@@ -78,6 +78,15 @@ pub enum HeaderKind {
     /// `import updates from "channel:updates"`: packs the flow sends (`updates.send(v)`) to
     /// whoever subscribes, a route answering with `return updates.subscribe()`.
     Channel(String),
+    /// `import ops from "mail:ops"`: a mail resource an admin binds on the host, sent through as
+    /// `ops.send({ to, subject, text })` once the run is over.
+    Mail(String),
+    /// `import prices from "feed:prices"`: a feed an admin binds on the host, listened to as
+    /// `on.feed(prices, (e) => …)`.
+    Feed(String),
+    /// `import payouts from "queue:payouts"`: a queue an admin binds on the host, listened to as
+    /// `on.queue(payouts, (m) => …)` and sent to as `payouts.send({ data })` once the run is over.
+    Queue(String),
     /// `import { charge } from "flow:billing"`: another deployed flow, by its slug, whose actions
     /// this flow runs, `RunsAction("billing/charge")`. Its call noun is the slug with `-` as `_`.
     Calls(String),
@@ -107,6 +116,10 @@ pub enum Item {
     Route(RouteDef),
     Every(EveryDef),
     OnFile(OnFileDef),
+    OnMail(OnMailDef),
+    OnFeed(OnFeedDef),
+    OnQueue(OnQueueDef),
+    WebSocket(WebSocketDef),
     Action(ActionDef),
     Stmt(Stmt),
 }
@@ -135,6 +148,54 @@ pub struct OnFileDef {
     /// The name of the file's handle.
     pub file: Name,
     /// `on.file.created(inbox, (f) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.mail(remit, (m) => …)`: a mail handler, a run for each message that comes to the mailbox
+/// of the mail `remit` (host-capabilities L4 §5.2.4). `m` in it is the message, read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnMailDef {
+    /// The mail whose mailbox it reads, as it is imported: `remit`.
+    pub mail: String,
+    /// The name of the message.
+    pub message: Name,
+    /// `on.mail(remit, (m) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.feed(prices, (e) => …)`: a feed handler, a run for each event the feed `prices` sends
+/// (host-capabilities L4 §5.9.2). `e` in it is the event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnFeedDef {
+    /// The feed it listens to, as it is imported: `prices`.
+    pub feed: String,
+    /// The name of the event.
+    pub event: Name,
+    /// `on.feed(prices, (e) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.queue(payouts, (m) => …)`: a queue handler, a run for each message from the queue
+/// `payouts`, deleted once its run is over (host-capabilities L4 §5.9.9). `m` in it is the message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnQueueDef {
+    /// The queue it listens to, as it is imported: `payouts`.
+    pub queue: String,
+    /// The name of the message.
+    pub message: Name,
+    /// `on.queue(payouts, (m) =>`.
     pub head: Span,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,
@@ -216,6 +277,27 @@ pub struct RouteDef {
     pub request: Name,
     pub resumes: Option<Name>,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `route.websocket("/room/:name", { open: (req) => …, message: (m) => …, close: (c) => … })`:
+/// the connections opened on a path, a run for each block's event (host-capabilities L4 §5.12).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebSocketDef {
+    pub path: Name,
+    /// Its blocks as written, one of each at most.
+    pub blocks: Vec<SocketBlockDef>,
+    pub span: Span,
+}
+
+/// One block of a websocket: `open`, `message` or `close`, its parameter what it received.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SocketBlockDef {
+    pub on: Name,
+    pub param: Name,
+    /// Its level, from the websocket's `{ log }` (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
@@ -312,6 +394,7 @@ pub enum ExprKind {
 pub enum Noun {
     Now,
     Random,
+    RandomBytes,
 }
 
 /// A record literal's key, as written.

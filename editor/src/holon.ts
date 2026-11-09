@@ -184,7 +184,9 @@ export type WCapability =
   | "NetworkIngress"
   | { FileRead: string }
   | { FileArrival: string }
+  | { MailArrival: string }
   | { Action: string }
+  | { WebSocket: string }
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }
@@ -202,7 +204,9 @@ export type WCapability =
   | { DbWrite: string }
   | { ChannelSend: string }
   | { ChannelRead: string }
+  | { MailSend: string }
   | { SecretAnswer: string }
+  | { FileServe: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —

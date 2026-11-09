@@ -126,8 +126,10 @@ jobs:
   e2e:
     runs-on: [self-hosted, Linux, X64]
     env:
-      # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
+      # The atlas-notes sample's MongoDB, and the ledger-watch sample's Postgres
+      # (editor/e2e/server.mjs binds them).
       HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
+      HOLON_TEST_POSTGRES: postgres://postgres:holon@127.0.0.1:5433/postgres
       # Builds go beside the checkout, which this runner keeps between runs (checkout's clean
       # removes target/ inside it), in place of GitHub's cache: saving 600 MB to that from this
       # runner hung at 0%.
@@ -159,6 +161,7 @@ jobs:
           if [ -x "$HOME/.cargo/bin/rustup" ]; then echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; fi
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
+      - run: bash .github/start-postgres.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -200,12 +203,14 @@ jobs:
         with:
           name: playwright-traces-${{ matrix.shard }}
           path: editor/test-results
-      # And after, however the run ended (failed, cancelled): its MongoDB with its volumes, and what
-      # an e2e server killed before its own cleanup left in the temp folder. The kept build stays.
+      # And after, however the run ended (failed, cancelled): its MongoDB and Postgres with their
+      # volumes, and what an e2e server killed before its own cleanup left in the temp folder. The
+      # kept build stays.
       - name: Clean up after the run
         if: always()
         run: |
           docker rm -f -v mongo || true
+          docker rm -f -v holon-postgres || true
           rm -rf /tmp/holon-e2e-* editor/test-results
           df -h "$GITHUB_WORKSPACE"
 

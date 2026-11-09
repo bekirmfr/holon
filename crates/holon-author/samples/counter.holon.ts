@@ -16,12 +16,9 @@ import { now } from "holon:clock"
 
 flow("counter", { port: 8155 })
 
-// Each hit adds one to the count kept across runs, and says it.
-route.get("/hit", () => {
-  const hits = (state.hits ?? 0) + 1
-  state.hits = hits
-  return `hit ${hits}`
-})
+// Each hit adds one to the count kept across runs, and says it: ++state.hits is the count it
+// makes, from 0 when there is none yet.
+route.get("/hit", () => `hit ${++state.hits}`)
 
 // Keeps when the visitor came, then (after the put) remembers who came last.
 route.post("/visits/:id", (req) => {

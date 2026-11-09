@@ -58,6 +58,18 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // And the mail resources (mails.rs).
+    if let Some(response) = crate::mails::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
+    // And the feeds (feeds.rs).
+    if let Some(response) = crate::feeds::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
+    // And the queues (queues.rs).
+    if let Some(response) = crate::queues::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
     // Who holds what (grants.rs): a server without accounts has deployments too.
     if request.method() == "GET" && url == "/admin/grants" {
         return Some(crate::grants::handle_get_admin_grants(state));

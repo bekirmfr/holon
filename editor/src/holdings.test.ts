@@ -27,6 +27,8 @@ describe("who holds what", () => {
     expect(itemParts('SecretRead("a\\"b")')).toEqual({ kind: "SecretRead", arg: 'a"b' });
     expect(reaches('DbRead("shop/sales.orders")')).toEqual({ kind: "database", name: "shop", use: "read", table: "sales.orders" });
     expect(reaches('FileArrival("inbox")')).toEqual({ kind: "folder", name: "inbox", use: "arrival", table: null });
+    expect(reaches('FileServe("site")')).toEqual({ kind: "folder", name: "site", use: "serve", table: null });
+    expect(usesText([{ use: "serve", table: null, revoked: false, item: 'FileServe("site")' }])).toEqual([{ text: "serves its files", revoked: false }]);
     expect(reaches('HttpRequest("a.com")')).toBeNull();
   });
 
@@ -59,5 +61,52 @@ describe("who holds what", () => {
       ['SecretRead("key")', "SecretRead", ["drop-box"]],
     ]);
     expect(kindsHeld(held)).toEqual(["databases", "folders", "HttpRequest", "NetworkIngress", "SecretRead"]);
+  });
+
+  it("reads a mail's grant by recipient, a computed one as any its binding allows", () => {
+    expect(reaches('MailSend("ops/approvals@acme.com")')).toEqual({ kind: "mail", name: "ops", use: "send", table: "approvals@acme.com" });
+    const mailing: HeldGrant[] = [
+      { slug: "approval-mail", status: "running", attention: null, items: ['MailSend("ops/approvals@acme.com")', 'MailSend("ops/*")', 'MailSend("alerts/oncall@acme.com")'], revoked: [] },
+    ];
+    const mails = [{ name: "ops", deployment: null }];
+    const ops = holdersOf("mail", mails[0], mails, mailing);
+    expect(ops.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([["approval-mail", ["mails approvals@acme.com, addresses it computes"]]]);
+    // A mail no binding answers is among the others.
+    expect(othersHeld(mailing, [], [], mails).map((o) => [o.item, o.kind])).toEqual([['MailSend("alerts/oncall@acme.com")', "mail"]]);
+    expect(kindsHeld(mailing)).toEqual(["mail"]);
+  });
+
+  it("reads a feed's grant as listening to it, through the binding each sees", () => {
+    expect(reaches('FeedEvent("prices")')).toEqual({ kind: "feed", name: "prices", use: "listen", table: null });
+    const listening: HeldGrant[] = [
+      { slug: "price-feed", status: "running", attention: null, items: ['FeedEvent("prices")', 'FeedEvent("rates")'], revoked: [] },
+    ];
+    const feeds = [{ name: "prices", deployment: null }];
+    const prices = holdersOf("feed", feeds[0], feeds, listening);
+    expect(prices.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([["price-feed", ["starts on each event it sends"]]]);
+    // A feed no binding answers is among the others.
+    expect(othersHeld(listening, [], [], [], feeds).map((o) => [o.item, o.kind])).toEqual([['FeedEvent("rates")', "feeds"]]);
+    expect(kindsHeld(listening)).toEqual(["feeds"]);
+  });
+
+  it("reads a queue's grants as taking its messages and sending to it, through the binding each sees", () => {
+    expect(reaches('QueueMessage("payout_events")')).toEqual({ kind: "queue", name: "payout_events", use: "dequeue", table: null });
+    expect(reaches('QueueSend("payout_retries")')).toEqual({ kind: "queue", name: "payout_retries", use: "enqueue", table: null });
+    const held: HeldGrant[] = [
+      { slug: "payout-events", status: "running", attention: null, items: ['QueueMessage("payout_events")', 'QueueSend("payout_retries")', 'QueueSend("audit")'], revoked: [] },
+      { slug: "replay", status: "running", attention: null, items: ['QueueSend("payout_events")'], revoked: [] },
+    ];
+    const queues = [
+      { name: "payout_events", deployment: null },
+      { name: "payout_retries", deployment: null },
+    ];
+    const events = holdersOf("queue", queues[0], queues, held);
+    expect(events.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([
+      ["payout-events", ["starts on each message it holds"]],
+      ["replay", ["sends messages to it"]],
+    ]);
+    // A queue no binding answers is among the others.
+    expect(othersHeld(held, [], [], [], [], queues).map((o) => [o.item, o.kind])).toEqual([['QueueSend("audit")', "queues"]]);
+    expect(kindsHeld(held)).toEqual(["queues"]);
   });
 });

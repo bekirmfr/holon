@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`xml_parse`](#xml_parse) · [`xml_format`](#xml_format) · [`xml_find`](#xml_find) · [`xml_text`](#xml_text) · [`xml_attribute`](#xml_attribute) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`xml_parse`](#xml_parse) · [`xml_format`](#xml_format) · [`xml_find`](#xml_find) · [`xml_text`](#xml_text) · [`xml_attribute`](#xml_attribute) · [`gzip`](#gzip) · [`gunzip`](#gunzip) · [`zip`](#zip) · [`unzip`](#unzip) · [`jwt_verify`](#jwt_verify) · [`jwt_decode`](#jwt_decode) · [`pgp_encrypt`](#pgp_encrypt) · [`pgp_verify`](#pgp_verify) · [`pgp_key`](#pgp_key) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
 
 ### `const`
 
@@ -1055,6 +1055,78 @@ xml_attribute(element: List<Any>, name: Text) -> out: Text
 
 An element's attribute, by name; nothing when it has none so named.
 
+### `gzip`
+
+```
+gzip(data: Any) -> out: Bytes
+```
+
+Gzips a text (its UTF-8) or bytes: deflated at level 6, with no file name and time 0, so the same data gives the same bytes everywhere.
+
+### `gunzip`
+
+```
+gunzip(bytes: Bytes) -> out: Bytes
+```
+
+The bytes inside a gzip, each member's joined. Nothing for a header, checksum or length that is wrong, bytes after the last member that aren't another, or past 64 MiB inflated.
+
+### `zip`
+
+```
+zip(files: Record) -> out: Bytes
+```
+
+Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.
+
+### `unzip`
+
+```
+unzip(bytes: Bytes) -> out: Record
+```
+
+A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.
+
+### `jwt_verify`
+
+```
+jwt_verify(token: Text, key: Any, now: Number) -> out: Record  {issuer, audience, leeway: 0}
+```
+
+A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM text or a JWK record, and a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.
+
+### `jwt_decode`
+
+```
+jwt_decode(token: Text) -> out: Record
+```
+
+A JWT's header and payload, {header, payload}, verifying nothing: what it says before it is trusted, to pick the key that checks it. Nothing for what isn't three base64url parts whose header and payload are JSON objects.
+
+### `pgp_encrypt`
+
+```
+pgp_encrypt(data: Any, keys: Any, random: Bytes, now: Number) -> out: Bytes  {armor: binary}
+```
+
+An OpenPGP message: data (a text's UTF-8, or bytes) encrypted to each of keys, to its newest encryption key valid at now, as GnuPG reads it: a session key for each, then AES-256 with the modification detection code over the data, dated now. random is the run's random bytes (random_bytes), from which every random byte is drawn, so a rerun writes the same message. A key is a public key, armored or bytes: version 4, RSA (2,048 to 4,096 bits) or Curve25519, valid by its own signatures (not expired, not revoked). armor ascii gives the armored text, as bytes. Nothing for a key without an encryption key valid at now, or fewer than 32 random bytes.
+
+### `pgp_verify`
+
+```
+pgp_verify(data: Any, signature: Any, keys: Any, now: Number) -> out: Record
+```
+
+{signer, key, created} when one of signature's signatures (detached, armored or bytes) over data verifies with one of keys: the primary key's fingerprint, the signing key's, and when it signed. The key must be able to sign and be valid when it signed (not expired, not revoked; a subkey bound by its primary and its own back-signature), the signature made no later than now and not expired at it, over SHA-224 to SHA-512. A text signature is over the data with CR LF line endings. Nothing otherwise, SHA-1 signatures included.
+
+### `pgp_key`
+
+```
+pgp_key(key: Any) -> out: Record
+```
+
+What one public key says, as its own signatures bear out: {fingerprint, user_ids, created, expires, revoked}, its fingerprint as GnuPG writes it (40 hex digits, upper case), expires absent when it never does. What a person compares before trusting a key. Nothing for several keys at once, a secret key, or a key no self-signature holds for.
+
 ### `to_text`
 
 ```
@@ -1123,7 +1195,7 @@ Nothing, with message given to the run's log as the reason: JavaScript's throw n
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`approval`](#approval) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`random_bytes`](#random_bytes) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`mail_arrival`](#mail_arrival) · [`feed_event`](#feed_event) · [`queue_message`](#queue_message) · [`await`](#await) · [`resume_token`](#resume_token) · [`approval`](#approval) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`file_serve`](#file_serve) · [`mail_send`](#mail_send) · [`queue_send`](#queue_send) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -1179,7 +1251,15 @@ The time the run started, in seconds since 1970. The same everywhere in one run,
 random() -> out: Number
 ```
 
-A random number from 0 up to 1, the same everywhere in one run, and recorded.
+A random number from 0 up to 1, the same everywhere in one run, and recorded: read from the run's random bytes.
+
+### `random_bytes`
+
+```
+random_bytes() -> out: Bytes
+```
+
+The run's 32 random bytes, the same everywhere in one run, and recorded: what pgp_encrypt draws a message's randomness from.
 
 ### `secret`
 
@@ -1196,6 +1276,30 @@ file_arrival() -> out: Record  {folder: files, on: new, matching}
 ```
 
 The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.
+
+### `mail_arrival`
+
+```
+mail_arrival() -> out: Record  {mail: ops}
+```
+
+The message that came to the mailbox of the mail resource an admin bound to the name set on the node (mail), which started the run: {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it (DMARC passed); From alone proves nothing. attachments is a record of each file's name to its text (a text, JSON, XML or CSV type) or bytes. A server's on.mail handler runs once for each message, which is moved to the binding's done folder once the run is over.
+
+### `feed_event`
+
+```
+feed_event() -> out: Record  {feed: prices}
+```
+
+The event the feed an admin bound to the name set on the node (feed) sent, which started the run: {data, id, event}. data is a value when the event's data is JSON, else its text; id is the event's id when the feed gives one; event is its name, message unless the feed names it. A server's on.feed handler runs once for each event, one at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and an event run on already isn't run again.
+
+### `queue_message`
+
+```
+queue_message() -> out: Record  {queue: payouts}
+```
+
+The message that came to the queue an admin bound to the name set on the node (queue), which started the run: {data, id, attributes, sent, count, group}. data is its body, a value when it is JSON, else its text; id is the queue's id for it; attributes its message attributes of type String or Number, as text; sent when it was sent, in seconds since 1970; count how many times the queue has handed it out; group a FIFO queue's message group. A server's on.queue handler runs once for each message, one at a time, in the order they came; the host deletes it once its run is over, and a message run on already isn't run again.
 
 ### `await`
 
@@ -1288,10 +1392,10 @@ A record of a folder's files (name, size, hash, modified) in name order, up to l
 ### `file_write`
 
 ```
-file_write(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
+file_write(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}
 ```
 
-Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
+Writes a text, or bytes as they are, to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
 
 ### `file_delete`
 
@@ -1344,10 +1448,10 @@ The bytes of the file name in a folder, any file, as the run found it; nothing w
 ### `file_create`
 
 ```
-file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
+file_create(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}
 ```
 
-Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
+Writes a text, or bytes as they are, to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
 
 ### `file_create_copy`
 
@@ -1437,6 +1541,30 @@ channel_subscribe() -> out: Effect  {channel: updates, from: new}
 
 A subscription to the channel set on the node, for a route to answer with: the caller gets each pack sent on it from then on (from "kept": the packs the channel keeps first), as server-sent events. Letting callers subscribe is a permission.
 
+### `file_serve`
+
+```
+file_serve(file: Record) -> out: Effect  {folder: site}
+```
+
+A route's answer that is the file a handle of the folder set on the node names: the host sends its bytes as they are, with the type its name says, if the file is still the handle's. Answering with a folder's files is a permission.
+
+### `mail_send`
+
+```
+mail_send(message: Record, trigger: Any) -> out: Effect  {mail: ops, to: *}
+```
+
+Sends message through the mail resource an admin bound to the name set on the node (mail), once the run is over and its writes have landed: {to, cc, subject, text, html, attachments}, to and cc an address or a list, attachments a record of a file name to its text or bytes. From is the binding's, never the flow's. to set on the node is the recipients the text names, or * when one is computed: a recipient it doesn't name gives nothing, and the host sends only to those the binding allows. At most 50 recipients and 10 MiB. Sending through it, to each recipient, is a permission.
+
+### `queue_send`
+
+```
+queue_send(message: Record, trigger: Any) -> out: Effect  {queue: payouts}
+```
+
+Sends message to the queue an admin bound to the name set on the node (queue), once the run is over and its writes have landed: {data, group}. data is the body, sent as JSON (text as it is); group, text, is a FIFO queue's message group, whose messages come out in the order sent. Sending to it is a permission.
+
 ### `egress`
 
 ```
@@ -1458,6 +1586,10 @@ A route: answers requests with the method and path set on the node (path params 
 
 Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error.
 
+### `websocket`
+
+A websocket's block: a run when a browser opens a WebSocket on the path set on the node (on: open), for each text message it sends (on: message), or when the connection ends (on: close). Gives its record (open: the opening request, with conn, the connection's id; message: {conn, params, query, text}; close: {conn, params, query, code, reason}), its params and query, and a message's text parsed as JSON. Open answers as a route does: a subscription accepts and subscribes, a status of 300 or more refuses. A message's respond goes back on its connection. Everything wired to it is that run.
+
 ### `stripe_verify`
 
 Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.
@@ -1469,6 +1601,18 @@ A clock: a run every seconds set on the node, with now, the time of the tick. Ev
 ### `on_file`
 
 A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_mail`
+
+A mail handler: a run for each message that comes to the mailbox an admin bound to the mail set on the node, with message, the message read {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it; From alone proves nothing. The message is moved to the binding's done folder once the run is over. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_feed`
+
+A feed handler: a run for each event the feed an admin bound to the name set on the node sends, with event {data, id, event}: data a value when the event's data is JSON, else its text. One at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and none runs twice. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_queue`
+
+A queue handler: a run for each message that comes to the queue an admin bound to the name set on the node, with message {data, id, attributes, sent, count, group}: data its body, a value when it is JSON, else its text. One at a time, in the order they came; the host deletes each once its run is over, and none runs twice. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
 
 ### `action`
 

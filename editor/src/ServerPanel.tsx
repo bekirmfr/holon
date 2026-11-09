@@ -1,10 +1,12 @@
-// The server panel: the routes, clocks, file handlers and actions this flow declares (derived from
-// its request, every, on_file and action nodes, see derive.ts), a request tester to try the
-// routes, locally or against the flow's deployment, "tick now" for a deployed clock, and "run"
-// for a deployed action, with what to send it.
+// The server panel: the routes, clocks, file, mail, feed and queue handlers and actions this flow
+// declares (derived from its request, every, on_file, on_mail, on_feed, on_queue and action nodes,
+// see derive.ts), a request tester to try the routes, locally or against the flow's deployment,
+// "tick now" for a deployed clock, what a deployed feed handler's connection and queue handler's
+// listener are doing and what its messages to queues came to, and "run" for a deployed action,
+// with what to send it.
 // Deploying is the header's job (DeployBar), for the whole flow.
 
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { buildPreimage, type Evaluator, type WUnit, type WValue } from "./holon";
 import {
   matchRoute,
@@ -16,8 +18,8 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { sendRequest, ServerError, tickNow, type HttpResponse, type Role } from "./server";
-import type { ActionDraft, ClockDraft, FileDraft } from "./canvasOps";
+import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending, type Role } from "./server";
+import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
@@ -100,6 +102,16 @@ type ToolsPanelProps = {
   clocks?: ClockDraft[];
   /** The file handlers the canvas declares (its `on_file` nodes' groups). */
   files?: FileDraft[];
+  /** The mail handlers the canvas declares (its `on_mail` nodes' groups). */
+  mails?: MailDraft[];
+  /** The feed handlers the canvas declares (its `on_feed` nodes' groups). */
+  feeds?: FeedDraft[];
+  /** The queue handlers the canvas declares (its `on_queue` nodes' groups). */
+  queues?: QueueDraft[];
+  /** The queues its flow sends to, by name. */
+  sendsTo?: string[];
+  /** The websockets' blocks the canvas declares (its `websocket` nodes' groups). */
+  websockets?: SocketDraft[];
   /** The actions the canvas declares (its `action` nodes' groups). */
   actions?: ActionDraft[];
   /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
@@ -123,6 +135,11 @@ export function ToolsPanel({
   endpoints,
   clocks = [],
   files = [],
+  mails = [],
+  feeds = [],
+  queues = [],
+  sendsTo = [],
+  websockets = [],
   actions = [],
   errors,
   liveSlug,
@@ -136,6 +153,47 @@ export function ToolsPanel({
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [ticked, setTicked] = useState("");
+  // What the running deployment's connection to each feed is doing, read every few seconds.
+  const [feedState, setFeedState] = useState<FeedState[]>([]);
+  const listens = feeds.length > 0;
+  useEffect(() => {
+    if (!tickSlug || !listens) {
+      setFeedState([]);
+      return;
+    }
+    let on = true;
+    const read = () =>
+      feedStates(tickSlug)
+        .then((f) => on && setFeedState(f))
+        .catch(() => on && setFeedState([]));
+    read();
+    const every = setInterval(read, 3000);
+    return () => {
+      on = false;
+      clearInterval(every);
+    };
+  }, [tickSlug, listens]);
+  // What the running deployment's listener to each queue is doing, and what its messages to each
+  // came to, read every few seconds.
+  const [queueState, setQueueState] = useState<{ listening: QueueListening[]; sending: QueueSending[] }>({ listening: [], sending: [] });
+  const queued = queues.length + sendsTo.length > 0;
+  useEffect(() => {
+    if (!tickSlug || !queued) {
+      setQueueState({ listening: [], sending: [] });
+      return;
+    }
+    let on = true;
+    const read = () =>
+      queueStates(tickSlug)
+        .then((q) => on && setQueueState(q))
+        .catch(() => on && setQueueState({ listening: [], sending: [] }));
+    read();
+    const every = setInterval(read, 3000);
+    return () => {
+      on = false;
+      clearInterval(every);
+    };
+  }, [tickSlug, queued]);
 
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);
@@ -216,7 +274,7 @@ export function ToolsPanel({
         </button>
         {serverOpen && (
           <>
-            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
+            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && feeds.length === 0 && queues.length === 0 && websockets.length === 0 && actions.length === 0 && errors.length === 0 && (
               <div style={{ color: "var(--faintest)", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
             )}
             {clocks.map((c) => (
@@ -240,7 +298,58 @@ export function ToolsPanel({
                 <span style={{ flex: 1, color: "var(--ink)" }}>{f.label.slice("on file ".length)}</span>
               </div>
             ))}
+            {mails.map((m) => (
+              <div key={m.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each message that comes to the mailbox of ${m.mail}, then moves it`}>
+                <span style={{ color: "#6fd3e0", ...lbl }}>on mail</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{m.mail}</span>
+              </div>
+            ))}
+            {feeds.map((f) => {
+              const live = feedState.find((s) => s.feed === f.feed);
+              return (
+                <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each event the feed ${f.feed} sends, one at a time${live?.address ? ` (${live.address})` : ""}`}>
+                  <span style={{ color: "#6fd3e0", ...lbl }}>on feed</span>
+                  <span style={{ flex: 1, color: "#e6eefb" }}>{f.feed}</span>
+                  {live && <span style={{ color: live.status === "connected" ? "#9fb4d4" : "#e0916f" }}>{feedLine(live)}</span>}
+                </div>
+              );
+            })}
+            {queues.map((q) => {
+              const live = queueState.listening.find((s) => s.queue === q.queue);
+              return (
+                <div
+                  key={q.label}
+                  style={{ display: "flex", gap: 6, alignItems: "center" }}
+                  title={`runs its group for each message the queue ${q.queue} holds, one at a time, and deletes it once its run is over${live?.address ? ` (${live.address})` : ""}`}
+                >
+                  <span style={{ color: "#6fd3e0", ...lbl }}>on queue</span>
+                  <span style={{ flex: 1, color: "#e6eefb" }}>{q.queue}</span>
+                  {live && <span style={{ color: live.status === "receiving" ? "#9fb4d4" : "#e0916f" }}>{queueLine(live)}</span>}
+                </div>
+              );
+            })}
+            {sendsTo.map((name) => {
+              const sent = queueState.sending.find((s) => s.queue === name);
+              return (
+                <div key={`sends ${name}`} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`sends messages to the queue ${name} once each run is over${sent?.address ? ` (${sent.address})` : ""}`}>
+                  <span style={{ color: "#6fd3e0", ...lbl }}>sends to</span>
+                  <span style={{ flex: 1, color: "#e6eefb" }}>{name}</span>
+                  {sent && <span style={{ color: sent.gave_up ? "#e0916f" : "#9fb4d4" }}>{sentLine(sent)}</span>}
+                </div>
+              );
+            })}
             <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
+            {[...new Set(websockets.map((w) => w.path))].map((path) => (
+              <div
+                key={`websocket ${path}`}
+                style={{ display: "flex", gap: 6, alignItems: "center" }}
+                title="holds the WebSocket connections a page opens on this path, and runs its blocks: open as one opens, message on each text it sends, close once it has ended"
+              >
+                <span style={{ color: "#6fd3e0", ...lbl }}>websocket</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{path}</span>
+                <span style={{ color: "#9fb4d4" }}>{websockets.filter((w) => w.path === path).map((w) => w.on).join(", ")}</span>
+              </div>
+            ))}
             {endpoints.map((e) => (
               <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <span style={{ color: "var(--accent)", ...lbl }}>{e.method}</span>
@@ -338,11 +447,55 @@ export function ToolsPanel({
 }
 
 /** @deprecated Use ToolsPanel. */
+/** A feed connection's state as one line: `connected, at BTC-USD/41`, `reconnecting: <why>`, how
+ *  many events wait, how many its buffer dropped or replaced and its binding passed over, and how
+ *  many numbers the feed skipped (`49 in gaps`). */
+export function feedLine(f: FeedState): string {
+  const at = f.position ? `, at ${f.position}` : "";
+  const counts: [number | undefined, string][] = [
+    [f.waiting, "waiting"],
+    [f.replaced, "replaced"],
+    [f.missed, "missed"],
+    [f.passed_over, "passed over"],
+    [f.gaps, "in gaps"],
+  ];
+  const said = counts.map(([n, what]) => (n ? `, ${n} ${what}` : "")).join("");
+  return f.status === "reconnecting" && f.error ? `reconnecting: ${f.error}${said}` : `${f.status}${at}${said}`;
+}
+
+/** A queue listener's state as one line: `receiving, 4 run, 1 passed over`, `unreachable: <why>`,
+ *  how many received wait for their run and how many were left for the queue's redrive. */
+export function queueLine(q: QueueListening): string {
+  const counts: [number | undefined, string][] = [
+    [q.waiting, "waiting"],
+    [q.run, "run"],
+    [q.passed_over, "passed over"],
+    [q.kept, "kept for the redrive"],
+  ];
+  const said = counts.map(([n, what]) => (n ? `, ${n} ${what}` : "")).join("");
+  return q.status === "unreachable" && q.error ? `unreachable: ${q.error}${said}` : `${q.status}${said}`;
+}
+
+/** What a deployment's messages to a queue came to, as one line: `2 sent, 1 waiting, 1 given up`. */
+export function sentLine(s: QueueSending): string {
+  const counts: [number | undefined, string][] = [
+    [s.sent, "sent"],
+    [s.waiting, "waiting"],
+    [s.gave_up, "given up"],
+  ];
+  return counts.flatMap(([n, what]) => (n ? [`${n} ${what}`] : [])).join(", ") || "none sent yet";
+}
+
 export function ServerPanel({
   ev,
   endpoints,
   clocks = [],
   files = [],
+  mails = [],
+  feeds = [],
+  queues = [],
+  sendsTo = [],
+  websockets = [],
   actions = [],
   errors,
   liveSlug,
@@ -352,5 +505,5 @@ export function ServerPanel({
   onViewRun,
 }: Omit<ToolsPanelProps, "open" | "onOpen">) {
   const [open, setOpen] = useState(true);
-  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
+  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} queues={queues} sendsTo={sendsTo} websockets={websockets} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
 }

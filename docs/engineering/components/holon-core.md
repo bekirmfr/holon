@@ -14,9 +14,14 @@ history is in the [JOURNAL](../../JOURNAL.md), by date.
 
 `crates/holon-core`, compiled native for the server and the command line, and to wasm32 for the
 editor ([holon-wasm](holon-wasm.md)): one evaluator, one encoder. It performs no effect and has
-no IO, async or network dependency; its five dependencies are `blake3`, `hmac`, `libm` (the
-number leaves' transcendental functions, the same bits on every target), `sha2` and `smallvec`
-(`Cargo.toml`), and the purity boundary is that dependency graph (`lib.rs`). An
+no IO, async or network dependency; its thirteen dependencies are `blake3`, `ed25519-dalek`,
+`p256` and `rsa` (`jwt_verify`'s and OpenPGP's signatures, RustCrypto's, without `std` or
+randomness), `curve25519-dalek`, `aes` and `sha1` (OpenPGP's X25519, AES and SHA-1 in `pgp.rs`,
+whose every random byte is drawn from the run's), `hmac`, `libm`
+(the number leaves' transcendental functions, the same bits on every target), `miniz_oxide`
+(`zip`'s and `gzip`'s deflate, pinned so the same data deflates to the same bytes), `sha2`,
+`smallvec` and `unicode-normalization` (`normalize`'s tables) (`Cargo.toml`), and the purity
+boundary is that dependency graph (`lib.rs`). An
 effect is a value core builds and the host performs ([holon-host](holon-host.md)).
 
 | File | Holds |
@@ -64,9 +69,9 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 177 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 188 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
-(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 141 of them,
+(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 151 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the
 other (RA D1). The rest are not computed here: `map`, `fold` and the other higher-order leaves
 (`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 19 build a
@@ -117,8 +122,8 @@ or a cycle makes every output absent; an edge from a child that doesn't exist re
 `Kind` (`Pure`, `Driver`, `State`, `Sink`) is a projection of the capabilities, never stored.
 `manifest_items`, `consent_name` and `trigger` are the rules the server grants by and the editor
 shows. `taint.rs` follows each secret through the graph (literal or derived) to the effects and
-answers it reaches. `read_server` reads a flow's declaration (routes, clocks, file handlers,
-actions, each handler's `LogLevel`) and fails closed on anything malformed.
+answers it reaches. `read_server` reads a flow's declaration (routes, clocks, file and mail
+handlers, actions, each handler's `LogLevel`) and fails closed on anything malformed.
 
 ## 3. Why it is this way
 

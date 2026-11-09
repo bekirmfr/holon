@@ -13,6 +13,7 @@ import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./f
 import { flowRow, gotoPage, navLink, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
+const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
 /** The samples' titles, as holon-author lists them (samples.rs), read as the tests are collected:
  *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
@@ -85,6 +86,8 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
     for (const title of titles) {
       // Its database is a MongoDB, bound only where the environment names one (CI does).
       if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
+      // Its feed is a Postgres channel, bound only where the environment names a Postgres.
+      if (title === LEDGER_WATCH && !process.env.HOLON_TEST_POSTGRES) continue;
       await test.step(title, async () => {
         await openSample(page, title, false);
         if (!DEPLOYED_BY_OWN_TEST.has(title)) await deploy(page);
@@ -870,6 +873,31 @@ test("live-board's page gets each ticket posted as a pack on its channel, and a 
   );
   expect(events).toContain(`"title":"${title}"`);
   await board.close();
+});
+
+test("room's pages talk over WebSockets: what one says reaches both, and the other hears who left", async ({ page, browser }) => {
+  await openSample(page, "Room (a chat over WebSockets)");
+  const port = await deploy(page);
+  // A page in the room under `name`: its WebSocket on /room/<name>, open once it says so.
+  const join = async (name: string) => {
+    const tab = await browser.newPage();
+    await tab.goto(`http://127.0.0.1:${port}/`);
+    await tab.getByPlaceholder("Your name").fill(name);
+    await tab.getByRole("button", { name: "Join" }).click();
+    await expect(tab.locator("#said")).toContainText(`you joined as ${name}`);
+    return tab;
+  };
+  const ann = await join("ann");
+  const bob = await join("bob");
+  await expect(ann.locator("#said")).toContainText("bob joined");
+  // What one says runs its message block, and its pack reaches both, under its name.
+  await bob.getByPlaceholder("Say something").fill("hi");
+  await bob.getByRole("button", { name: "Say" }).click();
+  for (const tab of [ann, bob]) await expect(tab.locator("#said")).toContainText("bob: hi");
+  // A page closed: its connection's close block runs, and the room hears who left.
+  await bob.close();
+  await expect(ann.locator("#said")).toContainText("bob left");
+  await ann.close();
 });
 
 test("approval sends an order's progress on its channel: waiting as the run parks, paid when it finishes, never the first twice", async ({ page, browser, request }) => {
@@ -1674,6 +1702,12 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   const last: string[] = await tail.json();
   expect([last.length, last[19]]).toEqual([20, "line 59999 of a log too big to read whole"]);
   await viewNewestRun(page);
+  // The whole log as a download, bigger than a file read whole: streamed by the host, as it is.
+  const download = await request.get(`http://127.0.0.1:${port}/logs/${name}/download`);
+  expect(download.status()).toBe(200);
+  expect(download.headers()["content-disposition"]).toBe(`attachment; filename="${name}"`);
+  expect(download.headers()["content-length"]).toBe(String(log.length));
+  expect(await download.text()).toBe(log);
   // Copied host to host by its handle: the bytes never entered the run.
   const archived = await request.post(`http://127.0.0.1:${port}/archive`, { data: { name } });
   expect(archived.status()).toBe(200);
@@ -1691,7 +1725,7 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   expect(exported).toContain("line 59999 ");
   expect(exported).not.toContain("line 30000 ");
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified).toContain("re-ran 3 runs: each produced what its log entry says");
+  expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
@@ -1950,6 +1984,838 @@ test("payment-batch writes a pain.001 whose control sum is exact and reads a pai
   });
 });
 
+test("statement-archive unzips and gunzips deliveries, archives each as a zip it writes, serves a statement gzipped, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { crc32, gzipSync, inflateRawSync } = await import("node:zlib");
+  // A zip as another tool writes one, its files stored rather than deflated: Node has no zip of its own.
+  const zipStored = (files: [string, Buffer][]) => {
+    const [parts, directory] = [[] as Buffer[], [] as Buffer[]];
+    let at = 0;
+    for (const [name, data] of files) {
+      const [named, local, entry] = [Buffer.from(name), Buffer.alloc(30), Buffer.alloc(46)];
+      local.writeUInt32LE(0x04034b50, 0);
+      entry.writeUInt32LE(0x02014b50, 0);
+      entry.writeUInt16LE(20, 4);
+      for (const [header, from] of [[local, 4], [entry, 6]] as const) {
+        header.writeUInt16LE(20, from);
+        header.writeUInt16LE(0x0021, from + 8);
+        header.writeUInt32LE(crc32(data), from + 10);
+        header.writeUInt32LE(data.length, from + 14);
+        header.writeUInt32LE(data.length, from + 18);
+        header.writeUInt16LE(named.length, from + 22);
+      }
+      entry.writeUInt32LE(at, 42);
+      parts.push(local, named, data);
+      directory.push(entry, named);
+      at += 30 + named.length + data.length;
+    }
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(files.length, 8);
+    end.writeUInt16LE(files.length, 10);
+    end.writeUInt32LE(directory.reduce((n, b) => n + b.length, 0), 12);
+    end.writeUInt32LE(at, 16);
+    return Buffer.concat([...parts, ...directory, end]);
+  };
+  // A zip read as another tool reads one: each local header in turn, its file inflated.
+  const unzipped = (zip: Buffer) => {
+    const files: Record<string, string> = {};
+    for (let at = 0; zip.readUInt32LE(at) === 0x04034b50; ) {
+      const [method, size, named, extra] = [zip.readUInt16LE(at + 8), zip.readUInt32LE(at + 18), zip.readUInt16LE(at + 26), zip.readUInt16LE(at + 28)];
+      const data = zip.subarray(at + 30 + named + extra, at + 30 + named + extra + size);
+      files[zip.toString("utf8", at + 30, at + 30 + named)] = (method === 8 ? inflateRawSync(data) : data).toString("utf8");
+      at += 30 + named + extra + size;
+    }
+    return files;
+  };
+  await openSample(page, "Statement archive (zip and gzip, bytes written to a file)");
+  const port = await deploy(page);
+  const statement = (iban: string, closing: string, side: string) =>
+    `<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt><Stmt><Acct><Id><IBAN>${iban}</IBAN></Id></Acct>` +
+    `<Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-11-05</Dt></Dt></Bal>` +
+    `<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">${closing}</Amt><CdtDbtInd>${side}</CdtDbtInd><Dt><Dt>2026-11-06</Dt></Dt></Bal></Stmt></BkToCstmrStmt></Document>`;
+  const [fr, de] = [statement("FR1420041010050500013M02606", "1250.50", "CRDT"), statement("DE89370400440532013000", "75.25", "DBIT")];
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const stamp = Date.now();
+  const [day, one] = [`day-${stamp}.zip`, `fr-${stamp}.xml.gz`];
+  writeFileSync(join(FOLDERS, "inbox", day), zipStored([["fr.xml", Buffer.from(fr)], ["de.xml", Buffer.from(de)]]));
+  writeFileSync(join(FOLDERS, "inbox", one), gzipSync(fr));
+  const deliveries = async () => (await request.get(`http://127.0.0.1:${port}/deliveries`)).json();
+  await expect.poll(async () => Object.keys(await deliveries()), { timeout: 15_000 }).toEqual(expect.arrayContaining([day, one]));
+  const all = await deliveries();
+  expect(all[day]).toEqual({
+    archive: day,
+    statements: [
+      { file: "de.xml", account: "DE89370400440532013000", date: "2026-11-06", closing: "-75.25", currency: "EUR", sha256: sha(de) },
+      { file: "fr.xml", account: "FR1420041010050500013M02606", date: "2026-11-06", closing: "1250.50", currency: "EUR", sha256: sha(fr) },
+    ],
+  });
+  expect(all[one].archive).toBe(`fr-${stamp}.xml.zip`);
+
+  // The archive, written as bytes, read back by Node: the statements as they came, the manifest beside them.
+  const archived = unzipped(readFileSync(join(FOLDERS, "archive", day)));
+  expect(Object.keys(archived)).toEqual(["de.xml", "fr.xml", "manifest.csv"]);
+  expect([archived["de.xml"], archived["fr.xml"]]).toEqual([de, fr]);
+  expect(archived["manifest.csv"]).toContain(`fr.xml,FR1420041010050500013M02606,2026-11-06,1250.50,EUR,${sha(fr)}`);
+
+  // A statement served back from the archive: gzipped when the client takes it, else as it is.
+  const served = await request.get(`http://127.0.0.1:${port}/deliveries/${day}/fr.xml`, { headers: { "accept-encoding": "gzip" } });
+  expect([served.headers()["content-encoding"], await served.text()]).toEqual(["gzip", fr]);
+  const plain = await request.get(`http://127.0.0.1:${port}/deliveries/${day}/fr.xml`, { headers: { "accept-encoding": "identity" } });
+  expect([plain.headers()["content-encoding"], await plain.text()]).toEqual([undefined, fr]);
+
+  // Its runs check offline.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "statement-archive.json");
+  execFileSync(holon, ["export", "statement-archive", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
+test("jwt-api verifies a partner's token with the key a person trusted for it, refuses alg none and HMAC over the public key, pays a token once, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHmac, generateKeyPairSync, sign } = await import("node:crypto");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // Two partners' keys, made by Node (OpenSSL): one trusted as a JWK, one as a PEM text.
+  const [acme, globex] = [generateKeyPairSync("ec", { namedCurve: "P-256" }), generateKeyPairSync("ed25519")];
+  const globexPem = globex.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const claims = (iss: string, jti: string, more: object = {}) => ({ iss, sub: "svc-1", aud: "payouts-api", scope: "payouts:write", jti, iat: now, exp: now + 600, ...more });
+  const jws = (alg: string, payload: object, signer: (data: Buffer) => Buffer) => {
+    const signed = `${b64u(JSON.stringify({ alg, typ: "JWT" }))}.${b64u(JSON.stringify(payload))}`;
+    return `${signed}.${b64u(signer(Buffer.from(signed)))}`;
+  };
+  const es256 = (payload: object) => jws("ES256", payload, (d) => sign("sha256", d, { key: acme.privateKey, dsaEncoding: "ieee-p1363" }));
+  const eddsa = (payload: object) => jws("EdDSA", payload, (d) => sign(null, d, globex.privateKey));
+
+  await openSample(page, "JWT API (partners' signed tokens, verified with keys a person trusts)");
+  const port = await deploy(page);
+  // A person trusts each partner's key, running the action from the server panel.
+  for (const [partner, key] of [["acme", acme.publicKey.export({ format: "jwk" })], ["globex", globexPem]] as const) {
+    await page.getByLabel("what to send trust").fill(JSON.stringify({ partner, key }));
+    await page.getByRole("button", { name: "run", exact: true }).click();
+    await expect(page.getByText(/^trust: null \(run \d+\)/)).toBeVisible();
+  }
+  const call = (method: "get" | "post", path: string, token: string, data?: object) =>
+    request[method](`http://127.0.0.1:${port}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {}, data });
+
+  // Who called, as each partner's key says.
+  const who = await call("get", "/whoami", es256(claims("acme", "j1")));
+  expect([who.status(), await who.json()]).toEqual([200, { partner: "acme", subject: "svc-1", scope: "payouts:write", expires: now + 600 }]);
+  expect((await (await call("get", "/whoami", eddsa(claims("globex", "g1")))).json()).partner).toBe("globex");
+
+  // What doesn't verify answers 401: no token, another partner's signature, alg none, HMAC with
+  // globex's public key as the secret, expired, for another API.
+  const refused = await call("get", "/whoami", "");
+  expect([refused.status(), refused.headers()["www-authenticate"]]).toEqual([401, "Bearer"]);
+  const none = `${b64u(JSON.stringify({ alg: "none" }))}.${b64u(JSON.stringify(claims("globex", "n1")))}.`;
+  const confused = jws("HS256", claims("globex", "h1"), (d) => createHmac("sha256", globexPem).update(d).digest());
+  for (const token of [es256(claims("globex", "x1")), none, confused, eddsa(claims("globex", "e1", { exp: now - 60 })), eddsa(claims("globex", "a1", { aud: "billing-api" }))]) {
+    expect((await call("get", "/whoami", token)).status()).toBe(401);
+  }
+
+  // A payout needs payouts:write, and a token pays once.
+  const read = await call("post", "/payouts", es256(claims("acme", "j2", { scope: "payouts:read" })), { amount: "5.00" });
+  expect([read.status(), await read.json()]).toEqual([403, { error: "the token's scope has no payouts:write" }]);
+  const token = es256(claims("acme", `j-${now}`));
+  const paid = await call("post", "/payouts", token, { amount: "120.00" });
+  expect([paid.status(), await paid.json()]).toEqual([202, { accepted: `acme/j-${now}` }]);
+  expect((await call("post", "/payouts", token, { amount: "120.00" })).status()).toBe(409);
+
+  // Its runs check offline: each token verified again at the time its run saw.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "jwt-api.json");
+  execFileSync(holon, ["export", "jwt-api", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
+test("pgp-outbox encrypts a payment file to the bank's key a person trusted, verifies the bank's signed report, refuses another key's, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // The bank's key, its signatures and a message to it, made by GnuPG (holon-core's testdata/pgp-vectors.mjs),
+  // so the runners need no gpg.
+  const vectors = JSON.parse(readFileSync(join(process.cwd(), "..", "crates", "holon-core", "src", "testdata", "pgp-vectors.json"), "utf8"));
+  const [primary, , signing] = vectors.fingerprints.c25519;
+  const sha = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
+
+  await openSample(page, "PGP outbox (payment files encrypted to the bank's key, its reports verified)");
+  const port = await deploy(page);
+  // A person trusts the bank's key from the server panel; it answers the key's fingerprint.
+  await page.getByLabel("what to send trust").fill(JSON.stringify({ key: vectors.keys.c25519 }));
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(new RegExp(`^trust: .*"fingerprint":"${primary}"`))).toBeVisible();
+
+  // A payment file: encrypted to the bank's key, armored, and kept with its SHA-256 and the encrypted file's.
+  const stamp = Date.now();
+  const [pain, asc] = [`pain-${stamp}.xml`, join(FOLDERS, "upload", `pain-${stamp}.xml.asc`)];
+  const payment = `<Document><CstmrCdtTrfInitn><GrpHdr><MsgId>B-${stamp}</MsgId></GrpHdr></CstmrCdtTrfInitn></Document>\n`;
+  writeFileSync(join(FOLDERS, "payments", pain), payment);
+  const sent = async () => (await request.get(`http://127.0.0.1:${port}/sent`)).json();
+  await expect.poll(async () => existsSync(asc) && pain in (await sent()), { timeout: 15_000 }).toBe(true);
+  const encrypted = readFileSync(asc);
+  expect((await sent())[pain]).toEqual({ to: primary, sha256: sha(payment), encrypted: sha(encrypted), at: expect.any(Number) });
+  // Past its first packet's header, the key ID and algorithm gpg wrote in its message to the same key.
+  const opening = (armored: string) => {
+    const lines = armored.split(/\r?\n/);
+    return lines[lines.indexOf("") + 1].slice(4, 16);
+  };
+  const armored = encrypted.toString("utf8");
+  expect(armored.startsWith("-----BEGIN PGP MESSAGE-----\n")).toBe(true);
+  expect(opening(armored)).toBe(opening(vectors.messages.to_c25519_armored));
+
+  // The bank's report with its signing subkey's signature beside it, and one another key signed.
+  const [report, forged] = [`pain.002-${stamp}.xml`, `forged-${stamp}.xml`];
+  writeFileSync(join(FOLDERS, "download", report), vectors.data);
+  writeFileSync(join(FOLDERS, "download", forged), vectors.data);
+  writeFileSync(join(FOLDERS, "download", `${report}.sig`), vectors.signatures.ed_subkey_armored);
+  writeFileSync(join(FOLDERS, "download", `${forged}.sig`), Buffer.from(vectors.signatures.other, "base64"));
+  const received = async () => (await request.get(`http://127.0.0.1:${port}/received`)).json();
+  await expect.poll(async () => Object.keys(await received()), { timeout: 15_000 }).toEqual(expect.arrayContaining([report, forged]));
+  const all = await received();
+  expect(all[report]).toEqual({ verified: signing, signed: 1780272000, sha256: sha(vectors.data) });
+  expect(all[forged]).toEqual({ refused: "not signed by the bank's trusted key, or not there" });
+
+  // Its runs check offline: the message encrypted again from the random bytes its run saw.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "pgp-outbox.json");
+  execFileSync(holon, ["export", "pgp-outbox", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
+test("approval-mail mails a payout's approval link, its page's button approves it, and whoever asked is mailed", async ({ page, request, adminToken }) => {
+  const { existsSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // What the e2e server's SMTP sink took (smtp-sink.mjs), oldest first; a mail's text, its
+  // quoted-printable undone.
+  const mailbox = join(FOLDERS, "mail");
+  const mails = (): { from: string; to: string[]; data: string }[] =>
+    existsSync(mailbox) ? readdirSync(mailbox).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(mailbox, f), "utf8"))) : [];
+  const unquoted = (data: string) =>
+    Buffer.from(data.replace(/=\r\n/g, "").replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "latin1").toString("utf8");
+  const mailed = async (subject: string) => {
+    await expect.poll(() => mails().some((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`)), { timeout: 15_000 }).toBe(true);
+    return mails().find((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`))!;
+  };
+
+  await openSample(page, "Approval mail (a second person approves each payout from a mail)");
+  const port = await deploy(page);
+  const id = `p${Date.now()}`;
+  const asked = await request.post(`http://127.0.0.1:${port}/payouts`, { data: { id, amount: 5000, iban: "DE89370400440532013000", by: "sam@acme.com" } });
+  expect(asked.status()).toBe(202);
+  expect(await asked.json()).toEqual({ id, waiting: "approval" });
+
+  // The approvers are mailed, from the binding's sender, the payout attached.
+  const approval = await mailed(`Approve payout ${id}: 5000 to DE89370400440532013000`);
+  expect([approval.from, approval.to]).toEqual(["treasury@acme.com", ["approvals@acme.com"]]);
+  expect(approval.data.startsWith("From: Treasury <treasury@acme.com>\r\nTo: approvals@acme.com\r\n")).toBe(true);
+  expect(approval.data).toContain('Content-Disposition: attachment; filename="payout.csv"');
+  const csv = Buffer.from(`id,amount,iban,by\n${id},5000,DE89370400440532013000,sam@acme.com\n`).toString("base64");
+  expect(approval.data.replace(/\r\n/g, "")).toContain(csv);
+  const link = /\/approve\/\S+/.exec(unquoted(approval.data))?.[0];
+  expect(link).toBeTruthy();
+
+  // Opening the link approves nothing; its button does.
+  await page.goto(`http://127.0.0.1:${port}${link}`);
+  await expect(page.getByText("Approve this payout?")).toBeVisible();
+  expect(JSON.stringify(await (await request.get(`http://127.0.0.1:${port}/payouts`)).json())).not.toContain(id);
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Approved.")).toBeVisible();
+
+  // Recorded, and whoever asked is mailed: an address the binding's --to allows.
+  const told = await mailed(`Payout ${id} approved`);
+  expect(told.to).toEqual(["sam@acme.com"]);
+  const recorded = await (await request.get(`http://127.0.0.1:${port}/payouts`)).json();
+  expect(recorded[id]).toEqual(expect.objectContaining({ id, amount: 5000, by: "sam@acme.com", approved_via: "POST" }));
+  // The deployment's timeline says what was mailed.
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/approval-mail/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events;
+  };
+  await expect.poll(said, { timeout: 15_000 }).toContainEqual(expect.objectContaining({ kind: "mail", what: `mailed "Payout ${id} approved" to sam@acme.com through ops` }));
+
+  // The admin's resources show the binding, its server without a login, and who mails through
+  // it; permissions, to whom.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
+  await expect(page.getByText(/^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_OPS_SMTP\) · as Treasury <treasury@acme\.com> · to \*@acme\.com$/)).toBeVisible();
+  await expect(page.getByText("used by approval-mail (who may touch what says how)")).toBeVisible();
+  await resourcesTab(page, "Who may touch what");
+  await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
+});
+
+test("remittance-mail settles an invoice from an authenticated mail, refuses one that isn't, and moves both", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { existsSync, mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // The e2e server's mailbox (imap-server.mjs): a message is an .eml file in its folder.
+  const mailbox = join(FOLDERS, "mailbox");
+  const id = `r${Date.now()}`;
+  const invoice = `INV-${id}`;
+  const remittance = (n: string, verdictBy: string, lines: string) =>
+    [
+      `Authentication-Results: ${verdictBy}; spf=pass smtp.mailfrom=customer.example; dkim=pass header.d=customer.example; dmarc=pass header.from=customer.example`,
+      "From: Billing <billing@customer.example>",
+      "To: remittances@acme.com",
+      `Subject: Remittance ${n}`,
+      "Date: Fri, 06 Nov 2026 10:00:00 +0000",
+      `Message-ID: <${n}@customer.example>`,
+      "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="b1"',
+      "",
+      "--b1",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "Paid, see attached.",
+      "--b1",
+      'Content-Type: text/csv; name="remit.csv"',
+      'Content-Disposition: attachment; filename="remit.csv"',
+      "",
+      "invoice,amount",
+      lines,
+      "--b1--",
+      "",
+    ].join("\r\n");
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/remittance-mail/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Remittance mail (invoices settled from customers' mail)");
+  const port = await deploy(page);
+  expect((await request.post(`http://127.0.0.1:${port}/invoices`, { data: { id: invoice, amount: "100.00", customer: "customer.example" } })).status()).toBe(201);
+  // Once it listens, what the mailbox held then isn't run on; what comes after is.
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (imap://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  writeFileSync(join(mailbox, "INBOX", `${id}.eml`), remittance(id, "mx.acme.com", `${invoice},100.00`));
+  writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), remittance(`${id}-forged`, "evil.example", `${invoice},100.00`));
+
+  // Within a look (every 10s): paid by the authenticated one, the other kept with its verdict.
+  const paid = async () => ((await (await request.get(`http://127.0.0.1:${port}/invoices`)).json()) as { paid: Record<string, { by: string }> }).paid[invoice];
+  await expect.poll(paid, { timeout: 30_000 }).toEqual(expect.objectContaining({ by: "billing@customer.example", message: `${id}@customer.example` }));
+  const remittances = await (await request.get(`http://127.0.0.1:${port}/remittances`)).json();
+  expect(remittances[`${id}@customer.example`]).toEqual(expect.objectContaining({ settled: [invoice], unmatched: [] }));
+  expect(remittances[`${id}-forged@customer.example`]).toEqual(expect.objectContaining({ refused: "not authenticated", verdict: { spf: "none", dkim: "none", dmarc: "none" } }));
+  // Each moved to Processed once its run was over.
+  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Processed", f))]), { timeout: 15_000 }).toEqual([
+    [false, true],
+    [false, true],
+  ]);
+
+  // Its runs check offline: each message is what its log entry says came.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "remittance-mail.json");
+  execFileSync(holon, ["export", "remittance-mail", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+
+  // The admin's resources show the mailbox, its server without a login, and whose verdict counts.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
+  await expect(page.getByText(/^receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_REMIT_IMAP\), moved to Processed · mx\.acme\.com's verdict$/)).toBeVisible();
+  await resourcesTab(page, "Who may touch what");
+  await expect(page.getByLabel("mail remit")).toContainText("starts on mail it receives");
+});
+
+test("support-inbox answers an authenticated request through one mail logged in with OAuth, and keeps one that isn't", async ({ page, request, adminToken }) => {
+  const { existsSync, readdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's support mailbox and what its mail sent (imap-server.mjs, smtp-sink.mjs), both
+  // logged in to with the token only, which the host asks its endpoint for (token-endpoint.mjs).
+  const mailbox = join(FOLDERS, "support-mailbox");
+  const outbox = join(FOLDERS, "support-mail");
+  const mails = (): { from: string; to: string[]; login?: string; data: string }[] =>
+    existsSync(outbox) ? readdirSync(outbox).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(outbox, f), "utf8"))) : [];
+  const id = `s${Date.now()}`;
+  const asking = (n: string, verdictBy: string, subject: string) =>
+    [
+      `Authentication-Results: ${verdictBy}; spf=pass smtp.mailfrom=customer.example; dkim=pass header.d=customer.example; dmarc=pass header.from=customer.example`,
+      "From: Ann <ann@customer.example>",
+      "To: support@acme.com",
+      `Subject: ${subject}`,
+      "Date: Mon, 09 Nov 2026 10:00:00 +0000",
+      `Message-ID: <${n}@customer.example>`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "It doesn't add up.",
+      "",
+    ].join("\r\n");
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/support-inbox/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Support inbox (a Microsoft 365 mailbox, logged in with OAuth)");
+  const port = await deploy(page);
+  // Once it listens, what comes to the mailbox is run on.
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of support (imap://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  writeFileSync(join(mailbox, "INBOX", `${id}.eml`), asking(id, "mx.acme.com", `Invoice ${id}`));
+  writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), asking(`${id}-forged`, "evil.example", `Refund ${id}`));
+
+  // Within a look (every 10s): a ticket for the authenticated one, the other kept unanswered.
+  type Ticket = { from: string; subject: string; verdict?: object };
+  const tickets = async () => (await (await request.get(`http://127.0.0.1:${port}/tickets`)).json()) as Record<string, Ticket>;
+  const ticket = async () => Object.entries(await tickets()).find(([, t]) => t.subject === `Invoice ${id}`)?.[0];
+  await expect.poll(ticket, { timeout: 30_000 }).toMatch(/^T-\d+$/);
+  const number = (await ticket())!;
+  expect((await tickets())[`unanswered:${id}-forged@customer.example`]).toEqual(expect.objectContaining({ from: "ann@customer.example", subject: `Refund ${id}` }));
+  // Answered through the same mail, logged in to the SMTP server as the mailbox, with the token.
+  const answered = () => mails().find((m) => m.data.includes(`\r\nSubject: [${number}] Invoice ${id}\r\n`));
+  await expect.poll(answered, { timeout: 15_000 }).toBeTruthy();
+  expect(answered()).toEqual(expect.objectContaining({ from: "support@acme.com", to: ["ann@customer.example"], login: "support@acme.com" }));
+  expect(answered()!.data.startsWith("From: Acme support <support@acme.com>\r\nTo: ann@customer.example\r\n")).toBe(true);
+  expect(mails().some((m) => m.data.includes(`Refund ${id}`))).toBe(false);
+  // Each moved to Answered once its run was over.
+  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Answered", f))]), { timeout: 15_000 }).toEqual([
+    [false, true],
+    [false, true],
+  ]);
+
+  // The admin's resources show both servers without a login, and where the token comes from.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
+  await expect(
+    page.getByText(
+      /^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_SUPPORT_SMTP\) · as Acme support <support@acme\.com> · to \* · receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_SUPPORT_IMAP\), moved to Answered · mx\.acme\.com's verdict · logs in with OAuth \(http:\/\/127\.0\.0\.1:\d+\/token from env:HOLON_SECRET_SUPPORT_OAUTH\)$/,
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
+  await resourcesTab(page, "Who may touch what");
+  await expect(page.getByLabel("mail support")).toContainText("starts on mail it receives");
+});
+
+test("price-feed runs on each event its feed sends, and opens the feed again from where it was", async ({ page, request, adminToken }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's feed (sse-server.mjs): an event is a .json file dropped in its folder, its
+  // name the event's id; `cut` drops every connection; connections.log says where each opened from.
+  const feed = join(FOLDERS, "feed");
+  const opened = () => (existsSync(join(feed, "connections.log")) ? readFileSync(join(feed, "connections.log"), "utf8").trim().split("\n") : []);
+  const symbol = `S${Date.now()}`;
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/price-feed/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Price feed (server-sent events, each event a run)");
+  const port = await deploy(page);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the feed prices (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  // Its key never shown.
+  expect((await said()).some((w) => w.includes("e2e-not-a-key"))).toBe(false);
+  writeFileSync(join(feed, `${symbol}-1.json`), JSON.stringify({ symbol, price: 10.5 }));
+  type Price = { price: number; at: number };
+  const prices = async () => (await (await request.get(`http://127.0.0.1:${port}/prices`)).json()) as Record<string, Price>;
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(10.5);
+  // The server panel says what its connection is doing, and where it is.
+  await expect(page.getByText(`connected, at ${symbol}-1`)).toBeVisible({ timeout: 15_000 });
+
+  // Every connection dropped: opened again from the last event run on, and what comes is run on.
+  const before = opened().length;
+  writeFileSync(join(feed, "cut"), "");
+  await expect.poll(() => opened().slice(before), { timeout: 15_000 }).toEqual([`${symbol}-1`]);
+  writeFileSync(join(feed, `${symbol}-2.json`), JSON.stringify({ symbol, price: 11 }));
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(11);
+
+  // The admin's resources show the feed without its query; permissions, that price-feed listens.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
+  await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/events \(from env:HOLON_SECRET_PRICES_URL\) · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+  await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
+  await resourcesTab(page, "Who may touch what");
+  await expect(page.getByLabel("feed prices")).toContainText("starts on each event it sends");
+});
+
+test("trading-bot keeps each product's newest price, places an order once, and waits for approval over the limit", async ({ page, request, adminToken }) => {
+  const { createServer } = await import("node:http");
+  const { createHmac } = await import("node:crypto");
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // An exchange on loopback, as Coinbase Exchange's REST API answers: each request signed, or
+  // refused 401; an order placed once, a client id it has seen refused 409; held while `held`.
+  const key = "e2e-exchange-key";
+  const secret = Buffer.from("e2e-exchange-secret-bytes").toString("base64");
+  const passphrase = "e2e-exchange-pass";
+  const asked: { client_oid: string; product_id: string; price: string }[] = [];
+  const placed: { client_oid: string; id: string }[] = [];
+  let release = () => {};
+  let held: Promise<void> = Promise.resolve();
+  const exchange = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      const signed = createHmac("sha256", Buffer.from(secret, "base64"))
+        .update(`${req.headers["cb-access-timestamp"]}${req.method}${req.url}${body}`)
+        .digest("base64");
+      if (req.headers["cb-access-sign"] !== signed || req.headers["cb-access-key"] !== key || req.headers["cb-access-passphrase"] !== passphrase) {
+        res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ message: "invalid signature" }));
+        return;
+      }
+      if (req.method === "GET") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(placed));
+        return;
+      }
+      const order = JSON.parse(body);
+      asked.push(order);
+      await held;
+      if (placed.some((o) => o.client_oid === order.client_oid)) {
+        res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ message: "duplicate client_oid" }));
+        return;
+      }
+      const done = { ...order, id: `ex-${placed.length + 1}` };
+      placed.push(done);
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(done));
+    });
+  });
+  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  // The e2e server's ticker (ws-server.mjs): a message is a .json file dropped in its folder, sent
+  // in the order of their names; heard.log is what its connections sent it.
+  const ticker = join(FOLDERS, "ticker");
+  const heard = () => (existsSync(join(ticker, "heard.log")) ? readFileSync(join(ticker, "heard.log"), "utf8").trim().split("\n") : []);
+  const stamp = Date.now();
+  let n = 0;
+  const drop = (message: object) => writeFileSync(join(ticker, `${stamp}-${String(++n).padStart(3, "0")}.json`), JSON.stringify(message));
+  const product = `BTC-E2E${stamp}`;
+  const price = (p: string, price: string, sequence: number) => drop({ type: "ticker", product_id: p, price, sequence });
+  try {
+    await openSample(page, "Trading bot (a WebSocket ticker, orders to an exchange)");
+    // The sample calls api.exchange.coinbase.com: here, the stand-in, over plain HTTP to this
+    // machine, as chat-proxy's test does.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/trading-bot.holon.ts", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await editor.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"host:api.exchange.coinbase.com"', `"host:${host}"`).replace("port: 8190", `port: ${8190 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8190 + SAMPLE_SHIFT));
+    const subscribed = heard().length;
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    for (const [name, value] of [["exchange_key", key], ["exchange_secret", secret], ["exchange_passphrase", passphrase]]) {
+      expect((await request.post(`${SERVER}/deployments/trading-bot/secrets/${name}`, { data: { value }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+    }
+    // Its connection subscribed, as its binding says.
+    await expect.poll(() => heard().slice(subscribed), { timeout: 15_000 }).toEqual(['{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}']);
+    const call = async (method: "get" | "put" | "post", path: string, data?: object) => (await request[method](`http://127.0.0.1:${port}${path}`, { data })).json();
+    const level = await call("put", `/levels/${product}`, { price: "100", size: "2" });
+
+    // Under the level, with the exchange holding its answer: the run waits on the order while
+    // prices come, and the binding keeps the product's newest.
+    held = new Promise<void>((r) => (release = r));
+    drop({ type: "subscriptions", channels: [{ name: "ticker" }] });
+    price(product, "99", 1);
+    await expect.poll(() => asked.length, { timeout: 15_000 }).toBe(1);
+    price(product, "98", 2);
+    price(product, "97", 3);
+    price(product, "96", 4);
+    await expect(page.getByText(/^connected, 1 waiting, 2 replaced, 1 passed over$/)).toBeVisible({ timeout: 15_000 });
+    release();
+    await expect(page.getByText(`connected, at ${product}/4, 2 replaced, 1 passed over`)).toBeVisible({ timeout: 15_000 });
+    expect(placed.map((o) => o.client_oid)).toEqual([level.id]);
+    const orders = await call("get", "/orders");
+    expect(orders.placed[level.id]).toMatchObject({ exchange: "ex-1", approved_by: "under the limit", price: "100", size: "2" });
+    const prices = await call("get", "/prices");
+    expect(prices[product]).toMatchObject({ price: "96", replaced: 2 });
+
+    // Worth more than 1000: it waits for a person's approval, then a run of its own places it.
+    const large = `ETH-E2E${stamp}`;
+    const big = await call("put", `/levels/${large}`, { price: "2000", size: "1" });
+    price(large, "1999", 1);
+    await expect.poll(async () => (await call("get", "/orders")).waiting[big.id]?.approve, { timeout: 15_000 }).toMatch(/^\/approve\//);
+    expect(asked.length).toBe(1);
+    const link = (await call("get", "/orders")).waiting[big.id].approve;
+    expect(await (await request.post(`http://127.0.0.1:${port}${link}`, { data: { by: "ops" } })).text()).toBe("approved");
+    await expect.poll(() => placed.length, { timeout: 15_000 }).toBe(2);
+    await expect.poll(async () => (await call("get", "/orders")).placed[big.id]?.approved_by, { timeout: 15_000 }).toBe("ops");
+    // Read back from the exchange, by hand.
+    const reconciled = await request.post(`${SERVER}/trigger/trading-bot/reconcile`, { data: {}, headers: { Authorization: `Bearer ${adminToken}` } });
+    expect(((await reconciled.json()) as { answer: unknown[] }).answer).toHaveLength(2);
+
+    // The admin's resources show the binding without the URL's key.
+    await gotoPage(page, "resources");
+    await resourcesTab(page, "Feeds");
+    await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TICKER_URL\) · subscribes with .* · runs only type ticker · its id product_id\/sequence · 1000 may wait, one a product_id, the newest · quiet for 90s at most$/)).toBeVisible();
+    await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
+  } finally {
+    release();
+    exchange.close();
+  }
+});
+
+test("bluesky-mentions keeps the posts that mention a word, and opens the feed again from its cursor", async ({ page, request }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's posts (ws-server.mjs): a post is a .json file dropped in its folder, sent in
+  // the order of their names, and sent again to a connection that asks from its seq; asked.log is
+  // what each connection asked for.
+  const folder = join(FOLDERS, "posts");
+  const asked = () => (existsSync(join(folder, "asked.log")) ? readFileSync(join(folder, "asked.log"), "utf8").trim().split("\n") : []);
+  const stamp = Date.now();
+  const seq = (n: number) => stamp * 10 + n;
+  const post = (n: number, operation: string, text: string) =>
+    writeFileSync(
+      join(folder, `${stamp}-${n}.json`),
+      JSON.stringify({ $type: "message", payload: { did: "did:plc:e2e", seq: seq(n), time: new Date().toISOString(), operation, collection: "app.bsky.feed.post", rkey: `${stamp}k${n}`, record: { text } } }),
+    );
+  await openSample(page, "Bluesky mentions (a feed resumed from a cursor)");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const text = readFileSync(new URL("../../crates/holon-author/samples/bluesky-mentions.holon.ts", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port: 8192", `port: ${8192 + SAMPLE_SHIFT}`));
+  await settingsSayPort(page, String(8192 + SAMPLE_SHIFT));
+  const opened = asked().length;
+  const port = await deploy(page, 0);
+  // A new listener asks from now: no cursor.
+  await expect.poll(() => asked().slice(opened), { timeout: 15_000 }).toEqual(["/ws?collections=app.bsky.feed.post"]);
+  const call = async (method: "get" | "put", path: string, data?: object) => (await request[method](`http://127.0.0.1:${port}${path}`, { data })).json();
+  expect(await call("put", "/watch", { word: `Holon${stamp}` })).toEqual({ word: `holon${stamp}` });
+  const mentions = async () => Object.values(await call("get", "/mentions")).filter((m) => String((m as { text: string }).text).includes(String(stamp))) as { text: string; seq: string }[];
+
+  post(1, "create", `hello Holon${stamp}`);
+  post(2, "create", "nothing to see");
+  post(3, "delete", `holon${stamp}, deleted`);
+  post(4, "create", `holon${stamp} again`);
+  await expect.poll(async () => (await mentions()).map((m) => m.seq).sort(), { timeout: 15_000 }).toEqual([String(seq(1)), String(seq(4))]);
+  await expect(page.getByText(`connected, at ${seq(4)}, 1 passed over`)).toBeVisible({ timeout: 15_000 });
+
+  // Cut, with two posts sent while it is down: opened again from the last post read, the feed
+  // sends it again (passed over), then the two.
+  writeFileSync(join(folder, "cut"), "");
+  post(5, "create", `a HOLON${stamp} while away`);
+  post(6, "create", "another while away");
+  await expect.poll(() => asked().slice(opened).at(-1), { timeout: 15_000 }).toBe(`/ws?collections=app.bsky.feed.post&cursor=${seq(4)}`);
+  await expect.poll(async () => (await mentions()).length, { timeout: 15_000 }).toBe(3);
+  await expect(page.getByText(`connected, at ${seq(6)}`)).toBeVisible({ timeout: 15_000 });
+
+  // The admin's resources show where the feed takes the position.
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
+  await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_POSTS_URL\) · runs only payload\.operation create · its id payload\.seq · resumes from its position with cursor= in the URL · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+});
+
+test("trade-tape fetches the trades its feed skipped, across a reconnect, and keeps each product's volume exact", async ({ page, request }) => {
+  const { createServer } = await import("node:http");
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // A trade's size: its id in thousandths, so a volume says exactly which trades were added.
+  const size = (id: number) => `${Math.floor(id / 1000)}.${String(id % 1000).padStart(3, "0")}`;
+  // The exchange's public trades on loopback, as Coinbase Exchange pages them: the trades before
+  // `after`, the newest first, `limit` of them.
+  const asked: string[] = [];
+  const exchange = createServer((req, res) => {
+    asked.push(req.url ?? "");
+    const url = new URL(req.url ?? "/", "http://exchange");
+    const product = url.pathname.replace(/^\/products\//, "").replace(/\/trades$/, "");
+    const after = Number(url.searchParams.get("after"));
+    const limit = Math.min(Number(url.searchParams.get("limit")), 1000);
+    const page = [];
+    for (let id = after - 1; id >= Math.max(1, after - limit); id--) page.push({ trade_id: id, product_id: product, size: size(id), price: "100", side: "buy" });
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(page));
+  });
+  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  // The e2e server's trades (ws-server.mjs): a trade is a .json file dropped in its folder, sent in
+  // the order of their names to the connections open; asked.log is what each connection asked for.
+  const folder = join(FOLDERS, "trades");
+  const opened = () => (existsSync(join(folder, "asked.log")) ? readFileSync(join(folder, "asked.log"), "utf8").trim().split("\n").length : 0);
+  const stamp = Date.now();
+  const product = `BTC-E2E${stamp}`;
+  let n = 0;
+  const trade = (type: string, id: number) =>
+    writeFileSync(join(folder, `${stamp}-${String(++n).padStart(3, "0")}.json`), JSON.stringify({ type, trade_id: id, product_id: product, size: size(id), price: "100", side: "buy" }));
+  try {
+    await openSample(page, "Trade tape (what a feed skipped, fetched)");
+    // The sample calls api.exchange.coinbase.com: here, the stand-in, over plain HTTP to this
+    // machine, as trading-bot's test does.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/trade-tape.holon.ts", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"host:api.exchange.coinbase.com"', `"host:${host}"`).replace("port: 8193", `port: ${8193 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8193 + SAMPLE_SHIFT));
+    const before = opened();
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    await expect.poll(opened, { timeout: 15_000 }).toBe(before + 1);
+    const volume = async () => (await (await request.get(`http://127.0.0.1:${port}/volumes`)).json())[product];
+
+    // 102 and 103 never came: the trade after them says so, and they are fetched.
+    trade("last_match", 100);
+    trade("match", 101);
+    trade("match", 104);
+    await expect.poll(async () => (await volume())?.trades, { timeout: 15_000 }).toBe(5);
+    expect(asked).toEqual([`/products/${product}/trades?after=104&limit=2`]);
+    await expect(page.getByText(`connected, at ${product}/104, 2 in gaps`)).toBeVisible({ timeout: 15_000 });
+
+    // Cut, with two trades while it reads nothing: opened again, the exchange's last trade (106)
+    // says one came before it (105).
+    writeFileSync(join(folder, "cut"), "");
+    trade("match", 105);
+    trade("match", 106);
+    await expect.poll(opened, { timeout: 15_000 }).toBe(before + 2);
+    trade("last_match", 106);
+    trade("match", 107);
+    await expect.poll(async () => (await volume())?.trades, { timeout: 15_000 }).toBe(8);
+    expect(await volume()).toMatchObject({ volume: size(100 + 101 + 102 + 103 + 104 + 105 + 106 + 107), fetched: 3, unfetched: 0, last: 107 });
+    expect(asked).toEqual([`/products/${product}/trades?after=104&limit=2`, `/products/${product}/trades?after=106&limit=1`]);
+    await expect(page.getByText(`connected, at ${product}/107, 3 in gaps`)).toBeVisible({ timeout: 15_000 });
+
+    // The admin's resources show what numbers its messages.
+    await gotoPage(page, "resources");
+    await resourcesTab(page, "Feeds");
+    await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TRADES_URL\) · subscribes with .* · runs only type match or last_match · its id product_id\/trade_id · numbered by trade_id, each product_id on its own · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+  } finally {
+    exchange.close();
+  }
+});
+
+test("payout-events runs each message its queue holds once, and sends a failed payout's retry to the FIFO queue", async ({ page, request, adminToken }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's SQS (sqs-server.mjs): a message is a file dropped in its queue's folder;
+  // sent.log and deleted.log say what the host sent and deleted.
+  const sqs = join(FOLDERS, "sqs");
+  type Line = { queue: string; id: string; body: string; group?: string | null };
+  const lines = (file: string): Line[] =>
+    existsSync(join(sqs, file))
+      ? readFileSync(join(sqs, file), "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as Line)
+      : [];
+  const stamp = Date.now();
+  const id = (n: number) => `po_${stamp}_${n}`;
+  const event = (type: string, n: number) => JSON.stringify({ type, payout: { id: id(n), amount: "120.00", currency: "EUR", account: `acct_${stamp}` } });
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/payout-events/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Payout events (an SQS queue in, a FIFO queue of retries out)");
+  const port = await deploy(page);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the queue payout_events (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  // Its key never shown.
+  expect((await said()).some((w) => w.includes("e2e-not-a-secret"))).toBe(false);
+  writeFileSync(join(sqs, "payout-events", `${stamp}-1.json`), event("payout.paid", 1));
+  writeFileSync(join(sqs, "payout-events", `${stamp}-2.json`), event("payout.failed", 2));
+  type Payout = { status: string; event: string; account: string };
+  const payouts = async () => (await (await request.get(`http://127.0.0.1:${port}/payouts`)).json()) as Record<string, Payout>;
+  await expect.poll(async () => [(await payouts())[id(1)]?.status, (await payouts())[id(2)]?.status], { timeout: 15_000 }).toEqual(["paid", "failed"]);
+  // Each deleted once its run was over; the failed one's retry in the FIFO queue, its group the
+  // account, sent once.
+  await expect.poll(() => lines("deleted.log").filter((d) => d.body.includes(String(stamp))).length, { timeout: 15_000 }).toBe(2);
+  await expect.poll(() => lines("sent.log").filter((s) => s.body.includes(String(stamp))).map((s) => [s.queue, JSON.parse(s.body).id, s.group]), { timeout: 15_000 }).toEqual([
+    ["payout-retries.fifo", id(2), `acct_${stamp}`],
+  ]);
+  // The server panel says what the listener did and what was sent.
+  await expect(page.getByText("receiving, 2 run")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("1 sent")).toBeVisible({ timeout: 15_000 });
+
+  // The admin's resources show each queue without its key; permissions, who takes and who sends.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Queues");
+  await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/000000000000\/payout-retries\.fifo \(from env:HOLON_SECRET_RETRIES_URL\) · FIFO · 256 KiB at most · out of sight for 300s$/)).toBeVisible();
+  await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
+  await resourcesTab(page, "Who may touch what");
+  await expect(page.getByLabel("queue payout_events")).toContainText("starts on each message it holds");
+  await expect(page.getByLabel("queue payout_retries")).toContainText("sends messages to it");
+});
+
+test("ledger-watch keeps each account's balance from its ledger's channel, and reads what it didn't hear while stopped", async ({ page, request, adminToken }) => {
+  test.skip(!process.env.HOLON_TEST_POSTGRES, "set HOLON_TEST_POSTGRES (a Postgres's URL) to run it against Postgres");
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const said = async () => ((await (await request.get(`${SERVER}/deployments/ledger-watch/events`, { headers: auth })).json()) as { events: { what: string }[] }).events.map((e) => e.what);
+  const feed = async () => ((await (await request.get(`${SERVER}/deployments/ledger-watch/feeds`, { headers: auth })).json()) as { feeds: { status: string; address?: string }[] }).feeds[0];
+
+  // The service that writes the ledger, standing in for one: a flow of the test's own, the ledger
+  // bound read-write for it alone (server.mjs).
+  const writerPort = 8199 + SAMPLE_SHIFT;
+  const writer = join(mkdtempSync(join(tmpdir(), "holon-ledger-writer-")), "ledger-writer.holon.ts");
+  writeFileSync(
+    writer,
+    `import { flow, route } from "holon"\nimport ledger from "database:ledger"\n\nflow("ledger-writer", { port: ${writerPort} })\n\nroute.post("/entries", (req) => {\n  ledger.exec("insert into entries (account, seq, amount) values ($1, $2, $3)", req.json.account, req.json.seq, req.json.amount)\n  return { written: req.json.seq }\n})\n`,
+  );
+  execFileSync(holon, ["deploy", writer, "--server", SERVER, "--slug", "ledger-writer", "--approve"], { encoding: "utf8", env });
+  const account = `acct_${Date.now()}`;
+  const write = async (seq: number, amount: string) => expect((await request.post(`http://127.0.0.1:${writerPort}/entries`, { data: { account, seq, amount } })).status()).toBe(200);
+
+  await openSample(page, LEDGER_WATCH);
+  const port = await deploy(page);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  expect((await feed()).address).toMatch(/^postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries$/);
+  type Balance = { balance: string; entries: number; read: number; last: number };
+  const balance = async () => ((await (await request.get(`http://127.0.0.1:${port}/balances`)).json()) as Record<string, Balance>)[account];
+  await write(1, "120.00");
+  await write(2, "-20.50");
+  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "99.50", entries: 2, read: 0, last: 2 });
+
+  // Stopped, its session closed: entry 3 is never sent. Run again, entry 4's run reads it from the
+  // ledger.
+  expect((await request.post(`${SERVER}/deployments/ledger-watch/stop`, { data: {}, headers: auth })).ok()).toBe(true);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("closed");
+  await write(3, "10.00");
+  expect((await request.post(`${SERVER}/deployments/ledger-watch/run`, { data: {}, headers: auth })).ok()).toBe(true);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  await write(4, "2.25");
+  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "111.75", entries: 4, read: 1, last: 4 });
+  expect((await said()).some((w) => w.startsWith("listens to the feed entries (postgres://127.0.0.1:"))).toBe(true);
+  // Its login never shown.
+  const login = `:${new URL(process.env.HOLON_TEST_POSTGRES ?? "").password}@`;
+  expect((await said()).some((w) => w.includes(login))).toBe(false);
+
+  // Its runs check offline, the ledger read as each run read it.
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ledger-watch.json");
+  execFileSync(holon, ["export", "ledger-watch", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified.trim().endsWith("ok")).toBe(true);
+
+  // The admin's resources show the feed on its channel, without the connection.
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
+  await expect(page.getByText(/^listens on postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries \(the database ledger\)/)).toBeVisible();
+  await expect(page.getByText(login)).toHaveCount(0);
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);
@@ -2129,4 +2995,57 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const restored = execFileSync(holon, ["verify", again], { encoding: "utf8" });
   expect(restored).toContain("(1 of them after a restore, from the state it put back)");
   expect(restored.trim().endsWith("ok")).toBe(true);
+});
+
+test("site serves a built app from its folder: a deep link opens its page, its files as they are, a cached copy a 304, a missing asset a 404", async ({ page, request }) => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The app's build, as a bundler leaves it: its page, its script, an image.
+  const site = join(FOLDERS, "site");
+  mkdirSync(join(site, "assets"), { recursive: true });
+  const index = `<!doctype html><meta charset="utf-8"><title>Site</title><p>Opened at <code></code>.</p><p id="api">Asking the API…</p><script type="module" src="/assets/app.js"></script>`;
+  writeFileSync(join(site, "index.html"), index);
+  const script = `document.querySelector("code").textContent = location.pathname\nfetch("/api/hello").then((r) => r.json()).then((j) => { document.getElementById("api").textContent = "The API says hello, " + j.hello + "." })\n`;
+  writeFileSync(join(site, "assets", "app.js"), script);
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe]);
+  writeFileSync(join(site, "logo.png"), png);
+  await openSample(page, "Site (a built web app and its API on one port)");
+  const port = await deploy(page);
+  const at = (path: string, headers: Record<string, string> = {}) => request.get(`http://127.0.0.1:${port}${path}`, { headers });
+  const deep = await at("/docs/a%20guide/part%202");
+  expect(deep.status()).toBe(200);
+  expect(deep.headers()["content-type"]).toBe("text/html; charset=utf-8");
+  expect(await deep.text()).toBe(index);
+  // Its etag is its hash (BLAKE3).
+  const etag = deep.headers()["etag"];
+  expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
+  expect(await (await at("/")).text()).toBe(index);
+  const js = await at("/assets/app.js");
+  expect(js.headers()["content-type"]).toBe("text/javascript; charset=utf-8");
+  expect(js.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+  expect(await js.text()).toBe(script);
+  const logo = await at("/logo.png");
+  expect(logo.headers()["content-type"]).toBe("image/png");
+  expect(Buffer.compare(await logo.body(), png)).toBe(0);
+  // The browser's cached copy, still the file's: a 304 and no body.
+  expect((await at("/docs/setup", { "if-none-match": etag })).status()).toBe(304);
+  expect((await at("/docs/setup", { "if-none-match": '"stale"' })).status()).toBe(200);
+  const missing = await at("/assets/nope.js");
+  expect(missing.status()).toBe(404);
+  expect(await missing.json()).toEqual({ error: "not found" });
+  expect(await (await at("/api/hello")).json()).toEqual({ hello: "world" });
+  const unknown = await at("/api/nope/more");
+  expect(unknown.status()).toBe(404);
+  expect(await unknown.json()).toEqual({ error: "no API at /api/nope/more" });
+  // A rest never names another path than the request's: no route takes these. (A client resolves
+  // `..` before it sends, so it isn't asked here; the server test asks it.)
+  for (const not of ["/docs/a%2Fb", "/docs/a%5Cb", "/docs//a", "/docs/"]) {
+    const answer = await at(not);
+    expect(answer.status(), not).toBe(404);
+    expect(await answer.json(), not).toEqual({ error: "no route for this path" });
+  }
+  // In a browser, a deep link opens the app where it points, its script runs, and it asks its API.
+  await page.goto(`http://127.0.0.1:${port}/docs/setup`);
+  await expect(page.locator("code")).toHaveText("/docs/setup");
+  await expect(page.locator("#api")).toHaveText("The API says hello, world.");
 });

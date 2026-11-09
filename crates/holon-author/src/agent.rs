@@ -54,7 +54,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
     // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
     // none runs whole.
-    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty());
+    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.websockets.is_empty() && server.actions.is_empty());
     let trace = if !handlers {
         let all: Vec<_> = c.doc.nodes.iter().collect();
         BTreeMap::from([("*".to_string(), trace_of(&root, &all))])
@@ -598,9 +598,13 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import key from "secret:key" with { optional: "true" }   a secret it can run without
   import state from "state"                     its state, its keys by use: state.count
   import notes from "collection:notes"          a named store of items, used as notes[key]
-  import inbox from "folder:inbox"              also "database:NAME" and "channel:NAME"
+  import inbox from "folder:inbox"              also "database:NAME", "channel:NAME",
+                                                "mail:NAME" (a mail it sends through or reads)
+                                                "feed:NAME" (a feed it listens to) and
+                                                "queue:NAME" (a queue it listens or sends to)
   import httpbin from "host:httpbin.org"        a host it calls, as httpbin.get("/uuid")
   import { now } from "holon:clock"             the time; import { random } from "holon:random"
+                                                (and random_bytes, the run's 32, for pgp_encrypt)
   import { charge } from "flow:billing"         another deployed flow's action, by its slug
   flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
                                                 port, keep: { runs, days }, browsers, limits
@@ -612,6 +616,7 @@ HANDLERS (each starts runs; a flow has one or more)
   route.get("/notes/:id", (req) => notes[req.params.id] ?? status(404))
   route.post, .put, .patch, .delete, and route.get with a block: (req) => { …; return x }
   req.params.id, req.query.after, req.headers.authorization, req.body (text), req.json (parsed)
+  route.get("/files/*path", (req) => …)          the rest of the path: /files/a/b.css, req.params.path a/b.css
   return x                                       answers 200 with x
   return status(201, x) ?? status(400)           another status; ?? says what an absent x answers
   return status(204)                             a status alone, no body
@@ -621,6 +626,11 @@ HANDLERS (each starts runs; a flow has one or more)
   every("10s", (now) => { state.last = now })    a clock: now is the time of the tick
   on.file.created(inbox, (f) => { … }, { matching: "*.csv" })   each new file, f its handle;
                                                  on.file.deleted(inbox, (f) => { … }) too
+  on.mail(remit, (m) => { … })                   each message to the mailbox remit is bound to
+  on.feed(prices, (e) => { … })                  each event the feed prices sends: e.data (JSON
+                                                 read, else text), e.id, e.event; one at a time
+  on.queue(payouts, (m) => { … })                each message from the queue payouts: m.data, m.id,
+                                                 m.group…; deleted once its run is over
   export const reset = action((input) => {       run by hand, by name: input is what was sent
     state.count = input.to ?? 0                  (JSON; {} for nothing), never from the network
     return { set: input.to ?? 0 }                its answer: a value alone, or none
@@ -673,6 +683,10 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   const d = await approval("payout", { people: 2 })   in an action: park the run until 2
                                            different people approve it in Holon (or one
                                            declines): d is {approved, by}; no route resumes it
+  ops.send({ to, subject, text })          mails through the mail ops an admin bound (cc, html
+                                           and attachments too), once the run is over: quoted
+                                           recipients are granted by name, computed ones within
+                                           the binding's
   JSON.stringify(x), JSON.parse(text)
 
 CALLS

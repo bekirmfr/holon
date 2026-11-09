@@ -102,7 +102,7 @@ impl From<Keep> for String {
 }
 
 /// A while, as `30d`, `12h`, `90m` or `45s`: in seconds (at least one, at most a hundred years).
-fn seconds_of(span: &str) -> Option<u64> {
+pub(crate) fn seconds_of(span: &str) -> Option<u64> {
     let unit = match span.chars().last()? {
         's' => 1,
         'm' => 60,
@@ -115,7 +115,7 @@ fn seconds_of(span: &str) -> Option<u64> {
 }
 
 /// A while in seconds, in the largest unit that says it exactly.
-fn span_text(secs: u64) -> String {
+pub(crate) fn span_text(secs: u64) -> String {
     match secs {
         s if s % 86_400 == 0 => format!("{}d", s / 86_400),
         s if s % 3600 == 0 => format!("{}h", s / 3600),
@@ -191,6 +191,13 @@ pub(crate) struct Folders {
     /// The databases bound on this server (databases.rs): the host's other resources a flow
     /// names, seen through a deployment's [`Scoped`] as its folders are.
     pub(crate) databases: databases::Databases,
+    /// The mail resources bound on this server (mails.rs), and the mail on its way through them.
+    pub(crate) mails: mails::Mails,
+    /// The feeds bound on this server (feeds.rs), and what each connection to them is doing.
+    pub(crate) feeds: feeds::Feeds,
+    /// The queues bound on this server (queues.rs), the messages on their way to them, and what
+    /// each listener is doing.
+    pub(crate) queues: queues::Queues,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -231,12 +238,30 @@ impl Folders {
             locks: locks::Locks::default(),
             claims: claims::Claims::default(),
             databases: databases::Databases::memory(),
+            mails: mails::Mails::memory(),
+            feeds: feeds::Feeds::memory(),
+            queues: queues::Queues::memory(),
         }
     }
 
     /// The same folders, beside the databases bound in `databases`.
     pub(crate) fn with_databases(self, databases: databases::Databases) -> Folders {
         Folders { databases, ..self }
+    }
+
+    /// The same folders, beside the mail resources bound in `mails`.
+    pub(crate) fn with_mails(self, mails: mails::Mails) -> Folders {
+        Folders { mails, ..self }
+    }
+
+    /// The same folders, beside the feeds bound in `feeds`.
+    pub(crate) fn with_feeds(self, feeds: feeds::Feeds) -> Folders {
+        Folders { feeds, ..self }
+    }
+
+    /// The same folders, beside the queues bound in `queues`.
+    pub(crate) fn with_queues(self, queues: queues::Queues) -> Folders {
+        Folders { queues, ..self }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
@@ -455,6 +480,10 @@ impl Scoped {
     pub(crate) fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
         let folder = self.folder(name)?;
         let Some(placed) = existing(&folder.path, file)? else { return Ok(None) };
+        // A folder is no file (Windows won't open one as a file at all).
+        if placed.path.is_dir() {
+            return Ok(None);
+        }
         // Opened with no link followed (a link put in its place since it was checked is refused),
         // and what it is read from the file opened.
         let mut options = std::fs::OpenOptions::new();
@@ -565,16 +594,16 @@ impl Scoped {
 
     #[cfg(test)]
     fn write_as(&self, name: &str, file: &str, text: &str, create: bool) -> Result<(), String> {
-        self.ready_write(name, file, text, create)?.land(self)
+        self.ready_write(name, file, text.as_bytes(), create)?.land(self)
     }
 
     /// A write of `text` as file `file` of folder `name`, made ready: its bytes beside the file.
-    fn ready_write(&self, name: &str, file: &str, text: &str, create: bool) -> Result<Ready, String> {
+    fn ready_write(&self, name: &str, file: &str, data: &[u8], create: bool) -> Result<Ready, String> {
         let folder = self.writable(name)?;
         let placed = for_writing(&folder.path, file)?;
         let why = |e: String| format!("{name}/{file} not written: {e}");
-        let beside = fill_beside(&placed.path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(why)?;
-        Ok(Ready { name: name.into(), file: file.into(), beside, size: text.len() as u64, create, verb: "written", placed })
+        let beside = fill_beside(&placed.path, create, |f| f.write_all(data).map_err(|e| e.to_string())).map_err(why)?;
+        Ok(Ready { name: name.into(), file: file.into(), beside, size: data.len() as u64, create, verb: "written", placed })
     }
 
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
@@ -643,6 +672,15 @@ impl Scoped {
     /// (`optional`) may be missing.
     pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
         if let Some(why) = self.all.databases.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
+        if let Some(why) = self.all.mails.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
+        if let Some(why) = self.all.feeds.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
+        if let Some(why) = self.all.queues.refuses(&self.deployment, manifest) {
             return Some(why);
         }
         for item in &manifest.capabilities {
@@ -851,7 +889,7 @@ pub(crate) struct RangeRead {
 }
 
 /// When a file was last changed, in milliseconds since 1970.
-fn modified(meta: &std::fs::Metadata) -> u64 {
+pub(crate) fn modified(meta: &std::fs::Metadata) -> u64 {
     meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
 }
 
@@ -1090,8 +1128,11 @@ fn pinned_paths() -> bool {
 /// The file `name` names in `root`, if there is one: refused if a link on its way (or it) leads
 /// out of `root` (on Linux, if there is a link on its way at all).
 fn existing(root: &Path, name: &str) -> Result<Option<Placed>, String> {
+    // A name no file can have (a `:`, a `<`, `CON`) names no file there, as a route's path may
+    // (`/Talk:Page`); one that would lead out of the folder fails the run, as a write's does.
     if let Some(why) = bad_file_name(name) {
-        return Err(why);
+        let leads_out = name.starts_with('/') || name.contains('\\') || name.split('/').any(|s| s.is_empty() || s == "." || s == "..");
+        return if leads_out { Err(why) } else { Ok(None) };
     }
     #[cfg(target_os = "linux")]
     if pinned_paths() {
@@ -1797,6 +1838,7 @@ pub(crate) fn past_write_limits(performed: &[(Capability, Value)], read: u64, li
         let Value::Record(r) = payload else { continue };
         bytes = bytes.saturating_add(match (r.get("text"), r.get("from")) {
             (Some(Value::Text(t)), _) => t.len() as u64,
+            (Some(Value::Bytes(b)), _) => b.len() as u64,
             (_, Some(Value::Record(h))) => match h.get("size") {
                 Some(Value::Number(n)) if *n >= 0.0 => *n as u64,
                 _ => 0,
@@ -2047,10 +2089,10 @@ fn step_of(folders: &Scoped, name: &str, payload: &Value) -> Result<Step, String
             folders.ready_copy(name, file, folder, source, hash, creates(payload)).map(Step::Land)
         }
         Value::Record(file) => {
-            let (Some(Value::Text(file)), Some(Value::Text(text))) = (file.get("name"), file.get("text")) else {
-                return Err("a write needs a name and a text".into());
+            let (Some(Value::Text(file)), Some(data)) = (file.get("name"), file.get("text").and_then(written_bytes_of)) else {
+                return Err("a write needs a name, and a text or bytes".into());
             };
-            folders.ready_write(name, file, text, creates(payload)).map(Step::Land)
+            folders.ready_write(name, file, data, creates(payload)).map(Step::Land)
         }
         Value::Text(file) => Ok(Step::Delete { name: name.into(), file: file.clone() }),
         _ => Err("not a write or a delete".into()),
@@ -2076,30 +2118,40 @@ impl Staged {
     }
 }
 
+/// What a write puts in its file: a text's UTF-8, or bytes as they are.
+fn written_bytes_of(v: &Value) -> Option<&[u8]> {
+    match v {
+        Value::Text(t) => Some(t.as_bytes()),
+        Value::Bytes(b) => Some(b),
+        _ => None,
+    }
+}
+
 /// Whether a write's or a copy's payload is create-only (`file_create`, `file_create_copy`).
 fn creates(payload: &Value) -> bool {
     matches!(payload, Value::Record(r) if r.get("create") == Some(&Value::Boolean(true)))
 }
 
-/// What the log keeps of a performed effect: a file write as `{name, size, hash}`, never its text;
-/// everything else as it is.
+/// What the log keeps of a performed effect: a file write as `{name, size, hash}`, never its text
+/// or bytes; everything else as it is.
 pub(crate) fn loggable(cap: &Capability, payload: &Value) -> Value {
     match cap {
         Capability::FileWrite(_) => by_hash(payload),
+        Capability::MailSend(_) => mails::loggable(payload),
         _ => payload.clone(),
     }
 }
 
-/// A file write's `{name, text}` as `{name, size, hash}` (and `create`, for a create-only one);
-/// anything else as it is.
+/// A file write's `{name, text}` (a text or bytes) as `{name, size, hash}` (and `create`, for a
+/// create-only one); anything else as it is.
 fn by_hash(payload: &Value) -> Value {
     if let Value::Record(file) = payload
-        && let (Some(name), Some(Value::Text(text))) = (file.get("name"), file.get("text"))
+        && let (Some(name), Some(data)) = (file.get("name"), file.get("text").and_then(written_bytes_of))
     {
         let mut kept = BTreeMap::from([
             ("name".to_string(), name.clone()),
-            ("size".to_string(), Value::Number(text.len() as f64)),
-            ("hash".to_string(), Value::Text(blake3::hash(text.as_bytes()).to_hex().to_string())),
+            ("size".to_string(), Value::Number(data.len() as f64)),
+            ("hash".to_string(), Value::Text(blake3::hash(data).to_hex().to_string())),
         ]);
         if creates(payload) {
             kept.insert("create".to_string(), Value::Boolean(true));
@@ -2116,6 +2168,7 @@ pub(crate) fn loggable_output(v: &Value) -> Value {
         Value::Effect { sink, payload } if sink.starts_with("file_write:") || sink.starts_with("file_create:") => {
             Value::Effect { sink: sink.clone(), payload: Box::new(by_hash(payload)) }
         }
+        Value::Effect { sink, payload } if sink.starts_with("mail_send:") => Value::Effect { sink: sink.clone(), payload: Box::new(mails::loggable(payload)) },
         Value::Record(r) => Value::Record(r.iter().map(|(k, v)| (k.clone(), loggable_output(v))).collect()),
         Value::List(l) => Value::List(l.iter().map(loggable_output).collect()),
         Value::Sum { arm, payload } => Value::Sum { arm: *arm, payload: Box::new(loggable_output(payload)) },
@@ -2131,6 +2184,21 @@ pub(crate) fn written_texts(performed: &[(Capability, Value)]) -> Vec<&str> {
         .filter_map(|(c, p)| match (c, p) {
             (Capability::FileWrite(_), Value::Record(f)) => match f.get("text") {
                 Some(Value::Text(t)) if t.len() as u64 > LOG_INLINE_BYTES => Some(t.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The bytes of the files a run wrote that are past the inline size, as [`written_texts`] gives
+/// the texts.
+pub(crate) fn written_bytes(performed: &[(Capability, Value)]) -> Vec<&[u8]> {
+    performed
+        .iter()
+        .filter_map(|(c, p)| match (c, p) {
+            (Capability::FileWrite(_), Value::Record(f)) => match f.get("text") {
+                Some(Value::Bytes(b)) if b.len() as u64 > LOG_INLINE_BYTES => Some(b.as_slice()),
                 _ => None,
             },
             _ => None,
@@ -2346,7 +2414,7 @@ mod tests {
         std::fs::create_dir_all(inbox.join("sub")).unwrap();
         let folders = Scoped::memory();
         folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
-        let ready = folders.ready_write("inbox", "sub/x.txt", "mine", false).unwrap();
+        let ready = folders.ready_write("inbox", "sub/x.txt", b"mine", false).unwrap();
         // Between the check and the landing, someone with a hand in the folder moves sub away
         // and puts a link to outside in its place.
         std::fs::rename(inbox.join("sub"), inbox.join("moved")).unwrap();

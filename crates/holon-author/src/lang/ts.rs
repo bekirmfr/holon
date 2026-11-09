@@ -22,7 +22,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
 use super::ast::*;
-use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED, ROUTE_WAITS};
+use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED, ROUTE_WAITS, SOCKET_WAITS};
 use crate::templates;
 
 type R<T> = Result<T, LowerError>;
@@ -100,6 +100,7 @@ enum Noun {
     Host(String),
     Now,
     Random,
+    RandomBytes,
     /// Another flow's action: `flow:billing`'s `charge`.
     Action { flow: String, action: String },
     Vocab(Vocab),
@@ -124,6 +125,14 @@ enum Block {
     Action,
     Every,
     File,
+    Mail,
+    Feed,
+    Queue,
+    /// A websocket's blocks: `open` answers as a route does, `message` with a value alone, as an
+    /// action does, and `close` nobody.
+    Open,
+    Message,
+    Close,
     Function,
 }
 
@@ -182,12 +191,28 @@ struct Frame {
     frozen: BTreeSet<String>,
     /// Whether it is a route's: a route answers and is done, so it doesn't wait.
     route: bool,
+    /// Whether it is a websocket block's: it runs and is done, so it doesn't wait.
+    socket: bool,
     /// Whether it is a function's: a function computes, so it never waits.
     function: bool,
     /// The `try` blocks being read, innermost last (§8).
     trying: Vec<Trying>,
     /// The bindings of a `throw`'s nothing: an answer of several outputs throws for each.
     throws: BTreeSet<String>,
+    /// What the `++` and `--` written as values in the statement being read did, made before it
+    /// ([`Self::flush_updates`]).
+    updates: Updates,
+    /// Why a `++` or `--` written as a value isn't taken where it is, innermost last: a part that
+    /// may not run, a function written in place.
+    no_updates: Vec<&'static str>,
+}
+
+/// What the `++` and `--` written as values in a statement did: the bindings they made (the
+/// value each read, a local's new version), and their writes to state and collections.
+#[derive(Default)]
+struct Updates {
+    binds: Vec<Stmt>,
+    writes: Vec<(Place, Expr, Span)>,
 }
 
 /// A `try` block being read: what it makes, whose arriving is the block succeeding (§8).
@@ -218,6 +243,9 @@ enum ExitKind {
 
 /// An object's fields, each with its key and where it is written.
 type Fields = Vec<(String, Expr, Span)>;
+
+/// A websocket's log levels by block (`message`), each with where it is written.
+type SocketLevels = HashMap<String, (String, oxc_span::Span)>;
 
 /// What a `return` answers.
 #[derive(Clone, Debug)]
@@ -511,13 +539,16 @@ impl<'s, 't> Reader<'s, 't> {
                 let local = one("the state", "import state from \"state\"")?;
                 self.imports.insert(local, Noun::State);
             }
-            (k @ ("collection" | "folder" | "database" | "channel"), name) if is_word(name) => {
+            (k @ ("collection" | "folder" | "database" | "channel" | "mail" | "feed" | "queue"), name) if is_word(name) => {
                 let local = one(&format!("a {k}"), &format!("import {name} from \"{k}:{name}\""))?;
                 let (word, header): (&'static str, HeaderKind) = match k {
                     "collection" => ("collection", HeaderKind::Collection(name.into())),
                     "folder" => ("folder", HeaderKind::Folder(name.into())),
                     "database" => ("database", HeaderKind::Database(name.into())),
-                    _ => ("channel", HeaderKind::Channel(name.into())),
+                    "channel" => ("channel", HeaderKind::Channel(name.into())),
+                    "mail" => ("mail", HeaderKind::Mail(name.into())),
+                    "feed" => ("feed", HeaderKind::Feed(name.into())),
+                    _ => ("queue", HeaderKind::Queue(name.into())),
                 };
                 if local != name {
                     return fail(at, format!("a {k} is imported under its own name, for now: import {name} from \"{k}:{name}\""));
@@ -534,7 +565,8 @@ impl<'s, 't> Reader<'s, 't> {
                     let noun = match (rest, imported(n).as_str()) {
                         ("clock", "now") => Noun::Now,
                         ("random", "random") => Noun::Random,
-                        (_, other) => return fail(self.span(n.span), format!("\"holon:{rest}\" has no \"{other}\": import {{ {} }} from \"holon:{rest}\"", if rest == "clock" { "now" } else { "random" })),
+                        ("random", "random_bytes") => Noun::RandomBytes,
+                        (_, other) => return fail(self.span(n.span), format!("\"holon:{rest}\" has no \"{other}\": import {{ {} }} from \"holon:{rest}\"", if rest == "clock" { "now" } else { "random, random_bytes" })),
                     };
                     self.bind_import(&n.local, noun)?;
                 }
@@ -548,7 +580,7 @@ impl<'s, 't> Reader<'s, 't> {
             _ => {
                 return fail(
                     self.span(i.source.span),
-                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
+                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"mail:NAME\", \"feed:NAME\", \"queue:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
                 );
             }
         }
@@ -699,11 +731,15 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Expression::Identifier(i) if self.vocab(i.name.as_str()) == Some(Vocab::Every) => self.every(c).map(|e| Some(Item::Every(e))),
             js::Expression::StaticMemberExpression(m) => match (&m.object, m.property.name.as_str()) {
+                (js::Expression::Identifier(r), "websocket") if self.vocab(r.name.as_str()) == Some(Vocab::Route) => self.websocket(c).map(|w| Some(Item::WebSocket(w))),
                 (js::Expression::Identifier(r), method) if self.vocab(r.name.as_str()) == Some(Vocab::Route) => self.route(c, method, m.property.span).map(|r| Some(Item::Route(r))),
                 (js::Expression::StaticMemberExpression(f), on) if f.property.name == "file" && matches!(&f.object, js::Expression::Identifier(o) if self.vocab(o.name.as_str()) == Some(Vocab::On)) => {
                     self.on_file(c, on, m.property.span).map(|o| Some(Item::OnFile(o)))
                 }
-                _ => fail(at, "a handler is route.get(…), every(…), on.file.created(…) or an exported action(…)"),
+                (js::Expression::Identifier(o), "mail") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_mail(c).map(|o| Some(Item::OnMail(o))),
+                (js::Expression::Identifier(o), "feed") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_feed(c).map(|o| Some(Item::OnFeed(o))),
+                (js::Expression::Identifier(o), "queue") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_queue(c).map(|o| Some(Item::OnQueue(o))),
+                _ => fail(at, "a handler is route.get(…), route.websocket(…), every(…), on.file.created(…), on.mail(…), on.feed(…), on.queue(…) or an exported action(…)"),
             },
             js::Expression::Identifier(i) if self.vocab(i.name.as_str()) == Some(Vocab::Action) => fail(at, "an action is exported, as nothing else could reach it: export const approve = action(…)"),
             _ => fail(at, "the top level holds imports, the flow(…) line, handlers, functions and consts of literals: move this into a handler"),
@@ -858,7 +894,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn route(&mut self, c: &js::CallExpression, method: &str, method_span: oxc_span::Span) -> R<RouteDef> {
         let m = method.to_ascii_uppercase();
         if !declares_method(&m) {
-            return fail(self.span(method_span), format!("route has no \"{method}\": get, post, put, patch or delete"));
+            return fail(self.span(method_span), format!("route has no \"{method}\": get, post, put, patch, delete or websocket"));
         }
         let shape = format!("route.{method}(\"/path\", (req) => …)");
         let Some(js::Expression::StringLiteral(path)) = c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) else {
@@ -879,6 +915,100 @@ impl<'s, 't> Reader<'s, 't> {
             body,
             span: self.span(c.span),
         })
+    }
+
+    /// `route.websocket("/room/:name", { open: (req) => …, message: (m) => …, close: (c) => … },
+    /// { log })`: each block an arrow or a method, one of each at most, one at least.
+    fn websocket(&mut self, c: &js::CallExpression) -> R<WebSocketDef> {
+        let shape = "route.websocket(\"/path\", { open: (req) => …, message: (m) => …, close: (c) => … })";
+        let at = self.span(c.span);
+        let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
+        if args.len() != c.arguments.len() || args.len() < 2 || args.len() > 3 {
+            return fail(at, format!("a websocket is a call: {shape}"));
+        }
+        let js::Expression::StringLiteral(path) = self.unwrap(args[0]) else {
+            return fail(self.span(args[0].span()), format!("a websocket's path is written in quotes: {shape}"));
+        };
+        let js::Expression::ObjectExpression(o) = self.unwrap(args[1]) else {
+            return fail(self.span(args[1].span()), format!("a websocket's blocks are an object: {shape}"));
+        };
+        let (levels, by_block) = self.socket_levels(args.get(2).copied())?;
+        let mut blocks: Vec<SocketBlockDef> = Vec::new();
+        for p in &o.properties {
+            let js::ObjectPropertyKind::ObjectProperty(p) = p else {
+                return fail(self.span(p.span()), "a websocket's blocks are named one by one: open, message, close");
+            };
+            let on = self.property_key(&p.key, p.computed)?;
+            let key_at = p.key.span();
+            let (block, fallback) = match on.as_str() {
+                "open" => (Block::Open, "req"),
+                "message" => (Block::Message, "m"),
+                "close" => (Block::Close, "c"),
+                _ => return fail(self.span(key_at), format!("a websocket's blocks are open, message and close, not \"{on}\"")),
+            };
+            if blocks.iter().any(|b| b.on.text == on) {
+                return fail(self.span(key_at), format!("{on} is written twice: one block of each per websocket"));
+            }
+            if p.kind != js::PropertyKind::Init || !matches!(self.unwrap(&p.value), js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_)) {
+                return fail(self.span(p.span), format!("a websocket's {on} is a function: {on}: ({fallback}) => …"));
+            }
+            let param = self.handler_param(&p.value, block, fallback)?;
+            let body = self.handler_body(&p.value, block, &param)?;
+            let log = levels.get(&on).map(|(v, s)| self.name(v, *s));
+            blocks.push(SocketBlockDef { on: self.name(&on, key_at), param: self.name(&param, p.value.span()), log, body, span: self.span(p.span) });
+        }
+        if blocks.is_empty() {
+            return fail(self.span(o.span), "a websocket has one block at least: open, message or close");
+        }
+        if by_block
+            && let Some((on, (_, s))) = holon_core::SOCKET_BLOCKS.iter().filter_map(|on| levels.get(*on).map(|l| (on, l))).find(|(on, _)| !blocks.iter().any(|b| b.on.text == **on))
+        {
+            return fail(self.span(*s), format!("log names {on}, which this websocket doesn't have"));
+        }
+        Ok(WebSocketDef { path: self.name(path.value.as_str(), path.span), blocks, span: at })
+    }
+
+    /// A websocket's `{ log }`, by block: one level for every block, `{ log: "lazy" }`, or each
+    /// its own, `{ log: { message: "unrecorded" } }`; and whether it was given by block. Strict is
+    /// the default, and never kept.
+    fn socket_levels(&self, options: Option<&js::Expression>) -> R<(SocketLevels, bool)> {
+        let mut out = HashMap::new();
+        let Some(o) = options else { return Ok((out, false)) };
+        let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
+            return fail(self.span(o.span()), "a websocket's options are an object: { log: \"lazy\" }");
+        };
+        let mut by_block = false;
+        for (key, value, span) in self.fields(o)? {
+            if key != "log" {
+                return fail(span, format!("a websocket's option is log, not \"{key}\""));
+            }
+            let levels: Vec<(String, &js::Expression)> = match self.unwrap(value) {
+                js::Expression::ObjectExpression(r) => {
+                    by_block = true;
+                    let mut each = Vec::new();
+                    for (on, v, at) in self.fields(r)? {
+                        if !holon_core::SOCKET_BLOCKS.contains(&on.as_str()) {
+                            return fail(at, format!("log is given by block, open, message or close, not \"{on}\""));
+                        }
+                        each.push((on, v));
+                    }
+                    each
+                }
+                _ => holon_core::SOCKET_BLOCKS.iter().map(|on| (on.to_string(), value)).collect(),
+            };
+            for (on, v) in levels {
+                let js::Expression::StringLiteral(s) = self.unwrap(v) else {
+                    return fail(self.span(v.span()), "log is written in quotes, { log: \"lazy\" }, or by block, { log: { message: \"unrecorded\" } }");
+                };
+                if !matches!(s.value.as_str(), "strict" | "lazy" | "unrecorded") {
+                    return fail(self.span(v.span()), "log is \"strict\", \"lazy\" or \"unrecorded\"");
+                }
+                if s.value != "strict" {
+                    out.insert(on, (s.value.to_string(), s.span));
+                }
+            }
+        }
+        Ok((out, by_block))
     }
 
     /// `every("1h", (now) => …, { log })`.
@@ -922,6 +1052,60 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(OnFileDef { on: FileOn { folder, deleted, matching }, file: self.name(&file, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
     }
 
+    /// `on.mail(remit, (m) => …, { log })`: a run for each message that comes to the mailbox of the
+    /// mail `remit`, imported from `"mail:remit"`.
+    fn on_mail(&mut self, c: &js::CallExpression) -> R<OnMailDef> {
+        let shape = "on.mail(mail, (m) => …)";
+        let mail = match c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) {
+            Some(js::Expression::Identifier(i)) => match self.imports.get(i.name.as_str()) {
+                Some(Noun::Declared("mail", name)) => name.clone(),
+                _ => return fail(self.span(i.span), format!("\"{}\" isn't an imported mail: import {} from \"mail:{}\"", i.name, i.name, i.name)),
+            },
+            _ => return fail(self.span(c.span), format!("a mail handler takes its mail first: {shape}")),
+        };
+        let (handler, options) = self.handler_args(c, 1, shape)?;
+        let log = self.options(options, &["log"])?.remove("log").map(|(v, s)| self.name(&v, s));
+        let message = self.handler_param(handler, Block::Mail, "m")?;
+        let body = self.handler_body(handler, Block::Mail, &message)?;
+        Ok(OnMailDef { mail, message: self.name(&message, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
+    }
+
+    /// `on.feed(prices, (e) => …, { log })`: a run for each event the feed `prices` sends,
+    /// imported from `"feed:prices"`.
+    fn on_feed(&mut self, c: &js::CallExpression) -> R<OnFeedDef> {
+        let shape = "on.feed(feed, (e) => …)";
+        let feed = match c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) {
+            Some(js::Expression::Identifier(i)) => match self.imports.get(i.name.as_str()) {
+                Some(Noun::Declared("feed", name)) => name.clone(),
+                _ => return fail(self.span(i.span), format!("\"{}\" isn't an imported feed: import {} from \"feed:{}\"", i.name, i.name, i.name)),
+            },
+            _ => return fail(self.span(c.span), format!("a feed handler takes its feed first: {shape}")),
+        };
+        let (handler, options) = self.handler_args(c, 1, shape)?;
+        let log = self.options(options, &["log"])?.remove("log").map(|(v, s)| self.name(&v, s));
+        let event = self.handler_param(handler, Block::Feed, "e")?;
+        let body = self.handler_body(handler, Block::Feed, &event)?;
+        Ok(OnFeedDef { feed, event: self.name(&event, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
+    }
+
+    /// `on.queue(payouts, (m) => …, { log })`: a run for each message from the queue `payouts`,
+    /// imported from `"queue:payouts"`.
+    fn on_queue(&mut self, c: &js::CallExpression) -> R<OnQueueDef> {
+        let shape = "on.queue(queue, (m) => …)";
+        let queue = match c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) {
+            Some(js::Expression::Identifier(i)) => match self.imports.get(i.name.as_str()) {
+                Some(Noun::Declared("queue", name)) => name.clone(),
+                _ => return fail(self.span(i.span), format!("\"{}\" isn't an imported queue: import {} from \"queue:{}\"", i.name, i.name, i.name)),
+            },
+            _ => return fail(self.span(c.span), format!("a queue handler takes its queue first: {shape}")),
+        };
+        let (handler, options) = self.handler_args(c, 1, shape)?;
+        let log = self.options(options, &["log"])?.remove("log").map(|(v, s)| self.name(&v, s));
+        let message = self.handler_param(handler, Block::Queue, "m")?;
+        let body = self.handler_body(handler, Block::Queue, &message)?;
+        Ok(OnQueueDef { queue, message: self.name(&message, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
+    }
+
     /// The name a handler's run knows what it received by: its parameter's, `fallback` when it has
     /// none or destructures it. A clock's tick has no name (`now` is it).
     fn handler_param(&mut self, handler: &js::Expression, block: Block, fallback: &str) -> R<String> {
@@ -947,6 +1131,7 @@ impl<'s, 't> Reader<'s, 't> {
         let saved = std::mem::take(&mut self.frame);
         self.frame.used.insert(received.to_string());
         self.frame.route = block == Block::Route;
+        self.frame.socket = matches!(block, Block::Open | Block::Message | Block::Close);
         self.scopes.push(HashMap::new());
         let mut stmts = Vec::new();
         let result = self.handler_statements(f, block, received, &mut stmts);
@@ -967,9 +1152,10 @@ impl<'s, 't> Reader<'s, 't> {
                     self.frame.params.insert(id.name.to_string());
                     self.bind_local(id.name.as_str(), Local::Bound(received.to_string()));
                 }
-                (js::BindingPattern::ObjectPattern(o), Block::Route) => {
+                (js::BindingPattern::ObjectPattern(o), Block::Route | Block::Open | Block::Message | Block::Close) => {
                     // The request's parts are its outputs: each is the request node itself, so a
-                    // name for one is no node, read where it is used.
+                    // name for one is no node, read where it is used. A websocket block's record
+                    // is read the same way.
                     let req = Expr { kind: ExprKind::Name(received.to_string()), span: self.span(o.span) };
                     for prop in &o.properties {
                         let key = self.property_key(&prop.key, prop.computed)?;
@@ -980,10 +1166,16 @@ impl<'s, 't> Reader<'s, 't> {
                         }
                     }
                     if let Some(rest) = &o.rest {
-                        return fail(self.span(rest.span), "the request's parts are named one by one: params, query, headers, body, json, method, path");
+                        let parts = match block {
+                            Block::Message => "the message's parts are named one by one: conn, text, json, params, query, path",
+                            Block::Close => "the close's parts are named one by one: conn, code, reason, params, query, path",
+                            Block::Open => "the request's parts are named one by one: conn, params, query, headers, body, method, path",
+                            _ => "the request's parts are named one by one: params, query, headers, body, json, method, path",
+                        };
+                        return fail(self.span(rest.span), parts);
                     }
                 }
-                (pattern, Block::Action | Block::File) => {
+                (pattern, Block::Action | Block::File | Block::Mail | Block::Feed | Block::Queue | Block::Open | Block::Message | Block::Close) => {
                     let whole = Expr { kind: ExprKind::Name(received.to_string()), span: self.span(pattern.span()) };
                     self.destructure(pattern, whole, Decl::Const, stmts)?;
                 }
@@ -1029,14 +1221,17 @@ impl<'s, 't> Reader<'s, 't> {
     /// An arrow's expression as its body: a route's or an action's answer, a function's output,
     /// or what a clock's or a file's run does.
     fn arrow_answer(&mut self, e: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
-        if matches!(block, Block::Every | Block::File) {
+        let mark = stmts.len();
+        if matches!(block, Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue | Block::Close) {
             if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_) | js::Expression::UpdateExpression(_)) {
                 self.effect(e, stmts, 0)?;
+                self.flush_updates(stmts, mark, 0)?;
                 return Ok(Ret::Never);
             }
             return fail(self.span(e.span()), format!("a {}'s run answers nobody: it writes, sends or calls", block_word(block)));
         }
         self.exit(e, block)?;
+        self.flush_updates(stmts, mark, 0)?;
         Ok(Ret::Always)
     }
 
@@ -1046,7 +1241,7 @@ impl<'s, 't> Reader<'s, 't> {
         let span = exits.last().map_or(at, |e| e.span);
         match self.fold(exits, matches!(ret, Ret::Always))? {
             Some(Answer::Response(r)) => stmts.push(Stmt { span: r.span, kind: StmtKind::Respond(respond_args(*r)), after: None }),
-            Some(Answer::Value { value, .. }) if block == Block::Action => stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None }),
+            Some(Answer::Value { value, .. }) if matches!(block, Block::Action | Block::Message) => stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None }),
             _ => {}
         }
         self.settle(stmts);
@@ -1107,7 +1302,13 @@ impl<'s, 't> Reader<'s, 't> {
                     r?
                 }
                 _ => {
-                    let r = self.statement(s, block, stmts, start)?;
+                    // A statement's `++` and `--` are its own: a block's head (an `if`'s
+                    // condition) keeps its own while the statements inside are read.
+                    let outer = std::mem::take(&mut self.frame.updates);
+                    let mark = stmts.len();
+                    let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
+                    self.frame.updates = outer;
+                    let r = r?;
                     if let Ret::When(e) = &r {
                         self.frame.guards.push(Guard::Live(otherwise(e)));
                     }
@@ -1363,6 +1564,7 @@ impl<'s, 't> Reader<'s, 't> {
                         Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
                         Noun::Declared(kind, name) if *name == receiver.text => match *kind {
                             "channel" => matches!(m, "send" | "pipe"),
+                            "mail" | "queue" => m == "send",
                             "collection" => matches!(m, "put" | "delete"),
                             "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
                             "database" => matches!(m, "exec" | "insert" | "update" | "delete"),
@@ -1384,11 +1586,9 @@ impl<'s, 't> Reader<'s, 't> {
         match self.unwrap(e) {
             js::Expression::AssignmentExpression(a) => self.assignment(a, stmts, start),
             js::Expression::UpdateExpression(u) => {
-                let op = if u.operator == js::UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub };
                 let place = self.place(&u.argument)?;
-                let old = self.read_place(&place, at)?;
-                let one = Expr { kind: ExprKind::Number { value: 1.0, text: "1".into() }, span: at };
-                self.write_place(place, binary(op, old, one), at, stmts, start)
+                let old = self.held_or_zero(&place, at)?;
+                self.write_place(place, stepped(u.operator, old, at), at, stmts, start)
             }
             js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => self.delete(u, stmts),
             js::Expression::CallExpression(c) if let Some((ts, method)) = self.local_method(c) => self.mutate(c, &ts, &method, stmts),
@@ -1443,17 +1643,23 @@ impl<'s, 't> Reader<'s, 't> {
         {
             let ts = ts.clone();
             let value = self.date_value(n)?;
+            self.flush_updates(stmts, stmts.len(), start)?;
             self.write_place(place, value, at, stmts, start)?;
             self.mark_date(&ts);
             return Ok(());
         }
+        // `x += …` reads x before what it adds, as JavaScript does: a `++` in it counts after.
+        let old = if op.is_some() || number.is_some() { Some(self.read_place(&place, at)?) } else { None };
         let rhs = self.expr(&a.right)?;
-        let value = match op {
-            None if let Some((name, params)) = number => {
-                let old = self.read_place(&place, at)?;
+        // What a `++` in the target's key or in the value did is done before the write.
+        self.flush_updates(stmts, stmts.len(), start)?;
+        let value = match (op, old) {
+            (Some(op), Some(old)) => binary(op, old, rhs),
+            (None, Some(old)) => {
+                let (name, params) = number.expect("an operator's leaf");
                 leaf(name, params, vec![old, rhs], at)
             }
-            None => {
+            _ => {
                 if self.share(&a.right)
                     && let Place::Local(ts, _) = &place
                 {
@@ -1463,10 +1669,6 @@ impl<'s, 't> Reader<'s, 't> {
                     return Ok(());
                 }
                 rhs
-            }
-            Some(op) => {
-                let old = self.read_place(&place, at)?;
-                binary(op, old, rhs)
             }
         };
         self.write_place(place, value, at, stmts, start)
@@ -1651,11 +1853,18 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// What `place` holds now, for `+=` and `++`.
+    /// What `place` holds now, for `+=` and `++`. A state key this run already writes is refused:
+    /// it reads as the run began, so a second change would count from there, not from the first.
     fn read_place(&mut self, place: &Place, at: Span) -> R<Expr> {
         match place {
             Place::Local(ts, span) => self.identifier(ts, *span),
-            Place::State(key, _) => self.state_read(key, at),
+            Place::State(key, _) => {
+                let pending = self.frame.updates.writes.iter().any(|(p, ..)| matches!(p, Place::State(k, _) if k == key));
+                if pending || self.frame.tied.contains(key) || self.frame.writes.iter().any(|(k, ..)| k == key) {
+                    return fail(at, format!("state.{key} is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"));
+                }
+                self.state_read(key, at)
+            }
             Place::Store(collection, span, key) => {
                 self.check_unwritten(collection, at)?;
                 Ok(Expr { kind: ExprKind::Index { base: Box::new(Expr { kind: ExprKind::Name(collection.clone()), span: *span }), key: Box::new(key.clone()) }, span: at })
@@ -1668,6 +1877,57 @@ impl<'s, 't> Reader<'s, 't> {
                 Ok(e)
             }
         }
+    }
+
+    /// What `place` holds as `++` and `--` read it: an absent value is 0, a counter's start,
+    /// where JavaScript's would be NaN.
+    fn held_or_zero(&mut self, place: &Place, at: Span) -> R<Expr> {
+        let held = self.read_place(place, at)?;
+        let zero = Expr { kind: ExprKind::Number { value: 0.0, text: "0".into() }, span: at };
+        Ok(binary_at(BinOp::Coalesce, held, zero, at))
+    }
+
+    /// `n++` or `++n` where a value goes: the value it read, or the one it made. Its change comes
+    /// before the statement it is in, in the order the statement reads ([`Self::flush_updates`]):
+    /// a local read after it in the statement is the new one; state and a collection are read
+    /// as the run began, wherever they are read.
+    fn update_value(&mut self, u: &js::UpdateExpression, span: Span) -> R<Expr> {
+        if let Some(why) = self.frame.no_updates.last() {
+            return fail(span, why.replace("OP", if u.operator == js::UpdateOperator::Increment { "++" } else { "--" }));
+        }
+        let place = self.place(&u.argument)?;
+        let base = match &place {
+            Place::Local(name, _) | Place::State(name, _) | Place::Store(name, ..) | Place::Member(name, ..) => self.local_name(name),
+        };
+        let mut binds = Vec::new();
+        let old = self.held_or_zero(&place, span)?;
+        let old = self.hide(old, &format!("{base}_was"), &mut binds);
+        let new = stepped(u.operator, old.clone(), span);
+        let new = if u.prefix { self.once(new, span, &mut binds) } else { new };
+        match place {
+            Place::Local(..) | Place::Member(..) => self.write_place(place, new.clone(), span, &mut binds, 0)?,
+            // Made where the statement begins, as each of them is when the run ends: written,
+            // a collection is no longer read in this run (§12).
+            Place::State(..) | Place::Store(..) => {
+                if let Place::Store(collection, ..) = &place {
+                    self.frame.written.insert(collection.clone());
+                }
+                self.frame.updates.writes.push((place, new.clone(), span));
+            }
+        }
+        self.frame.updates.binds.extend(binds);
+        Ok(if u.prefix { new } else { old })
+    }
+
+    /// What the `++` and `--` in a statement's values did, before what the statement does: the
+    /// bindings, where it begins (`at`), then the writes, in the order they were read.
+    fn flush_updates(&mut self, stmts: &mut Vec<Stmt>, at: usize, start: usize) -> R<()> {
+        let Updates { binds, writes } = std::mem::take(&mut self.frame.updates);
+        stmts.splice(at..at, binds);
+        for (place, value, span) in writes {
+            self.write_place(place, value, span, stmts, start)?;
+        }
+        Ok(())
     }
 
     fn write_place(&mut self, place: Place, value: Expr, at: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
@@ -1875,6 +2135,8 @@ impl<'s, 't> Reader<'s, 't> {
             return self.after_block(f, x, block, stmts, at);
         }
         let cond = self.cond(&f.test)?;
+        // A `++` in the condition counts before either branch, which reads what it made.
+        self.flush_updates(stmts, stmts.len(), start)?;
         let cond = self.hide(cond, "cond", stmts);
         let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
         let mut paths = self.branches(branches, block, stmts)?;
@@ -2098,7 +2360,7 @@ impl<'s, 't> Reader<'s, 't> {
             return Ok(Ret::Always);
         }
         let answer = match block {
-            Block::Every | Block::File => {
+            Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue | Block::Close => {
                 // Its message only where the throw is reached, as nothing reads it to choose.
                 let ExprKind::Leaf { args, .. } = &mut failed.kind else { unreachable!("a leaf") };
                 args[0].value = self.guarded(args[0].value.clone());
@@ -2112,7 +2374,7 @@ impl<'s, 't> Reader<'s, 't> {
                     self.frame.throws.insert(n.clone());
                 }
                 match block {
-                    Block::Route => Answer::Response(Box::new(Response { body: Some(failed), status: None, missing: None, headers: None, stream: None, span: at })),
+                    Block::Route | Block::Open => Answer::Response(Box::new(Response { body: Some(failed), status: None, missing: None, headers: None, stream: None, span: at })),
                     _ => Answer::Value { value: failed, name: None, fields: None },
                 }
             }
@@ -2294,6 +2556,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn switch(&mut self, w: &js::SwitchStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let at = self.span(w.span);
         let subject = self.expr(&w.discriminant)?;
+        self.flush_updates(stmts, stmts.len(), start)?;
         let subject = self.hide(subject, "subject", stmts);
         let mut cases: Vec<Case> = Vec::new();
         let (mut patterns, mut default) = (Vec::new(), false);
@@ -2384,15 +2647,16 @@ impl<'s, 't> Reader<'s, 't> {
     fn exit(&mut self, e: &js::Expression, block: Block) -> R<()> {
         let at = self.span(e.span());
         let answer = match block {
-            Block::Route => Answer::Response(Box::new(self.response(e)?)),
-            Block::Action => {
+            Block::Route | Block::Open => Answer::Response(Box::new(self.response(e)?)),
+            Block::Action | Block::Message => {
                 if self.answers_with(e).is_some() {
-                    return fail(at, "an action answers with a value alone: return it, without status or respond");
+                    let who = if block == Block::Action { "an action answers" } else { "a message block answers on its connection" };
+                    return fail(at, format!("{who} with a value alone: return it, without status or respond"));
                 }
                 Answer::Value { value: self.expr(e)?, name: None, fields: None }
             }
             Block::Function => self.returned(e)?,
-            Block::Every | Block::File => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
+            Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue | Block::Close => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
         };
         self.push_exit(ExitKind::One(answer), at)
     }
@@ -2400,6 +2664,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn bare_exit(&mut self, block: Block, at: Span) -> R<()> {
         match block {
             Block::Route => fail(at, "a route answers: return status(204) for an answer with no body"),
+            Block::Open => fail(at, "an open block answers as a route does: return status(204) to accept the connection and send nothing"),
             Block::Function => fail(at, "a function returns a value"),
             _ => self.push_exit(ExitKind::One(Answer::Nothing), at),
         }
@@ -2620,8 +2885,17 @@ impl<'s, 't> Reader<'s, 't> {
             js::LogicalOperator::And => BinOp::And,
             js::LogicalOperator::Coalesce => BinOp::Coalesce,
         };
-        let (lhs, rhs) = (operand(self, &l.left)?, operand(self, &l.right)?);
+        let lhs = operand(self, &l.left)?;
+        let rhs = self.unsure(MAY_NOT_RUN, |s| operand(s, &l.right))?;
         Ok(Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span })
+    }
+
+    /// `read` in a place where a `++` or `--` written as a value isn't taken, `why` saying so.
+    fn unsure<T>(&mut self, why: &'static str, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.frame.no_updates.push(why);
+        let r = read(self);
+        self.frame.no_updates.pop();
+        r
     }
 
     /// `e` read as a condition, as `if`, `?:` and `!` read one: JavaScript's ToBoolean of its
@@ -2846,11 +3120,22 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    fn output_fields(&mut self, fields: Fields, stmts: &mut Vec<Stmt>) -> Vec<String> {
+    fn output_fields(&mut self, mut fields: Fields, stmts: &mut Vec<Stmt>) -> Vec<String> {
+        let bound_here: Vec<bool> = fields.iter().map(|(key, value, _)| matches!(&value.kind, ExprKind::Name(n) if n == key) && self.is_binding(key, stmts)).collect();
+        // A binding the body made of an output's name is renamed first, in the body and in every
+        // field's value: `{ total: total * 2, again: total }` reads the binding in both.
+        for (i, key) in fields.iter().map(|(key, ..)| key.clone()).collect::<Vec<_>>().into_iter().enumerate() {
+            if !bound_here[i] && self.is_binding(&key, stmts) {
+                let other = self.hidden_name(&key);
+                rename(stmts, &key, &other);
+                for (_, value, _) in &mut fields {
+                    rename_expr(value, &key, &other);
+                }
+            }
+        }
         let mut outputs = Vec::new();
-        for (key, value, span) in fields {
-            let bound_here = matches!(&value.kind, ExprKind::Name(n) if *n == key) && self.is_binding(&key, stmts);
-            if !bound_here {
+        for ((key, value, span), here) in fields.into_iter().zip(bound_here) {
+            if !here {
                 self.output(&key, value, span, stmts);
             }
             outputs.push(key);
@@ -3099,10 +3384,10 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr),
             js::Expression::ConditionalExpression(c) => {
                 let cond = self.cond(&c.test)?;
-                let then = self.expr(&c.consequent)?;
+                let then = self.unsure(MAY_NOT_RUN, |s| s.expr(&c.consequent))?;
                 let els = match self.unwrap(&c.alternate) {
                     js::Expression::Identifier(i) if i.name == "undefined" && self.lookup("undefined").is_none() => None,
-                    other => Some(Box::new(self.expr(other)?)),
+                    other => Some(Box::new(self.unsure(MAY_NOT_RUN, |s| s.expr(other))?)),
                 };
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
@@ -3110,7 +3395,7 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::NewExpression(n) => self.new_expr(n, span),
             js::Expression::TaggedTemplateExpression(t) => self.tagged(t, span),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
-            js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
+            js::Expression::UpdateExpression(u) => self.update_value(u, span),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
         }
     }
@@ -3224,6 +3509,7 @@ impl<'s, 't> Reader<'s, 't> {
             Some(Noun::Declared(_, n)) => ok(ExprKind::Name(n)),
             Some(Noun::Now) => ok(ExprKind::Noun(Noun::Now.into())),
             Some(Noun::Random) => ok(ExprKind::Noun(Noun::Random.into())),
+            Some(Noun::RandomBytes) => ok(ExprKind::Noun(Noun::RandomBytes.into())),
             Some(Noun::State) => fail(span, format!("the state is read by key: {name}.hits")),
             Some(Noun::Host(h)) => fail(span, format!("a host is called: {name}.get(\"/path\"), a request to {h}")),
             Some(Noun::Action { action, .. }) => fail(span, format!("an action is called: {name}(input) runs {action}")),
@@ -3393,6 +3679,9 @@ impl<'s, 't> Reader<'s, 't> {
         };
         if self.frame.function {
             return fail(span, FUNCTION_WAITS);
+        }
+        if self.frame.socket {
+            return fail(span, SOCKET_WAITS);
         }
         if self.frame.route {
             return fail(span, ROUTE_WAITS);
@@ -4448,7 +4737,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let added: Vec<String> = names.iter().map(|(ts, _)| ts.clone()).filter(|ts| !self.frame.params.contains(ts)).collect();
                 self.frame.params.extend(added.iter().cloned());
                 self.scopes.push(scope);
-                let body = self.expr(body);
+                let body = self.unsure(IN_A_FUNCTION, |s| s.expr(body));
                 self.scopes.pop();
                 for ts in &added {
                     self.frame.params.remove(ts);
@@ -4691,6 +4980,7 @@ impl From<Noun> for super::ast::Noun {
         match n {
             Noun::Now => super::ast::Noun::Now,
             Noun::Random => super::ast::Noun::Random,
+            Noun::RandomBytes => super::ast::Noun::RandomBytes,
             _ => unreachable!("only the clock and randomness are nouns of the tree"),
         }
     }
@@ -4900,6 +5190,12 @@ fn block_word(b: Block) -> &'static str {
         Block::Action => "action",
         Block::Every => "clock",
         Block::File => "file handler",
+        Block::Mail => "mail handler",
+        Block::Feed => "feed handler",
+        Block::Queue => "queue handler",
+        Block::Open => "open block",
+        Block::Message => "message block",
+        Block::Close => "close block",
         Block::Function => "function",
     }
 }
@@ -5131,6 +5427,16 @@ fn joined(x: Expr) -> Expr {
         }
     }
 }
+
+/// `old` and one more for `++`, one less for `--`.
+fn stepped(op: js::UpdateOperator, old: Expr, at: Span) -> Expr {
+    let one = Expr { kind: ExprKind::Number { value: 1.0, text: "1".into() }, span: at };
+    binary_at(if op == js::UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub }, old, one, at)
+}
+
+/// Where a `++` or `--` written as a value isn't taken, `OP` standing for which it is.
+const MAY_NOT_RUN: &str = "OP in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, nOP, and read n";
+const IN_A_FUNCTION: &str = "OP in a function written in place isn't taken: it would change what is outside it once for each item";
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.to(rhs.span);
@@ -5879,9 +6185,47 @@ flow("u", { port: 8000 })
 
 every("1m", () => {
   const n = state.beats ?? 0
-  const n_2 = n + 1
+  const n_2 = (n ?? 0) + 1
   const n_3 = n_2 + 2
   state.beats = n_3
+})
+"#,
+            ),
+            (
+                "++ and -- as values: what they read or made, left to right, absent counted as 0",
+                r#"import { flow, route } from "holon"
+import state from "state"
+import beats from "collection:beats"
+import { now } from "holon:clock"
+flow("v", { port: 8000 })
+route.post("/v", (req) => {
+  let i = 0
+  const xs = [i++, i++, i, --i]
+  beats[state.count++] = now
+  return { xs, next: ++state.next }
+})
+"#,
+                r#"import { flow, route } from "holon"
+import state from "state"
+import beats from "collection:beats"
+import { now } from "holon:clock"
+
+flow("v", { port: 8000 })
+
+route.post("/v", (req) => {
+  const i = 0
+  const a = i ?? 0
+  const i_2 = a + 1
+  const b = i_2 ?? 0
+  const i_3 = b + 1
+  const c = (i_3 ?? 0) - 1
+  const xs = [a, b, i_3, c]
+  const count = state.count ?? 0
+  state.count = count + 1
+  beats[count] = now
+  const next = (state.next ?? 0) + 1
+  state.next = next
+  return { xs, next }
 })
 "#,
             ),
@@ -6067,8 +6411,11 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
             ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
-            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),
-            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n", "6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: \"req\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = { ...req }"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  const n = req.json.a ? i++ : 0\n  return n\n})\n", "7:26: ++ in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, n++, and read n"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  return req.json.xs.map((x) => i--)\n})\n", "7:33: -- in a function written in place isn't taken: it would change what is outside it once for each item"),
+            ("route.post(\"/\", (req) => {\n  state.n++\n  notes[state.n++] = 1\n  return 1\n})\n", "7:9: state.n is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"),
+            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n","6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
             ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch (e) {\n    return 2\n  }\n  return 1\n})\n", "8:12: write catch { … }; the reason is in the run's log"),
             ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch {\n    state.failed = 1\n  } finally {\n    return 2\n  }\n})\n", "10:13: a finally holds writes and calls: a return or a throw in it comes in a later slice"),
             ("route.post(\"/\", (req) => {\n  try {\n    state.n = 1\n  } catch {\n    state.n = 2\n  }\n  return 1\n})\n", "6:3: nothing in this try can fail, so its catch never runs: write its statements without it"),
@@ -6388,7 +6735,7 @@ route.post("/n", (req) => {
     fn a_mistake_names_its_line_and_column() {
         assert_eq!(mistake("route.get(\"/\", () => {\n  let n\n  return n\n})\n"), "6:10: \"n\" has no value here: give it one first, let n = …");
         assert_eq!(mistake("route.get(\"/\", (req) => fetch(req.query.u))\n"), "4:25: unknown function \"fetch\": define it at the top level, or import the leaf from \"holon\"");
-        assert_eq!(mistake("route.fetch(\"/\", () => 1)\n"), "4:7: route has no \"fetch\": get, post, put, patch or delete");
+        assert_eq!(mistake("route.fetch(\"/\", () => 1)\n"), "4:7: route has no \"fetch\": get, post, put, patch, delete or websocket");
         assert_eq!(mistake("route.get(\"/\", () => 1, { log: \"loud\" })\n"), "4:32: log is \"strict\", \"lazy\" or \"unrecorded\"");
         assert_eq!(mistake("route.get(\"/\", () => {\n  notes = 1\n  return 1\n})\n"), "5:3: \"notes\" is imported, and stays what it is: give a value of its own a name of its own");
         let unknown = parse("import x from \"npm:left-pad\"\n").unwrap_err();

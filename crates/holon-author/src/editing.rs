@@ -77,9 +77,9 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("import", "`import notes from \"collection:notes\"`: names something the flow uses from outside a run, its source saying what: `\"holon\"` (the vocabulary and the leaves), `\"secret:NAME\"`, `\"state\"`, `\"collection:NAME\"`, `\"folder:NAME\"`, `\"database:NAME\"`, `\"channel:NAME\"`, `\"host:HOST\"`, `\"holon:clock\"`, `\"holon:random\"` or `\"flow:SLUG\"`. An import names; it grants nothing: what the flow may do is worked out from what it does with what it imports."),
     ("with", "`import key from \"secret:NAME\" with { optional: \"true\" }`: a secret the flow can run without; the parts that need it have no value when it isn't set."),
     ("flow", "`flow(\"name\", { port: 8080 })`: what the flow is, once, after its imports: the name it deploys as, and its deploy settings (`port`, `keep`, `limits`, `browsers`)."),
-    ("route", "`route.post(\"/path/:id\", (req) => answer, { resumes, log })`: answers requests on the flow's port, by `get`, `post`, `put`, `patch` or `delete`; `:id` in the path is read as `req.params.id`. `req` names the request (any name; destructured, or left out when the route reads nothing of it); `async` goes on one that `await`s."),
+    ("route", "`route.post(\"/path/:id\", (req) => answer, { resumes, log })`: answers requests on the flow's port, by `get`, `post`, `put`, `patch` or `delete`; `:id` in the path is read as `req.params.id`, and a last `*path` as `req.params.path`, the rest of the path (`/files/*path` answers `/files/a/b.css`, its `path` `a/b.css`). `req` names the request (any name; destructured, or left out when the route reads nothing of it); `async` goes on one that `await`s."),
     ("every", "`every(\"1h\", (now) => { … })`: a run every period, a whole number of seconds from `\"1s\"` to `\"366d\"`, one clock per period; `now` is the tick's time, left out when it isn't read."),
-    ("on", "`on.file.created(inbox, (f) => { … }, { matching: \"*.csv\" })`: a run for each file new or changed in the folder `inbox` imports, once it stops changing; `on.file.deleted`, for each file removed. `f` is the file's handle."),
+    ("on", "`on.file.created(inbox, (f) => { … }, { matching: \"*.csv\" })`: a run for each file new or changed in the folder `inbox` imports, once it stops changing; `on.file.deleted`, for each file removed. `f` is the file's handle. `on.mail(remit, (m) => { … })`: a run for each message that comes to the mailbox a mail is bound to. `on.feed(prices, (e) => { … })`: a run for each event a feed sends, one at a time. `on.queue(payouts, (m) => { … })`: a run for each message from a queue, deleted once its run is over."),
     ("action", "`export const reset = action((input) => { … })`: a run by hand, by its name, `input` what was sent (`{}` for nothing); it answers with what it returns, a value alone. It is exported, as nothing else could reach it; a route starts one by calling it without `await`, `const started = reset(req.json)`."),
     ("js", "`const page = js(function html(past) { … }, { fuel, memory, outputs })`: a function whose body is JavaScript, run as written with no clock, randomness or I/O, under its budgets (200M instructions and 16 MiB when not written). Its text is its identity: `holon fmt` leaves it alone."),
     ("respond", "`return respond(body, { status: 201, headers: { … }, stream: true })`: a route's answer with its status, its headers (a record of texts), or streamed. Like `status(…)`, it is a route's answer and nothing else: return it."),
@@ -109,10 +109,14 @@ const NOUNS: &[(&str, &str)] = &[
     ("state", "`state.key`: the flow's own value under `key` (`import state from \"state\"`), as the run began; `state.key = v` writes it when the run finishes. Each key read or written is one permission."),
     ("now", "`now` (`import { now } from \"holon:clock\"`): the time the run started, in seconds since the epoch, recorded with the run so a replay sees the same; in a clock, the tick's. A permission: reading the clock."),
     ("random", "`random` (`import { random } from \"holon:random\"`): one random number for the run, recorded so a replay sees the same. A permission: randomness."),
+    ("random_bytes", "`random_bytes` (`import { random_bytes } from \"holon:random\"`): the run's 32 random bytes, recorded so a replay sees the same: what `pgp_encrypt` draws a message's randomness from. A permission: randomness."),
     ("collection", "A named store of items, `import notes from \"collection:notes\"`: `notes[key]`, `notes[key] = v` and `delete notes[key]` (or `notes.get(k)`, `notes.put(k, v)`, `notes.delete(k)`), and `notes.list({ prefix: p, after: a, limit: 50 })`, a page of items in key order. One permission for each use."),
     ("folder", "Files on the host, in a folder an admin binds to the name, `import inbox from \"folder:inbox\"`: `inbox[file]` reads a file's text, `inbox[file] = text` writes it when the run finishes (`inbox.create(file, text)` only if no file has that name), `delete inbox[file]` deletes it, `inbox.list({ prefix: p, after: a, limit: 50 })` lists files; `inbox.file(name)` is a handle to a file of any size, and `inbox.lines(…)` and `inbox.slice(…)` read part of one. One permission to read, one to write."),
     ("database", "A database an admin binds on the host, `import shop from \"database:shop\"`. `shop.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `shop.one(…)` the first row or nothing, `shop.exec(\"update … where id = $1\", id, { expect: 1 })` changes rows when the run finishes, in one transaction with its other writes there (`expect`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) takes records instead: `notes.find(\"notes\", { owner: who }, { sort: { at: -1 }, limit: 20 })` reads documents, `notes.find_one(…)` the first, and `notes.insert(\"notes\", { … })`, `notes.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, { expect: 1 })` and `notes.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; each computed value goes in as a value, never as an operator."),
     ("channel", "Packs the flow sends to whoever subscribes, `import updates from \"channel:updates\"`: `updates.send(v)` sends one once the run is over and its writes have landed; a route answers with `updates.subscribe()`, a stream of server-sent events (`{ from: \"kept\" }`, the ones it keeps first); `updates.pipe(…)` passes a call's answer on as it arrives. One permission to send, one to let callers subscribe."),
+    ("mail", "Mail sent through a mail resource an admin binds on the host, `import ops from \"mail:ops\"`: `ops.send({ to: \"approvals@acme.com\", cc, subject, text, html, attachments: { \"payout.csv\": csv } })` sends it once the run is over and its writes have landed, from the binding's address, never the flow's. Each recipient written in quotes is a permission of its own; a computed one is one permission, held to the addresses the binding allows. At most 50 recipients and 10 MiB."),
+    ("feed", "A feed an admin binds on the host, `import prices from \"feed:prices\"`: a stream of events (server-sent events) the host keeps a connection to. `on.feed(prices, (e) => { … })` runs once for each event, one at a time, in the order they came: `e.data` (a value when it is JSON, else its text), `e.id` and `e.event`. The host keeps where the feed is, so a reconnect resumes after the last event run on, and none runs twice. One permission: running on its events."),
+    ("queue", "A queue an admin binds on the host (Amazon SQS, or a service that speaks its API), `import payouts from \"queue:payouts\"`. `payouts.send({ data, group })` sends a message once the run is over and its writes have landed: `data` as JSON (text as it is), `group` a FIFO queue's message group. `on.queue(payouts, (m) => { … })` runs once for each message, one at a time, and deletes it once its run is over: `m.data` (a value when it is JSON, else its text), `m.id`, `m.attributes`, `m.sent`, `m.count` (how many times it was handed out) and `m.group`. One deployment listens to a queue. Two permissions: running on its messages, and sending to it."),
     ("host", "`await api.get(path, { headers: h, body: b })`, `import api from \"host:api.example.com\"`: a request to the host over HTTPS; also `post`, `put`, `patch`, `delete` and `head`. The host is the permission; the answer, `{status, headers, body}`, is recorded with the run. `file: handle` in place of `body` sends a file's bytes, streamed by the server."),
     ("flow", "`import { charge } from \"flow:billing\"`: an action of another deployed flow. `await charge(x)` runs it and answers `{answer, run}`, or `{error, message}` when it didn't run; `charge(x)` without `await` starts it. One permission: running it."),
     ("stripe", "`stripe.verify(req, secret, now, { tolerance: 300 })`: the request as a verified Stripe webhook (`.event`), or no value."),
@@ -585,6 +589,7 @@ enum Imported {
     Host(String),
     Now,
     Random,
+    RandomBytes,
     /// Another flow's action: `flow:billing`'s `charge`.
     Action { flow: String, action: String },
 }
@@ -823,6 +828,7 @@ impl Outline {
             "state" => Some(Imported::State),
             "now" => Some(Imported::Now),
             "random" => Some(Imported::Random),
+            "random_bytes" => Some(Imported::RandomBytes),
             w => VOCABULARY.iter().find(|v| **v == w).map(|v| Imported::Vocab(v)),
         }
     }
@@ -888,7 +894,11 @@ fn classify(source: &str, imported: &str, optional: bool) -> Option<Imported> {
             None => Imported::Leaf(imported.to_string()),
         }),
         ("holon", "clock") => (imported == "now").then_some(Imported::Now),
-        ("holon", "random") => (imported == "random").then_some(Imported::Random),
+        ("holon", "random") => match imported {
+            "random" => Some(Imported::Random),
+            "random_bytes" => Some(Imported::RandomBytes),
+            _ => None,
+        },
         ("state", "") => Some(Imported::State),
         (_, "") => None,
         ("secret", name) => Some(Imported::Secret { name: name.to_string(), optional }),
@@ -896,6 +906,9 @@ fn classify(source: &str, imported: &str, optional: bool) -> Option<Imported> {
         ("folder", _) => declared("folder"),
         ("database", _) => declared("database"),
         ("channel", _) => declared("channel"),
+        ("mail", _) => declared("mail"),
+        ("feed", _) => declared("feed"),
+        ("queue", _) => declared("queue"),
         ("host", host) => Some(Imported::Host(host.to_string())),
         ("flow", slug) => Some(Imported::Action { flow: slug.to_string(), action: imported.to_string() }),
         _ => None,
@@ -1004,6 +1017,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
         Some(Imported::Host(host)) => return said(format!("`{word}`: the host {host}, called over HTTPS. {}", noun("host"))),
         Some(Imported::Now) => return said(noun("now").into()),
         Some(Imported::Random) => return said(noun("random").into()),
+        Some(Imported::RandomBytes) => return said(noun("random_bytes").into()),
         Some(Imported::Action { flow, action }) => return said(format!("`{word}`: the action `{action}` of the deployed flow `{flow}`. {}", noun("flow"))),
         Some(Imported::Vocab("stripe")) => return said(noun("stripe").into()),
         Some(Imported::Vocab(v)) => return said(keyword(v).unwrap_or_default().into()),
@@ -1138,9 +1152,10 @@ pub struct Completion {
 /// `notes[k]`, `shop.query(…)`, `now`, a secret, an action called), as `await event(…)`,
 /// `stripe.verify`, `JSON.parse`, or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
-    "http_request", "http_upload", "http_stream", "clock", "random", "file_arrival", "secret", "await", "approval", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
-    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query", "db_one",
-    "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
+    "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "approval", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_serve", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query",
+    "db_one",
+    "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "mail_send", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
     "stripe_verify",
 ];
 
@@ -1200,6 +1215,8 @@ const CHANNEL: &[(&str, &str)] = &[
     ("pipe", "pipe(await api.post(…)): the call's answer, to its subscribers as it arrives"),
     ("subscribe", "subscribe({ from: \"kept\" }): a route's answer, the packs as server-sent events"),
 ];
+const MAIL: &[(&str, &str)] = &[("send", "send({ to, cc, subject, text, html, attachments }): mailed once the run is over")];
+const QUEUE: &[(&str, &str)] = &[("send", "send({ data, group }): sent once the run is over")];
 const HOST: &[&str] = &["get", "post", "put", "patch", "delete", "head"];
 const REQUEST_PARTS: &[(&str, &str)] = &[
     ("params", "the path's :names"),
@@ -1256,12 +1273,20 @@ fn members(o: &Outline, code: &[&Lexeme], head: usize, at: Pos) -> Vec<Completio
                 "collection" => COLLECTION,
                 "folder" => FOLDER,
                 "database" => DATABASE,
+                "mail" => MAIL,
+                "feed" => &[],
+                "queue" => QUEUE,
                 _ => CHANNEL,
             },
         ),
         Some(Imported::Host(host)) => HOST.iter().map(|m| word(m, Kind::Member, format!("{h}.{m}(path, {{ headers: h, body: b }}): a request to {host}"), Some(noun("host").into()))).collect(),
         Some(Imported::Vocab("route")) => methods(h, ROUTE),
-        Some(Imported::Vocab("on")) => vec![word("file", Kind::Member, format!("{h}.file.created(folder, (f) => …), {h}.file.deleted(…)"), keyword("on").map(str::to_string))],
+        Some(Imported::Vocab("on")) => vec![
+            word("file", Kind::Member, format!("{h}.file.created(folder, (f) => …), {h}.file.deleted(…)"), keyword("on").map(str::to_string)),
+            word("mail", Kind::Member, format!("{h}.mail(mail, (m) => …)"), keyword("on").map(str::to_string)),
+            word("feed", Kind::Member, format!("{h}.feed(feed, (e) => …)"), keyword("on").map(str::to_string)),
+            word("queue", Kind::Member, format!("{h}.queue(queue, (m) => …)"), keyword("on").map(str::to_string)),
+        ],
         Some(Imported::Vocab("stripe")) => vec![word("verify", Kind::Member, format!("{h}.verify(req, secret, now)"), Some(noun("stripe").into()))],
         _ if o.received(h) == Some(Received::Request) => REQUEST_PARTS.iter().map(|(m, d)| word(m, Kind::Member, format!("{h}.{m}: {d}"), None)).collect(),
         _ if h == "file" && head.checked_sub(2).and_then(|i| word_of(code.get(i))).and_then(|w| o.vocab(w)) == Some("on") => {
@@ -1289,6 +1314,7 @@ fn everything(o: &Outline) -> Vec<Completion> {
             Imported::Host(host) => (Kind::Module, format!("the host {host}"), noun("host")),
             Imported::Now => (Kind::Module, "the clock: one permission".into(), noun("now")),
             Imported::Random => (Kind::Module, "randomness: one permission".into(), noun("random")),
+            Imported::RandomBytes => (Kind::Module, "the run's random bytes: one permission".into(), noun("random_bytes")),
             Imported::Action { flow, action } => (Kind::Function, format!("the action {action} of the flow {flow}"), noun("flow")),
             // Offered as the vocabulary and the leaves are, below.
             Imported::Vocab(_) | Imported::Leaf(_) => continue,
@@ -1707,7 +1733,7 @@ mod tests {
         assert_eq!(offered(state), ["count"], "the keys the text uses, not the one typed");
         let outside = "import { flow, on, route } from \"holon\"\nimport inbox from \"folder:inbox\"\nimport shop from \"database:shop\"\nimport updates from \"channel:updates\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8200 })\n\n";
         assert_eq!(offered(&format!("{outside}route.p|")), ["post", "put", "patch"]);
-        assert_eq!(offered(&format!("{outside}on.|")), ["file"]);
+        assert_eq!(offered(&format!("{outside}on.|")), ["file", "mail", "feed", "queue"]);
         assert_eq!(offered(&format!("{outside}on.file.|")), ["created", "deleted"]);
         assert_eq!(offered(&format!("{outside}route.get(\"/\", () => inbox.c|)")), ["copy", "create", "create_copy"]);
         assert_eq!(offered(&format!("{outside}route.get(\"/\", () => shop.f|)")), ["find", "find_one"]);

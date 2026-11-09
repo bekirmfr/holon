@@ -71,9 +71,13 @@ An import names something the flow uses from outside a run. Its source says what
 | `import inbox from "folder:NAME"` | a named folder on the host, used as `inbox[file]` |
 | `import shop from "database:NAME"` | a named database on the host, used as `shop.query(sql, …)` |
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
+| `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })`; bound to a mailbox, `on.mail(ops, (m) => …)` runs on what comes to it |
+| `import prices from "feed:NAME"` | a feed of server-sent events, a WebSocket or a Postgres channel, bound by an admin: `on.feed(prices, (e) => …)` runs on each event it sends |
+| `import payouts from "queue:NAME"` | an Amazon SQS queue, bound by an admin: `payouts.send({ data, group })` sends to it once the run is over; `on.queue(payouts, (m) => …)` runs on each message it holds |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
+| `import { random_bytes } from "holon:random"` | the run's 32 random bytes |
 | `import { charge } from "flow:SLUG"` | an action of another deployed flow, by its slug (see [The outside world](#the-outside-world)) |
 
 An import names; it grants nothing. What the flow may do is always worked out from what it does
@@ -122,7 +126,7 @@ and a record or list is written as JSON.
 |---|---|
 | `const name = expr` | Binds a name. |
 | `let name = expr`, `name = expr` | A name that may be bound again: each assignment is a new value, and where branches assign it, the value is the branch taken's. `var` is read as `let`. |
-| `n++`, `n += 2`, `n %= 3`, `x ??= y` | An assignment of `n + 1`, `n + 2`, `n % 3`, `x ?? y`; each of TypeScript's compound operators the same way. |
+| `n++`, `n += 2`, `n %= 3`, `x ??= y` | An assignment of `n + 1`, `n + 2`, `n % 3`, `x ?? y`; each of TypeScript's compound operators the same way. `++` and `--` count from 0 where `n` has no value yet, so `state.hits++` starts a count. A state key changed twice in a run is refused: it reads as the run began. |
 | `const { a, b } = r`, `const [x, y] = xs` | Destructuring: a field each, an index each; `{ a = 1 }` takes a default, `[first, ...rest]` the head and the tail. |
 | `state.key = expr` | Writes the flow's state under `key` when the run finishes. |
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
@@ -234,9 +238,10 @@ else does, an empty list or record included. A `c` with no value doesn't hold, a
 | `a + b`, `a - b`, `a * b`, `a / b` | arithmetic, on numbers; `+` with a text on either side joins the two, a number written as JavaScript writes it: `"n=" + 1` is `"n=1"` |
 | `a % b`, `a ** b` | the remainder, with `a`'s sign, and `a` to the power `b`; `**` groups right to left |
 | `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
+| `n++`, `n--`, `++n`, `--n` | `n` changed as the statement does, before the statement it is in: `n++` is the value it had, `++n` the one it has after, read left to right (`[i++, i++, i]` is `[0, 1, 2]`); none yet counts as 0. Refused after `?`, `&&`, `\|\|` or `??` and in a function written in place, where a statement of its own does it |
 | `f(…)` | a call (see [Calls](#calls)) |
 | `a.name`, `a?.name` | an output named `name`, else the field `name` of a record; `?.` means the same |
-| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file. A text's character is `s.at(i)` or `s.charAt(i)` |
+| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file, a number naming one by its text (`beats[3]` is `beats["3"]`). A text's character is `s.at(i)` or `s.charAt(i)` |
 | `(e)` | grouping |
 
 **Choices only run what they need.** In `?:`, `??`, `if` and `switch`, the branch that isn't
@@ -442,6 +447,65 @@ named entities, character references and CDATA; no entity is ever defined or fet
 is refused. Writing escapes what it must and writes a number as `String(n)` does. Elements nest at
 most 64 deep. The payment-batch sample writes a pain.001 and reads a pain.002.
 
+### Zip and gzip
+
+| Call | Gives |
+|---|---|
+| `zip(files)` | a zip's bytes: each of the record's texts or bytes deflated under its name, in order of the names |
+| `unzip(b)` | a record of each file's bytes under its name, a folder's own entry left out; nothing for bytes that aren't a whole zip |
+| `gzip(x)` | a text's UTF-8, or bytes, gzipped |
+| `gunzip(b)` | the bytes gzipped, each member in turn; nothing for bytes that aren't a whole gzip |
+
+The same input gives the same bytes on every host: the deflate is pinned, and a zip's entries are
+dated 1980-01-01. Reading checks every checksum and length, and gives nothing for a file that is
+encrypted, zip64 or compressed other than by deflate, for a name given twice or one that would
+land outside its folder (a `..` part, a leading `/`, a `\`), and past 64 MiB inflated or 10,000
+files, so a zip bomb stops early. `zip` refuses the same names. The statement-archive sample
+unzips deliveries of bank statements and archives each as a zip.
+
+### JWT
+
+| Call | Gives |
+|---|---|
+| `jwt_verify(token, key, now)` | the token's claims, its payload as a record, when its signature verifies with `key` and they hold at `now`; nothing else |
+| `jwt_verify(token, key, now, { issuer, audience, leeway })` | the same, with `iss` equal to `issuer` and `aud` holding `audience`; `exp` and `nbf` widened by `leeway` seconds (`"0"`, `"30"`, `"60"`, `"120"`, `"300"`) |
+| `jwt_decode(token)` | `{header, payload}`, verifying nothing: who a token says signed it, to pick the key that checks it |
+
+The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes,
+at least 32, 48 or 64 bytes) allows HS256, HS384 or HS512; an RSA key of 2,048 to 4,096 bits
+RS256 to RS512 and PS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM
+text (SPKI, or PKCS #1 for RSA) or a JWK record, whose `alg`, `use` and `key_ops` narrow it; a JWKS
+(`{keys: [...]}`) gives the key the token's `kid` names, or its one key when the token names none.
+So a token saying `alg: none`, or one signed with HMAC over a public key, is nothing. `exp` is
+required, and `now` is a number of seconds, as `exp` is: `now` from `"holon:clock"`, so a rerun
+checks the token at the time its run saw. A token with `crit`, padding or a payload that isn't an
+object is nothing too. The key's taint stops at `jwt_verify`, as at `hmac_sha256`. The jwt-api
+sample verifies partners' tokens with keys a person trusts.
+
+### OpenPGP
+
+| Call | Gives |
+|---|---|
+| `pgp_encrypt(data, keys, random_bytes, now)` | an OpenPGP message, as bytes: `data` (a text's UTF-8, or bytes) encrypted to each of `keys`, to its newest encryption key valid at `now`, as GnuPG reads it |
+| `pgp_encrypt(data, keys, random_bytes, now, { armor: "ascii" })` | the same, armored (`-----BEGIN PGP MESSAGE-----`), as bytes to write to a file |
+| `pgp_verify(data, signature, keys, now)` | `{signer, key, created}` when one of the detached `signature`'s signatures over `data` verifies with one of `keys`: the primary key's fingerprint, the signing key's, and when it signed; nothing else |
+| `pgp_key(key)` | `{fingerprint, user_ids, created, expires, revoked}`, as the key's own signatures bear them out (`expires` absent when it doesn't): what a person compares before trusting it |
+
+A key is a public key as `gpg --export` writes it, armored or bytes; `keys` is one or a list, and a
+signature is armored or bytes too. Version 4 keys of the two kinds GnuPG makes are understood: RSA
+of 2,048 to 4,096 bits, and Curve25519 (EdDSA to sign, ECDH to encrypt). A key's own signatures
+decide what it does: a subkey counts only when its primary binds it, a signing subkey only with its
+own back-signature too, and a key or subkey only while it is valid: created, not expired, not
+revoked. The message is a session key for each key, then AES-256 with the modification detection
+code, uncompressed, its data dated `now` and given no file name. Its every random byte is drawn
+from `random_bytes` (`import { random_bytes } from "holon:random"`, the run's 32 recorded bytes),
+so `holon verify` writes the same message again from the log; fewer than 32 give nothing. A
+signature must be over SHA-224 to SHA-512 (SHA-1 gives nothing), made no later than `now` by a key
+that could sign then, and not expired at `now`; a text signature (`gpg --textmode`) is over the
+data with CR LF line endings. Other keys (NIST and Brainpool curves, DSA, ElGamal, version 6) and
+messages that carry their own signature give nothing. The pgp-outbox sample encrypts payment files
+to a bank's key and verifies the bank's signed reports.
+
 ## The outside world
 
 Each of these is one building block, and each is one thing the flow may do.
@@ -455,21 +519,25 @@ Each of these is one building block, and each is one thing the flow may do.
 | `state.key = e` | write it when the run finishes |
 | `now` | the time the run started, in seconds since the epoch; in a clock, the tick's |
 | `random` | one random number for the run |
+| `random_bytes` | the run's 32 random bytes, the ones `random` is read from |
 | `coll[k]`, `coll.get(k)` | the item under `k` in a collection |
 | `coll[k] = e`, `coll.put(k, e)` | put it when the run finishes |
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
 | `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
 | `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
-| `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes |
+| `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes: a text as its UTF-8, bytes as they are |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
 | `dir.file(name)` | a handle to a file of any size: `{folder, name, size, hash, modified}`, no bytes |
+| `return dir.serve(name)`, `respond(dir.serve(name), { headers })` | a route's answer that is the file: the host sends its bytes, with the type its name says and its hash as its `etag`, if they are still the handle's; no such file is no value (`dir.serve(a) ?? dir.serve("index.html")`). See [Serving a folder](../guides/files.md#serving-a-folder) |
 | `dir.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, { offset: o, length: n })` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
-| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
+| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
+| `m` in `on.mail(ops, (m) => …)` | the message that started the run: `{from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}`; `authenticated` is the mailbox's own server's word that the domain in `from` sent it |
+| `e` in `on.feed(prices, (e) => …)` | the event that started the run: `{data, event, id}`; `data` a value when it is JSON, else its text; `event` its name, `"message"` when it gives none; `id` only when it has one |
 | `db.query(sql, v1, v2, …)` | the rows of a database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none |
 | `db.exec(sql, v1, …)`, `db.exec(sql, …, { expect: n })` | run an `insert`, `update` or `delete` when the run finishes; with `expect`, only if it changes exactly `n` rows, else nothing the run wrote lands and a route answers 409 |
@@ -480,6 +548,8 @@ Each of these is one building block, and each is one thing the flow may do.
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route) |
 | `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by}`, with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route) |
+| `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
+| `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
 
 Rules:
@@ -491,6 +561,10 @@ Rules:
   has `$n`s. See [Databases on the host](../guides/databases.md).
 - **A host is its import,** so it can't come from a value: the host is the permission the
   deployment asks for. The path, headers and body can come from anywhere.
+- **A mail's recipients are part of its grant.** Each one written as text in quotes is granted by
+  name; one computed from a value is granted as "an address it computes", which the binding's
+  list of addresses holds. The sender is the binding's, never the flow's. See
+  [Mail](../guides/mail.md).
 - **`now` and a secret are the same within a run,** however often they are written.
 - **A file sent with `file:`** must be in a folder the flow reads, or be the new file that
   started the run. The server checks, before and as it sends, that the bytes still have the
@@ -523,8 +597,12 @@ route.METHOD("/path", async (req) => { statements; return answer })
 
 - **Methods:** `get`, `post`, `put`, `patch`, `delete`.
 - **Paths:** a literal, `/` and segments of letters, digits, `_`, `.` and `-`, or `:name` for a
-  part that `req.params.name` reads. The most specific route wins: `/todos/new` before
-  `/todos/:id`.
+  part that `req.params.name` reads, and last, perhaps, `*name` for the rest of the path, one
+  segment or more: `/files/*path` answers `/files/css/site.css` with `req.params.path`
+  `css/site.css`, each segment decoded. A segment that is empty, `.` or `..`, or that decodes to
+  `/` or `\`, matches no rest. The most specific route wins: `/todos/new` before `/todos/:id`,
+  and any route without a rest before one with it, the longest prefix first (`/api/*rest` before
+  `/*path`).
 - **`(req)`** names the request; any name works, it may be destructured (`({ params, json }) =>
   …`), and a route that reads nothing of it leaves it out: `() => "ok"`.
 - **`async`** goes on a handler that `await`s, as TypeScript requires.
@@ -558,6 +636,36 @@ bound to a name, passed to a function or returned from an action is refused.
 **Handlers are separate.** Two routes (or any two handlers) can't share a value. At the top level
 of a flow, beside handlers and functions, only `const`s of literals are allowed (`const limit =
 50`); put shared logic in a function.
+
+## WebSockets
+
+```
+route.websocket("/room/:name", {
+  open: (req) => answer,
+  message: (m) => value,
+  close: (c) => { … },
+}, { log: { message: "lazy" } })
+```
+
+A websocket holds the WebSocket connections pages open on its path, on the flow's port beside its
+routes, and runs each block as a handler of its own. One block at least, each written once:
+
+| Block | Runs | `req`, `m`, `c` hold | Answers |
+|---|---|---|---|
+| `open` | as a page opens a connection | the opening request, and `conn`, the connection's id | as a route does: `return ch.subscribe()` accepts and subscribes it to the channel; a `status` of 300 or more refuses it; `status(204)`, or effects alone, accept and send nothing; anything else accepts and is the first message |
+| `message` | for each text the page sends, one at a time, in order | `conn`, `text`, `json`, and the opening's `path`, `params`, `query` | with a value alone, sent back on the connection; nothing sends nothing; `status` and `respond` are refused |
+| `close` | once, when the connection has ended, after its last message | `conn`, `code`, `reason`, and the opening's `path`, `params`, `query` | nobody |
+
+- **The path** is a route's; a websocket whose path matches a GET route's, or another
+  websocket's, is refused: a path is a page or a connection.
+- **`conn`** is the same in each run of a connection: the key to keep what the flow knows of it.
+- **To reach the other connections,** send on a channel they are subscribed to: a run answers
+  only its own.
+- **The `log` option** is one level for every block, or each block's own: `{ log: "lazy" }`,
+  `{ log: { message: "lazy" } }`.
+
+The host's side (pings, limits, the codes it closes with, what a new version does to open
+connections) is in [WebSockets](../guides/websockets.md).
 
 ## Clocks, files and actions
 
@@ -597,6 +705,21 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   from the folder, and `{ matching: "*.csv" }` for the names that match (`*` and `?` within a
   folder, `**/` any number of folders, letters either case). Several handlers may watch one
   folder, each with its own pattern.
+- **`on.mail(ops, (m) => { … })`** runs for each message that comes to the mailbox an admin bound
+  `ops` to (`holon mail add ops --imap …`); `m` is the message, read, and it is moved to the
+  binding's done folder once the run is over. One handler a mail; what the mailbox held when the
+  flow was deployed isn't run on. `From` proves nothing: check `m.authenticated`
+  ([Receiving mail](../guides/mail.md#receiving-mail)).
+- **`on.feed(prices, (e) => { … })`** runs for each event the feed an admin bound `prices` to
+  sends (`holon feed add prices --url …`), one at a time, in the order they came; `e` is the
+  event. One handler a feed; it answers nobody. The host keeps where the feed is: a connection
+  lost is opened again from the last event run on, and an event sent again is passed over
+  ([Feeds](../guides/feeds.md)).
+- **`on.queue(payouts, (m) => { … })`** runs for each message the queue an admin bound `payouts`
+  to holds (`holon queue add payouts --url …`), one at a time, in the order received; `m` is the
+  message, `{data, id, attributes, sent, count, group}`, and it is deleted once its run's record
+  is on disk. One handler a queue, one deployment listening to it; it answers nobody. A message
+  run already is passed over ([Queues](../guides/queues.md)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is

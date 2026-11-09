@@ -491,7 +491,7 @@ fn eval_as(
         (Body::GroupBy, _) => smallvec![eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Json(json), _) => smallvec![eval_json(json, &mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
-        (Body::Sourced, _) => smallvec![Slot::of(resolver.sourced(unit).cloned())],
+        (Body::Sourced, _) => smallvec![Slot::of(crate::sourced_value(unit, resolver.sourced(unit)))],
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
         // inputs in port order), but that is a property of its implementation, not its

@@ -16,12 +16,16 @@
 //! - a subscription (`return updates.subscribe()`, a `channel_subscribe` as the body) is
 //!   answered 200 with the channel's packs as server-sent events, streamed by the transport
 //!   (`subscribe`; channels.rs);
+//! - a file (`return site.serve(name)`, a `file_serve` as the body) is answered with its bytes,
+//!   its type and its hash as its `etag`, once the host has checked it is still the handle's
+//!   (`file`; listeners.rs's `serve_file`);
 //! - nothing at all (the handler didn't settle) is a 500.
 //!
 //! A text body goes out as `text/plain`, anything else as JSON, unless the envelope sets
 //! `content-type` itself.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use holon_core::{match_route, stringify_json, Capability, Resolver, Server, Value};
 
@@ -34,6 +38,38 @@ pub struct DataResponse {
     /// The channel the caller subscribes to, when the answer is a subscription: the transport
     /// streams its packs after the headers.
     pub subscribe: Option<Subscribe>,
+    /// The file the answer is, when it is one: its bytes are the body once the host has read them
+    /// (a small one's), or the transport streams them from the file it opened (a big one's).
+    pub file: Option<Served>,
+}
+
+/// A file a route answered with: what its handle said of it, and its type. Read again as it is
+/// sent, and sent only if it is still the handle's.
+#[derive(Clone, Debug)]
+pub struct Served {
+    pub folder: String,
+    pub name: String,
+    pub size: u64,
+    /// Its BLAKE3, hex: its `etag`, and what its bytes are checked against as they are sent.
+    pub hash: String,
+    /// When it was last changed, in ms since the epoch, as its handle said.
+    pub modified: u64,
+    pub content_type: String,
+    /// The file, opened and checked by the host, for the transport to stream: a big one's.
+    pub opened: Option<Arc<std::fs::File>>,
+}
+
+impl PartialEq for Served {
+    fn eq(&self, other: &Served) -> bool {
+        (&self.folder, &self.name, self.size, &self.hash, self.modified, &self.content_type) == (&other.folder, &other.name, other.size, &other.hash, other.modified, &other.content_type)
+    }
+}
+
+impl Served {
+    /// How the run log and the control plane say it: `file site/app.js (148.2 KiB, blake3 7c1e2a9b…)`.
+    pub(crate) fn line(&self) -> String {
+        format!("file {}/{} ({}, blake3 {}…)", self.folder, self.name, crate::folders::size_text(self.size), &self.hash[..self.hash.len().min(8)])
+    }
 }
 
 /// A subscription a route answered with.
@@ -46,6 +82,39 @@ pub struct Subscribe {
 
 /// Response headers a flow's answer doesn't set: how the reply is framed, which the host says.
 const FRAMING: &[&str] = &["content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade"];
+
+/// The file `v` answers with, if it is one (`file_serve`'s effect).
+fn served(v: &Value) -> Option<Served> {
+    let Value::Effect { sink, payload } = v else { return None };
+    let folder = sink.strip_prefix("file_serve:")?;
+    let Value::Record(f) = &**payload else { return None };
+    let text = |k: &str| match f.get(k) {
+        Some(Value::Text(t)) => Some(t.clone()),
+        _ => None,
+    };
+    let count = |k: &str| match f.get(k) {
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as u64),
+        _ => None,
+    };
+    if text("folder")? != folder {
+        return None;
+    }
+    Some(Served { folder: folder.to_string(), name: text("name")?, size: count("size")?, hash: text("hash")?, modified: count("modified")?, content_type: text("type")?, opened: None })
+}
+
+/// A file's answer: the flow's headers, its type and `cache-control` unless the flow set them,
+/// and its hash as its `etag`, the host's.
+fn file_answer(status: u16, mut headers: Vec<(String, String)>, file: Served) -> DataResponse {
+    headers.retain(|(k, _)| k != "etag");
+    if !headers.iter().any(|(k, _)| k == "content-type") {
+        headers.push(("content-type".into(), file.content_type.clone()));
+    }
+    headers.push(("etag".into(), format!("\"{}\"", file.hash)));
+    if !headers.iter().any(|(k, _)| k == "cache-control") {
+        headers.push(("cache-control".into(), "no-cache".into()));
+    }
+    DataResponse { status, headers, body: vec![], subscribe: None, file: Some(file) }
+}
 
 /// The subscription `v` asks for, if it is one (`channel_subscribe`'s effect).
 fn subscription(v: &Value) -> Option<Subscribe> {
@@ -63,6 +132,7 @@ impl DataResponse {
             headers: vec![("content-type".into(), "application/json".into())],
             body: stringify_json(&body).unwrap_or_default().into_bytes(),
             subscribe: None,
+            file: None,
         }
     }
 }
@@ -165,10 +235,13 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
         return DataResponse::json_error(500, "the handler produced no response");
     };
     if let Some(subscribe) = subscription(output) {
-        return DataResponse { status: 200, headers: event_stream(vec![]), body: vec![], subscribe: Some(subscribe) };
+        return DataResponse { status: 200, headers: event_stream(vec![]), body: vec![], subscribe: Some(subscribe), file: None };
+    }
+    if let Some(file) = served(output) {
+        return file_answer(200, vec![], file);
     }
     if let Value::Effect { .. } = output {
-        return DataResponse { status: 204, headers: vec![], body: vec![], subscribe: None };
+        return DataResponse { status: 204, headers: vec![], body: vec![], subscribe: None, file: None };
     }
     let (status, mut headers, body) = match output {
         Value::Record(fields) if matches!(fields.get("status"), Some(Value::Number(_))) => {
@@ -198,7 +271,13 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
                 Some(_) => return DataResponse::json_error(500, "response headers must be a record"),
             };
             if let Some(subscribe) = fields.get("body").and_then(subscription) {
-                return DataResponse { status: *n as u16, headers: event_stream(headers), body: vec![], subscribe: Some(subscribe) };
+                return DataResponse { status: *n as u16, headers: event_stream(headers), body: vec![], subscribe: Some(subscribe), file: None };
+            }
+            // A status the flow chose stays; a 204 or a 304 has no body, a file's or any.
+            if let Some(file) = fields.get("body").and_then(served)
+                && !matches!(*n as u16, 204 | 304)
+            {
+                return file_answer(*n as u16, headers, file);
             }
             (*n as u16, headers, fields.get("body"))
         }
@@ -207,7 +286,7 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     // A 204 or a 304 has no body (RFC 9110 §15.3.5, §15.4.5): one a computed status chose, as a
     // status alone's empty text, isn't sent, nor its content type.
     if matches!(status, 204 | 304) {
-        return DataResponse { status, headers, body: vec![], subscribe: None };
+        return DataResponse { status, headers, body: vec![], subscribe: None, file: None };
     }
     let (content_type, bytes) = match body {
         None => (None, vec![]),
@@ -223,7 +302,7 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     {
         headers.push(("content-type".into(), ct.into()));
     }
-    DataResponse { status, headers, body: bytes, subscribe: None }
+    DataResponse { status, headers, body: bytes, subscribe: None, file: None }
 }
 
 /// A subscription's headers: the flow's, and an event stream nothing caches or buffers.
@@ -333,6 +412,27 @@ mod tests {
         assert!(sub.headers.contains(&("content-type".to_string(), "text/event-stream".to_string())));
         assert!(sub.headers.contains(&("cache-control".to_string(), "no-store".to_string())), "the flow's header stands");
         assert_eq!(respond(Some(&ask("new"))).subscribe, Some(Subscribe { channel: "updates".into(), kept: false }));
+
+        // A file: its type, its hash as the etag, no-cache; a status and headers the flow chose stay.
+        let hash = "ab".repeat(32);
+        let handle = rec(&[("folder", txt("site")), ("name", txt("a.js")), ("size", Value::Number(3.0)), ("hash", txt(&hash)), ("modified", Value::Number(7.0)), ("type", txt("text/javascript; charset=utf-8"))]);
+        let serve = Value::Effect { sink: "file_serve:site".into(), payload: Box::new(handle) };
+        let served = respond(Some(&serve));
+        let file = Served { folder: "site".into(), name: "a.js".into(), size: 3, hash: hash.clone(), modified: 7, content_type: "text/javascript; charset=utf-8".into(), opened: None };
+        assert_eq!((served.status, served.file.as_ref(), served.body.len()), (200, Some(&file), 0));
+        let header = |r: &DataResponse, k: &str| r.headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
+        assert_eq!(header(&served, "content-type").as_deref(), Some("text/javascript; charset=utf-8"));
+        assert_eq!(header(&served, "etag"), Some(format!("\"{hash}\"")));
+        assert_eq!(header(&served, "cache-control").as_deref(), Some("no-cache"));
+        let headers = rec(&[("cache-control", txt("public, max-age=31536000, immutable")), ("etag", txt("\"mine\"")), ("content-type", txt("text/plain"))]);
+        let chosen = respond(Some(&rec(&[("status", Value::Number(404.0)), ("headers", headers), ("body", serve.clone())])));
+        assert_eq!((chosen.status, chosen.file.is_some()), (404, true));
+        assert_eq!(header(&chosen, "cache-control").as_deref(), Some("public, max-age=31536000, immutable"));
+        assert_eq!(header(&chosen, "content-type").as_deref(), Some("text/plain"), "the flow's type stands");
+        assert_eq!(header(&chosen, "etag"), Some(format!("\"{hash}\"")), "the etag is the host's");
+        let none = respond(Some(&rec(&[("status", Value::Number(204.0)), ("body", serve)])));
+        assert_eq!((none.status, none.file), (204, None));
+        assert_eq!(file.line(), format!("file site/a.js (3 bytes, blake3 abababab…)"));
         assert_eq!(respond(None).status, 500);
         assert_eq!(respond(Some(&rec(&[("status", Value::Number(99.0))]))).status, 500);
         assert_eq!(respond(Some(&rec(&[("status", Value::Number(200.5))]))).status, 500);
@@ -389,5 +489,32 @@ mod tests {
         let wrong = run("DELETE", "/todos/7");
         assert_eq!(wrong.status, 405);
         assert!(wrong.headers.contains(&("allow".to_string(), "GET".to_string())));
+    }
+
+    #[test]
+    fn a_rest_is_the_rest_of_the_path_decoded_and_counts_for_405() {
+        let mut r = MapResolver::new();
+        let files = params_endpoint(&mut r, "GET", "/files/*path");
+        let post = params_endpoint(&mut r, "POST", "/*all");
+        let server_unit = Unit {
+            body: UnitBody::Composite { children: vec![files, post], edges: vec![] },
+            params: vec![Param::frozen("declare", "server"), Param::frozen("port", "8080")],
+            inputs: vec![],
+            outputs: vec![],
+        };
+        let server = read_server(&server_unit, &r).unwrap();
+        let run = |method: &str, url: &str| {
+            let http = HttpRequest { method, url, headers: &[], body: b"" };
+            handle(&server, &r, &http, |unit, _, request, _| holon_core::eval(unit, &[Some(request)], &r).into_vec(), &[])
+        };
+        let ok = run("GET", "/files/css/site%20a.css?v=2");
+        assert_eq!((ok.status, String::from_utf8_lossy(&ok.body).into_owned()), (200, "{\"path\":\"css/site a.css\"}".to_string()));
+        // A part that would name another path is no rest's, of any method.
+        for other in ["/files/a%2Fb", "/files/..", "/files/"] {
+            assert_eq!(run("GET", other).status, 404, "{other}");
+        }
+        let wrong = run("PUT", "/files/a");
+        assert_eq!(wrong.status, 405);
+        assert!(wrong.headers.contains(&("allow".to_string(), "GET, POST".to_string())));
     }
 }

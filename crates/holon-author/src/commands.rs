@@ -73,15 +73,15 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Nothing would start a run of it: no route, clock, file handler or action. It is a holon, placed
+/// Nothing would start a run of it: no route, websocket, clock, file, mail, feed or queue handler or action. It is a holon, placed
 /// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty()
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.websockets.is_empty() && server.actions.is_empty()
 }
 
 /// What `check` says of a flow nothing would start.
-pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
+pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
@@ -147,6 +147,18 @@ pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
     problems
 }
 
+/// A server's websockets, one line each, as written: `WebSocket /room/:name: open, message, close`.
+fn socket_lines(server: &crate::flow::DerivedServer) -> Vec<String> {
+    let mut lines: Vec<(&str, Vec<&str>)> = Vec::new();
+    for w in &server.websockets {
+        match lines.iter_mut().find(|(path, _)| *path == w.path) {
+            Some((_, on)) => on.push(&w.on),
+            None => lines.push((&w.path, vec![&w.on])),
+        }
+    }
+    lines.into_iter().map(|(path, on)| format!("WebSocket {path}: {}", on.join(", "))).collect()
+}
+
 /// `holon check`: compiled, its routes and clocks, its unit and what it may do; each problem on
 /// stderr.
 pub fn check(file: &str, source: &str) -> Report {
@@ -157,22 +169,38 @@ pub fn check(file: &str, source: &str) -> Report {
     };
     let (server, unit) = derive(&c, &mut store);
     let mut out = vec![format!("{}: {} nodes, {} wires", c.name.as_deref().unwrap_or(file), c.doc.nodes.len(), c.doc.edges.len())];
-    if !server.endpoints.is_empty() {
+    if !server.endpoints.is_empty() || !server.websockets.is_empty() {
         let port = port_of(&c);
         out.push(format!("a server on :{}", if port.is_empty() { "?" } else { port }));
         out.extend(server.endpoints.iter().map(|e| format!("  {} {}", e.method, e.path)));
+        out.extend(socket_lines(&server).into_iter().map(|l| format!("  {l}")));
     }
     if !server.clocks.is_empty() {
-        out.push(if server.endpoints.is_empty() { "a server of clocks, listening on no port" } else { "and its clocks" }.into());
+        out.push(if server.endpoints.is_empty() && server.websockets.is_empty() { "a server of clocks, listening on no port" } else { "and its clocks" }.into());
         out.extend(server.clocks.iter().map(|c| format!("  {}", c.label)));
     }
     if !server.files.is_empty() {
-        let alone = server.endpoints.is_empty() && server.clocks.is_empty();
+        let alone = server.endpoints.is_empty() && server.websockets.is_empty() && server.clocks.is_empty();
         out.push(if alone { "a server of file handlers, listening on no port" } else { "and its file handlers" }.into());
         out.extend(server.files.iter().map(|f| format!("  {}", f.label)));
     }
+    if !server.mails.is_empty() {
+        let alone = server.endpoints.is_empty() && server.websockets.is_empty() && server.clocks.is_empty() && server.files.is_empty();
+        out.push(if alone { "a server of mail handlers, listening on no port" } else { "and its mail handlers" }.into());
+        out.extend(server.mails.iter().map(|m| format!("  {}", m.label)));
+    }
+    if !server.feeds.is_empty() {
+        let alone = server.endpoints.is_empty() && server.websockets.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty();
+        out.push(if alone { "a server of feed handlers, listening on no port" } else { "and its feed handlers" }.into());
+        out.extend(server.feeds.iter().map(|f| format!("  {}", f.label)));
+    }
+    if !server.queues.is_empty() {
+        let alone = server.endpoints.is_empty() && server.websockets.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty();
+        out.push(if alone { "a server of queue handlers, listening on no port" } else { "and its queue handlers" }.into());
+        out.extend(server.queues.iter().map(|q| format!("  {}", q.label)));
+    }
     if !server.actions.is_empty() {
-        let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty();
+        let alone = server.endpoints.is_empty() && server.websockets.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty();
         out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
         out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
@@ -195,11 +223,18 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
     // Its unrecorded handlers, each asked for at deploy, said as the approval says it (C5).
-    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
+    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log)));
+    let unrecorded = unrecorded.chain(server.mails.iter().map(|m| (m.label.clone(), &m.log))).chain(server.feeds.iter().map(|f| (f.label.clone(), &f.log))).chain(server.queues.iter().map(|q| (q.label.clone(), &q.log))).chain(server.websockets.iter().map(|w| (w.label.clone(), &w.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
     out.extend(while_it_runs(&caps));
+    // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
+    // last sync didn't cover (host-capabilities L4 §5.9.4).
+    out.extend(server.feeds.iter().filter(|f| f.log == "lazy").map(|f| format!("{} is lazy: after a crash, the events of its last second may run again", f.label)));
+    // A lazy queue handler's message is deleted once the sync covering its record is done: a
+    // crash before it hands out again what it didn't cover (§5.9.9).
+    out.extend(server.queues.iter().filter(|q| q.log == "lazy").map(|q| format!("{} is lazy: after a crash, the messages of its last second may run again", q.label)));
     if problems.is_empty() && starts_nothing(&c, &mut store) {
         out.push(STARTS_NOTHING.into());
     }
@@ -269,6 +304,22 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.files.is_empty() {
         out.push("  files".into());
         out.extend(server.files.iter().map(|f| format!("    {}", f.label)));
+    }
+    if !server.mails.is_empty() {
+        out.push("  mails".into());
+        out.extend(server.mails.iter().map(|m| format!("    {}", m.label)));
+    }
+    if !server.feeds.is_empty() {
+        out.push("  feeds".into());
+        out.extend(server.feeds.iter().map(|f| format!("    {}", f.label)));
+    }
+    if !server.queues.is_empty() {
+        out.push("  queues".into());
+        out.extend(server.queues.iter().map(|q| format!("    {}", q.label)));
+    }
+    if !server.websockets.is_empty() {
+        out.push("  websockets".into());
+        out.extend(socket_lines(&server).into_iter().map(|l| format!("    {l}")));
     }
     if !server.actions.is_empty() {
         out.push("  actions".into());
@@ -551,6 +602,33 @@ mod tests {
         let text = "import { flow, respond, route, status } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"board\", { port: 8200 })\n\nroute.post(\"/t\", (req) => {\n  updates.send({ new: req.json.title })\n  return status(201, { ok: true })\n})\n\nroute.get(\"/live\", () => updates.subscribe())\n\nroute.get(\"/all\", () =>\n  respond(updates.subscribe({ from: \"kept\" }), { headers: { \"cache-control\": \"no-store\" } }),\n)\n";
         assert_eq!(check("board.holon.ts", text).code, 0, "{:?}", check("board.holon.ts", text).err);
         assert_eq!(fmt("board.holon.ts", text).unwrap(), text);
+    }
+
+    #[test]
+    fn a_mail_is_written_back_as_written_its_recipients_in_its_grant() {
+        let text = "import { flow, route, status } from \"holon\"\nimport ops from \"mail:ops\"\n\nflow(\"payouts\", { port: 8200 })\n\nroute.post(\"/ask\", (req) => {\n  ops.send({\n    to: \"approvals@acme.com\",\n    cc: [\"audit@acme.com\", \"Approvals@acme.com\"],\n    subject: `Payout ${req.json.id}`,\n    text: \"Approve it\",\n    attachments: { \"payout.csv\": req.text },\n  })\n  return status(202, { ok: true })\n})\n\nroute.post(\"/tell\", (req) => {\n  ops.send({ to: req.json.who, subject: \"Approved\", text: \"It went out\" })\n  return status(202, { ok: true })\n})\n";
+        let checked = check("payouts.holon.ts", text);
+        assert_eq!(checked.code, 0, "{:?}", checked.err);
+        assert_eq!(fmt("payouts.holon.ts", text).unwrap(), text);
+        // Each recipient written in quotes, once; a computed one is the binding's to hold.
+        let may: Vec<&String> = checked.out.iter().filter(|l| l.contains("send mail")).collect();
+        assert_eq!(
+            may,
+            [
+                "  send mail through \"ops\" to an address it computes, within its binding's",
+                "  send mail through \"ops\" to approvals@acme.com",
+                "  send mail through \"ops\" to audit@acme.com",
+            ]
+        );
+        let flow = |body: &str| format!("import {{ flow, route, status }} from \"holon\"\nimport ops from \"mail:ops\"\n\nflow(\"payouts\", {{ port: 8200 }})\n\nroute.post(\"/ask\", (req) => {{\n{body}\n  return status(202, {{ ok: true }})\n}})\n");
+        let fails = |body: &str| check("payouts.holon.ts", &flow(body)).err.join("\n");
+        assert!(fails("  ops.send({ to: \"approvals\", subject: \"s\", text: \"t\" })").contains("\"approvals\" isn't an address a mail goes to"));
+        assert!(fails("  ops.send({ to: \"a@acme.com\", bcc: \"b@acme.com\", subject: \"s\", text: \"t\" })").contains("a mail has no \"bcc\""));
+        assert!(fails("  ops.send({ to: \"a@acme.com\", text: \"t\" })").contains("a mail needs its subject"));
+        assert!(fails("  ops.send({ to: [], subject: \"s\", text: \"t\" })").contains("one recipient at least"));
+        assert!(fails("  ops.send(req.json, req.json)").contains("ops.send takes one message"));
+        assert!(fails("  ops.post(req.json)").contains("a mail has no \"post\""));
+        assert!(check("payouts.holon.ts", "import { flow, route } from \"holon\"\nimport billing from \"mail:ops\"\n\nflow(\"p\", { port: 8200 })\n\nroute.get(\"/\", () => 1)\n").err.join("\n").contains("a mail is imported under its own name"));
     }
 
     #[test]

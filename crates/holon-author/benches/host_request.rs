@@ -189,7 +189,7 @@ fn run(name: &str, r: &Route, req: Value) {
     }
     let root = r.resolver.resolve(&r.endpoint).expect("the endpoint resolves");
     let inputs = [Some(req)];
-    let sourced = [(Capability::Clock, &Value::Number(1_762_400_000.0)), (Capability::Random, &Value::Number(0.5))];
+    let sourced = [(Capability::Clock, &Value::Number(1_762_400_000.0)), (Capability::Random, &Value::Bytes(vec![0x80; 32]))];
     let limits = Limits::request_run();
     let once = || {
         let mut host = Recording(Vec::new());

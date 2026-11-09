@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `load`, `folder`, `database`, `mcp` and `lsp` say more with `--help`.
+`verify`, `load`, `folder`, `database`, `mail`, `feed`, `queue`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -37,6 +37,9 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
+| [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
+| [`holon feed`](#holon-feed) | bind the feeds flows listen to: server-sent events, WebSockets, Postgres channels |
+| [`holon queue`](#holon-queue) | bind the SQS queues flows take messages from and send to |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -102,8 +105,9 @@ it may:
   receive requests
 ```
 
-A flow that touches nothing outside says `it only computes: it reads and changes nothing
-outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
+A websocket is listed under its server with the blocks it has, `WebSocket /room/:name: open,
+message, close`. A flow that touches nothing outside says `it only computes: it reads and changes
+nothing outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 
 ### `holon show`
@@ -164,7 +168,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
-| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
+| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--queues`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails`, the messages to queues in `queue-spool` beside `--queues` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
@@ -228,7 +232,7 @@ crumb going back to it; the line above the keys says what just happened.
 | 4 the open flow | its status (routes, what it may do and whether its grant covers it, what a version waiting would add, the secrets it reads), its runs (enter shows one over its text, with each statement's value; `/` filters them, `i` explains one, `F` follows the newest, `o` writes them to `<slug>-runs.json` for [`holon verify`](#holon-verify); each run says where it is on record), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is; each tab's dot is its deployment's state, and the text's title says how it stands against what is live (`v3, live`, `changed from v3 *`). `⌂ Home` starts a draft or opens a sample, a tab closed lately or a flow on the server |
 | 6 Library | the samples, with what each shows and its `holon new` line; enter opens a copy, `/` filters them |
-| 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders and databases flows use (bound with the same flags as [`holon folder`](#holon-folder) and [`holon database`](#holon-database)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
+| 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases, mail and feeds flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database), [`holon mail`](#holon-mail) and [`holon feed`](#holon-feed)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
 A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
 action), with the lines between them showing what feeds what, as `git log --graph` draws
@@ -709,6 +713,99 @@ host](../guides/databases.md).
 | `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none (not for a MongoDB) |
 | `--read-only` | flows may read it, not write it |
 | `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
+| `--for SLUG` | for that deployment only |
+
+## `holon mail`
+
+```
+holon mail add NAME [--smtp SOURCE --from SENDER --to LIST]
+                     [--imap SOURCE [--folder F] [--done F] [--verdict-from SERVER] [--every T]]
+                     [--oauth SOURCE] [--for SLUG]
+holon mail list
+holon mail remove NAME [--for SLUG]
+```
+
+Binds a name flows import (`"mail:ops"`) to an SMTP server they send through (`--smtp`), a mailbox
+whose messages start their runs (`--imap`, `on.mail(ops, …)`), or both. Each server's URL, with its
+login, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`),
+never storing or showing it: `smtps://user:password@host` (TLS, port 465), or
+`smtp://user:password@host:587` (STARTTLS, required); `imaps://user:password@host` (TLS, port
+993), or `imap://user:password@host:143` (STARTTLS, required); plain `smtp://` and `imap://` only
+to a server on the same machine. A URL with a user and no password (Microsoft 365's, which take
+none) logs in with a token the server asks the endpoint in `--oauth` for, and keeps in memory. It
+logs in to each when it is bound, and makes the mailbox's `--done` folder. Removing it gives up
+the mail on its way through it. Needs an admin; each takes
+`--server PORT|URL`. See [Mail](../guides/mail.md).
+
+| Option | |
+|---|---|
+| `--smtp SOURCE` | where the server reads the SMTP server's URL |
+| `--from SENDER` | who the mail is from: `"Treasury <treasury@acme.com>"`; never the flow's choice |
+| `--to LIST` | every address it may ever send to, with commas: addresses, `*@domain`, or `*` for anyone |
+| `--imap SOURCE` | where the server reads the mailbox's URL |
+| `--folder F` | the folder read: `INBOX` unless given |
+| `--done F` | where each message is moved once its run is over: `Processed` unless given |
+| `--verdict-from SERVER` | whose `Authentication-Results` verdict on a sender counts: the name the mailbox's own server writes there; without it, no message is authenticated |
+| `--every T` | how often the folder is looked at: `1m` unless given, `10s` at least |
+| `--oauth SOURCE` | where the server reads the token request, for a server whose URL names a user and no password: `https://id:secret@host/…/token?scope=…` (client credentials) or `?refresh_token=…`; see [Logging in with OAuth](../guides/mail.md#logging-in-with-oauth) |
+| `--for SLUG` | for that deployment only |
+
+## `holon feed`
+
+```
+holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+holon feed add NAME --database NAME --channel CHANNEL [--buffer N] [--idle T] [--for SLUG]
+holon feed list
+holon feed remove NAME [--for SLUG]
+```
+
+Binds a name flows import (`"feed:prices"`) to a feed of server-sent events, a WebSocket or a
+Postgres channel, whose events start their runs (`on.feed(prices, …)`), one at a time, in the
+order they came. The feed's URL, and each header's value, the server fetches from `SOURCE`
+(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`) each time it opens the connection, never
+storing or showing it: `https://…`, a login in it sent as Basic authentication; `wss://…` for a
+WebSocket; plain `http://` and `ws://` only to this machine. A channel's is its database's
+connection, as the listening deployment sees the database's name. It reads the feed when it is
+bound (listens on the channel), and refuses one that doesn't answer as a feed does. Removing it
+closes its connections. Needs an admin; each takes `--server PORT|URL`. A WebSocket's options
+(`--subscribe`, `--heartbeat`, `--id`, `--only`, `--resume`) and what comes when events wait
+(`--on-full`, `--key`, `--sequence`) are in [Feeds](../guides/feeds.md#binding-a-feed).
+
+| Option | |
+|---|---|
+| `--url SOURCE` | where the server reads the feed's URL |
+| `--header NAME=SOURCE` | a header each request sends, its value read from a source (`Authorization=env:HOLON_SECRET_PRICES_AUTH`); again for another |
+| `--buffer N` | how many events may wait for their run before the connection waits too: 1000 unless given |
+| `--idle T` | how long the feed may say nothing before the connection is opened again: `90s` unless given, `5s` at least |
+| `--database NAME` | a Postgres channel's: the database it is on, as bound ([`holon database`](#holon-database)) |
+| `--channel CHANNEL` | the channel listened on (`LISTEN`): letters, digits and `_` |
+| `--for SLUG` | for that deployment only |
+
+## `holon queue`
+
+```
+holon queue add NAME --url SOURCE [--visibility T] [--keep-failed] [--for SLUG]
+holon queue list
+holon queue remove NAME [--for SLUG]
+```
+
+Binds a name flows import (`"queue:payout_events"`) to an Amazon SQS queue, or a service that
+speaks its API (ElasticMQ, LocalStack). A flow sends to it once its run is over
+(`payout_events.send({ data, group })`), and its messages start runs
+(`on.queue(payout_events, …)`), one at a time, each deleted once its run is over. The queue's
+URL, with its access key, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`,
+`vault:<mount>/<path>#<field>`), never storing or showing it:
+`https://<key id>:<secret>@sqs.<region>.amazonaws.com/<account>/<queue>`, the secret
+percent-encoded; `?region=` for a service under another name, `?token=` for a temporary key; plain
+`http://` only to this machine. It asks the queue when it is bound, and refuses one that doesn't
+answer. Removing it stops its listener. Needs an admin; each takes `--server PORT|URL`. See
+[Queues](../guides/queues.md).
+
+| Option | |
+|---|---|
+| `--url SOURCE` | where the server reads the queue's URL |
+| `--visibility T` | how long a message received is kept out of sight while it waits for its run and runs: `30s` to `12h`, `5m` unless given |
+| `--keep-failed` | leave a failed run's message for the queue to hand out again, for its redrive policy to count, rather than delete it |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

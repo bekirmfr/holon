@@ -57,12 +57,13 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
     items: new Set([
       "json_parse", "json_stringify", "csv_parse", "csv_format",
       "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
-      "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
+      "sha256", "hmac_sha256", "hex", "base64", "secure_equals", "jwt_verify", "jwt_decode",
+      "pgp_encrypt", "pgp_verify", "pgp_key",
     ]),
   },
   {
     name: "bytes",
-    items: new Set(["text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes"]),
+    items: new Set(["text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes", "gzip", "gunzip", "zip", "unzip"]),
   },
   {
     name: "decimal",
@@ -74,7 +75,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "drivers",
-    items: new Set(["clock", "random", "secret", "file_arrival", "await", "resume_token", "approval"]),
+    items: new Set(["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message", "await", "resume_token", "approval"]),
   },
   {
     name: "state",
@@ -85,7 +86,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
     name: "files",
     items: new Set([
       "file_read", "file_list", "file_write", "file_delete",
-      "file_handle", "file_lines", "file_slice", "file_copy",
+      "file_handle", "file_serve", "file_lines", "file_slice", "file_copy",
       "file_create", "file_create_copy", "file_read_bytes",
     ]),
   },
@@ -99,5 +100,13 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   {
     name: "channel",
     items: new Set(["channel_send", "channel_subscribe", "egress"]),
+  },
+  {
+    name: "mail",
+    items: new Set(["mail_send"]),
+  },
+  {
+    name: "queue",
+    items: new Set(["queue_send"]),
   },
 ];

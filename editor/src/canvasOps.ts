@@ -45,17 +45,38 @@ export type ClockDraft = { seconds: number; label: string; hash: string; log?: L
  *  label (`on file inbox`) and its handler unit's hash. */
 export type FileDraft = { folder: string; label: string; hash: string; log?: LogWord };
 
+/** One mail handler of the derived server (an `on_mail` node's group): the mail whose mailbox it
+ *  reads, its label (`on mail remit`) and its handler unit's hash. */
+export type MailDraft = { mail: string; label: string; hash: string; log?: LogWord };
+
+/** One feed handler of the derived server (an `on_feed` node's group): the feed it listens to,
+ *  its label (`on feed prices`) and its handler unit's hash. */
+export type FeedDraft = { feed: string; label: string; hash: string; log?: LogWord };
+
+/** One queue handler of the derived server (an `on_queue` node's group): the queue it listens to,
+ *  its label (`on queue payout_events`) and its handler unit's hash. */
+export type QueueDraft = { queue: string; label: string; hash: string; log?: LogWord };
+
+/** One block of a websocket of the derived server (a `websocket` node's group): its path, what it
+ *  runs on (`open`, `message` or `close`), its label (`WebSocket /room/:name message`) and its
+ *  handler unit's hash. */
+export type SocketDraft = { path: string; on: "open" | "message" | "close"; label: string; hash: string; log?: LogWord };
+
 /** One action of the derived server (an `action` node's group): its name, its label (`action
  *  reset`) and its handler unit's hash. */
 export type ActionDraft = { name: string; label: string; hash: string; log?: LogWord };
 
-/** The server a canvas declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the
+/** The server a canvas declares: its endpoints, clocks, file, mail, feed and queue handlers, websockets and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
  *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
   endpoints: EndpointDraft[];
   clocks: ClockDraft[];
   files: FileDraft[];
+  mails: MailDraft[];
+  feeds: FeedDraft[];
+  queues: QueueDraft[];
+  websockets: SocketDraft[];
   actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;

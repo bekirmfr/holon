@@ -128,6 +128,67 @@ route.post("/archive", (req) => {
 Only the lines or bytes read enter the run, and the log keeps with them the hashes that prove
 them part of the file, so the run can still be checked offline.
 
+## Serving a folder
+
+A route answers with a file of a folder with `f.serve(name)`: a built web app, a download. The
+`site` sample serves a single-page app's build, its API beside it:
+
+```ts
+import { flow, respond, route, status } from "holon"
+import site from "folder:site"
+
+flow("site", { port: 8196 })
+
+route.get("/api/hello", () => ({ hello: "world" }))
+
+route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
+
+route.get(
+  "/assets/*file",
+  (req) =>
+    respond(site.serve(`assets/${req.params.file}`), {
+      headers: { "cache-control": "public, max-age=31536000, immutable" },
+    }),
+  { log: "lazy" },
+)
+
+route.get("/", () => site.serve("index.html"), { log: "lazy" })
+
+route.get("/*path", (req) => site.serve(req.params.path) ?? site.serve("index.html"), {
+  log: "lazy",
+})
+```
+
+`site.serve(name)` is the file's handle, served: the run reads its handle (its size and hash),
+never its bytes, and the host sends them once the run is over.
+
+- **Its type** is its name's: `text/html; charset=utf-8`, `text/javascript`, `text/css`,
+  `image/png`, `font/woff2`, … (html, css, js, mjs, json, map, svg, png, jpg, gif, webp, avif,
+  ico, woff, woff2, ttf, wasm, txt, pdf, mp4, webm, mp3), else `application/octet-stream`, unless
+  the route's headers set one.
+- **Its `etag`** is its hash, and `cache-control` is `no-cache` unless the route sets one: a
+  browser asks again each time, and a copy that is still the file's gets a `304` with no body. A
+  status the flow chose stays (`status(404, site.serve("404.html"))`); only a `200` becomes a
+  `304`.
+- **It is the file the run saw, or nothing.** A file up to `inline_file_bytes` (1 MiB) is read,
+  and sent if its hash is the handle's; a bigger one is checked by its size and time, then
+  streamed, its hash checked as it goes, and if it changes while it is sent the connection is cut
+  before its end, and the deployment's timeline says so. A file changed or gone since the run read
+  its handle is a `503` the browser may retry.
+- **No such file is no value,** so `??` falls back: `site.serve(path) ?? site.serve("index.html")`
+  is the file at the path, or the app's page, which is how a deep link opens a single-page app
+  where it points. A name no file can have (`/Talk:Page`, a folder's own name) is no such file.
+  A route answering with no value answers 404, as the asset route does for a script that isn't
+  there: never the page served as a script.
+- **It asks for `FileServe("site")`** beside `FileRead("site")`: "answer its callers with files
+  from the folder site". A file past `max_served_bytes` (1 GiB) isn't sent: the caller gets a
+  500 saying so.
+- **The run log keeps the file by its hash,** `file site/assets/app.js (148.2 KiB, blake3
+  7c1e2a9b…)`, never its bytes, and `holon verify` re-runs it from the handle the log kept.
+
+The editor's request tester shows a small file's bytes; a big one is only streamed on the
+deployment's own port, and the tester shows its line.
+
 ## A run per new file
 
 `on.file.created(NAME, (f) => { … })` runs once for each new file in the folder `NAME` imports,

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use holon_core::{parse_path, Edge, EncapSpec, Hash, Param, Port, Segment, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
+use holon_core::{parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
@@ -90,6 +90,65 @@ pub struct FileGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One mail handler of the server: its `on_mail` node, its mail, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct MailGroup {
+    pub mail: String,
+    /// `on mail remit`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onMailId")]
+    pub on_mail_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
+/// One queue handler of the server: its `on_queue` node, its queue, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct QueueGroup {
+    pub queue: String,
+    /// `on queue payouts`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onQueueId")]
+    pub on_queue_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
+/// One feed handler of the server: its `on_feed` node, its feed, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FeedGroup {
+    pub feed: String,
+    /// `on feed prices`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onFeedId")]
+    pub on_feed_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
+/// One block of a websocket of the server: its `websocket` node, its path, what it runs on, and
+/// every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SocketGroup {
+    pub path: String,
+    /// `open`, `message` or `close`.
+    pub on: String,
+    /// `WebSocket /room/:name message`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "socketId")]
+    pub socket_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 /// One action of the server: its `action` node, its name, and every node wired to it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActionGroup {
@@ -110,8 +169,8 @@ impl FileGroup {
     }
 }
 
-/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, an
-/// action.
+/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, a
+/// message, an action.
 fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
@@ -125,6 +184,14 @@ fn trigger_label(n: &Node) -> Option<String> {
             Ok(t) => t.label(),
             Err(_) => format!("on file {}", n.param("folder")),
         })
+    } else if n.is_template("on_mail") {
+        Some(holon_core::mail_label(n.param("mail")))
+    } else if n.is_template("on_feed") {
+        Some(holon_core::feed_label(n.param("feed")))
+    } else if n.is_template("on_queue") {
+        Some(holon_core::queue_label(n.param("queue")))
+    } else if n.is_template("websocket") {
+        Some(holon_core::socket_label(n.param("path"), n.param("on")))
     } else if n.is_template("action") {
         Some(format!("action {}", n.param("name")))
     } else {
@@ -192,6 +259,140 @@ pub fn find_files(nodes: &[Node], wires: &[Wire]) -> (Vec<FileGroup>, Vec<String
     (files, errors)
 }
 
+/// The mail handlers the flow declares (each connected group holding an `on_mail` node and no
+/// other trigger), and why any can't be one.
+pub fn find_mails(nodes: &[Node], wires: &[Wire]) -> (Vec<MailGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut mails, mut errors): (Vec<MailGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_mail] = triggers.as_slice() else { continue };
+        if !on_mail.is_template("on_mail") {
+            continue;
+        }
+        let mail = match crate::templates::mail_name(&on_mail.data.params) {
+            Ok(m) => m,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::mail_label(&mail);
+        if mails.iter().any(|m| m.mail == mail) {
+            errors.push(format!("{label} is written twice: one handler per mail"));
+            continue;
+        }
+        mails.push(MailGroup { mail, label, on_mail_id: on_mail.id.clone(), log: on_mail.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    mails.sort_by_key(|m| node_ids.iter().position(|id| *id == m.on_mail_id));
+    (mails, errors)
+}
+
+/// The feed handlers the flow declares (each connected group holding an `on_feed` node and no
+/// other trigger), and why any can't be one.
+pub fn find_feeds(nodes: &[Node], wires: &[Wire]) -> (Vec<FeedGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut feeds, mut errors): (Vec<FeedGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_feed] = triggers.as_slice() else { continue };
+        if !on_feed.is_template("on_feed") {
+            continue;
+        }
+        let feed = match crate::templates::feed_name(&on_feed.data.params) {
+            Ok(f) => f,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::feed_label(&feed);
+        if feeds.iter().any(|f| f.feed == feed) {
+            errors.push(format!("{label} is written twice: one handler per feed"));
+            continue;
+        }
+        feeds.push(FeedGroup { feed, label, on_feed_id: on_feed.id.clone(), log: on_feed.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    feeds.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_feed_id));
+    (feeds, errors)
+}
+
+/// The queue handlers the flow declares (each connected group holding an `on_queue` node and no
+/// other trigger), and why any can't be one.
+pub fn find_queues(nodes: &[Node], wires: &[Wire]) -> (Vec<QueueGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut queues, mut errors): (Vec<QueueGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_queue] = triggers.as_slice() else { continue };
+        if !on_queue.is_template("on_queue") {
+            continue;
+        }
+        let queue = match crate::templates::queue_name(&on_queue.data.params) {
+            Ok(q) => q,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::queue_label(&queue);
+        if queues.iter().any(|q| q.queue == queue) {
+            errors.push(format!("{label} is written twice: one handler per queue"));
+            continue;
+        }
+        queues.push(QueueGroup { queue, label, on_queue_id: on_queue.id.clone(), log: on_queue.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    queues.sort_by_key(|q| node_ids.iter().position(|id| *id == q.on_queue_id));
+    (queues, errors)
+}
+
+/// The websocket blocks the flow declares (each connected group holding a `websocket` node and no
+/// other trigger), and why any can't be one: a block written twice, or a path that takes the
+/// requests another websocket's or one of `routes`' GET routes does.
+pub fn find_websockets(nodes: &[Node], wires: &[Wire], routes: &[RouteGroup]) -> (Vec<SocketGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let clash = |a: &str, b: &str| parse_path(a).zip(parse_path(b)).is_some_and(|(a, b)| same_requests(&a, &b));
+    let (mut sockets, mut errors): (Vec<SocketGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [socket] = triggers.as_slice() else { continue };
+        if !socket.is_template("websocket") {
+            continue;
+        }
+        let (path, on) = match crate::templates::socket_block(&socket.data.params) {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::socket_label(&path, on);
+        if sockets.iter().any(|s| s.path == path && s.on == on) {
+            errors.push(format!("{label} is written twice: one block of each per websocket"));
+            continue;
+        }
+        if let Some(other) = sockets.iter().find(|s| s.path != path && clash(&s.path, &path)) {
+            errors.push(format!("WebSocket {path} clashes with WebSocket {}", other.path));
+            continue;
+        }
+        if let Some(r) = routes.iter().find(|r| r.method == "GET" && clash(&r.path, &path)) {
+            errors.push(format!("WebSocket {path} clashes with GET {}: a path is a page or a connection", r.path));
+            continue;
+        }
+        sockets.push(SocketGroup { path, on: on.into(), label, socket_id: socket.id.clone(), log: socket.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    sockets.sort_by_key(|s| node_ids.iter().position(|id| *id == s.socket_id));
+    (sockets, errors)
+}
+
 /// The actions the flow declares (each connected group holding an `action` node and no other
 /// trigger), and why any can't be one.
 pub fn find_actions(nodes: &[Node], wires: &[Wire]) -> (Vec<ActionGroup>, Vec<String>) {
@@ -231,10 +432,7 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
     let mut errors = Vec::new();
     let label = |n: &Node| format!("{} {}", n.param("method"), n.param("path"));
     // Two routes clash when they'd match the same requests, the rule core's read_server enforces.
-    let shape = |p: &str| parse_path(p).map(|segs| segs.into_iter().map(|s| match s {
-        Segment::Literal(l) => Some(l),
-        Segment::Param(_) => None,
-    }).collect::<Vec<_>>());
+    let clash = |a: &str, b: &str| parse_path(a).zip(parse_path(b)).is_some_and(|(a, b)| same_requests(&a, &b));
     let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     for ids in components(&node_ids, wires) {
         let requests: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| n.is_template("request")).collect();
@@ -261,10 +459,10 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
             continue;
         }
         if parse_path(path).is_none() {
-            errors.push(format!("\"{path}\" is not a route path (use /todos or /todos/:id)"));
+            errors.push(format!("\"{path}\" is not a route path (use /todos, /todos/:id or /files/*path)"));
             continue;
         }
-        if let Some(clash) = routes.iter().find(|r| r.method == method && shape(&r.path) == shape(path)) {
+        if let Some(clash) = routes.iter().find(|r| r.method == method && clash(&r.path, path)) {
             errors.push(format!("{method} {path} clashes with {} {}", clash.method, clash.path));
             continue;
         }
@@ -329,6 +527,16 @@ pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
     caller_spec(spec, group, label, "request")
 }
 
+/// A websocket block's boundary, as a route's: the one input left open is its `websocket` node's
+/// (the record), the outputs its respond's (the answer) and its effects. It answers and is done,
+/// as a route does.
+pub fn socket_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
+        return Err(format!("{label}: a block answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start", n.data.name));
+    }
+    caller_spec(spec, group, label, "websocket")
+}
+
 /// An action's boundary, as a route's: the one input left open is its `action` node's (what was
 /// sent), the outputs its respond's (the answer) and its effects.
 pub fn action_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
@@ -390,6 +598,24 @@ pub fn file_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapS
     handler_spec(spec, group, label, "a file's run")
 }
 
+/// A mail handler's boundary, as a file's: no inputs (the message is its `on_mail` node's) and its
+/// effects as outputs.
+pub fn mail_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run")
+}
+
+/// A feed handler's boundary, as a mail's: no inputs (the event is its `on_feed` node's) and its
+/// effects as outputs.
+pub fn feed_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "an event's run")
+}
+
+/// A queue handler's boundary, as a feed's: no inputs (the message is its `on_queue` node's) and
+/// its effects as outputs.
+pub fn queue_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run")
+}
+
 /// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
 fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
@@ -448,7 +674,52 @@ pub fn file_unit(handler: Hash, outputs: &[Port], trigger: &holon_core::FileTrig
     }
 }
 
-/// `unit` (a handler unit: an endpoint, a clock's, a file's or an action's) with its log level
+/// Wrap a mail handler's handler as a mail handler unit (core's `read_mail_handler`): no inputs,
+/// each of its effects an output, `declare = "on_mail"` and `mail`.
+pub fn mail_unit(handler: Hash, outputs: &[Port], mail: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_mail"), frozen("mail", mail)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// Wrap a feed handler's handler as a feed handler unit (core's `read_feed_handler`): no inputs,
+/// each of its effects an output, `declare = "on_feed"` and `feed`.
+pub fn feed_unit(handler: Hash, outputs: &[Port], feed: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_feed"), frozen("feed", feed)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// Wrap a queue handler's handler as a queue handler unit (core's `read_queue_handler`): no
+/// inputs, each of its effects an output, `declare = "on_queue"` and `queue`.
+pub fn queue_unit(handler: Hash, outputs: &[Port], queue: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_queue"), frozen("queue", queue)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// `unit` (a handler unit: an endpoint, a clock's, a file's, a message's or an action's) with its log level
 /// (docs/L4s/request-path-L4.md, C5): its frozen `log` param, set only when it isn't strict, so a
 /// handler written without one hashes as it always did. An error for a word that isn't a level.
 pub fn with_log(mut unit: Unit, log: &str) -> Result<Unit, String> {
@@ -478,7 +749,7 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
         return Err(format!("\"{resume}\" is not a waiting point's name (letters, digits, - and _)"));
     }
     if parse_path(path).is_none() {
-        return Err(format!("\"{path}\" is not a route path (use /todos or /todos/:id)"));
+        return Err(format!("\"{path}\" is not a route path (use /todos, /todos/:id or /files/*path)"));
     }
     if inputs.len() > 1 {
         return Err("a handler takes at most one input: the request record".into());
@@ -492,6 +763,24 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
     if !resume.is_empty() {
         params.push(frozen("resume", resume));
     }
+    Ok(caller_unit(handler, inputs, outputs, params, Port { name: "request".into(), ty: Type::Record }, "response"))
+}
+
+/// Wrap a websocket block's handler as its unit (core's `read_websocket`), as an endpoint is
+/// wrapped: its one input the block's record, output 0 its answer, then its effects;
+/// `declare = "websocket"`, `path` and `on`.
+pub fn socket_unit(handler: Hash, inputs: &[Port], outputs: &[Port], path: &str, on: &str) -> Result<Unit, String> {
+    if parse_path(path).is_none() {
+        return Err(format!("\"{path}\" is not a route path (use /chat, /room/:name or /files/*path)"));
+    }
+    if inputs.len() > 1 {
+        return Err("a handler takes at most one input: the block's record".into());
+    }
+    if outputs.is_empty() {
+        return Err("a handler needs an output: its answer or an effect".into());
+    }
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    let params = vec![frozen("declare", "websocket"), frozen("path", path), frozen("on", on)];
     Ok(caller_unit(handler, inputs, outputs, params, Port { name: "request".into(), ty: Type::Record }, "response"))
 }
 
@@ -617,7 +906,7 @@ mod tests {
             [
                 "GET /x and GET /y are wired together: one request node per route",
                 "\"FETCH\" is not a method (GET, POST, PUT, PATCH, DELETE)",
-                "\"no-slash\" is not a route path (use /todos or /todos/:id)",
+                "\"no-slash\" is not a route path (use /todos, /todos/:id or /files/*path)",
                 "GET /t/:key clashes with GET /t/:id",
             ]
         );

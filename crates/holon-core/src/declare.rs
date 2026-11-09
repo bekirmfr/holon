@@ -11,12 +11,29 @@
 //!   carrying `declare = "on_file"`, `folder`, and `on` (`deleted`) and `matching` when given: the
 //!   host runs it for each file its trigger starts. The file's handle is sourced, as a
 //!   `file_arrival` leaf's is (docs/L4s/triggers-L4.md §4, as built).
+//! - A **mail handler** is a composite with no inputs, its outputs the effects of one message's
+//!   run, carrying `declare = "on_mail"` and `mail`: the host runs it for each message that comes
+//!   to the mailbox an admin bound to that mail. The message is sourced, as a `mail_arrival`
+//!   leaf's is (host-capabilities L4 §5.2.4).
+//! - A **feed handler** is a composite with no inputs, its outputs the effects of one event's run,
+//!   carrying `declare = "on_feed"` and `feed`: the host runs it for each event the feed an admin
+//!   bound to that name sends. The event is sourced, as a `feed_event` leaf's is
+//!   (host-capabilities L4 §5.9.2).
+//! - A **queue handler** is a composite with no inputs, its outputs the effects of one message's
+//!   run, carrying `declare = "on_queue"` and `queue`: the host runs it for each message that comes
+//!   to the queue an admin bound to that name. The message is sourced, as a `queue_message` leaf's
+//!   is (host-capabilities L4 §5.9.9).
 //! - An **action handler** is a composite from what its caller sent to its answer (an envelope, as
 //!   an endpoint's response is, whose body is the answer), then its effects, carrying
 //!   `declare = "action"` and `name`: a person runs it by name through Holon, never the network.
-//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers and action handlers, with no wiring
-//!   and no ports, carrying `declare = "server"`, and `port` when it has a route. Its hash is the
-//!   hash of the whole flow.
+//! - A **websocket block** is a composite from its record (the opening request, a message, or the
+//!   connection's end) to its answer, then its effects, as an endpoint is, carrying
+//!   `declare = "websocket"`, `path` and `on` (`open`, `message` or `close`): the host runs it when
+//!   a connection opens on the path, for each message on it, and when it ends (host-capabilities L4
+//!   §5.12.14).
+//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers, mail handlers, feed handlers, websocket blocks and action handlers, with no wiring
+//!   and no ports, carrying `declare = "server"`, and `port` when it has a route or a websocket. Its
+//!   hash is the hash of the whole flow.
 //!
 //! Nothing here changes the encoding: the markers are ordinary frozen params. This module is the
 //! one place that reads them, used by the host (to listen and route) and the editor (to check a
@@ -29,11 +46,14 @@ use crate::{FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
 /// The methods an endpoint may declare.
 pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-/// One segment of a route path: `/todos/:id` is `[Literal("todos"), Param("id")]`.
+/// One segment of a route path: `/todos/:id` is `[Literal("todos"), Param("id")]`, and
+/// `/files/*path` is `[Literal("files"), Rest("path")]`, a rest only ever last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Segment {
     Literal(String),
     Param(String),
+    /// The rest of the path, one segment or more (docs/L4s/host-capabilities-L4.md §5.11.2).
+    Rest(String),
 }
 
 /// How a handler's runs are recorded (docs/L4s/request-path-L4.md, C5): `strict` by default, the
@@ -118,6 +138,114 @@ pub struct FileHandler {
     pub log: LogLevel,
 }
 
+/// One mail handler of a server, as declared: a run for each message that comes to its mail's
+/// mailbox.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MailHandler {
+    /// The mail resource whose mailbox it reads: `remit`.
+    pub mail: String,
+    /// How the log and the editor name it: `on mail remit`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which a message evaluates with no inputs, the
+    /// message sourced.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// A mail handler's label, as the log keeps it: `on mail remit`.
+pub fn mail_label(mail: &str) -> String {
+    format!("on mail {mail}")
+}
+
+/// One feed handler of a server, as declared: a run for each event its feed sends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedHandler {
+    /// The feed it listens to: `prices`.
+    pub feed: String,
+    /// How the log and the editor name it: `on feed prices`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which an event evaluates with no inputs, the
+    /// event sourced.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// A feed handler's label, as the log keeps it: `on feed prices`.
+pub fn feed_label(feed: &str) -> String {
+    format!("on feed {feed}")
+}
+
+/// One queue handler of a server, as declared: a run for each message that comes to its queue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueHandler {
+    /// The queue it listens to: `payouts`.
+    pub queue: String,
+    /// How the log and the editor name it: `on queue payouts`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which a message evaluates with no inputs, the
+    /// message sourced.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// A queue handler's label, as the log keeps it: `on queue payouts`.
+pub fn queue_label(queue: &str) -> String {
+    format!("on queue {queue}")
+}
+
+/// What a websocket's blocks run on, in the order they are written: the connection opening, each
+/// message, its end.
+pub const SOCKET_BLOCKS: &[&str] = &["open", "message", "close"];
+
+/// One block of a websocket: a run when its connection opens, for each message on it, or when it
+/// ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SocketBlock {
+    /// How the log and the editor name it: `WebSocket /room/:name message`.
+    pub label: String,
+    /// The block's unit (the server's child), which a run evaluates with the block's record.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// One websocket of a server, as declared: a path a browser opens a WebSocket on, and its blocks,
+/// at least one (host-capabilities L4 §5.12.14).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebSocket {
+    /// The path exactly as declared, e.g. `/room/:name`.
+    pub path: String,
+    pub segments: Vec<Segment>,
+    pub open: Option<SocketBlock>,
+    pub message: Option<SocketBlock>,
+    pub close: Option<SocketBlock>,
+}
+
+impl WebSocket {
+    /// Its block that runs on `on` (`open`, `message` or `close`), if it has one.
+    pub fn block(&self, on: &str) -> Option<&SocketBlock> {
+        match on {
+            "open" => self.open.as_ref(),
+            "message" => self.message.as_ref(),
+            "close" => self.close.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Its blocks, as written: open, message, close.
+    pub fn blocks(&self) -> impl Iterator<Item = &SocketBlock> + '_ {
+        [&self.open, &self.message, &self.close].into_iter().flatten()
+    }
+}
+
+/// A websocket block's label, as the log keeps it: `WebSocket /room/:name message`.
+pub fn socket_label(path: &str, on: &str) -> String {
+    format!("WebSocket {path} {on}")
+}
+
 /// One action handler of a server, as declared: run by name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
@@ -137,6 +265,10 @@ pub struct Server {
     pub routes: Vec<Route>,
     pub clocks: Vec<Clock>,
     pub files: Vec<FileHandler>,
+    pub mails: Vec<MailHandler>,
+    pub feeds: Vec<FeedHandler>,
+    pub queues: Vec<QueueHandler>,
+    pub websockets: Vec<WebSocket>,
     pub actions: Vec<Action>,
 }
 
@@ -152,8 +284,12 @@ impl Server {
         let routes = self.routes.iter().map(|r| (format!("{} {}", r.method, r.path), r.log, r.endpoint));
         let clocks = self.clocks.iter().map(|c| (c.label.clone(), c.log, c.handler));
         let files = self.files.iter().map(|f| (f.label.clone(), f.log, f.handler));
+        let mails = self.mails.iter().map(|m| (m.label.clone(), m.log, m.handler));
+        let feeds = self.feeds.iter().map(|f| (f.label.clone(), f.log, f.handler));
+        let queues = self.queues.iter().map(|q| (q.label.clone(), q.log, q.handler));
+        let sockets = self.websockets.iter().flat_map(|w| w.blocks().map(|b| (b.label.clone(), b.log, b.handler)));
         let actions = self.actions.iter().map(|a| (a.label.clone(), a.log, a.handler));
-        routes.chain(clocks).chain(files).chain(actions)
+        routes.chain(clocks).chain(files).chain(mails).chain(feeds).chain(queues).chain(sockets).chain(actions)
     }
 
     /// Its action named `name`, if it has one.
@@ -218,6 +354,48 @@ pub fn read_file_handler(unit: &Unit) -> Option<FileTrigger> {
     Some(FileTrigger { folder, deleted, matching })
 }
 
+/// A mail handler's mail, if `unit` is one: `declare = "on_mail"`, a mail's name, a composite with
+/// no inputs.
+pub fn read_mail_handler(unit: &Unit) -> Option<String> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("on_mail") || !unit.inputs.is_empty() {
+        return None;
+    }
+    crate::kind::ident(&unit.params, "mail")
+}
+
+/// A feed handler's feed, if `unit` is one: `declare = "on_feed"`, a feed's name, a composite with
+/// no inputs.
+pub fn read_feed_handler(unit: &Unit) -> Option<String> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("on_feed") || !unit.inputs.is_empty() {
+        return None;
+    }
+    crate::kind::ident(&unit.params, "feed")
+}
+
+/// A queue handler's queue, if `unit` is one: `declare = "on_queue"`, a queue's name, a composite
+/// with no inputs.
+pub fn read_queue_handler(unit: &Unit) -> Option<String> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("on_queue") || !unit.inputs.is_empty() {
+        return None;
+    }
+    crate::kind::ident(&unit.params, "queue")
+}
+
+/// A websocket block's path and what it runs on, if `unit` is one: `declare = "websocket"`, a
+/// route's path, `on` open, message or close, a composite of one record input with an answer.
+pub fn read_websocket(unit: &Unit) -> Option<(String, &'static str)> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("websocket") {
+        return None;
+    }
+    if !matches!(unit.inputs.as_slice(), [p] if crate::compatible(&Type::Record, &p.ty)) || unit.outputs.is_empty() {
+        return None;
+    }
+    let path = frozen(unit, "path")?;
+    parse_path(path)?;
+    let on = SOCKET_BLOCKS.iter().find(|b| Some(**b) == frozen(unit, "on"))?;
+    Some((path.to_string(), on))
+}
+
 /// Why a unit is not a well-formed server. `child` is the index of the offending endpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeclError {
@@ -235,9 +413,21 @@ pub enum DeclError {
     DuplicateClock { seconds: u64 },
     /// Two file handlers with the same folder, `on` and `matching`.
     DuplicateFileHandler { label: String },
+    /// Two mail handlers of one mail.
+    DuplicateMailHandler { mail: String },
+    /// Two feed handlers of one feed.
+    DuplicateFeedHandler { feed: String },
+    /// Two queue handlers of one queue.
+    DuplicateQueueHandler { queue: String },
     /// Two actions of one name.
     DuplicateAction { name: String },
-    /// No route, clock, file handler or action: nothing would start a run.
+    /// Two blocks of one websocket that run on the same thing.
+    DuplicateSocketBlock { label: String },
+    /// A websocket's path that takes the requests another websocket's or a GET route's does: a
+    /// path is a page or a connection. `other` is its label, `WebSocket /a/:y` or `GET /a/:y`.
+    WebSocketClash { path: String, other: String },
+    /// No route, clock, file, mail, feed or queue handler, websocket or action: nothing would start
+    /// a run.
     NoHandlers,
     /// A handler's `log` param isn't a level.
     BadLogLevel { child: u32, value: String },
@@ -268,6 +458,10 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     let mut routes: Vec<Route> = Vec::with_capacity(children.len());
     let mut clocks: Vec<Clock> = Vec::new();
     let mut files: Vec<FileHandler> = Vec::new();
+    let mut mails: Vec<MailHandler> = Vec::new();
+    let mut feeds: Vec<FeedHandler> = Vec::new();
+    let mut queues: Vec<QueueHandler> = Vec::new();
+    let mut websockets: Vec<WebSocket> = Vec::new();
     let mut actions: Vec<Action> = Vec::new();
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
@@ -289,6 +483,55 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             files.push(FileHandler { label: trigger.label(), trigger, handler: *hash, log });
             continue;
         }
+        if declaration_of(endpoint) == Some("on_mail") {
+            let mail = read_mail_handler(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if mails.iter().any(|m| m.mail == mail) {
+                return Err(DeclError::DuplicateMailHandler { mail });
+            }
+            mails.push(MailHandler { label: mail_label(&mail), mail, handler: *hash, log });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("on_feed") {
+            let feed = read_feed_handler(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if feeds.iter().any(|f| f.feed == feed) {
+                return Err(DeclError::DuplicateFeedHandler { feed });
+            }
+            feeds.push(FeedHandler { label: feed_label(&feed), feed, handler: *hash, log });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("on_queue") {
+            let queue = read_queue_handler(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if queues.iter().any(|q| q.queue == queue) {
+                return Err(DeclError::DuplicateQueueHandler { queue });
+            }
+            queues.push(QueueHandler { label: queue_label(&queue), queue, handler: *hash, log });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("websocket") {
+            let (path, on) = read_websocket(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            let segments = parse_path(&path).expect("read_websocket parsed it");
+            let at = match websockets.iter().position(|w| w.path == path) {
+                Some(at) => at,
+                None => {
+                    if let Some(other) = websockets.iter().find(|w| same_requests(&w.segments, &segments)) {
+                        return Err(DeclError::WebSocketClash { path, other: format!("WebSocket {}", other.path) });
+                    }
+                    websockets.push(WebSocket { path: path.clone(), segments, open: None, message: None, close: None });
+                    websockets.len() - 1
+                }
+            };
+            let label = socket_label(&path, on);
+            let slot = match on {
+                "open" => &mut websockets[at].open,
+                "message" => &mut websockets[at].message,
+                _ => &mut websockets[at].close,
+            };
+            if slot.is_some() {
+                return Err(DeclError::DuplicateSocketBlock { label });
+            }
+            *slot = Some(SocketBlock { label, handler: *hash, log });
+            continue;
+        }
         if declaration_of(endpoint) == Some("action") {
             let name = read_action(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
             if actions.iter().any(|a| a.name == name) {
@@ -304,17 +547,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             EndpointError::BadShape => DeclError::BadEndpointShape { child },
         })?;
         let segments = parse_path(&path).ok_or_else(|| DeclError::BadPath { child, path: path.clone() })?;
-        // Two routes clash when they would match exactly the same requests: same method, and the
-        // same segments with every param treated alike (`/todos/:id` and `/todos/:key` clash).
-        let shape = |s: &[Segment]| -> Vec<Option<String>> {
-            s.iter()
-                .map(|seg| match seg {
-                    Segment::Literal(l) => Some(l.clone()),
-                    Segment::Param(_) => None,
-                })
-                .collect()
-        };
-        if routes.iter().any(|r| r.method == method && shape(&r.segments) == shape(&segments)) {
+        if routes.iter().any(|r| r.method == method && same_requests(&r.segments, &segments)) {
             return Err(DeclError::DuplicateRoute { method, path });
         }
         let resume = match frozen(endpoint, "resume") {
@@ -323,18 +556,26 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         };
         routes.push(Route { method, path, segments, endpoint: *hash, resume, log });
     }
-    if routes.is_empty() && clocks.is_empty() && files.is_empty() && actions.is_empty() {
+    if routes.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && feeds.is_empty() && queues.is_empty() && websockets.is_empty() && actions.is_empty() {
         return Err(DeclError::NoHandlers);
     }
-    // A port only for a server with a route: a flow of clocks, files and actions listens on none.
+    // A path is a page or a connection: a GET route's never a websocket's.
+    for w in &websockets {
+        if let Some(r) = routes.iter().find(|r| r.method == "GET" && same_requests(&r.segments, &w.segments)) {
+            return Err(DeclError::WebSocketClash { path: w.path.clone(), other: format!("GET {}", r.path) });
+        }
+    }
+    // A port only for a server with a route or a websocket: a flow of clocks, files and actions
+    // listens on none.
+    let listens = !routes.is_empty() || !websockets.is_empty();
     let port = match frozen(unit, "port") {
-        None if routes.is_empty() => None,
+        None if !listens => None,
         text => match text.unwrap_or("").parse::<u16>() {
-            Ok(p) if p != 0 && !routes.is_empty() => Some(p),
+            Ok(p) if p != 0 && listens => Some(p),
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks, files, actions })
+    Ok(Server { port, routes, clocks, files, mails, feeds, queues, websockets, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -367,8 +608,9 @@ pub fn read_endpoint(unit: &Unit) -> Result<(String, String), EndpointError> {
 }
 
 /// Parse a route path: `/`, or `/` followed by segments that are literals (letters, digits,
-/// `-`, `_`, `.`, `~`) or params, written `:name` or `{name}` (the same param either way).
-/// `None` if malformed, including a repeated param name.
+/// `-`, `_`, `.`, `~`) or params, written `:name` or `{name}` (the same param either way), the
+/// last of them perhaps a rest, `*name`. `None` if malformed, including a repeated param name and
+/// a rest anywhere but last.
 pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     let rest = path.strip_prefix('/')?;
     if rest.is_empty() {
@@ -379,51 +621,103 @@ pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     };
     let mut segments = Vec::new();
     let mut names: Vec<&str> = Vec::new();
-    for part in rest.split('/') {
+    let parts: Vec<&str> = rest.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
         let param = part.strip_prefix(':').or_else(|| part.strip_prefix('{').and_then(|p| p.strip_suffix('}')));
-        match param {
-            Some(name) if word(name) && !names.contains(&name) => {
+        let rest = part.strip_prefix('*').filter(|_| i + 1 == parts.len());
+        match (param, rest) {
+            (Some(name), _) | (None, Some(name)) if word(name) && !names.contains(&name) => {
                 names.push(name);
-                segments.push(Segment::Param(name.to_string()));
+                segments.push(if param.is_some() { Segment::Param(name.to_string()) } else { Segment::Rest(name.to_string()) });
             }
-            None if word(part) => segments.push(Segment::Literal(part.to_string())),
+            (None, None) if word(part) => segments.push(Segment::Literal(part.to_string())),
             _ => return None,
         }
     }
     Some(segments)
 }
 
-/// The route a request should go to, with its path params. Among routes that match, the one
-/// with the most literal segments wins, so `/todos/new` beats `/todos/:id`; ties go to the
-/// earlier route. `request_path` is the path only, without the query string.
+/// Whether two route paths match exactly the same requests, so two routes of one method on them
+/// clash: the same segments, every param alike (`/todos/:id` and `/todos/:key`), a rest alike
+/// only a rest (`/a/*x` and `/a/*y`, never `/a/:x`).
+pub fn same_requests(a: &[Segment], b: &[Segment]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Segment::Literal(x), Segment::Literal(y)) => x == y,
+            (Segment::Param(_), Segment::Param(_)) | (Segment::Rest(_), Segment::Rest(_)) => true,
+            _ => false,
+        })
+}
+
+/// Which of `paths` a request goes to, by its index, with its path params as the request wrote
+/// them (a rest's segments joined by `/`): a path without a rest beats any path with one, then
+/// the one with the most literal segments wins, so `/todos/new` beats `/todos/:id` and
+/// `/docs/*page` beats `/*path`; ties go to the earlier path. `request_path` is the path only,
+/// without the query string.
+pub fn pick_path<'s>(paths: impl IntoIterator<Item = &'s [Segment]>, request_path: &str) -> Option<(usize, BTreeMap<String, String>)> {
+    let parts: Vec<&str> = match request_path.strip_prefix('/')? {
+        "" => vec![],
+        rest => rest.split('/').collect(),
+    };
+    // How close a match is: no rest first, then the literals.
+    type Closeness = (bool, usize);
+    let mut best: Option<(usize, BTreeMap<String, String>, Closeness)> = None;
+    for (i, segments) in paths.into_iter().enumerate() {
+        let rest = matches!(segments.last(), Some(Segment::Rest(_)));
+        let fits = if rest { parts.len() >= segments.len() } else { parts.len() == segments.len() };
+        if !fits {
+            continue;
+        }
+        let mut params = BTreeMap::new();
+        let mut literals = 0;
+        let matched = segments.iter().enumerate().all(|(at, seg)| match seg {
+            Segment::Literal(l) => {
+                literals += 1;
+                l == parts[at]
+            }
+            Segment::Param(name) => {
+                params.insert(name.clone(), parts[at].to_string());
+                !parts[at].is_empty()
+            }
+            Segment::Rest(name) => {
+                params.insert(name.clone(), parts[at..].join("/"));
+                parts[at..].iter().all(|part| plain(part))
+            }
+        });
+        let closeness = (!rest, literals);
+        if matched && best.as_ref().is_none_or(|(_, _, c)| closeness > *c) {
+            best = Some((i, params, closeness));
+        }
+    }
+    best.map(|(i, params, _)| (i, params))
+}
+
+/// Whether a request's segment may be part of a rest: not empty, not `.` or `..` (`%2e` read as
+/// `.`), and nothing in it that decodes to a separator (`%2f`, `%5c`, `\`, the last one's on
+/// Windows), so a rest names only what the request's path said.
+fn plain(part: &str) -> bool {
+    let lower = part.to_ascii_lowercase();
+    let dots = lower.replace("%2e", ".");
+    !part.is_empty() && dots != "." && dots != ".." && !lower.contains("%2f") && !lower.contains("%5c") && !part.contains('\\')
+}
+
+/// The route a request should go to, with its path params, as [`pick_path`] picks among the
+/// routes of its method. `request_path` is the path only, without the query string.
 pub fn match_route<'a>(
     server: &'a Server,
     method: &str,
     request_path: &str,
 ) -> Option<(&'a Route, BTreeMap<String, String>)> {
-    let parts: Vec<&str> = match request_path.strip_prefix('/')? {
-        "" => vec![],
-        rest => rest.split('/').collect(),
-    };
-    let mut best: Option<(&Route, BTreeMap<String, String>, usize)> = None;
-    for route in server.routes.iter().filter(|r| r.method == method && r.segments.len() == parts.len()) {
-        let mut params = BTreeMap::new();
-        let mut literals = 0;
-        let matched = route.segments.iter().zip(&parts).all(|(seg, part)| match seg {
-            Segment::Literal(l) => {
-                literals += 1;
-                l == part
-            }
-            Segment::Param(name) => {
-                params.insert(name.clone(), part.to_string());
-                !part.is_empty()
-            }
-        });
-        if matched && best.as_ref().is_none_or(|(_, _, n)| literals > *n) {
-            best = Some((route, params, literals));
-        }
-    }
-    best.map(|(route, params, _)| (route, params))
+    let routes: Vec<&Route> = server.routes.iter().filter(|r| r.method == method).collect();
+    let (i, params) = pick_path(routes.iter().map(|r| r.segments.as_slice()), request_path)?;
+    Some((routes[i], params))
+}
+
+/// The websocket a connection opened on `request_path` goes to, with its path params, as
+/// [`pick_path`] picks among the server's websockets.
+pub fn match_websocket<'a>(server: &'a Server, request_path: &str) -> Option<(&'a WebSocket, BTreeMap<String, String>)> {
+    let (i, params) = pick_path(server.websockets.iter().map(|w| w.segments.as_slice()), request_path)?;
+    Some((&server.websockets[i], params))
 }
 
 #[cfg(test)]
@@ -560,7 +854,7 @@ mod tests {
         assert!(matches!(read_server(&server("80", vec![clash, clash2]), &r), Err(DeclError::DuplicateRoute { .. })));
         let bad_method = endpoint(&mut r, "FETCH", "/a");
         assert!(matches!(read_server(&server("80", vec![bad_method]), &r), Err(DeclError::BadMethod { child: 0, .. })));
-        for path in ["a", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b"] {
+        for path in ["a", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b", "/a/*", "/a/*x/b", "/*x/*y", "/:x/*x", "*x", "/a/**x"] {
             let e = endpoint(&mut r, "GET", path);
             assert!(matches!(read_server(&server("80", vec![e]), &r), Err(DeclError::BadPath { .. })), "{path}");
         }
@@ -573,6 +867,44 @@ mod tests {
         assert_eq!(read_server(&handler(), &r), Err(DeclError::NotAServer));
         // Parse the root path, which has no segments.
         assert_eq!(parse_path("/"), Some(vec![]));
+    }
+
+    #[test]
+    fn a_rest_takes_the_rest_of_the_path_and_gives_way_to_any_other() {
+        let rest = |name: &str| Segment::Rest(name.into());
+        assert_eq!(parse_path("/*path"), Some(vec![rest("path")]));
+        assert_eq!(parse_path("/docs/:v/*page"), Some(vec![Segment::Literal("docs".into()), Segment::Param("v".into()), rest("page")]));
+
+        let mut r = MapResolver::new();
+        let paths = ["/api/hello", "/api/:name", "/api/*rest", "/docs/*page", "/*path", "/"];
+        let hashes: Vec<Hash> = paths.iter().map(|p| endpoint(&mut r, "GET", p)).collect();
+        let s = read_server(&server("80", hashes.clone()), &r).unwrap();
+        let picked = |path: &str| match_route(&s, "GET", path).map(|(route, params)| (route.path.clone(), params.into_iter().collect::<Vec<_>>()));
+        let one = |path: &str, name: &str, value: &str| Some((path.to_string(), vec![(name.to_string(), value.to_string())]));
+        // Any route without a rest first, then the longest prefix.
+        assert_eq!(picked("/api/hello"), Some(("/api/hello".into(), vec![])));
+        assert_eq!(picked("/api/other"), one("/api/:name", "name", "other"));
+        assert_eq!(picked("/api/a/b"), one("/api/*rest", "rest", "a/b"));
+        assert_eq!(picked("/docs/a/b"), one("/docs/*page", "page", "a/b"));
+        assert_eq!(picked("/docs"), one("/*path", "path", "docs"));
+        assert_eq!(picked("/"), Some(("/".into(), vec![])));
+        // As written: the host decodes a rest as it does every param.
+        assert_eq!(picked("/css/site%20a.css"), one("/*path", "path", "css/site%20a.css"));
+        // Never empty, and never a part that would mean another path: those match nothing here.
+        for not in ["/docs/", "/docs//a", "/docs/a/", "/docs/..", "/docs/a/./b", "/docs/%2e%2E", "/docs/a%2Fb", "/docs/a%5cb", "/docs/a\\b", "//"] {
+            assert_eq!(picked(not), None, "{not}: nor by /*path");
+        }
+        assert_eq!(picked("/.."), None);
+        assert_eq!(picked("/docs/...").map(|(p, _)| p), Some("/docs/*page".into()), "three dots are a name");
+
+        // Two rest routes clash on the same prefix, a rest never with a param.
+        let x = endpoint(&mut r, "GET", "/a/*x");
+        let y = endpoint(&mut r, "GET", "/a/*y");
+        let param = endpoint(&mut r, "GET", "/a/:x");
+        assert!(matches!(read_server(&server("80", vec![x, y]), &r), Err(DeclError::DuplicateRoute { .. })));
+        assert!(read_server(&server("80", vec![x, param]), &r).is_ok());
+        let other = endpoint(&mut r, "GET", "/:b/*x");
+        assert!(read_server(&server("80", vec![x, other]), &r).is_ok());
     }
 
     fn clock(r: &mut MapResolver, seconds: &str) -> Hash {
@@ -677,6 +1009,69 @@ mod tests {
             let f = file_handler(&mut r, bad);
             assert_eq!(read_server(&server("80", vec![e, f]), &r), Err(DeclError::BadEndpointShape { child: 1 }), "{bad:?}");
         }
+    }
+
+    fn socket_block(r: &mut MapResolver, path: &str, on: &str) -> Hash {
+        let h = r.insert(handler()).unwrap();
+        r.insert(Unit {
+            body: UnitBody::Composite {
+                children: vec![h],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                ],
+            },
+            params: vec![Param::frozen("declare", "websocket"), Param::frozen("path", path), Param::frozen("on", on)],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        })
+        .unwrap()
+    }
+
+    /// A websocket's blocks are children beside the endpoints, gathered by their path; each is a
+    /// handler of its own, and the websocket a capability of its own (host-capabilities L4
+    /// §5.12.14).
+    #[test]
+    fn a_server_holds_websockets_their_blocks_by_path() {
+        let mut r = MapResolver::new();
+        let (open, message, close) = (socket_block(&mut r, "/room/:name", "open"), socket_block(&mut r, "/room/:name", "message"), socket_block(&mut r, "/room/:name", "close"));
+        let echo = socket_block(&mut r, "/echo", "message");
+        let s = read_server(&server("8132", vec![open, message, echo, close]), &r).unwrap();
+        assert_eq!(s.port, Some(8132), "a websocket listens, as a route does");
+        let got: Vec<(&str, Vec<&str>)> = s.websockets.iter().map(|w| (w.path.as_str(), w.blocks().map(|b| b.label.as_str()).collect())).collect();
+        assert_eq!(
+            got,
+            [
+                ("/room/:name", vec!["WebSocket /room/:name open", "WebSocket /room/:name message", "WebSocket /room/:name close"]),
+                ("/echo", vec!["WebSocket /echo message"]),
+            ]
+        );
+        assert_eq!(s.websockets[1].block("message").map(|b| b.handler), Some(echo));
+        assert!(s.websockets[1].block("open").is_none());
+        assert_eq!(s.handlers().map(|(label, _, _)| label).filter(|l| l.starts_with("WebSocket")).count(), 4);
+        let (w, params) = match_websocket(&s, "/room/ada").unwrap();
+        assert_eq!((w.path.as_str(), params.get("name").map(String::as_str)), ("/room/:name", Some("ada")));
+        assert!(match_websocket(&s, "/room").is_none());
+
+        let alone = server("8132", vec![echo]);
+        let caps = crate::capabilities(&alone, &r);
+        assert!(caps.contains(crate::Capability::WebSocket("/echo".into())));
+        assert!(!caps.contains(crate::Capability::NetworkIngress), "its own item says it listens");
+
+        // One block of each per websocket; a path is a page or a connection, and two spellings of
+        // one path are one clash.
+        assert_eq!(read_server(&server("80", vec![open, open]), &r), Err(DeclError::DuplicateSocketBlock { label: "WebSocket /room/:name open".into() }));
+        let page = endpoint(&mut r, "GET", "/room/:who");
+        assert_eq!(read_server(&server("80", vec![page, open]), &r), Err(DeclError::WebSocketClash { path: "/room/:name".into(), other: "GET /room/:who".into() }));
+        let post = endpoint(&mut r, "POST", "/room/:who");
+        assert!(read_server(&server("80", vec![post, open]), &r).is_ok(), "a POST is no page");
+        let other = socket_block(&mut r, "/room/{who}", "message");
+        assert_eq!(read_server(&server("80", vec![open, other]), &r), Err(DeclError::WebSocketClash { path: "/room/{who}".into(), other: "WebSocket /room/:name".into() }));
+        for (path, on) in [("/a", "upgrade"), ("a", "open"), ("/a/:x/:x", "message")] {
+            let bad = socket_block(&mut r, path, on);
+            assert_eq!(read_server(&server("80", vec![bad]), &r), Err(DeclError::BadEndpointShape { child: 0 }), "{path} {on}");
+        }
+        assert_eq!(read_server(&Unit { params: vec![Param::frozen("declare", "server")], ..server("", vec![echo]) }, &r), Err(DeclError::BadPort(String::new())));
     }
 
     #[test]

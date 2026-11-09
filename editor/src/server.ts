@@ -181,40 +181,6 @@ export type DatabaseEntry = {
   lock?: "commit" | "run";
   deployment: string | null;
 };
-/** A list only a newer server serves: null where this one answers its route with a bare 404. */
-async function listedOrNone<T>(url: string): Promise<T[] | null> {
-  const res = await api(url);
-  if (res.status === 404 && !(await res.clone().text()).trim()) return null;
-  return asJson<T[]>(res);
-}
-/** A name flows import as `"mail:<name>"` (`GET /admin/mails`): an SMTP server it sends through, an
- *  IMAP mailbox it reads, or both. Every source (`smtp`, `imap`, `oauth.source`) is a reference
- *  (`env:…`, `vault:…`), never a value; `address` is where it points, without login or query. */
-export type MailEntry = {
-  name: string;
-  deployment: string | null;
-  smtp?: string | null;
-  address?: string | null;
-  from?: string | null;
-  to?: string[];
-  mailbox?: { imap: string; address: string; folder: string; done?: string | null; verdict_from?: string | null; every?: string | null } | null;
-  oauth?: { source: string; address: string } | null;
-};
-/** `GET /admin/mails`; null: this server binds no mail. */
-export const listMails = () => listedOrNone<MailEntry>(`${BASE}/admin/mails`);
-/** A name flows listen to as `"feed:<name>"` (`GET /admin/feeds`): a stream of events at `address`.
- *  `url` and each header's value are sources (`env:…`, `vault:…`), never values. */
-export type FeedEntry = {
-  name: string;
-  deployment: string | null;
-  url: string;
-  address: string;
-  headers?: Record<string, string>;
-  buffer?: number | null;
-  idle?: string | null;
-};
-/** `GET /admin/feeds`; null: this server binds no feeds. */
-export const listFeeds = () => listedOrNone<FeedEntry>(`${BASE}/admin/feeds`);
 /** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
 export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment" | "lock"> & { path?: string; connection?: string; schema: string | null };
 export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
@@ -227,6 +193,154 @@ export async function unbindDatabase(name: string, deployment: string | null): P
 export async function listTables(name: string, deployment: string | null): Promise<string[]> {
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
+}
+/** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
+ *  where it points, without the login; its sender; and every address it may send to (empty when
+ *  it only receives); the mailbox it receives in, if it does; and where its token comes from, for
+ *  a server whose URL names a user and no password (OAuth: Microsoft 365, Google Workspace). */
+export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[]; mailbox: Mailbox | null; oauth?: OAuthSource | null };
+/** Where a mail's token comes from: where the token request is read from, and where it is sent
+ *  (without the client's login or the query). */
+export type OAuthSource = { source: string; address: string };
+/** A mailbox a mail receives in: where its IMAP server's URL is read from, where it points, the
+ *  folder read, where each message is moved after its run, whose verdict counts, and how often
+ *  (seconds) it is looked at. */
+export type Mailbox = { imap: string; address: string; folder: string; done: string; verdict_from?: string; every: number };
+/** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas; `imap` (with its folder,
+ *  done and verdict_from, empty for the defaults) to receive; `oauth`, where its token request is
+ *  read from. */
+export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string; imap?: string; folder?: string; done?: string; verdict_from?: string; oauth?: string };
+export const listMails = async () => asJson<MailEntry[]>(await api(`${BASE}/admin/mails`));
+export const bindMail = async (m: MailBinding) => asJson<MailEntry>(await post(`${BASE}/admin/mails`, m));
+export async function unbindMail(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/mails/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** What a feed's connection does with what comes while its buffer is full: waits, drops it, or
+ *  replaces the waiting event of its key. */
+export type OnFull = "wait" | "skip" | "latest";
+/** A feed bound (feeds.rs): where its URL is read from (env:…, vault:…) and where it points,
+ *  without its login or query; the headers each request sends (each name, and where its value is
+ *  read from); how many events may wait for their run, and what comes when they are that many;
+ *  how long (seconds) it may say nothing. A WebSocket's: what it is sent when it opens and to
+ *  keep it, the fields that are a message's id, the messages it runs, and where a feed that
+ *  replays takes the id it is opened again from (`resume`). A Postgres channel's: the database
+ *  it is on and the channel (`url` empty, `address` the database's and the channel), its id and
+ *  the messages it runs as a WebSocket's. Any feed's: the field that numbers a message
+ *  (`sequence`), each `key` on its own. */
+export type FeedEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  headers: Record<string, string>;
+  buffer: number;
+  idle: number;
+  on_full: OnFull;
+  key?: string;
+  sequence?: string;
+  subscribe?: string[];
+  heartbeat?: string;
+  every?: number;
+  id?: string[];
+  only?: Record<string, string[]>;
+  resume?: { query?: string; header?: string; message?: string[] };
+  database?: string;
+  channel?: string;
+};
+/** A feed to bind: what is left out takes its default. `id` is FIELD[,FIELD], `only` each
+ *  FIELD=VALUE, `resume` query:NAME, header:NAME or each message:…, `idle` and `every` 90s, 2m.
+ *  A Postgres channel's names its `database` and `channel` in place of `url` and `headers`. */
+export type FeedBinding = {
+  name: string;
+  deployment: string | null;
+  url?: string;
+  headers?: Record<string, string>;
+  database?: string;
+  channel?: string;
+  buffer?: number;
+  idle?: string;
+  on_full?: OnFull;
+  key?: string;
+  sequence?: string;
+  subscribe?: string[];
+  heartbeat?: string;
+  every?: string;
+  id?: string;
+  only?: string[];
+  resume?: string[];
+};
+export const listFeeds = async () => asJson<FeedEntry[]>(await api(`${BASE}/admin/feeds`));
+export const bindFeed = async (f: FeedBinding) => asJson<FeedEntry>(await post(`${BASE}/admin/feeds`, f));
+export async function unbindFeed(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/feeds/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** What a deployment's connection to one feed its handlers listen to is doing (`GET
+ *  /deployments/<slug>/feeds`): since when (ms), why it isn't connected, the id of the last event
+ *  run on, how many wait, and since it opened how many its binding passed over (`--only`), its
+ *  full buffer dropped (`skip`), newer ones of their key replaced (`latest`), and numbers the feed
+ *  skipped (`--sequence`). */
+export type FeedState = {
+  feed: string;
+  label: string;
+  address?: string;
+  status: "connecting" | "connected" | "reconnecting" | "closed";
+  since?: number;
+  error?: string;
+  position?: string;
+  waiting: number;
+  passed_over?: number;
+  missed?: number;
+  replaced?: number;
+  gaps?: number;
+};
+export async function feedStates(slug: string): Promise<FeedState[]> {
+  return (await asJson<{ feeds: FeedState[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/feeds`))).feeds;
+}
+/** A queue bound (queues.rs): where its URL is read from (env:…, vault:…) and the queue it points
+ *  to, without its key; whether it is FIFO, the largest message it takes (bytes), how long a
+ *  message received is kept out of sight at first (seconds), and whether a failed run's message is
+ *  left in the queue for its redrive rather than deleted. */
+export type QueueEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  fifo: boolean;
+  largest: number;
+  visibility: number;
+  keep_failed: boolean;
+};
+/** A queue to bind: what is left out takes its default. `visibility` 5m, 90s. */
+export type QueueBinding = { name: string; deployment: string | null; url: string; visibility?: string; keep_failed?: boolean };
+export const listQueues = async () => asJson<QueueEntry[]>(await api(`${BASE}/admin/queues`));
+export const bindQueue = async (q: QueueBinding) => asJson<QueueEntry>(await post(`${BASE}/admin/queues`, q));
+export async function unbindQueue(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/queues/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** What a deployment's listener to one queue its handlers listen to is doing (`GET
+ *  /deployments/<slug>/queues`): since when (ms), why it can't receive, how many received wait
+ *  for their run, and since it started how many ran, were passed over (run already) and were
+ *  left for the queue's redrive (`keep_failed`). */
+export type QueueListening = {
+  queue: string;
+  label: string;
+  address?: string;
+  status: "receiving" | "unreachable" | "stopped";
+  since?: number;
+  error?: string;
+  waiting: number;
+  run: number;
+  passed_over?: number;
+  kept?: number;
+};
+/** What a deployment's messages to one queue came to since the server started: how many it
+ *  sent, gave up on, and wait to be sent. */
+export type QueueSending = { queue: string; address?: string; sent: number; gave_up?: number; waiting: number };
+export async function queueStates(slug: string): Promise<{ listening: QueueListening[]; sending: QueueSending[] }> {
+  return asJson(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/queues`));
 }
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
@@ -847,7 +961,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick" | "resume" | "file";
+  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed" | "queue" | "websocket";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

@@ -90,6 +90,10 @@ pub struct LogEntry {
     /// deployment without state, a run that didn't commit, and entries logged before rc.30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_after: Option<String>,
+    /// Where it stands among the commits to the deployment's state, which its seq may not say:
+    /// absent for a deployment without state, and in entries logged before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Commit>,
     /// The unit's settled outputs (an endpoint's: response first, then effects).
     pub outputs: Vec<Option<SValue>>,
     /// The effects the host performed.
@@ -156,6 +160,34 @@ pub struct LogEntry {
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
+    /// The mails it sent, through which and each message whole, until the entry is logged and
+    /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
+    #[serde(skip)]
+    pub mails: Vec<(String, holon_core::Value)>,
+    /// The messages it sent to queues, to which and each message whole, until the entry is logged
+    /// and they are spooled (queues.rs): the log keeps them in `performed`.
+    #[serde(skip)]
+    pub queued: Vec<(String, holon_core::Value)>,
+}
+
+/// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
+/// stateful deployment commits under the state's lock, a run that only read too, and each commit
+/// is counted there; its line is numbered after, outside that lock, so two runs committing close
+/// together may be numbered the other way round. `holon verify` takes the run a run began after
+/// from here, not from the line before it (verify.rs, `check_states`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct Commit {
+    /// The state its commits are counted in: a random id the server gives it each time it loads
+    /// the state, or a deploy first makes it (`claims::StateCell`).
+    pub cell: String,
+    /// The commit it began after: the state it began from is the one that commit left (0: the
+    /// state as the server loaded it). None for a resumed part, which began from its run's first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// Its own, once it committed; a restore or a stop's run again counts one too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u64>,
 }
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
@@ -708,17 +740,22 @@ pub fn sync_file(path: &Path) -> std::io::Result<()> {
 /// The packs of the runs a sync covered go out (channels.rs): a lazy run's wait for this.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
-    let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>)>, Vec<(String, PathBuf)>) = {
+    let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>, std::sync::Arc<crate::folders::Scoped>)>, Vec<(String, PathBuf)>) = {
         let mut table = deployments.lock().unwrap();
-        let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit))).collect();
+        let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit), std::sync::Arc::clone(&d.folders))).collect();
         let events = table.iter_mut().filter_map(|(slug, d)| d.events.take_dirty().map(|p| (slug.clone(), p))).collect();
         (logs, events)
     };
     let mut failed: Option<String> = None;
-    for (log, channels, permit) in logs {
+    for (log, channels, permit, folders) in logs {
         // Through the cell, so a strict run waiting on its sync knows when it is done.
         match log.sync() {
-            Ok(()) => channels.release(log.synced(), &permit.channels),
+            Ok(()) => {
+                channels.release(log.synced(), &permit.channels);
+                folders.all.mails.release(&folders.deployment, log.synced());
+                folders.all.feeds.release(&folders.deployment, log.synced());
+                folders.all.queues.release(&folders.deployment, log.synced());
+            }
             Err(e) => drop(failed.get_or_insert(e)),
         }
         // And its file cut back, if a run found it past what it keeps.
@@ -1903,14 +1940,18 @@ impl Log {
     /// first), and how many of them failed: counted from what it keeps of each run, no line read.
     pub fn hourly(&self, to_ms: u64, hours: usize) -> (Vec<u64>, Vec<u64>) {
         const HOUR_MS: u64 = 3600 * 1000;
+        if hours == 0 {
+            return (Vec::new(), Vec::new());
+        }
         let from_ms = to_ms.saturating_sub(hours as u64 * HOUR_MS);
         let (mut runs, mut failed) = (vec![0; hours], vec![0; hours]);
         // Newest first, so a log keeping a year stops at the window's start.
         for (seq, at) in self.kept.iter().rev().take_while(|(_, at)| *at >= from_ms) {
-            if *at >= to_ms {
+            if *at > to_ms {
                 continue;
             }
-            let hour = ((at - from_ms) / HOUR_MS) as usize;
+            // A run stamped in the very millisecond the window ends counts in its last hour.
+            let hour = (((at - from_ms) / HOUR_MS) as usize).min(hours - 1);
             runs[hour] += 1;
             if self.failed.contains(seq) {
                 failed[hour] += 1;
@@ -1974,6 +2015,7 @@ mod tests {
             sourced: vec![],
             state_before: BTreeMap::new(),
             state_after: None,
+            commit: None,
             outputs: vec![],
             performed: vec![],
             response_body: None,
@@ -1993,6 +2035,8 @@ mod tests {
             secrets: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
+            mails: Vec::new(),
+            queued: Vec::new(),
         }
     }
 

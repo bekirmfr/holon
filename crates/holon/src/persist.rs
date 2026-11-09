@@ -216,6 +216,7 @@ pub(crate) fn load_deployments(
             Deployment {
                 events,
                 channels,
+                sockets: Default::default(),
                 unit: unit_hash,
                 triggers,
                 deployed_by: record.deployed_by.clone(),

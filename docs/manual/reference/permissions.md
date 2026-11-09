@@ -13,6 +13,7 @@ the editor show).
 | Name | Shown as | From |
 |---|---|---|
 | `NetworkIngress` | receive requests | a `route` |
+| `WebSocket("/room/:name")` | hold WebSocket connections on /room/:name, and run on each message | `route.websocket("/room/:name", { … })` |
 | `Clock` | read the clock | `now`, or `every` (a clock starts runs) |
 | `Action("name")` | can be run by hand: name | `export const name = action(…)` |
 | `Random` | use randomness | `random` |
@@ -23,18 +24,24 @@ the editor show).
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
 | `CollectionWrite("c")` | put and delete items of its collection "c" | `c[k] = …`, `delete c[k]` |
-| `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, or copying a file from `f` |
+| `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, `f.serve`, or copying a file from `f` |
 | `FileWrite("f")` | write, copy into and delete files in the folder "f" | `f[name] = …`, `delete f[name]`, `f.copy(…)` |
+| `FileServe("f")` | answer its callers with files from the folder "f" | a route answering with `f.serve(name)`: `return f.serve(name)`, `respond(f.serve(name), { headers })` |
 | `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
+| `MailSend("m/a@acme.com")`, `MailSend("m/*")` | send mail through the mail "m" to a@acme.com; with `*`, "to an address it computes, within its binding's" | `m.send({ to: "a@acme.com", … })`; `*` where a recipient is computed, `m.send({ to: req.json.by, … })` |
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on.file.created(f, …)`, `on.file.deleted(f, …)` |
+| `MailArrival("m")` | run on each mail that comes to "m", read it, and move it once its run is over | `on.mail(m, …)` |
+| `FeedEvent("p")` | run on each event from the feed "p" | `on.feed(p, …)` |
+| `QueueMessage("q")` | run on each message from the queue "q", and delete it once its run is over | `on.queue(q, …)` |
+| `QueueSend("q")` | send messages to the queue "q" | `q.send({ data, group })` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
 | `Approval("a/2")` | wait for 2 people's approval "a" and continue later | `await approval("a", { people: 2 })` |
 
-A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
-for an `every`, `FileArrival` for each folder a file handler watches, and `Action("name")` for
-each action. A flow with a clock asks for `Clock` even if it never reads `now`, because
+A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes,
+`WebSocket("/path")` for each websocket, `Clock` for an `every`, `FileArrival` for each folder a
+file handler watches, and `Action("name")` for each action. A flow with a clock asks for `Clock` even if it never reads `now`, because
 the clock starts its runs. A deploy with no trigger is refused, saying how to run it by hand, and
 none of a flow's triggers can be optional.
 
@@ -95,12 +102,25 @@ can change both columns
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
+| `inline_file_bytes` | a file a run reads whole, or a range of one; a file a route answers with up to this is read before it is sent | 1048576 (1 MiB) | 16777216 |
+| `max_file_read_bytes` | bytes a run reads from files | 67108864 (64 MiB) | 1073741824 |
+| `max_file_write_bytes` | bytes a run writes and copies into files | 1073741824 (1 GiB) | 1099511627776 |
+| `max_files_per_run` | files a run reads, takes a handle to, writes, copies or deletes | 1000 | 100000 |
+| `max_served_bytes` | a file a route answers with (`f.serve(name)`) | 1073741824 (1 GiB) | 1099511627776 (1 TiB) |
 | `module_fuel` | instructions a `js()` function may run per call | 200000000 per function, unless it says | 1000000000 |
 | `module_memory` | memory a `js()` function may use per call | 16 MiB per function, unless it says | 256 MiB |
 | `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |
 | `max_db_read_bytes` | bytes a run reads from databases | 16777216 (16 MiB) | 268435456 |
 | `db_statement_ms` | time one SQL statement may take | 5000 | 60000 |
 | `max_db_statements` | SQL statements a run sends, reads and writes | 100 | 10000 |
+| `max_pack_bytes` | a pack a run sends on a channel, as JSON | 65536 (64 KiB) | 1048576 |
+| `max_packs_per_run` | packs a run sends | 1000 | 100000 |
+| `channel_keep` | packs each channel keeps for subscribers that ask for them | 100 | 10000 |
+| `channel_buffer` | packs waiting for one subscriber before it is dropped as too slow | 256 | 4096 |
+| `max_subscribers` | subscribers of one channel at once (a WebSocket subscribed to it is one) | 100 | 10000 |
+| `max_websockets` | WebSocket connections the deployment holds at once | 100 | 10000 |
+| `max_message_bytes` | a message a WebSocket connection sends | 65536 (64 KiB) | 1048576 (1 MiB) |
+| `messages_per_second` | messages each WebSocket connection may send a second, in bursts of twice that | 10 | 1000 |
 | `keep_runs` | runs the deployment's log keeps, the newest | 500 (`--keep-runs`) | 20000 |
 | `keep_run_days` | days the deployment's log keeps a run | 3650 (any age) | 3650 |
 

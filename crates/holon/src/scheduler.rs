@@ -130,7 +130,7 @@ pub(crate) fn fire_one_clock_tick(
     let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let extra_sourced = [
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
-        (Capability::Random, Value::Number(rand::random::<f64>())),
+        (Capability::Random, Value::Bytes(rand::random::<[u8; 32]>().to_vec())),
     ];
     let started = started_now();
     let (folders, channels) = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.folders), Arc::clone(&d.channels))).unzip();

@@ -514,6 +514,286 @@ As designed, with what building it found:
   so the sample now answers 400 for them, and for a control sum past the schema's 18 digits and a
   date that isn't a calendar day as written; a file at every limit validates.
 
+#### 5.1.7 Slice 1.2d as designed (2026-11-08): zip, gzip, and bytes written to a file
+
+Banks deliver statements as a zip of camt.053 files or one gzipped, and an archive or an auditor
+takes them back zipped. Four leaves, the names of Node's `zlib` and fflate's `zipSync` and
+`unzipSync` (the zip library JavaScript reaches for now):
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `gzip(data)` | a text's UTF-8 or bytes, gzipped: deflate at level 6, no file name, time 0 | `zlib.gzipSync(data)`, fflate's `gzipSync` |
+| `gunzip(bytes)` | the bytes inside, each member's joined as `gunzip` does | `zlib.gunzipSync(b)` |
+| `zip(files)` | a zip of a record of files, name to a text (its UTF-8) or bytes, each deflated, in name order | fflate's `zipSync(files)` |
+| `unzip(bytes)` | a record of a zip's files, name to bytes, its directories left out | fflate's `unzipSync(b)` |
+
+**The same bytes everywhere** (R1). A gzip's header holds a time and the system that wrote it,
+and a zip's entries a date: `gzip` writes time 0 and system 255 (unknown), `zip` dates every entry
+1980-01-01 at midnight, the first date a zip can hold, and neither reads the clock. Deflate is
+`miniz_oxide`'s (fork 28, decided for compression), pinned in `Cargo.lock` as `libm` is, since a
+new version may compress differently and a logged run must give the same bytes when verify runs
+it again. CRC-32, which both formats carry, is twenty lines and written by hand.
+
+**Bounded** (R1). Core can't see the run's limits, so the leaves have their own, the same on every
+platform as `MAX_TEXT` is: `gunzip` and `unzip` give nothing past 64 MiB inflated, counted as
+they inflate, so a 10 MiB file that would inflate to 10 GiB stops at 64 MiB; and `unzip` nothing
+past 10,000 files.
+
+**Nothing for what isn't one**, as the other leaves: a gzip whose header, checksum or length is
+wrong, or with bytes after its last member that aren't another; a zip without its end record, an
+entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't
+match, two entries of one name, or the 64-bit form (it holds more than 64 MiB anyway). A name
+without the zip's UTF-8 flag that isn't UTF-8 is read as Latin-1, as fflate reads one. `zip`
+gives nothing for a name that would land outside the folder it is unzipped into (empty, starting
+with `/`, holding a `..` part or a `\`), or a value that isn't a text or bytes.
+
+**Bytes written to a file.** `file_write` and `file_create` take a text or bytes, as Node's
+`fs.writeFile` does: `archive[name] = zip(files)`. Their port stays `text`, typed `Any` as
+`sha256`'s is. The host writes the bytes as they are; the log keeps a write by its size and hash,
+as for a text, so the bytes never enter it; the run's `max_file_write_bytes` counts them.
+
+**The sample, `statement-archive`:** a bank's delivery dropped in a folder, a zip of camt.053
+statements or one gzipped, is unzipped or gunzipped; each statement's account, date and closing
+balance are kept (1.2c's XML), and the delivery is archived as one zip with a manifest (CSV, each
+file's SHA-256) beside its statements, written as bytes. A route answers a statement from the
+archive, gzipped when the client takes it. One write a run: a loop that writes a file per item
+waits for the TypeScript slices.
+
+#### 5.1.8 Slice 1.2d as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `compress.rs`, with CRC-32 by hand and `miniz_oxide`'s deflate and inflate; 181
+  primitives. Inflating goes through its streaming state 64 KiB at a time, so the 64 MiB budget is
+  spent as the bytes come out, never after. Python's `gzip` and `zipfile` wrote the test vectors
+  (a file name and two members in a gzip, a folder entry in a zip), and a test pins the SHA-256 of
+  the bytes `gzip` and `zip` write for a fixed text: a `miniz_oxide` that deflates differently
+  fails it before it changes what a logged run gives.
+- **The host:** a write's payload holds a text or bytes. The log keeps `{name, size, hash}` over
+  the bytes, and a run's timeline leaves out a node's output that carries bytes written past the
+  inline size, as it does for a text, so an archive is in the log by its hash alone.
+- **The language** needed one fix, found writing the sample's `summary`: a key a function returns
+  named like a binding of its body. `{ total: total * 2, again: total }` read the output in
+  `again`, and `{ again: total, total }` failed with "unknown name total", since the binding had
+  become the output. The binding is now renamed first, in the body and in every key's value, and a
+  declared output once bound is a name the rest of the block reads.
+- **Order:** a flow deployed as units alone, with no text, has its file handlers in its
+  composite's order, which follows hashes. `file_create`'s port becoming `Any` changed the order
+  file-audit's test saw, so that test compares them as a set.
+- **The sample, run live:** Python's `zipfile` and `gzip` made the deliveries (a deflated zip with
+  a folder entry, a gzip with its file name and time). Each statement's account, closing balance
+  and SHA-256 came back as `sha256sum` and the XML say, and `zipfile` read the archive
+  (`testzip` clean, deflated, dated 1980-01-01, the statements byte for byte, the manifest). A
+  route answered a statement with `content-encoding: gzip` to `curl --compressed` and plain
+  without it. Not a zip, a zip bomb (200 MiB of zeros in 200 KiB), a gzip bomb (100 MiB) and a
+  zip whose entry was `../evil.xml` were each kept as refused, with nothing archived. The export's
+  17 runs verified. In the e2e test, Node reads the archive and the flow reads a zip Node wrote
+  with its files stored.
+
+#### 5.1.9 Slice 1.2e as designed (2026-11-08, against `3370c81`): JWT verify
+
+An API that payment partners call checks who is calling: a bearer token, a JWT. An identity
+provider signs it (RS256 from Auth0, Okta, Entra ID and Cognito; ES256 from Apple; PS256 and
+ES256 under open banking's FAPI), or the partner itself does, with its own key or a secret it
+shares with the API (HS256). Two leaves, after jose's `jwtVerify` and `decodeJwt`:
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `jwt_verify(token, key, now) {issuer, audience, leeway}` | the token's claims, its payload as a record, when its signature verifies with `key` and they hold at `now`; else nothing | jose's `jwtVerify(token, key, { issuer, audience, clockTolerance, currentDate })`, jsonwebtoken's `verify` |
+| `jwt_decode(token)` | `{header, payload}`, verifying nothing: what a token says before it is trusted, to pick the key that checks it | jose's `decodeJwt` and `decodeProtectedHeader`, jsonwebtoken's `decode(t, { complete: true })` |
+
+**The key decides the algorithm.** The attack JWT libraries are known for is a token that names
+its own: `none`, or HS256 with the issuer's RSA public key taken for the HMAC secret. Here a
+token's `alg` only has to be one its key allows:
+
+| `key` | Its algorithms |
+|---|---|
+| a text that isn't PEM, or bytes: a shared secret, at least the hash's length (32 bytes for HS256, 48 for HS384, 64 for HS512, as RFC 7518 requires) | HS256, HS384, HS512 |
+| an RSA public key, 2,048 to 4,096 bits | RS256, RS384, RS512, PS256, PS384, PS512 |
+| a P-256 public key | ES256 |
+| an Ed25519 public key | `EdDSA`, and `Ed25519`, RFC 9864's name for it |
+
+A public key is a PEM text (`-----BEGIN PUBLIC KEY-----`, or `RSA PUBLIC KEY`) or a JWK record. A
+JWK's `alg`, when it has one, is the one algorithm it allows, and a JWK whose `use` isn't `sig`
+or whose `key_ops` lacks `verify` allows none. A JWKS (`{keys: […]}`, what an issuer publishes at
+its `jwks_uri`) gives the key whose `kid` is the token's; a token without a `kid` takes the set's
+one key for its algorithm, and nothing when there are several, as jose does. `none` is no key's
+algorithm. Any other key (a certificate, P-384, Ed448) gives nothing (fork 41).
+
+**What else must hold.** The token is three base64url parts without padding: its header a JSON
+object naming `alg`, without `crit` (no extension is understood, so none may be required), its
+payload a JSON object. `exp` is required (fork 40) and `now` must be before it; `nbf`, when
+present, not after `now`; each of `exp`, `nbf` and `iat` a number when present. `leeway` widens
+both, in seconds: `0` (the default, as jose's), `30`, `60`, `120` or `300`, a family as
+`rounding` is, so another value is refused when the flow compiles. Given `issuer`, `iss` must be
+it; given `audience`, `aud` must be it or a list holding it. A JWE (five parts) gives nothing.
+
+**`now` is an input**, as `stripe.verify` takes it: the leaf stays pure, so a rerun checks the
+token at the time the run saw, and a token that has expired since still verifies in `holon
+verify`. A flow passes `now` from `holon:clock`, in seconds as `exp` is.
+
+**Taint.** A shared secret's taint stops at `jwt_verify`, as at `hmac_sha256`: what comes out is
+the token's payload, nothing of the key (fork 42). The token's own taint goes on, derived, as
+through any decoding.
+
+**Dependencies** (fork 28): RustCrypto's `rsa` 0.9, `p256` 0.13 and `ed25519-dalek` 2.2, the
+generation core's `sha2` 0.10 and `hmac` 0.12 belong to, each without its default features
+(their `std` turns on `getrandom`, which doesn't build for the editor's wasm) and pinned with a
+comment. HMAC is core's own, compared in constant time.
+
+**The sample, `jwt-api`:** partners' services call a payouts API with tokens each signs with its
+own key, as OAuth's `private_key_jwt` does. A person trusts a partner's public key by running an
+action (`trust`), which keeps it under the partner's id: an agent can't add a partner unless a
+person lets agents run it. A route reads the token's `iss` with `jwt_decode`, verifies the token
+with that partner's key for the API's audience, and answers 401 with `www-authenticate: Bearer`
+otherwise; a payout needs the `payouts:write` scope, else 403.
+
+#### 5.1.10 Slice 1.2e as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `jwt.rs`; 183 primitives. Node's crypto (OpenSSL) wrote the test vectors, with the
+  script that writes them kept beside them: each algorithm with its key as PEM and as JWK, a JWKS
+  by `kid`, and the tokens that must give nothing (`none`, HS256 over the RSA public key, a
+  1,024-bit RSA key, `crit`, no `exp`, an `exp` written as text, padding, a payload that is a
+  list). RFC 7515's own HS256 example verifies at its time. An ES256 signature is JWS's 64 bytes,
+  r then s, so a DER one gives nothing; Ed25519 verifies strictly, refusing a small-order key and
+  a signature that isn't canonical. `rsa`, `p256` and `ed25519-dalek` build without `std`, and
+  the editor's wasm builds without `getrandom`.
+- **The language** needed no fix. A function of its own may read a collection, so the sample
+  writes the token check once, as `caller`, for both routes (236 nodes, 256 with it written in
+  each). Writing it met three things the language doesn't do yet, each written around: a
+  top-level `const` binds only literals (the 401's message is a text, its record built where it
+  is answered), `respond` isn't a branch of `?:` (its body and status are), and a `return` inside
+  `if (x !== undefined)` isn't lowered.
+- **The tests:** the server test trusts the OIDC tests' RSA key as a JWKS and a throwaway Ed25519
+  key as a PEM, and mints tokens with `jsonwebtoken`, the crate the server already signs in with;
+  the e2e test makes its keys and signs with Node, and trusts them from the editor's server panel.
+- **A shared secret through `trust`** is kept in the collection and in the run's log, as any
+  action's input is. The sample is written for public keys; a partner that shares a secret is
+  given one as a deployment secret (`import key from "secret:…"`).
+- **The sample, run live:** openssl made the partners' keys (an Ed25519 PEM; a P-256 key trusted
+  as a JWK; RSA keys of 3,072 and 2,048 bits trusted as one JWKS; a secret of 64 characters and
+  one of 16), each trusted with `holon action`, and Node signed the tokens. EdDSA, ES256, RS256,
+  RS512, PS256, PS384, HS256 and HS512 verified, and so did an `aud` list holding the audience.
+  401 for no token, `none`, HS256 over a partner's PEM or over its modulus, a token one partner
+  signed naming another, a `kid` not in the set, no `kid` with two keys in it, ES256 against RSA
+  keys, expired, `nbf` ahead, no `exp`, another audience, a payload changed under its signature,
+  padding, `crit`, five parts, and the 16-byte secret. A payout was 403 without `payouts:write`,
+  202 and then 409 for the same token, and 202 with no body. The export's 98 runs verified.
+
+#### 5.1.11 Slice 1.2f as designed (2026-11-08, against `336a26b`): PGP encrypt and verify
+
+A bank takes payment files encrypted to its public key, and signs what it sends back. Both halves
+need only the bank's public key, which is data: encrypting to it and checking its signature are
+leaves (R1). Decrypting with the company's own key, and signing with it, are the host's keys
+(§5.3, step 1.5). Three leaves, after OpenPGP.js's `encrypt`, `verify` and `readKey`:
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `pgp_encrypt(data, keys, random, now) {armor}` | the OpenPGP message: `data` (a text's UTF-8, or bytes) encrypted to each key's encryption key valid at `now`, as bytes, armored when `armor` is `"ascii"` (else `"binary"`, the default) | OpenPGP.js's `encrypt({ message, encryptionKeys, date, format })` |
+| `pgp_verify(data, signature, keys, now)` | `{signer, key, created}` when one of `signature`'s signatures over `data` verifies with one of `keys`, valid when it was made and not after `now`: the primary key's fingerprint, the signing key's, and when it signed; else nothing | OpenPGP.js's `verify({ message, signature, verificationKeys, date })`, `gpg --verify file.sig file` |
+| `pgp_key(key)` | `{fingerprint, user_ids, created, expires, revoked}`: what a person compares before trusting a key (`expires` absent when it doesn't) | `readKey` and its `getFingerprint()`, `gpg --show-keys` |
+
+A key is a transferable public key, armored (`-----BEGIN PGP PUBLIC KEY BLOCK-----`, what
+`gpg --export --armor` writes) or as bytes; `keys` is one or a list. A signature is a detached
+one, armored or bytes, holding one or more signature packets.
+
+**What is understood.** Version 4 keys of the two kinds GnuPG makes: RSA of 2,048 to 4,096 bits,
+and Curve25519 (EdDSA to sign, ECDH over X25519 to encrypt, the "legacy" forms every OpenPGP
+implementation reads). A key's subkeys count only with a binding signature from the primary that
+verifies; a signing subkey only with its own back-signature too, so a subkey can't be claimed by
+another key. A key, or a subkey, is used only while it is valid: created, not past the expiry its
+newest self-signature gives, and not revoked by its primary. Its key flags decide what it does.
+Other kinds (P-256 to P-521, Brainpool, DSA and ElGamal, version 6 keys) give nothing (forks 44,
+45).
+
+**Encrypting** writes what GnuPG reads everywhere: for each key, a public-key encrypted session
+key packet to its newest valid encryption key (RSA with PKCS #1 v1.5; ECDH with the KDF and key
+wrap its key packet names), then a symmetrically encrypted integrity protected data packet,
+version 1: AES-256 in OpenPGP's CFB, holding a literal data packet (binary, no file name, dated
+`now`) and the modification detection code (SHA-1) that refuses a changed message. AES-256
+whatever the key prefers, since every implementation since 2005 reads it. No compression before
+encryption (fork 47). Version 2 of that packet (AEAD, RFC 9580) waits for GnuPG to read it (fork
+44).
+
+**Randomness** (fork 29, decided): a message needs a fresh session key, a random prefix, and an
+ephemeral X25519 key or PKCS #1 padding. A run's `random` is one number, 53 bits: too few. The
+host now draws 32 random bytes for each run instead, recorded as `Random` is; `random` is a number
+read from them, and `random_bytes` (`import { random_bytes } from "holon:random"`) is the bytes,
+JavaScript's `crypto.getRandomValues(new Uint8Array(32))`. `pgp_encrypt` takes them as an input
+and draws every random byte from BLAKE3 keyed with them over all its inputs, so two messages in
+one run never share a session key, and the leaf stays pure: `holon verify` recomputes the
+ciphertext byte for byte from the logged bytes. The export then proves what each encrypted file
+held. Fewer than 32 bytes give nothing. Whoever reads the log can decrypt what the run encrypted,
+and could already read it: its plaintext came into the run and is logged. A text computed from a
+secret stays tainted through `pgp_encrypt`, as through any leaf, so it can't be written anywhere.
+
+**Verifying** checks a version 4 signature of a binary document (type 0x00) or a text (0x01, its
+line endings made CRLF), over SHA-256, SHA-384, SHA-512 or SHA-224; SHA-1 and MD5 signatures give
+nothing (fork 48). The signature's issuer fingerprint, or key ID, names the key among `keys`; it
+must be able to sign, valid at the signature's creation time, which must not be after `now`, and
+the signature must not have expired at `now`.
+
+**Dependencies** (fork 28, decided for OpenPGP): no `pgp` crate. rPGP brings some forty crates,
+ciphers this refuses among them, and draws its own randomness, so its ciphertext couldn't be
+recomputed. OpenPGP's packets, armor (with its CRC-24), key flags, the KDF and AES key wrap are
+written here by hand, over primitives core already has or the workspace already builds: `rsa`,
+`ed25519-dalek` and `sha2` from 1.2e; `curve25519-dalek` (X25519, already under `ed25519-dalek`);
+`aes` 0.8 and `sha1` 0.10 (fingerprints, the modification detection code and older
+self-signatures), each without default features. PKCS #1 v1.5's padding is written here too, over
+`rsa`'s numbers, so every random byte is this code's. GnuPG checks it: its keys, signatures and
+messages are the test vectors, and a test decrypts what `pgp_encrypt` writes with a decryptor the
+GnuPG messages prove.
+
+**The sample, `pgp-outbox`:** a payment file dropped in an outbox folder is encrypted to the
+bank's key and written, armored, to the folder the bank collects from, standing for its SFTP
+drop. A person trusts the bank's key by running an action (`trust`) that keeps it and answers its
+fingerprint, to compare with the one the bank gave. The bank's signed answers (a file and its
+`.sig`) land in a third folder; each is verified with the bank's key and kept as verified, with
+when and by which key it was signed, or refused. What was sent is kept with the plaintext's
+SHA-256 and the key it went to.
+
+#### 5.1.12 Slice 1.2f as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `pgp.rs`, by hand as designed; 187 primitives (the three leaves, and `random_bytes`, a
+  driver). GnuPG 2.2 wrote the test vectors, with the script that writes them kept beside them: an
+  RSA-3072 key; a Curve25519 key with a signing subkey; one that expired, one revoked and another
+  party's; signatures over SHA-1 to SHA-512, binary, text and armored, one made after `now`; and
+  messages to each key and to both. A decryptor written for the tests reads GnuPG's messages, then
+  reads what `pgp_encrypt` writes, and a test pins the bytes one set of inputs writes. A signing
+  subkey whose back-signature is taken away signs nothing. `pgp_key` answers `revoked` too, beside
+  what was designed, so a person trusting a revoked key sees it. The packets are written in the
+  new format; GnuPG writes the old, and reads both.
+- **Randomness:** the host draws 32 bytes for each run (`Random`), and core's `sourced_value`
+  reads `random` from their first 53 bits, as the editor's replay does. Every run's sourced value
+  changed with it, and so did the server's golden record.
+- **The language:** `import { random_bytes } from "holon:random"`, printed back and described on
+  hover as `random` is. Writing the sample met one thing: a record with a field that is nothing is
+  nothing as a whole, so `trust` answers `key.expires ?? "never"` for a key that never expires. A
+  trusted key is kept in the state with its fingerprint, and what isn't a key is refused inside
+  `try`, nothing kept. The sample is 125 nodes; its folders are `payments` (read only), `upload`
+  and `download` (read only).
+- **Taint** is unchanged: what `pgp_encrypt` writes from a secret is derived from it, as any
+  leaf's output is, since whoever holds the key reads it.
+- **The tests:** the server test and the e2e test use the GnuPG vectors, so neither needs gpg on
+  the runners. The bank's Curve25519 key is trusted; a payment file is encrypted to its encryption
+  subkey, the message's key ID and algorithm those of GnuPG's message to it; its report verifies
+  with the signing subkey; one another key signed is refused; and the runs verify.
+- **The sample, run live,** against GnuPG 2.2.41 with keys made for it, a Curve25519 bank key and
+  an RSA-4096 one, each trusted with `holon action`. gpg decrypted each file the flow encrypted to
+  the same bytes: a pain.001 with CR LF lines, 300 KB of random bytes and an empty file to the
+  Curve25519 key's ECDH subkey, and a pain.001 to the RSA key's subkey. The bank's binary, armored
+  and text-mode EdDSA signatures verified, and, with the RSA key trusted, an RSA SHA-512 one.
+  Refused: another key's signature, a report changed under its signature, a SHA-1 signature, a
+  signature with no report beside it, and the Curve25519 key's signature once the RSA key was
+  trusted. A junk key was refused, nothing kept. The bank's key, revoked by the certificate gpg
+  stored when it made it, answered `revoked: true`, and a key made in January 2025 to expire 30
+  days later answered its expiry; neither encrypted. The export's 29 runs verified, each message
+  encrypted again byte for byte from its logged random bytes.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -545,6 +825,440 @@ The pair is the approval loop payment teams already run on: a payout over a limi
 approver a resume link (`approved-payout` already waits on one), and the run continues when it is
 used.
 
+#### 5.2.1 As designed (2026-11-08, against `a781416`)
+
+The text above is in the language as it was. In TypeScript a mail resource is imported as a folder
+or a database is, sends with a method, and is listened to as a folder is:
+
+```ts
+import ops from "mail:ops"
+
+ops.send({ to: "approvals@acme.com", subject: `Payout ${id}`, text: `…` })
+on.mail(ops, (m) => { … })
+```
+
+Three slices, each with its sample:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.3a | sending through SMTP: the binding, recipients in the grant, delivery after the run, attachments | `approval-mail` |
+| 1.3b | receiving through IMAP: `on.mail`, the message parsed, `m.authenticated` from the mailbox's own verdict, moved after the run | `remittance-mail` |
+| 1.3c | mailboxes that log in with OAuth (fork 2): Microsoft 365, Google Workspace | `support-inbox` |
+
+SMTP and IMAP come first because every mailbox and every sending provider speaks them: Postmark,
+SES, Resend, SendGrid and Mailgun take SMTP with a login, as Fastmail, Gmail with an app password
+and a company's own relay do. A provider's API is HTTPS underneath and the same item (1.3c).
+
+#### 5.2.2 Slice 1.3a as designed (2026-11-08): sending
+
+**The binding.** An admin binds a mail resource as a database is bound (`--mails`, owner-only;
+`/admin/mails`; `holon mail add|remove|list`), for the whole server or one deployment (`--for`):
+
+```
+holon mail add ops --smtp env:HOLON_SECRET_OPS_SMTP --from "Treasury <treasury@acme.com>" --to "*@acme.com,treasury@bank.example"
+```
+
+- `--smtp` names a source (`env:…`, `vault:…`) holding the server's URL with its login, as a
+  database's connection is held: `smtps://user:password@smtp.example.com` (TLS from the first
+  byte, port 465 unless given) or `smtp://user:password@smtp.example.com:587` (STARTTLS, required:
+  a server that doesn't offer it is refused, so a login never crosses in clear). Plain SMTP only to
+  a loopback address: a relay on the machine, the tests' sink. The URL is never stored, shown or
+  logged; the host keeps the address without the login. AUTH PLAIN or LOGIN, whichever the server
+  offers; none when the URL has no login.
+- `--from` is the sender, the admin's, never the flow's: a flow can't send as someone else.
+- `--to` is every address the binding may ever send to, the ceiling: addresses and `*@domain`, or
+  `*` for anyone. It is required: a binding that sends anywhere says so.
+
+**The flow.** `import ops from "mail:ops"`, imported under its own name as a database is, then
+`ops.send({ to, cc, subject, text, html, attachments })`: `to` and `cc` an address or a list (one
+recipient at least, 50 at most), `subject` and `text` texts, `html` optional, `attachments` a record
+of a file name to its text or bytes, as `zip` takes one. It lowers to a `mail_send{mail, to}` leaf,
+an effect as `channel_send` is. Its `to` parameter is the recipients the text names, when each is
+written as text in quotes, else `*`: the recipients are part of the grant, so they are read off the
+text as a request's host is.
+
+**The grant.** `MailSend("ops/approvals@acme.com")` for each recipient written in the text, or
+`MailSend("ops/*")` when one is computed (from a request, a database), two names in one as
+`DbWrite("db/table")` carries them:
+
+```
+it may:
+  send mail through "ops" to approvals@acme.com
+  send mail through "ops" to an address it computes, within its binding's
+```
+
+A deploy is refused when a recipient written in the text is outside the binding's `--to`, or the
+binding isn't there ("the mail "ops" isn't bound on this server", as a folder's). As each mail
+goes, every recipient must be one the grant names (or the grant says `*`) and inside the binding's
+`--to` as it is then; a mail with one that isn't is refused whole, and the refusal is noted in the
+deployment's activity.
+
+**The message** is the host's to write: `From` the binding's; `To`, `Cc` and `Subject` the flow's
+(RFC 2047 words when not ASCII); `Date` the run's clock; a `Message-ID` from the run's id and the
+send's place in it (`<run-…@from-domain>`), so a mail sent again is known for the same one; the
+text as UTF-8, quoted-printable; with `html`, both as `multipart/alternative`; with attachments,
+`multipart/mixed`, each base64 with its type from its extension. No `Bcc`, no `Reply-To` (fork
+51).
+
+**Delivered after the run,** as a channel's pack is: once the run's writes have landed and its
+record is on disk, never from an attempt that went round again. A queue for each binding sends in
+order on its own thread, so a slow server holds no run. A temporary failure (no connection, a 4xx)
+is tried again with the same `Message-ID`, after a minute, then 5, then 30, then each hour for a
+day; a permanent one (5xx), or a day of temporary ones, gives up. Each outcome is noted in the
+deployment's activity, and a delivery record beside its log says what was delivered, so a restart
+sends what wasn't, as held packs are rebuilt from the log (fork 50).
+
+**Logged:** the run's `performed` keeps each message, its recipients, subject and text, and its
+attachments by size and hash, as a written file is; `holon verify` computes it again.
+
+**Secrets:** a message holding a secret or an answered token, or computed from a secret, is
+refused, as a channel's pack is.
+
+**Limits:** 50 recipients and 10 MiB a message, attachments included, 100 mails a run.
+
+**Links.** The host knows no address of its own the world reaches, so a flow writes the base of a
+link it mails as text (fork 52). A link that approves is a page whose button approves: a mail
+scanner opening each link (Outlook's, Gmail's) must not approve anything.
+
+**Mail before an `await`** waits for the run's end, as its other effects do: an approval link is
+mailed by the route that starts the waiting run, which knows its token (`started.waiting.approved`),
+as approved-payout answers it (fork 53).
+
+**Dependencies:** none new. SMTP's commands and MIME's parts are written here, over the `rustls`
+and `webpki-roots` the database connections use (fork 50).
+
+**Tests:** an SMTP server in the server test, and one the e2e server starts, each keeping what it
+is sent, plain on loopback.
+
+**The sample, `approval-mail`:** a payout over 1,000 waits for an approval. The route that takes
+it starts the payout's run and mails approvals@acme.com a link, with the payout attached as a CSV;
+the link's page has a button, and its POST approves. The approved payout is recorded, and the one
+who asked for it (an address from the request) is mailed that it was approved: a computed
+recipient, held to the binding's `*@acme.com`.
+
+#### 5.2.3 Slice 1.3a as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `mail.rs` and the `mail_send` leaf, an effect; 188 primitives. The message is made
+  regular in core, so the log and the grant read one shape: `to` and `cc` lists, `cc` only when
+  there is one, `html` and `attachments` only when given. A message that isn't one has no value,
+  so nothing is sent: a field it doesn't know (`bcc`), no recipient or more than 50, an address
+  that isn't one or that the leaf's `to` doesn't name, a subject with a line break, an attachment
+  that isn't a text or bytes or whose name isn't a file's, more than 10 MiB. MIME is written there
+  too, a pure function of the message, the sender, the run's clock and the `Message-ID`
+  (`<run.n@from-domain>`): headers folded at 78 characters, RFC 2047 words, quoted-printable
+  text, base64 attachments in 76-character lines with an RFC 2231 name when it isn't ASCII, and
+  boundaries with `=_` in them, which neither encoding writes.
+- **The language:** `import ops from "mail:ops"`, imported under its own name, printed back, and
+  described on hover. The recipients are read off the call's record when it is written out with no
+  spread and each of `to` and `cc` is text in quotes or a list of them; else `*`. Where the record
+  is written out, `holon check` refuses a field it doesn't know, a missing `to`, `subject` or
+  `text`, a quoted recipient that isn't an address, and none or more than 50.
+- **The binding:** as designed; `--mails` is `mails.json` in the data folder. The admin page's
+  resources tab binds and unbinds a mail (where its URL is kept, never the URL; its sender; its
+  `--to`), and its permissions list each mail's holders by recipient: "mails approvals@acme.com,
+  addresses it computes".
+- **Delivery:** a spool, not the delivery record fork 50 named. Each mail is a file in
+  `mail-spool` beside the bindings (owner-only), written before its run's record is and outside
+  the log's lock, held until that record is on disk, then queued. A restart sends each file whose
+  run its log holds, and deletes one whose run a crash lost: what the log says was sent is what
+  goes. An unrecorded run's mail is spooled as unrecorded and queued at once. One thread a binding
+  sends, in order; the outcome is a timeline event of kind `mail`: `mailed "…" to … through ops`,
+  or `gave up mailing …`.
+- **Refusals:** a recipient the grant doesn't cover is caught as the run's effects are checked, as
+  any ungranted effect is, in the server's log; a recipient the binding no longer allows is caught
+  as the mail goes, and given up on the timeline. A secret in a mail, or a value computed from one,
+  is refused as a channel's pack is. A run past 100 mails fails, `mail not sent: …`.
+- **SMTP** by hand as designed (`smtp.rs`): implicit TLS or STARTTLS over `rustls` with
+  `webpki-roots`, refusing STARTTLS when the server says more before TLS begins; `EHLO` with the
+  local address as a literal; AUTH PLAIN, else LOGIN, the login zeroized and an AUTH error never
+  echoing what was sent; dot-stuffing. A connection failure or a 4xx is temporary, a 5xx
+  permanent.
+- **The sample:** every payout waits for a second person's approval (four eyes), not only one
+  over 1,000: the sample shows the loop, and a threshold is one `if`. The approval is recorded with
+  `approved_via`, the method of the request that approved it, so a page opened by a scanner (a
+  `GET`) is told apart from the button (`POST`) in the record too. The page's route is
+  unrecorded: the live run showed its `GET` logged with the token in its path, which a log reader
+  could approve with, where the route that resumes logs `‹token:approved›`. A host that kept a
+  waiting run's tokens out of every logged path would make the option needless; until then the
+  sample says it.
+- **The tests:** the server test's SMTP sink takes AUTH PLAIN and LOGIN; the deploy is refused
+  until `ops` is bound; the link mailed opens a page and approves nothing until its button is
+  pressed; an asker outside `*@acme.com` is given up, on the timeline; the log keeps the CSV by
+  hash. The e2e server starts a sink of its own (`editor/e2e/smtp-sink.mjs`) that writes each mail
+  it takes as a file; the test approves through the mailed link in the browser, then reads the
+  binding and its holder on the admin page.
+
+#### 5.2.4 Slice 1.3b as designed (2026-11-08, against `c9f4017`): receiving
+
+**The binding.** The same mail resource receives when it names a mailbox: `--imap` beside or
+instead of `--smtp`, so one name can do both (`ops.send(…)` and `on.mail(ops, …)`):
+
+```
+holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --folder INBOX --done Processed --verdict-from mx.acme.com
+```
+
+- `--imap` names a source holding the mailbox's URL with its login, as `--smtp` does:
+  `imaps://user:password@imap.example.com` (TLS from the first byte, port 993 unless given) or
+  `imap://…:143` (STARTTLS, required; plain only to a loopback address). Never stored, shown or
+  logged; the host keeps the address without the login.
+- `--folder` is the folder read (`INBOX` unless given); `--done` the one each message is moved to
+  once its run is over (`Processed` unless given), made when the mail is bound if it isn't there.
+  ASCII names (IMAP writes others in its own UTF-7).
+- `--verdict-from` names whose verdict on the sender counts: the `authserv-id` the mailbox's own
+  server writes first in its `Authentication-Results` header (`mx.google.com`,
+  `mx3.messagingengine.com`). Without it nothing is authenticated: a header anyone can write
+  isn't believed by default.
+- `--every` is how often the folder is looked at, `1m` unless given, `10s` at least.
+- `--from` and `--to` stay `--smtp`'s; a binding with only `--imap` sends nothing.
+
+The server logs in when the mail is bound, selects the folder and makes `--done`.
+
+**The flow.** `on.mail(remit, (m) => { … }, { log })`, `remit` imported from `"mail:remit"`: a
+run for each message that comes to the folder, one handler a mail in a flow. It lowers to an
+`on_mail{mail}` node, a template as `on_file` is, whose `message` output is a `mail_arrival{mail}`
+leaf, sourced; the server declaration's child carries `declare = "on_mail"` and `mail`, and
+the host reads it as it reads a file handler (`MailHandler`, labelled `on mail remit`).
+
+**The message,** `m`, made in core from the message's bytes (`mail::received`), a pure function
+of them and the binding's `--verdict-from`:
+
+| Field | What |
+|---|---|
+| `from` | the sender's address, as `From:` writes it (one address, else nothing) |
+| `name` | the sender's display name, `""` when none |
+| `to`, `cc` | lists of addresses |
+| `subject` | RFC 2047 words decoded |
+| `date` | `Date:` in seconds since the epoch, as `now` is; nothing when it isn't a date |
+| `message_id` | without its `<>`; for a message with none, `sha256:` and the hash of its bytes |
+| `text` | the first `text/plain` part that isn't an attachment, decoded; `""` when none |
+| `html` | the first `text/html` part, when there is one |
+| `attachments` | a record of each attachment's file name to its content: text for `text/*`, `application/json`, `application/xml` and `application/csv` in a charset core reads, bytes otherwise |
+| `authenticated` | `true` when the verdict says `dmarc=pass` for the `From:` domain |
+| `verdict` | `{ spf, dkim, dmarc }` as that verdict writes them, `"none"` for each it doesn't |
+
+`From:` proves nothing; `authenticated` is the mailbox server's word that the domain in `From:`
+sent it (DMARC passes only when SPF or DKIM passed for that same domain). A flow that acts on
+mail checks it first, and the sample does. Only the first `Authentication-Results` header whose
+`authserv-id` is the binding's is read, the one the mailbox's server wrote on arrival: one a
+sender wrote further down, or under another name, is never believed. Charsets: UTF-8, US-ASCII,
+ISO-8859-1 and Windows-1252; another is read as UTF-8, what isn't kept as U+FFFD. Transfer
+encodings: 7bit, 8bit, binary, quoted-printable, base64. Two attachments of one name: the second
+`name (2).ext`.
+
+**The grant.** `MailArrival("remit")`: "is run by each mail that comes to remit, read and moved
+there". A deploy is refused while `remit` isn't bound with `--imap`, and while another deployment
+listens to the same mailbox (a message is moved once, so one listener a mailbox).
+
+**Watching.** A thread looks at each running deployment's mailboxes when due (`--every`): it logs
+in, selects the folder, lists its UIDs (`UID SEARCH ALL`), and for each it hasn't seen, oldest
+first, at most 20 a look, fetches the message (`UID FETCH … BODY.PEEK[]`, nothing marked read) and
+starts one run. What it has seen is kept beside its log (`mail-seen/<slug>.json`), with the
+folder's `UIDVALIDITY`:
+
+- **New since the deploy.** What the folder holds when the deployment first looks is seen, not
+  run on and not moved, as a folder's files are: a mailbox that already holds a thousand messages
+  isn't worked through by a flow deployed to it.
+- **Moved after the run.** Once the run's record is on disk (or it is over, for an unrecorded
+  handler), the message is moved to `--done` (`UID MOVE`; without `MOVE`, `UID COPY`, `\Deleted`
+  and `UID EXPUNGE`; without `UIDPLUS` as well, left marked `\Deleted`). A run that failed is
+  moved too: its record says why, as a file's failed run doesn't run again.
+- **Never twice.** A message whose run is over is noted with its UID before it is moved, so one
+  whose move failed, or a crash cut off, is moved at the next look, not run again. A message
+  whose `message_id` is one of the last 1,000 run on (a second copy) is moved without a run, on
+  the timeline.
+- **Too large:** a message past the deployment's `max_body_bytes` (10 MiB) is moved without a
+  run, on the timeline, as a request past it is refused.
+- **Unreachable:** a look that can't log in, or loses the connection, is tried at the next one;
+  the timeline says so once, and again when it reads the mailbox again. A changed `UIDVALIDITY`
+  (the server numbered the folder again) sees the folder anew: what it holds then isn't run on.
+
+**The run** is the handler's alone, logged under its label with `kind: "mail"`, its message
+sourced as `MailArrival("remit")`. **Logged** whole, attachments included, as a request's body is
+(under the same 10 MiB); `holon verify` and the editor's replay read it from there. A secret in a
+message isn't possible: it comes from outside, as a request does.
+
+**Dependencies:** none new. IMAP's commands by hand (`imap.rs`), over `rustls` and `webpki-roots`
+as SMTP is; MIME read in core beside where it is written (fork 54).
+
+**Tests:** an IMAP server in the server test, keeping its folders in memory; the e2e server starts
+one of its own (`editor/e2e/imap-server.mjs`) serving a folder of `.eml` files, `INBOX` and the
+others as folders beside it.
+
+**The sample, `remittance-mail`:** customers mail remittance advice to remittances@acme.com, each
+a CSV of `invoice,amount` attached. Each authenticated mail's lines are matched against the open
+invoices (put by `POST /invoices`): an invoice paid in full is closed, with who paid it and the
+message it came in; a line that matches nothing, or not the amount, is kept to look at. A mail
+that isn't authenticated changes nothing and is kept with its verdict.
+
+#### 5.2.5 Slice 1.3b as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **Core:** `mail::received` (`mail/received.rs`), MIME read by hand (fork 54): headers unfolded,
+  parts to a depth of 20, RFC 2047 words and RFC 2231 parameters (continuations and charsets),
+  quoted-printable and base64 read leniently, UTF-8, ISO-8859-1 and Windows-1252 (a BOM dropped),
+  `Date:` with the obsolete zones. Whatever the bytes, it gives a message: a part it can't read is
+  kept as bytes or left out, never a failed run. The `mail_arrival{mail}` leaf, sourced; 189
+  primitives. `MailArrival` is a driver, and a server's `mails` are read from its `on_mail`
+  children, one a mail (`DuplicateMailHandler`).
+- **The language:** `on.mail(remit, (m) => …, { log })` as designed; refused when its first
+  argument isn't an imported mail, when a mail has two handlers, and at a `return` with a value (a
+  message's run answers nobody). The printer writes it back, the mail imported as one sent
+  through is. `holon.d.ts` gives `m` a `MailMessage` type, so the editor checks what a handler
+  reads.
+- **The binding:** one binding holds both halves: `smtp`, `from` and `to` empty when it only
+  receives, `mailbox` absent when it only sends. A flow that sends through a mail bound only with
+  `--imap` is refused ("isn't bound to send"). One listener a mailbox is checked against the
+  mailbox itself (the source its URL is read from, and the folder), so a second name bound to the
+  same folder is refused too. The admin page binds a mailbox beside the SMTP fields and lists it;
+  permissions say "starts on mail it receives".
+- **Watching** (`inbox.rs`): a thread looks every second for the mailboxes due, each on its own
+  thread, the timing in memory and what each deployment has seen in
+  `mail-seen/<slug>/<mail>.json` (one file a mail, so two handlers of one deployment never write
+  one file). What the folder holds is seen at the watcher's first look, not at the deploy, which
+  doesn't log in to the mailbox: a message that comes in the second between them is seen, not run
+  on. That first look is on the timeline, `listens to the mailbox of remit (imaps://… INBOX), what
+  it holds now (3 messages) isn't run on`, which says why those aren't, and which the e2e test
+  waits for. "Too large" is the data plane's 10 MiB, a server's limit rather than a deployment's.
+  A server without `MOVE` and `UIDPLUS` has the message copied and marked `\Deleted`, and it isn't
+  copied again.
+- **The run** is the handler's alone, as a file handler's: `kind: "mail"`, its label the route,
+  the message sourced as `MailArrival("remit")` with the clock and the random bytes. A parked one
+  keeps the message among its sourced values (`durable.rs`), and `holon verify` reruns it as that
+  handler alone.
+- **IMAP** by hand as designed (`imap.rs`): `AUTHENTICATE PLAIN` (with the initial response when
+  `SASL-IR` is offered), else `LOGIN`; the capabilities read again after STARTTLS and after the
+  login; a literal read whole wherever a response holds one, so a message whose bytes look like
+  one (`{5}`) reads as it is. smtp.rs's TLS, URL and base64 helpers are shared.
+- **The sample** found that `{ ...state.open, [id]: … }` keeps nothing while `state.open` isn't
+  set (a spread of nothing is nothing, §5.5 of the language): it writes `...(state.open ?? {})`.
+- **The editor:** the server panel lists mail handlers; a mail run is titled `mail from
+  billing@customer.example: Remittance May (on mail remit)`; replay shows the message on the
+  `on_mail` node; the palette has `mail_arrival`.
+- **The tests:** an IMAP stand-in in memory (`imap::stand_in`, with `MOVE` and without); the
+  binding refused for a bad source, login, folder, `--done`, `--every` and `--verdict-from`, and a
+  second listener refused under either name; the server test deploys the sample, refused until
+  `remit` is bound, sees the message there before it, then runs an authenticated message (an
+  invoice settled), one whose verdict another server wrote (refused), and a second copy (moved
+  without a run), all three moved to `Processed`, and verifies the runs. The e2e server starts an
+  IMAP server of its own (`editor/e2e/imap-server.mjs`) whose folders are folders of `.eml` files;
+  the test drops two messages in, waits for the invoice to be paid and both files to move, verifies
+  the export, and reads the mailbox on the admin page.
+
+#### 5.2.6 Slice 1.3c as designed (2026-11-09, against `c853e1d`): mailboxes that log in with OAuth
+
+Microsoft 365 has turned passwords off for IMAP and SMTP, and Google Workspace steers to OAuth.
+Both still speak IMAP and SMTP: they take an OAuth token in place of a password (SASL `XOAUTH2`).
+So fork 2 is decided for the host doing OAuth: the same binding, the same servers, the same
+flows, logged in with a token the host asks for. Microsoft Graph and the Gmail API stay in Tier 3,
+for a tenant that has turned IMAP itself off.
+
+**The binding.** `--oauth` names a source holding the token request as a URL, the client's id and
+secret as its login, as the other sources hold a server's URL with its login:
+
+```
+HOLON_SECRET_SUPPORT_OAUTH=https://<client id>:<client secret>@login.microsoftonline.com/<tenant>/oauth2/v2.0/token?scope=https://outlook.office365.com/.default
+HOLON_SECRET_SUPPORT_IMAP=imaps://support%40acme.com@outlook.office365.com
+HOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@smtp.office365.com:587
+holon mail add support --imap env:HOLON_SECRET_SUPPORT_IMAP --smtp env:HOLON_SECRET_SUPPORT_SMTP
+  --oauth env:HOLON_SECRET_SUPPORT_OAUTH --from "Support <support@acme.com>" --to "*" --verdict-from …
+```
+
+- **Which grant:** client credentials (`scope=` in the query: Microsoft 365's app-only access, no
+  person's consent, nothing that runs out), or a refresh token (`refresh_token=` in the query, a
+  person's consent given once: Google's `https://oauth2.googleapis.com/token`, scope
+  `https://mail.google.com/`). Values in the query percent-encoded.
+- **Which login:** a server's URL with a password logs in with it; one with a user and no
+  password logs in as that user with the binding's token. `--oauth` where neither URL names a
+  user without a password is refused, and so is a user without a password and no `--oauth`. So
+  one binding may send through a relay's password and receive through Microsoft 365's token.
+- **Where:** the token URL is `https://` (plain `http://` only to a loopback address, the tests').
+  Never stored, shown or logged; the host keeps the endpoint without its login or query.
+
+The server asks for a token when the mail is bound, and logs in with it to each server, so a
+wrong secret or a mailbox the app may not read is refused then.
+
+**The token.** Asked for with a form POST (`grant_type=client_credentials` with the scope, or
+`refresh_token`; the client's id and secret in the body, which Microsoft and Google both take),
+kept in memory only, until a minute before it runs out (`expires_in`), and by the source's value,
+so a value an admin changes asks anew. A login refused with it drops it: the next asks for a new
+one. A refresh token the answer replaces is kept in memory in place of the source's for the
+server's life; a restart starts from the source's again. A provider that revokes a refresh token
+once it is used isn't one this host can hold (it would write the new one back to the source):
+Microsoft 365 runs on client credentials, which have none, and Google's refresh tokens are
+reused.
+
+**The login.** SASL `XOAUTH2`: `user=<user>^Aauth=Bearer <token>^A^A`, base64. IMAP sends
+`AUTHENTICATE XOAUTH2` when the server offers `AUTH=XOAUTH2` (the response with the command when
+it offers `SASL-IR`); SMTP sends `AUTH XOAUTH2` when it offers it. A refusal may come as a
+challenge first (a status in JSON, Google's way): it is answered empty, as the mechanism says, and
+the login is refused.
+
+**Failures.** The token endpoint unreachable, or answering 5xx: temporary (the mail is tried
+again, the mailbox at its next look). A 4xx: permanent, saying its `error` (`invalid_client`,
+`invalid_grant`) and the first 200 characters of its `error_description`, which hold no secret.
+Each on the timeline as a password's refusal is.
+
+**The grant.** Nothing new: `MailSend` and `MailArrival` as before. How the host logs in is the
+admin's business, as a password is.
+
+**The admin page and the CLI:** an OAuth source beside the servers' (`--oauth`); a binding is
+listed with "logs in with OAuth (https://login.microsoftonline.com/…/token)".
+
+**Dependencies:** none new. The token request goes through `ureq`, as the OIDC sign-in's do.
+
+**Tests:** a token endpoint in the server test (it counts what it is asked); the IMAP stand-in
+and the SMTP sink take `XOAUTH2`. The e2e server starts a token endpoint of its own, and its IMAP
+server and SMTP sink take the token it gives.
+
+**The sample, `support-inbox`:** a support mailbox on Microsoft 365, received from and answered
+through one binding that logs in with OAuth. Each authenticated request opens a ticket, numbered,
+and is answered with its number; one that isn't authenticated is kept, unanswered (answering a
+forged `From` would mail whoever it names).
+
+#### 5.2.7 Slice 1.3c as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A refused token is tried again at once.** The design dropped a token a login was refused
+  with, for the next attempt to ask anew; built, the same login is tried once more with a new one
+  (`Mails::with_token`), so a token revoked before it runs out costs one more login, not a failed
+  look or a mail waiting for its retry. A second refusal is the login's failure, the new token
+  dropped too.
+- **One token for both servers:** kept by the blake3 of the request's value, so a binding with
+  both halves asks once (the server test counts what the endpoint is asked).
+- **The login, shared:** `smtp::Login` (a password, or a user and the token given at login time)
+  is what both clients parse from a URL's login, and `smtp::xoauth2` writes the SASL response for
+  both. IMAP sends `AUTHENTICATE XOAUTH2` only when `AUTH=XOAUTH2` is offered (with the response
+  when `SASL-IR` is, else after the `+`), answers a challenge empty and reads the tagged `NO`, and
+  reads the capabilities again after; SMTP's `AUTH XOAUTH2` answers a `334` empty the same way,
+  and a 4xx is temporary. A server that offers no XOAUTH2 to a token login is refused, saying so.
+- **The request's URL is checked part by part** (`oauth::Grant`): a login that is the client's id
+  and secret, a host, `https://` (or `http://` to a loopback address), and a query of `scope` and
+  `refresh_token` only, any other key refused, so nothing the endpoint isn't sent hides there. Its
+  errors name the part, never the value.
+- **The watcher logs in as the binding does:** `inbox.rs` opens the mailbox through
+  `Mails::open_mailbox`, so a look that needs a token gets it from the same place, kept.
+- **The binding shows** `"oauth": {"source", "address"}`, the endpoint without its login or query;
+  `holon mail list` and the admin page say "logs in with OAuth (<endpoint> from <source>)", and
+  the admin page has the OAuth source beside the servers'.
+- **The tests:** a token endpoint stand-in in memory (`oauth::stand_in`: it counts what it is
+  asked, refuses a wrong client as Entra does, with `AADSTS7000215`, and replaces a refresh token
+  each time it is used); the IMAP stand-in logs in by token alone (`start_with_token`), the SMTP
+  sink takes `XOAUTH2` and can be made to refuse a token. Unit tests: the URL's parts, a token
+  kept until a minute before it runs out and asked for again, a rotated refresh token used next,
+  an endpoint that isn't there temporary, each client's XOAUTH2 login and refusal. The server
+  test binds `support` with `--oauth`, deploys the sample, runs an authenticated request (a
+  ticket, its answer sent logged in with the token) and a forged one (kept, unanswered), both
+  moved to `Answered`, the token asked for once; then the SMTP server refuses that token, and the
+  next answer goes with a new one. Neither the binding nor the log holds the secret or a token.
+  The e2e server starts a token endpoint (`editor/e2e/token-endpoint.mjs`), and a second IMAP
+  server and SMTP sink that take its token only; the test drops two requests in, waits for the
+  ticket, reads the answer and the user it was sent as, sees both files moved, and reads the
+  binding on the admin page.
+
 ### 5.3 Keys
 
 A **key** is a resource an admin binds: a PGP private key, later a key in a cloud KMS or an HSM,
@@ -572,6 +1286,8 @@ consuming is a handler (`on message events (m) { … }`), acknowledged after the
 delivery is at least once and the message id, kept in the claims table, makes it once. One engine
 comes in Tier 1 (§7, step 1.6), which one is §8's fork 8: SQS shares S3's request signing (§6),
 RabbitMQ and NATS have pure-Rust clients, Kafka's mature client is C (librdkafka).
+
+Designed with the feeds, in step 1.6 (§5.9.1): SQS's API first.
 
 ### 5.6 Approvals
 
@@ -867,6 +1583,1043 @@ outbound client can do. A Postgres `LISTEN` is the
 `postgres` crate's notifications, beside `engines.rs`. MQTT is rumqttc. gRPC (tonic, HTTP/2 and
 protobuf) waits for a job that brings one. A socket's framing and session are Holon's own code,
 small; the protocols' meaning stays in leaves.
+
+#### 5.9.1 Step 1.6 as designed (2026-11-09, against `426b659`): feeds and a queue
+
+§5.5 and the text above are in the language as it was. In TypeScript a feed and a queue are
+imported as a mail is, a queue sends with a method as a mail does, and each is listened to as a
+mail is:
+
+```ts
+import prices from "feed:prices"
+import payouts from "queue:payouts"
+
+on.feed(prices, (e) => { … }, { log: "lazy" })
+payouts.send({ id, amount })
+on.queue(payouts, (m) => { … })
+```
+
+`on.feed` and `on.queue`, not `on event` and `on message`: a handler is named for what it
+listens to, as `on.mail` and `on.file` are, and *message* stays the socket's (fork 61).
+
+Six slices, each with its sample:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.6a | the subscription runtime, and server-sent events: `feed:` bindings, `on.feed`, the position (`Last-Event-ID`), once per message, a bounded buffer that stops reading when full, reconnecting, the feed's state on the deployment's page | `price-feed` |
+| 1.6b | WebSocket feeds: a position the binding names the field of, a subscribe message and a heartbeat from the binding, `--on-full skip` and `latest` (forks 17, 26), a lazy or unrecorded handler's position (fork 25) | `trading-bot` |
+| 1.6c | a WebSocket feed resumed from its position, where the binding says the feed takes it (`--resume`, fork 64) | `bluesky-mentions` |
+| 1.6d | a feed's gaps: the numbers a feed that can't replay skipped, on each event (`--sequence`, `e.gap`) | `trade-tape` |
+| 1.6e | the queue, SQS's API (fork 8): `queue.send` once the run's writes land, `on.queue` deleting each message once its run is over, AWS's request signing in the host | `payout-events` |
+| 1.6f | a Postgres `LISTEN` channel on a bound database, as a feed | `ledger-watch` |
+
+Each slice gets its own "as designed" before its code, as 1.3's did. What follows is what they
+share.
+
+**The binding.** A feed's URL is kept where a server's is, in a secret source, since a feed's
+token often rides in it:
+
+```
+HOLON_SECRET_PRICES_URL=https://stream.example.com/v1/prices?token=…
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL [--header NAME=SOURCE]…
+                      [--buffer N] [--on-full wait|skip|latest [--key FIELD]] [--idle T] [--for SLUG]
+```
+
+- The scheme says which kind: `https://` server-sent events, `wss://` a WebSocket (1.6b);
+  `http://` and `ws://` only to this machine, as mail's plain servers. A feed may reach a private
+  address, since it is the admin's to bind and the binding shows where (fork 19); a flow's own
+  text still can't.
+- `--header` adds a request header whose value is read from a source
+  (`Authorization=env:HOLON_SECRET_PRICES_AUTH`).
+- Checked when it is bound: connected to, its answer's status and content type read
+  (`text/event-stream`), and closed. The URL is never stored, shown or logged: the binding keeps
+  the source, and where it points without its login or query.
+- Several deployments may listen to one feed, each on its own connection with its own position: a
+  feed is a broadcast. A queue's messages are shared out among those who read them, so one
+  deployment listens to a queue, as one listens to a mailbox.
+
+**The runtime.** For each feed a running deployment listens to, the host keeps a connection (a
+thread reading it) and a runner (a thread starting its runs), with a bounded buffer between them
+(`--buffer`, 1,000 messages unless given).
+
+- **A run per message,** one at a time per feed, in the order they came. One at a time keeps the
+  feed's order and makes the position one id, the last message whose run is over. A strict run is
+  paced by the disk's sync (about 500 a second), a lazy one by the run itself (fork 58). Batches
+  (`batch: 100` above) wait for a job.
+- **The position.** What the feed gives as each message's id (an SSE `id:`, a field the binding
+  names, a queue's message id) is kept in `feed-seen/<slug>/<feed>.json`, as a mailbox's seen UIDs
+  are, and moved past a message once its run's record is on disk: a strict run's at its end, a
+  lazy one's at the next sync, an unrecorded one's at its end (fork 25). A reconnect resumes after
+  it (`Last-Event-ID`). A feed that gives no ids resumes where it is, and the binding says so.
+- **Once per message:** the last 1,000 ids run on are kept beside the position, and a message
+  among them is passed over without a run, on the timeline, so a feed that resends after a
+  reconnect runs nothing twice. A crash between a lazy run and its sync runs it again (fork 25).
+- **When the buffer is full** the connection stops reading, and the sender waits, as TCP makes it
+  (`--on-full wait`, the default, fork 17). `skip` drops what comes while it is full, and the next
+  run hears how many (`e.missed`); `latest` keeps one waiting message per value of `--key`, the
+  newest, and its run hears how many it replaced (`e.replaced`; 1.6b, fork 26).
+- **Reconnecting:** a connection lost, refused, or silent for `--idle` (90 s unless given; a
+  feed's own heartbeats keep it alive) is opened again after a second, doubling to a minute. The
+  timeline says so once, and again when it connects.
+- **Its state** is in the deployment's API and on its server panel: connected since, *n* waiting,
+  or reconnecting since, with the last error. A paused or removed deployment closes its
+  connections and keeps its position; a new version opens them again from it.
+- **What the connection did outside any run** (connects, reconnects, skipped messages) is on the
+  deployment's timeline, as a mailbox's looks are. The record of its own that fork 20 gives a
+  connection waits for the socket, whose sign-ons and heartbeats need it (fork 59).
+
+**The run** is the handler's alone, as a mail handler's is: `kind: "feed"` or `"queue"`, its label
+the handler's, the message sourced (`FeedEvent("prices")`, `QueueMessage("payouts")`) with the
+clock and the random bytes, so a replay and `holon verify` need no connection. A parked run keeps
+the message among its sourced values.
+
+`e` is the message:
+
+| Field | |
+|---|---|
+| `data` | a value when its data is JSON, else its text; bytes for a binary WebSocket frame |
+| `id` | its id, when the feed gives one |
+| `event` | an SSE event's name, `message` unless it says |
+| `missed`, `replaced` | how many were skipped, or replaced, before it (`--on-full`) |
+
+**The queue (1.6e).** SQS's API, which AWS's queues speak and so do services that copy it
+(ElasticMQ, LocalStack, Yandex Message Queue). The URL holds the access key as its login, as
+mail's URLs hold theirs: `https://<key id>:<secret>@sqs.eu-west-1.amazonaws.com/123456789012/payouts`,
+the region read from the host, or from `?region=` for another service. Requests are signed with
+AWS's Signature Version 4, written in the host (`sigv4.rs`, on the `hmac` and `sha2` core already
+uses), so step 1.4's S3, when it comes, signs with it too.
+
+- `payouts.send(data, { group })` sends once the run's writes land, as mail does, kept and tried
+  again through an outbox like mail's. `group` is a FIFO queue's message group; its deduplication
+  id is the run's and the send's, so a retry is one message.
+- `on.queue(payouts, (m) => …)` long-polls (20 s), runs each message one at a time, and deletes it
+  once its run's record is written, a failed run's too (its record says why), as a mail is moved
+  (fork 60). A run still going when the message's visibility runs out (`--visibility`, 5 minutes
+  unless given) extends it, so the message doesn't come back while it runs.
+- `m` is the message: `data` (a value when it is JSON, else its text), `id`, `attributes` (a
+  record of text), `sent` (seconds since 1970, as `now` is) and `count` (how many times the queue
+  has handed it out).
+
+**The grant.** `FeedEvent("prices")`, a driver, shown as "run on each event from prices
+(wss://stream.example.com/v1/prices)"; `QueueMessage("payouts")`, "run on each message from
+payouts, and delete it once its run is over"; `QueueSend("payouts")`, a sink, "send messages to
+payouts". A message computed from a secret is refused, as a channel's pack is.
+
+**Engines.** Server-sent events are a streaming read through `ureq`, as the token request is.
+WebSocket is `tungstenite` (1.6b): the one new dependency, and the one step 1.9's server side
+uses, through `tokio-tungstenite`. SQS is `ureq` and `sigv4.rs`. `LISTEN` is the `postgres`
+crate's notifications, on a connection of its own to the bound database.
+
+**Stand-ins.** The server tests run each against one in memory, as the IMAP one is: an SSE
+server, a WebSocket server, and an SQS that checks each request's signature. The e2e server starts
+the same in Node. 1.6f's e2e test needs a Postgres beside the e2e job's MongoDB.
+
+#### 5.9.2 Slice 1.6a as designed (2026-11-09, against `426b659`): server-sent events
+
+The runtime of §5.9.1, with server-sent events as its first kind of feed.
+
+**The language.** `import prices from "feed:prices"` imports a feed as a mail is imported;
+`on.feed(prices, (e) => …, { log })` is its handler, refused when its first argument isn't an
+imported feed, when a feed has two handlers, and at a `return` with a value (an event's run
+answers nobody). Its node is `on_feed` (`declare = "on_feed"`, `feed`), its leaf `feed_event`
+(`feed`, sourced as `mail_arrival` is), its label `on feed prices`. `holon.d.ts` gives `e` a
+`FeedEvent` type: `data`, `id` and `event` in this slice (`missed` and `replaced` come with
+`--on-full`, 1.6b).
+
+**The grant.** `FeedEvent("prices")`, a driver, shown as "run on each event from the feed
+prices". A deploy that listens to a feed no one bound is refused, as one that reads an unbound
+mailbox is.
+
+**The binding** (`feeds.rs`, beside `mails.rs`, its file `feeds.json`):
+
+```
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+holon feed list
+holon feed remove prices [--for SLUG]
+```
+
+and `GET`, `POST` and `DELETE` on `/admin/feeds`, and the admin page's resources. The URL is
+`https://` (plain `http://` only to this machine); a header's value is read from its source when
+the connection opens, never kept. Bound only once a request to it answers 200 with
+`text/event-stream`, its connection then closed. The binding keeps the sources, and where the URL
+points without its login or query (`https://stream.example.com/v1/prices`), which is what is
+shown.
+
+**Server-sent events** (`sse.rs`): a `GET` with `Accept: text/event-stream`, through `ureq`, its
+body read as it comes. Lines are read as the standard says: `data:` lines joined with a newline,
+`id:` (one holding a NUL ignored), `event:`, `retry:` (the feed's own wait before reconnecting,
+taken when it is longer than ours), comments (`:`) and blank lines; an event is dispatched at a
+blank line when it has data. One event is at most 1 MiB, a line too; past that the connection is
+closed and opened again, on the timeline. The reconnect sends `Last-Event-ID`.
+
+**The runtime** (`subscriptions.rs`, for every kind of feed to come): every second a thread
+compares the feeds running deployments listen to with the connections it holds, and opens or
+closes them; each has a reading thread, a bounded buffer and a running thread, as §5.9.1 says. A
+new version of a deployment closes the old connection and opens one from the position. The
+position and the last 1,000 ids are in `feed-seen/<slug>/<feed>.json`, with where the feed
+points: a binding pointed somewhere else starts anew, as a mailbox's seen UIDs do.
+
+- **Where a new listener starts:** at what the feed sends from now. A feed that replays its
+  history to a first connection without `Last-Event-ID` runs it, since the host can't tell
+  history from news.
+- **The position moves at the run's end** in this slice, for every log level; 1.6b makes a lazy
+  handler's follow its sync (fork 25).
+- **What the timeline says:** `listens to the feed prices (https://…)`, `lost the feed prices:
+  <why>; trying again in 4s` once, `reads the feed prices again`, and `passed over an event of
+  prices it ran already (41)`.
+
+**The run:** `kind: "feed"`, its label `on feed prices`, `e` sourced as `FeedEvent("prices")`
+with the clock and the random bytes; `holon verify` reruns it as that handler alone, and a parked
+one keeps `e`.
+
+**Its state** is in `GET /deployments/<slug>/feeds`: each feed's state (`connected` since,
+`reconnecting` since, with the last error), its position, and how many wait. The editor's server
+panel lists feed handlers with it; a run is titled `event from prices: <its event's name> (on
+feed prices)`; the palette has `feed_event`.
+
+**The sample, `price-feed`:** a feed of prices; each event's price is kept per symbol in state,
+sent on a channel its page shows as they come, and answered at `GET /prices`. Run live and in the
+e2e tests against a stand-in: an SSE server whose events are files dropped in a folder, as the IMAP
+stand-in's messages are, kept so a reconnect with `Last-Event-ID` is answered from after it.
+
+**Tests:** the parser (data lines, ids, a NUL in an id, `retry:`, comments, CRLF and CR, an event
+too long); the binding refused for a bad source, a URL that isn't `https://`, an answer that isn't
+`text/event-stream`, and a header source that isn't there; the server test binds a feed to an SSE
+stand-in in memory, deploys the sample, sends events, drops the connection and sees the reconnect
+resume with `Last-Event-ID`, a resent event passed over, and the runs verify.
+
+#### 5.9.3 Slice 1.6a as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The client is the host's own** (`sse.rs`), over the `rustls` and `webpki-roots` the mail and
+  the databases use, not `ureq`: a deployment stopped or a binding removed closes its connection
+  at once from the supervisor's thread (a clone of the socket, shut down), and `--idle` is the
+  socket's read timeout. On Windows a cloned socket's timeout is its own, so it is set on the one
+  the read uses. The body is chunked, of a length, or up to the close. A redirect isn't followed:
+  the headers it would carry are the binding's, and a binding to one says it answered a redirect.
+  A login in the URL is sent as Basic authentication; a header's name is checked, and a value
+  with a line break refused.
+- **An event past 1 MiB is passed over,** not a reason to close. Closed and opened again, as
+  designed, a feed that keeps its events sends the same one after `Last-Event-ID`, for ever. Its
+  lines are dropped as they come (a line is kept to a byte past 1 MiB), the timeline says `passed
+  over an event of prices past 1 MiB`, and the rest is read on.
+- **Read, and run.** The reconnect sends the id of the last event read: those in the buffer still
+  run, from the same thread. What is kept on disk is the last run on, so a server started again
+  opens from there. Only an event with an id of its own is passed over as sent again; one without
+  can't be told from another.
+- **No event runs twice across versions:** a run lock per deployment and feed outlives a
+  connection while a run of the old one holds it, so a new version's running thread waits for that
+  run, and reads where the feed is under the lock before each event.
+- **The timeline,** as designed, but `lost the feed prices: …; trying again in 1s` is said only
+  when a connection can't be opened, once until `reads the feed prices again`: a connection that
+  drops and opens again at once is in the feed's state, not on the timeline, which a feed whose
+  server ends its connections every few minutes, as proxies do, would fill.
+- **Its state** is also `closed`: no connection (the deployment stopped, or not yet opened). The
+  server panel asks for it every 3 seconds (`connected, at 41`, `reconnecting: <why>`, `, 3
+  waiting`). The admin page's resources bind a feed, its headers a `NAME=SOURCE` a line, and show
+  it as `<address> (from <source>) · 1000 may wait · quiet for 90s at most`; permissions list it as
+  a resource, price-feed "starts on each event it sends".
+- **The sample** keeps each price in a collection, `latest`, one item a symbol, which answers
+  `GET /prices` and draws the page; not the state. It doesn't keep `e.id`: an event without one
+  would leave the write without a value, and nothing would be kept.
+- **The tests:** the parser (data lines, ids and a NUL, CRLF, LF, CR and a byte-order mark,
+  `retry:`, an event and a line past 1 MiB passed over and the rest read), the URL (`https://`,
+  `http://` to loopback only, shown without its login or query), a connection read, closed from
+  another thread and opened again with `Last-Event-ID`, an idle feed found out, and an answer that
+  isn't a feed refused, against an SSE stand-in in memory (`sse::stand_in`, whose `/events` is
+  chunked and can be cut); the binding (refused for a value that isn't a source, a source that
+  isn't there, a remote `http://`, an answer of `text/plain` or 404, a header's value in clear, an
+  idle time or a buffer out of bounds, a name; kept without the query) and a deploy refused while
+  unbound. The server test binds `prices` to the stand-in with a key in the URL's query, deploys
+  the sample, sends three events (three runs, the prices, `connected` at 3), cuts the connection
+  (opened again with `Last-Event-ID: 3`), sends 3 again (passed over), one past 1 MiB (passed
+  over, the connection read on) and 4 (a fourth run), verifies the runs, finds no key in the log,
+  and stops it (closed, nothing more runs). The e2e server starts a stand-in whose events are files
+  dropped in a folder (`editor/e2e/sse-server.mjs`) and binds `prices`; the test deploys the
+  sample in the editor, drops an event, reads the price and the server panel's line, cuts the
+  connections, sees the feed opened again from the event run on, drops another, and reads the
+  binding on the admin page and the grant on permissions.
+- **Run live** on a scratch server against the e2e's stand-in: four events, four runs; a cut,
+  opened again from `e003`; the feed stopped, `lost the feed prices: … can't be reached …; trying
+  again in 1s` and the state `reconnecting`, the position kept, the flow still answering.
+
+#### 5.9.4 Slice 1.6b as designed (2026-11-09, against `22a3b56`): WebSocket feeds
+
+WebSocket feeds on 1.6a's runtime, what a full buffer does besides waiting, and the position of a
+handler that isn't strict.
+
+**The binding.** A `wss://` URL is a WebSocket feed (`ws://` only to this machine), with 1.6a's
+options and these:
+
+```
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL
+                      [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
+                      [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
+                      [--on-full wait|skip|latest [--key FIELD]]
+```
+
+- **`--subscribe`** is a text message sent each time the connection opens, in order, again for
+  another: the subscription most market feeds want
+  (`{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}`). One that starts
+  `env:` or `vault:` is read from that source, for a feed whose sign-in is a message with a key in
+  it; the binding keeps the source, and a written one as written, which is what is shown.
+- **`--heartbeat`** is a text message sent every `--every` (30 s unless given) while the
+  connection is open, for a feed that drops a client that says nothing (`ping`). WebSocket's own
+  pings are answered by the host, always. Neither starts a run or is on the timeline: what the host
+  says for the deployment comes from the binding, never from a run (fork 18).
+- **`--id`** names the field of a JSON message that is its id: a dotted path (`data.u`), or
+  several joined with `/`, for a feed whose sequence is per symbol (`--id product_id,sequence`
+  gives `BTC-USD/41`). Without it a WebSocket's messages have none.
+- **`--only`** runs only the messages whose field has one of the values given (`--only
+  type=ticker`, again for another value or field; every field named must match). The rest, the
+  answers to the subscription and the heartbeat, are passed over without a run, counted in the
+  feed's state, not on the timeline (fork 63).
+- **`--on-full`** and **`--key`**, below, are any feed's. `--subscribe`, `--heartbeat`, `--id`
+  and `--only` are a WebSocket's; an SSE binding that gives one is refused, since an SSE event
+  has its own id.
+- **Checked when bound:** the handshake answers 101, then the connection is closed. A redirect
+  isn't followed, as for SSE.
+
+**The connection** (`ws.rs`, beside `sse.rs`, sharing its URL, socket and TLS): the handshake
+through `tungstenite`, the one new dependency, with its `handshake` feature and no TLS of its own,
+reading the host's own stream, so a connection is closed from another thread and found quiet by
+its read timeout as an SSE one is; the binding's headers, and a login in the URL as Basic
+authentication. A text frame is a message, its data a value when it is JSON, else its text; a
+binary frame's data is bytes. A ping is answered with its pong; a close frame ends the connection,
+which opens again as any lost one does, and sends its subscription again. A message past 1 MiB
+ends the connection, on the timeline: unlike an SSE event, a WebSocket message can't be passed
+over without reading it, and since a reconnect doesn't resume (below), the feed doesn't send it
+again.
+
+**The position** is the last id run on, as for SSE, and the last 1,000 ids pass over a message
+sent again (the snapshot a feed sends after a reconnect, say). It isn't sent back: a WebSocket has
+no `Last-Event-ID`, and the feeds a job brings send a snapshot on subscribe, not a replay
+(fork 64). A new listener, and a reconnect, start at what the feed sends from then.
+
+**When the buffer is full** (`--on-full`, forks 17 and 26):
+
+- **`wait`,** unless given: the connection stops reading, as in 1.6a.
+- **`skip`:** what comes while the buffer is full is dropped, and the next message that finds
+  room carries how many were dropped before it, `e.missed`. A dropped message's id isn't kept: it
+  never ran.
+- **`latest --key product_id`:** a message replaces the one of its key that waits, in that one's
+  place, full or not (fork 62), and its `e.replaced` is how many it replaced, theirs counted with
+  it. A message without the key waits as it came. The buffer holds `--buffer` messages, so a key
+  that finds it full of others waits for room, as with `wait`. `--key` is a dotted path, as
+  `--id`; `latest` without it is refused.
+
+`e.missed` and `e.replaced` are on every event, 0 unless the binding skips or replaces, so a flow
+reads them whatever its binding says (an absent field would stop what reads it); SSE's events
+gain them too.
+
+**A handler that isn't strict** (fork 25). In 1.6a the position moved at every run's end. Now it
+follows the record: a strict run's at its end, its record on disk, as now; a lazy run's once the
+sync that covers its record is done, held as its channel packs and mail are and released by
+`sync_logs` beside them; an unrecorded run's at its end. Until then it is kept in memory, so the
+connection, and a new version's, go on from it. A crash loses the lazy runs the last sync didn't
+cover, and their events run again, their claims gone with their records. The deploy says so where
+it lists the handler's level: "on feed prices is lazy: after a crash, the events of its last
+second may run again"; `Unrecorded("on feed prices")` says the same. `holon check` lists a mail
+and a feed handler's level as it does a route's, which 1.3b and 1.6a left out.
+
+**Its state** adds how many were passed over by `--only`, missed and replaced since the
+connection opened: the server panel says `connected, at BTC-USD/41, 3 waiting, 120 replaced`.
+
+**The run** is 1.6a's: `kind: "feed"`, `e` sourced as `FeedEvent("prices")`, a binary message's
+bytes logged as any bytes value is.
+
+**The sample, `trading-bot`:** a market's ticker over a WebSocket, shaped as Coinbase Exchange's
+public feed is (`product_id`, `price` as a decimal in text, `sequence`), and orders to an exchange
+over HTTP, signed with `hmac_sha256`. It shows §5.9's four points:
+
+- the prices, conflated by the binding (`--on-full latest --key product_id`) and handled `lazy`:
+  each symbol's newest price kept, with how many it replaced;
+- the order strict: a price at or under a symbol's level, which a route sets, starts the flow's
+  own `order` action (a start, not awaited), which places it;
+- the order's client id the level's own, set when the level was, never the run's: a lazy run a
+  crash ran again, or the next price under the level, sends the same id, and the exchange refuses
+  it the second time;
+- an order over a limit waiting for approval (`await event("approved")`, as `approval` does), and
+  an action that reads the exchange's open orders back after a restart, run by hand, since
+  nothing starts a run at start.
+
+Its text takes what the language has now: one order a run, and no loop that waits on a call
+(the TypeScript slices 6 to 11, after Tier 1); fork 65 says what that leaves out.
+
+**Stand-ins.** The server test's WebSocket feed is `tungstenite`'s server side in a thread (it
+records what each connection was sent, and can be cut), and the exchange an HTTP stand-in that
+checks the signature and refuses a client order id twice (409). The e2e server starts the same in
+Node: `editor/e2e/ws-server.mjs`, its messages files dropped in a folder as `sse-server.mjs`'s
+are, written by hand (the handshake and text frames), since Node has no WebSocket server of its
+own; the exchange in the test.
+
+**The live run:** the prices from Coinbase Exchange's public feed
+(`wss://ws-feed.exchange.coinbase.com`, the `ticker` channel, which needs no account), bound with
+`--subscribe`, `--only type=ticker`, `--id product_id,sequence` and `--on-full latest --key
+product_id`; the orders to the stand-in exchange (fork 66).
+
+**Tests:**
+
+- **`ws.rs`:** the handshake and its headers, Basic authentication, text and binary frames, a
+  ping answered, a close and a cut, a message past 1 MiB, idle found out, a heartbeat sent when
+  due, and a subscription sent on each connection.
+- **The buffer:** `skip`'s count, `latest`'s replacement in place with its count, a key that
+  waits for room, and a message without the key.
+- **The position:** a lazy run's moved only by the sync that covers it, and an unrecorded one's at
+  its end.
+- **The binding:** `--id`, `--only` and `--key` paths; WebSocket options refused on an SSE
+  binding, and `latest` without a key.
+- **The server test** binds `prices` to the stand-in, deploys the sample, sets a level, and sends
+  prices: they are conflated while a run is slow, the order is placed once, it isn't placed again
+  when the price comes again, it is refused by the exchange when a run is made again by hand, and
+  it waits for approval over the limit. It also checks the runs verify, and that the key is in no
+  log.
+- **The e2e test** deploys it in the editor against `ws-server.mjs` and the exchange stand-in,
+  sets a level, drops prices, reads the order and the server panel's line, and approves a large
+  order.
+
+#### 5.9.5 Slice 1.6b as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A message past 1 MiB is passed over,** as an SSE event is, not a reason to close: `tungstenite`
+  reads a message whole before handing it over, so the host reads up to 16 MiB, passes over what
+  is past 1 MiB (on the timeline), and reads on. Only past 16 MiB does the connection end and open
+  again. Ending it at 1 MiB, as designed, would have lost what came after it, and the feed doesn't
+  send it again.
+- **A message sent again writes nothing.** It is passed over by its id, as designed, and where the
+  feed is moves with the next run's, not on its own: a lazy handler's position then moves only
+  with a record that a sync covers.
+- **`holon check` says it:** `on feed ticker is lazy: after a crash, the events of its last second
+  may run again`, after what the flow holds while it runs. Its unrecorded lines now take mail and
+  feed handlers too, which 1.3b and 1.6a left out.
+- **The sample, as the language has it:**
+  - The order's action is `place`. The handler marks the level `started` when a price comes under
+    it, and reads nothing `place` writes: a run that starts another holds the keys it read until it
+    commits (its claims), so `place`, writing `orders`, would wait on a handler that read
+    them. The mark is also what keeps the next price under the level from sending the order again.
+  - A call bound on a statement is made when the run reaches it, whatever a plain `if` around it
+    says: only an absent input keeps it from being made. So the handler writes
+    `place(!large ? order : undefined)` and `approval(large ? order : undefined)`, and `order` is
+    absent unless the price is under the level.
+  - The approval is an action of its own, `approval`, which waits for the event and then starts
+    `place`: a resumed run keeps the clock it began with, so an order placed from it an hour
+    later would be signed with an hour-old time, which an exchange refuses. `place` signs with the
+    time its own run began.
+  - `reconcile`, run by hand, answers the exchange's orders as one value.
+- **Its state** counts per connection, as designed: `connected, at BTC-USD/41, 1 waiting, 2
+  replaced, 1 passed over` (the subscription's answer).
+- **`ring`** is a dev-dependency of `holon`: the server test's exchange checks the signature with
+  it. It was built already, under `rustls`.
+- **The tests:**
+  - `ws.rs`: a connection opened with its headers, Basic authentication and subscription, read as
+    it comes (text, binary, a message past 1 MiB passed over and the rest read), cut, and closed
+    from another thread; heartbeats sent while it waits and a quiet feed found out; a redirect
+    refused. The stand-in (`ws::stand_in`) is `tungstenite`'s server side in a thread.
+  - The binding: options read as they say and shown, and refused where they don't fit (a
+    WebSocket's on SSE, `latest` without a key, a key without `latest`, `--every` without
+    `--heartbeat`); a field found by its dotted path and read as text.
+  - The subscription: an event's fields, `skip`'s drop and count, `latest`'s replacement in place
+    and a new key waiting for room, and a lazy run's move held until the sync that covers it.
+  - The server test binds `ticker` to the stand-in with a key in its query, deploys the sample
+    with the exchange's host replaced by an HTTP stand-in that checks the signature, and sets a
+    level of 100 x 2. With the exchange holding its answer, prices of 99, 98, 97 and 96 for BTC and
+    one for ETH come: 2 replaced, 2 waiting, the subscription's answer passed over. Released, three
+    runs: the price kept is 96 with 2 replaced, the order placed once with the level's client id,
+    and the position `ETH-USD/1` (BTC's newest kept its place, ahead of ETH). A price of 95 sends
+    nothing; `place` run by hand is refused 409. A level worth 2000 waits for approval; the link
+    approves it, and a run of its own places it. `reconcile` reads both back, the runs verify, and
+    no key or secret is in the log.
+  - The e2e test deploys the sample in the editor against `ws-server.mjs` and a Node exchange,
+    sets the secrets, reads the subscription in what the feed heard, drops prices while the
+    exchange holds, reads the server panel's line (`connected, 1 waiting, 2 replaced, 1 passed
+    over`, then `connected, at …/4, …`), the order, the approval of a large one, `reconcile`, and
+    the binding on the admin page without its key.
+- **Run live** on a scratch server, the ticker bound to `wss://ws-feed.exchange.coinbase.com` (BTC
+  and ETH), the orders to a stand-in exchange on loopback with throwaway credentials: the binding's
+  check, the handshake; prices kept within seconds, 47 replaced in the first ten and 338 in about
+  a minute, the subscription's answer passed over; a BTC level above the market placed one order
+  (signed 1 s before it was sent) and none for the prices under it after; an ETH level worth 2500
+  waited, was approved 40 s later and placed from its own run (signed 0 s before); `reconcile`
+  read both; `place` run again by hand was refused 409. 669 runs exported and verified, and no
+  credential in the data or the server's output.
+
+#### 5.9.6 Slices 1.6c and 1.6d as designed (2026-11-09, against `7b6a02e`): a feed resumed, and its gaps
+
+Asked once 1.6b was designed (fork 64): a feed that can send again what came while the host
+wasn't reading should be asked to, as SSE is with `Last-Event-ID`; and a feed that numbers its
+messages but can't send them again should say, on the next event, how many were lost, so the flow
+fetches them. WebSocket feeds come in three kinds (two probed live on 2026-11-09):
+
+- **They replay from a cursor:** Bluesky's Jetstream (`?cursor=<seq>`, the event at the cursor
+  sent again, at least once, within a window it keeps), Socket.IO's connection-state recovery,
+  GraphQL subscriptions, Nostr's `since`, Kafka and NATS bridges. Each takes the position in a
+  place of its own: a query parameter, a header, or the subscription message.
+- **They number their messages and can't replay:** Coinbase Exchange's `matches` (`trade_id`, one
+  more for each trade of a product; probed: none skipped), `full` and `level2` (`sequence`),
+  Binance's depth stream. What is lost is fetched over the provider's REST API, a snapshot or a
+  page of what was skipped. That fetch is the provider's, so the flow's; the host says when one is
+  needed, and how much.
+- **Neither:** a ticker (1.6b's), whose newest value makes the lost ones moot.
+
+**1.6c: `--resume WHERE`,** a WebSocket's (an SSE feed has `Last-Event-ID`), where the feed takes
+the position:
+
+- `query:NAME`: the URL opened gets `NAME=<position>`, in place of a parameter of that name in it
+  (`--resume query:cursor`);
+- `header:NAME`: the request sends `NAME: <position>`;
+- `message:TEMPLATE`: sent in place of the `--subscribe` messages, `{position}` in it replaced by
+  the position; again for another, in order (fork 68).
+
+It is sent only when there is a position: a new listener opens as the binding is written and reads
+from what the feed sends then. The position is the one SSE sends: on a reconnect, the last message
+read, since those waiting still run; after a restart or for a new version, the last run on, a lazy
+handler's once its record is synced. A feed that sends the position's own message again, as
+Jetstream does, has it passed over by the last 1,000 ids. `--resume` needs an `--id` of one field:
+a cursor is one value (fork 67). A position older than what the feed keeps is the feed's to answer;
+a feed that also numbers its messages one by one says what was lost with 1.6d's `--sequence`.
+
+**1.6d: `--sequence FIELD`,** any feed's whose data is JSON: a whole number that grows by one for
+each message, for each `--key` when one is given (`--sequence trade_id --key product_id`). Each
+event's `e.gap` is how many numbers were skipped before it: its number, less the last one read of
+its key, less one. It is 0 for the next number, for a key's first, for a message whose field isn't
+a whole number, and for a number not above the last: a message sent again, or a count begun anew,
+as a feed that numbers per connection begins one (fork 71).
+
+- **The last number of each key is kept with the position,** on disk, so a gap across a reconnect
+  or a restart is said: what came while the host wasn't reading, which the feed won't send again.
+  At most 10,000 keys, the least recently read forgotten, its next message's gap 0 (fork 72).
+- **It is the feed's gaps, not the host's:** counted as each message is read, before the buffer,
+  so a message `latest` replaced or `skip` dropped is no gap (those are `e.replaced` and
+  `e.missed`); a message that replaces another carries that one's gap with its own (fork 69).
+- **A message `--only` passes over is counted:** the feed numbered it (a `full` channel numbers
+  each message, whatever its type), and a gap it shows is carried by the next of its key that runs
+  (fork 70). So what the binding passes over is what the flow doesn't want, not what it can't see.
+- **A lazy handler's numbers move with its position,** once synced. After a crash, a feed that
+  can't replay doesn't send again the events of its last second; the next message's gap counts
+  them, and the flow fetches them with the rest.
+- `e.gap` is on every event, 0 unless the binding names a sequence, as `e.missed` and `e.replaced`
+  are. `--key` now names the key of `latest` and of `--sequence`; one with neither is refused.
+- **Its state** adds the numbers skipped since the connection opened: `connected, at
+  BTC-USD/1117440338, 49 in gaps`; `gaps` in `GET /deployments/<slug>/feeds`. Not on the
+  timeline: each run's input says its gap.
+
+**The samples** (fork 73):
+
+- **`bluesky-mentions` (1.6c):** Bluesky's posts from Jetstream
+  (`wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post`),
+  bound with `--resume query:cursor --id payload.seq --only payload.operation=create`. A lazy
+  handler keeps each post that mentions the word a route sets, by its `at://` URI, so a post sent
+  again writes the same item, as Jetstream's "at least once" asks. `GET /mentions` lists them.
+- **`trade-tape` (1.6d):** Coinbase Exchange's trades (`matches` and the `last_match` it sends
+  first, `--id product_id,trade_id --sequence trade_id --key product_id`). A handler adds each
+  trade's size to its product's volume; when `e.gap` is above 0 it fetches the trades it skipped
+  (`GET /products/<product>/trades?after=<trade_id>&limit=<gap>`, public, 1,000 at most a page)
+  and adds theirs (`decimal_sum` of a `map`), so the volume is exact across a reconnect or a
+  restart. A gap past 1,000 adds what one page holds and keeps how many it couldn't.
+
+**Stand-ins.** The server test's WebSocket stand-in replays from a `cursor` in its query, numbers
+what it sends, and can leave numbers out; the trades' REST API is an HTTP stand-in in the test. The
+e2e's `ws-server.mjs` does the same: a dropped file whose `seq` is at or past the cursor is sent
+again to a connection that asks from it.
+
+**The live runs** (fork 74):
+
+- `bluesky-mentions` against Jetstream: the server stopped for 30 s and started again; the posts of
+  those 30 s run from the cursor, the cursor's own passed over, no `seq` run twice (read from the
+  exported runs).
+- `trade-tape` against Coinbase Exchange: the server stopped for 30 s and started again; the first
+  trade of each product carries the gap, its trades are fetched, and the volume equals the sum of
+  the trades REST gives for the same ids.
+
+**Tests:**
+
+- **The binding:** `--resume`'s three places, refused on SSE, without `--id`, or with an id of two
+  fields; `--sequence`'s path; `--key` refused with neither `latest` nor `--sequence`.
+- **`ws.rs` and the link:** the cursor in the query, the header, the message in place of the
+  subscription; none for a new listener; the position read on a reconnect and the one run on after
+  a restart; the cursor's own message passed over.
+- **The gaps:** the next number, one skipped, several, per key, a key's first, a number not above
+  the last, a message without the field, one `--only` passes over carrying its gap to the next, a
+  replaced message's gap added to the one that replaced it, the numbers kept across a restart and
+  moved with a lazy position, and the 10,000th key forgetting the least recent.
+- **Server tests**, one a sample: `bluesky-mentions` cut and restarted, its posts sent again from
+  the cursor, each run once; `trade-tape` with numbers left out and the trades fetched, its volume
+  exact.
+- **e2e tests**, one a sample, in the editor against `ws-server.mjs`.
+
+#### 5.9.7 Slice 1.6c as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding** keeps `resume` as one of `{"query": NAME}`, `{"header": NAME}` or
+  `{"message": [MESSAGE, …]}`; `/admin/feeds` and `holon feed add --resume` take each as
+  `query:NAME`, `header:NAME` or `message:…`. A written message without `{position}` is refused;
+  one read from a source is taken as it is. The admin page and `holon feed list` say `resumes from
+  its position with cursor= in the URL`.
+- **The query parameter goes last,** in place of any of its name the URL holds, its value
+  percent-encoded: `?collections=app.bsky.feed.post&cursor=26984957930`. Nothing else in the
+  connection changed: the position, the 1,000 ids and the lazy hold are 1.6a's and 1.6b's.
+- **The sample** writes `mentions[address] = kept`, with `kept` absent unless the post mentions
+  the word. Building it found that `if (kept !== undefined) mentions[address] = kept` was refused
+  as doing nothing when it was the handler's only write, though the same `if` beside another write
+  compiled and ran (trading-bot's): the compiler asked whether anything was left to tie to the
+  handler's trigger, and the `if` had tied its write to `kept`. That was the compiler's check, not
+  the feed's, fixed in its own change: a handler does something when it places a write or a call,
+  however it is tied. A collection is read and written by key, `watch["word"]`. Its port is 8192:
+  8191 is an e2e test's own flow.
+- **The stand-ins** replay from `cursor=N`: what was sent from the message whose `seq` (or
+  `payload.seq`) is N. The e2e's `ws-server.mjs` also writes what each connection asked for to
+  `asked.log`.
+- **The tests:**
+  - The binding: each place, the cursor put in place of the URL's own, the header, the messages in
+    place of the subscription (one read from a source), none for a new listener, the stand-in's
+    replay; refused on SSE, without `--id`, with an id of two fields, with two places or a place
+    and a message, a name that isn't one, and a written message without `{position}`.
+  - The server test binds `posts` to the stand-in, deploys the sample, and sends four posts (a
+    delete passed over by `--only`): three runs, two kept, at 4; the first connection asked with
+    no cursor. Cut, with two posts sent while it is down: opened again with `cursor=4`, the 4 sent
+    again passed over (on the timeline), the two run, each post once, three kept; the runs verify
+    and the URL's key is in no log.
+  - The e2e test deploys it in the editor against `ws-server.mjs`, sets the word, drops the posts,
+    reads the server panel (`connected, at …, 1 passed over`), cuts the connections with two posts
+    dropped meanwhile, reads the reconnect's `cursor=` in `asked.log`, the third mention, and the
+    binding on the admin page.
+- **Run live** on a scratch server (a release build, `--keep-runs 200000`), the feed bound to
+  `wss://jetstream.us-east.bsky.network/…?collections=app.bsky.feed.post`, the word `the`: about
+  25 posts a second ran as they came, the deletes passed over by `--only`. The server was killed
+  at 08:09:12 and started again 40 s later: it asked from the position kept on disk (…957930), the
+  timeline says `passed over an event of posts it ran already (26984957930)`, the backlog filled
+  the buffer (1000 waiting) and was run through in 55 s. Of 6,172 runs, the widest gap between the
+  times of posts run one after another is 0.3 s: the 4,515 posts written while it was down ran.
+  16 ran twice: those after the kept position, run in the last 0.3 s before the kill, lazy and not
+  yet synced, as `holon check` says; each wrote its item again. The runs verify. A first try on a
+  debug build ran about 30 a second, only just as fast as Jetstream sends: after the restart its
+  buffer stayed full, Jetstream ended the connection it read too slowly, and the host opened it
+  again from the last post read.
+
+#### 5.9.8 Slice 1.6d as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding** keeps `sequence` beside `key`. `/admin/feeds` and `holon feed add --sequence`
+  take a field's path, a dotted one too, and refuse one that isn't a path. `--key` with neither
+  `latest` nor `--sequence` is refused. The admin page and `holon feed list` say `numbered by
+  trade_id, each product_id on its own`, and the admin page's form takes it (`feed sequence`, with
+  the key's input shown for it as for `latest`).
+- **The count is the reading thread's** (`Counting` in `subscriptions.rs`). It holds each key's last
+  number read, the gaps `--only` passed over (carried to the next of their key that runs), and the
+  keys read since the connection opened. It starts from the numbers kept when a link is made (a
+  restart, a new version, a binding changed), and keeps its own across a reconnect, as the
+  position does.
+- **A number not above the last** begins the count anew only as the first of its key on a
+  connection. A later one is a message sent again: its gap is 0 and the last is unchanged, so a
+  replayed run of old numbers can't make the next message count again what already ran.
+- **The buffer's drops still say their gap.** The design had a message `skip` dropped be no gap,
+  which holds (it is `e.missed`), but the numbers the feed skipped before it would have gone
+  unsaid. So the dropped event's gap is kept for its key (`Waiting.gaps`) and added to the next of
+  its key that finds room. An event that replaces another (`latest`) adds the other's gap, as
+  designed.
+- **The numbers kept** (`Seen.numbers`, at most 10,000 keys, the least recent forgotten) move with
+  the runs, as the position does: a strict run's at its end, a lazy one's once synced. One known
+  limit follows, recorded and not fixed. After a restart, the messages of a key that `--only`
+  passed over, or `skip` dropped, since its last run count in its next gap: they never ran, and
+  the kept numbers don't know they were read. A flow that fetches its gaps fetches those too.
+  Keeping the reader's numbers instead would cost a write for each message read. trade-tape isn't
+  touched by it: `--only` passes over none of Coinbase's numbered trades.
+- **Its state:** `Live.gaps` counts the numbers skipped since the link was made, across its
+  reconnects: `connected, at BTC-USD/1117483559, 301 in gaps` on the server panel, `gaps` in
+  `GET /deployments/<slug>/feeds`.
+- **The sample** is as designed. The language asked for two changes:
+  - `page` is absent when no gap asks for one, so is what is read from it, and `(page.status ===
+    200 ? JSON.parse(page.body) : undefined) ?? []` falls to `[]`. A page that doesn't answer 200
+    adds no trades, and the gap stays `unfetched`.
+  - The count of what was fetched is `sizes.length`, of the `map`: a parsed page's own length isn't
+    known to the compiler.
+
+  Its port is 8193. Coinbase's REST API answers 400 (`User-Agent header is required.`) to a request
+  without a User-Agent. A flow's request carries `ureq`'s own unless it sets one, so the sample
+  sets none.
+- **The stand-ins** (`sse.rs`, `ws.rs`) record what each connection asked for before they answer
+  its handshake. Two of 1.6a's and 1.6c's tests read it as soon as the connection opened and failed
+  now and then.
+- **The tests:**
+  - The binding: `--sequence` and `--key` kept and shown, a path refused, `--key` alone refused.
+    The link numbers each message by its key, gives a filtered message's number, and gives none
+    without the field.
+  - The count: the next number, one skipped, several, per key, a key's first, a number not above
+    the last (first on a connection, then again), and a gap `--only` passed over carried. Also
+    `skip`'s dropped gaps carried to the next of their key, `latest`'s added, the 10,000th key
+    forgetting the least recent, and a lazy position's numbers moving once synced.
+  - The server test (`trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact`)
+    binds `trades` to the WebSocket stand-in and the REST API to an HTTP stand-in whose trade sizes
+    are their ids in thousandths, so a volume says exactly which trades were added. On one
+    connection it skips 2. Cut, it skips one of each product. After a restart (the binding
+    changed) it skips 1, then a gap past a page: 1,000 fetched, 91 unfetched. Each volume is exact,
+    the runs verify, and the URL's key is in no log.
+  - The e2e test deploys it in the editor against `ws-server.mjs` and a REST stand-in, then reads
+    the server panel (`2 in gaps`, then `3 in gaps` after a cut with two trades lost) and the
+    binding on the admin page.
+- **Run live** on a scratch server (a release build) against Coinbase Exchange's matches for
+  BTC-USD and ETH-USD:
+  - It ran 36 s, then was killed. BTC-USD's kept number was 1117483263. It started again 38 s
+    later.
+  - The first trade of each product after the restart was its `last_match`, with a gap of 204
+    (BTC-USD) and 97 (ETH-USD). Both pages were fetched and nothing was left unfetched.
+  - Unbound about 50 s later: 676 runs. In each product, every run's gap is exactly the ids between it
+    and the one before.
+  - BTC-USD's volume, 4.90093013 over 616 trades (ids 1117483081 to 1117483696), equals the sum
+    REST gives for the same 616 ids, and ETH-USD's 91.64382809 over 361 trades does too.
+  - The 682 runs (with the `/volumes` calls) verify.
+
+#### 5.9.9 Slice 1.6e as designed (2026-11-09, against `f2055a1`): a queue
+
+§5.9.1 gives the queue its shape: SQS's API, a send that goes once the run's writes land, a
+handler that deletes each message once its run is over. What it leaves open:
+
+**The binding.** As a feed's, the URL with its key read from a source, never kept or shown:
+
+```
+HOLON_SECRET_PAYOUTS_URL=https://AKIA…:<secret, percent-encoded>@sqs.eu-west-1.amazonaws.com/123456789012/payouts
+holon queue add payouts --url env:HOLON_SECRET_PAYOUTS_URL [--visibility T] [--keep-failed] [--for SLUG]
+holon queue list
+holon queue remove payouts
+```
+
+- **The URL is the queue's own** (`QueueUrl`), the access key id and secret its login,
+  percent-encoded (a secret holds `/` and `+`). The region is the host's
+  (`sqs.<region>.amazonaws.com`), or `?region=` for a service that copies the API under another
+  name (ElasticMQ, LocalStack). `http://` only to this machine, as a feed's. A session token
+  (`?token=`) is taken for temporary keys; an instance's own role waits for a job (fork 75).
+- **Checked when bound:** `GetQueueAttributes`, signed, so a wrong key, a wrong region or a queue
+  that isn't there is refused, saying what the service answered. It reads whether the queue is
+  FIFO (`FifoQueue`, or a name ending `.fifo`) and its largest message (`MaximumMessageSize`),
+  kept with the binding.
+- **The binding keeps** the source, where it points without its login or query
+  (`https://sqs.eu-west-1.amazonaws.com/123456789012/payouts`), `fifo`, `largest`, `visibility` (30 s to
+  12 h, 5 minutes unless given) and `keep_failed`. `/admin/queues`, `holon queue`, and a
+  **queues** list on the admin page's resources, as feeds have.
+
+**The API.** SQS's JSON protocol (`application/x-amz-json-1.0`, `X-Amz-Target:
+AmazonSQS.<Action>`), which AWS has answered since 2023 and ElasticMQ and LocalStack copy: a
+JSON body each way, no XML (fork 76). Five actions: `GetQueueAttributes`, `SendMessage`,
+`ReceiveMessage`, `DeleteMessage`, `ChangeMessageVisibility`. Each request is signed with
+Signature Version 4 (`sigv4.rs`): the canonical request, the scope `<date>/<region>/sqs/aws4_request`,
+the key derived by HMAC-SHA256 from the secret, as AWS's documents give it, tested on their
+published example. Step 1.4's S3 signs with it too, its payload hashed the same way.
+
+**Sending: `payouts.send(data, { group })`.** A statement, as `ops.send(…)` is:
+
+- **The body** is `data` as JSON (text sent as it is), at most the queue's
+  `MaximumMessageSize`, read when it is bound (256 KiB to 1 MiB); past it the run fails, before
+  anything is sent.
+- **Once the run's writes land,** as mail: spooled before the run's record is written (one file a
+  message in `queue-spool/`, beside the bindings file), held until the record is on disk, then
+  sent in order, a queue for each binding on its own thread. An unrecorded run's message is
+  spooled and sent all the same.
+- **Tried again** on what SQS says is temporary (no connection, a 5xx, a throttle), after 1 s,
+  10 s, a minute, then every 5 minutes, for a day; refused (any other 4xx), or a day of trying,
+  gives up. Each outcome is on the deployment's timeline, as mail's (fork 77). A restart sends
+  what the spool holds whose run its log holds.
+- **A FIFO queue** takes a message group (`group`, text): messages of one group come out in the
+  order sent. Without one, the run's messages go in a group named for the deployment, so they
+  keep their order. Its deduplication id is the run's id and the send's place in it, so a send
+  tried again after a lost answer is one message. A standard queue has no such id: a retry after
+  a lost answer can send twice, which its listener's once-per-message can't tell, since SQS gives
+  each send its own id (fork 78).
+- **At most 100 sends a run,** as mail's limit is; past it the run fails, before anything is sent.
+- **A message computed from a secret** is refused, as a channel's pack is.
+
+**Listening: `on.queue(payouts, (m) => …, { log })`.** One deployment listens to a queue, as to a
+mailbox: a deploy is refused while another listens to it, or it isn't bound.
+
+- **A thread for each deployment and queue** long-polls (`ReceiveMessage`, 20 s, up to 10, its
+  visibility the binding's), runs the messages received one at a time in the order they came, and
+  receives again once their runs are over. A FIFO queue's order holds.
+- **Deleted once its run's record is on disk**, as a feed's position moves: a strict or
+  unrecorded run's at its end, a lazy one's once the sync covering its record is done. A failed
+  run's message is deleted too, its record saying why (fork 60), unless the binding says
+  `--keep-failed`: then it comes back once its visibility runs out, and the queue's redrive policy
+  counts it.
+- **Kept out of sight while it waits or runs:** every half of the visibility, the reading thread
+  extends what it received and hasn't deleted (`ChangeMessageVisibility`).
+- **Once per message:** the last 1,000 message ids run on are kept beside the log
+  (`queue-seen/<slug>/<queue>.json`), written as the record is; a message among them (one whose
+  delete a crash cut off, or a standard queue's second delivery) is deleted without a run, on the
+  timeline.
+- **Unreachable:** tried again after a second, twice as long each time, up to a minute; the
+  timeline says so once, and again when it is read again.
+- **Its state,** on the server panel and in `GET /deployments/<slug>/queues`: `receiving`, how
+  many wait for their run, and since the thread started how many ran, were passed over, and
+  were kept for the redrive (`--keep-failed`): `receiving, 2 waiting, 120 run`.
+
+`m` is the message:
+
+| Field | |
+|---|---|
+| `data` | its body: a value when it is JSON, else its text |
+| `id` | SQS's message id |
+| `attributes` | its message attributes whose type is `String` or `Number`, as text |
+| `sent` | when it was sent, in seconds since 1970, as `now` is |
+| `count` | how many times the queue has handed it out (`ApproximateReceiveCount`) |
+| `group` | a FIFO queue's message group, when it has one |
+
+**The run** is `kind: "queue"`, its label the handler's (`on queue payouts`), the message sourced
+as `QueueMessage("payouts")` with the clock and the random bytes. A parked run keeps it.
+
+**The grant.** `QueueMessage("payouts")`, a driver: "run on each message from payouts
+(https://sqs.eu-west-1.amazonaws.com/123456789012/payouts), and delete it once its run is over";
+`QueueSend("payouts")`, a sink: "send messages to payouts". A flow may do both, to one queue or
+two.
+
+**The sample, `payout-events`** (fork 79): a payment provider's payout events, as a provider's
+webhooks forwarded to SQS deliver them (`{"type": "payout.paid" | "payout.failed", "payout":
+{"id", "amount", "currency", "account"}}`), each payout's status kept by its id; a failed one
+sent to a FIFO queue `payout-retries`, its group the account, so one account's retries keep their
+order. `GET /payouts` lists them. Strict, the default: a payout's status is money.
+
+**Stand-ins.** The server test's SQS (`sqs.rs`'s, on loopback) keeps its queues in memory,
+standard and FIFO, with visibility, receive counts and deduplication, and refuses a request whose
+signature isn't the one its secret makes. The e2e's `sqs-server.mjs` does the same in Node.
+
+**The live run** (fork 80): against AWS SQS with a key the owner makes (an IAM user whose policy
+allows these five actions on two queues), or against ElasticMQ on this machine. The sample
+deployed, its queue sent events from outside (the AWS console or `aws sqs send-message`), each
+run once, deleted, the failed one's retry in `payout-retries`; the server stopped mid-batch and
+started again, no message run twice.
+
+**Tests:**
+
+- **`sigv4.rs`:** AWS's published example, and a request the stand-in checks.
+- **The binding:** each URL form, the region from the host or `?region=`, a token, refused
+  without a login, plain HTTP elsewhere, a wrong key or a missing queue (the service's answer),
+  `--visibility` out of range; `fifo` read.
+- **Sending:** held for the record, in order, the group and deduplication id, tried again on a
+  5xx and a throttle, given up on a 4xx, a restart sending the spool, the limit and the size.
+- **Listening:** one run a message, deleted after its record (a lazy one's after its sync), a
+  failed one deleted or kept (`--keep-failed`), a message received again passed over, its
+  visibility extended through a long run, another deployment refused.
+- **Server test**, the sample: events sent to the stand-in, each payout kept, the failed one's
+  retry in `payout-retries` with its group, every message deleted; a restart with messages in
+  flight runs none twice; the runs verify.
+- **e2e test**, the sample in the editor against `sqs-server.mjs`.
+
+#### 5.9.10 Slice 1.6e as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A queue's name is a flow's name:** letters, digits and `_`, as `import payout_events from
+  "queue:payout_events"` takes it, so the binding names are `payout_events` and `payout_retries`;
+  the SQS queues behind them keep their own (`payout-events`, `payout-retries.fifo`).
+- **The send is one record,** `payout_retries.send({ data, group })`, as `ops.send({ … })` is,
+  not `send(data, { group })`: the message is a value the run can build and pass. It lowers to
+  `queue_send{queue}(message)`, whose payload is `{data, group}`. A message without `data`, or a
+  `group` that isn't text of 1 to 128 characters (SQS's limit), has no value and sends nothing, as
+  a mail that isn't one sends nothing. The body is `data`: text as it is, anything else as JSON;
+  bytes, an empty body, a body past the binding's `largest` or a run's 101st send fail the run
+  before anything is sent (`message not sent: …`).
+- **A standard queue isn't sent the group:** SQS takes `MessageGroupId` only on a FIFO queue's
+  send, so the group (the given one, or the deployment's name) goes to a FIFO queue alone, with
+  the deduplication id `<run id>-<n>`.
+- **Each queue's outbox keeps order strictly:** the message at its front is tried again while the
+  ones behind it wait, so a group's messages reach a FIFO queue in the order sent even across a
+  retry. A queue's outbox doesn't wait for another queue's.
+- **The timeline says what is worth a person's look,** not each send (fork 77 had each outcome
+  there, as mail's): a queue's first failure (`couldn't send a message to payout_retries yet: …;
+  trying again`), a give-up, `sends to payout_retries again` once it takes one, and a message to a
+  queue no longer bound. A deployment's events are kept for as long as it is, and a queue may take
+  thousands of messages an hour. What was sent is counted instead, since the server started:
+  `sent`, `gave_up` and `waiting` for each queue a deployment sends to.
+- **Its state** is `GET /deployments/<slug>/queues`: `{listening: [{queue, label, address, status,
+  since, error, waiting, run, passed_over, kept}], sending: [{queue, address, sent, gave_up,
+  waiting}]}`. The server panel says each on a line (`receiving, 4 run, 1 passed over`; `2 sent`).
+- **The listener** is as designed: a thread for each deployment and queue started by a reconcile
+  every second, a second thread keeping what it received out of sight, the message deleted once
+  its record is on disk (a lazy run's once synced, held with the feeds' positions). A message is
+  added to the ids run on as it is deleted; a failed run's kept for the redrive is not, so it runs
+  again when the queue hands it out again. Stopped mid-batch, the messages not run are made
+  visible at once (`ChangeMessageVisibility` to 0). `m.sent` is whole seconds, as `now` is.
+- **One deployment listens to a queue** by where its binding points, under whatever name: a deploy
+  is refused while another deployment's handler listens to the same address.
+- **The admin page** has a queues list and form in its resources (name, where the URL is kept,
+  visibility, whether a failed run's message is left, for one deployment); permissions reads
+  `QueueMessage` as "starts on each message it holds" and `QueueSend` as "sends messages to it".
+- **The tests:**
+  - `sigv4.rs`: AWS's published example, and `X-Amz-Date`'s form. `sqs.rs`: each URL form (the
+    region from the host or `?region=`, a token, a port, plain HTTP refused off this machine, no
+    login, no queue, a query it doesn't take), and the stand-in refusing a request signed with
+    another secret.
+  - `queues.rs`: a binding read from its source and shown without its key, refused bindings,
+    the limits and the body, sends held until their record is on disk and then sent in order (a
+    FIFO queue's group and deduplication id), retried and given up, a restart sending what the
+    spool holds whose run the log holds, and a deploy refused while another listens.
+    `dequeue.rs`: a message as the handler reads it, and the ids run on kept, the oldest forgotten.
+  - The server test (`payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_fifo_queue`)
+    deploys the sample against the stand-in: refused until both queues are bound; four events,
+    four runs in order, each message deleted; the two failed payouts' retries in the FIFO queue,
+    each in its account's group; one whose retry is past the queue's largest fails, writes nothing
+    and is deleted. The first message handed out again is passed over and deleted, and the state
+    says `run 4, passed_over 1` and `sent 2`. Stopped, a message put waits in the queue. Bound
+    again with `keep_failed`, the waiting message runs and a failing one is left, comes back once
+    visible, runs again and is left again. The runs verify (the failed ones not run again), and
+    the key is in no log.
+  - The e2e test deploys it in the editor against `sqs-server.mjs` (SQS's JSON protocol, each
+    request's signature checked), drops two events, reads both payouts, both deletes, the retry
+    in the FIFO queue in its account's group, the server panel's `receiving, 2 run` and `1 sent`,
+    and the bindings and holders on the admin page.
+- **Run live** (2026-11-09) against ElasticMQ 1.7.1, in Docker: SQS's JSON protocol, though it
+  doesn't check a signature. Both queues bound (it answered `GetQueueAttributes`, the retries'
+  FIFO, 256 KiB), the sample's deploy refused until they were. Beside the sample, a flow sending
+  events with `payout_events.send` and one listening to the retries. 540 events, 40 through that
+  flow and 500 put on the queue: 540 runs of 540 message ids, each message run once, and the
+  queue empty after.
+  - The server killed mid-batch: the two messages it had received and not run came back once
+    their 30 s were up, and ran then, after later ones. A standard queue's order, which the
+    retries followed.
+  - The binding removed mid-batch, five times: what the listener held and hadn't run was visible
+    again at once (`ChangeMessageVisibility` to 0), 15 messages handed out again, each run once.
+  - 85 retries of the first 320 events in the FIFO queue, each in its account's group, a group's
+    in the order its runs sent them. The kill held one group back for the binding's 5 minutes:
+    a FIFO queue keeps a group waiting while one of its messages is out of sight.
+  - Both deployments' runs verify (`holon verify`, 342 and 89 runs), and the key is in no file
+    the server wrote.
+- **Run live against moto** 5.2.5 (2026-11-09), in Docker, checking keys as IAM does
+  (`INITIAL_NO_AUTH_ACTION_COUNT`): each request's signature computed again by botocore's signer,
+  the key one its IAM made, a temporary key's session token matched, the key's policy evaluated
+  for the action. (moto evaluates SQS's actions against the resource `*`, so the policy there names
+  the actions and not the queues.) A user allowed the five actions, one allowed all but
+  `SendMessage`, and a role the first may assume.
+  - A wrong secret is refused at bind with what moto answered, `SignatureDoesNotMatch`. That
+    took a change: moto refuses a key in the query protocol's XML (`<Code>`, `<Message>`), which
+    the client didn't read, so it said only `answered 403`; it reads both now (`sqs::said`).
+  - Bound with the first user's key (moto's queues take 1 MiB, which the binding read), the
+    sample, the flow sending events and the one reading the retries ran 20 events: 20 runs, 5
+    retries in their accounts' groups, both queues empty after.
+  - The retries bound for payout-events to the key without `SendMessage`: a failed payout's run
+    succeeds, and its retry is given up on the timeline, `answered 403 to SendMessage:
+    AccessDenied: …`; the state says `gave_up: 1`.
+  - The events queue bound again to the role's temporary key (`?token=`): 20 more events
+    received, run and deleted, and sent by the flow sending them, with it.
+  - The three deployments' runs verify (43, 41 and 16), and none of the six secrets and tokens
+    is in a file the server wrote.
+  - Real AWS is still to come: no account yet.
+
+#### 5.9.11 Slice 1.6f as designed (2026-11-09, against `ea55171`): a Postgres `LISTEN` channel
+
+A feed whose messages are a Postgres channel's notifications: what a trigger, or any session,
+says with `pg_notify('ledger_entries', …)` as its transaction commits. The flow is unchanged from
+a feed's: `import entries from "feed:entries"`, `on.feed(entries, (e) => …)`.
+
+```
+holon feed add entries --database ledger --channel ledger_entries
+                       [--id FIELD,…] [--only FIELD=VALUE]… [--sequence FIELD [--key FIELD]]
+                       [--buffer N] [--on-full …] [--idle T] [--for SLUG]
+```
+
+- **On a bound database,** by its name, in place of a URL: the binding the listening deployment
+  sees as `ledger` (its own, else the server's), read each time the connection opens, so a
+  database bound again moves the feed with it, and one no longer bound leaves the connection
+  reconnecting, saying why. Postgres alone: a database of another engine is refused when the feed
+  is bound (`LISTEN is Postgres's: the database ledger is sqlite`).
+- **`--channel`** is the channel as `pg_notify` names it: letters, digits and `_`, up to 63 bytes
+  (Postgres's names), quoted when listened to, so its case counts as `pg_notify`'s does.
+- **What a URL's binding says that a channel's doesn't** is refused with it: `--url`,
+  `--header`, `--subscribe`, `--heartbeat` and `--resume`. `--id`, `--only`, `--sequence`,
+  `--key`, `--buffer`, `--on-full` and `--idle` read a notification's JSON as they read a
+  WebSocket message's.
+- **Checked when bound:** connected with the database's connection, `LISTEN` on the channel,
+  closed. Shown as the database is, with the channel: `postgres://db.example.com:5432/ledger,
+  channel ledger_entries`; the connection is never shown.
+- **Its connection is its own,** one a deployment and feed, not one of the database's pool: a
+  `LISTEN` belongs to its session. TLS as the pool's (`engines::pg_tls`). The reading thread waits
+  for a notification a second at a time, to notice a close; after `--idle` (90 s) with none it asks
+  the server whether the connection is still there (`is_valid`), and opens it again only when the
+  server doesn't answer: opening it again for quiet would lose what was sent meanwhile.
+- **`e`** is the feed's event: `data` the payload (a value when it is JSON, else its text),
+  `event` the channel, `id` by `--id`, `gap` by `--sequence`.
+- **No position.** Postgres sends a notification to the sessions listening when its transaction
+  commits, and keeps none: what commits while the connection isn't there (a restart, a lost
+  connection, before the deployment) is never sent. The timeline says so when it listens again
+  (`listens to the feed entries again: what was sent meanwhile is lost`). `--sequence` counts what
+  was lost by a key (`e.gap`, across a restart too); a flow that keeps its own last number (as
+  `ledger-watch` does) needs none, and reads what it missed from the database it is bound to.
+- **What Postgres does,** said in the guide: notifications come in the order their transactions
+  committed; one rolled back sends none; identical ones (channel and payload) of one transaction
+  are sent once, so a payload that names its row keeps each; a payload is 8,000 bytes at most, so
+  a big row is named by its id and read.
+- **Several deployments** may listen to one channel, each on its own connection: a notification
+  is a broadcast.
+- **The grant** is the feed's, `FeedEvent("entries")`, shown "run on each event from entries
+  (postgres://db.example.com:5432/ledger, channel ledger_entries)". Listening needs no grant on
+  the database; reading it, as the sample does, is the database's own.
+- **Engine:** `listen.rs`, the `postgres` crate's notifications (`timeout_iter`) on a client of its
+  own.
+- **The editor:** the admin page's feed form takes a database and a channel in place of a URL.
+- **The sample, `ledger-watch`:** a ledger's entries, each account's numbered one after another
+  (`seq`), said by a trigger as they commit; the handler adds each to its account's balance,
+  reading first the entries of the account it hasn't added (all of them for an account new to it,
+  or those committed while it wasn't listening). The balance stays exact across a restart and a
+  lost connection, without the feed knowing where it was.
+- **Tests:** a server test against the Postgres `HOLON_TEST_POSTGRES` names, skipped without one
+  as the database tests are: refused for a database not bound, of another engine, and a channel
+  that isn't one; the sample deployed, entries inserted and run in the order committed; the
+  listener's session ended by the server (`pg_terminate_backend`), the entries committed meanwhile
+  read by the next run, the timeline saying the connection was lost and listened to again;
+  balances exact; the runs verify. The e2e test deploys the sample in the editor against a
+  Postgres beside the job's MongoDB (`start-postgres.sh`), the entries inserted by a second
+  deployment that writes the ledger.
+
+#### 5.9.12 Slice 1.6f as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding keeps the database's name, not its connection:** `Binding` has `database` and
+  `channel`, and its `url` is empty (not kept). `Binding::seen_by(databases, slug)` fills `url`
+  with the connection source of the database `slug` sees by that name, and `address` with its
+  address and the channel, when it is a Postgres; else the URL stays empty and a connection says
+  `the database ledger isn't a Postgres bound for this deployment`. The reconcile maps each binding
+  through it, so a database bound again, or removed, is a changed binding: the connection is
+  opened anew, as for a feed bound again.
+- **`Feeds::bind` takes the database** as the deployment (or the server) sees it, resolved by the
+  admin route (`Databases::resolve`), since feeds.rs holds no databases. A channel's binding
+  without its database, with both or neither of `--database` and `--channel`, or with a URL's
+  options is refused before anything is reached.
+- **Closing it:** a Postgres client has no socket the host can shut from another thread, so
+  `sse::Closer` became `Socket(TcpStream)` or `Flag(Arc<AtomicBool>)`: a `LISTEN` connection reads
+  a second at a time (`timeout_iter`) and looks at its flag between, so a stopped deployment's
+  session ends within a second.
+- **What it says** is what Postgres said (`engines::pg_said`): a server's error by its message,
+  not the client's `db error`, and the client's own with the cause its text leaves out, which the
+  pool's errors now say too: `lost the feed entries: the database can't be reached: error
+  connecting to server: No connection could be made because the target machine actively refused
+  it. (os error 10061); trying again in 1s`.
+- **Each connection opened again says what it lost,** whether it was lost or couldn't be opened
+  for a while: `listens to the feed entries again: what was sent meanwhile is lost`. A URL's feed
+  says `reads the feed … again` only after a failure, since it resumes.
+- **The grant's words are the feed's** (`run on each event from the feed "entries"`), as every
+  feed's: the address isn't in them, it is the binding's, shown by the admin page, `holon feed
+  list` and the server panel.
+- **`e.event`** is the channel, and `e.data` the payload, parsed when it is JSON.
+- **The editor:** the admin page's feed form asks "from a URL" or "a Postgres channel", the latter
+  with the Postgres databases bound as its choices, a channel, and `--id` and `--only`; a bound
+  channel reads `listens on postgres://…/ledger, channel ledger_entries (the database ledger)`.
+- **The e2e test** has its own ledger writer, `ledger-writer`, deployed with the command line, the
+  ledger bound read-write for it alone (`--for`); the sample's binding is read-only, its schema
+  read from the sample's comment (as the server test reads it), so the comment can't drift. What
+  isn't heard is made by stopping the deployment (`/stop`, then `/run`) between two entries. CI's
+  e2e job starts `postgres:17.7` on 5433 (`start-postgres.sh`) and removes it, with its volume,
+  after the run.
+- **Run live** against Postgres 17.7 in Docker (WSL), a database `ledger` bound read-only with the
+  sample's `ledger.sql`, a server of the slice's build on loopback: three accounts written with
+  `psql` as another service would, in single rows, a statement of three and a transaction of two;
+  a transaction rolled back sent nothing; the listener's session ended with
+  `pg_terminate_backend`, an entry written in the second before it listened again, read by the
+  next run (`read: 1`); the server killed, three entries written for two accounts while it was
+  down, one of them new, each read by its account's next run once it was back; Postgres restarted
+  (`docker restart`), and stopped for a few seconds then started, the listener back on its own each
+  time and the next entry heard. Each balance equal to the ledger's own `sum(amount)` by account;
+  the 18 runs verify offline; no file the server wrote holds the database's password.
 
 ### 5.10 A bytes value, and decimals with it
 
@@ -1301,9 +3054,12 @@ subscription route could be `lazy` by the same argument. That is fork 23, not ta
 
 #### 5.11.8 Slices
 
-1. **The rest segment:** core, language, printer, bridge, editor matcher, docs; the `site` sample
-   without `serve` (an index page from a `js` holon, a catch-all answering it).
-2. **`file_serve`:** the primitive, the capability and its description, `respond`, the
+Step 1.8 comes after 1.6 and before 1.9 (§7, revised 2026-11-09), the rest segment first:
+
+1. **1.8a, the rest segment:** core (`Segment::Rest`), the language's route path and the printer,
+   the bridge's `route_path`, the editor's `parsePath` and matcher, docs; the `site` sample
+   without `serve` (an index page from a `js` holon, a catch-all answering it), run live.
+2. **1.8b, `file_serve`:** the primitive, the capability and its description, `respond`, the
    transport's file answer, small files from memory, big ones streamed and checked, ETag and 304,
    the log line, `FileServe` allowed `lazy` and `unrecorded` (`is_answer`, §5.11.5); the `site`
    sample in full, `log-archive`'s download.
@@ -1351,6 +3107,268 @@ subscription route could be `lazy` by the same argument. That is fork 23, not ta
 - **Request-path I-g and I-h:** `FileServe` changes nothing, so allowing it `lazy` and
   `unrecorded` keeps "nothing that changes anything goes unrecorded or lazy"; `unrecorded` is
   still a person's approval.
+
+#### 5.11.12 Slice 1.8a as designed (2026-11-09, against `5e4d472`)
+
+§5.11.2 stands. What the code at `5e4d472` changes about where it is built:
+
+- **The language has no route-path tokens any more.** A route is `route.get("/*path", (req) =>
+  …)`: its path is a string, lowered as the request node's `path` param as written
+  (`lower.rs`, `route`), checked by core's `parse_path` when the routes are read
+  (`routes.rs`, `find_routes`, and `endpoint_unit`). `Tok::Star` and a printer change aren't
+  needed: the printer writes the string back. What the language does change is its words: the
+  error for a bad path (`use /todos, /todos/:id or /files/*path`), `Path`'s doc in `holon.d.ts`,
+  the editor's help for `route` (`editing.rs`) and the agent's (`agent.rs`).
+- **The editor asks core instead of keeping a copy.** `endpoint.ts` matches requests itself for
+  the request tester (`matchRoute`, `requestRecord`), a second copy of `match_route`. Instead of a
+  test keeping the copy equal, core gets `pick_path(paths, request_path)`, which `match_route` is
+  built on, and the bridge hands it to the editor as `route_pick(paths, request_path)`: `{index,
+  params}` (params as the request wrote them) or `null`. The editor keeps only what is its own:
+  which endpoints have the method, decoding, the 405. `route_path` gains `rest` beside `literal`
+  and `param`.
+- **Clashes are core's too:** `same_requests(a, b)`, whether two paths match exactly the same
+  requests, used by `read_server` and `routes.rs` (each has its own `shape` today).
+
+**Core** (`declare.rs`):
+
+```rust
+pub enum Segment { Literal(String), Param(String), Rest(String) }
+```
+
+- `parse_path`: a part `*name` (a word, the names shared with params, so `/:path/*path` is bad) is
+  `Rest(name)`, and only as the last part: `/a/*p/b` and `/*p/*q` are bad paths.
+- `pick_path`: a rest path matches when the parts before its rest match as today and one or more
+  parts follow, each one *plain*: not empty, not `.` or `..` once `%2e` is read as `.`, and with
+  no `%2f`, `%5c` or `\` in it, which would decode to a separator. A part that isn't plain makes
+  the path not match, so `/docs/a%2Fb` and `/docs/..` get a 404 from `GET /docs/*page`, as from
+  no route at all. Besides §5.11.2's `/`, `\` is refused because a folder on Windows reads it as
+  one. The rest's param is the parts joined by `/`, as written; the host decodes it as it decodes
+  every param (`data.rs`, `percent_decode`), so `css/site%20a.css` reaches the flow as
+  `css/site a.css`, and the editor decodes it as it does every param.
+- **Which wins:** a path without a rest beats any path with one, then the most literal parts, then
+  the earlier path, as §5.11.2 says.
+- `same_requests`: equal parts, every param alike, a rest only alike a rest. `/a/*x` and `/a/*y`
+  clash; `/a/*x` and `/a/:x` don't.
+
+**The tests' fillers.** The eval and server goldens (`golden.rs`, `tests.rs`) fill a route's
+`:name` with `tea` to send it a request; they fill `*name` the same way. `load.rs` already fills
+and matches `*rest`.
+
+**The sample `site`** (port 8196, 8131 being taken): the API and an app's page on one port.
+
+```ts
+route.get("/api/hello", () => ({ hello: "world" }))
+route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
+route.get("/", () => respond(page(""), { headers: html }), { log: "lazy" })
+route.get("/*path", (req) => respond(page(req.params.path), { headers: html }), { log: "lazy" })
+```
+
+`page` is a `js` holon writing the app's one page: where it was opened (escaped), and a script
+that reads `/api/hello`. A deep link (`/docs/setup`) gets the page, which says where it is; an
+unknown API path gets a JSON 404, not the page, since `/api/*rest` is the longer prefix; and
+`/api/hello` beats both. 1.8b replaces `page` with the folder's `index.html` and the files beside
+it.
+
+**Tests.** Core: the paths parsed and refused, a table of requests against paths (which wins, the
+params, the parts that aren't plain), the clashes. The host: `data.rs`'s params decoded and its
+405 over rest routes; a server test deploying `site` and asking a deep link, `/`, an unknown API
+path, `/api/hello`, `..` and `%2F`. The editor: `endpoint.test.ts` over the same requests through
+the bridge; `samples.test.ts` builds the sample. e2e: the sample deployed in the flows page's
+loop, and a test of its answers.
+
+**Docs:** `LANGUAGE.md` (routes), the manual's reference (routes, the most specific route), and
+this L4's as built.
+
+#### 5.11.13 Slice 1.8a as built (2026-11-09)
+
+As designed (§5.11.12), with what building it found:
+
+- **Core** has `Segment::Rest`, `pick_path` (the one place a request is matched: `match_route`
+  picks among its method's routes with it, and the bridge's `route_pick` among the paths it is
+  given) and `same_requests` (the one place two routes clash). The closeness of a match is
+  `(no rest, literals)`, compared as a pair, so a route without a rest always comes first.
+- **The editor matches nothing itself any more.** `matchRoute` and `requestRecord` ask
+  `route_pick`, and keep only the method's filter, decoding and the 405; `parsePath` reads `rest`
+  beside `literal` and `param`. A path core refuses matches nothing there, as on the server.
+- **What a client does with dots.** A browser, `fetch` and Playwright's request read `..` and
+  `%2e%2e` as the path's parent before they send, so they never ask `/docs/..`; `curl
+  --path-as-is` does. The server test and the live run ask it (404); the e2e test asks only what a
+  client sends as written (`%2F`, `%5C`, an empty segment).
+- **The goldens** fill `*name` with `tea` as they fill `:name`. The `site` sample comes after
+  `guestbook` in the samples' order, so the server golden's runs of every sample after it have
+  later clocks and nonces; their answers are unchanged.
+- **Run live** on a scratch server of the slice's build on loopback, the sample deployed with
+  `holon deploy --approve`: `/api/hello` answered `{"hello":"world"}`; `/api/nope/more` 404 with
+  `{"error":"no API at /api/nope/more"}`; `/`, `/docs/setup` and `/docs/a%20guide/part%202?x=1`
+  the page, opened at `/`, `/docs/setup` and `/docs/a guide/part 2`; `/%3Cb%3Ehi` the page with
+  `&lt;b&gt;hi`; `/docs/a%2Fb`, `/docs/a%5Cb`, `/docs//a`, `/docs/`, `/api/%2e%2e` and `/docs/..`
+  no route's (404); `POST /docs/setup` 405 with `allow: GET`. In a browser, the deep link opened
+  the page, its script got the API's answer, and its links went from page to page. The 19 runs
+  export and verify: the 12 that ran re-run to what their entries say, the 7 no route took are
+  logged as such.
+
+#### 5.11.14 Slice 1.8b as designed (2026-11-09, against `15d81b3`)
+
+§5.11.3–§5.11.7 stand, with what the code at `15d81b3` changes:
+
+- **No log-level amendment.** §5.11.5 has `may_record_lightly` take `FileServe` by a new
+  `is_answer()`. That rule is gone: since request-path C5's revision a handler's level is what its
+  author declares, whatever it does (`declare.rs`, `LogLevel`), and the approval says what an
+  unrecorded one leaves out. A file route is `lazy` or `unrecorded` as any route is; nothing to
+  amend, and fork 22 is moot.
+- **The record is written before the bytes go.** A strict run's record is on disk before it
+  answers (C2 e), so the checks that decide the status run before the record, in the host's
+  answer to the run (`listeners.rs`, `serve_flow`), and the record says what was sent: 200, 304 or
+  503. Only a big file's last check, its hash at the end of the stream, comes after; a mismatch
+  cuts the connection and says so on the deployment's timeline (`… changed while it was sent: the
+  connection was cut`), since the record can't be changed after it is written.
+- **A status the flow chose stays.** `return status(404, site.serve("404.html"))` answers the
+  page with a 404; only a 200 is answered 304 to a matching `If-None-Match`.
+- **A missing asset is a route of its own.** §5.11.7's "a missing asset 404 under `/assets/`" needs
+  a route without the `index.html` fallback: `GET /assets/*file`, the longer prefix (§5.11.2), so
+  a script that isn't there is a 404, never the page served as a script.
+
+**Core.**
+
+- **`file_serve`**, a genesis leaf: input `file` (a handle, `Record`), param `folder`, output an
+  Effect. Pure: from a handle of its folder (`{folder, name, size, hash, modified}`, each of its
+  type) it makes `Effect { sink: "file_serve:site", payload: {folder, name, size, hash, modified,
+  type} }`; from anything else, nothing. `type` is `content_type(name)`, a table in core by the
+  name's extension (§5.11.10's list, `text/…` with `; charset=utf-8`), else
+  `application/octet-stream`. Not a sink the host performs and not triggered: like
+  `channel_subscribe`, what a route answers with.
+- **`FileServe(folder)`**, a capability: `Sink`, not sourced, from `file_serve`'s `folder`;
+  described "answer its callers with files from the folder \"site\"". The handle's `FileRead`
+  stays the handle leaf's. `firing.rs` never performs it (as `ChannelRead`); `touches.rs`, the
+  bridge's `WCapability`, `restore.rs` and the editor's holdings (a folder's use `serve`) learn it.
+
+**The language.** `site.serve(name)`, on a folder the flow imports, lowers to
+`file_serve{folder: site}(file_handle{folder: site}(name))`; it takes a name, as `site.file(name)`
+does. It is an answer: `return site.serve(n)`, `respond(site.serve(n), { headers })`,
+`status(404, site.serve("404.html"))`, and `site.serve(a) ?? site.serve("index.html")` (the lazy
+evaluator reads the second handle only when the first file isn't there). The printer prints the
+pair back as `site.serve(name)` when the handle is the serve's alone, else each as written.
+`holon.d.ts`: `Folder.serve(name: string): Answer`.
+
+**The host.**
+
+- **`respond`** (`data.rs`) reads a `file_serve` effect as it reads a subscription, alone or as an
+  envelope's body: `DataResponse.file: Some(Served {folder, name, size, hash, modified, type})`,
+  the envelope's status and headers kept.
+- **`serve_flow`**, after the run and before its record:
+  1. `FileServe(folder)` granted, else 500 (as `ChannelRead`).
+  2. The size within `max_served_bytes`, else 500 saying so.
+  3. A 200 whose request's `If-None-Match` names `"<hash>"` (or is `*`): 304, no body.
+  4. Small (up to `inline_file_bytes`): read through the deployment's folders, hashed, sent from
+     memory if it is the handle's. Big: opened, its size and modified time the handle's, then
+     streamed by the transport. Anything else (gone, changed): 503, `retry-after: 1`, its error
+     `changed: site/x changed since the run read it`.
+  5. Headers: `content-type` the payload's `type` unless the flow set one, `etag: "<hash>"`,
+     `cache-control: no-cache` unless the flow set one. The length is the transport's.
+  6. The record's `response_body`: `file site/assets/app.js (148.2 KB, blake3 7c1e2a9b…)`.
+- **The transport** (`dataplane.rs`): `Answer::File`, the file read on the blocking pool in 64 KiB
+  chunks into a channel, hashed as it goes, its length said; a hash that isn't the handle's at the
+  end ends the body with an error, so the connection is cut before its last chunk. It holds a
+  connection as a subscription does (`max_connections`).
+- **The control plane's "send live"** gets a small file's bytes as any body, and a big one's line
+  (`file site/x (…)`): the bytes go out on the deployment's own port.
+- **`max_served_bytes`**, a file limit: 1 GiB by default, 1 TiB at most, set as any limit
+  (`limits`, the deploy bar).
+
+**Samples.** `site` in full: the folder `site` (read-only, a built app), `GET /api/hello`, `GET
+/api/*rest` (a JSON 404), `GET /assets/*file` (`site.serve(`assets/${file}`)`, 404 when missing,
+cached a year as its names carry hashes), `GET /` (`index.html`) and `GET /*path`
+(`site.serve(path) ?? site.serve("index.html")`), the page routes `lazy`. `log-archive` gains `GET
+/logs/:name/download`, the whole log as an attachment.
+
+**Tests.** Core: `file_serve` on handles of its folder and others, the content types, the
+capability and its words. The language: lowering, printing back, the errors. The host: `respond`'s
+`file`; a server test of `site` against a folder: a deep link, the script's type, a PNG's exact
+bytes, a 304, a missing asset's 404, a file changed between its handle and its send (503), a big
+file streamed (through the data plane) and cut when changed while sent, a file past
+`max_served_bytes`, a deployment not granted `FileServe`. The goldens: `site` reads a folder now,
+so the server golden leaves it out. e2e: the folder bound to a fixture `dist/`, the sample
+deployed, a deep link, the script, the PNG's bytes, a 304, a missing asset; `log-archive`'s
+download.
+
+**Docs:** the files guide (serving a folder), the permissions page, `LANGUAGE.md`, the manual's
+reference and leaves, and this L4's as built.
+
+#### 5.11.15 Slice 1.8b as built (2026-11-09)
+
+As designed (§5.11.14), with what building it found:
+
+- **Core** has `file_serve` (genesis 193), `content_type` (exported, so the host and a later
+  `Content-Type` check read one table) and `FileServe`, in the saturated set too (22). A handle is
+  taken only whole: its five fields, each of its type, the hash BLAKE3's lowercase hex, and nothing
+  more, so a record a flow builds that isn't one gives no answer.
+- **The language** lowers `site.serve(name)` on the folder's own path, before the method table, and
+  takes exactly one name; the printer prints the pair back when the handle is the serve's alone
+  (`inline_source`), else `file_serve(…)` by name. It is an expression, as `site.file(name)` is, so
+  `??`, `status(…)` and `respond(…)` take it with no rule of their own.
+- **A name no file can have names no file.** A route's path is the caller's: `/Talk:Page` or
+  `/docs/con` handed to `site.serve` made the run fail (a name with a `:`, or Windows' `CON`, is
+  `bad_file_name`'s) and answer 500 where the page was meant. A read of such a name (`existing`)
+  now has no value, so `??` falls back; a name that would lead out of its folder (a `..` part, a
+  leading `/`, a `\`) still fails the run, as the named-folders note has it. A folder's own name is
+  no file either (`open_file`): Windows won't open one as a file, so `/assets` answered 500 there
+  and nothing on Linux.
+- **The checks are `listeners::serve_file`,** run after the run's other checks and before its
+  record, its error the entry's (`changed: …`, `refused: …`). A small file is read and hashed there
+  and sent as any body; a big one is opened and checked by size and time, and handed to the
+  transport open (`Served::opened`), so what is streamed is the file checked.
+- **`holon verify` expects the host's status,** not the flow's, for a file: `served_status` is the
+  one rule, shared by the host and verify, from the flow's status, the request's `If-None-Match`
+  and the entry's error. Without it a 304 re-ran as the flow's 200 and differed.
+- **The transport** (`Answer::File`) holds back the last 64 KiB piece until the whole is the
+  handle's, says its length (`SizeHint::with_exact`), and ends a changed file with a body error, so
+  hyper cuts the connection short of its `Content-Length`. The body's error type is `io::Error`
+  now; the other answers can't fail.
+- **The record** says `file site/assets/app.4f2a.js (19 bytes, blake3 9a1c…)`, sizes as the folder
+  guide writes them (`size_text`, KiB); the control plane's "send live" gets a big file's line,
+  a small one's bytes.
+- **The editor** has the leaf in the files group of the palette, `FileServe` among the folder uses
+  (`serves its files`), and `max_served_bytes` in the deploy bar. The permissions page gains the
+  file limits, which it hadn't listed.
+- **Tested:** core (the effect from a handle and not from anything else, the types, the
+  capability), the language (lowering, the errors, printing back), `respond`'s file, the `site`
+  server test (§5.11.14's list, through a real socket for the big file, its cut on the timeline),
+  the goldens (`site` leaves the server golden; the evaluator's gains the two routes), vitest,
+  wasm, and e2e: `site` against a fixture build, a deep link opening in a browser, its script
+  running; `log-archive`'s download, 2.5 MB, so streamed.
+- **Run live** on a scratch server of the slice's build: §5.11.16.
+
+#### 5.11.16 Slice 1.8b run live (2026-11-09)
+
+A scratch server of the slice's release build, `site` bound read-only to a fixture build (its
+page, `assets/app.4f2a.js`, an 11-byte PNG, a 5.8 MB `assets/big.txt`), `logs` and `archive` for
+`log-archive`, both samples deployed as written (8196, 8124), approved with their asks
+(`FileServe("site")`, `FileServe("logs")` beside the reads):
+
+- **A deep link** (`/docs/a%20guide/part%202`) answers the page: 200, `text/html; charset=utf-8`,
+  its `etag` its BLAKE3 hash, `no-cache`, 178 bytes; `/` the same. In the browser pane
+  `/docs/setup` opened the app there, its script ran ("Opened at /docs/setup") and asked its API
+  ("The API says hello, world."), with nothing on the console.
+- **The script** is `text/javascript; charset=utf-8` with the route's `immutable` cache-control;
+  the PNG's bytes arrive as written, `image/png`.
+- **The browser's copy:** `If-None-Match` with the etag a 304 and no body; a stale one a 200.
+- **A missing asset** a 404 `{"error":"not found"}`, never the page; `/api/nope` the API's own
+  JSON 404.
+- **Names no file can have:** `/Talk:Page`, `/docs/con` and `/assets` (a folder) the page, by
+  `??`; `/%2e%2e/secret` matches no route: a 404, recorded with nothing run.
+- **The big file** streamed: 200, `content-length: 5800000`, the bytes the file's. Sent again at
+  400 KB/s with its last 8 bytes changed two seconds in, the connection was cut at 5,439,488
+  bytes (curl: a partial transfer), and the timeline said "site/assets/big.txt changed while it
+  was sent: the connection was cut".
+- **`log-archive`'s download:** `attachment; filename="app.log"`, 2,508,890 bytes as written; a
+  log that isn't there a 404.
+- **Exported and verified:** `site`'s 21 runs re-ran but one (the `..` path, where nothing ran),
+  the 304 among them, each what its entry says; the record kept `file site/assets/big.txt
+  (5.5 MiB, blake3 9538ba51…)`, never the bytes. `log-archive`'s 2 runs re-ran too.
+
+Not seen live: the 503 for a file changed between the run and its send, which needs the change to
+land inside a run's few milliseconds; the server test makes it by calling `serve_file` with a
+handle the file no longer has.
 
 ### 5.12 Inbound WebSockets: a connection whose every message is a run
 
@@ -1612,6 +3630,212 @@ Nothing here needs a second representation of binary data.
   connection's runs are in order.
 - **Request-path I-g and I-h:** a block that sends or writes is `strict`; `unrecorded` is a
   person's approval.
+
+#### 5.12.14 Slice 1.9a as designed (2026-11-09, against `870402d`): text frames
+
+Re-checked against the code as it is now. What changed since §5.12 was written:
+
+- **The language is TypeScript's syntax** (`docs/LANGUAGE.md`): a handler is a top-level call whose
+  function is the handler, its options last. A websocket is three functions on one path, so it is
+  one call with its blocks in an object, beside `route.get`, as uWebSockets.js writes `app.ws(path,
+  { open, message, close })`:
+
+  ```ts
+  route.websocket("/room/:name", {
+    open: (req) => {
+      people[req.conn] = { name: req.params.name, since: now }
+      room.send({ joined: req.params.name })
+      return room.subscribe()
+    },
+    message: (m) => {
+      room.send({ from: people[m.conn].name, text: m.text })
+    },
+    close: (c) => {
+      delete people[c.conn]
+      room.send({ left: c.params.name })
+    },
+  })
+  ```
+
+  A block may be an arrow or a method (`open(req) { … }`); `fmt` writes arrows. Each is optional,
+  at least one is there: without `open` a connection is accepted and nothing runs until it sends,
+  without `message` a frame closes it (1003), without `close` its end runs nothing. The options are
+  `{ log: "lazy" }` for every block, or by block, `{ log: { message: "unrecorded" } }`.
+- **Log levels are the author's** (request-path C5 as built, "Log levels are authored"): any block
+  may be `lazy` or `unrecorded`, whatever it does, as any handler may. §5.12.5's rule that a block
+  that sends is strict is gone with it.
+- **The engine is `tungstenite` 0.30** (in the tree since 1.6b, sync, its `handshake` feature),
+  not tokio-tungstenite: the host feeds it the bytes hyper's upgraded connection reads, through an
+  in-memory pipe, and writes what it queues (frames, pongs, the closing handshake) back. No new
+  crate; tokio gains its `io-util` feature.
+- **The connection's record is its runs** (§5.12.3 simplified): `open` says who connected, when,
+  from where (the opening request); each `message` what it sent; `close` how it ended, its code and
+  reason, the host's reason when the host closed it (too big, too fast, no pong, going away). Pings
+  are the host's and not recorded. A flow that wants a record of every end declares `close`.
+
+**What a block is.** Each block lowers to a `websocket{path, on, log}` trigger node, its outputs
+`request` (the record), `params`, `query` and `json`; its group is wrapped as a caller-shaped unit
+(the record in, output 0 its answer, then its effects) with frozen `declare = "websocket"`, `path`,
+`on` (`open`, `message` or `close`) and `log` when it isn't strict. `read_server` gathers them into
+`Server.websockets`, by path, each block with its hash and level. Labelled `WebSocket /room/:name
+message`, as the log, the tallies and an `Unrecorded(…)` item name it. A websocket's path clashes
+with another websocket's or a GET route's of the same shape (`same_requests`): a path is a page or a
+connection. A flow with a websocket needs a port, as one with a route does.
+
+**What each block receives:**
+
+| Block | Its record | |
+|---|---|---|
+| `open` | the opening request, `{method, path, params, query, headers, body, conn}` | `conn` the connection's id, 16 hex digits the host draws |
+| `message` | `{conn, path, params, query, text}` | `m.json` its text parsed, as `req.json` is |
+| `close` | `{conn, path, params, query, code, reason}` | the browser's code and reason, or the host's |
+
+`params` and `query` are the opening request's, on every record, so a block reads `m.params.name`
+without keeping it.
+
+**What each block answers:**
+
+- **`open` answers as a route does** (`return`, `status`, `respond`, `??`): a subscription
+  (`return room.subscribe()`, `from: "kept"` too) accepts and subscribes the connection; an answer
+  of status 300 or more refuses the upgrade with that response (`?? status(403)`, and an absent
+  answer 404, a route's rule); any other accepts and sends its body as the first message (text as it
+  is, anything else as JSON); 204 (writes alone, `status(204)`) accepts and sends nothing. The 101
+  goes out once its run is over and its record is where its level puts it, so its writes have
+  landed before the first message is read. A refusal's headers are the flow's; an acceptance's are
+  the host's.
+- **`message` answers with a value alone**, as an action does: sent back on its connection only;
+  none, or an absent one, sends nothing. `status(…)` and `respond(…)` are refused there.
+- **`close` answers nobody**: a `return` with a value is refused.
+
+**The host** (`websockets.rs`, beside `ws.rs`'s feeds, on the data plane's runtime):
+
+- **The opening request** is a GET with `Upgrade: websocket`, version 13 and a key, on a websocket's
+  path. A GET without the upgrade there is a 426. Past `max_websockets` open connections of the
+  deployment it is a 503, before `open` runs.
+- **Its origin is checked,** as a browser's page can open a WebSocket to any site with its cookies
+  and CORS doesn't apply: one with an `Origin` is accepted when the origin is the request's own
+  host, or one of the flow's `browsers` (or `"*"`); else a 403, and nothing runs. A client that
+  isn't a browser sends none.
+- **Each text frame** is queued for its connection (32 at most; full, 1013 "try again later") and
+  run by `message`, one at a time, in order; connections run concurrently, as requests do.
+  Binary frames close it with 1003 (§5.12.8, slice 3), a message past `max_message_bytes` with 1009,
+  text that isn't UTF-8 with 1007, more than `messages_per_second` (bursts of twice that) with 1008.
+- **Replies and packs** go out as text frames in the order the host sends them, a pack once its run's
+  record is where its level puts it, as for server-sent events.
+- **Pings** every 15 s; a connection that answers none for 30 s is closed (1001).
+- **`close` runs once,** after the connection's last message has run, whichever side closed it, with
+  the browser's code and reason, the host's, or 1006 for a connection that dropped without a close.
+  Messages that came before the close still run, in order.
+- **Pausing or stopping** the deployment closes its connections with 1001, and each one's `close`
+  runs, the end of a connection opened while it ran. A server that stops or crashes runs none: what
+  a flow keeps by `conn` may outlive its connection, which it is told.
+- **Redeploying** keeps the connections: the next message runs the new version's block; a version
+  without the path closes them (1001).
+
+**Consent.** `WebSocket("/room/:name")`, "hold WebSocket connections on /room/:name, and run on each
+message", read from the server's children as `Action(name)` is. Subscribing asks `ChannelRead`,
+sending `ChannelSend`, a reply computed from a secret `SecretAnswer`, as now. Three limits, each
+asked for above its default up to its ceiling: `max_websockets` (100, 10,000), `max_message_bytes`
+(64 KiB, 1 MiB) and `messages_per_second` (10, 1,000).
+
+**The log.** Each run is an entry of kind `websocket`, its route the block's label, its request the
+record. `open`'s status is the handshake's (101, or the refusal's). `holon verify` re-runs each by
+its label, as an action's.
+
+**The sample, `room`** (port 8132): a chat. `GET /` answers its page, a `const` of HTML whose script
+opens `/room/<name>`; `open` keeps who joined, by `conn`, says so on the channel and subscribes;
+`message` sends what was said with who said it; `close` says who left. The server test opens
+connections over a real socket; e2e opens two from the editor's browser, sends from one, sees it
+on the other, closes one and sees `left`.
+
+**Not in this slice:** a pack to one connection (`room.send(v, { to: conn })`, slice 2, with closing
+from the flow, fork 2); binary frames (slice 3); subprotocols (fork 1); the deployment's page
+listing its open connections.
+
+#### 5.12.15 Slice 1.9a as built (2026-11-09)
+
+As designed (§5.12.14), with what building it found:
+
+- **Core** declares a websocket block (`declare = "websocket"`, `path`, `on`) and the server's
+  websockets, each its blocks in the order written, labelled `WebSocket /room/:name message`;
+  `WebSocket(path)` is a trigger (`manifest_trigger`, after `NetworkIngress`) and sourced. A path
+  is a page or a connection: a websocket a GET route's path matches, or another websocket's, is
+  refused, as two routes alike are.
+- **The language** lowers each block to a `websocket{path, on, log}` template node, its trigger;
+  the template gives the record, its params and query, and the text parsed (`json`). The mistakes
+  say each block's rule at its column: a `message` answering with `status`, a `close` returning a
+  value, an `open` that does nothing (it says that without `open` a connection is accepted as it
+  comes), a path written twice. A subscription anywhere but a route's or an `open`'s answer now
+  says both.
+- **No new crate.** The design's table had tokio-tungstenite; the host instead feeds tungstenite's
+  own `WebSocket` (sans I/O, the `handshake` feature already in the tree for feeds) the bytes
+  hyper's upgraded connection reads, through a `Pipe` that says `WouldBlock` when it has nothing,
+  and writes what it gives back. tokio gains its `io-util` feature. The 101's
+  `Sec-WebSocket-Accept` is tungstenite's `derive_accept_key`; hyper serves connections
+  `with_upgrades()`.
+- **A message it can't read ends the reading:** past `max_message_bytes`, text that isn't UTF-8 or
+  a frame that breaks the protocol leaves what follows unreadable, so the host sends its close and
+  ends the connection at once, not waiting the 5 s it gives a peer's close answer.
+- **An opening `open` accepted but the host couldn't hold** (its channel at `max_subscribers`, the
+  flow gone, no upgrade to take) was answered 503 with nothing more, so what `open` had kept stayed
+  for good. Its `close` now runs, as a dropped connection's does (1006, what the page sees too).
+- **Some ends run no `close`:** the block is looked up in the version deployed when it runs, so a
+  connection a new version without its path closes, or one removing the deployment closes, has no
+  `close` left to run, as one a server that stops ends. The guide says so, and that a flow can
+  clear what it keeps of them with an action.
+- **Paused, a connection's queued messages don't run** (a paused flow runs nothing), but its
+  `close` does, as designed.
+- **A verify gap, not this slice's:** two runs beside each other that write different keys of one
+  collection leave a state neither run left, and `holon verify`'s state chain says the later one
+  DOESN'T FOLLOW. Routes have it too; two `close` runs at once made it plain (the server test's
+  client didn't answer the host's close, so two waited the 5 s and overlapped). The test now
+  answers as a browser does; the gap is a follow-up for verify.
+- **The editor** derives the websockets (`SocketDraft`), lists each path with its blocks in the
+  server panel, counts them as what starts runs (its deploy bar's "nothing would start a run",
+  which hadn't counted mail, feed or queue handlers either), offers the three limits under ⚙,
+  anchors each block's node to its text, and replays a block's run inside its group, its record
+  the template's input.
+- **The manual** gains a WebSockets guide and a reference section; the permissions page gains the
+  capability and the WebSocket and channel limits, which it hadn't listed.
+- **Tested:** the host's pieces (a reply's text, the origin rule, the rate's bucket, the places
+  and the closing), the server over a real socket (§5.12.14's list: 426, 403 from another site
+  and from `open`, a first message, 1003 with no `message` block, two in a room, binary 1003,
+  1009, 1008, a pause's 1001 with `close` run, the log's entries and their statuses, nobody left
+  in `people`, export and verify each run Matched) and the opening not held (503, `close` with
+  1006); the language's lowering, mistakes and printing back; the goldens (the evaluator's and
+  the server's gain `room`; `due-dates` after it moves with the fixed clock); the leaves page;
+  `holon.d.ts`; vitest; wasm; e2e, `room` in two browsers.
+- **Run live** on a scratch server of the slice's build: §5.12.16.
+
+#### 5.12.16 Slice 1.9a run live (2026-11-09)
+
+A scratch server of the slice's release build, `room` deployed as written (8132) and approved with
+its asks (`WebSocket("/room/:name")` beside the channel and the collection), driven from two tabs of
+the browser pane and from a raw-socket client:
+
+- **Two pages in the room:** ann joined, then bob; ann's page said "bob joined", bob's "hello from
+  bob" showed on both, and so did ann's after a redeploy, which kept both connections open. Closing
+  bob's tab, ann's page said "bob left".
+- **The page's own mistake:** the console said the name's `pattern` (`[A-Za-z0-9_-]+`) isn't a
+  valid expression, as browsers now read it with the `v` flag, where a bare `-` in a class is
+  refused, so the field took any name. The sample takes letters, digits and `_`, and the page
+  served after the redeploy refused `a-b` and took `ann_2`.
+- **Refusals:** a GET without the upgrade a 426 with `Upgrade: websocket`; a page from
+  `http://evil.example` a 403; a path with no websocket a 404; an opening while the flow was paused
+  a 503, and a 101 once it ran again. None is in the log: nothing ran.
+- **Its limits:** a binary message closed with 1003 ("this WebSocket takes text messages"), 70 KiB
+  with 1009, 30 messages at once with 1008 after the 20 its burst allows; a watching connection
+  heard each join, the 20 messages and each leave, as each one's `close` told the room. Text that
+  isn't UTF-8 closed with 1007.
+- **A pause** with dee connected closed it with 1001 ("the flow was paused or stopped"), after the
+  message it had sent was heard; its `close` ran and `people` was empty again.
+- **Exported and verified:** 44 runs, the chain unbroken; 40 re-ran, each what its entry says (7
+  opens at 101, 23 messages, 7 closes, the page 3 times); the 4 where nothing ran are `/nope` and
+  the browser's `favicon.ico`. The closes kept their codes and reasons: bob and ann 1001 (their
+  tabs going), the client's 1000, 1003, 1009, 1008 with the host's words, dee's pause.
+
+Not seen live: `max_websockets` and a channel's `max_subscribers` reached (the server test makes
+the second), 1013 for a full queue, and the 30 s of silence, which a browser's own pong answers.
 
 ### 5.13 What else a web app asks for
 
@@ -2342,17 +4566,22 @@ engine.
 
 ### Tier 1: essential host capabilities
 
+**Order, revised 2026-11-09:** after 1.3, step 1.6, then 1.8 (its rest segment first, 1.8a, then
+answering with a file: §5.11.8), then 1.9. Steps 1.4, 1.5 and 1.7 are deferred, taken when asked;
+1.8 was deferred with them from the 2026-11-08 revision until this one. 1.6 needs 1.4's request
+signing only for SQS (fork 8): its design settles the queue engine with 1.4 deferred.
+
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6) | §5.1 (here) | 1.1 | M |
-| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
-| 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
-| 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
-| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
-| 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
-| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
-| 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
+| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5); 1.3c, mailboxes that log in with OAuth, built (§5.2.7) | §5.2 (here) | 1.1 for attachments | L |
+| 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
+| 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
+| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in slices (§5.9.1), all built: 1.6a the subscription runtime and server-sent events (§5.9.3), 1.6b WebSocket feeds (§5.9.5), 1.6c a feed resumed (§5.9.7), 1.6d a feed's gaps (§5.9.8), 1.6e the queue (§5.9.10, live against ElasticMQ and moto; real AWS still to come), 1.6f a Postgres channel (§5.9.12) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
+| 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment (built, §5.11.13), 1.8b answering with a file (built, §5.11.15) | §5.11 (here) | — | M |
+| 1.9 | **Inbound WebSockets:** `route.websocket(path, { open, message, close })`, a run per message, replies and channel packs out, the runs a connection's record (§5.12); in slices (§5.12.11), 1.9a text frames (built, §5.12.15) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
   - 1.1 `file-checksums` (a binary file's hash, into a manifest);
@@ -2379,23 +4608,27 @@ engine.
 **Tracks.** 1.1 is the one most others stand on, so it starts first. Then:
 
 ```
-A  1.1 ──► 1.2 ──► 1.5
-B  1.4  (text files at once; binary files once 1.1 lands)
+A  1.1 ──► 1.2 ──► 1.5 (deferred)
+B  1.4  (deferred; text files at once; binary files once 1.1 lands)
 C  1.3  (text mail at once; attachments once 1.1 lands)
 D  1.6, 1.9  (one engine, tokio-tungstenite; 1.9's text frames at once, binary once 1.1 lands)
-E  1.7
+E  1.7  (deferred)
 F  1.8  (the rest segment, then FileServe)
 ```
 
 Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
-`tests.rs`) merge into `main` one at a time, each rebased on the last.
+`tests.rs`) merge into `main` one at a time, each rebased on the last. Since the 2026-11-09
+revision, C, D and F are the ones running, one after another: 1.3 to its end, then 1.6, then 1.8,
+then 1.9.
 
 ### Between Tier 1 and Tier 2: the TypeScript slices
 
-Decided 2026-11-08: once Tier 1's steps 1.1 to 1.9 have landed, the TypeScript syntax's slices 6
-to 11 come next ([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and
-requests that wait, waits a route's caller outlasts, waiting loops, failures with a reason, and
-editors and tools. Tier 2 starts when they have landed; Tier 3 is still taken when asked.
+Decided 2026-11-08: once Tier 1's steps 1.1 to 1.3, 1.6, 1.8 and 1.9 have landed (the rest
+deferred, above; 1.8 added 2026-11-09), the TypeScript syntax's slices 6 to 11 come next
+([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and requests that
+wait, waits a route's caller outlasts, waiting loops, failures with a reason, and editors and
+tools. Tier 2 starts when they have landed; Tier 3 and the deferred Tier 1 steps are taken when
+asked. Two of Tier 2's steps stand on deferred ones: 2.3 needs 1.4, and 2.4 needs 1.7.
 
 ### Tier 2: operationally essential
 
@@ -2444,7 +4677,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
    refreshing it), or those mailboxes are reached through their HTTP APIs (Microsoft Graph, Gmail
    API) as other backends.
    *Lean:* SMTP and IMAP with passwords first (most providers and relays take them), Graph as the
-   second backend if the job is on Microsoft 365.
+   second backend if the job is on Microsoft 365. *Decided* (2026-11-09, §5.2.6): the host does
+   OAuth, logging in to the same IMAP and SMTP with `XOAUTH2`, which Microsoft 365 and Google
+   Workspace both take; Graph and the Gmail API stay in Tier 3, for a tenant that turns IMAP off.
 3. **The tz database.** Time zones need it in the binary (a few hundred KiB) and in the wasm
    build, and its updates are releases. *Lean:* UTC and fixed offsets first; zones when a job asks.
 4. **Recipients' grain.** Exact addresses, domains with `*`, or addresses read from a collection
@@ -2463,6 +4698,7 @@ Taken when a job or a user asks, each with its design here and its sample all th
 8. **Which queue first** (§7, step 1.6). SQS's API is HTTPS, so its e2e stand-in is an
    in-process stub and its signing is S3's (step 1.4); RabbitMQ is what self-hosted shops run,
    but its stand-in is a real broker in CI. *Lean:* SQS-compatible first, RabbitMQ in Tier 3.
+   *Decided* (2026-11-09, §5.9.1): SQS's API first, its signing written in the host.
 9. **Which user a command or terminal runs as.** The server's own user can read the server's
    files, the secrets key among them. Another OS user (or, on Linux, a namespace) per binding
    confines it, but needs setup Holon can't do alone. *Lean:* an optional user in the binding,
@@ -2545,12 +4781,19 @@ Taken when a job or a user asks, each with its design here and its sample all th
     *Lean:* pure-Rust crates that build for wasm (`miniz_oxide`; RustCrypto's `rsa`, `p256`,
     `ed25519-dalek`; `pgp`), each pinned in `Cargo.lock` with a comment as `libm` is, with no
     feature that reads the clock or the operating system's randomness; decimals, CSV, dates and
-    XML by hand.
+    XML by hand. *Decided for compression* (§5.1.8): `miniz_oxide` 0.9.1, its `with-alloc`
+    feature alone, pinned with its comment and a test that pins the bytes it writes; core has
+    seven. *Decided for signatures* (§5.1.10): `rsa` 0.9.10, `p256` 0.13.2 and `ed25519-dalek`
+    2.2.0, without their default features, so none reads the operating system's randomness, each
+    pinned with its comment; core has ten. *Decided for OpenPGP* (§5.1.12): no `pgp` crate;
+    `curve25519-dalek` 4.1.3, `aes` 0.8.4 and `sha1` 0.10.7, without their default features,
+    each pinned with its comment; core has thirteen.
 29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
     must give the same answer on every replay (R1). Either the host answers it as a request, its
     ciphertext kept in the log as an answer is, or the randomness comes into the run from a
     driver, as `random` does, made bytes. *Lean:* the driver: the leaf stays pure over its inputs,
-    and verify recomputes the ciphertext from the logged randomness. Decided in 1.2f.
+    and verify recomputes the ciphertext from the logged randomness. *Decided so* (§5.1.12): a
+    run's randomness is 32 bytes, `random` read from them and `random_bytes` them.
 30. **XML's shape in a flow** (§5.1.5). JsonML's lists, one form both ways, or records as
     fast-xml-parser makes them, easier to read (`doc.Document.GrpHdr.MsgId`) but losing a
     schema's order when written, and changing shape between one child and several. *Lean:* lists,
@@ -2591,6 +4834,154 @@ Taken when a job or a user asks, each with its design here and its sample all th
 39. **Exit codes of an app.** *Lean:* 0 and 1 by the answer's status, an envelope's `exit` when
     it gives one, 2 for a command line that doesn't parse, and the BSD sysexits for the app's own
     refusals: 70 a damaged payload, 77 not accepted, 78 a secret or binding missing.
+40. **A token without `exp`** (§5.1.9). jose and jsonwebtoken accept one, valid forever. *Lean:*
+    refused: a bearer token that never expires is a credential nobody can take back; a flow that
+    means to trust one checks its signature with `hmac_sha256` itself. *Built so* (§5.1.10).
+41. **Keys beyond these** (§5.1.9). X.509 certificates (a JWK's `x5c`, a PEM `CERTIFICATE`), P-384
+    and P-521 (ES384, ES512), Ed448. *Lean:* when an issuer brings one; each is another crate
+    (`p384`, `x509-cert`), and the algorithms here are what the major issuers sign with.
+42. **A verify that says whether a secret matched** (§5.1.9). With a shared secret, `jwt_verify`
+    tells whether a guessed token's signature matches, as `secure_equals` tells whether two texts
+    do. *Lean:* the taint stops, as at `hmac_sha256`: what comes out is the token's own payload.
+    *Built so* (§5.1.10).
+43. **A bearer token in the log** (§5.1.9). A run's log keeps its request, its `authorization`
+    header included, so whoever reads the deployment's log can read a token while it is still
+    valid. *Lean:* as today, the log's readers are the deployment's and `exp` bounds the token's
+    use; a header kept by its hash alone is a log setting of its own, later.
+44. **OpenPGP's version 6** (§5.1.11). RFC 9580's keys (X25519 and Ed25519 as their own
+    algorithms, SHA-256 fingerprints) and its AEAD packet (SEIPD version 2). GnuPG reads neither
+    yet; Sequoia and OpenPGP.js write both. *Lean:* when a bank's key is one, beside version 4.
+45. **Other curves and old algorithms** (§5.1.11). P-256 to P-521, Brainpool, DSA and ElGamal.
+    *Lean:* NIST curves when a bank brings one (`p256` is already in core; `p384` and `p521`
+    aren't); DSA and ElGamal never: 1,024-bit DSA is what they mostly are.
+46. **Signed messages** (§5.1.11). A message that carries its own signature (`gpg --sign`, a
+    cleartext signature) rather than one beside it. *Lean:* with decrypting (step 1.5), since a
+    bank's signed file is usually encrypted too and its signature is inside.
+47. **Compressing before encrypting** (§5.1.11). GnuPG compresses by default. *Lean:* never:
+    compression before encryption leaks lengths, and a flow that wants it zips first.
+48. **SHA-1 in self-signatures** (§5.1.11). Keys made before about 2012 bind their subkeys with
+    SHA-1. *Lean:* accepted in a key's own self-signatures and bindings, as GnuPG does, since a
+    forged one needs the key's owner; refused in a document's signature, where a collision is the
+    attack.
+49. **The literal packet's file name** (§5.1.11). GnuPG writes the file's name, and some bank
+    systems name what they decrypt by it. *Lean:* none, until one asks; it is advisory, and a
+    leaf of its own would carry it.
+50. **SMTP by hand, and how sure delivery is** (§5.2.2). `lettre` does SMTP and MIME, with some
+    thirty crates and its own TLS choices; SMTP's commands and the MIME a flow sends are small and
+    the host writes every byte of them. A mail the server accepted can't be taken back, and one
+    whose acceptance was lost on the wire can't be known: sent again with the same `Message-ID`,
+    a receiver may show it twice. *Lean:* by hand; tried again on a temporary failure, the same
+    `Message-ID`, so a duplicate is rare and recognizable. *Decided so* (§5.2.3), with a spool in
+    place of a delivery record: a mail's file is written before its run's record, and a restart
+    sends only those whose run the log holds.
+51. **Bcc and Reply-To** (§5.2.2). A blind copy hides a recipient from the others, and Reply-To
+    sends the answers elsewhere: both are what a phishing mail uses. *Lean:* neither until a flow
+    needs one; then each held to the binding's `--to` as `to` is. *Decided so* (§5.2.3): a
+    message with either has no value.
+52. **The host's own address** (§5.2.2). A mailed link needs an address the world reaches, and
+    the host knows only where it listens. *Lean:* the flow writes its base as text until a
+    setting names it (`--public-url`), shared with OAuth's callback (fork 2). *Decided so for
+    now* (§5.2.3): the sample writes `const site`.
+53. **Mail sent as a run parks** (§5.2.2). A waiting run's channel packs go out as it parks; its
+    mail could too, so the run that waits mails its own link (`resume_token`). *Lean:* when a
+    sample needs it; the route that starts the run knows its token today. *Decided so for now*
+    (§5.2.3): the sample's route mails the link.
+54. **MIME read by hand** (§5.2.4). `mail-parser` reads more of what is out there: every charset
+    `encoding_rs` knows, and the malformed mail a mail server has met. Reading MIME is a few
+    hundred lines beside where core writes it, and in core the editor's replay reads a message as
+    the host does. *Lean:* by hand, four charsets; a crate when mail in another one turns up.
+55. **Whose verdict** (§5.2.4). The host could check DKIM itself, but the key is a DNS lookup
+    outside the run, and SPF needs the address that connected, which IMAP never sees; the
+    mailbox's own server decided both as the mail came in. *Lean:* that server's verdict, named
+    by its `authserv-id`, none believed by default.
+56. **IDLE** (§5.2.4). IMAP's `IDLE` says at once that a message came; a look every minute is
+    simpler, and works with every server. *Lean:* looking, `--every`; `IDLE` when a flow needs
+    seconds.
+57. **A failed run's message** (§5.2.4). Moved as any other, left in the folder for another try,
+    or moved to a folder of its own. *Lean:* moved, as a file whose run failed isn't run again:
+    its record says why; a `--failed` folder when someone needs to tell them apart in the mailbox.
+58. **A feed's runs one at a time, or several at once** (§5.9.1). One at a time keeps the feed's
+    order and makes the position one id; several at once go faster but finish out of order, so
+    the position is the oldest still running, and a crash runs again whatever finished after it.
+    *Lean:* one at a time; `--parallel N` when a job asks.
+    *Decided* (2026-11-09) as the lean.
+59. **The connection's own record, now or with the socket** (§5.9.1). *Lean:* feeds and queues
+    put what their connection did on the deployment's timeline (connects, reconnects, skipped
+    messages), as a mailbox's looks are; fork 20's record comes with the socket, whose sign-ons
+    and heartbeats need one.
+    *Decided* (2026-11-09) as the lean.
+60. **A queue message whose run failed** (§5.9.1). Deleted, as a mail is moved, or left to come
+    back and run again until the queue's redrive policy moves it aside. *Lean:* deleted, so one
+    bad message doesn't run forever, its record saying why; `--keep-failed` leaves it for a queue
+    that has a redrive policy.
+    *Decided* (2026-11-09) as the lean.
+61. **`on.feed` and `on.queue`, or `on.event` and `on.message`** (§5.9.1). *Lean:* named for
+    what they listen to, as `on.mail` and `on.file` are; *message* stays the socket's.
+    *Decided* (2026-11-09) as the lean.
+62. **`latest` replaces whenever its key waits, or only once the buffer is full** (§5.9.4).
+    Only once full, a slow handler first works through `--buffer` stale prices. *Lean:* whenever:
+    a price that waits while a newer one comes is stale, full or not. The buffer then holds one
+    message a key, and a new key waits for room.
+63. **Which messages run: filtered by the binding (`--only`) or by the handler** (§5.9.4). The
+    messages a flow doesn't want are mostly the answers to the binding's own subscription and
+    heartbeat. *Lean:* the binding, which writes what they answer; a handler's own filter waits
+    for a job.
+64. **A WebSocket feed resumed from its position** (§5.9.4). *Lean:* not in 1.6b. The feeds
+    a job brings send a snapshot on subscribe, not a replay, and the position already stops a
+    message running twice. A feed that resumes from a sequence would get it written into its
+    subscription (`{position}`) when a job asks.
+    *Decided* (2026-11-09) otherwise: asked how a feed resumes properly, the owner took a resume
+    where the binding says (`--resume`, 1.6c), and the gaps of a feed that can't replay
+    (`--sequence`, 1.6d), after 1.6b (§5.9.6).
+65. **The trading bot's order half in 1.6b** (§5.9.4): the order a strict action, its client id,
+    approval over a limit, reading the exchange's orders back. None of it is new to 1.6b, and the
+    language has no loop that waits on a call until the TypeScript slices 6 to 11. *Lean:* in
+    1.6b, kept to what the language has: one order a run, the orders read back as one value.
+    §5.9 promises step 1.6's sample shows it.
+66. **A live run against a public feed** (§5.9.4): Coinbase Exchange's ticker, which needs no
+    account, for the prices; the orders to the stand-in. *Lean:* yes; it is an outside service
+    with no credentials to keep.
+67. **`--resume` and an id of several fields** (§5.9.6). The position `BTC-USD/41` is no cursor.
+    *Lean:* refused: a feed that resumes takes one value, and a binding that needs two writes them
+    in a `message:` the host can't build from one.
+68. **`--resume message:` in place of the subscription, or after it** (§5.9.6). *Lean:* in place:
+    a feed that resumes by message takes the position in its subscription (Nostr's `REQ` with
+    `since`, a GraphQL subscription's variables); sending both would subscribe twice.
+69. **A gap counted as the message is read, or as it runs** (§5.9.6). As it runs, `latest` and
+    `skip` would make gaps the feed never made. *Lean:* as it is read, the feed's gaps only, a
+    replaced message's gap carried by the one that replaced it.
+70. **A message `--only` passes over counted in the sequence** (§5.9.6). *Lean:* counted: the feed
+    numbered it, and a flow that filters a `full` channel to its matches would otherwise see a gap
+    at each message of another type.
+71. **A number not above the last** (§5.9.6): a message sent again, or a count begun anew on a new
+    connection. *Lean:* `e.gap` 0, and the number kept as the last: a duplicate with an id is
+    passed over anyway, and a feed that numbers per connection says nothing of what came between
+    connections, which no field can mend.
+72. **How many keys' numbers are kept** (§5.9.6). *Lean:* 10,000, the least recently read
+    forgotten: a feed of every symbol on an exchange fits, and a key forgotten only loses one gap.
+73. **Two slices and two samples** (§5.9.6): `--resume` with `bluesky-mentions`, `--sequence` with
+    `trade-tape`, a commit each. *Lean:* yes: neither needs the other, and no one feed shows both
+    (Jetstream's `seq` skips the collections it filters out; Coinbase's trades can't be replayed).
+74. **Live runs against Jetstream and Coinbase Exchange's trades** (§5.9.6): public, no account.
+    *Lean:* yes.
+75. **Which AWS credentials** (§5.9.9). A key id and secret in the URL, with a session token for
+    temporary keys; or the credential chain AWS's SDKs read (environment, profile, an instance's
+    role). *Lean:* the URL, as every other binding's login is, read from a source each time; the
+    chain when a job runs on AWS and has a role to use.
+76. **SQS's JSON protocol or its query protocol** (§5.9.9). The query protocol (form-encoded, XML
+    answers) is older and every copy speaks it; JSON is what AWS's SDKs send now. *Lean:* JSON:
+    serde already reads it, and ElasticMQ and LocalStack answer it.
+77. **How a queue's send is tried again** (§5.9.9). Mail waits a minute, then 5, 30, an hour: a
+    person reads it. A queue's reader is a program waiting on it. *Lean:* 1 s, 10 s, a minute,
+    then every 5 minutes, for a day.
+78. **A standard queue's send tried again** (§5.9.9): SQS has no deduplication there. The host
+    could add an attribute with the run and the send, for listeners to check. *Lean:* no:
+    at-least-once is a standard queue's contract, and a FIFO queue is the one that dedupes;
+    the guide says so.
+79. **The sample** (§5.9.9): `payout-events`, a provider's events in, a FIFO queue of retries out:
+    one flow listens and sends. *Lean:* yes: the use payment ops have, and it shows both halves.
+80. **The live run's queue** (§5.9.9): AWS SQS needs the owner's account and a key; ElasticMQ
+    runs here, but is a copy. *Lean:* AWS, if the owner makes the key; ElasticMQ otherwise.
 
 ## 9. What stays true
 
@@ -2622,7 +5013,7 @@ A section is cited as `host-capabilities §5.9` or by its link, `host-capabiliti
 | 1.5 secure connectivity | §5.3, §5.4 |
 | 1.6 messaging (feeds, queues) | §5.9, §5.5 |
 | 1.7 commands | §5.7 |
-| 1.8 static files | §5.11 (designed) |
+| 1.8 static files | §5.11 (built) |
 | 1.9 inbound WebSockets | §5.12 (designed) |
 | 2.1 approvals by role | §5.6 |
 | 2.2 telemetry and audit export | a new section of §5 |

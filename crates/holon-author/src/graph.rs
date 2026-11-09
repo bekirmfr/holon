@@ -94,12 +94,22 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
     // Each handler is titled as the server labels its trigger.
     let mut all: Vec<Block> = vec![];
     for item in &file.items {
+        // A websocket's blocks are handlers each, as the server labels them.
+        if let Item::WebSocket(w) = item {
+            for b in &w.blocks {
+                all.push(Block { title: holon_core::socket_label(&w.path.text, &b.on.text), span: b.span, body: b.body.iter().collect() });
+            }
+            continue;
+        }
         let (title, span, body) = match item {
             Item::Route(r) => (format!("{} {}", r.method.text, r.path.text), r.span, &r.body),
             Item::Every(e) => (holon_core::clock_label(e.seconds as u64), e.span, &e.body),
             Item::OnFile(o) => (holon_core::FileTrigger { folder: o.on.folder.clone(), deleted: o.on.deleted, matching: o.on.matching.clone().unwrap_or_default() }.label(), o.span, &o.body),
+            Item::OnMail(o) => (holon_core::mail_label(&o.mail), o.span, &o.body),
+            Item::OnFeed(o) => (holon_core::feed_label(&o.feed), o.span, &o.body),
+            Item::OnQueue(o) => (holon_core::queue_label(&o.queue), o.span, &o.body),
             Item::Action(a) => (format!("action {}", a.name.text), a.span, &a.body),
-            Item::Stmt(_) | Item::Holon(_) | Item::Js(_) => continue,
+            Item::WebSocket(_) | Item::Stmt(_) | Item::Holon(_) | Item::Js(_) => continue,
         };
         all.push(Block { title, span, body: body.iter().collect() });
     }

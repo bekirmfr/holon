@@ -1,6 +1,6 @@
 // The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
 // address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
-// .feeds, .secrets with the server's own and their history, .host with its storage, .who-may),
+// .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may),
 // People and access (#people: accounts, API tokens, agents, signing in through an identity
 // provider) and Policy (#policy: what holon.toml allows, its limits and ceilings, and the
 // deployments it holds off). A section of People and access has its place in the address too
@@ -11,6 +11,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties,
 import {
   changeAccount,
   bindDatabase,
+  bindMail,
   bindFolder,
   bindServerSecret,
   capServerSecret,
@@ -18,6 +19,17 @@ import {
   getOidcSettings,
   getPermissions,
   listDatabases,
+  listMails,
+  listFeeds,
+  bindFeed,
+  unbindFeed,
+  type FeedBinding,
+  type FeedEntry,
+  type OnFull,
+  listQueues,
+  bindQueue,
+  unbindQueue,
+  type QueueEntry,
   listFolders,
   listGrants,
   listServerSecrets,
@@ -37,11 +49,14 @@ import {
   setStorage,
   type HostView,
   unbindDatabase,
+  unbindMail,
   unbindFolder,
   unbindServerSecret,
   type AccountEntry,
   type DatabaseBinding,
   type DatabaseEntry,
+  type MailBinding,
+  type MailEntry,
   type FolderBinding,
   type FolderEntry,
   type HeldGrant,
@@ -53,8 +68,6 @@ import {
   getSecretHistory,
   previewSecretRollback,
   rollbackSecret,
-  listFeeds,
-  listMails,
   type DeploymentEntry,
   type SecretHistory,
 } from "./server";
@@ -129,6 +142,36 @@ function useHost(shown = false) {
   const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding & { where: string }>({ name: "", where: "", access: "read-write", schema: null, deployment: null });
   // Each database's tables as last read, by binding: the tables, or why they couldn't be read.
   const [tables, setTables] = useState<Record<string, string[] | { error: string }>>({});
+  const [mails, setMails] = useState<MailEntry[]>([]);
+  const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", oauth: "", deployment: null };
+  const [mailDraft, setMailDraft] = useState<MailBinding>(noMail);
+  const [feeds, setFeeds] = useState<FeedEntry[]>([]);
+  // A feed to bind, its headers written NAME=SOURCE and its subscription messages one a line, its
+  // --only FIELD=VALUE with spaces between.
+  const noFeed = {
+    name: "",
+    from: "url" as "url" | "channel",
+    url: "",
+    database: "",
+    channel: "",
+    headers: "",
+    buffer: "",
+    idle: "",
+    deployment: "",
+    onFull: "wait" as OnFull,
+    key: "",
+    sequence: "",
+    subscribe: "",
+    heartbeat: "",
+    every: "",
+    id: "",
+    only: "",
+    resume: "",
+  };
+  const [feedDraft, setFeedDraft] = useState(noFeed);
+  const [queues, setQueues] = useState<QueueEntry[]>([]);
+  const noQueue = { name: "", url: "", visibility: "", keepFailed: false, deployment: "" };
+  const [queueDraft, setQueueDraft] = useState(noQueue);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   // A server secret being bound: its name, its value or where that is kept, and where it may go.
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "", kind: "value" as SecretKind });
@@ -153,6 +196,9 @@ function useHost(shown = false) {
     listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
+    listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
+    listFeeds().then(setFeeds).catch((e: unknown) => setMsg(messageOf(e)));
+    listQueues().then(setQueues).catch((e: unknown) => setMsg(messageOf(e)));
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
@@ -201,6 +247,9 @@ function useHost(shown = false) {
 
   const folderHolders = (f: FolderEntry) => holdersOf("folder", f, folders, grants);
   const databaseHolders = (d: DatabaseEntry) => holdersOf("database", d, databases, grants);
+  const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
+  const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
+  const queueHolders = (q: QueueEntry) => holdersOf("queue", q, queues, grants);
   /** Which deployments use it, said under its row. */
   const usedBy = (holders: Holder[]) => (
     <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
@@ -230,6 +279,8 @@ function useHost(shown = false) {
     setReloaded, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
     fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, version, setVersion,
     dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays,
+    mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft,
+    setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders,
   };
 }
 type Host = ReturnType<typeof useHost>;
@@ -476,7 +527,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
 
 export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
   const h = useHost(true);
-  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays } = h;
+  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
       <nav className="hl-flow__tabs" aria-label="resources tabs">
@@ -750,9 +801,431 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
         </>
       )}
 
-      {tab === "mail" && <MailTab />}
+      {tab === "mail" && (
+        <>
+          <div style={about}>
+            The mail flows send: each name an SMTP server whose URL, with its login, the server fetches from where it is kept, as a secret&apos;s
+            (<code>env:HOLON_SECRET_OPS_SMTP</code>, <code>vault:…</code>), never typed in here, stored or shown; it logs in when it is bound. A flow names
+            the mail (<code>import ops from &quot;mail:ops&quot;</code>), never the server, and never chooses the sender: from is the binding&apos;s. To is
+            every address it may ever send to (addresses, *@domain, or * for anyone): a flow is granted each recipient its text writes, or any address it
+            computes within these. Mail goes once its run is over, and is tried again for a day while the server can&apos;t take it. A mail bound to a
+            mailbox as well (or instead: an IMAP server&apos;s URL kept the same way) starts a run of <code>on.mail(…)</code> for each message that comes to
+            its folder, then moves it to done; whose verdict counts is the name the mailbox&apos;s own server writes in its Authentication-Results header
+            (without one, no message is authenticated). A server that takes no password (Microsoft 365, Google Workspace) logs in with a token: its URL names
+            the user and no password, and the OAuth source keeps the token request (https://id:secret@host/…/token?scope=…), which the server sends to get one.
+          </div>
+          {mails.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
+          {mails.map((m) => (
+            <Fragment key={keyOf(m)}>
+              <div style={row}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>mail {m.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
+                  {m.smtp && `${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`}
+                  {m.smtp && m.mailbox && " · "}
+                  {m.mailbox &&
+                    `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
+                  {m.oauth && ` · logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`}
+                </span>
+                {m.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {m.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: mail on its way through it is given up"
+                  onClick={async () => {
+                    const whose = m.deployment ? ` for ${m.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the mail "${m.name}"${whose}? Mail on its way through it is given up. ${unbindingSays(mailHolders(m))}`, "Unbind"))
+                      act(() => unbindMail(m.name, m.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(mailHolders(m))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = mailDraft.name.trim();
+              const deployment = mailDraft.deployment?.trim() || null;
+              const there = mails.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(mailHolders(there)).replace(/: they keep running.*/, ": their next mail goes through the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const t = (s: string | undefined) => (s ?? "").trim();
+                await bindMail({ name, smtp: t(mailDraft.smtp), from: t(mailDraft.from), to: t(mailDraft.to), imap: t(mailDraft.imap), folder: t(mailDraft.folder), done: t(mailDraft.done), verdict_from: t(mailDraft.verdict_from), oauth: t(mailDraft.oauth), deployment });
+                setMailDraft(noMail);
+              });
+            }}
+          >
+            <input aria-label="mail name" placeholder="name (ops)" value={mailDraft.name} onChange={(e) => setMailDraft({ ...mailDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="mail server"
+              placeholder="where the SMTP server's URL is kept (env:HOLON_SECRET_OPS_SMTP, vault:…)"
+              value={mailDraft.smtp}
+              onChange={(e) => setMailDraft({ ...mailDraft, smtp: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input aria-label="mail sender" placeholder="from (Treasury <treasury@acme.com>)" value={mailDraft.from} onChange={(e) => setMailDraft({ ...mailDraft, from: e.target.value })} style={input} />
+            <input
+              aria-label="mail recipients"
+              placeholder="to: every address it may send to (*@acme.com, bank@example.com)"
+              value={mailDraft.to}
+              onChange={(e) => setMailDraft({ ...mailDraft, to: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
+              aria-label="mailbox"
+              placeholder="to receive: where the IMAP server's URL is kept (env:HOLON_SECRET_REMIT_IMAP)"
+              value={mailDraft.imap ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, imap: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input aria-label="mailbox folder" placeholder="folder (INBOX)" value={mailDraft.folder ?? ""} onChange={(e) => setMailDraft({ ...mailDraft, folder: e.target.value })} style={input} />
+            <input aria-label="mailbox done" placeholder="moved to (Processed)" value={mailDraft.done ?? ""} onChange={(e) => setMailDraft({ ...mailDraft, done: e.target.value })} style={input} />
+            <input
+              aria-label="mailbox verdict from"
+              placeholder="whose verdict counts (mx.acme.com)"
+              value={mailDraft.verdict_from ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, verdict_from: e.target.value })}
+              style={input}
+            />
+            <input
+              aria-label="mail oauth"
+              placeholder="OAuth: where the token request is kept (env:HOLON_SECRET_SUPPORT_OAUTH)"
+              value={mailDraft.oauth ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, oauth: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
+              aria-label="mail for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={mailDraft.deployment ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {(isUrl(mailDraft.smtp) || isUrl(mailDraft.imap ?? "") || isUrl(mailDraft.oauth ?? "")) && (
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_OPS_SMTP, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button
+              type="submit"
+              style={primary}
+              disabled={
+                !mailDraft.name.trim() ||
+                (!mailDraft.smtp.trim() && !(mailDraft.imap ?? "").trim()) ||
+                (!!mailDraft.smtp.trim() && (!mailDraft.from.trim() || !mailDraft.to.trim())) ||
+                isUrl(mailDraft.smtp) ||
+                isUrl(mailDraft.imap ?? "") ||
+                isUrl(mailDraft.oauth ?? "")
+              }
+            >
+              bind mail
+            </button>
+          </form>
+        </>
+      )}
 
-      {tab === "feeds" && <FeedsTab />}
+      {tab === "feeds" && (
+        <>
+          <div style={about}>
+            The feeds flows listen to: each name a feed of server-sent events, or a WebSocket (wss://), whose URL the server fetches from where it is kept, as a secret&apos;s
+            (<code>env:HOLON_SECRET_PRICES_URL</code>, <code>vault:…</code>), never typed in here, stored or shown, and so are the values of the headers each
+            request sends (Authorization=env:HOLON_SECRET_PRICES_AUTH, one a line). It is bound once a request to it answers as a feed does. A flow names the
+            feed (<code>import prices from &quot;feed:prices&quot;</code>) and runs <code>on.feed(prices, (e) =&gt; …)</code> for each event it sends, one at
+            a time, in the order they came; the server keeps the connection and where it is, opens it again from there when it is lost, and passes over an
+            event it ran already. How many may wait for their run (1000), and what comes when that many do: it waits, it is dropped (the next event&apos;s{" "}
+            <code>e.missed</code> says how many were), or it replaces the waiting event of its key (<code>e.replaced</code>); and how long the feed may say
+            nothing before it is opened again (90s). A WebSocket is also sent its subscription when it opens (a message as written, or a source for one with a
+            key in it) and a heartbeat to keep it; the fields of a message that are its id (product_id,sequence) say where it is, and only the messages whose
+            field has a value given (type=ticker) run. A WebSocket that replays is opened again from its id where the binding says the feed takes it:
+            query:cursor, header:NAME, or message:… sent in place of the subscription, <code>{"{position}"}</code> in it the id. A feed whose JSON messages
+            a whole number counts one by one (trade_id), each key on its own (product_id), says on each event how many numbers were skipped before it (
+            <code>e.gap</code>): what came while the server wasn&apos;t reading, for the flow to fetch. A feed may also be a Postgres channel: the server
+            listens on it (<code>LISTEN</code>) in a database bound here, the one each deployment sees by that name, and each notification
+            (<code>pg_notify</code>, from a trigger) is an event; what is sent while it isn&apos;t listening is lost, for the flow to read from the table.
+          </div>
+          {feeds.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
+          {feeds.map((f) => (
+            <Fragment key={keyOf(f)}>
+              <div style={row}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>feed {f.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
+                  {f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`}
+                  {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
+                  {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
+                  {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
+                  {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
+                  {f.id && ` · its id ${f.id.join("/")}`}
+                  {f.sequence && ` · numbered by ${f.sequence}${f.key ? `, each ${f.key} on its own` : ""}`}
+                  {f.resume?.query && ` · resumes from its position with ${f.resume.query}= in the URL`}
+                  {f.resume?.header && ` · resumes from its position with the header ${f.resume.header}`}
+                  {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
+                  {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
+                </span>
+                {f.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {f.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: its connections close"
+                  onClick={async () => {
+                    const whose = f.deployment ? ` for ${f.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the feed "${f.name}"${whose}? Its connections close. ${unbindingSays(feedHolders(f))}`, "Unbind")) act(() => unbindFeed(f.name, f.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(feedHolders(f))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = feedDraft.name.trim();
+              const deployment = feedDraft.deployment.trim() || null;
+              const there = feeds.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(feedHolders(there)).replace(/: they keep running.*/, ": their connections open again to the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const headers: Record<string, string> = {};
+                for (const line of feedDraft.headers.split("\n").map((l) => l.trim()).filter(Boolean)) {
+                  const at = line.indexOf("=");
+                  if (at < 1) throw new Error(`"${line}" isn't a header: NAME=SOURCE (Authorization=env:HOLON_SECRET_PRICES_AUTH)`);
+                  headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+                }
+                const channel = feedDraft.from === "channel";
+                const binding: FeedBinding = channel
+                  ? { name, database: feedDraft.database.trim(), channel: feedDraft.channel.trim(), deployment }
+                  : { name, url: feedDraft.url.trim(), headers, deployment };
+                if (feedDraft.buffer.trim()) binding.buffer = Number(feedDraft.buffer.trim());
+                if (feedDraft.idle.trim()) binding.idle = feedDraft.idle.trim();
+                if (feedDraft.onFull !== "wait") binding.on_full = feedDraft.onFull;
+                if (feedDraft.key.trim()) binding.key = feedDraft.key.trim();
+                if (feedDraft.sequence.trim()) binding.sequence = feedDraft.sequence.trim();
+                const subscribe = feedDraft.subscribe.split("\n").map((l) => l.trim()).filter(Boolean);
+                if (subscribe.length > 0 && !channel) binding.subscribe = subscribe;
+                if (feedDraft.heartbeat.trim() && !channel) binding.heartbeat = feedDraft.heartbeat.trim();
+                if (feedDraft.every.trim() && !channel) binding.every = feedDraft.every.trim();
+                if (feedDraft.id.trim()) binding.id = feedDraft.id.trim();
+                const only = feedDraft.only.split(/\s+/).filter(Boolean);
+                if (only.length > 0) binding.only = only;
+                const resume = feedDraft.resume.split("\n").map((l) => l.trim()).filter(Boolean);
+                if (resume.length > 0 && !channel) binding.resume = resume;
+                await bindFeed(binding);
+                setFeedDraft(noFeed);
+              });
+            }}
+          >
+            <input aria-label="feed name" placeholder="name (prices)" value={feedDraft.name} onChange={(e) => setFeedDraft({ ...feedDraft, name: e.target.value })} style={input} />
+            <select aria-label="feed from" value={feedDraft.from} onChange={(e) => setFeedDraft({ ...feedDraft, from: e.target.value as "url" | "channel" })} style={input}>
+              <option value="url">from a URL</option>
+              <option value="channel">a Postgres channel</option>
+            </select>
+            {feedDraft.from === "url" ? (
+              <input
+                aria-label="feed url"
+                placeholder="where the feed's URL is kept (env:HOLON_SECRET_PRICES_URL, vault:…)"
+                value={feedDraft.url}
+                onChange={(e) => setFeedDraft({ ...feedDraft, url: e.target.value })}
+                style={{ ...input, flex: 1, minWidth: 220 }}
+              />
+            ) : (
+              <>
+                <select aria-label="feed database" value={feedDraft.database} onChange={(e) => setFeedDraft({ ...feedDraft, database: e.target.value })} style={input}>
+                  <option value="">its database</option>
+                  {[...new Set(databases.filter((d) => d.engine === "postgres").map((d) => d.name))].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  aria-label="feed channel"
+                  placeholder="channel (ledger_entries)"
+                  value={feedDraft.channel}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, channel: e.target.value })}
+                  style={{ ...input, flex: 1, minWidth: 160 }}
+                />
+              </>
+            )}
+            <input aria-label="feed buffer" placeholder="may wait (1000)" value={feedDraft.buffer} onChange={(e) => setFeedDraft({ ...feedDraft, buffer: e.target.value })} style={input} />
+            <select aria-label="feed on full" value={feedDraft.onFull} onChange={(e) => setFeedDraft({ ...feedDraft, onFull: e.target.value as OnFull })} style={input}>
+              <option value="wait">when full: wait</option>
+              <option value="skip">when full: skip</option>
+              <option value="latest">latest of each key</option>
+            </select>
+            <input
+              aria-label="feed sequence"
+              placeholder="numbered by (trade_id)"
+              value={feedDraft.sequence}
+              onChange={(e) => setFeedDraft({ ...feedDraft, sequence: e.target.value })}
+              style={input}
+            />
+            {(feedDraft.onFull === "latest" || feedDraft.sequence.trim() !== "") && (
+              <input aria-label="feed key" placeholder="its key (product_id)" value={feedDraft.key} onChange={(e) => setFeedDraft({ ...feedDraft, key: e.target.value })} style={input} />
+            )}
+            <input aria-label="feed idle" placeholder="quiet for at most (90s)" value={feedDraft.idle} onChange={(e) => setFeedDraft({ ...feedDraft, idle: e.target.value })} style={input} />
+            <input
+              aria-label="feed for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={feedDraft.deployment}
+              onChange={(e) => setFeedDraft({ ...feedDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {feedDraft.from === "url" && (
+              <textarea
+                aria-label="feed headers"
+                placeholder="headers each request sends, NAME=SOURCE, one a line (Authorization=env:HOLON_SECRET_PRICES_AUTH)"
+                value={feedDraft.headers}
+                onChange={(e) => setFeedDraft({ ...feedDraft, headers: e.target.value })}
+                rows={2}
+                style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+              />
+            )}
+            {feedDraft.from === "channel" && (
+              <>
+                <input aria-label="feed id" placeholder="its id fields (id)" value={feedDraft.id} onChange={(e) => setFeedDraft({ ...feedDraft, id: e.target.value })} style={input} />
+                <input aria-label="feed only" placeholder="runs only (kind=credit)" value={feedDraft.only} onChange={(e) => setFeedDraft({ ...feedDraft, only: e.target.value })} style={input} />
+              </>
+            )}
+            {feedDraft.from === "url" && (/^\s*wss?:/.test(feedDraft.url) || /^\s*(env|vault):/.test(feedDraft.url)) ? (
+              <>
+                <textarea
+                  aria-label="feed subscribe"
+                  placeholder={'a WebSocket\'s: what it is sent when it opens, one a line, as written or a source ({"type":"subscribe","channels":["ticker"]})'}
+                  value={feedDraft.subscribe}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, subscribe: e.target.value })}
+                  rows={2}
+                  style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+                />
+                <input aria-label="feed id" placeholder="its id fields (product_id,sequence)" value={feedDraft.id} onChange={(e) => setFeedDraft({ ...feedDraft, id: e.target.value })} style={input} />
+                <input aria-label="feed only" placeholder="runs only (type=ticker)" value={feedDraft.only} onChange={(e) => setFeedDraft({ ...feedDraft, only: e.target.value })} style={input} />
+                <textarea
+                  aria-label="feed resume"
+                  placeholder="resumes from its id with (query:cursor, header:NAME, or message:… one a line)"
+                  value={feedDraft.resume}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, resume: e.target.value })}
+                  rows={1}
+                  style={{ ...input, fontFamily: "monospace" }}
+                />
+                <input aria-label="feed heartbeat" placeholder="heartbeat (ping)" value={feedDraft.heartbeat} onChange={(e) => setFeedDraft({ ...feedDraft, heartbeat: e.target.value })} style={input} />
+                {feedDraft.heartbeat.trim() && (
+                  <input aria-label="feed every" placeholder="every (30s)" value={feedDraft.every} onChange={(e) => setFeedDraft({ ...feedDraft, every: e.target.value })} style={input} />
+                )}
+              </>
+            ) : null}
+            {feedDraft.from === "url" && isUrl(feedDraft.url) && (
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_PRICES_URL, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button
+              type="submit"
+              style={primary}
+              disabled={!feedDraft.name.trim() || (feedDraft.from === "url" ? !feedDraft.url.trim() || isUrl(feedDraft.url) : !feedDraft.database || !feedDraft.channel.trim())}
+            >
+              bind feed
+            </button>
+          </form>
+        </>
+      )}
+
+      {tab === "queues" && (
+        <>
+          <div style={about}>
+            The queues flows take messages from and send to: each name an Amazon SQS queue, whose URL with its access key
+            (https://&lt;key id&gt;:&lt;secret&gt;@sqs.&lt;region&gt;.amazonaws.com/&lt;account&gt;/&lt;queue&gt;) the server fetches from where it is kept, as a
+            secret&apos;s (<code>env:HOLON_SECRET_EVENTS_URL</code>, <code>vault:…</code>), never typed in here, stored or shown. It is bound once the queue
+            answers. A flow names the queue (<code>import payout_events from &quot;queue:payout_events&quot;</code>) and runs{" "}
+            <code>on.queue(payout_events, (m) =&gt; …)</code> for each message it holds, one at a time, in the order received: the message is deleted once its
+            run&apos;s record is on disk, so a crash runs it again rather than losing it, and one handed out again is passed over. One deployment listens to a
+            queue. A flow sends with <code>payout_retries.send({"{ data, group }"})</code>: the message goes once the run is over and its writes have landed,
+            tried again for a day if the queue can&apos;t take it yet, a FIFO queue&apos;s in the group given and deduplicated by its run. How long a message
+            received is kept out of sight at first (5m, kept so while it runs); and whether a failed run&apos;s message is left in the queue, for its redrive
+            policy to move, rather than deleted.
+          </div>
+          {queues.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
+          {queues.map((q) => (
+            <Fragment key={keyOf(q)}>
+              <div style={row}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>queue {q.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
+                  {`${q.address} (from ${q.url})`}
+                  {q.fifo && " · FIFO"}
+                  {` · ${Math.round(q.largest / 1024)} KiB at most · out of sight for ${q.visibility}s`}
+                  {q.keep_failed && " · a failed run's message is left for the redrive"}
+                </span>
+                {q.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {q.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: its listeners stop"
+                  onClick={async () => {
+                    const whose = q.deployment ? ` for ${q.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the queue "${q.name}"${whose}? Its listeners stop, and what it holds stays in it. ${unbindingSays(queueHolders(q))}`, "Unbind"))
+                      act(() => unbindQueue(q.name, q.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(queueHolders(q))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = queueDraft.name.trim();
+              const deployment = queueDraft.deployment.trim() || null;
+              const there = queues.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(queueHolders(there)).replace(/: they keep running.*/, ": their listeners start again on the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const visibility = queueDraft.visibility.trim();
+                await bindQueue({ name, url: queueDraft.url.trim(), deployment, ...(visibility ? { visibility } : {}), ...(queueDraft.keepFailed ? { keep_failed: true } : {}) });
+                setQueueDraft(noQueue);
+              });
+            }}
+          >
+            <input aria-label="queue name" placeholder="name (payout_events)" value={queueDraft.name} onChange={(e) => setQueueDraft({ ...queueDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="queue url"
+              placeholder="where the queue's URL is kept (env:HOLON_SECRET_EVENTS_URL, vault:…)"
+              value={queueDraft.url}
+              onChange={(e) => setQueueDraft({ ...queueDraft, url: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
+              aria-label="queue visibility"
+              placeholder="out of sight for (5m)"
+              value={queueDraft.visibility}
+              onChange={(e) => setQueueDraft({ ...queueDraft, visibility: e.target.value })}
+              style={input}
+            />
+            <label style={{ ...quiet, display: "flex", gap: 4, alignItems: "center" }}>
+              <input aria-label="queue keep failed" type="checkbox" checked={queueDraft.keepFailed} onChange={(e) => setQueueDraft({ ...queueDraft, keepFailed: e.target.checked })} />
+              leave a failed run&apos;s message
+            </label>
+            <input
+              aria-label="queue for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={queueDraft.deployment}
+              onChange={(e) => setQueueDraft({ ...queueDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {isUrl(queueDraft.url) && (
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_EVENTS_URL, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button type="submit" style={primary} disabled={!queueDraft.name.trim() || !queueDraft.url.trim() || isUrl(queueDraft.url)}>
+              bind queue
+            </button>
+          </form>
+        </>
+      )}
 
       {tab === "secrets" && (
         <>
@@ -1090,15 +1563,15 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
       {tab === "who-may" && (
         <>
           <div style={about}>
-            Each resource, and the deployments granted it, by table for a database and by how for a folder: read from each deployment&apos;s grant. Nothing
+            Each resource, and the deployments granted it, by table for a database, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
             is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
           </div>
           <label style={{ ...quiet, display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases and folders always: they're listed as resources, held or not. */}
-              {["databases", "folders", ...kindsHeld(grants).filter((k) => k !== "databases" && k !== "folders")].map((k) => (
+              {/* Databases, folders, mail, feeds and queues always: they're listed as resources, held or not. */}
+              {["databases", "folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
@@ -1113,7 +1586,31 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             folders.map((f) => (
               <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${f.path}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
             ))}
-          {othersHeld(grants, folders, databases)
+          {(kind === "everything" || kind === "mail") &&
+            mails.map((m) => (
+              <Resource
+                key={`mail:${keyOf(m)}`}
+                title={`mail ${m.name}`}
+                detail={`${[m.smtp ? `to ${m.to.join(", ")}` : "", m.mailbox ? `receives in ${m.mailbox.folder}` : ""].filter(Boolean).join(" · ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`}
+                holders={mailHolders(m)}
+                onOpen={onOpenDeployment}
+              />
+            ))}
+          {(kind === "everything" || kind === "feeds") &&
+            feeds.map((f) => (
+              <Resource key={`feed:${keyOf(f)}`} title={`feed ${f.name}`} detail={`${f.address}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={feedHolders(f)} onOpen={onOpenDeployment} />
+            ))}
+          {(kind === "everything" || kind === "queues") &&
+            queues.map((q) => (
+              <Resource
+                key={`queue:${keyOf(q)}`}
+                title={`queue ${q.name}`}
+                detail={`${q.address}${q.fifo ? " · FIFO" : ""}${q.deployment ? ` · for ${q.deployment} only` : ""}`}
+                holders={queueHolders(q)}
+                onOpen={onOpenDeployment}
+              />
+            ))}
+          {othersHeld(grants, folders, databases, mails, feeds, queues)
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>
@@ -1284,97 +1781,6 @@ function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () 
       )}
       {dryRun.modal}
     </div>
-  );
-}
-
-/** A list read once its tab is shown: undefined while it's read, null where this server doesn't serve it. */
-function useListed<T>(read: () => Promise<T[] | null>): { list: T[] | null | undefined; failed: string | null } {
-  const [list, setList] = useState<T[] | null | undefined>(undefined);
-  const [failed, setFailed] = useState<string | null>(null);
-  useEffect(() => {
-    read().then(setList, (e) => setFailed(messageOf(e)));
-  }, [read]);
-  return { list, failed };
-}
-
-/** What a tab says where its list isn't there: still read, failed, not served, or empty. */
-function ListedState({ list, failed, what }: { list: unknown[] | null | undefined; failed: string | null; what: string }) {
-  if (failed) return <div role="alert" style={{ color: "var(--bad)", fontSize: 12 }}>{failed}</div>;
-  if (list === undefined) return <div style={quiet}>reading…</div>;
-  if (list === null) return <div style={quiet}>this server binds no {what} yet: it is older than this editor (holon update)</div>;
-  return list.length === 0 ? <div style={quiet}>no {what} bound</div> : null;
-}
-
-const forWhom = (deployment: string | null) => (deployment ? ` · for ${deployment} only` : "");
-
-/** Mail: the names flows send and read mail through (`"mail:ops"`), each an SMTP server, an IMAP mailbox, or both. */
-function MailTab() {
-  const { list, failed } = useListed(listMails);
-  return (
-    <>
-      <div style={about}>
-        The names flows send and read mail through. A flow imports a name (<code>&quot;mail:ops&quot;</code>), never a server: each is bound here to an SMTP server it sends
-        through, an IMAP mailbox it reads, or both. Its grant says to whom it may send (<code>MailSend(&quot;ops/*&quot;)</code>) and whether it hears what arrives
-        (<code>MailArrival(&quot;ops&quot;)</code>). Logins are where their source says, never here.
-      </div>
-      <ListedState list={list} failed={failed} what="mail" />
-      {list?.map((m) => (
-        <div key={`${m.deployment ?? ""}/${m.name}`} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 2 }} aria-label={`mail ${m.name}`}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <span style={{ color: "var(--accent)", minWidth: 90 }}>mail {m.name}</span>
-            <span style={{ ...quiet, flex: 1 }}>{forWhom(m.deployment).slice(3)}</span>
-          </div>
-          {m.smtp && (
-            <div style={{ color: "var(--ink)", overflowWrap: "anywhere" }}>
-              sends through {m.address ?? "an SMTP server"}
-              {m.from ? `, from ${m.from}` : ""}
-              {m.to && m.to.length > 0 ? `, only to ${m.to.join(", ")}` : ""}
-              <span style={quiet}> · {sourceLabel(m.smtp)}</span>
-            </div>
-          )}
-          {m.mailbox && (
-            <div style={{ color: "var(--ink)", overflowWrap: "anywhere" }}>
-              reads {m.mailbox.address}, folder {m.mailbox.folder}
-              {m.mailbox.every ? `, every ${m.mailbox.every}` : ""}
-              {m.mailbox.done ? `; what's read goes to ${m.mailbox.done}` : ""}
-              <span style={quiet}> · {sourceLabel(m.mailbox.imap)}</span>
-            </div>
-          )}
-          {m.oauth && (
-            <div style={quiet}>
-              logs in with OAuth at {m.oauth.address} · {sourceLabel(m.oauth.source)}
-            </div>
-          )}
-        </div>
-      ))}
-    </>
-  );
-}
-
-/** Feeds: the streams of events flows listen to (`"feed:prices"`), each at an address. */
-function FeedsTab() {
-  const { list, failed } = useListed(listFeeds);
-  return (
-    <>
-      <div style={about}>
-        The streams of events flows listen to. A flow names a feed (<code>&quot;feed:prices&quot;</code>), never a URL: each is bound here to where its events come from, and its
-        grant says it hears them (<code>FeedEvent(&quot;prices&quot;)</code>).
-      </div>
-      <ListedState list={list} failed={failed} what="feeds" />
-      {list?.map((f) => (
-        <div key={`${f.deployment ?? ""}/${f.name}`} style={row} aria-label={`feed ${f.name}`}>
-          <span style={{ color: "var(--accent)", minWidth: 90 }}>feed {f.name}</span>
-          <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{f.address}</span>
-          <span style={quiet}>
-            {sourceLabel(f.url)}
-            {f.headers && Object.keys(f.headers).length > 0 ? ` · headers ${Object.keys(f.headers).join(", ")}` : ""}
-            {f.buffer != null ? ` · keeps ${f.buffer} events` : ""}
-            {f.idle ? ` · idle after ${f.idle}` : ""}
-            {forWhom(f.deployment)}
-          </span>
-        </div>
-      ))}
-    </>
   );
 }
 

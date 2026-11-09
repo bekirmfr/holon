@@ -25,6 +25,7 @@ use holon_host::Limits;
 use serde::{Deserialize, Serialize};
 
 use crate::channels::ChannelLimits;
+use crate::websockets::SocketLimits;
 use crate::outbound::Outbound;
 use crate::to_hex;
 
@@ -72,18 +73,20 @@ pub(crate) struct FileLimits {
     pub(crate) max_file_write_bytes: u64,
     /// The files a run reads, takes a handle to, writes, copies or deletes.
     pub(crate) max_files_per_run: u64,
+    /// The largest file a route answers with (`site.serve(name)`), streamed as it is read.
+    pub(crate) max_served_bytes: u64,
 }
 
 impl FileLimits {
     /// What a deployment gets without asking: a text up to 1 MiB, 64 MiB read; a gigabyte written,
-    /// since a copy by handle is how a big file moves; a thousand files.
+    /// since a copy by handle is how a big file moves; a thousand files; a gigabyte served.
     pub(crate) fn defaults() -> FileLimits {
-        FileLimits { inline_file_bytes: 1 << 20, max_file_read_bytes: 64 << 20, max_file_write_bytes: 1 << 30, max_files_per_run: 1000 }
+        FileLimits { inline_file_bytes: 1 << 20, max_file_read_bytes: 64 << 20, max_file_write_bytes: 1 << 30, max_files_per_run: 1000, max_served_bytes: 1 << 30 }
     }
 
     /// What no grant can exceed.
     pub(crate) fn ceilings() -> FileLimits {
-        FileLimits { inline_file_bytes: 16 << 20, max_file_read_bytes: 1 << 30, max_file_write_bytes: 1 << 40, max_files_per_run: 100_000 }
+        FileLimits { inline_file_bytes: 16 << 20, max_file_read_bytes: 1 << 30, max_file_write_bytes: 1 << 40, max_files_per_run: 100_000, max_served_bytes: 1 << 40 }
     }
 }
 
@@ -169,7 +172,9 @@ fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbL
 }
 
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, the file limits, the database limits, the channel limits and the log's.
+/// durable-run limits, the file limits, the database limits, the channel limits, the WebSocket
+/// limits and the log's.
+#[allow(clippy::too_many_arguments)]
 fn limits_to_numbers(
     request: &Limits,
     clock_budget: Duration,
@@ -177,6 +182,7 @@ fn limits_to_numbers(
     files: &FileLimits,
     databases: &DbLimits,
     channels: &ChannelLimits,
+    sockets: &SocketLimits,
     log: &LogLimits,
 ) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
@@ -200,6 +206,7 @@ fn limits_to_numbers(
         ("max_file_read_bytes".into(), files.max_file_read_bytes),
         ("max_file_write_bytes".into(), files.max_file_write_bytes),
         ("max_files_per_run".into(), files.max_files_per_run),
+        ("max_served_bytes".into(), files.max_served_bytes),
         ("max_db_rows".into(), databases.max_db_rows),
         ("max_db_read_bytes".into(), databases.max_db_read_bytes),
         ("db_statement_ms".into(), ms(databases.db_statement)),
@@ -209,6 +216,9 @@ fn limits_to_numbers(
         ("channel_keep".into(), channels.channel_keep),
         ("channel_buffer".into(), channels.channel_buffer),
         ("max_subscribers".into(), channels.max_subscribers),
+        ("max_websockets".into(), sockets.max_websockets),
+        ("max_message_bytes".into(), sockets.max_message_bytes),
+        ("messages_per_second".into(), sockets.messages_per_second),
         ("keep_runs".into(), log.keep_runs),
         ("keep_run_days".into(), log.keep_run_days),
     ])
@@ -226,6 +236,16 @@ fn numbers_to_channels(base: &ChannelLimits, numbers: &BTreeMap<String, u64>) ->
     }
 }
 
+/// `numbers` applied over `base`'s WebSocket limits.
+fn numbers_to_sockets(base: &SocketLimits, numbers: &BTreeMap<String, u64>) -> SocketLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    SocketLimits {
+        max_websockets: n("max_websockets", base.max_websockets),
+        max_message_bytes: n("max_message_bytes", base.max_message_bytes),
+        messages_per_second: n("messages_per_second", base.messages_per_second),
+    }
+}
+
 /// `numbers` applied over `base`'s file limits.
 fn numbers_to_files(base: &FileLimits, numbers: &BTreeMap<String, u64>) -> FileLimits {
     let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
@@ -234,6 +254,7 @@ fn numbers_to_files(base: &FileLimits, numbers: &BTreeMap<String, u64>) -> FileL
         max_file_read_bytes: n("max_file_read_bytes", base.max_file_read_bytes),
         max_file_write_bytes: n("max_file_write_bytes", base.max_file_write_bytes),
         max_files_per_run: n("max_files_per_run", base.max_files_per_run),
+        max_served_bytes: n("max_served_bytes", base.max_served_bytes),
     }
 }
 
@@ -401,6 +422,8 @@ pub(crate) struct Policy {
     pub(crate) databases: DbLimits,
     /// The channel limits a deployment gets without asking.
     pub(crate) channels: ChannelLimits,
+    /// The WebSocket limits a deployment gets without asking.
+    pub(crate) sockets: SocketLimits,
     /// How long a deployment's log keeps its runs without asking.
     pub(crate) log: LogLimits,
     /// What no grant can exceed.
@@ -589,7 +612,7 @@ pub(crate) fn every_text(every: Option<Duration>) -> String {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings(), &LogLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings(), &SocketLimits::ceilings(), &LogLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -599,6 +622,7 @@ impl Default for Policy {
             files: FileLimits::defaults(),
             databases: DbLimits::defaults(),
             channels: ChannelLimits::defaults(),
+            sockets: SocketLimits::defaults(),
             log: LogLimits::defaults(),
             ceilings,
             auto: Vec::new(),
@@ -705,6 +729,7 @@ impl Policy {
         policy.files = numbers_to_files(&policy.files, &defaults);
         policy.databases = numbers_to_databases(&policy.databases, &defaults);
         policy.channels = numbers_to_channels(&policy.channels, &defaults);
+        policy.sockets = numbers_to_sockets(&policy.sockets, &defaults);
         policy.log = numbers_to_log(&policy.log, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
@@ -741,7 +766,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.log)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.sockets, &self.log)
     }
 
     /// Whether `item` is granted without asking.
@@ -1033,6 +1058,8 @@ pub(crate) struct Permit {
     pub(crate) databases: DbLimits,
     /// What its runs may send on its channels, and how many may subscribe.
     pub(crate) channels: ChannelLimits,
+    /// How many WebSocket connections it holds, and what each may send.
+    pub(crate) sockets: SocketLimits,
     /// How long its log keeps its runs.
     pub(crate) log: LogLimits,
     pub(crate) outbound: Outbound,
@@ -1067,6 +1094,7 @@ impl Permit {
         let files = numbers_to_files(&policy.files, &clamped);
         let databases = numbers_to_databases(&policy.databases, &clamped);
         let channels = numbers_to_channels(&policy.channels, &clamped);
+        let sockets = numbers_to_sockets(&policy.sockets, &clamped);
         let log = numbers_to_log(&policy.log, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
@@ -1105,7 +1133,7 @@ impl Permit {
                 names.entry(kind.to_string()).or_default().insert(name.to_string());
             }
         }
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
     }
 
     /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,
@@ -1141,6 +1169,17 @@ impl Permit {
     /// The channels it may send on, by name: the ones a piped call may send its answer to.
     pub(crate) fn channels_sent(&self) -> BTreeSet<String> {
         self.named("ChannelSend")
+    }
+
+    /// The recipients it may mail, by mail: `ops/approvals@acme.com`, or `ops/*` for any its
+    /// binding allows.
+    pub(crate) fn mails_sent(&self) -> BTreeSet<String> {
+        self.named("MailSend")
+    }
+
+    /// The queues it may send to, by name.
+    pub(crate) fn queues_sent(&self) -> BTreeSet<String> {
+        self.named("QueueSend")
     }
 
     /// The folders it may read, by name.

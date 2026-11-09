@@ -65,6 +65,8 @@ test("a clock flow is run by hand, its grant and secrets changed, and it is remo
   // Its clock beats on its own too, every 10s.
   expect(ok(adminToken, ["tick", slug, "every 10s"])).toMatch(/^did {8}StateWrite\("beats"\) \d+$/m);
   expect(ok(adminToken, ["state", slug])).toMatch(/^beats\s+\d+$/m);
+  // Each beat's time under the count before it, a number naming the item as its text.
+  expect(ok(adminToken, ["state", slug, "--collection", "times"])).toMatch(/^0\s+\d+$/m);
 
   // Its grant: an item taken back pauses it; given back, it runs again.
   expect(ok(adminToken, ["grant", slug])).toContain('StateWrite("beats")');
@@ -127,9 +129,9 @@ test("flows are saved and read back, and people and tokens managed, from the com
 });
 
 test("a new version is replayed on a deployment's recent runs from the command line before it is deployed", async ({ adminToken }) => {
-  // The price-rules sample, under a slug of its own, on a port past the samples' in this slot's range.
+  // The price-rules sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `price-replay-${Date.now().toString(36)}`;
-  const text = readFileSync(join(SAMPLES, "price-rules.holon.ts"), "utf8").replace("port: 8185", `port: ${8194 + SAMPLE_SHIFT}`);
+  const text = readFileSync(join(SAMPLES, "price-rules.holon.ts"), "utf8").replace("port: 8185", `port: ${8144 + SAMPLE_SHIFT}`);
   mkdirSync(RUN_DIR, { recursive: true });
   const file = (name: string, body: string) => {
     const path = join(RUN_DIR, `${slug}-${name}.holon.ts`);

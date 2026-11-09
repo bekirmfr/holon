@@ -68,7 +68,7 @@ pub(crate) const UNUSED: &str = "is_list";
 /// Words the lowering keeps for itself: a TypeScript binding of one is renamed, `name_`.
 pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
-    "when", "match", "fn", "true", "false", "secret", "state", "now", "random", "http", "stripe", "json", "parse_json",
+    "when", "match", "fn", "true", "false", "secret", "state", "now", "random", "random_bytes", "http", "stripe", "json", "parse_json",
 ];
 
 /// The noun the tree calls another flow's actions by (`import { charge } from "flow:billing-v2"`
@@ -126,6 +126,10 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
 
 /// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
 pub(crate) const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, const started = payment(req.json), and answer with its link, started.waiting.paid";
+
+/// Why a websocket's block can't wait: it runs and is done, as a route does (host-capabilities L4
+/// §5.12.14).
+pub(crate) const SOCKET_WAITS: &str = "a websocket's block runs and is done, so it doesn't wait: start an action that waits, const started = payment(m.json), and send its link, started.waiting.paid";
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
 /// `get`, `c[k] = v` writes with `put`, `delete c[k]` with `delete`; `c.list(…)` with `list`.
@@ -220,8 +224,19 @@ enum FrameKind {
     Every { tick: String },
     /// A file handler.
     OnFile,
+    /// A mail handler.
+    OnMail,
+    /// A feed handler.
+    OnFeed,
+    /// A queue handler.
+    OnQueue,
     /// An action's block: its `action` node, and where it responded.
     Action { node: String, responded: Option<Span> },
+    /// A websocket's `message` block: its `websocket` node, and where it answered. (Its `open`
+    /// is a route's frame, as it answers as a route does.)
+    Message { node: String, responded: Option<Span> },
+    /// A websocket's `close` block, which answers nobody.
+    Close,
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -289,6 +304,12 @@ struct Lowerer<'a> {
     /// The channels the flow imports (`import updates from "channel:updates"`): sent on, and
     /// subscribed to as a route's answer.
     channels: HashSet<String>,
+    /// The mail resources it imports (`import ops from "mail:ops"`): sent through.
+    mails: HashSet<String>,
+    /// The feeds it imports (`import prices from "feed:prices"`): listened to.
+    feeds: HashSet<String>,
+    /// The queues it imports (`import payouts from "queue:payouts"`): listened to, sent to.
+    queues: HashSet<String>,
     /// The flows whose actions it imports (`import { charge } from "flow:billing"`), by the noun
     /// that calls them (`billing`, or `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
@@ -316,6 +337,8 @@ struct Lowerer<'a> {
     routes: Vec<(String, Vec<String>, Span)>,
     /// Each clock, file and action handler, likewise.
     ticks: Vec<Block>,
+    /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
+    socket: bool,
 }
 
 impl<'a> Lowerer<'a> {
@@ -325,6 +348,9 @@ impl<'a> Lowerer<'a> {
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
+        let mails = file.headers.iter().filter_map(|h| if let HeaderKind::Mail(m) = &h.kind { Some(m.clone()) } else { None }).collect();
+        let feeds = file.headers.iter().filter_map(|h| if let HeaderKind::Feed(f) = &h.kind { Some(f.clone()) } else { None }).collect();
+        let queues = file.headers.iter().filter_map(|h| if let HeaderKind::Queue(q) = &h.kind { Some(q.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let secrets = file
             .headers
@@ -356,6 +382,9 @@ impl<'a> Lowerer<'a> {
             folders,
             databases,
             channels,
+            mails,
+            feeds,
+            queues,
             calls,
             flow,
             actions,
@@ -371,6 +400,7 @@ impl<'a> Lowerer<'a> {
             lambdas: 0,
             routes: vec![],
             ticks: vec![],
+            socket: false,
         }
     }
 
@@ -409,6 +439,30 @@ impl<'a> Lowerer<'a> {
         }
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
         let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
+        let mail_blocks: Vec<&OnMailDef> = file.items.iter().filter_map(|i| if let Item::OnMail(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in mail_blocks.iter().enumerate() {
+            if mail_blocks[..i].iter().any(|o| o.mail == b.mail) {
+                return err(b.head, format!("{} is written twice: one handler per mail", holon_core::mail_label(&b.mail)));
+            }
+        }
+        let feed_blocks: Vec<&OnFeedDef> = file.items.iter().filter_map(|i| if let Item::OnFeed(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in feed_blocks.iter().enumerate() {
+            if feed_blocks[..i].iter().any(|o| o.feed == b.feed) {
+                return err(b.head, format!("{} is written twice: one handler per feed", holon_core::feed_label(&b.feed)));
+            }
+        }
+        let queue_blocks: Vec<&OnQueueDef> = file.items.iter().filter_map(|i| if let Item::OnQueue(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in queue_blocks.iter().enumerate() {
+            if queue_blocks[..i].iter().any(|o| o.queue == b.queue) {
+                return err(b.head, format!("{} is written twice: one handler per queue", holon_core::queue_label(&b.queue)));
+            }
+        }
+        let sockets: Vec<&WebSocketDef> = file.items.iter().filter_map(|i| if let Item::WebSocket(w) = i { Some(w) } else { None }).collect();
+        for (i, w) in sockets.iter().enumerate() {
+            if sockets[..i].iter().any(|o| o.path.text == w.path.text) {
+                return err(w.path.span, format!("WebSocket {} is written twice: its blocks go in one route.websocket", w.path.text));
+            }
+        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one handler per period", b.text));
@@ -442,6 +496,10 @@ impl<'a> Lowerer<'a> {
                 Item::Route(r) => self.route(r)?,
                 Item::Every(e) => self.every(e)?,
                 Item::OnFile(o) => self.on_file(o)?,
+                Item::OnMail(o) => self.on_mail(o)?,
+                Item::OnFeed(o) => self.on_feed(o)?,
+                Item::OnQueue(o) => self.on_queue(o)?,
+                Item::WebSocket(w) => self.websocket(w)?,
                 Item::Action(a) => self.action(a)?,
                 _ => {}
             }
@@ -508,7 +566,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) | HeaderKind::Queue(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -536,7 +594,10 @@ impl<'a> Lowerer<'a> {
             || self.is_def(&noun)
             || self.store(&noun).is_some()
             || self.databases.contains(&noun)
-            || self.channels.contains(&noun);
+            || self.channels.contains(&noun)
+            || self.mails.contains(&noun)
+            || self.feeds.contains(&noun)
+            || self.queues.contains(&noun);
         if taken {
             return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so"));
         }
@@ -669,6 +730,26 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A collection's key or a folder's file name in `c[k]`: a number is its text, as
+    /// JavaScript's property key is (`beats[3]` is `beats["3"]`, `beats[n + 1]` too).
+    fn key_text(&mut self, k: Val, span: Span) -> R<Val> {
+        let number = self.typed(&k) == Some(&WType::Number) || matches!(&k, Val::Out { id, outputs, port, .. } if outputs.get(*port).is_some_and(|p| self.numeric(id, &p.name)));
+        if number {
+            return self.node_with("as_text", &[], &[("value", k)], span);
+        }
+        Ok(k)
+    }
+
+    /// Whether node `id`'s `output` is known to be a number: its type says so, or it is `+` of
+    /// numbers (an `add` gives any value, as a text on either side joins).
+    fn numeric(&self, id: &str, output: &str) -> bool {
+        let Some(d) = self.b.data(id) else { return false };
+        if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
+            return true;
+        }
+        d.name == "add" && d.inputs.iter().all(|p| self.b.source(id, &p.name).is_some_and(|(from, out)| self.numeric(from, out)))
+    }
+
     /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.
     fn typed<'v>(&'v self, v: &'v Val) -> Option<&'v WType> {
         match v {
@@ -712,6 +793,15 @@ impl<'a> Lowerer<'a> {
         }
         if self.channels.contains(n) {
             return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
+        }
+        if self.mails.contains(n) {
+            return err(name.span, format!("\"{n}\" is a mail; a binding may not shadow it"));
+        }
+        if self.feeds.contains(n) {
+            return err(name.span, format!("\"{n}\" is a feed; a binding may not shadow it"));
+        }
+        if self.queues.contains(n) {
+            return err(name.span, format!("\"{n}\" is a queue; a binding may not shadow it"));
         }
         if self.calls.contains_key(n) {
             return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
@@ -778,6 +868,8 @@ impl<'a> Lowerer<'a> {
                         return err(value.span, "an output can't be an input passed straight through: put a node between");
                     }
                     let v = self.whole(v, value.span)?;
+                    // Bound, the output is also a name the rest of the block reads.
+                    self.frame().env.insert(name.text.clone(), v.clone());
                     if let FrameKind::Holon { bound, .. } = &mut self.frame().kind {
                         bound.insert(name.text.clone(), (v, s.span));
                     }
@@ -804,6 +896,7 @@ impl<'a> Lowerer<'a> {
             StmtKind::CollectionWrite { collection, key, value } => {
                 let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
+                let k = self.key_text(k, key.span)?;
                 let v = self.expr(value)?;
                 let named = [(store.param.into(), collection.text.clone())];
                 // A file's handle written to a folder is a copy: its bytes go host to host.
@@ -818,6 +911,7 @@ impl<'a> Lowerer<'a> {
             StmtKind::Delete { collection, key } => {
                 let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
+                let k = self.key_text(k, key.span)?;
                 let w = self.node_with(store.delete, &[(store.param.into(), collection.text.clone())], &[(store.key, k)], s.span)?;
                 self.effect(w, s.span)
             }
@@ -884,7 +978,14 @@ impl<'a> Lowerer<'a> {
                 return err(span, format!("more than one respond in the action (the first is on line {})", first.start.line));
             }
             let node = node.clone();
-            return self.answer(&node, args, span);
+            return self.answer(&node, "input", args, span);
+        }
+        if let FrameKind::Message { node, responded } = &self.cur().kind {
+            if let Some(first) = responded {
+                return err(span, format!("more than one answer in the message block (the first is on line {})", first.start.line));
+            }
+            let node = node.clone();
+            return self.answer(&node, "request", args, span);
         }
         let request = match &self.cur().kind {
             FrameKind::Route { request, responded } => {
@@ -1011,28 +1112,41 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// An action's answer: the value alone. An action is run through Holon, not
-    /// HTTP, so it has no status, headers or stream: the respond's envelope is a 200 whose body is
-    /// the answer.
-    fn answer(&mut self, action: &str, args: &'a [Arg], span: Span) -> R<()> {
+    /// An action's answer, or a websocket message's: the value alone. An action is run through
+    /// Holon, not HTTP, and a message's answer goes back on its connection, so neither has a
+    /// status, headers or stream: the respond's envelope is a 200 whose body is the answer. `port`
+    /// is the trigger's output the respond reads.
+    fn answer(&mut self, trigger: &str, port: &str, args: &'a [Arg], span: Span) -> R<()> {
+        let who = if matches!(self.cur().kind, FrameKind::Message { .. }) { "a message block" } else { "an action" };
         if let Some(n) = args.iter().find_map(|a| a.name.as_ref()) {
-            return err(n.span, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+            return err(n.span, format!("{who} answers with a value alone: status:, missing:, headers: and stream: are a route's"));
         }
         let value = match args {
             [one] => &one.value,
-            [] => return err(span, "respond gives the action's answer: respond with a value"),
+            [] => return err(span, format!("respond gives {who}'s answer: respond with a value")),
             [_, second, ..] => return err(second.value.span, "respond takes one value"),
         };
         let v = self.expr(value)?;
         let node = self.node("respond", &[("status".to_string(), "200".to_string()), ("missing".to_string(), "404".to_string())], span)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
         let id = id.clone();
-        self.b.wire(action, "input", &id, "request").or_else(|e| err(span, e))?;
+        self.b.wire(trigger, port, &id, "request").or_else(|e| err(span, e))?;
         self.connect(&v, &id, "body", value.span)?;
-        if let FrameKind::Action { responded, .. } = &mut self.frame().kind {
+        if let FrameKind::Action { responded, .. } | FrameKind::Message { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
         }
         Ok(())
+    }
+
+    /// Whether this block does anything: it places a sink, tied to its trigger or to the value an
+    /// `if (x !== undefined)` waits for, or a function with an effect, and no choice makes it only
+    /// when it needs it.
+    fn does_something(&self) -> bool {
+        let f = self.cur();
+        f.created.iter().any(|id| {
+            !f.in_branches.contains(id)
+                && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER) || d.outputs.iter().any(|p| p.ty == WType::Effect))
+        })
     }
 
     /// Whether this block's only effects are calls: it makes one, and writes nothing.
@@ -1051,7 +1165,7 @@ impl<'a> Lowerer<'a> {
         let id = id.clone();
         self.b.wire(from, port, &id, "request").or_else(|e| err(span, e))?;
         match &mut self.frame().kind {
-            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } => *responded = Some(span),
+            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } | FrameKind::Message { responded, .. } => *responded = Some(span),
             _ => {}
         }
         Ok(())
@@ -1172,9 +1286,10 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&tick, e.head)?;
+        self.tie_block(&tick, e.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(e.head, "the handler does nothing: write something in it (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, e.head, ("the tick", "now".into())));
@@ -1209,12 +1324,172 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&file, o.head)?;
+        self.tie_block(&file, o.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(o.head, "the handler does nothing: write something in it (a folder, state, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
+        Ok(())
+    }
+
+    /// `on.mail(remit, (m) => …)`: a mail handler. Its `on_mail` node is its trigger, `m` in it the
+    /// message, and its sinks are tied to it (host-capabilities L4 §5.2.4).
+    fn on_mail(&mut self, o: &'a OnMailDef) -> R<()> {
+        let mut params = vec![("mail".to_string(), o.mail.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let message = self.node("on_mail", &params, o.head)?;
+        let Val::Out { id, .. } = &message else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.message.text.clone());
+        self.check_name_free(&o.message)?;
+        let mut frame = Frame::new(FrameKind::OnMail);
+        frame.created.push(id.clone());
+        frame.env.insert(o.message.text.clone(), message.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a message's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        self.tie_block(&message, o.head)?;
+        let does = self.does_something();
+        let frame = self.frames.pop().expect("the block's frame");
+        if !does {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
+        Ok(())
+    }
+
+    /// `on.feed(prices, (e) => …)`: a feed handler. Its `on_feed` node is its trigger, `e` in it the
+    /// event, and its sinks are tied to it (host-capabilities L4 §5.9.2).
+    fn on_feed(&mut self, o: &'a OnFeedDef) -> R<()> {
+        let mut params = vec![("feed".to_string(), o.feed.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let event = self.node("on_feed", &params, o.head)?;
+        let Val::Out { id, .. } = &event else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.event.text.clone());
+        self.check_name_free(&o.event)?;
+        let mut frame = Frame::new(FrameKind::OnFeed);
+        frame.created.push(id.clone());
+        frame.env.insert(o.event.text.clone(), event.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: an event's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        self.tie_block(&event, o.head)?;
+        let does = self.does_something();
+        let frame = self.frames.pop().expect("the block's frame");
+        if !does {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the event", o.event.text.clone())));
+        Ok(())
+    }
+
+    /// `on.queue(payouts, (m) => …)`: a queue handler. Its `on_queue` node is its trigger, `m` in it
+    /// the message, and its sinks are tied to it (host-capabilities L4 §5.9.9).
+    fn on_queue(&mut self, o: &'a OnQueueDef) -> R<()> {
+        let mut params = vec![("queue".to_string(), o.queue.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let message = self.node("on_queue", &params, o.head)?;
+        let Val::Out { id, .. } = &message else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.message.text.clone());
+        self.check_name_free(&o.message)?;
+        let mut frame = Frame::new(FrameKind::OnQueue);
+        frame.created.push(id.clone());
+        frame.env.insert(o.message.text.clone(), message.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a message's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        self.tie_block(&message, o.head)?;
+        let does = self.does_something();
+        let frame = self.frames.pop().expect("the block's frame");
+        if !does {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a queue)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
+        Ok(())
+    }
+
+    /// `route.websocket("/room/:name", { open, message, close })`: a `websocket` node for each
+    /// block, its trigger, the block's parameter in it the record, and its sinks tied to it
+    /// (host-capabilities L4 §5.12.14). `open` answers as a route does, `message` with a value
+    /// alone, as an action does, and `close` nobody.
+    fn websocket(&mut self, w: &'a WebSocketDef) -> R<()> {
+        for b in &w.blocks {
+            let on = b.on.text.as_str();
+            let mut params = vec![("path".to_string(), w.path.text.clone()), ("on".to_string(), on.to_string())];
+            params.extend(b.log.iter().map(|l| ("log".to_string(), l.text.clone())));
+            let head = b.on.span;
+            let node = self.node("websocket", &params, head)?;
+            let Val::Out { id, .. } = &node else { unreachable!() };
+            let id = id.clone();
+            self.names.insert(id.clone(), b.param.text.clone());
+            self.check_name_free(&b.param)?;
+            let kind = match on {
+                "open" => FrameKind::Route { request: id.clone(), responded: None },
+                "message" => FrameKind::Message { node: id.clone(), responded: None },
+                _ => FrameKind::Close,
+            };
+            let mut frame = Frame::new(kind);
+            frame.created.push(id.clone());
+            frame.env.insert(b.param.text.clone(), node.clone());
+            self.frames.push(frame);
+            self.streamed = None;
+            self.socket = true;
+            for s in &b.body {
+                if let (StmtKind::Respond(_), "close") = (&s.kind, on) {
+                    return err(s.span, "a close block answers nobody: the connection is gone");
+                }
+                self.stmt(s)?;
+            }
+            self.socket = false;
+            self.tie_block(&node, head)?;
+            let does = self.does_something();
+            let unanswered = matches!(self.cur().kind, FrameKind::Route { responded: None, .. } | FrameKind::Message { responded: None, .. } | FrameKind::Close);
+            if unanswered && self.calls_alone() {
+                // A call's answer is the far side's: the block's is nothing, as one that writes.
+                self.answer_nothing(&id, "request", head)?;
+            }
+            let frame = self.frames.pop().expect("the block's frame");
+            if let Some(stream) = frame.created.iter().find(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))) {
+                let at = self.spans.get(stream).copied().unwrap_or(head);
+                return err(at, "a streamed call is a route's: a websocket's block answers with a value, or (open) a subscription");
+            }
+            let responded = match frame.kind {
+                FrameKind::Route { responded, .. } | FrameKind::Message { responded, .. } => responded,
+                _ => None,
+            };
+            if responded.is_none() && !does {
+                return err(
+                    head,
+                    match on {
+                        "open" => "the open block does nothing: return something, or write something (without open, a connection is accepted as it comes)",
+                        "message" => "the message block does nothing: return something to send back, or write something (state, a collection, a channel)",
+                        _ => "the close block does nothing: write something in it (state, a collection, a channel)",
+                    },
+                );
+            }
+            let what = match on {
+                "open" => "the request",
+                "message" => "the message",
+                _ => "the close",
+            };
+            self.ticks.push((id, frame.created, head, (what, b.param.text.clone())));
+        }
         Ok(())
     }
 
@@ -1237,7 +1512,8 @@ impl<'a> Lowerer<'a> {
         for s in &a.body {
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&node, a.head)?;
+        self.tie_block(&node, a.head)?;
+        let does = self.does_something();
         if let FrameKind::Action { responded: None, .. } = &self.cur().kind
             && self.calls_alone()
         {
@@ -1245,7 +1521,7 @@ impl<'a> Lowerer<'a> {
         }
         let frame = self.frames.pop().expect("the block's frame");
         let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
-        if responded.is_none() && !tied {
+        if responded.is_none() && !does {
             return err(a.head, "the action does nothing: return something, or write something (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, a.head, ("what was sent", a.input.text.clone())));
@@ -1254,7 +1530,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.queues.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -1264,7 +1540,7 @@ impl<'a> Lowerer<'a> {
     /// not after a keyword, a collection or a function.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
+        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.queues.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1587,7 +1863,15 @@ impl<'a> Lowerer<'a> {
             }
             // In an `every` block, `now` is the time of its tick.
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
-            ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
+            ExprKind::Noun(n) => self.node(
+                match n {
+                    Noun::Now => "clock",
+                    Noun::Random => "random",
+                    Noun::RandomBytes => "random_bytes",
+                },
+                &[],
+                e.span,
+            ),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Leaf { leaf, params, args, number } => self.leaf_form(leaf, params, args, *number, e.span),
             ExprKind::TextOrList { subject, method, args } => self.text_or_list(subject, method, args, e.span),
@@ -1609,6 +1893,7 @@ impl<'a> Lowerer<'a> {
                     && let Some(store) = self.store(c)
                 {
                     let k = self.expr(key)?;
+                    let k = self.key_text(k, key.span)?;
                     return self.node_with(store.get, &[(store.param.into(), c.clone())], &[(store.key, k)], e.span);
                 }
                 let r = self.expr(base)?;
@@ -1658,6 +1943,9 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires, people } => {
+                if self.socket {
+                    return err(e.span, SOCKET_WAITS);
+                }
                 if matches!(self.cur().kind, FrameKind::Route { .. }) {
                     return err(e.span, ROUTE_WAITS);
                 }
@@ -1712,6 +2000,15 @@ impl<'a> Lowerer<'a> {
         }
         if self.channels.contains(n) {
             return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with it, return {n}.subscribe()"));
+        }
+        if self.mails.contains(n) {
+            return err(span, format!("\"{n}\" is a mail: send through it with {n}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})"));
+        }
+        if self.feeds.contains(n) {
+            return err(span, format!("\"{n}\" is a feed: listen to it with on.feed({n}, (e) => {{ … }})"));
+        }
+        if self.queues.contains(n) {
+            return err(span, format!("\"{n}\" is a queue: send to it with {n}.send({{ data }}), or listen to it with on.queue({n}, (m) => {{ … }})"));
         }
         if self.calls.contains_key(n) {
             return err(span, format!("\"{n}\" is a flow: import the action you call, import {{ charge }} from \"flow:{n}\""));
@@ -1867,6 +2164,55 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A param's frozen text from an expression: a literal, a duration (in seconds), or a word.
+    /// The recipients a mail's text names, its `to` param and so its grant: each `to` and `cc`
+    /// written as text in quotes in the record the call writes, or `*` when one is computed (from
+    /// a request, a database) or the message is made elsewhere (mail.rs).
+    fn mail_recipients(&self, mail: &str, args: &[Arg], span: Span) -> R<String> {
+        let message = match args {
+            [only] if only.name.is_none() => &only.value,
+            _ => return err(span, format!("{mail}.send takes one message: {mail}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})")),
+        };
+        let ExprKind::Record { spread: None, fields } = &message.kind else { return Ok("*".into()) };
+        if let Some((k, _)) = fields.iter().find(|(k, _)| !holon_core::mail::FIELDS.contains(&k.text.as_str())) {
+            return err(k.span, format!("a mail has no \"{}\": to, cc, subject, text, html and attachments", k.text));
+        }
+        if let Some(needed) = ["to", "subject", "text"].into_iter().find(|n| !fields.iter().any(|(k, _)| k.text == *n)) {
+            return err(message.span, format!("a mail needs its {needed}: {mail}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})"));
+        }
+        let mut named = Vec::new();
+        for (_, e) in fields.iter().filter(|(k, _)| k.text == "to" || k.text == "cc") {
+            let each: Vec<&Expr> = if let ExprKind::List(xs) = &e.kind { xs.iter().collect() } else { vec![e] };
+            for x in each {
+                let ExprKind::Text(a) = &x.kind else { return Ok("*".into()) };
+                if !holon_core::mail::is_address(a.trim()) {
+                    return err(x.span, format!("\"{a}\" isn't an address a mail goes to: name@example.com"));
+                }
+                named.push(a.trim().to_string());
+            }
+        }
+        match holon_core::mail::recipients(&named.join(",")) {
+            Some(to) => Ok(to.join(",")),
+            None => err(message.span, format!("a mail goes to one recipient at least, and {} at most", holon_core::mail::MAX_RECIPIENTS)),
+        }
+    }
+
+    /// `payouts.send({ data, group })`: one message, its data and, for a FIFO queue, its group. A
+    /// record written out is checked here; a computed one when it is sent.
+    fn queue_message(&self, queue: &str, args: &[Arg], span: Span) -> R<()> {
+        let message = match args {
+            [only] if only.name.is_none() => &only.value,
+            _ => return err(span, format!("{queue}.send takes one message: {queue}.send({{ data: … }})")),
+        };
+        let ExprKind::Record { spread: None, fields } = &message.kind else { return Ok(()) };
+        if let Some((k, _)) = fields.iter().find(|(k, _)| !matches!(k.text.as_str(), "data" | "group")) {
+            return err(k.span, format!("a queue's message has no \"{}\": data, and group for a FIFO queue", k.text));
+        }
+        if !fields.iter().any(|(k, _)| k.text == "data") {
+            return err(message.span, format!("a queue's message needs its data: {queue}.send({{ data: … }})"));
+        }
+        Ok(())
+    }
+
     fn literal_text(&self, e: &Expr) -> R<String> {
         match &e.kind {
             ExprKind::Number { text, .. } => Ok(text.clone()),
@@ -1890,6 +2236,9 @@ impl<'a> Lowerer<'a> {
             return self.start(args, span);
         }
         // A token resumes the run that hands it out where it waits, and a route never waits.
+        if name == "resume_token" && self.socket {
+            return err(callee.span, SOCKET_WAITS);
+        }
         if name == "resume_token" && matches!(self.cur().kind, FrameKind::Route { .. }) {
             return err(callee.span, ROUTE_WAITS);
         }
@@ -2119,8 +2468,34 @@ impl<'a> Lowerer<'a> {
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
             c if self.databases.contains(c) => self.db_call(c, method, args, span),
+            c if self.mails.contains(c) => match method.text.as_str() {
+                "send" => {
+                    let to = self.mail_recipients(c, args, span)?;
+                    let (inputs, params) = leaf("mail_send");
+                    self.unit_call("mail_send", &inputs, &params, &[("mail".to_string(), c.to_string()), ("to".to_string(), to)], args, span)
+                }
+                other => err(method.span, format!("a mail has no \"{other}\": send({{ to, subject, text }})")),
+            },
+            c if self.feeds.contains(c) => err(method.span, format!("a feed has no \"{}\": listen to it with on.feed({c}, (e) => {{ … }})", method.text)),
+            c if self.queues.contains(c) => match method.text.as_str() {
+                "send" => {
+                    self.queue_message(c, args, span)?;
+                    let (inputs, params) = leaf("queue_send");
+                    self.unit_call("queue_send", &inputs, &params, &[("queue".to_string(), c.to_string())], args, span)
+                }
+                other => err(method.span, format!("a queue has no \"{other}\": send({{ data, group }}), or on.queue({c}, (m) => {{ … }}) to listen")),
+            },
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
+                // A route's answer that is a file of the folder: its handle, sent by the host.
+                if folder && method.text == "serve" {
+                    if args.len() != 1 || args[0].name.is_some() {
+                        return err(span, format!("{c}.serve takes the file's name: return {c}.serve(\"index.html\")"));
+                    }
+                    let (inputs, params) = leaf("file_handle");
+                    let handle = self.unit_call("file_handle", &inputs, &params, &[("folder".to_string(), c.to_string())], args, span)?;
+                    return self.node_with("file_serve", &[("folder".to_string(), c.to_string())], &[("file", handle)], span);
+                }
                 let leaf_name = match method.text.as_str() {
                     "get" => store.get,
                     "put" => store.put,
@@ -2136,7 +2511,7 @@ impl<'a> Lowerer<'a> {
                     "create" if folder => "file_create",
                     "create_copy" if folder => "file_create_copy",
                     other if folder => {
-                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy"));
+                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, serve, lines, slice, copy, create or create_copy"));
                     }
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
@@ -2148,7 +2523,7 @@ impl<'a> Lowerer<'a> {
                     let (inputs, params) = leaf("channel_send");
                     self.unit_call("channel_send", &inputs, &params, &[("channel".to_string(), c.to_string())], args, span)
                 }
-                "subscribe" => err(span, format!("a subscription is a route's answer: return {c}.subscribe()")),
+                "subscribe" => err(span, format!("a subscription is a route's answer, or a websocket's open block's: return {c}.subscribe() from one")),
                 // `updates.pipe(api.post(…))`: the call's answer, to the channel as it arrives.
                 "pipe" => {
                     let call = match args {
@@ -3189,6 +3564,38 @@ every("10s", async () => {
 
     // ── each construct, by the nodes it places ──
 
+    /// A number naming a collection's item is its text, as JavaScript's property key is: read,
+    /// written or deleted. A text key is left as it is.
+    #[test]
+    fn a_number_names_a_collection_item_by_its_text() {
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import beats from "collection:beats"
+
+flow("t")
+
+export const t = action(() => {
+  const n = 3
+  const was = beats[n] ?? beats["5"]
+  beats[n + 1] = was
+  delete beats[4]
+  return was
+})
+"#,
+        )
+        .doc;
+        let names = leaves(&d);
+        assert_eq!(names.iter().filter(|l| *l == "as_text").count(), 3, "{names:?}");
+        let key_from = |leaf: &str| -> Vec<String> {
+            d.nodes.iter().filter(|n| n.data.name == leaf).map(|n| {
+                let wire = d.edges.iter().find(|w| w.target == n.id && w.target_handle.as_deref() == Some(if leaf == "collection_delete" || leaf == "collection_get" || leaf == "collection_put" { "key" } else { "" })).expect("a key wire");
+                d.nodes.iter().find(|m| m.id == wire.source).unwrap().data.name.clone()
+            }).collect()
+        };
+        assert_eq!(key_from("collection_get"), ["as_text", "const"], "the number's text, and the text as it is");
+        assert_eq!((key_from("collection_put"), key_from("collection_delete")), (vec!["as_text".to_string()], vec!["as_text".to_string()]));
+    }
+
     #[test]
     fn literals_and_interpolation() {
         let d = compiled(
@@ -3500,6 +3907,32 @@ route.get("/picked", (req) => `${pair("k").a}!`)
         assert_eq!(got["/mapped"], r#"[{"a":"<x>","b":1},{"a":"<y>","b":1}]"#);
         assert_eq!(got["/folded"], r#"{"n":3,"sum":6}"#);
         assert_eq!(got["/picked"], "<k>!");
+    }
+
+    /// A key named like a binding of the body reads the binding in every field after it, not the
+    /// output it names: `{ total: total * 2, again: total }` is `{ total: 4, again: 2 }`.
+    #[test]
+    fn a_returned_key_named_like_a_binding_hides_it_from_no_other_field() {
+        let src = r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+function doubled(x) {
+  const total = x + 1
+  return { total: total * 2, again: total, and: `${total}!` }
+}
+
+function kept(x) {
+  const total = x + 1
+  return { again: total, total }
+}
+
+route.get("/doubled", (req) => doubled(1))
+route.get("/kept", (req) => kept(1))
+"#;
+        let got: BTreeMap<String, String> = bodies(src).into_iter().collect();
+        assert_eq!(got["/doubled"], r#"{"again":2,"and":"2!","total":4}"#);
+        assert_eq!(got["/kept"], r#"{"again":2,"total":2}"#);
     }
 
     #[test]
@@ -4298,6 +4731,283 @@ route.get("/n", () => state.ticks ?? 0)
     /// wired to it, its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md
     /// §2, §3).
     #[test]
+    fn on_mail_blocks_are_mail_handlers_tied_to_their_message() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import remit from "mail:remit"
+
+flow("f", { port: 8080 })
+
+on.mail(remit, (m) => {
+  state.last = m.subject
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_mail")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("mail"), n.param("log"))).collect::<Vec<_>>(), [("remit", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "mail_arrival"), "m in a block is its on_mail node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "message".to_string())), "the write is tied to the message");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.mails.iter().map(|m| (m.mail.as_str(), m.label.as_str())).collect::<Vec<_>>(), [("remit", "on mail remit")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.mails.len(), read.mails[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::MailArrival("remit".into())));
+
+        // A mail is an imported one; one handler a mail; a message's run answers nobody.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\nimport inbox from \"folder:inbox\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.mail(inbox, (m) => {\n  state.a = m.text\n})\n", "\"inbox\" isn't an imported mail: import inbox from \"mail:inbox\""),
+            ("on.mail((m) => {\n  state.a = m.text\n})\n", "a mail handler takes its mail first"),
+            ("on.mail(remit, (m) => {\n  state.a = m.text\n})\non.mail(remit, (n) => {\n  state.b = n.text\n})\n", "on mail remit is written twice: one handler per mail"),
+            ("on.mail(remit, (m) => {\n  return 1\n})\n", "a mail handler's run answers nobody: return alone ends it"),
+            ("on.mail(remit, (m) => {\n  state.a = m.text\n}, { matching: \"*\" })\n", "matching"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    /// `on.feed(prices, (e) => { … })` is a feed handler: its `on_feed` node, its sinks tied to the
+    /// event, `e` the event (host-capabilities L4 §5.9.2).
+    #[test]
+    fn on_feed_blocks_are_feed_handlers_tied_to_their_event() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import prices from "feed:prices"
+
+flow("f", { port: 8080 })
+
+on.feed(prices, (e) => {
+  state.last = e.data.price
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_feed")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("feed"), n.param("log"))).collect::<Vec<_>>(), [("prices", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "feed_event"), "e in a block is its on_feed node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "event".to_string())), "the write is tied to the event");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.feeds.iter().map(|f| (f.feed.as_str(), f.label.as_str())).collect::<Vec<_>>(), [("prices", "on feed prices")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.feeds.len(), read.feeds[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FeedEvent("prices".into())));
+
+        // A feed is an imported one, listened to and nothing else; one handler a feed; an event's
+        // run answers nobody.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\nimport remit from \"mail:remit\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.feed(remit, (e) => {\n  state.a = e.data\n})\n", "\"remit\" isn't an imported feed: import remit from \"feed:remit\""),
+            ("on.feed((e) => {\n  state.a = e.data\n})\n", "a feed handler takes its feed first"),
+            ("on.feed(prices, (e) => {\n  state.a = e.data\n})\non.feed(prices, (f) => {\n  state.b = f.data\n})\n", "on feed prices is written twice: one handler per feed"),
+            ("on.feed(prices, (e) => {\n  return 1\n})\n", "a feed handler's run answers nobody: return alone ends it"),
+            ("on.feed(prices, (e) => {\n  state.a = prices\n})\n", "\"prices\" is a feed: listen to it with on.feed(prices, (e) => { … })"),
+            ("on.feed(prices, (e) => {\n  state.a = prices.read()\n})\n", "a feed has no \"read\""),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    /// A handler whose only write waits for a value, in an `if (x !== undefined)`, does something:
+    /// the write is tied to that value, not to the handler's trigger. Without the write it does
+    /// nothing, as before.
+    #[test]
+    fn a_handler_whose_only_write_waits_for_a_value_does_something() {
+        let head = "import { action, every, flow, on } from \"holon\"\nimport state from \"state\"\nimport kept from \"collection:kept\"\nimport drop from \"folder:drop\"\nimport remit from \"mail:remit\"\nimport posts from \"feed:posts\"\n\nflow(\"f\", { port: 8080 })\n\n";
+        for (open, k, write, nothing) in [
+            ("every(\"2s\", (now) => {\n", "  const k = state.on ? now : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.file.created(drop, (f) => {\n", "  const k = f.size > 0 ? f.name : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.mail(remit, (m) => {\n", "  const k = m.subject !== \"\" ? m.subject : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.feed(posts, (e) => {\n", "  const k = e.data.x ? e.data : undefined\n", "  if (k !== undefined) kept[\"a\"] = k\n", "the handler does nothing"),
+            ("export const keep = action((input) => {\n", "  const k = input.x ? input : undefined\n", "  if (k !== undefined) state.last = k\n", "the action does nothing"),
+        ] {
+            let src = format!("{head}{open}{k}{write}}})\n");
+            let d = compiled(&src).doc;
+            let sink = d.nodes.iter().find(|n| n.data.inputs.iter().any(|p| p.name == TRIGGER)).expect("the write");
+            let tied = d.edges.iter().find(|w| w.target == sink.id && w.input() == TRIGGER).and_then(|w| d.nodes.iter().find(|n| n.id == w.source));
+            assert_eq!(tied.map(|n| n.data.name.as_str()), Some("guard"), "{open}: tied to k, the choice");
+            let mut store = MapResolver::new();
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+
+            let (line, _, e) = error(&format!("{head}{open}{k}}})\n"));
+            assert_eq!((line, e.split(':').next()), (10, Some(nothing)), "{open}");
+        }
+
+        // So does one whose only write is a function's, waiting for a value in it.
+        let src = format!("{head}function keep(x) {{\n  const k = x.x ? x : undefined\n  if (k !== undefined) state.last = k\n  return x.n + 1\n}}\n\non.feed(posts, (e) => {{\n  keep(e.data)\n}})\n");
+        let d = compiled(&src).doc;
+        let mut store = MapResolver::new();
+        text::restore(&d, &mut store, &Names::new());
+        assert_eq!(crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080").errors, Vec::<String>::new(), "{src}");
+    }
+
+    /// `on.queue(payouts, (m) => { … })` is a queue handler: its `on_queue` node, its sinks tied to
+    /// the message, `m` the message; `retries.send({ data, group })` sends one (host-capabilities
+    /// L4 §5.9.9).
+    #[test]
+    fn on_queue_blocks_are_queue_handlers_and_a_queue_is_sent_to() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import payouts from "queue:payouts"
+import retries from "queue:retries"
+
+flow("f", { port: 8080 })
+
+on.queue(payouts, (m) => {
+  state.last = m.data
+  retries.send({ data: m.data, group: "acct_1" })
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_queue")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("queue"), n.param("log"))).collect::<Vec<_>>(), [("payouts", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "queue_message"), "m in a block is its on_queue node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "message".to_string())), "the write is tied to the message");
+        let send = d.nodes.iter().find(|n| n.data.name == "queue_send").unwrap();
+        assert_eq!(send.param("queue"), "retries");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.queues.iter().map(|q| (q.queue.as_str(), q.label.as_str())).collect::<Vec<_>>(), [("payouts", "on queue payouts")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.queues.len(), read.queues[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        let caps = holon_core::capabilities(unit, &store);
+        assert!(caps.contains(holon_core::Capability::QueueMessage("payouts".into())));
+        assert!(caps.contains(holon_core::Capability::QueueSend("retries".into())));
+
+        // A queue is an imported one; one handler a queue; a message's run answers nobody; a queue
+        // is listened to or sent one message.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\nimport remit from \"mail:remit\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.queue(remit, (m) => {\n  state.a = m.data\n})\n", "\"remit\" isn't an imported queue: import remit from \"queue:remit\""),
+            ("on.queue((m) => {\n  state.a = m.data\n})\n", "a queue handler takes its queue first"),
+            ("on.queue(payouts, (m) => {\n  state.a = m.data\n})\non.queue(payouts, (n) => {\n  state.b = n.data\n})\n", "on queue payouts is written twice: one handler per queue"),
+            ("on.queue(payouts, (m) => {\n  return 1\n})\n", "a queue handler's run answers nobody: return alone ends it"),
+            ("on.queue(payouts, (m) => {\n  state.a = payouts\n})\n", "\"payouts\" is a queue: send to it with payouts.send({ data })"),
+            ("on.queue(payouts, (m) => {\n  state.a = payouts.read()\n})\n", "a queue has no \"read\""),
+            ("on.queue(payouts, (m) => {\n  payouts.send(m.data, \"g\")\n})\n", "payouts.send takes one message"),
+            ("on.queue(payouts, (m) => {\n  payouts.send({ body: m.data })\n})\n", "a queue's message has no \"body\": data, and group for a FIFO queue"),
+            ("on.queue(payouts, (m) => {\n  payouts.send({ group: \"g\" })\n})\n", "a queue's message needs its data"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    /// `route.websocket(path, { open, message, close })` is a `websocket` node for each block, its
+    /// sinks tied to its record: `open` answers as a route does, `message` with a value alone,
+    /// `close` nobody; a block may be a method, and its level its own (host-capabilities L4
+    /// §5.12.14).
+    #[test]
+    fn websocket_blocks_are_handlers_each_answering_its_way() {
+        let src = r#"import { flow, route } from "holon"
+import people from "collection:people"
+import room from "channel:room"
+import { now } from "holon:clock"
+
+flow("f", { port: 8080 })
+
+route.websocket("/room/:name", {
+  open: (req) => {
+    people[req.conn] = { name: req.params.name, since: now }
+    return room.subscribe()
+  },
+  message(m) {
+    room.send({ from: people[m.conn].name, text: m.text })
+    return { sent: m.json.n ?? 0 }
+  },
+  close: ({ conn }) => {
+    delete people[conn]
+  },
+}, { log: { message: "lazy" } })
+"#;
+        let d = compiled(src).doc;
+        let blocks: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("websocket")).collect();
+        assert_eq!(
+            blocks.iter().map(|n| (n.param("path"), n.param("on"), n.param("log"))).collect::<Vec<_>>(),
+            [("/room/:name", "open", ""), ("/room/:name", "message", "lazy"), ("/room/:name", "close", "")]
+        );
+        let tied = |leaf: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        assert_eq!(tied("collection_put"), Some((blocks[0].id.clone(), "request".into())), "open's write is tied to its record");
+        assert_eq!(tied("channel_send"), Some((blocks[1].id.clone(), "request".into())), "message's send is tied to its record");
+        assert_eq!(tied("collection_delete"), Some((blocks[2].id.clone(), "request".into())), "close's delete is tied to its record");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(
+            server.websockets.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            ["WebSocket /room/:name open", "WebSocket /room/:name message", "WebSocket /room/:name close"]
+        );
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.websockets.len()), (Some(8080), 1));
+        let levels: Vec<holon_core::LogLevel> = read.websockets[0].blocks().map(|b| b.log).collect();
+        assert_eq!(levels, [holon_core::LogLevel::Strict, holon_core::LogLevel::Lazy, holon_core::LogLevel::Strict]);
+        let caps = holon_core::capabilities(unit, &store);
+        assert!(caps.contains(holon_core::Capability::WebSocket("/room/:name".into())));
+        assert!(caps.contains(holon_core::Capability::ChannelRead("room".into())));
+        assert!(caps.contains(holon_core::Capability::ChannelSend("room".into())));
+
+        // A websocket's path is a page's or a connection's.
+        let page = format!("{src}\nroute.get(\"/room/:who\", () => \"a page\")\n");
+        let d = compiled(&page).doc;
+        let errors = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080").errors;
+        assert!(errors.iter().any(|e| e.contains("WebSocket /room/:name clashes with GET /room/:who")), "{errors:?}");
+
+        // One block of each at least, each a function; one call a path; open answers as a route,
+        // message with a value alone, close nobody; none waits; the levels name its blocks.
+        let head = "import { event, flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\n";
+        for (body, said) in [
+            ("route.websocket(\"/w\", {})\n", "a websocket has one block at least: open, message or close"),
+            ("route.websocket(\"/w\", { ping: (m) => m.text })\n", "a websocket's blocks are open, message and close, not \"ping\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text, message: (n) => n.text })\n", "message is written twice: one block of each per websocket"),
+            ("route.websocket(\"/w\", { message: state.handler })\n", "a websocket's message is a function: message: (m) => …"),
+            ("route.websocket(\"/w\", (m) => m.text)\n", "a websocket's blocks are an object"),
+            ("route.websocket(\"/w\", { message: (m) => m.text })\nroute.websocket(\"/w\", { close: (c) => { state.c = c.code } })\n", "WebSocket /w is written twice: its blocks go in one route.websocket"),
+            ("route.websocket(\"/w\", { message: (m) => status(400) })\n", "a message block answers on its connection with a value alone"),
+            ("route.websocket(\"/w\", { close: (c) => c.code })\n", "a close block's run answers nobody"),
+            ("route.websocket(\"/w\", { close: (c) => {\n  const code = c.code\n} })\n", "the close block does nothing"),
+            ("route.websocket(\"/w\", { open: (req) => {\n  return\n} })\n", "an open block answers as a route does: return status(204) to accept the connection"),
+            ("route.websocket(\"/w\", { message: async (m) => {\n  const paid = await event(\"paid\")\n  return paid.method\n} })\n", SOCKET_WAITS),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: { close: \"lazy\" } })\n", "log names close, which this websocket doesn't have"),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: \"loud\" })\n", "log is \"strict\", \"lazy\" or \"unrecorded\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: { ping: \"lazy\" } })\n", "log is given by block, open, message or close, not \"ping\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { resumes: \"paid\" })\n", "a websocket's option is log, not \"resumes\""),
+            ("route.chat(\"/w\", (req) => 1)\n", "route has no \"chat\": get, post, put, patch, delete or websocket"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    #[test]
     fn on_file_blocks_are_file_handlers_tied_to_their_file() {
         let src = r#"import { flow, on, route } from "holon"
 import state from "state"
@@ -4451,7 +5161,7 @@ export const t = action(() => {
         let route = |handler: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport inbox from \"folder:inbox\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
         assert_eq!(route("route.get(\"/a\", () => inbox)"), (7, 23, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(route("route.get(\"/a\", () => {\n  inbox = 1\n  return 1\n})"), (8, 3, "\"inbox\" is imported, and stays what it is: give a value of its own a name of its own".into()));
-        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
+        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, serve, lines, slice, copy, create or create_copy".into()));
         assert_eq!(route("route.get(\"/a\", () => notes.file(\"a\"))"), (7, 29, "a collection has no \"file\": get, put, delete or list".into()));
         // A folder without its name.
         let e = error("import { flow, route } from \"holon\"\nimport inbox from \"folder:\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", () => 1)\n");
@@ -4612,6 +5322,40 @@ export const t = action(() => {
         .doc;
         let got = leaves(&d);
         assert!(got.contains(&"file_create".to_string()) && got.contains(&"file_create_copy".to_string()), "{got:?}");
+    }
+
+    /// `site.serve(name)` is a route's answer: the file's handle, served. It answers alone, in a
+    /// `respond` with headers, with a status, or falling back to another file.
+    #[test]
+    fn a_folder_serves_its_files_as_a_routes_answer() {
+        let d = compiled(
+            r#"import { flow, respond, route, status } from "holon"
+import site from "folder:site"
+
+flow("f")
+
+route.get("/assets/*file", (req) => site.serve(`assets/${req.params.file}`))
+
+route.get("/down", () => respond(site.serve("a.zip"), { headers: { "content-disposition": "attachment" } }))
+
+route.get("/gone", () => status(410, site.serve("410.html")))
+
+route.get("/*path", (req) => site.serve(req.params.path) ?? site.serve("index.html"))
+"#,
+        )
+        .doc;
+        let serves: Vec<_> = d.nodes.iter().filter(|n| n.data.name == "file_serve").collect();
+        assert_eq!(serves.len(), 5);
+        for s in &serves {
+            assert_eq!(s.param("folder"), "site");
+            let from = d.edges.iter().find(|w| w.target == s.id && w.input() == "file").expect("a handle");
+            let handle = d.nodes.iter().find(|n| n.id == from.source).unwrap();
+            assert_eq!((handle.data.name.as_str(), handle.param("folder")), ("file_handle", "site"), "each its own handle");
+        }
+        let error = |line: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport site from \"folder:site\"\n\nflow(\"f\")\n\nroute.get(\"/\", () => {line})\n")).2;
+        assert_eq!(error("site.serve()"), "site.serve takes the file's name: return site.serve(\"index.html\")");
+        assert_eq!(error("site.serve(\"a\", \"b\")"), "site.serve takes the file's name: return site.serve(\"index.html\")");
+        assert!(error("site.serves(\"a\")").contains("file, serve, lines"));
     }
 
     /// A file handler reads the file that started its run by its handle, and sends a file on by

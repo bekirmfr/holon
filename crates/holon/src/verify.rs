@@ -553,7 +553,12 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// read are as it found them (firing.rs), and its line is written after its commit. So a run that
 /// ran beside another may have begun from a state an earlier one left or began with, and may have
 /// left cells it couldn't read as the other wrote them: of those, only the cells it wrote are
-/// checked, in a state a later run began from.
+/// checked, in a state a later run began from. Two runs committing close together may even be
+/// numbered the other way round: the run before a run is the one whose commit it began after, as
+/// its entry says (`recorder::Commit`), wherever its line is; and whether another commit landed
+/// while it ran is said by their numbers. One that began after a commit older than every one here
+/// has no run before it here, as the first hasn't. A line without them (logged before) is taken
+/// by its place and its times.
 ///
 /// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a power loss lost:
 /// where every cell that doesn't follow is one such a handler may write, it is said unchecked, as
@@ -587,7 +592,9 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             continue;
         }
         let others = || entries.iter().enumerate().filter(move |(a, (e, _))| *a != i && ran(e));
-        let side_by_side = others().any(|(_, (a, _))| beside(a, b));
+        // Whether another commit landed between its beginning and its own, as their numbers say.
+        let landed_beside = b.commit.as_ref().and_then(|c| Some(c.n? > c.after? + 1));
+        let side_by_side = landed_beside.unwrap_or_else(|| others().any(|(_, (a, _))| beside(a, b)));
         let first_part = entries[..i].iter().position(|(e, _)| e.run_id == b.run_id);
         let resumed = first_part.is_some() || !b.events.is_empty();
 
@@ -599,6 +606,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                 Some(f) => states.breaks.push((b.seq, format!("a resumed part begins from the state its run began with (run {}), and it didn't", entries[f].0.seq))),
                 None => states.unchecked("where it began: it is a resumed part, and its run's first part isn't here", b.seq),
             },
+            // The run whose commit it began after left the state it began from.
+            Some(h) if began_after(entries, b).is_some_and(|p| p.state_after.as_ref() == Some(h)) => states.began.push(b.seq),
             Some(h) => {
                 // The run before it that committed: one that failed didn't.
                 match entries[..i].iter().rposition(|(e, _)| ran(e) && e.error.is_none()) {
@@ -633,6 +642,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                             if from_before || from_beside {
                                 states.began.push(b.seq);
                                 states.beside.push(b.seq);
+                            } else if before_the_first(entries, b) {
+                                states.unchecked("where it began: no run before it here", b.seq);
                             } else if let Some(why) = began[i]
                                 .as_ref()
                                 .and_then(|(_, now)| moved(p, lefts[pi].as_ref(), now))
@@ -652,7 +663,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         // it, as another run may any.
         let (Some(after), Some(left)) = (&b.state_after, &lefts[i]) else { continue };
         let unrecorded = &light(b).unrecorded;
-        let (ran_beside, side_by_side) = (side_by_side, side_by_side || !unrecorded.is_empty());
+        // Numbered, an unrecorded handler's commits are counted too.
+        let (ran_beside, side_by_side) = (side_by_side, side_by_side || (landed_beside.is_none() && !unrecorded.is_empty()));
         if resumed {
             states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
             continue;
@@ -689,6 +701,26 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         }
     }
     Some(states)
+}
+
+/// The run whose commit `b` began after (`recorder::Commit`), wherever its line is; none for a
+/// line without one, one that began from the state as the server loaded it or put it in place,
+/// or after a run the log doesn't hold.
+fn began_after<'a>(entries: &'a [(LogEntry, &str)], b: &LogEntry) -> Option<&'a LogEntry> {
+    let c = b.commit.as_ref()?;
+    let after = c.after?;
+    entries.iter().map(|(e, _)| e).find(|e| ran(e) && e.commit.as_ref().is_some_and(|p| p.cell == c.cell && p.n == Some(after)))
+}
+
+/// Whether `b` began after a run's commit older than every one here, before the first of those
+/// landed: the run that made it is before the first here, as in a log trimmed to its newest runs,
+/// where runs beside each other began after commits whose lines are gone. Not one that began from
+/// the state as the server loaded it (`after` 0), whose run before it may be here.
+fn before_the_first(entries: &[(LogEntry, &str)], b: &LogEntry) -> bool {
+    let Some(c) = &b.commit else { return false };
+    let Some(after) = c.after.filter(|a| *a > 0) else { return false };
+    let numbered = entries.iter().map(|(e, _)| e).filter(|e| ran(e)).filter_map(|e| Some((e.commit.as_ref().filter(|d| d.cell == c.cell)?.n?, e)));
+    numbered.min_by_key(|(n, _)| *n).is_some_and(|(n, first)| after < n && b.at_ms <= span(first).1 + 1)
 }
 
 /// The cells a run began with otherwise than the run before it (`p`) left them: as its writes made
@@ -940,9 +972,10 @@ fn rerun(
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; a clock's tick or a file's run, that
-    // handler alone (the file's handle among the sourced values); an action's, its first part or
-    // a resumed one, its handler with what was sent; anything else, the whole unit.
+    // What it ran: a request's endpoint, with the request; a clock's tick, a file's, a mail's or a
+    // feed's run, that handler alone (the file's handle, the message, or the event, among the
+    // sourced values); an action's, its first part or a resumed one, and a WebSocket block's, its
+    // handler with what was sent (the block's record); anything else, the whole unit.
     let clock = match &entry.route {
         Some(label) if entry.kind == "tick" => {
             read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| (c.handler, false))
@@ -950,6 +983,18 @@ fn rerun(
         Some(label) if entry.kind == "file" => {
             read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
         }
+        Some(label) if entry.kind == "mail" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.mails.into_iter().find(|m| m.label == *label)).map(|m| (m.handler, false))
+        }
+        Some(label) if entry.kind == "feed" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.feeds.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
+        }
+        Some(label) if entry.kind == "queue" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.queues.into_iter().find(|q| q.label == *label)).map(|q| (q.handler, false))
+        }
+        Some(label) if entry.kind == "websocket" => read_server(deployed, resolver)
+            .ok()
+            .and_then(|s| s.websockets.iter().flat_map(|w| w.blocks()).find(|b| b.label == *label).map(|b| (b.handler, true))),
         Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
             read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
         }
@@ -1055,7 +1100,7 @@ fn rerun(
     // hash, differs too): the run isn't checked.
     let keeps = |c: &holon_core::Capability| {
         use holon_core::Capability::*;
-        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | FileWrite(_))
+        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | QueueSend(_) | FileWrite(_))
     };
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
         return Rerun::Skipped("it wrote a secret's value, which the server refuses: not run again".into());
@@ -1083,9 +1128,27 @@ fn rerun(
     if json(&progress) != json(&entry.progress) {
         differs.push("the packs it sent as it waited");
     }
+    // A file's status is the host's checks' too: a 304 for the request's cached copy, or what its
+    // entry's error says they found.
+    let answered = || {
+        let answer = data::respond(outcome.outputs.first().and_then(Option::as_ref));
+        let Some(file) = &answer.file else { return answer.status };
+        let headers = match inputs.first() {
+            Some(Some(Value::Record(r))) => r.get("headers"),
+            _ => None,
+        };
+        let if_none_match = match headers {
+            Some(Value::Record(h)) => match h.get("if-none-match") {
+                Some(Value::Text(v)) => Some(v.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        listeners::served_status(answer.status, file, if_none_match, entry.error.as_deref())
+    };
     if entry.kind == "request"
         && let Some(status) = entry.status
-        && data::respond(outcome.outputs.first().and_then(Option::as_ref)).status != status
+        && answered() != status
     {
         differs.push("the status it answered");
     }

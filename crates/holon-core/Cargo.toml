@@ -8,10 +8,27 @@ publish = false
 [dependencies]
 blake3   = "1"
 hmac = "0.12"
+# gzip's and zip's deflate and inflate (compress.rs). Pinned at 0.9.1 in Cargo.lock; a new version
+# can deflate the same data to other bytes, and a logged run must give the same bytes again.
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 # The number leaves' transcendental functions (numbers.rs): musl's port of fdlibm, the same bits
 # on every target. Pinned at 0.2.16 in Cargo.lock; a new version is a change to what they mean.
 libm = "0.2.16"
 sha2 = "0.10"
+# `jwt_verify`'s signatures (jwt.rs): RSA (RS256, PS256 and their kin), P-256 (ES256) and Ed25519
+# (EdDSA), RustCrypto's, of the generation `sha2` and `hmac` are. Pinned in Cargo.lock; no default
+# features, since their `std` turns on `getrandom`, which doesn't build for the editor's wasm, and
+# verifying needs no randomness.
+rsa = { version = "0.9.10", default-features = false, features = ["pem", "u64_digit", "sha2"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pem"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "pem"] }
+# OpenPGP's (pgp.rs): X25519 for ECDH to a Curve25519 key (already under `ed25519-dalek`), AES for
+# the message and the key wrap, SHA-1 for v4 fingerprints, the modification detection code and
+# older self-signatures. Pinned in Cargo.lock, without default features: a message's every random
+# byte is pgp.rs's own, drawn from the run's.
+curve25519-dalek = { version = "4.1.3", default-features = false }
+aes = { version = "0.8.4", default-features = false }
+sha1 = { version = "0.10.7", default-features = false, features = ["oid"] }
 smallvec = "1"
 # `normalize`'s tables (texts.rs). Pinned at 0.1.26 in Cargo.lock; a new version can treat a
 # character assigned in a later Unicode version differently.
@@ -24,7 +41,7 @@ eager-oracle = []
 [dev-dependencies]
 criterion = "0.5"
 # Tests assemble tiny modules from text (docs/L4s/wasm-module-L4.md §7); never a dependency of
-# core itself, whose purity-by-dependency argument keeps it to its six.
+# core itself, whose purity-by-dependency argument keeps it to its thirteen.
 wat = "1"
 
 [[bench]]

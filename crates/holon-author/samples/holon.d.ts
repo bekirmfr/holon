@@ -27,7 +27,8 @@ declare module "holon" {
   export type Duration = `${number}${"s" | "m" | "h" | "d"}`
   /** How a handler's runs are recorded: strict when left out, `"lazy"` or `"unrecorded"`. */
   export type Log = "lazy" | "unrecorded"
-  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads. */
+  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads, and a last
+   *  `*name` for the rest of the path, one segment or more (`/files/*path`). */
   export type Path = `/${string}`
 
   /** A flow's settings, the deploy settings. */
@@ -76,9 +77,50 @@ declare module "holon" {
     put(path: Path, handler: RouteHandler, options?: RouteOptions): void
     patch(path: Path, handler: RouteHandler, options?: RouteOptions): void
     delete(path: Path, handler: RouteHandler, options?: RouteOptions): void
+    /** WebSocket connections on the path, a run for each block's event: one block at least. */
+    websocket(path: Path, blocks: WebSocketBlocks, options?: WebSocketOptions): void
   }
   /** A route: `route.post("/orders", (req) => …)`. The most specific path wins. */
   export const route: Routes
+
+  /** A connection's opening request, with the connection's id. */
+  export interface SocketOpen extends Request {
+    /** The connection's id, 16 hex digits: the same on its messages and its close. */
+    conn: string
+  }
+  /** A text frame the connection sent. */
+  export interface SocketMessage {
+    conn: string
+    /** The frame's text. */
+    text: string
+    /** The text parsed as JSON. */
+    json: any
+    path: string
+    /** The opening request's path parts and query. */
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** How the connection ended: the browser's code and reason, the host's, or 1006 when it dropped. */
+  export interface SocketClose {
+    conn: string
+    code: number
+    reason: string
+    path: string
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** A websocket's blocks. `open` answers as a route does (a subscription, a first message, or a
+   *  status of 300 or more to refuse it); `message` with the value sent back, if any; `close`
+   *  nobody. */
+  export interface WebSocketBlocks {
+    open?: (req: SocketOpen) => any
+    message?: (m: SocketMessage) => any
+    close?: (c: SocketClose) => void
+  }
+  export interface WebSocketOptions {
+    /** One level for every block, or each block's own. */
+    log?: Log | { open?: Log; message?: Log; close?: Log }
+  }
 
   /** Runs every `period`; `now` is the tick's time, in seconds since the epoch. */
   export function every(period: Duration, handler: (now: number) => any, options?: { log?: Log }): void
@@ -101,6 +143,59 @@ declare module "holon" {
     log?: Log
   }
   export type FileHandler = (file: FileEvent) => any
+  /** A message that came to a mail's mailbox, read. */
+  export interface MailMessage {
+    /** The sender's address, as From writes it: proves nothing alone. Absent unless one. */
+    from?: string
+    /** The sender's display name, "" when none. */
+    name: string
+    to: string[]
+    cc: string[]
+    subject: string
+    /** Its Date, in seconds since the epoch, when it is one. */
+    date?: number
+    /** Its Message-ID without the brackets, or `sha256:` and its hash when it has none. */
+    message_id: string
+    /** Its plain text, "" when none. */
+    text: string
+    html?: string
+    /** Each attachment's file name to its text (a text, JSON, XML or CSV type) or bytes. */
+    attachments: Record<string, string | Uint8Array>
+    /** The mailbox's own server's word that the domain in From sent it (DMARC passed). */
+    authenticated: boolean
+    /** What that server said: pass, fail, none... */
+    verdict: { spf: string; dkim: string; dmarc: string }
+  }
+  /** An event a feed sent. */
+  export interface FeedEvent {
+    /** Its data: a value when it is JSON, else its text; a binary WebSocket message's bytes. */
+    data: any
+    /** Its id, when the feed gives one (a WebSocket's: the fields its binding names, joined with /). */
+    id?: string
+    /** Its name: "message" unless the feed names it; a Postgres channel's, the channel. */
+    event: string
+    /** How many events its full buffer dropped before it (`--on-full skip`): 0 unless some were. */
+    missed: number
+    /** How many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did. */
+    replaced: number
+    /** How many numbers of its key the feed skipped before it, theirs counted (`--sequence`): what came while the host wasn't reading. 0 unless some were. */
+    gap: number
+  }
+  /** A message from a queue. */
+  export interface QueueMessage {
+    /** Its body: a value when it is JSON, else its text. */
+    data: any
+    /** The queue's id for it. */
+    id: string
+    /** Its message attributes whose type is String or Number, as text. */
+    attributes: Record<string, string>
+    /** When it was sent, in seconds since 1970, as `now` is. */
+    sent: number
+    /** How many times the queue has handed it out: more than 1 once a run of it failed or was cut off. */
+    count: number
+    /** A FIFO queue's message group. */
+    group?: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -108,6 +203,12 @@ declare module "holon" {
       /** Runs for each file removed from the folder. */
       deleted(folder: Folder, handler: FileHandler, options?: FileOptions): void
     }
+    /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
+    mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
+    /** Runs for each event the feed sends, one at a time, in the order they came. */
+    feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
+    /** Runs for each message from the queue, one at a time, deleted once its run is over. */
+    queue(queue: Queue, handler: (message: QueueMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -209,25 +310,27 @@ declare module "holon" {
     /** A page of items, in key order. */
     list(page?: Page): any
   }
-  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it. */
+  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it, or bytes as they are. */
   export interface Folder {
     [name: string]: any
     get(name: string): any
     /** The file's bytes, any file: an image, a PDF, an archive. */
     bytes(name: string): Uint8Array
-    put(name: string, content: string | FileHandle): any
+    put(name: string, content: string | Uint8Array | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */
     list(page?: Page): any
     /** A handle to a file of any size, no bytes. */
     file(name: string): FileHandle
+    /** A route's answer that is the file, its bytes sent by the host: `return site.serve("index.html")`. */
+    serve(name: string): Answer
     /** Lines from line `from` (from the end when negative). */
     lines(name: string, options?: { from?: number; limit?: number }): any
     /** Bytes from `offset`, as text. */
     slice(name: string, options?: { offset?: number; length?: number }): any
     copy(name: string, handle: FileHandle): any
     /** Writes the file only if there is none yet: else the run fails, and nothing it did lands. */
-    create(name: string, text: string): any
+    create(name: string, content: string | Uint8Array): any
     create_copy(name: string, handle: FileHandle): any
   }
   /** A named database: its SQL written in quotes (the tables are the permission), values after it as `$1`, `$2`, … */
@@ -251,6 +354,32 @@ declare module "holon" {
     subscribe(options?: { from?: string }): Answer
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
+  }
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address; a
+   *  mailbox it names is read by `on.mail`. */
+  export interface Mail {
+    send(message: {
+      to: string | string[]
+      cc?: string | string[]
+      subject: string
+      text: string
+      html?: string
+      /** A file name to its text or bytes. */
+      attachments?: Record<string, string | Uint8Array>
+    }): any
+  }
+  /** A feed an admin binds on the host: listened to by `on.feed`. */
+  export interface Feed {
+    readonly kind: "feed"
+  }
+  /** A queue an admin binds on the host: sent to once the run is over, listened to by `on.queue`. */
+  export interface Queue {
+    send(message: {
+      /** The body: JSON, or text as it is. */
+      data: any
+      /** A FIFO queue's message group: one group's messages come out in the order sent. */
+      group?: string
+    }): any
   }
 }
 
@@ -284,6 +413,21 @@ declare module "channel:*" {
   const channel: Channel
   export default channel
 }
+declare module "mail:*" {
+  import type { Mail } from "holon"
+  const mail: Mail
+  export default mail
+}
+declare module "feed:*" {
+  import type { Feed } from "holon"
+  const feed: Feed
+  export default feed
+}
+declare module "queue:*" {
+  import type { Queue } from "holon"
+  const queue: Queue
+  export default queue
+}
 declare module "host:*" {
   import type { Host } from "holon"
   const host: Host
@@ -296,6 +440,8 @@ declare module "holon:clock" {
 declare module "holon:random" {
   /** One random number for the run, recorded. */
   export const random: number
+  /** The run's 32 random bytes, recorded: what `pgp_encrypt` draws a message's randomness from. */
+  export const random_bytes: Uint8Array
 }
 /** Another deployed flow's actions, by its slug: `await charge(x)` runs one, `charge(x)` starts it. */
 declare module "flow:*"
@@ -322,6 +468,7 @@ declare module "holon" {
     max_file_read_bytes?: number
     max_file_write_bytes?: number
     max_files_per_run?: number
+    max_served_bytes?: number
     max_db_rows?: number
     max_db_read_bytes?: number
     db_statement_ms?: number | Duration
@@ -331,6 +478,9 @@ declare module "holon" {
     channel_keep?: number
     channel_buffer?: number
     max_subscribers?: number
+    max_websockets?: number
+    max_message_bytes?: number
+    messages_per_second?: number
   }
 
   /**
@@ -1237,6 +1387,69 @@ declare module "holon" {
   export function xml_attribute(...args: any[]): any
 
   /**
+   * `gzip(data: Any) -> out: Bytes`
+   *
+   * Gzips a text (its UTF-8) or bytes: deflated at level 6, with no file name and time 0, so the same data gives the same bytes everywhere.
+   */
+  export function gzip(...args: any[]): any
+
+  /**
+   * `gunzip(bytes: Bytes) -> out: Bytes`
+   *
+   * The bytes inside a gzip, each member's joined. Nothing for a header, checksum or length that is wrong, bytes after the last member that aren't another, or past 64 MiB inflated.
+   */
+  export function gunzip(...args: any[]): any
+
+  /**
+   * `zip(files: Record) -> out: Bytes`
+   *
+   * Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.
+   */
+  export function zip(...args: any[]): any
+
+  /**
+   * `unzip(bytes: Bytes) -> out: Record`
+   *
+   * A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.
+   */
+  export function unzip(...args: any[]): any
+
+  /**
+   * `jwt_verify(token: Text, key: Any, now: Number) -> out: Record  {issuer, audience, leeway: 0}`
+   *
+   * A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM text or a JWK record, and a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.
+   */
+  export function jwt_verify(...args: any[]): any
+
+  /**
+   * `jwt_decode(token: Text) -> out: Record`
+   *
+   * A JWT's header and payload, {header, payload}, verifying nothing: what it says before it is trusted, to pick the key that checks it. Nothing for what isn't three base64url parts whose header and payload are JSON objects.
+   */
+  export function jwt_decode(...args: any[]): any
+
+  /**
+   * `pgp_encrypt(data: Any, keys: Any, random: Bytes, now: Number) -> out: Bytes  {armor: binary}`
+   *
+   * An OpenPGP message: data (a text's UTF-8, or bytes) encrypted to each of keys, to its newest encryption key valid at now, as GnuPG reads it: a session key for each, then AES-256 with the modification detection code over the data, dated now. random is the run's random bytes (random_bytes), from which every random byte is drawn, so a rerun writes the same message. A key is a public key, armored or bytes: version 4, RSA (2,048 to 4,096 bits) or Curve25519, valid by its own signatures (not expired, not revoked). armor ascii gives the armored text, as bytes. Nothing for a key without an encryption key valid at now, or fewer than 32 random bytes.
+   */
+  export function pgp_encrypt(...args: any[]): any
+
+  /**
+   * `pgp_verify(data: Any, signature: Any, keys: Any, now: Number) -> out: Record`
+   *
+   * {signer, key, created} when one of signature's signatures (detached, armored or bytes) over data verifies with one of keys: the primary key's fingerprint, the signing key's, and when it signed. The key must be able to sign and be valid when it signed (not expired, not revoked; a subkey bound by its primary and its own back-signature), the signature made no later than now and not expired at it, over SHA-224 to SHA-512. A text signature is over the data with CR LF line endings. Nothing otherwise, SHA-1 signatures included.
+   */
+  export function pgp_verify(...args: any[]): any
+
+  /**
+   * `pgp_key(key: Any) -> out: Record`
+   *
+   * What one public key says, as its own signatures bear out: {fingerprint, user_ids, created, expires, revoked}, its fingerprint as GnuPG writes it (40 hex digits, upper case), expires absent when it never does. What a person compares before trusting a key. Nothing for several keys at once, a secret key, or a key no self-signature holds for.
+   */
+  export function pgp_key(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.
@@ -1330,9 +1543,16 @@ declare module "holon" {
   /**
    * `random() -> out: Number`
    *
-   * A random number from 0 up to 1, the same everywhere in one run, and recorded.
+   * A random number from 0 up to 1, the same everywhere in one run, and recorded: read from the run's random bytes.
    */
   export function random(...args: any[]): any
+
+  /**
+   * `random_bytes() -> out: Bytes`
+   *
+   * The run's 32 random bytes, the same everywhere in one run, and recorded: what pgp_encrypt draws a message's randomness from.
+   */
+  export function random_bytes(...args: any[]): any
 
   /**
    * `secret() -> out: Text  {name: api_key}`
@@ -1347,6 +1567,27 @@ declare module "holon" {
    * The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.
    */
   export function file_arrival(...args: any[]): any
+
+  /**
+   * `mail_arrival() -> out: Record  {mail: ops}`
+   *
+   * The message that came to the mailbox of the mail resource an admin bound to the name set on the node (mail), which started the run: {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it (DMARC passed); From alone proves nothing. attachments is a record of each file's name to its text (a text, JSON, XML or CSV type) or bytes. A server's on.mail handler runs once for each message, which is moved to the binding's done folder once the run is over.
+   */
+  export function mail_arrival(...args: any[]): any
+
+  /**
+   * `feed_event() -> out: Record  {feed: prices}`
+   *
+   * The event the feed an admin bound to the name set on the node (feed) sent, which started the run: {data, id, event}. data is a value when the event's data is JSON, else its text; id is the event's id when the feed gives one; event is its name, message unless the feed names it. A server's on.feed handler runs once for each event, one at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and an event run on already isn't run again.
+   */
+  export function feed_event(...args: any[]): any
+
+  /**
+   * `queue_message() -> out: Record  {queue: payouts}`
+   *
+   * The message that came to the queue an admin bound to the name set on the node (queue), which started the run: {data, id, attributes, sent, count, group}. data is its body, a value when it is JSON, else its text; id is the queue's id for it; attributes its message attributes of type String or Number, as text; sent when it was sent, in seconds since 1970; count how many times the queue has handed it out; group a FIFO queue's message group. A server's on.queue handler runs once for each message, one at a time, in the order they came; the host deletes it once its run is over, and a message run on already isn't run again.
+   */
+  export function queue_message(...args: any[]): any
 
   /**
    * `resume_token() -> out: Text  {await: event}`
@@ -1412,9 +1653,9 @@ declare module "holon" {
   export function file_list(...args: any[]): any
 
   /**
-   * `file_write(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}`
+   * `file_write(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}`
    *
-   * Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
+   * Writes a text, or bytes as they are, to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
    */
   export function file_write(...args: any[]): any
 
@@ -1461,9 +1702,9 @@ declare module "holon" {
   export function file_read_bytes(...args: any[]): any
 
   /**
-   * `file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}`
+   * `file_create(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}`
    *
-   * Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
+   * Writes a text, or bytes as they are, to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
    */
   export function file_create(...args: any[]): any
 
@@ -1543,6 +1784,27 @@ declare module "holon" {
    * A subscription to the channel set on the node, for a route to answer with: the caller gets each pack sent on it from then on (from "kept": the packs the channel keeps first), as server-sent events. Letting callers subscribe is a permission.
    */
   export function channel_subscribe(...args: any[]): any
+
+  /**
+   * `file_serve(file: Record) -> out: Effect  {folder: site}`
+   *
+   * A route's answer that is the file a handle of the folder set on the node names: the host sends its bytes as they are, with the type its name says, if the file is still the handle's. Answering with a folder's files is a permission.
+   */
+  export function file_serve(...args: any[]): any
+
+  /**
+   * `mail_send(message: Record, trigger: Any) -> out: Effect  {mail: ops, to: *}`
+   *
+   * Sends message through the mail resource an admin bound to the name set on the node (mail), once the run is over and its writes have landed: {to, cc, subject, text, html, attachments}, to and cc an address or a list, attachments a record of a file name to its text or bytes. From is the binding's, never the flow's. to set on the node is the recipients the text names, or * when one is computed: a recipient it doesn't name gives nothing, and the host sends only to those the binding allows. At most 50 recipients and 10 MiB. Sending through it, to each recipient, is a permission.
+   */
+  export function mail_send(...args: any[]): any
+
+  /**
+   * `queue_send(message: Record, trigger: Any) -> out: Effect  {queue: payouts}`
+   *
+   * Sends message to the queue an admin bound to the name set on the node (queue), once the run is over and its writes have landed: {data, group}. data is the body, sent as JSON (text as it is); group, text, is a FIFO queue's message group, whose messages come out in the order sent. Sending to it is a permission.
+   */
+  export function queue_send(...args: any[]): any
 
   /**
    * `egress(payload: Any, trigger: Any) -> out: Effect`

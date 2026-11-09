@@ -260,6 +260,16 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return durable::handle_get_runs(&state.deployments, slug);
         }
+        if let Some(slug) = rest.strip_suffix("/feeds")
+            && method == "GET"
+        {
+            return feeds::handle_get_feeds(state, slug);
+        }
+        if let Some(slug) = rest.strip_suffix("/queues")
+            && method == "GET"
+        {
+            return queues::handle_get_queues(state, slug);
+        }
         if let Some((slug, run_id)) = rest.strip_suffix("/decide").and_then(|r| r.split_once("/runs/"))
             && method == "POST"
         {

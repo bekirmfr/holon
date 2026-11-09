@@ -401,8 +401,12 @@ pub(crate) fn capability_named(name: &str) -> Option<Capability> {
         "Clock" => Some(Capability::Clock),
         "Random" => Some(Capability::Random),
         "NetworkIngress" => Some(Capability::NetworkIngress),
-        // The new file that started it (arrivals.rs).
-        _ => name.strip_prefix("FileArrival(").and_then(|r| r.strip_suffix(')')).and_then(|q| serde_json::from_str(q).ok()).map(Capability::FileArrival),
+        // The new file that started it (arrivals.rs), the mail (inbox.rs), the feed's event
+        // (subscriptions.rs), or the queue's message (dequeue.rs).
+        _ => {
+            let named = |prefix: &str| name.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')).and_then(|q| serde_json::from_str::<String>(q).ok());
+            named("FileArrival(").map(Capability::FileArrival).or_else(|| named("MailArrival(").map(Capability::MailArrival)).or_else(|| named("FeedEvent(").map(Capability::FeedEvent)).or_else(|| named("QueueMessage(").map(Capability::QueueMessage))
+        }
     }
 }
 
@@ -463,7 +467,7 @@ impl ParkedRun {
             inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
             sourced: sourced
                 .iter()
-                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress | Capability::FileArrival(_)))
+                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress | Capability::FileArrival(_) | Capability::MailArrival(_) | Capability::FeedEvent(_) | Capability::QueueMessage(_)))
                 .map(|(c, v)| (format!("{c:?}"), SValue::from_core(v)))
                 .collect(),
             state_refs,

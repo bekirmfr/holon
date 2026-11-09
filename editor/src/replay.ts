@@ -217,10 +217,11 @@ export type NodeTiming = {
 };
 
 /** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
- *  route, or a clock's, file handler's or action's label (`every 2s`, `on file inbox`, `action
- *  reset`), one level down, inside its handler unit; else the whole flow's (`"*"`), at the top. */
+ *  route, or a clock's, file handler's, websocket block's or action's label (`every 2s`, `on file
+ *  inbox`, `WebSocket /room/:name message`, `action reset`), one level down, inside its handler
+ *  unit; else the whole flow's (`"*"`), at the top. */
 function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
-  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger") && !!entry.route);
+  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger" || entry.kind === "websocket") && !!entry.route);
   return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
 }
 
@@ -401,12 +402,40 @@ export function fileLabel(params: ReplayNode["data"]["params"]): string {
   return `on file ${frozen(params, "folder") ?? ""}${frozen(params, "on") === "deleted" ? " deleted" : ""}${matching ? ` matching ${JSON.stringify(matching)}` : ""}`;
 }
 
+/** An `on_mail` node's label, as the log names its handler's runs: `on mail remit` (core's
+ *  `mail_label`). */
+export function mailLabel(params: ReplayNode["data"]["params"]): string {
+  return `on mail ${frozen(params, "mail") ?? ""}`;
+}
+
+/** An `on_feed` node's label, as the log names its handler's runs: `on feed prices` (core's
+ *  `feed_label`). */
+export function feedLabel(params: ReplayNode["data"]["params"]): string {
+  return `on feed ${frozen(params, "feed") ?? ""}`;
+}
+
+/** A `websocket` node's label, as the log names its block's runs: `WebSocket /room/:name message`
+ *  (core's `socket_label`). */
+export function socketLabel(params: ReplayNode["data"]["params"]): string {
+  return `WebSocket ${frozen(params, "path") ?? ""} ${frozen(params, "on") ?? ""}`;
+}
+
+/** An `on_queue` node's label, as the log names its handler's runs: `on queue payout_events`
+ *  (core's `queue_label`). */
+export function queueLabel(params: ReplayNode["data"]["params"]): string {
+  return `on queue ${frozen(params, "queue") ?? ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
- * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for an
- * action's, the group holding its `action` node (`"action reset"`); for anything else (a flow's
- * tick, a trigger, a flow of `on file` lines), the whole canvas.
+ * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`), a mail
+ * handler's its `on_mail` node (`"on mail remit"`), a feed handler's its `on_feed` node (`"on feed
+ * prices"`), a queue handler's its `on_queue` node (`"on queue payout_events"`), a websocket
+ * block's its `websocket` node (`"WebSocket /room/:name message"`); for an action's, the group
+ * holding its
+ * `action` node (`"action reset"`); for anything else (a flow's tick, a trigger, a flow of
+ * `on file` lines), the whole canvas.
  */
 export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: ReplayInput): string[] {
   if (entry.kind === "trigger" && entry.route) {
@@ -418,6 +447,26 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     const onFile = nodes.find((n) => n.data.name === "on_file" && n.data.body.kind === "Template" && fileLabel(n.data.params) === entry.route);
     if (!onFile) return [];
     return components(nodes, edges).find((ids) => ids.includes(onFile.id)) ?? [];
+  }
+  if (entry.kind === "mail" && entry.route) {
+    const onMail = nodes.find((n) => n.data.name === "on_mail" && n.data.body.kind === "Template" && mailLabel(n.data.params) === entry.route);
+    if (!onMail) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onMail.id)) ?? [];
+  }
+  if (entry.kind === "feed" && entry.route) {
+    const onFeed = nodes.find((n) => n.data.name === "on_feed" && n.data.body.kind === "Template" && feedLabel(n.data.params) === entry.route);
+    if (!onFeed) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onFeed.id)) ?? [];
+  }
+  if (entry.kind === "queue" && entry.route) {
+    const onQueue = nodes.find((n) => n.data.name === "on_queue" && n.data.body.kind === "Template" && queueLabel(n.data.params) === entry.route);
+    if (!onQueue) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onQueue.id)) ?? [];
+  }
+  if (entry.kind === "websocket" && entry.route) {
+    const block = nodes.find((n) => n.data.name === "websocket" && n.data.body.kind === "Template" && socketLabel(n.data.params) === entry.route);
+    if (!block) return [];
+    return components(nodes, edges).find((ids) => ids.includes(block.id)) ?? [];
   }
   if (entry.kind === "tick" && entry.route) {
     const every = nodes.find(
@@ -528,6 +577,16 @@ export function replay(
       return traces.has(wire.source) ? carried(wire) : undefined;
     });
 
+  // `random`'s number from the run's 32 random bytes: their first 53 bits over 2^53, as core's
+  // `sourced_value` reads them.
+  const randomNumber = (v: WValue | null): WValue | null => {
+    if (v?.type !== "Bytes") return null;
+    const b = typeof v.value === "string" ? Uint8Array.from(atob(v.value), (c) => c.charCodeAt(0)) : v.value;
+    if (b.length < 8) return null;
+    const word = (i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    return { type: "Number", value: (word(0) * 2 ** 21 + (word(4) >>> 11)) / 2 ** 53 };
+  };
+
   // What one node computes once everything it needs has arrived.
   const run = (id: string, node: ReplayNode, inputs: (WValue | null)[]): NodeTrace => {
     const name = node.data.name;
@@ -537,11 +596,22 @@ export function replay(
     if (primitive && name === "clock") return { inputs, outputs: [sourced.get("Clock") ?? null] };
     // A clock's tick: the time it ticked.
     if (node.data.body.kind === "Template" && name === "every") return { inputs, outputs: [sourced.get("Clock") ?? null] };
-    if (primitive && name === "random") return { inputs, outputs: [sourced.get("Random") ?? null] };
+    // The run's random bytes, as they are, and the number read from them, as core reads it.
+    if (primitive && name === "random_bytes") return { inputs, outputs: [sourced.get("Random") ?? null] };
+    if (primitive && name === "random") return { inputs, outputs: [randomNumber(sourced.get("Random") ?? null)] };
     // The new file that started the run: its handle, as the log keeps it.
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A file handler's file: its handle, likewise.
     if (node.data.body.kind === "Template" && name === "on_file") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
+    // The message that started a mail handler's run, as the log keeps it, whole.
+    if ((primitive && name === "mail_arrival") || (node.data.body.kind === "Template" && name === "on_mail"))
+      return { inputs, outputs: [sourced.get(`MailArrival(${JSON.stringify(param("mail"))})`) ?? null] };
+    // The event that started a feed handler's run, as the log keeps it.
+    if ((primitive && name === "feed_event") || (node.data.body.kind === "Template" && name === "on_feed"))
+      return { inputs, outputs: [sourced.get(`FeedEvent(${JSON.stringify(param("feed"))})`) ?? null] };
+    // The message that started a queue handler's run, as the log keeps it.
+    if ((primitive && name === "queue_message") || (node.data.body.kind === "Template" && name === "on_queue"))
+      return { inputs, outputs: [sourced.get(`QueueMessage(${JSON.stringify(param("queue"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any: an approval, with
     // the decision.
     if (primitive && (name === "await" || name === "approval")) return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
@@ -558,7 +628,8 @@ export function replay(
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
     }
-    if (name === "request" && node.data.body.kind === "Template") {
+    // A route's request, or a websocket block's record, as the log keeps it.
+    if ((name === "request" || name === "websocket") && node.data.body.kind === "Template") {
       const fed = [entry.request];
       return { inputs: fed, outputs: evaluate(node, fed) };
     }
@@ -769,6 +840,24 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "xml_text":
     case "xml_attribute":
       return "its input isn't an element (a list starting with a name), a path step isn't a name or *, or nothing matched";
+    case "gzip":
+      return "its input isn't a text or bytes";
+    case "gunzip":
+      return "its bytes aren't a whole gzip (a checksum or a length that doesn't match, bytes after it), or they inflate past 64 MiB";
+    case "zip":
+      return "a file isn't a text or bytes, a name is empty, ends with / or would land outside its folder (a leading /, a \\, a .. part), or there are more than 10,000";
+    case "unzip":
+      return "its bytes aren't a whole zip, a file is encrypted, zip64 or compressed other than by deflate, a name is given twice or lands outside its folder, or it inflates past 64 MiB or 10,000 files";
+    case "jwt_verify":
+      return "the token didn't verify with its key (a signature, an algorithm the key doesn't allow, alg none, crit), or its claims don't hold at now: exp passed or missing, nbf ahead, another issuer or audience";
+    case "jwt_decode":
+      return "its token isn't three base64url parts whose header and payload are JSON objects";
+    case "pgp_encrypt":
+      return "no key has an encryption key valid at now (not a version 4 RSA or Curve25519 public key, expired, revoked, a subkey its primary didn't bind), or random has fewer than 32 bytes";
+    case "pgp_verify":
+      return "no signature verified with a key that could sign when it was made (another key, expired or revoked, a signing subkey without its back-signature), it was made after now or has expired, or it is over SHA-1";
+    case "pgp_key":
+      return "its input isn't one public key (several, a secret key, not OpenPGP), or no self-signature holds for it";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

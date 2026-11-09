@@ -85,7 +85,7 @@ unit.
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | Its syntax | TypeScript's: a flow is a valid TypeScript module, read by a TypeScript parser (oxc's). The meanings that differ from JavaScript's are Holon's; where a JavaScript reader would be misled, the compiler refuses and says what to write instead | §1, §2, §6 |
 | What it is not | General-purpose. No loops, recursion, classes, generics, imports of code, or standard library growth | §2 |
-| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
+| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
 | Settings | `flow("name", { port, keep, limits, browsers })`, once, after the imports | §5.1 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
@@ -96,7 +96,7 @@ unit.
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
-| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
+| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `on.mail(mail, (m) => …)`, `on.feed(feed, (e) => …)`, `on.queue(queue, (m) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
 | Another flow's action | `import { charge } from "flow:billing"`, then `await charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | A run that waits | A route answers and is done: what waits (`await event(…)`) is an action, which the route starts by calling it without `await`, `payment(x)`, answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
@@ -254,6 +254,46 @@ says how the route's runs are recorded (§5.1). `respond(page, { headers: { "con
 "text/html; charset=utf-8" } })` sets response headers (a record, text values): a page instead of
 JSON, or `respond("", { headers: { location: "/" }, status: 303 })` for a redirect; without it, a
 text body goes out as plain text and anything else as JSON (the `guestbook` sample).
+
+### site: the rest of a path, and a folder served
+
+```ts
+route.get("/api/hello", () => ({ hello: "world" }))
+
+route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
+
+route.get(
+  "/assets/*file",
+  (req) =>
+    respond(site.serve(`assets/${req.params.file}`), {
+      headers: { "cache-control": "public, max-age=31536000, immutable" },
+    }),
+  { log: "lazy" },
+)
+
+route.get("/", () => site.serve("index.html"), { log: "lazy" })
+
+route.get("/*path", (req) => site.serve(req.params.path) ?? site.serve("index.html"), {
+  log: "lazy",
+})
+```
+
+`/*path` is a rest segment, only ever last: it matches the rest of the path, one segment or more,
+and `req.params.path` is what it matched, each segment decoded (`/docs/a%20guide/part%202` gives
+`docs/a guide/part 2`). It never matches nothing, so `/` has its own route. A route without a rest
+beats any route with one, and among rest routes the most literal segments win, so `/api/hello`
+answers itself, any other path under `/api` gets the JSON 404, and every other path gets the page:
+a single-page app's deep link opens the app where it points. A segment that is empty, `.` or
+`..`, or that decodes to `/` or `\`, matches no rest, so the param never names another path than
+the request's.
+
+`site.serve(name)` (`import site from "folder:site"`) answers with a file of the folder: the
+file's handle, served, its bytes sent by the host once the run is over, with the type its name
+says and its hash as its `etag`, so a browser's copy that is still the file's gets a 304. The host
+sends the file the run saw or nothing: one changed since is a 503 to retry, and a big one that
+changes while it is streamed is cut. No such file is no value, so `??` falls back to the page; a
+route answering with no value answers 404, as `/assets/*file` does for a script that isn't there.
+It asks for `FileServe("site")`. See the files guide (`docs/manual/guides/files.md`).
 
 ### stripe-to-slack
 
@@ -630,6 +670,37 @@ back into the same form, refusing a DOCTYPE, so no entity is ever defined or fet
 Python's ElementTree does. The payment-batch sample writes a pain.001 from a CSV of payouts and
 reads the bank's pain.002 back.
 
+A bank's statements come zipped, or gzipped. `unzip(b)` reads a zip into a record of each file's
+bytes under its name, and `zip(files)` writes a record of texts or bytes as one, deflated; `gzip`
+and `gunzip` do the same for one stream. A logged run gives the same bytes again, so the deflate
+is pinned, and what isn't a whole zip or gzip gives nothing: a checksum that doesn't match, an
+encrypted or zip64 file, a name that would land outside its folder (`../x`, `/x`), more than
+64 MiB inflated or 10,000 files, so a zip bomb stops early. A folder's file is written as bytes as
+it is as text, `dir[name] = zipped`, and the log keeps its size and hash. The statement-archive
+sample unzips each delivery of camt.053 statements dropped in a folder, reads each statement's
+closing balance, archives the delivery as one zip with a manifest beside its statements, and
+serves a statement back gzipped when the client takes it.
+
+A partner's service calls with a token it signed itself. `jwt_verify(token, key, now, { audience })`
+gives the token's claims when its signature verifies with `key` and they hold at `now`: `exp` after
+it, `nbf` not, the issuer and audience given. The key decides the algorithm, never the token: a
+shared secret allows HMAC, an RSA, P-256 or Ed25519 public key (a PEM text or a JWK; a JWKS by the
+token's `kid`) its own signatures, so `alg: none`, or HMAC signed over a public key, gives nothing.
+`jwt_decode(token)` reads a token's header and payload without trusting them, to find the key that
+checks it. The jwt-api sample keeps each partner's public key, added by a person running an action,
+and verifies each request's bearer token with the key of the partner it names.
+
+A bank takes payment files encrypted to its OpenPGP key, and signs what it sends back.
+`pgp_encrypt(data, key, random_bytes, now, { armor: "ascii" })` writes what GnuPG decrypts: a
+session key for the key's encryption key valid at `now`, then AES-256 with its modification
+detection code, every random byte drawn from the run's recorded `random_bytes`, so a replay writes
+the same file. `pgp_verify(data, signature, key, now)` gives who signed and when, when a detached
+signature verifies with a key that could sign then; `pgp_key(key)` gives its fingerprint, user IDs,
+expiry and revocation as its own signatures say, what a person compares before trusting it. The
+pgp-outbox sample encrypts each payment file dropped in a folder to the bank's key, which a person
+trusts by running an action, and verifies each report the bank delivers with its signature beside
+it.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -878,6 +949,355 @@ as server-sent events (`id: 12.0`, `data: {"at":…,"title":…}`), while the ca
 that reconnects says the last id it saw and gets the kept ones past it. Sending on a channel is a
 permission (`ChannelSend("updates")`), and so is letting callers subscribe
 (`ChannelRead("updates")`).
+
+`import ops from "mail:ops"` names a mail an admin bound to an SMTP server, with its sender and
+every address it may send to (`docs/L4s/host-capabilities-L4.md` §5.2.2). `ops.send({ to,
+subject, text })` (and `cc`, `html`, `attachments`) is an effect, `mail_send{mail: ops, to}(m)`,
+sent as a channel's pack is: once the run is over and its record is on disk, from a queue that
+tries again for a day. Its `to` parameter is the recipients the call's record writes as text in
+quotes, joined with commas, or `*` when one is computed: the grant names each,
+`MailSend("ops/approvals@acme.com")`, or says `MailSend("ops/*")`, held to the binding's list.
+The approval-mail sample mails a payout's approval link from the route that starts its waiting
+run, and whoever asked once it is approved.
+
+The same mail, bound to a mailbox (`--imap`, §5.2.4 of the L4), is received with a handler of its
+own: `on.mail(ops, (m) => { … })` runs for each message that comes there, `m` the message read
+(`from`, `subject`, `text`, `attachments`, `authenticated`, …), and the message is moved to the
+binding's done folder once the run is over. `authenticated` is the mailbox's own server's verdict
+that the domain in `From` sent it, the only part of a message's sender a flow can believe. The
+remittance-mail sample settles invoices from the CSVs customers mail, once it has checked it.
+How the host logs in is the binding's business, not the flow's: the support-inbox sample
+receives requests from a Microsoft 365 mailbox and answers them through the same mail, the host
+logging in to both servers with an OAuth token (`--oauth`), and nothing in its text says so.
+
+### room: a WebSocket chat
+
+The sample without its page (a form to join under a name, and a `WebSocket` on `/room/<name>`
+that shows what the room says) and the route that serves it:
+
+```ts
+import { flow, route } from "holon"
+import people from "collection:people"
+import room from "channel:room"
+
+flow("room", { port: 8132 })
+
+route.websocket("/room/:name", {
+  open: (req) => {
+    people[req.conn] = req.params.name
+    room.send({ joined: req.params.name })
+    return room.subscribe()
+  },
+  message: (m) => {
+    room.send({ from: people[m.conn], text: m.text })
+  },
+  close: (c) => {
+    delete people[c.conn]
+    room.send({ left: c.params.name })
+  },
+})
+```
+
+`route.websocket(path, blocks)` holds the WebSocket connections pages open on the path, and runs
+its blocks, each a handler of its own: `open` as one opens, its record the opening request with
+`conn`, the connection's id (16 hex digits, the same in each of its runs); `message` for each text
+the page sends (`m.text`, and `m.json` when it is JSON); `close` once the connection has ended
+(`c.code` and `c.reason` say how). `open` answers as a route does: `return room.subscribe()`
+accepts the connection and sends it each pack sent on the channel from then on, a status of 300
+or more refuses it (the page sees the opening fail), and any other answer is the connection's
+first message. What `message` returns goes back on its connection; `close` answers nobody. So a
+channel is how one connection's runs reach the others: a message's pack goes to every page in the
+room once its run is over and its record is on disk, as live-board's tickets do. A connection's
+messages run one at a time, in the order they came, and `close` runs once, after the last of them.
+
+The host holds the connections, never a run: each run is over in milliseconds, and what outlives
+it is in the collection and the channel. A page from another site can't open one: its `Origin`
+must be the flow's own host or one `browsers` names. The limits `max_websockets`,
+`max_message_bytes` and `messages_per_second` (under ⚙) bound what the flow holds and what each
+connection sends; one past them is closed with the code that says why, and its `close` runs all
+the same. A websocket is a permission, `WebSocket("/room/:name")`, as the channel and the
+collection are.
+
+### price-feed: a feed of server-sent events
+
+Its handler and two of its routes (the page left out):
+
+```ts
+import { flow, js, on, respond, route } from "holon"
+import latest from "collection:latest"
+import ticks from "channel:ticks"
+import prices from "feed:prices"
+import { now } from "holon:clock"
+
+flow("price-feed", { port: 8187 })
+
+// Each event, {"symbol": "ACME", "price": 10.5}: kept by its symbol, and told to the page.
+on.feed(prices, (e) => {
+  const symbol = e.data.symbol
+  latest[symbol] = { price: e.data.price, at: now }
+  ticks.send({ symbol, price: e.data.price, at: now })
+})
+
+// The last price of each symbol.
+route.get("/prices", () => latest.list())
+
+// Each new price as server-sent events, for as long as the caller stays.
+route.get("/live", () => ticks.subscribe())
+```
+
+`import prices from "feed:prices"` names a feed an admin bound to a stream of server-sent events
+(`holon feed add prices --url env:…`, `docs/L4s/host-capabilities-L4.md` §5.9.2), its URL and the
+key in it the binding's, never the flow's. `on.feed(prices, (e) => { … })` runs for each event the
+feed sends, one at a time, in the order they came: `e` is the event, its `data` a value when it is
+JSON (as here) and its text when it isn't, `event` its name (`"message"` when it gives none) and
+`id` its id, absent when it has none. The host holds the connection and keeps where the feed is: a
+connection lost is opened again from the last event run on (`Last-Event-ID`), an event the feed
+sends again is passed over, and events that come faster than their runs wait, up to the binding's
+`--buffer`, before the connection waits too. A new listener starts at what the feed sends from
+now. The grant is `FeedEvent("prices")`, "run on each event from the feed prices"; the page
+listens to the channel the handler sends on, as live-board's does.
+
+### trading-bot: a WebSocket feed, and an order placed once
+
+Its handler and the order's run (the signing function, the approval and the routes left out):
+
+```ts
+import { action, decimal_compare, decimal_mul, flow, on } from "holon"
+import levels from "collection:levels"
+import orders from "collection:orders"
+import prices from "collection:prices"
+import ticker from "feed:ticker"
+import exchange from "host:api.exchange.coinbase.com"
+import { now } from "holon:clock"
+
+flow("trading-bot", { port: 8190 })
+
+on.feed(
+  ticker,
+  (e) => {
+    const product = e.data.product_id
+    prices[product] = { price: e.data.price, at: now, replaced: e.replaced }
+    const level = levels[product]
+    const started = level.started ?? false
+    const under = decimal_compare(e.data.price, level.price) <= 0 && started === false
+    const order = under
+      ? { product, price: level.price, size: level.size, id: level.id }
+      : undefined
+    if (order !== undefined) levels[product] = { ...level, started: now }
+    place(order)
+  },
+  { log: "lazy" },
+)
+
+export const place = action(async (order) => {
+  const body = JSON.stringify({
+    type: "limit",
+    side: "buy",
+    product_id: order.product,
+    price: order.price,
+    size: order.size,
+    client_oid: order.id,
+  })
+  const sent = await exchange.post("/orders", {
+    headers: { "content-type": "application/json" },
+    body,
+  })
+  if (sent.status === 200) {
+    orders[order.id] = { product: order.product, exchange: JSON.parse(sent.body).id }
+  }
+  return { status: sent.status }
+})
+```
+
+The feed is a WebSocket (`wss://ws-feed.exchange.coinbase.com`), bound with what the flow doesn't
+say: the message that subscribes to the ticker (`--subscribe`), the messages that run (`--only
+type=ticker`), their id (`--id product_id,sequence`), and, while runs are slower than the prices,
+only each product's newest kept (`--on-full latest --key product_id`), `e.replaced` saying how many
+waiting prices it replaced. The handler is `lazy`: it is a price, and where the host is in the
+feed moves once the record is synced, so after a crash the prices of the last second run again.
+The order is not lazy. `place(order)` starts the flow's own action, a strict run, and `order` is
+absent unless the price is under the level, so no run starts for the others: a call bound on a
+statement is made when the run reaches it, but not without its input (§6.3). The order's client
+id is the level's, made when the level was set, so a price run again after a crash, or the action
+run again by hand, sends the same order, and the exchange places it once. The handler marks the
+level as started and reads nothing the order's run writes: a run that has started another holds
+the keys it read until it commits, so the order's run would wait on them. In the sample, an order
+worth more than 1000 waits for a person's approval (`await event("approved")`) in a run of its own,
+which starts `place` once approved, so the order is signed with the time it is sent.
+
+### bluesky-mentions: a feed opened again from where it was
+
+```ts
+import { flow, on, route } from "holon"
+import mentions from "collection:mentions"
+import watch from "collection:watch"
+import posts from "feed:posts"
+import { now } from "holon:clock"
+
+flow("bluesky-mentions", { port: 8192 })
+
+on.feed(
+  posts,
+  (e) => {
+    const post = e.data.payload
+    const text = post.record.text
+    const kept = text.toLowerCase().includes(watch["word"].text)
+      ? { text, by: post.did, at: post.time, seq: e.id }
+      : undefined
+    mentions[`at://${post.did}/${post.collection}/${post.rkey}`] = kept
+  },
+  { log: "lazy" },
+)
+
+route.put("/watch", (req) => {
+  const word = req.json.word.toLowerCase()
+  watch["word"] = { text: word, since: now }
+  return { word }
+})
+
+route.get("/mentions", () => mentions.list())
+```
+
+The feed is Bluesky's Jetstream, a WebSocket that numbers each post (`payload.seq`) and sends again
+what came after a number when a connection asks from it (`?cursor=…`). The flow says none of it:
+the binding names the id (`--id payload.seq`), the posts that run (`--only
+payload.operation=create`) and where the feed takes the id (`--resume query:cursor`). So when the
+connection is lost, or the server stopped, the host opens it again from the last post it read, and
+the posts that came meanwhile run; the one at the cursor, which Jetstream sends again, is passed
+over by its id. `kept` is absent unless the post mentions the word, so the write is made only then
+(§6.3), and it is keyed by the post's own address: a post the feed sends twice, as a feed that
+sends at least once may, writes the same item. Until `PUT /watch` sets a word, `watch["word"]` is
+absent, and so is everything read from it: nothing is kept.
+
+### trade-tape: what a feed skipped, fetched
+
+```ts
+import { decimal_sum, flow, on, route } from "holon"
+import volumes from "collection:volumes"
+import trades from "feed:trades"
+import exchange from "host:api.exchange.coinbase.com"
+
+flow("trade-tape", { port: 8193 })
+
+on.feed(trades, async (e) => {
+  const trade = e.data
+  const product = trade.product_id
+  const was = volumes[product] ?? { volume: "0", trades: 0, fetched: 0, unfetched: 0 }
+  const page =
+    e.gap > 0
+      ? await exchange.get(
+          `/products/${product}/trades?after=${trade.trade_id}&limit=${Math.min(e.gap, 1000)}`,
+        )
+      : undefined
+  const skipped = (page.status === 200 ? JSON.parse(page.body) : undefined) ?? []
+  const sizes = skipped.map((t) => t.size)
+  volumes[product] = {
+    volume: decimal_sum([was.volume, trade.size, ...sizes]),
+    trades: was.trades + 1 + sizes.length,
+    fetched: was.fetched + sizes.length,
+    unfetched: was.unfetched + e.gap - sizes.length,
+    last: trade.trade_id,
+  }
+})
+
+route.get("/volumes", () => volumes.list())
+```
+
+The feed is Coinbase Exchange's matches channel, a WebSocket that numbers each product's trades
+(`trade_id`) and never sends one again. The binding numbers them (`--sequence trade_id --key
+product_id`), so each event's `e.gap` says how many of its product's trades came while the host
+wasn't reading: across a reconnect, or a restart, from the numbers the host keeps with where the
+feed is. When it is above 0, the handler asks the exchange's REST API for the trades before this
+one (`after=`), as many as the gap, a page of 1,000 at most, and adds their sizes with
+`decimal_sum`: the volume stays exact. `page` is absent when no gap asks, and so is everything read
+from it, so `skipped` falls to `[]`; a page that doesn't answer 200 adds none, and the gap is kept
+as `unfetched`. The handler is strict (the default log): where the host is in the feed moves once
+a run's record is on disk, so a trade a crash cut short is in the next one's gap.
+
+### payout-events: a queue in, a FIFO queue out
+
+```ts
+import { flow, on, route } from "holon"
+import payouts from "collection:payouts"
+import payout_events from "queue:payout_events"
+import payout_retries from "queue:payout_retries"
+
+flow("payout-events", { port: 8194 })
+
+on.queue(payout_events, (m) => {
+  const payout = m.data.payout
+  payouts[payout.id] = {
+    amount: payout.amount,
+    currency: payout.currency,
+    account: payout.account,
+    status: m.data.type.replace("payout.", ""),
+    event: m.id,
+    at: m.sent,
+  }
+  if (m.data.type === "payout.failed") {
+    payout_retries.send({ data: payout, group: payout.account })
+  }
+})
+
+route.get("/payouts", () => payouts.list())
+```
+
+`import payout_events from "queue:payout_events"` names a queue an admin bound to an Amazon SQS
+queue (`holon queue add payout_events --url env:…`, `docs/L4s/host-capabilities-L4.md` §5.9.9),
+its URL and the access key in it the binding's, never the flow's. `on.queue(payout_events, (m) =>
+{ … })` runs for each message the queue holds, one at a time, in the order received: `m.data` is
+its body, a value since it is JSON, `m.id` the queue's id for it, `m.sent` when it was sent. The
+host deletes it once the run's record is on disk, so a crash runs it again rather than losing it,
+and a message it ran already is passed over. `payout_retries.send({ data, group })` is an effect,
+`queue_send{queue: payout_retries}(message)`, performed once the run is over and its writes have
+landed: a failed payout goes to a FIFO queue, its group the account, so one account's retries keep
+their order, and its deduplication id is the run's, so a send tried again is taken once.
+
+### ledger-watch: a Postgres channel as a feed
+
+```ts
+import { decimal_sum, flow, on, route } from "holon"
+import balances from "collection:balances"
+import ledger from "database:ledger"
+import entries from "feed:entries"
+
+flow("ledger-watch", { port: 8195 })
+
+on.feed(entries, (e) => {
+  const entry = e.data
+  const was = balances[entry.account] ?? { balance: "0", entries: 0, read: 0, last: 0 }
+  const unheard =
+    entry.seq > was.last + 1
+      ? ledger.query(
+          "select amount from entries where account = $1 and seq > $2 and seq < $3",
+          entry.account,
+          was.last,
+          entry.seq,
+        )
+      : []
+  const amounts = unheard.map((u) => u.amount)
+  if (entry.seq > was.last)
+    balances[entry.account] = {
+      balance: decimal_sum([was.balance, entry.amount, ...amounts]),
+      entries: was.entries + 1 + amounts.length,
+      read: was.read + amounts.length,
+      last: entry.seq,
+    }
+})
+
+route.get("/balances", () => balances.list())
+```
+
+The feed is a channel of a Postgres database an admin bound (`holon feed add entries --database
+ledger --channel ledger_entries`, `docs/L4s/host-capabilities-L4.md` §5.9.11): a trigger on the
+ledger's `entries` table sends each row as it commits (`pg_notify`), and the host listens on the
+channel, so each entry starts a run, `e.data` the row as the trigger built it. Postgres keeps no
+notification for a session that isn't listening, so the flow keeps each account's last `seq`
+itself: an entry past the one after it reads the entries between from the ledger
+(`ledger.query`, the rows as the run began, logged with it), and an entry at or below it changes
+nothing (`if` with no `else`: no write). The balance and the last `seq` are one write, so they
+move together, and `decimal_sum` keeps the balance exact: an amount is read as text, from the
+payload and from the table.
 
 ### chat-proxy: a streamed reply
 
@@ -1159,8 +1579,8 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Route paths:** a text literal, `/` followed by segments of `[A-Za-z0-9_.-]+` or `:name`, as
   `parse_path` accepts.
 - **Import sources** are text literals of a fixed shape: `"holon"`, `"state"`, `"secret:NAME"`,
-  `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"host:HOST"`,
-  `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
+  `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`,
+  `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
   }`, is in quotes, as an attribute's value is a text.
 
 ## 5. Syntax and lowering
@@ -1175,7 +1595,7 @@ same flow drawn on the canvas are the same unit. A file, in shapes:
 import { flow, route, every, on, action, js, respond, status, stripe, event, LEAF… } from "holon"
 import NAME from "secret:NAME"                       (with { optional: "true" })
 import state from "state"
-import NAME from "collection:NAME"                   (and folder:, database:, channel:)
+import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:, feed:, queue:)
 import NAME from "host:HOST"
 import { now } from "holon:clock"
 import { random } from "holon:random"
@@ -1191,6 +1611,9 @@ route.METHOD("/path", (req) => answer, { resumes, log })
 every("DURATION", (now) => { … }, { log })
 on.file.created(FOLDER, (f) => { … }, { matching, log })
 on.file.deleted(FOLDER, (f) => { … }, { matching, log })
+on.mail(MAIL, (m) => { … }, { log })
+on.feed(FEED, (e) => { … }, { log })
+on.queue(QUEUE, (m) => { … }, { log })
 export const NAME = action((input) => { … }, { log })
 ```
 
@@ -1208,9 +1631,13 @@ An import names something the flow uses from outside a run; its source says what
 | `import inbox from "folder:inbox"` | a named folder on the host | the file leaves |
 | `import shop from "database:shop"` | a named database on the host | the database leaves |
 | `import updates from "channel:updates"` | a channel | `channel_send`, `channel_subscribe`, a piped call |
+| `import ops from "mail:ops"` | a mail an admin bound to an SMTP server, a mailbox, or both | `mail_send{mail}`; `on.mail`'s trigger |
+| `import prices from "feed:prices"` | a feed an admin bound to a stream of server-sent events | `on.feed`'s trigger |
+| `import payouts from "queue:payouts"` | a queue an admin bound to an Amazon SQS queue | `queue_send{queue}`; `on.queue`'s trigger |
 | `import api from "host:api.example.com"` | a host the flow calls | `http_request{host}` and its kin |
 | `import { now } from "holon:clock"` | the time the run started | `clock()`; in a clock, the tick |
 | `import { random } from "holon:random"` | one random number for the run | `random()` |
+| `import { random_bytes } from "holon:random"` | the run's 32 random bytes | `random_bytes()` |
 | `import { charge } from "flow:billing"` | an action of another deployed flow | `flow_call{flow: billing, action: charge}`, or `flow_start` when not awaited |
 
 **The imports name everything that comes from outside a run or outlives it; the handlers use only
@@ -1242,6 +1669,15 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
 - **A route,** `route.get("/path", (req) => …)`, and `post`, `put`, `patch`, `delete`, runs on each
   request to the flow's port, `req` the request (§5.11). It lowers to a `request{method, path,
   resume, log}` template node, its trigger.
+- **A websocket,** `route.websocket("/room/:name", { open, message, close })`, holds the WebSocket
+  connections pages open on the path, on the flow's port beside its routes, and runs each of its
+  blocks as a handler of its own: `open: (req) => …` as one opens, `req` the opening request with
+  `.conn`, the connection's id; `message: (m) => …` for each text it sends (`.conn`, `.text`,
+  `.json`, and the opening request's `.path`, `.params` and `.query`); `close: (c) => …` once it
+  has ended (`.conn`, `.code`, `.reason`, and the same three). One block at least, each written
+  once; the option `log` is one level for every block, or each block's own (`{ log: { message:
+  "lazy" } }`). Each block lowers to a `websocket{path, on, log}` template node, its trigger, `on`
+  the block's name (§5.11).
 - **A clock,** `every("2s", (now) => { … })`, runs every 2 seconds, with no input: its parameter,
   or `now` imported, is the time of the tick, and a clock that reads neither leaves it out. Its
   period is a whole number of seconds, from `"1s"` to `"366d"`; one clock per period. It lowers to
@@ -1254,6 +1690,30 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
   folder, `**/` any number of folders, letters either case). Several handlers may watch one
   folder, each with its own pattern. It lowers to an `on_file{folder, on, matching, log}` node, its
   trigger, whose output `file` is the handle.
+- **A mail handler,** `on.mail(remit, (m) => { … })`, runs for each message that comes to the
+  mailbox an admin bound the mail `remit` imports to; `m` is the message read (`.from`, `.name`,
+  `.to`, `.cc`, `.subject`, `.date`, `.message_id`, `.text`, `.html`, `.attachments`,
+  `.authenticated`, `.verdict`), and once its run is over the host moves it to the binding's done
+  folder. One handler a mail; its first argument is an imported mail. It lowers to an
+  `on_mail{mail, log}` node, its trigger, whose output `message` is the message (a
+  `mail_arrival{mail}` leaf inside it, sourced: `MailArrival("remit")`).
+- **A feed handler,** `on.feed(prices, (e) => { … })`, runs for each event the feed `prices`
+  imports sends, one at a time, in the order they came; `e` is the event (`.data`, a value when it
+  is JSON and its text when it isn't; `.event`, its name, `"message"` when it gives none; `.id`,
+  when it has one), and the host keeps where the feed is, so a connection lost is opened again
+  from the last event run on. One handler a feed; its first argument is an imported feed, and its
+  run answers nobody, so a `respond` in it is refused. It lowers to an `on_feed{feed, log}` node,
+  its trigger, whose output `event` is the event (a `feed_event{feed}` leaf inside it, sourced:
+  `FeedEvent("prices")`).
+- **A queue handler,** `on.queue(payouts, (m) => { … })`, runs for each message the queue
+  `payouts` imports holds, one at a time, in the order received; `m` is the message (`.data`, a
+  value when its body is JSON and its text when it isn't; `.id`; `.attributes`; `.sent`, in
+  seconds since 1970; `.count`, how many times the queue handed it out; `.group`, a FIFO queue's),
+  and the host deletes it once its run's record is on disk. One handler a queue, and one
+  deployment listening to it; its first argument is an imported queue, and its run answers
+  nobody, so a `respond` in it is refused. It lowers to an `on_queue{queue, log}` node, its
+  trigger, whose output `message` is the message (a `queue_message{queue}` leaf inside it,
+  sourced: `QueueMessage("payouts")`).
 - **An action,** `export const reset = action((input) => { … })`, runs when someone runs it by its
   name, `input` what they sent (a JSON value; `{}` when they sent nothing). It answers with what it
   returns, a value alone (a route's `status(…)` and `respond(…)` are not an action's); an action
@@ -1326,7 +1786,8 @@ handler (§10, §12).
 |---|---|
 | `const name = expr` | a binding: a name for the node `expr` places, no node of its own |
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
-| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
+| `n++`, `n += 2`, `x ??= y` | an assignment of `(n ?? 0) + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6). A state key changed twice in a run is refused |
+| `n++`, `++n` where a value goes | the change made before the statement it is in, its value `n ?? 0` (`default`) or that plus one, read left to right; refused after `?`, `&&`, `\|\|` or `??` and in a function written in place |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
 | `Object.assign(t, a, b)` alone, on a local | a new value, `{ ...t, ...a, ...b }` (`merge`); on a parameter or a record another name holds, refused, as for `push` |
 | `const d = new Date(t)`; `d.setUTCHours(h, m)` alone; `d = new Date(t2)` | `d` is a Date, held as its time value (`date_part{part: time}(t)`) and read only by a Date's methods (§5.3); a setter alone gives `d` a new value, `date_set{part: hours}(d, h, m)`, and `const ms = d.setUTCHours(h)` gives it that and `ms` the time value; a setter elsewhere in an expression is the time value, and `d`, changed in place, is read no more; `d` read any other way is refused, naming `d.getTime()` and `d.toISOString()` |
@@ -1335,7 +1796,7 @@ handler (§10, §12).
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
-| `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4) |
+| `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4); a number key through `as_text`, as JavaScript's property key |
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
@@ -1503,7 +1964,10 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `state.beats = e` | `store_write{key: beats}(e)` | set the state when the run finishes |
 | `now` (`import { now } from "holon:clock"`) | `clock()`; in a clock, its tick's `now` output | the time the run started; in a clock, the tick's |
 | `random` (`import { random } from "holon:random"`) | `random()` | one random number for the run |
+| `random_bytes` (`import { random_bytes } from "holon:random"`) | `random_bytes()` | the run's 32 random bytes, the ones `random` is read from |
 | `f` (`on.file.created(inbox, (f) => …)`) | the handler's `on_file{folder: inbox}` node, its `file` output | the handle of the file that started the run, with its `event` |
+| `m` (`on.mail(remit, (m) => …)`) | the handler's `on_mail{mail: remit}` node, its `message` output | the message that started the run, read |
+| `e` (`on.feed(prices, (e) => …)`) | the handler's `on_feed{feed: prices}` node, its `event` output | the event that started the run: `{data, event, id}` |
 | `input` (`action((input) => …)`) | the handler's `action{name}` node, its `input` output | what whoever ran it sent |
 | `notes[k]` (`import notes from "collection:notes"`) | `collection_get{collection: notes}(k)` | the item under `k` |
 | `notes[k] = e` | `collection_put{collection: notes}(k, e)` | put it when the run finishes |
@@ -1517,6 +1981,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
 | `inbox.list({ prefix: p, after: a, limit: n })` | `file_list{folder: inbox, limit: n}(p, a)` | a page of files, `{size, hash, modified}` by name, in name order |
 | `inbox.file(n)` | `file_handle{folder: inbox}(n)` | a handle: `{folder, name, size, hash, modified}`, no bytes |
+| `return site.serve(n)`, `respond(site.serve(n), { headers })`, `site.serve(n) ?? …` | `file_serve{folder: site}(file_handle{folder: site}(n))` as `respond`'s body | answer with the file, its bytes sent by the host if they are still the handle's (`FileServe("site")`) |
 | `inbox.lines(n, { from: i, limit: k })` | `file_lines{folder: inbox, limit: k}(n, i)` | `k` lines from line `i` (from the end when negative), without line endings |
 | `inbox.slice(n, { offset: o, length: k })` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or a file handler's `f`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
@@ -1530,6 +1995,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `notes.update(c, { … }, { "$set": … }, { expect: n })` | `db_update{database: notes, collection: c, filter, update, expect: n}(list(v…))` | update what the filter selects when the run finishes (only if it matches `n`) |
 | `notes.delete(c, { … }, { expect: n })` | `db_delete{database: notes, collection: c, filter, expect: n}(list(v…))` | delete what the filter selects when the run finishes (only if it deletes `n`) |
 | `updates.send(e)` (`import updates from "channel:updates"`) | `channel_send{channel: updates}(e)` | send `e` to the channel's subscribers once the run is over |
+| `payouts.send({ data, group })` (`import payouts from "queue:payouts"`) | `queue_send{queue: payouts}({ data, group })` | send a message to the queue once the run is over and its writes have landed; `group` a FIFO queue's |
 | `return updates.subscribe({ from: "kept" })` | `channel_subscribe{channel: updates, from: kept}` as `respond`'s body | answer with the channel's packs, as server-sent events (`from: "new"`, the default: only those sent from now on) |
 | `await api.get(path, { headers: h, body: b })` (`import api from "host:api.example.com"`), and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host: api.example.com}(path, h, b)` | a call to that host: `{status, headers, body}` |
 | `await api.put(path, { headers: h, file: f })` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
@@ -1552,6 +2018,8 @@ Rules the table implies:
   `max_file_read_bytes`, writes 1 GiB, `max_file_write_bytes`, and touches 1,000 files,
   `max_files_per_run`); a read of anything else fails the run, and it writes nothing. A bigger one
   is read by handle, lines or slice; a copy also asks `FileRead` of the folder its handle names.
+  A name no file can have (a `:`, a `<`, a `CON`) names no file: a read of it has no value. One
+  that would lead out of its folder (a `..` part, a leading `/`, a `\`) fails the run.
 - A host is its import, because the host is the capability the deployment asks for: a request is
   a method of an imported host, never a host from a wire. The path, headers and body can come from
   anywhere. A database's SQL is a text literal for the same reason: its tables are
@@ -1933,12 +2401,19 @@ idiom the samples use for a write that may not happen.
 ```
 route.METHOD("/path", (req) => answer, { resumes: "NAME", log: "lazy" })
 route.METHOD("/path", async (req) => { statements; return answer })
+route.websocket("/path", { open: (req) => answer, message: (m) => value, close: (c) => { … } }, { log })
 ```
+
+**The path** is `/` and segments: literals, `:name` params, and a last `*name` that takes the
+rest of the path, one segment or more. A route without a rest beats any route with one, then the
+most literal segments win, then the earlier route; two routes of one method clash when they match
+the same requests (a param alike any param, a rest alike only a rest). The `site` sample shows a
+rest.
 
 Lowers to a `request{method, path, resume, log}` template node, the route's trigger, and the
 handler's nodes; `resume` is the option `resumes`, and `log` the option `log` (§5.1), empty for
-strict, the same param a clock's `every`, a file handler's `on_file` and an action's `action`
-carry. Every `return` and every use of `req` wires into the same connected group, which is what
+strict, the same param a websocket block's `websocket`, a clock's `every`, a file handler's
+`on_file`, a mail handler's `on_mail`, a feed handler's `on_feed` and an action's `action` carry. Every `return` and every use of `req` wires into the same connected group, which is what
 makes the handler one route (`find_routes` works by connectivity, unchanged). `async` goes on a
 handler that `await`s, as TypeScript requires.
 
@@ -1972,9 +2447,27 @@ handler that `await`s, as TypeScript requires.
 - Clashing routes and bad paths are the existing errors, said of the flow by its routes (`GET /a
   clashes with GET /a`), not yet at a column.
 
+**A websocket's blocks.** Its path is a route's, and a path is a page or a connection: a websocket
+whose path matches a GET route's requests is refused (`WebSocket /w/:name clashes with GET
+/w/:id`), as are two websockets alike. A GET there without a WebSocket's opening headers is
+answered 426. Each block answers as its event can:
+
+| Block | Its record | Its answer |
+|---|---|---|
+| `open` | the opening request (`method`, `path`, `params`, `query`, `headers`, …) and `conn` | as a route's: `return ch.subscribe()` accepts and subscribes, `status(code, …)` of 300 or more refuses, `status(204)` or effects alone accept and send nothing, anything else accepts and is the first message |
+| `message` | `conn`, `text`, `json`, `path`, `params`, `query` | a value alone, sent back on the connection (text as it is, anything else as JSON); none sends nothing; `status` and `respond` are refused, as an action's are |
+| `close` | `conn`, `code`, `reason`, `path`, `params`, `query` | nobody: a `return` with a value is refused |
+
+Without `open`, a connection is accepted as it comes, and sent nothing. Without `message`, a
+connection that sends one is closed (1003). A message's run that fails sends nothing back; its
+record says why. `conn` is the connection's id, a key a flow keeps what it knows of the
+connection under, as the room sample keeps who joined; it is not a secret, and gives nothing to
+whoever has it.
+
 **A handler is everything tied to its trigger.** Each handler (§5.1) has a trigger node: a route's
-`request`, a clock's tick (its value the time of the tick), a file handler's `on_file` (the file's
-handle) and an action's `action` (what was sent). What reads from it is the handler's, and so is
+`request`, a websocket block's `websocket` (its record), a clock's tick (its value the time of the
+tick), a file handler's `on_file` (the file's handle), a mail handler's `on_mail` (the message), a
+feed handler's `on_feed` (the event) and an action's `action` (what was sent). What reads from it is the handler's, and so is
 every sink placed in it:
 
 - **Every sink takes its trigger.** The writes (state, a collection, a folder, a database), the
@@ -2602,6 +3095,19 @@ the syntax to TypeScript's, keeping the lowering.
    - *XML* (2026-11-08, host-capabilities L4 §5.1.5, slice 1.2c): an element as JsonML's list,
      `xml_parse` without a DTD and `xml_format`, compact or indented, and `xml_find`, `xml_text`
      and `xml_attribute` along paths. The payment-batch sample, run live.
+   - *Zip and gzip* (2026-11-08, host-capabilities L4 §5.1.7, slice 1.2d): `zip`, `unzip`,
+     `gzip` and `gunzip` on a pinned deflate, bounded at 64 MiB and 10,000 files, a name outside
+     its folder refused; a folder's file written as bytes. A key a function returns named like a
+     binding of its body no longer hides that binding from the other keys (`{ total: total * 2,
+     again: total }`, `{ again: total, total }`). The statement-archive sample, run live.
+   - *JWT* (2026-11-08, host-capabilities L4 §5.1.9, slice 1.2e): `jwt_verify`, the key deciding
+     the algorithm (HS, RS, PS, ES256, EdDSA; PEM, JWK, a JWKS by `kid`), `exp` required and
+     checked at `now`, and `jwt_decode`. The jwt-api sample, run live.
+   - *OpenPGP* (2026-11-08, host-capabilities L4 §5.1.11, slice 1.2f): `pgp_encrypt`,
+     `pgp_verify` and `pgp_key` for version 4 RSA and Curve25519 keys, written by hand over
+     RustCrypto's primitives. A run's randomness is 32 recorded bytes, `random` read from them and
+     `random_bytes` them, so an encrypted message replays byte for byte. The pgp-outbox sample,
+     run live against GnuPG.
    - *A call under a condition* (2026-11-09): a call bound on a statement in an `if`, or after a
      `return` that may have answered, is tied to the conditions it runs under whether or not
      something reads its answer. One that was read had been tied to its handler alone, since calls

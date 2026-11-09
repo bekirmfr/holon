@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
 use crate::routes::{with_log, 
-    action_spec, action_unit, clock_spec, clock_unit, endpoint_unit, file_spec, file_unit, find_actions, find_clocks, find_files, find_routes, is_optional_input, route_spec,
+    action_spec, action_unit, clock_spec, clock_unit, endpoint_unit, feed_spec, feed_unit, file_spec, file_unit, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes, find_websockets, is_optional_input, mail_spec, mail_unit, queue_spec, queue_unit, route_spec, socket_spec, socket_unit,
     server_unit,
 };
 use crate::wire::WPort;
@@ -111,6 +111,48 @@ pub struct FileDraft {
     pub log: String,
 }
 
+/// One mail handler: its mail, its label (`on mail remit`), and its unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct MailDraft {
+    pub mail: String,
+    pub label: String,
+    pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
+}
+
+/// One feed handler: its feed, its label (`on feed prices`), and its unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FeedDraft {
+    pub feed: String,
+    pub label: String,
+    pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
+}
+
+/// One queue handler: its queue, its label (`on queue payouts`), and its unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct QueueDraft {
+    pub queue: String,
+    pub label: String,
+    pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
+}
+
+/// One websocket block: its path, what it runs on, its label (`WebSocket /room/:name message`), and
+/// its unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SocketDraft {
+    pub path: String,
+    pub on: String,
+    pub label: String,
+    pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
+}
+
 /// One action: its name, its label (`action reset`), and its unit's hash.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActionDraft {
@@ -121,7 +163,7 @@ pub struct ActionDraft {
     pub log: String,
 }
 
-/// The server a flow declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the server
+/// The server a flow declares: its endpoints, clocks, file, mail, feed and queue handlers and actions, why any handler can't be one, the server
 /// unit's hash once every handler is sound (and the port is a port, with a route), and, for each
 /// handler by its label, which node each of its stored children is.
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
@@ -129,6 +171,10 @@ pub struct DerivedServer {
     pub endpoints: Vec<EndpointDraft>,
     pub clocks: Vec<ClockDraft>,
     pub files: Vec<FileDraft>,
+    pub mails: Vec<MailDraft>,
+    pub feeds: Vec<FeedDraft>,
+    pub queues: Vec<QueueDraft>,
+    pub websockets: Vec<SocketDraft>,
     pub actions: Vec<ActionDraft>,
     pub errors: Vec<String>,
     #[serde(rename = "serverHash")]
@@ -146,6 +192,7 @@ fn port_of(text: &str) -> Option<u16> {
 /// and the response and effect outputs, and wrapped as an endpoint. Every unit made is stored.
 pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> DerivedServer {
     let (routes, mut errors) = find_routes(nodes, wires);
+    let (socket_groups, socket_errors) = find_websockets(nodes, wires, &routes);
     let approval = |name: &str| nodes.iter().any(|n| n.data.name == "approval" && n.param("name") == name);
     for n in nodes.iter().filter(|n| n.data.name == "resume_token" && approval(n.param("await"))) {
         errors.push(format!("resume_token({:?}): {:?} is an approval, which people decide in Holon: it has no token", n.param("await"), n.param("await")));
@@ -233,6 +280,105 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             Err(e) => errors.push(format!("{}: {e}", f.label)),
         }
     }
+    let (groups, mail_errors) = find_mails(nodes, wires);
+    errors.extend(mail_errors);
+    let mut mails = Vec::new();
+    for m in groups {
+        let group: Vec<&Node> = m.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let mail = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match mail_spec(proposed, &group, &m.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(m.label.clone(), trace_of(&handler, &group));
+            let outputs = handler.outputs.clone();
+            let handler = put(store, handler)?;
+            let unit = with_log(mail_unit(handler, &outputs, &m.mail), &m.log)?;
+            Ok(Ok(put(store, unit)?))
+        })();
+        match mail {
+            Ok(Ok(hash)) => mails.push(MailDraft { mail: m.mail, label: m.label, hash: to_hex(&hash), log: m.log }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", m.label)),
+        }
+    }
+    let (groups, feed_errors) = find_feeds(nodes, wires);
+    errors.extend(feed_errors);
+    let mut feeds = Vec::new();
+    for g in groups {
+        let group: Vec<&Node> = g.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let feed = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match feed_spec(proposed, &group, &g.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(g.label.clone(), trace_of(&handler, &group));
+            let outputs = handler.outputs.clone();
+            let handler = put(store, handler)?;
+            let unit = with_log(feed_unit(handler, &outputs, &g.feed), &g.log)?;
+            Ok(Ok(put(store, unit)?))
+        })();
+        match feed {
+            Ok(Ok(hash)) => feeds.push(FeedDraft { feed: g.feed, label: g.label, hash: to_hex(&hash), log: g.log }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", g.label)),
+        }
+    }
+    let (groups, queue_errors) = find_queues(nodes, wires);
+    errors.extend(queue_errors);
+    let mut queues = Vec::new();
+    for g in groups {
+        let group: Vec<&Node> = g.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let queue = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match queue_spec(proposed, &group, &g.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(g.label.clone(), trace_of(&handler, &group));
+            let outputs = handler.outputs.clone();
+            let handler = put(store, handler)?;
+            let unit = with_log(queue_unit(handler, &outputs, &g.queue), &g.log)?;
+            Ok(Ok(put(store, unit)?))
+        })();
+        match queue {
+            Ok(Ok(hash)) => queues.push(QueueDraft { queue: g.queue, label: g.label, hash: to_hex(&hash), log: g.log }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", g.label)),
+        }
+    }
+    errors.extend(socket_errors);
+    let mut websockets = Vec::new();
+    for g in socket_groups {
+        let group: Vec<&Node> = g.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let socket = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match socket_spec(proposed, &group, &g.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(g.label.clone(), trace_of(&handler, &group));
+            let (inputs, outputs) = (handler.inputs.clone(), handler.outputs.clone());
+            let handler = put(store, handler)?;
+            let unit = with_log(socket_unit(handler, &inputs, &outputs, &g.path, &g.on)?, &g.log)?;
+            Ok(Ok(put(store, unit)?))
+        })();
+        match socket {
+            Ok(Ok(hash)) => websockets.push(SocketDraft { path: g.path, on: g.on, label: g.label, hash: to_hex(&hash), log: g.log }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", g.label)),
+        }
+    }
     let (groups, action_errors) = find_actions(nodes, wires);
     errors.extend(action_errors);
     let mut actions = Vec::new();
@@ -258,15 +404,20 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             Err(e) => errors.push(format!("{}: {e}", a.label)),
         }
     }
-    // A port only with a route: a flow of clocks, files and actions listens on none.
-    let port = if endpoints.is_empty() { Some(None) } else { port_of(port).map(Some) };
+    // A port only with a route or a websocket: a flow of clocks, files, mails, feeds, queues and
+    // actions listens on none.
+    let port = if endpoints.is_empty() && websockets.is_empty() { Some(None) } else { port_of(port).map(Some) };
     let server_hash = match port {
-        Some(port) if !(endpoints.is_empty() && clocks.is_empty() && files.is_empty() && actions.is_empty()) && errors.is_empty() => {
+        Some(port) if !(endpoints.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && feeds.is_empty() && queues.is_empty() && websockets.is_empty() && actions.is_empty()) && errors.is_empty() => {
             let hashes = endpoints
                 .iter()
                 .map(|e| &e.hash)
                 .chain(clocks.iter().map(|c| &c.hash))
                 .chain(files.iter().map(|f| &f.hash))
+                .chain(mails.iter().map(|m| &m.hash))
+                .chain(feeds.iter().map(|f| &f.hash))
+                .chain(queues.iter().map(|q| &q.hash))
+                .chain(websockets.iter().map(|w| &w.hash))
                 .chain(actions.iter().map(|a| &a.hash))
                 .map(|h| parse_hash(h).expect("hashes made here"))
                 .collect();
@@ -274,7 +425,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         }
         _ => None,
     };
-    DerivedServer { endpoints, clocks, files, actions, errors, server_hash, trace }
+    DerivedServer { endpoints, clocks, files, mails, feeds, queues, websockets, actions, errors, server_hash, trace }
 }
 
 /// What each canvas node does with a secret, for the canvas to mark it: by node id, a line for each
@@ -284,15 +435,20 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
 pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> BTreeMap<String, Vec<String>> {
     use holon_core::Resolver as _;
     let derived = derive_server(nodes, wires, store, port);
-    // Each handler (a route's, a clock's, a file's, an action's: the composite of its nodes, child
-    // 0 of what wraps it), the canvas node each of its children is, and whether its first output
-    // answers a caller (a route's; an action's answer goes back through Holon, withheld).
+    // Each handler (a route's, a clock's, a file's, a message's, a websocket block's, an action's: the
+    // composite of its nodes, child 0 of what wraps it), the canvas node each of its children is,
+    // and whether its first output answers a caller (a route's, a websocket's open and message
+    // blocks'; an action's answer goes back through Holon, withheld).
     let labelled = derived
         .endpoints
         .iter()
         .map(|e| (&e.hash, format!("{} {}", e.method, e.path), true))
         .chain(derived.clocks.iter().map(|c| (&c.hash, c.label.clone(), false)))
         .chain(derived.files.iter().map(|f| (&f.hash, f.label.clone(), false)))
+        .chain(derived.mails.iter().map(|m| (&m.hash, m.label.clone(), false)))
+        .chain(derived.feeds.iter().map(|f| (&f.hash, f.label.clone(), false)))
+        .chain(derived.queues.iter().map(|q| (&q.hash, q.label.clone(), false)))
+        .chain(derived.websockets.iter().map(|w| (&w.hash, w.label.clone(), w.on != "close")))
         .chain(derived.actions.iter().map(|a| (&a.hash, a.label.clone(), false)));
     let mut handlers: Vec<(Unit, Vec<String>, bool)> = Vec::new();
     for (hash, label, answers) in labelled {
@@ -306,7 +462,7 @@ pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
         }
     }
     // A flow without handlers runs whole.
-    if derived.endpoints.is_empty() && derived.clocks.is_empty() && derived.files.is_empty() && derived.actions.is_empty() && derived.errors.is_empty() && !nodes.is_empty() {
+    if derived.endpoints.is_empty() && derived.clocks.is_empty() && derived.files.is_empty() && derived.mails.is_empty() && derived.feeds.is_empty() && derived.queues.is_empty() && derived.websockets.is_empty() && derived.actions.is_empty() && derived.errors.is_empty() && !nodes.is_empty() {
         let whole = flow_unit(nodes, wires, store, port).ok().and_then(|h| store.resolve(&h)).cloned();
         if let Some(whole) = whole {
             let all: Vec<&Node> = nodes.iter().collect();
@@ -375,7 +531,7 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     if !derived.errors.is_empty() {
         return Err(derived.errors.join("; "));
     }
-    if !derived.endpoints.is_empty() || !derived.clocks.is_empty() || !derived.files.is_empty() || !derived.actions.is_empty() {
+    if !derived.endpoints.is_empty() || !derived.clocks.is_empty() || !derived.files.is_empty() || !derived.mails.is_empty() || !derived.feeds.is_empty() || !derived.queues.is_empty() || !derived.websockets.is_empty() || !derived.actions.is_empty() {
         let hash = derived.server_hash.ok_or_else(|| format!("\"{port}\" is not a port (set it under ⚙)"))?;
         return Ok(parse_hash(&hash).expect("a hash made here"));
     }

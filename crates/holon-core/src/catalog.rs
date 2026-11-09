@@ -68,6 +68,15 @@ pub const GENESIS: &[&str] = &[
     "csv_parse", "csv_format",
     // pure — XML (5): an element as JsonML's list, both ways, and read by path (xml.rs)
     "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+    // pure — compression (4): gzip and zip, both ways, the same bytes everywhere (compress.rs,
+    // host-capabilities L4 §5.1.7)
+    "gzip", "gunzip", "zip", "unzip",
+    // pure — JWT (2): a token verified with the key that decides its algorithm, or read without
+    // trusting it (jwt.rs, host-capabilities L4 §5.1.9)
+    "jwt_verify", "jwt_decode",
+    // pure — OpenPGP (3): a message encrypted to a public key, a detached signature checked with
+    // one, and what a key says (pgp.rs, host-capabilities L4 §5.1.11)
+    "pgp_encrypt", "pgp_verify", "pgp_key",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -78,8 +87,9 @@ pub const GENESIS: &[&str] = &[
     // and a call to another deployed flow's action, which the host runs in-process, and a start
     // of one, which doesn't wait for it to end (2)
     "flow_call", "flow_start",
-    // drivers — sourced, no compute (4): a new file in a folder starts a run, as a request does
-    "clock", "random", "secret", "file_arrival",
+    // drivers — sourced, no compute (8): a new file in a folder starts a run, as a request does,
+    // and so does a message that comes to a mailbox, an event a feed sends, and a queue's message
+    "clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message",
     // durable runs — answered by the host when an event arrives, or when people decide (3)
     "await", "resume_token", "approval",
     // state cell (2)
@@ -102,6 +112,12 @@ pub const GENESIS: &[&str] = &[
     "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
     // channels: a pack sent when the run is over, and a route's answer that subscribes (2)
     "channel_send", "channel_subscribe",
+    // a route's answer that is a file of a folder, sent by the host (1)
+    "file_serve",
+    // mail: a message sent through a mail resource an admin binds, once the run is over (1)
+    "mail_send",
+    // a queue: a message sent to a queue an admin binds, once the run is over (1)
+    "queue_send",
     // sink — performed (1)
     "egress",
 ];
@@ -193,6 +209,8 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
     ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
     ("decimal_round", "rounding", crate::decimals::ROUNDINGS),
+    ("jwt_verify", "leeway", crate::jwt::LEEWAYS),
+    ("pgp_encrypt", "armor", crate::pgp::ARMORS),
     ("csv_parse", "header", crate::csv::HEADERS),
     ("csv_parse", "separator", crate::csv::SEPARATORS),
     ("csv_format", "header", crate::csv::HEADERS),
@@ -462,6 +480,34 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "xml_text" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Text),
         "xml_attribute" => prim(vec![port("element", Type::list_any()), port("name", Text)], vec![], Text),
 
+        // ── pure — compression (compress.rs) ── a text is gzipped or zipped as its UTF-8; what
+        // comes out is bytes, a zip's files a record of them by name.
+        "gzip" => prim(vec![port("data", Any)], vec![], Bytes),
+        "gunzip" => prim(vec![port("bytes", Bytes)], vec![], Bytes),
+        "zip" => prim(vec![port("files", Type::Record)], vec![], Bytes),
+        "unzip" => prim(vec![port("bytes", Bytes)], vec![], Type::Record),
+
+        // ── pure — JWT (jwt.rs) ── `now` is an input, as stripe_verify's is: a rerun checks the
+        // token at the time the run saw. An issuer or audience left empty isn't checked.
+        "jwt_verify" => prim(
+            vec![port("token", Text), port("key", Any), port("now", Number)],
+            vec![Param::frozen("issuer", ""), Param::frozen("audience", ""), Param::frozen("leeway", "0")],
+            Type::Record,
+        ),
+        "jwt_decode" => prim(vec![port("token", Text)], vec![], Type::Record),
+
+        // ── pure — OpenPGP (pgp.rs) ── A key is armored text or bytes; `keys` one or a list.
+        // `random` is the run's random bytes (`random_bytes`), from which every random byte of the
+        // message is drawn, so a rerun writes the same message; `now`, as jwt_verify's, decides
+        // which keys are valid.
+        "pgp_encrypt" => prim(
+            vec![port("data", Any), port("keys", Any), port("random", Bytes), port("now", Number)],
+            vec![Param::frozen("armor", "binary")],
+            Type::Bytes,
+        ),
+        "pgp_verify" => prim(vec![port("data", Any), port("signature", Any), port("keys", Any), port("now", Number)], vec![], Type::Record),
+        "pgp_key" => prim(vec![port("key", Any)], vec![], Type::Record),
+
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
         // already expressible with no new value kind for THAT half; the new kind is the tag itself
@@ -490,6 +536,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
         "random" => prim(vec![], vec![], Number),
+        "random_bytes" => prim(vec![], vec![], Bytes),
         // The handle of the new file that started the run.
         // `on`: `new` (a file new or changed) or `deleted`; `matching`: a glob on its name, empty
         // for every file. The host reads both from the deployed graph.
@@ -498,6 +545,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("folder", "files"), Param::frozen("on", "new"), Param::frozen("matching", "")],
             Type::Record,
         ),
+        // The message that came to the mailbox of the mail an admin bound to `mail`, read (mail.rs
+        // `received`), which started the run. The host reads the mail from the deployed graph.
+        "mail_arrival" => prim(vec![], vec![Param::frozen("mail", "ops")], Type::Record),
+        // The event the feed an admin bound to `feed` sent, which started the run (host-capabilities
+        // L4 §5.9.2). The host reads the feed from the deployed graph.
+        "feed_event" => prim(vec![], vec![Param::frozen("feed", "prices")], Type::Record),
+        // The message that came to the queue an admin bound to `queue`, which started the run
+        // (host-capabilities L4 §5.9.9). The host reads the queue from the deployed graph.
+        "queue_message" => prim(vec![], vec![Param::frozen("queue", "payouts")], Type::Record),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
         // A durable run's waiting point: its event (the request that resumed the run, or
@@ -541,12 +597,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
             Type::Record,
         ),
-        "file_write" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_write" => prim(vec![port("name", Text), port("text", Any)], vec![Param::frozen("folder", "files")], Effect),
         "file_delete" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Effect),
         // A file of any size without its bytes: a handle `{folder, name, size, hash, modified}`, to
         // pass on or copy. Part of one: `limit` lines from line `from` (from the end when
         // negative), or `length` bytes from `offset`, as text.
         "file_handle" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Type::Record),
+        // A route's answer that is the file a handle of the folder names: the host sends its
+        // bytes, if they are still the handle's.
+        "file_serve" => prim(vec![port("file", Type::Record)], vec![Param::frozen("folder", "site")], Effect),
         "file_lines" => prim(
             vec![port("name", Text), port("from", Number)],
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
@@ -555,7 +614,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "file_slice" => prim(vec![port("name", Text), port("offset", Number), port("length", Number)], vec![Param::frozen("folder", "files")], Text),
         "file_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
         // As a write and a copy, landing only where no file has the name: never a replace.
-        "file_create" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_create" => prim(vec![port("name", Text), port("text", Any)], vec![Param::frozen("folder", "files")], Effect),
         "file_create_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
         // ── databases ── `database` (frozen) names which one, the host binding the name; `sql`
@@ -603,6 +662,13 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // a route answers with (`from`: "new" packs only, or the "kept" ones first).
         "channel_send" => prim(vec![port("pack", Any)], vec![Param::frozen("channel", "updates")], Effect),
         "channel_subscribe" => prim(vec![], vec![Param::frozen("channel", "updates"), Param::frozen("from", "new")], Effect),
+        // A message sent through the mail resource an admin bound to `mail`, once the run is over
+        // and its writes have landed. `to` is the recipients the text names, each in quotes, or
+        // `*` when one is computed: the recipients are part of the grant (mail.rs).
+        "mail_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("mail", "ops"), Param::frozen("to", "*")], Effect),
+        // A message sent to the queue an admin bound to `queue`, once the run is over and its
+        // writes have landed: `{data, group}`, `group` a FIFO queue's message group.
+        "queue_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("queue", "payouts")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -661,8 +727,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 pub const TRIGGER: &str = "trigger";
 
 /// The sinks: the leaves whose output is an Effect the host performs, and the calls out. Each
-/// takes a [`TRIGGER`] input last. `channel_subscribe` is a read (a route's streamed answer) and
-/// takes none.
+/// takes a [`TRIGGER`] input last. `channel_subscribe` and `file_serve` are a route's answers
+/// and take none.
 pub const TRIGGERED: &[&str] = &[
     "store_write",
     "collection_put",
@@ -677,6 +743,8 @@ pub const TRIGGERED: &[&str] = &[
     "db_update",
     "db_delete",
     "channel_send",
+    "mail_send",
+    "queue_send",
     "egress",
     "http_request",
     "http_upload",
@@ -690,10 +758,29 @@ pub const TRIGGERED: &[&str] = &[
 /// whether or not its answer is read, and its answer is never its caller's to give.
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
-/// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, a
-/// random number, a secret, the file that started the run, a state key. Each computes nothing; the
-/// other reads (a collection's, a folder's, a database's, a waiting point) ask as the run goes.
-pub const SOURCED: &[&str] = &["clock", "random", "secret", "file_arrival", "store_read"];
+/// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
+/// run's random bytes (as a number, or as they are), a secret, the file, the mail, the feed's
+/// event or the queue's message that started the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
+/// waiting point) ask as the run goes.
+pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message", "store_read"];
+
+/// What a sourced leaf gives of the value the host supplied for it. The host draws 32 random
+/// bytes for a run (`Random`, host-capabilities L4 §5.1.11): `random_bytes` gives them as they
+/// are, and `random` a number from 0 up to 1 read from their first 53 bits, as many as a double
+/// holds. The others give what was supplied.
+pub fn sourced_value(unit: &Unit, supplied: Option<&crate::Value>) -> Option<crate::Value> {
+    use crate::Value;
+    let name = match &unit.body {
+        UnitBody::Primitive { name } => name.as_str(),
+        _ => "",
+    };
+    match (name, supplied?) {
+        ("random", Value::Bytes(b)) => Some(Value::Number((u64::from_be_bytes(b.get(..8)?.try_into().ok()?) >> 11) as f64 / (1u64 << 53) as f64)),
+        ("random_bytes", v @ Value::Bytes(_)) => Some(v.clone()),
+        ("random" | "random_bytes", _) => None,
+        (_, v) => Some(v.clone()),
+    }
+}
 
 /// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
 /// sinks had one has none, and is computed as it always was).
@@ -757,8 +844,13 @@ mod tests {
         // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
-        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute).
-        assert_eq!(GENESIS.len(), 178);
+        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
+        // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
+        // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
+        // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
+        // and a queue's (queue_send, queue_message), and a file as a route's answer (file_serve); and
+        // approval, a waiting point people decide.
+        assert_eq!(GENESIS.len(), 194);
     }
 
     #[test]

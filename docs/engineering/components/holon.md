@@ -49,7 +49,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 | Control plane edge | http.rs, access.rs, auth.rs, accounts.rs, oidc.rs, local.rs, activity.rs, editor.rs | `route` dispatches every request after `reject_untrusted` (Host, Origin, Content-Type, `MAX_BODY_BYTES`) and `Access::check` (who, and their role); `/auth/…` and `/admin/…` are auth.rs's; `with_cors` adds CORS to every answer; the built-in editor is served at `/` before the gate |
 | Deployments | deploy.rs, persist.rs, lifecycle.rs, permissions.rs, grants.rs, restore.rs, history.rs, events.rs, flows.rs, wire.rs | deploy, delete, `/trigger`, run, pause, stop; the deployments and flows files; manifests, the policy, grants and permits; versions and restores; each deployment's events |
 | Run path | firing.rs, units.rs, claims.rs, locks.rs, taint.rs, secrets.rs | `fire_with_state` and what it is held to; the flow and value caches; key claims and commit locks; redaction |
-| Data plane | dataplane.rs, listeners.rs, data.rs, channels.rs | the listeners and their limits; routing a request to its endpoint (`serve_data`); subscriptions as server-sent events |
+| Data plane | dataplane.rs, listeners.rs, data.rs, channels.rs, websockets.rs | the listeners and their limits; routing a request to its endpoint (`serve_data`); subscriptions as server-sent events; inbound WebSocket connections, a run for each block's event (`websockets::open`, hooked before routing) |
 | Triggers | scheduler.rs, arrivals.rs, durable.rs, calls.rs | clocks, files arriving, runs that wait for an event, flows calling flows |
 | Resources | folders.rs, blobs.rs, ranges.rs, databases.rs, engines.rs, mongo.rs, collections.rs, outbound.rs, secret_sources.rs, sealing.rs | what a flow touches outside its run, each bound or granted by the host |
 | The record | recorder.rs, heads.rs, verify.rs, changes.rs, touches.rs | the hash-chained run logs, the witness, export and `holon verify`, what a dry run shows |
@@ -133,8 +133,8 @@ A MongoDB binding keeps a lease thread of its own (mongo.rs).
 `POST /deploy` (`handle_post_deploy` → `deploy`) derives the unit's capabilities, builds its
 `Manifest`, refuses what the policy never grants, asks for what needs approval (`approval_needed`;
 [Security](../themes/security.md#24-what-a-flow-may-do-grants-and-approvals)), and inserts the
-`Deployment` under the table lock: a redeploy keeps the same state `Arc`, log, channels and
-waiting runs, adds a `Version`, and starts the deployment again. Then `persist_deployments`
+`Deployment` under the table lock: a redeploy keeps the same state `Arc`, log, channels, open
+WebSocket connections and waiting runs, adds a `Version`, and starts the deployment again. Then `persist_deployments`
 writes the whole table (`write_private`), and `sync_listeners` runs. A stateful deployment's state
 is kept apart, as a head file per slug (`state_head_for`: `<deployments>.state/<slug>`, written by
 `StateCell::write_head` as each change lands). `load_deployments` re-derives what was never

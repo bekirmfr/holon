@@ -250,6 +250,7 @@ fn records_runs(dep: &crate::Deployment) -> bool {
     !server.clocks.is_empty()
         || !server.files.is_empty()
         || server.routes.iter().any(|r| recorded(format!("{} {}", r.method, r.path), r.log))
+        || server.websockets.iter().flat_map(|w| w.blocks()).any(|b| recorded(b.label.clone(), b.log))
         || server.actions.iter().any(|a| recorded(a.label.clone(), a.log))
 }
 
@@ -453,6 +454,7 @@ impl Sweeps {
                     if dep.life.status == crate::lifecycle::Status::Running && records_runs(dep) {
                         let _ = dep.life.pause();
                         dep.channels.close();
+                        dep.sockets.close_all(crate::websockets::PAUSED);
                         dep.grant.paused_full = true;
                         eprintln!("holon: paused {slug:?}: {}", why(pct));
                         dep.note("lifecycle", format!("paused by the host: {}", why(pct)), None, Default::default());

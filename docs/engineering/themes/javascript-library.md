@@ -75,7 +75,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `~x` | `bitwise {op: xor}` | mapped | `x ^ -1` |
 | `typeof x` | `type_of`, `default` | mapped | `type_of(x) ?? "undefined"`; a record, a list and `null` are `"object"` |
 | `void` | | js() | "void isn't an operator Holon has" |
-| `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf | mapped as statements | "++ and -- are a statement of their own: n++" in an expression |
+| `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf; `default` for `++` and `--` | mapped; differs | `x++` and `++x` are values too, read left to right (`beats[state.count++] = now`); `++` and `--` count an absent value from 0, where JavaScript gives `NaN`; refused after `?`, `&&`, `\|\|` or `??` and in a function written in place, naming the statement |
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
 | `a < b`, `<=`, `>`, `>=` | `compare {op}` | mapped | two numbers, or two texts in UTF-16 code-unit order; a number and a text: nothing (JavaScript converts) |
@@ -132,6 +132,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `fetch` | refused, import | `import api from "host:api.example.com"`, `await api.get("/p")` (§8) |
 | `console.log` | refused | not needed: each node's value is in the run's record (`holon explain`) |
 | `globalThis`, `window`, `process`, `require`, `Promise` | refused | "a flow has no globals; import what it uses" |
+| `crypto.getRandomValues(new Uint8Array(32))` | refused, import | a flow has no globals: the run's 32 random bytes are `import { random_bytes } from "holon:random"`, recorded so they replay |
 
 ## 4. `Math`
 
@@ -279,12 +280,21 @@ asks for:
 | `b.length`, `b.slice(i, j)` on a `Uint8Array` | as written, where `b` is known to be bytes | `bytes_length`, `slice` |
 | `Array.from(b)`, `new Uint8Array(xs)`, `Buffer.concat([a, b])` | `bytes_to_list(b)`, `list_to_bytes(xs)` (nothing for an item that isn't 0 to 255), `bytes_concat(a, b)` | by name |
 | `fs.readFile(name)` (a `Buffer`) | `folder.bytes(name)` | `file_read_bytes` |
+| `fs.writeFile(name, buffer)` | `folder[name] = b`, `folder.create(name, b)`: the bytes as they are | `file_write`, `file_create` |
 | decimal.js, big.js: `a.plus(b)`, `a.minus(b)`, `a.times(b)`, `a.div(b)`, `a.toDecimalPlaces(n)`, `a.cmp(b)` | `decimal_add(a, b)`, `decimal_sub`, `decimal_mul`, `decimal_div(a, b, scale)`, `decimal_round(a, scale)`, `decimal_compare`, over decimals written as text; `decimal_sum(xs)` | by name; `+` and `<` refused on their results |
 | date-fns: `addDays(d, n)`, `addMonths(d, n)`, `addYears(d, n)` | `date_add(d, n)`, `{ unit: "months" }`, `{ unit: "years" }`: a month clamped to its last day, as date-fns's | by name |
 | date-fns: `addBusinessDays(d, n)`, `differenceInBusinessDays(a, b)`, `isWeekend(d)` | `business_day_add(d, n, holidays)`, `business_days_between(b, a, holidays)`, `!is_business_day(d)`: holidays given, which date-fns has none of, and a date as `YYYY-MM-DD` | by name |
 | date-fns-tz, Luxon, Temporal at an offset: `formatInTimeZone(d, "+01:00", …)`, `toISOString` with the offset | `date_text(d, "+01:00")`, `date_text(d, offset, { format: "date" })`, `date_part(d, offset, { part })` | by name; fixed offsets, no zones |
 | Papa Parse, csv-parse, csv-stringify | `csv_parse(t)`, `{ header: "none" }`, `{ separator: ";" }`; `csv_format(rows, columns)` | by name |
 | fast-xml-parser: `new XMLParser().parse(t)`, `new XMLBuilder().build(o)`; `DOMParser`, `XMLSerializer` | `xml_parse(t)`, `xml_format(e)`, `{ layout: "indented" }`: an element as JsonML's list, not a record, so a schema's order is kept | by name |
+| Node's zlib: `gzipSync(b)`, `gunzipSync(b)`; `new CompressionStream("gzip")` | `gzip(b)`, `gunzip(b)`: `b` a text or bytes; nothing past 64 MiB inflated | by name |
+| fflate, JSZip, adm-zip: `zipSync(files)`, `unzipSync(b)` | `zip(files)`, `unzip(b)`: a record of texts or bytes by name, deflated; nothing past 64 MiB inflated or 10,000 files, or for a name outside its folder | by name |
+| jose: `jwtVerify(token, key, { issuer, audience, clockTolerance })` with `importSPKI`, `importJWK` or `createLocalJWKSet`; jsonwebtoken: `jwt.verify(token, key, options)` | `jwt_verify(token, key, now, { issuer, audience, leeway })`: the key a PEM text, a JWK or a JWKS as it is, the algorithm the key's, `exp` required, `now` given | by name |
+| jose: `decodeJwt(token)`, `decodeProtectedHeader(token)`; jsonwebtoken: `jwt.decode(token, { complete: true })` | `jwt_decode(token)`: `{header, payload}`, nothing verified | by name |
+| OpenPGP.js: `encrypt({ message: await createMessage({ binary }), encryptionKeys: await readKey({ armoredKey }), date, format: "armored" })` | `pgp_encrypt(data, keys, random_bytes, now, { armor: "ascii" })`: the key as it is, armored or bytes; the randomness the run's, given, so a rerun writes the same message; AES-256, uncompressed | by name |
+| OpenPGP.js: `verify({ message, signature: await readSignature({ armoredSignature }), verificationKeys, date })`; `gpg --verify file.sig file` | `pgp_verify(data, signature, keys, now)`: `{signer, key, created}`, or nothing; a detached signature | by name |
+| OpenPGP.js: `readKey({ armoredKey })`, then `getFingerprint()`, `getUserIDs()`, `getExpirationTime()`, `isRevoked()` | `pgp_key(key)`: `{fingerprint, user_ids, created, expires, revoked}` | by name |
+| Nodemailer: `transporter.sendMail({ from, to, cc, subject, text, html, attachments: [{ filename, content }] })` | `ops.send({ to, cc, subject, text, html, attachments: { [filename]: content } })`, `ops` a mail an admin bound: the server, its login and `from` are the binding's; sent once the run is over | `mail_send` |
 | the DOM: `doc.querySelectorAll("Rpt > Tx")`, `el.textContent`, `el.getAttribute("Ccy")` | `xml_find(e, "Rpt/Tx")`, `xml_text(e)` or `xml_text(e, path)`, `xml_attribute(e, "Ccy")`: a path of names, as ElementTree's `findall` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |

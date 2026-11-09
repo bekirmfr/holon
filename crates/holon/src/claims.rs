@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,12 +30,29 @@ pub(crate) struct StateCell {
     /// Where the deployment's state is kept: a file holding its snapshot's hash (persist.rs's
     /// `state_head_for`), written as each change lands. None for one kept in memory only.
     head: Option<std::path::PathBuf>,
+    /// What a run's log entry names this state by (`recorder::Commit`): random, made as the
+    /// server loads the state or a deploy first makes it, so counts begun afresh don't meet.
+    pub(crate) id: String,
+    /// The commits to it so far, its runs' and the states put in place; read and counted with
+    /// the state's lock held, so they count in the order they land.
+    commits: AtomicU64,
 }
 
 impl StateCell {
     /// A state kept at `head` too.
     pub(crate) fn kept_at(state: State, head: Option<std::path::PathBuf>) -> StateCell {
-        StateCell { state: Mutex::new(state), claims: Claims::default(), head }
+        let id = format!("{:016x}", rand::random::<u64>());
+        StateCell { state: Mutex::new(state), claims: Claims::default(), head, id, commits: AtomicU64::new(0) }
+    }
+
+    /// The commits so far: the one a run starting now begins after. The state's lock is held.
+    pub(crate) fn commits(&self) -> u64 {
+        self.commits.load(Ordering::Relaxed)
+    }
+
+    /// Count a commit as it lands, the state's lock held: its number.
+    pub(crate) fn count_commit(&self) -> u64 {
+        self.commits.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Make the snapshot `hex` (its values and record already in the store) the deployment's
@@ -51,8 +69,10 @@ impl StateCell {
 
     /// Keep `live` (the state now in place, its lock held by the caller) as the deployment's
     /// durable state: its snapshot into the store, then the head. For a state put in place
-    /// outside a run: a restore, or a session started from another's state.
+    /// outside a run: a restore, or a session started from another's state. It counts as a
+    /// commit, so no run after it is taken to have begun from the state before it.
     pub(crate) fn keep(&self, live: &State, store: &SharedStore) {
+        self.count_commit();
         if self.head.is_none() {
             return;
         }

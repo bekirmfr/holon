@@ -77,7 +77,7 @@ fn text(s: &str) -> Value {
 
 /// A request as the data plane gives a route one.
 fn request(method: &str, path: &str, body: &str) -> Value {
-    let params: BTreeMap<String, Value> = path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(|k| (k.to_string(), text("tea"))).collect();
+    let params: BTreeMap<String, Value> = path.split('/').filter_map(|seg| seg.strip_prefix(':').or_else(|| seg.strip_prefix('*'))).map(|k| (k.to_string(), text("tea"))).collect();
     Value::Record(BTreeMap::from([
         ("method".to_string(), text(method)),
         ("path".to_string(), text(path)),

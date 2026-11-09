@@ -22,7 +22,8 @@ declare module "holon" {
   export type Duration = `${number}${"s" | "m" | "h" | "d"}`
   /** How a handler's runs are recorded: strict when left out, `"lazy"` or `"unrecorded"`. */
   export type Log = "lazy" | "unrecorded"
-  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads. */
+  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads, and a last
+   *  `*name` for the rest of the path, one segment or more (`/files/*path`). */
   export type Path = `/${string}`
 
   /** A flow's settings, the deploy settings. */
@@ -71,9 +72,50 @@ declare module "holon" {
     put(path: Path, handler: RouteHandler, options?: RouteOptions): void
     patch(path: Path, handler: RouteHandler, options?: RouteOptions): void
     delete(path: Path, handler: RouteHandler, options?: RouteOptions): void
+    /** WebSocket connections on the path, a run for each block's event: one block at least. */
+    websocket(path: Path, blocks: WebSocketBlocks, options?: WebSocketOptions): void
   }
   /** A route: `route.post("/orders", (req) => …)`. The most specific path wins. */
   export const route: Routes
+
+  /** A connection's opening request, with the connection's id. */
+  export interface SocketOpen extends Request {
+    /** The connection's id, 16 hex digits: the same on its messages and its close. */
+    conn: string
+  }
+  /** A text frame the connection sent. */
+  export interface SocketMessage {
+    conn: string
+    /** The frame's text. */
+    text: string
+    /** The text parsed as JSON. */
+    json: any
+    path: string
+    /** The opening request's path parts and query. */
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** How the connection ended: the browser's code and reason, the host's, or 1006 when it dropped. */
+  export interface SocketClose {
+    conn: string
+    code: number
+    reason: string
+    path: string
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** A websocket's blocks. `open` answers as a route does (a subscription, a first message, or a
+   *  status of 300 or more to refuse it); `message` with the value sent back, if any; `close`
+   *  nobody. */
+  export interface WebSocketBlocks {
+    open?: (req: SocketOpen) => any
+    message?: (m: SocketMessage) => any
+    close?: (c: SocketClose) => void
+  }
+  export interface WebSocketOptions {
+    /** One level for every block, or each block's own. */
+    log?: Log | { open?: Log; message?: Log; close?: Log }
+  }
 
   /** Runs every `period`; `now` is the tick's time, in seconds since the epoch. */
   export function every(period: Duration, handler: (now: number) => any, options?: { log?: Log }): void
@@ -96,6 +138,59 @@ declare module "holon" {
     log?: Log
   }
   export type FileHandler = (file: FileEvent) => any
+  /** A message that came to a mail's mailbox, read. */
+  export interface MailMessage {
+    /** The sender's address, as From writes it: proves nothing alone. Absent unless one. */
+    from?: string
+    /** The sender's display name, "" when none. */
+    name: string
+    to: string[]
+    cc: string[]
+    subject: string
+    /** Its Date, in seconds since the epoch, when it is one. */
+    date?: number
+    /** Its Message-ID without the brackets, or `sha256:` and its hash when it has none. */
+    message_id: string
+    /** Its plain text, "" when none. */
+    text: string
+    html?: string
+    /** Each attachment's file name to its text (a text, JSON, XML or CSV type) or bytes. */
+    attachments: Record<string, string | Uint8Array>
+    /** The mailbox's own server's word that the domain in From sent it (DMARC passed). */
+    authenticated: boolean
+    /** What that server said: pass, fail, none... */
+    verdict: { spf: string; dkim: string; dmarc: string }
+  }
+  /** An event a feed sent. */
+  export interface FeedEvent {
+    /** Its data: a value when it is JSON, else its text; a binary WebSocket message's bytes. */
+    data: any
+    /** Its id, when the feed gives one (a WebSocket's: the fields its binding names, joined with /). */
+    id?: string
+    /** Its name: "message" unless the feed names it; a Postgres channel's, the channel. */
+    event: string
+    /** How many events its full buffer dropped before it (`--on-full skip`): 0 unless some were. */
+    missed: number
+    /** How many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did. */
+    replaced: number
+    /** How many numbers of its key the feed skipped before it, theirs counted (`--sequence`): what came while the host wasn't reading. 0 unless some were. */
+    gap: number
+  }
+  /** A message from a queue. */
+  export interface QueueMessage {
+    /** Its body: a value when it is JSON, else its text. */
+    data: any
+    /** The queue's id for it. */
+    id: string
+    /** Its message attributes whose type is String or Number, as text. */
+    attributes: Record<string, string>
+    /** When it was sent, in seconds since 1970, as `now` is. */
+    sent: number
+    /** How many times the queue has handed it out: more than 1 once a run of it failed or was cut off. */
+    count: number
+    /** A FIFO queue's message group. */
+    group?: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -103,6 +198,12 @@ declare module "holon" {
       /** Runs for each file removed from the folder. */
       deleted(folder: Folder, handler: FileHandler, options?: FileOptions): void
     }
+    /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
+    mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
+    /** Runs for each event the feed sends, one at a time, in the order they came. */
+    feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
+    /** Runs for each message from the queue, one at a time, deleted once its run is over. */
+    queue(queue: Queue, handler: (message: QueueMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -204,25 +305,27 @@ declare module "holon" {
     /** A page of items, in key order. */
     list(page?: Page): any
   }
-  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it. */
+  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it, or bytes as they are. */
   export interface Folder {
     [name: string]: any
     get(name: string): any
     /** The file's bytes, any file: an image, a PDF, an archive. */
     bytes(name: string): Uint8Array
-    put(name: string, content: string | FileHandle): any
+    put(name: string, content: string | Uint8Array | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */
     list(page?: Page): any
     /** A handle to a file of any size, no bytes. */
     file(name: string): FileHandle
+    /** A route's answer that is the file, its bytes sent by the host: `return site.serve("index.html")`. */
+    serve(name: string): Answer
     /** Lines from line `from` (from the end when negative). */
     lines(name: string, options?: { from?: number; limit?: number }): any
     /** Bytes from `offset`, as text. */
     slice(name: string, options?: { offset?: number; length?: number }): any
     copy(name: string, handle: FileHandle): any
     /** Writes the file only if there is none yet: else the run fails, and nothing it did lands. */
-    create(name: string, text: string): any
+    create(name: string, content: string | Uint8Array): any
     create_copy(name: string, handle: FileHandle): any
   }
   /** A named database: its SQL written in quotes (the tables are the permission), values after it as `$1`, `$2`, … */
@@ -246,6 +349,32 @@ declare module "holon" {
     subscribe(options?: { from?: string }): Answer
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
+  }
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address; a
+   *  mailbox it names is read by `on.mail`. */
+  export interface Mail {
+    send(message: {
+      to: string | string[]
+      cc?: string | string[]
+      subject: string
+      text: string
+      html?: string
+      /** A file name to its text or bytes. */
+      attachments?: Record<string, string | Uint8Array>
+    }): any
+  }
+  /** A feed an admin binds on the host: listened to by `on.feed`. */
+  export interface Feed {
+    readonly kind: "feed"
+  }
+  /** A queue an admin binds on the host: sent to once the run is over, listened to by `on.queue`. */
+  export interface Queue {
+    send(message: {
+      /** The body: JSON, or text as it is. */
+      data: any
+      /** A FIFO queue's message group: one group's messages come out in the order sent. */
+      group?: string
+    }): any
   }
 }
 
@@ -279,6 +408,21 @@ declare module "channel:*" {
   const channel: Channel
   export default channel
 }
+declare module "mail:*" {
+  import type { Mail } from "holon"
+  const mail: Mail
+  export default mail
+}
+declare module "feed:*" {
+  import type { Feed } from "holon"
+  const feed: Feed
+  export default feed
+}
+declare module "queue:*" {
+  import type { Queue } from "holon"
+  const queue: Queue
+  export default queue
+}
 declare module "host:*" {
   import type { Host } from "holon"
   const host: Host
@@ -291,6 +435,8 @@ declare module "holon:clock" {
 declare module "holon:random" {
   /** One random number for the run, recorded. */
   export const random: number
+  /** The run's 32 random bytes, recorded: what `pgp_encrypt` draws a message's randomness from. */
+  export const random_bytes: Uint8Array
 }
 /** Another deployed flow's actions, by its slug: `await charge(x)` runs one, `charge(x)` starts it. */
 declare module "flow:*"

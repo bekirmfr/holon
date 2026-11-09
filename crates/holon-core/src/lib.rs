@@ -58,13 +58,17 @@ mod validate;
 mod value;
 mod value_hash;
 mod xml;
+mod compress;
+mod jwt;
+pub mod mail;
+mod pgp;
 
 pub mod primitives;
 /// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).
 pub mod sql;
 /// What a document database leaf's templates say (docs/L4s/databases-L4.md §3, slice 7).
 pub mod documents;
-pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
+pub use primitives::{content_type, MAX_AWAIT_SECONDS, MAX_RANGE};
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
@@ -72,7 +76,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
+pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, sourced_value, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};
@@ -100,8 +104,8 @@ pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};
 pub use crypto::{bytes_text, text_bytes};
 pub use declare::{
-    clock_label, declaration_of, log_level, match_route, parse_path, period_text, read_clock, read_action, read_endpoint,
-    read_file_handler, read_server, Action, Clock, DeclError, EndpointError, FileHandler, LogLevel, Route, Segment, Server, MAX_PERIOD, METHODS,
+    clock_label, declaration_of, log_level, match_route, parse_path, pick_path, same_requests, period_text, read_clock, read_action, read_endpoint,
+    read_feed_handler, read_file_handler, read_mail_handler, read_queue_handler, read_server, read_websocket, feed_label, mail_label, queue_label, socket_label, match_websocket, Action, Clock, DeclError, EndpointError, FeedHandler, FileHandler, LogLevel, MailHandler, QueueHandler, Route, Segment, Server, SocketBlock, WebSocket, MAX_PERIOD, METHODS, SOCKET_BLOCKS,
 };
 
 /// Reserved edge endpoint denoting a composite's **boundary** (its own interface)

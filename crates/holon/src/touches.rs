@@ -35,6 +35,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "NetworkIngress" => ("triggers", "requests", arg, s("receive")),
         "Clock" => ("other", "clock", arg, s("read")),
         "Action" => ("triggers", "action", arg, s("by hand")),
+        "WebSocket" => ("triggers", "websocket", arg, s("hold connections")),
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
@@ -44,8 +45,11 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
             None => ("triggers", "approval", arg, s("people approve")),
         },
         "FileArrival" => ("resources", "folder", arg, s("watch")),
+        "MailArrival" => ("resources", "mail", arg, s("receive")),
+        "FeedEvent" => ("resources", "feed", arg, s("listen")),
         "FileRead" => ("resources", "folder", arg, s("read")),
         "FileWrite" => ("resources", "folder", arg, s("write")),
+        "FileServe" => ("resources", "folder", arg, s("answer its callers with its files")),
         "DbRead" | "DbWrite" => {
             let verb = if name == "DbRead" { "read" } else { "write" };
             match arg.split_once('/') {
@@ -66,6 +70,12 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         },
         "ChannelSend" => ("outside", "channel", arg, s("send")),
         "ChannelRead" => ("outside", "channel", arg, s("let callers subscribe")),
+        "MailSend" => match arg.split_once('/') {
+            Some((mail, "*")) => ("outside", "mail", mail.to_string(), s("send to an address it computes")),
+            Some((mail, to)) => ("outside", "mail", mail.to_string(), format!("send to {to}")),
+            None => ("outside", "mail", arg, s("send")),
+        },
+        "QueueSend" => ("outside", "queue", arg, s("send")),
         "Spawn" => ("outside", "process", arg, s("start")),
         "Browser" => ("outside", "browser", arg, s("answer pages")),
         "StateRead" => ("state", "key", arg, s("read")),

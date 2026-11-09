@@ -23,8 +23,9 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     })
 }
 
-/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`), its file
-/// handlers (`on file inbox`) and its actions (`action reset`), or plain
+/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`), its file,
+/// mail, feed and queue handlers (`on file inbox`, `on mail remit`, `on feed prices`, `on queue
+/// payouts`) and its actions (`action reset`), or plain
 /// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
 /// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
 /// derive it here.
@@ -33,13 +34,17 @@ pub(crate) fn trigger_labels(s: &Server) -> Vec<String> {
     triggers.extend(s.port.map(|port| format!("Http :{port}")));
     triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
     triggers.extend(s.files.iter().map(|f| f.label.clone()));
+    triggers.extend(s.mails.iter().map(|m| m.label.clone()));
+    triggers.extend(s.feeds.iter().map(|f| f.label.clone()));
+    triggers.extend(s.queues.iter().map(|q| q.label.clone()));
+    triggers.extend(s.websockets.iter().flat_map(|w| w.blocks().map(|b| b.label.clone())));
     triggers.extend(s.actions.iter().map(|a| a.label.clone()));
     triggers
 }
 
 /// What a deploy of a unit nothing would start says.
 pub(crate) const STARTS_NOTHING: &str =
-    "nothing would start a run: it has no route, clock, file handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
+    "nothing would start a run: it has no route, websocket, clock, file, mail, feed or queue handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -189,6 +194,30 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
         let named = format!("FileArrival({:?})", f.trigger.folder);
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
+        }
+    }
+    for m in &server.mails {
+        let named = format!("MailArrival({:?})", m.mail);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", m.label));
+        }
+    }
+    for f in &server.feeds {
+        let named = format!("FeedEvent({:?})", f.feed);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
+        }
+    }
+    for q in &server.queues {
+        let named = format!("QueueMessage({:?})", q.queue);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", q.label));
+        }
+    }
+    for w in &server.websockets {
+        let named = format!("WebSocket({:?})", w.path);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} opens this flow's WebSocket {}: it can't be optional", w.path));
         }
     }
     // Agents may run only actions it has.
@@ -350,6 +379,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
         let document = body.document.clone().or(old_document);
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
+        // So do its WebSocket connections, but those on a path this version has no websocket on.
+        let sockets: Arc<websockets::Sockets> = deployments.get(&body.slug).map(|old| Arc::clone(&old.sockets)).unwrap_or_default();
+        sockets.close_gone(Some(&server));
         // Runs waiting keep waiting, each on the unit it started on.
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         // And whether agents may propose its versions is as a person left it.
@@ -388,6 +420,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
                 life,
                 log,
                 channels,
+                sockets,
                 document,
                 versions,
                 events,
@@ -839,7 +872,11 @@ pub(crate) fn handle_delete_deployment(
                 let _ = std::fs::remove_file(head);
             }
             dep.arrivals.forget();
+            inbox::forget(deployments_path, slug);
+            subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
+            dequeue::forget(deployments_path, slug, &dep.folders.all.queues);
             dep.channels.close();
+            dep.sockets.close_all(websockets::REMOVED);
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
@@ -985,7 +1022,7 @@ pub(crate) fn run_action(
     };
 
     let epoch_seconds = clock_seconds();
-    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(random_number()))];
+    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, random_bytes())];
     let started = started_now();
     let inputs = [Some(input.clone())];
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
@@ -1689,6 +1726,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         // A paused or stopped deployment answers nobody: its subscribers hear so.
         if dep.life.status != Status::Running {
             dep.channels.close();
+            dep.sockets.close_all(websockets::PAUSED);
         }
         // From here on the status is the person's choice, not the grant's.
         dep.grant.paused = false;

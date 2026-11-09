@@ -2869,12 +2869,18 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
 #[test]
 fn an_actions_run_is_given_the_clock_and_randomness() {
     let state = test_state();
-    let text = "import { action, flow } from \"holon\"\nimport { now } from \"holon:clock\"\nimport { random } from \"holon:random\"\n\nflow(\"sources\")\n\nexport const read = action(() => ({ at: now, r: random }))\n";
+    let text = "import { action, bytes_to_text, flow } from \"holon\"\nimport { now } from \"holon:clock\"\nimport { random, random_bytes } from \"holon:random\"\n\nflow(\"sources\")\n\nexport const read = action(() => ({ at: now, r: random, bytes: bytes_to_text(random_bytes, { encoding: \"base64\" }) }))\n";
     let unit = stage_text(&state, text);
     let ack = serde_json::json!({ "acknowledge": ["Action(\"read\")", "Clock", "Random"] });
     assert_eq!(deploy_json(&state, "sources", unit, ack).status_code, 200);
     let answered = body_json(run_action_named(&state, "sources", "read", serde_json::json!({})));
     assert!(answered["answer"]["at"].is_number() && answered["answer"]["r"].is_number(), "real numbers, not nothing: {answered}");
+    let r = answered["answer"]["r"].as_f64().unwrap();
+    assert!((0.0..1.0).contains(&r), "from 0 up to 1: {r}");
+    // The run's random bytes, 32, the number read from their first 53 bits.
+    let bytes = holon_core::text_bytes(answered["answer"]["bytes"].as_str().unwrap(), "base64").unwrap();
+    assert_eq!(bytes.len(), 32, "{answered}");
+    assert_eq!(r, (u64::from_be_bytes(bytes[..8].try_into().unwrap()) >> 11) as f64 / (1u64 << 53) as f64);
 }
 
 // ── per-deployment state ─────────────────────────────────────────────────────────────
@@ -3377,6 +3383,195 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
         std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
     });
     assert!(released, "the port is free again");
+}
+
+/// A flow's WebSockets through a real socket (host-capabilities L4 §5.12.14): a GET there without
+/// the upgrade is a 426, a page from another site a 403, an open block's refusal its own status;
+/// one accepted runs `open` (the first message its answer, or a subscription), each message
+/// `message` (its answer sent back, its packs to every subscriber) and `close` once, with the
+/// page's code or the host's: a binary message 1003, one too big 1009, too many a second 1008, a
+/// message where there is no message block 1003, a pause 1001. Each run is logged, `open` with the
+/// handshake's status, and `holon verify` runs each again.
+#[test]
+fn a_websocket_runs_its_blocks_through_a_real_socket() {
+    use std::net::TcpStream;
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::{Message, WebSocket};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, route, status }} from \"holon\"\nimport people from \"collection:people\"\nimport room from \"channel:room\"\n\nflow(\"chat\", {{ port: {port} }})\n\nroute.websocket(\"/room/:name\", {{\n  open: (req) => {{\n    people[req.conn] = req.params.name\n    room.send({{ joined: req.params.name }})\n    return room.subscribe()\n  }},\n  message: (m) => {{\n    room.send({{ from: people[m.conn], text: m.text }})\n    return {{ echo: m.text }}\n  }},\n  close: (c) => {{\n    delete people[c.conn]\n    room.send({{ left: c.params.name, code: c.code }})\n  }},\n}}, {{ log: {{ message: \"lazy\" }} }})\n\nroute.websocket(\"/closed\", {{ open: () => status(403, {{ error: \"closed\" }}) }})\n\nroute.websocket(\"/hello\", {{ open: (req) => `hello ${{req.query.who ?? \"you\"}}` }})\n"
+    );
+    let slug = deploy_plain_text(&state, &text);
+    sync_listeners(&state);
+    let sockets = Arc::clone(&state.deployments.lock().unwrap()[&slug].sockets);
+    let open = |path: &str, origin: Option<&str>| -> Result<WebSocket<TcpStream>, u16> {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut request = format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap();
+        if let Some(origin) = origin {
+            request.headers_mut().insert("origin", origin.parse().unwrap());
+        }
+        match tungstenite::client(request, stream) {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
+            Err(e) => panic!("{path}: {e}"),
+        }
+    };
+    let said = |ws: &mut WebSocket<TcpStream>| loop {
+        match ws.read().unwrap() {
+            Message::Text(t) => break serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
+            Message::Close(c) => panic!("closed: {c:?}"),
+            _ => {}
+        }
+    };
+    // The code the server closed it with, its close answered as a browser answers it.
+    let closed_with = |ws: &mut WebSocket<TcpStream>| {
+        let code = loop {
+            match ws.read() {
+                Ok(Message::Close(c)) => break c.map(|c| u16::from(c.code)),
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        };
+        while ws.read().is_ok() {}
+        code
+    };
+
+    // Not a WebSocket's opening request, a page from elsewhere, a refusal: nothing opens.
+    let plain = raw_http(port, b"GET /room/ann HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(plain.starts_with("HTTP/1.1 426") && plain.to_ascii_lowercase().contains("upgrade: websocket"), "{plain}");
+    assert_eq!(open("/hello", Some("http://evil.example")).err(), Some(403));
+    assert_eq!(open("/closed", None).err(), Some(403));
+
+    // The page's own origin: open's answer is the first message; with no message block, a
+    // message closes it.
+    let mut hello = open("/hello?who=ann", Some(&format!("http://127.0.0.1:{port}"))).unwrap();
+    assert_eq!(said(&mut hello), serde_json::json!("hello ann"));
+    hello.send(Message::text("hi")).unwrap();
+    assert_eq!(closed_with(&mut hello), Some(1003));
+
+    // Two in a room: each message runs, its answer back to its sender, its pack to both once its
+    // record is where its level puts it (lazy: the next sync).
+    let mut a = open("/room/ann", None).unwrap();
+    let mut b = open("/room/bob", None).unwrap();
+    assert_eq!(said(&mut a), serde_json::json!({ "joined": "bob" }));
+    b.send(Message::text("hi")).unwrap();
+    assert_eq!(said(&mut b), serde_json::json!({ "echo": "hi" }));
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let pack = serde_json::json!({ "from": "bob", "text": "hi" });
+    assert_eq!((said(&mut a), said(&mut b)), (pack.clone(), pack));
+
+    // A binary message closes its connection (1003), and close runs with the host's code.
+    b.send(Message::binary(vec![1u8, 2, 3])).unwrap();
+    assert_eq!(closed_with(&mut b), Some(1003));
+    assert_eq!(said(&mut a), serde_json::json!({ "left": "bob", "code": 1003 }));
+    // Past max_message_bytes (64 KiB): 1009.
+    a.send(Message::text("x".repeat(70 << 10))).unwrap();
+    assert_eq!(closed_with(&mut a), Some(1009));
+    // More than messages_per_second (10, bursts of 20): 1008.
+    let mut c = open("/room/cy", None).unwrap();
+    for n in 0..30 {
+        c.send(Message::text(format!("{n}"))).unwrap();
+    }
+    assert_eq!(closed_with(&mut c), Some(1008));
+    eventually("each connection's messages and its close ran", || sockets.count() == 0);
+    // Paused, its connections close (1001), and their close runs all the same.
+    let mut d = open("/room/dee", None).unwrap();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
+    assert_eq!(closed_with(&mut d), Some(1001));
+
+    eventually("dee's close ran", || sockets.count() == 0);
+    let entries = log_entries(&state, &slug);
+    // Each run's entry, with its record as plain JSON.
+    let runs = |label: &str| {
+        let plain = |v: &serde_json::Value| serde_json::from_str::<serde_json::Value>(&holon_core::stringify_json(&serde_json::from_value::<SValue>(v.clone()).unwrap().into_core()).unwrap()).unwrap();
+        let ran = entries.iter().filter(|e| e["kind"] == "websocket" && e["route"] == label);
+        ran.map(|e| serde_json::json!({ "status": e["status"], "request": plain(&e["request"]) })).collect::<Vec<_>>()
+    };
+    let opened: Vec<_> = runs("WebSocket /room/:name open").iter().map(|e| (e["request"]["params"]["name"].clone(), e["status"].clone())).collect();
+    assert_eq!(opened.len(), 4, "{opened:?}");
+    assert!(opened.iter().all(|(_, status)| *status == 101), "{opened:?}");
+    assert_eq!(runs("WebSocket /closed open")[0]["status"], 403);
+    let mut ended: Vec<(String, u64)> = runs("WebSocket /room/:name close")
+        .iter()
+        .map(|e| (e["request"]["params"]["name"].as_str().unwrap().to_string(), e["request"]["code"].as_u64().unwrap()))
+        .collect();
+    ended.sort();
+    assert_eq!(ended, [("ann".into(), 1009), ("bob".into(), 1003), ("cy".into(), 1008), ("dee".into(), 1001)]);
+    let messages = runs("WebSocket /room/:name message");
+    assert!(messages.iter().any(|e| e["request"]["text"] == "hi" && e["request"]["conn"].as_str().is_some_and(|c| c.len() == 16)), "{messages:?}");
+    // The ones that came before the close ran: the burst's.
+    assert!(messages.iter().filter(|e| e["request"]["params"]["name"] == "cy").count() >= 20, "{messages:?}");
+    let people = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/collections/people"), vec![])));
+    assert_eq!(people["items"].as_array().map(Vec::len), Some(0), "who left was let go: {people}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// A connection its open block accepts but the host can't hold (its channel has all the
+/// subscribers it may) is refused, 503, and its close runs as a dropped connection's does (1006):
+/// what open kept of it is let go.
+#[test]
+fn a_connection_accepted_but_not_held_runs_its_close() {
+    use std::net::TcpStream;
+    use tungstenite::client::IntoClientRequest;
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"
+import people from \"collection:people\"
+import gone from \"collection:gone\"
+import room from \"channel:room\"
+
+flow(\"full\", {{ port: {port} }})
+
+route.websocket(\"/room/:name\", {{
+  open: (req) => {{
+    people[req.conn] = req.params.name
+    return room.subscribe()
+  }},
+  close: (c) => {{
+    delete people[c.conn]
+    gone[c.params.name] = c.code
+  }},
+}})
+"
+    );
+    // Its channel holds one subscriber: the deploy asks for it, as the flow's `limits` would.
+    let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let one = serde_json::json!({ "limits": { "max_subscribers": 1 } });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": one })).unwrap())));
+    let asked = preview["needs_approval"].clone();
+    let deployed = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document, "requirements": one }));
+    let status = deployed.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(deployed)));
+    let slug = plan.name;
+    sync_listeners(&state);
+    let open = |path: &str| {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        match tungstenite::client(format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap(), stream) {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
+            Err(e) => panic!("{path}: {e}"),
+        }
+    };
+    let _ann = open("/room/ann").unwrap();
+    assert_eq!(open("/room/bob").err(), Some(503));
+    let items = |name: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/collections/{name}"), vec![])))["items"].clone();
+    let people = items("people");
+    assert_eq!(people.as_array().map(Vec::len), Some(1), "only ann is held: {people}");
+    let gone = items("gone");
+    assert!(gone.to_string().contains("bob") && gone.to_string().contains("1006"), "bob's close ran, as a dropped connection's: {gone}");
 }
 
 /// A route whose runs can never wait (unrecorded and granted, reading only its request, the clock
@@ -4801,9 +4996,12 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
 
     // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
-    // what it left (beside another) is checked in no later run's state.
+    // what it left (beside another) is checked in no later run's state. Its line is without the
+    // commits it began after and made (as one logged before they were numbered): its place and
+    // its times say it ran beside run 1.
     let first: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
     let beside = rechained(&|i, v| {
+        v.as_object_mut().unwrap().remove("commit");
         if i == 2 {
             v["state_before"] = first["state_before"].clone();
             v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + 1001);
@@ -5686,6 +5884,132 @@ fn different_keys_never_wait() {
             assert!(c["waited_ms"].as_f64().unwrap() < 50.0, "{c}");
         }
     }
+}
+
+/// Two runs beside each other that write different keys of one collection commit one on the
+/// other, and a run after both begins from what the second left. Each line is numbered after its
+/// commit, outside the state's lock, so the two may be numbered the other way round: `holon
+/// verify` takes the run a run began after from its entry's commit numbers, not the line before
+/// it, and the three follow either way. Without the numbers (a log written before them) the run
+/// after both broke; with them, a state the run it began after didn't leave still breaks.
+#[test]
+fn runs_beside_each_other_numbered_the_other_way_round_follow() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((a.0, b.0), (200, 200));
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k8", "after").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.states.as_ref().unwrap().breaks, vec![]);
+
+    // Both began from the state as deployed (/slow takes 400 ms) and landed in turn; the run
+    // after them began after the second.
+    let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let commit = |v: &serde_json::Value| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap());
+    let (first, second) = if commit(&lines[0]).1 == 1 { (&lines[0], &lines[1]) } else { (&lines[1], &lines[0]) };
+    assert_eq!((commit(first), commit(second), commit(&lines[2])), ((0, 1), (0, 2), (2, 3)));
+    assert_eq!(lines[2]["commit"]["cell"], first["commit"]["cell"]);
+
+    // Numbered the other way round: the second to land first, the two beside each other, the
+    // run after them two seconds on; each changed by `edit` and chained again.
+    let swapped = |edit: &dyn Fn(usize, &mut serde_json::Value)| {
+        let mut copy = verify::Export { lines: Vec::new(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut prev = String::new();
+        for (i, (v, at)) in [(second, 0), (first, 60), (&lines[2], 2000)].into_iter().enumerate() {
+            let mut v = v.clone();
+            v["seq"] = serde_json::json!(i);
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + at);
+            v["duration_ms"] = serde_json::json!(if at == 2000 { 2.0 } else { 500.0 });
+            edit(i, &mut v);
+            v["prev"] = serde_json::Value::String(prev.clone());
+            if prev.is_empty() {
+                v.as_object_mut().unwrap().remove("prev");
+            }
+            let line = serde_json::to_string(&v).unwrap();
+            prev = recorder::line_hash(&line);
+            copy.lines.push(line);
+        }
+        copy.head = prev;
+        copy
+    };
+    let swapped_states = |e: &verify::Export| {
+        let report = verify::check(e, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{text}");
+        (report.states.unwrap(), text)
+    };
+    let (s, text) = swapped_states(&swapped(&|_, _| {}));
+    assert_eq!(s.breaks, vec![], "{text}");
+    // Run 2 began from what run 0 left, its line before the one before it; run 1 beside run 0,
+    // from the state run 0 began with; run 0 left its key as it wrote it, on run 1's.
+    assert_eq!((&s.began, &s.beside), (&vec![1, 2], &vec![1]), "{text}");
+    assert!(s.left.contains(&0), "{text}");
+
+    // The same lines without their numbers, as a log written before them: run 2 broke.
+    let (s, _) = swapped_states(&swapped(&|_, v| drop(v.as_object_mut().unwrap().remove("commit"))));
+    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())]);
+
+    // Run 0 says it left another state: run 2 began after it, from a state it didn't leave.
+    let (s, text) = swapped_states(&swapped(&|i, v| {
+        if i == 0 {
+            v["state_after"] = serde_json::json!("00".repeat(32));
+        }
+    }));
+    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())], "{text}");
+    assert!(text.contains("run 2's state DOESN'T FOLLOW"), "{text}");
+}
+
+/// A log trimmed to its newest runs, with runs beside each other: a run that began after a commit
+/// whose line is gone, before the first commit here landed, has no run before it here, as the
+/// first hasn't, and isn't checked where it began. Without the commit numbers it broke.
+#[test]
+fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
+    // X calls out (400 ms); Q lands meanwhile, and Y begins from what Q left and calls out too.
+    let (x, y) = std::thread::scope(|s| {
+        let x = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k2", "q").0, 200);
+        let y = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
+        (x.join().unwrap(), y.join().unwrap())
+    });
+    assert_eq!((x.0, y.0), (200, 200));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let commits: Vec<(u64, u64)> = lines.iter().map(|v| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap())).collect();
+    assert_eq!(commits, vec![(0, 1), (1, 2), (1, 3), (2, 4)], "P, Q, then X and Y as they landed");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.states.as_ref().unwrap().breaks.is_empty(), "{}", verify::describe(&report, None));
+
+    // Trimmed to X and Y, as retention trims a log: Y began after Q's commit, whose line is gone.
+    let trimmed = |lines: Vec<String>| verify::Export { lines, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&trimmed(export.lines[2..].to_vec()), None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok(), "{text}");
+    let s = report.states.unwrap();
+    assert_eq!((s.breaks, &s.unchecked["where it began: no run before it here"]), (vec![], &vec![2, 3]), "{text}");
+
+    // The same two without their numbers, as a log written before them, chained again: Y broke.
+    let mut x = lines[2].clone();
+    x.as_object_mut().unwrap().remove("commit");
+    let x = serde_json::to_string(&x).unwrap();
+    let mut y = lines[3].clone();
+    y.as_object_mut().unwrap().remove("commit");
+    y["prev"] = serde_json::Value::String(recorder::line_hash(&x));
+    let y = serde_json::to_string(&y).unwrap();
+    let report = verify::check(&verify::Export { head: recorder::line_hash(&y), ..trimmed(vec![x, y]) }, None, &BTreeMap::new());
+    assert_eq!(report.states.unwrap().breaks, vec![(3, "it began from a state the run before it (run 2) didn't leave, nor a run beside it".to_string())]);
 }
 
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
@@ -7377,6 +7701,277 @@ fn a_files_bytes_are_read_hashed_logged_and_verified() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A bank's deliveries (the statement-archive sample): a zip of camt.053 statements unzipped, and
+/// one statement gzipped by flate2 gunzipped, each read for its account and closing balance; each
+/// delivery archived as a zip written as bytes, a manifest beside its statements; a statement
+/// served back gzipped when the client takes it; what isn't a delivery refused; the archive kept
+/// in the log by its hash only; and the runs verify.
+#[test]
+fn a_delivery_is_unzipped_read_and_archived_as_a_zip_written_as_bytes() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-statements-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (inbox, archive) = (dir.join("inbox"), dir.join("archive"));
+    for (name, path, access) in [("inbox", &inbox, "read"), ("archive", &archive, "read-write")] {
+        std::fs::create_dir_all(path).unwrap();
+        assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
+    }
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/statement-archive.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // A camt.053 statement: an opening balance, then the closing one the sample reads; and a note
+    // that doesn't compress, so the zips are past what a log entry keeps inline.
+    let note: String = (0..200u32).map(|i| blake3::hash(&i.to_le_bytes()).to_hex().to_string()).collect();
+    let statement = |iban: &str, closing: &str, side: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-06T18:00:00</CreDtTm></GrpHdr><Stmt><Id>S1</Id><Acct><Id><IBAN>{iban}</IBAN></Id></Acct><Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-11-05</Dt></Dt></Bal><Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">{closing}</Amt><CdtDbtInd>{side}</CdtDbtInd><Dt><Dt>2026-11-06</Dt></Dt></Bal><AddtlStmtInf>{note}</AddtlStmtInf></Stmt></BkToCstmrStmt></Document>"#
+        )
+    };
+    let (fr, de) = (statement("FR1420041010050500013M02606", "1250.50", "CRDT"), statement("DE89370400440532013000", "75.25", "DBIT"));
+    let leaf = |name: &str, input: Value| holon_core::primitives::compute(name, &[&input], &[]).unwrap_or_else(|| panic!("{name} gave nothing"));
+    let bytes = |s: &str| Value::Bytes(s.as_bytes().to_vec());
+    let sha = |s: &str| match holon_core::primitives::compute("sha256", &[&bytes(s)], &[holon_core::Param::frozen("encoding", "hex")]) {
+        Some(Value::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    let Value::Bytes(zipped) = leaf("zip", Value::Record(BTreeMap::from([("fr.xml".to_string(), bytes(&fr)), ("de.xml".to_string(), bytes(&de))]))) else { panic!("zip gives bytes") };
+    std::fs::write(inbox.join("2026-11-06.zip"), &zipped).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, fr.as_bytes()).unwrap();
+    std::fs::write(inbox.join("2026-11-07.xml.gz"), gz.finish().unwrap()).unwrap();
+    std::fs::write(inbox.join("junk.zip"), "not a zip").unwrap();
+    look();
+
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/deliveries", "");
+    let summary = |file: &str, iban: &str, closing: &str, text: &str| serde_json::json!({ "file": file, "account": iban, "date": "2026-11-06", "closing": closing, "currency": "EUR", "sha256": sha(text) });
+    let (fr_summary, de_summary) = (summary("fr.xml", "FR1420041010050500013M02606", "1250.50", &fr), summary("de.xml", "DE89370400440532013000", "-75.25", &de));
+    assert_eq!(
+        (status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()),
+        (
+            200,
+            serde_json::json!({
+                "2026-11-06.zip": { "archive": "2026-11-06.zip", "statements": [de_summary, fr_summary] },
+                "2026-11-07.xml.gz": { "archive": "2026-11-07.xml.zip", "statements": [summary("2026-11-07.xml", "FR1420041010050500013M02606", "1250.50", &fr)] },
+                "junk.zip": { "refused": "not a zip of camt.053 statements, or one gzipped" },
+            })
+        )
+    );
+
+    // The archive: the statements as they came, and the manifest beside them.
+    let unzipped = |name: &str| match leaf("unzip", Value::Bytes(std::fs::read(archive.join(name)).unwrap())) {
+        Value::Record(files) => files,
+        other => panic!("{other:?}"),
+    };
+    let day = unzipped("2026-11-06.zip");
+    assert_eq!(day.keys().map(String::as_str).collect::<Vec<_>>(), ["de.xml", "fr.xml", "manifest.csv"]);
+    assert_eq!((&day["de.xml"], &day["fr.xml"]), (&bytes(&de), &bytes(&fr)));
+    let manifest = format!(
+        "file,account,date,closing,currency,sha256\r\nde.xml,DE89370400440532013000,2026-11-06,-75.25,EUR,{}\r\nfr.xml,FR1420041010050500013M02606,2026-11-06,1250.50,EUR,{}\r\n",
+        sha(&de),
+        sha(&fr)
+    );
+    assert_eq!(day["manifest.csv"], bytes(&manifest));
+    assert_eq!(unzipped("2026-11-07.xml.zip").keys().map(String::as_str).collect::<Vec<_>>(), ["2026-11-07.xml", "manifest.csv"]);
+
+    // A statement served back from its archive: gzipped when the client takes it, else as it is.
+    let get = |accept: &[(String, String)]| {
+        let asked = data::DataRequest { method: "GET".into(), url: "/deliveries/2026-11-06.zip/fr.xml".into(), headers: accept.to_vec(), body: vec![], by: None };
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &asked)
+    };
+    let r = get(&[("accept-encoding".into(), "gzip, br".into())]);
+    assert!(r.headers.iter().any(|(k, v)| k == "content-encoding" && v == "gzip"), "{:?}", r.headers);
+    let mut back = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&r.body[..]), &mut back).unwrap();
+    assert_eq!((r.status, back.as_str()), (200, fr.as_str()), "gzipped, flate2 reads it");
+    let r = get(&[]);
+    assert_eq!((r.status, r.body.as_slice()), (200, fr.as_bytes()));
+    assert!(!r.headers.iter().any(|(k, _)| k == "content-encoding"), "{:?}", r.headers);
+
+    // The archive is in the log by its hash, its bytes nowhere: not in what was performed, nor in
+    // the timeline.
+    let entries = log_entries(&state, &slug);
+    let archived = std::fs::read(archive.join("2026-11-06.zip")).unwrap();
+    let performed = serde_json::to_string(&entries.iter().map(|e| &e["performed"]).collect::<Vec<_>>()).unwrap();
+    assert!(performed.contains(&blake3::hash(&archived).to_hex().to_string()), "the archive written, by its hash: {performed}");
+    let whole = holon_core::bytes_text(&archived, "base64").unwrap();
+    assert!(!serde_json::to_string(&entries).unwrap().contains(&whole[..64]), "its bytes aren't in the log");
+
+    // Its runs check offline: the deliveries read from the export's blobs.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Partners' tokens (the jwt-api sample): a person trusts each partner's public key, a JWKS or a
+/// PEM text, by running trust; a bearer token is verified with the key of the partner it names,
+/// for payouts-api, at the time of the run. A token another partner signed, alg none, HMAC over
+/// the public key, or one expired or for another audience answers 401; a payout needs
+/// payouts:write (403), and a token pays once (409); and the runs verify.
+#[test]
+fn a_partners_token_is_verified_with_the_key_a_person_trusted_for_it() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/jwt-api.holon.ts"), "");
+    let trust = |partner: &str, key: serde_json::Value| run_action_named(&state, &slug, "trust", serde_json::json!({ "partner": partner, "key": key })).status_code;
+    assert_eq!(trust("acme", serde_json::from_str(include_str!("testdata/oidc-test-jwks.json")).unwrap()), 200, "a JWKS");
+    assert_eq!(trust("globex", serde_json::json!(include_str!("testdata/jwt-test-ed25519.pub.pem"))), 200, "a PEM text");
+
+    let now = crate::deploy::epoch_now();
+    let claims = |iss: &str, jti: &str, more: serde_json::Value| {
+        let mut all = serde_json::json!({ "iss": iss, "sub": "svc-1", "aud": "payouts-api", "scope": "payouts:write", "jti": jti, "iat": now, "exp": now + 600 });
+        for (k, v) in more.as_object().unwrap() {
+            all[k] = v.clone();
+        }
+        all
+    };
+    let acme = |c: serde_json::Value| {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key".into());
+        jsonwebtoken::encode(&header, &c, &EncodingKey::from_rsa_pem(include_bytes!("testdata/oidc-test-key.pem")).unwrap()).unwrap()
+    };
+    let globex = |c: serde_json::Value| jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &c, &EncodingKey::from_ed_pem(include_bytes!("testdata/jwt-test-ed25519.pem")).unwrap()).unwrap();
+    let call = |method: &str, url: &str, token: &str, body: &str| {
+        let headers = if token.is_empty() { vec![] } else { vec![("authorization".to_string(), format!("Bearer {token}"))] };
+        let asked = data::DataRequest { method: method.into(), url: url.into(), headers, body: body.as_bytes().to_vec(), by: None };
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &asked);
+        (r.status, serde_json::from_slice::<serde_json::Value>(&r.body).unwrap_or_default(), r.headers)
+    };
+
+    // Who called, as each partner's key says.
+    let (status, answer, _) = call("GET", "/whoami", &acme(claims("acme", "j1", serde_json::json!({}))), "");
+    assert_eq!((status, &answer["partner"], &answer["subject"], &answer["scope"]), (200, &serde_json::json!("acme"), &serde_json::json!("svc-1"), &serde_json::json!("payouts:write")), "{answer}");
+    assert_eq!(answer["expires"].as_f64(), Some((now + 600) as f64));
+    let (status, answer, _) = call("GET", "/whoami", &globex(claims("globex", "g1", serde_json::json!({}))), "");
+    assert_eq!((status, &answer["partner"]), (200, &serde_json::json!("globex")), "{answer}");
+
+    // What doesn't verify: no token; one acme signed naming globex; alg none; HMAC with globex's
+    // public key as its secret; one expired; one for another API.
+    let (status, answer, headers) = call("GET", "/whoami", "", "");
+    assert_eq!((status, answer["error"].as_str()), (401, Some("a token a trusted partner signed for payouts-api is needed")));
+    assert!(headers.iter().any(|(k, v)| k == "www-authenticate" && v == "Bearer"), "{headers:?}");
+    let b64u = |s: String| holon_core::bytes_text(s.as_bytes(), "base64url").unwrap();
+    let none = format!("{}.{}.", b64u(r#"{"alg":"none"}"#.into()), b64u(claims("globex", "n1", serde_json::json!({})).to_string()));
+    let confused = jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims("globex", "h1", serde_json::json!({})), &EncodingKey::from_secret(include_bytes!("testdata/jwt-test-ed25519.pub.pem"))).unwrap();
+    for (what, token) in [
+        ("signed by another partner", acme(claims("globex", "x1", serde_json::json!({})))),
+        ("alg none", none),
+        ("HMAC over the public key", confused),
+        ("expired", globex(claims("globex", "e1", serde_json::json!({ "exp": now - 60 })))),
+        ("for another API", globex(claims("globex", "a1", serde_json::json!({ "aud": "billing-api" })))),
+    ] {
+        assert_eq!(call("GET", "/whoami", &token, "").0, 401, "{what}");
+        assert_eq!(call("POST", "/payouts", &token, r#"{"amount": "1.00"}"#).0, 401, "{what}");
+    }
+
+    // A payout: the scope it needs, then once per token.
+    let (status, answer, _) = call("POST", "/payouts", &acme(claims("acme", "j2", serde_json::json!({ "scope": "payouts:read" }))), r#"{"amount": "5.00"}"#);
+    assert_eq!((status, answer), (403, serde_json::json!({ "error": "the token's scope has no payouts:write" })));
+    let token = acme(claims("acme", "j1", serde_json::json!({})));
+    let (status, answer, _) = call("POST", "/payouts", &token, r#"{"amount": "120.00"}"#);
+    assert_eq!((status, answer), (202, serde_json::json!({ "accepted": "acme/j1" })));
+    let (status, answer, _) = call("POST", "/payouts", &token, r#"{"amount": "120.00"}"#);
+    assert_eq!((status, answer), (409, serde_json::json!({ "error": "this token has asked for a payout already", "payout": "acme/j1" })));
+    let (status, answer, _) = call("POST", "/payouts", &globex(claims("globex", "g1", serde_json::json!({ "scope": "payouts:read payouts:write" }))), r#"{"amount": "7.50"}"#);
+    assert_eq!((status, answer), (202, serde_json::json!({ "accepted": "globex/g1" })));
+
+    // Its runs check offline: each token verified again at the time its run saw.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// A bank's files (the pgp-outbox sample), with keys, signatures and a message GnuPG made
+/// (holon-core's testdata/pgp-vectors.mjs): a person trusts the bank's Curve25519 key, its
+/// fingerprint answered as GnuPG lists it, and nothing kept for what isn't a key; a payment file is
+/// encrypted to the key's encryption subkey, armored, its SHA-256 and the encrypted file's kept,
+/// and refused before a key is trusted; a report signed by the bank's signing subkey verifies,
+/// one another key signed or with no report beside it is refused; and the runs verify, the
+/// encryption done again from the random bytes the log keeps.
+#[test]
+fn a_payment_file_is_encrypted_to_the_banks_key_and_its_signed_reports_verified() {
+    let state = claims_state("");
+    let vectors: serde_json::Value = serde_json::from_str(include_str!("../../holon-core/src/testdata/pgp-vectors.json")).unwrap();
+    let dir = std::env::temp_dir().join(format!("holon-pgp-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (payments, upload, download) = (dir.join("payments"), dir.join("upload"), dir.join("download"));
+    for (name, path, access) in [("payments", &payments, "read"), ("upload", &upload, "read-write"), ("download", &download, "read")] {
+        std::fs::create_dir_all(path).unwrap();
+        assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
+    }
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/pgp-outbox.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    let trust = |key: &serde_json::Value| body_json(run_action_named(&state, &slug, "trust", serde_json::json!({ "key": key })));
+    let kept = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])))["state"]["bank"].clone();
+    let sha = |b: &[u8]| match holon_core::primitives::compute("sha256", &[&Value::Bytes(b.to_vec())], &[holon_core::Param::frozen("encoding", "hex")]) {
+        Some(Value::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+
+    // What isn't a key is refused and kept as nothing, so a payment file is refused.
+    assert_eq!(trust(&serde_json::json!("not a key"))["answer"], serde_json::json!({ "refused": "not one OpenPGP public key its own signatures hold for" }));
+    assert!(kept().is_null(), "nothing kept: {}", kept());
+    std::fs::write(payments.join("early.xml"), "<Document/>").unwrap();
+    look();
+
+    // The bank's key: its fingerprint, user ID and no expiry, as GnuPG lists them.
+    let fingerprints = &vectors["fingerprints"]["c25519"];
+    let answered = trust(&vectors["keys"]["c25519"]);
+    assert_eq!(answered["answer"]["fingerprint"], fingerprints[0], "{answered}");
+    assert_eq!(answered["answer"]["user_ids"], serde_json::json!(["Bank 25519 <c25519@bank.example>"]), "{answered}");
+    assert_eq!((&answered["answer"]["expires"], &answered["answer"]["revoked"]), (&serde_json::json!("never"), &serde_json::json!(false)), "{answered}");
+    let pain = "<Document><CstmrCdtTrfInitn><GrpHdr><MsgId>B-1</MsgId></GrpHdr></CstmrCdtTrfInitn></Document>\n";
+    std::fs::write(payments.join("pain.001.xml"), pain).unwrap();
+    look();
+
+    // Armored, a session key for the encryption subkey first: past its packet's header (gpg writes
+    // the old form, 0x84, Holon the new, 0xC1), its version, key ID and algorithm are those of the
+    // message gpg encrypted to the same key, bytes 3 to 12.
+    let encrypted = std::fs::read(upload.join("pain.001.xml.asc")).unwrap();
+    let armored = String::from_utf8(encrypted.clone()).unwrap();
+    assert!(armored.starts_with("-----BEGIN PGP MESSAGE-----\n") && armored.trim_end().ends_with("-----END PGP MESSAGE-----"), "{armored}");
+    let opening = |armored: &str| armored.lines().skip_while(|l| !l.is_empty()).nth(1).unwrap()[4..16].to_string();
+    assert_eq!(opening(&armored), opening(vectors["messages"]["to_c25519_armored"].as_str().unwrap()));
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/sent", "");
+    let sent: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(sent["early.xml"], serde_json::json!({ "refused": "no bank key is trusted, or none of its keys encrypts now" }));
+    let one = &sent["pain.001.xml"];
+    assert_eq!((&one["to"], one["sha256"].as_str(), one["encrypted"].as_str()), (&fingerprints[0], Some(sha(pain.as_bytes()).as_str()), Some(sha(&encrypted).as_str())), "{sent}");
+
+    // The bank's reports: signed by its signing subkey (armored); by another key (bytes); a
+    // signature with no report beside it.
+    let data = vectors["data"].as_str().unwrap();
+    let signature = |name: &str| vectors["signatures"][name].as_str().unwrap().to_string();
+    std::fs::write(download.join("pain.002.xml"), data).unwrap();
+    std::fs::write(download.join("pain.002.xml.sig"), signature("ed_subkey_armored")).unwrap();
+    std::fs::write(download.join("forged.xml"), data).unwrap();
+    std::fs::write(download.join("forged.xml.sig"), holon_core::text_bytes(&signature("other"), "base64").unwrap()).unwrap();
+    std::fs::write(download.join("missing.xml.sig"), signature("ed_subkey_armored")).unwrap();
+    look();
+    let (_, answer, _) = data_call(&state, &slug, "GET", "/received", "");
+    let refused = serde_json::json!({ "refused": "not signed by the bank's trusted key, or not there" });
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        serde_json::json!({
+            "pain.002.xml": { "verified": fingerprints[2], "signed": 1780272000, "sha256": sha(data.as_bytes()) },
+            "forged.xml": refused,
+            "missing.xml": refused,
+        })
+    );
+
+    // Its runs check offline: the message encrypted again from the random bytes its run saw.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `on file` lines (the file-audit sample): several folders, files removed, and only some names.
 /// Each run's `ingress` says what happened; a name no line is for starts nothing; an entry is
 /// created, never replaced; and the runs verify.
@@ -7391,8 +7986,11 @@ fn on_file_lines_run_on_several_folders_deletions_and_matching_names() {
     }
     std::fs::write(inbox.join("old.txt"), "there before").unwrap();
     let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-audit.holon.ts"), "");
-    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
-    assert_eq!(triggers, serde_json::json!(["on file inbox matching \"*.csv\"", "on file inbox deleted", "on file outbox"]), "each file handler its own trigger");
+    // Deployed as units alone, with no text, its handlers come in its composite's order, which
+    // follows hashes rather than the order they are written in.
+    let mut triggers: Vec<String> = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone()).unwrap();
+    triggers.sort();
+    assert_eq!(triggers, ["on file inbox deleted", "on file inbox matching \"*.csv\"", "on file outbox"], "each file handler its own trigger");
     let look = || {
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
@@ -7676,6 +8274,1201 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert!(said["run_error"].is_null(), "{said}");
     assert_eq!((balance(), hits_of(&hits, "/slow")), (140, 1), "nothing paid");
     assert!(waiting().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── Mail (host-capabilities 1.3a) ──
+
+/// A test server with mail: its `ops` read from a dotenv file pointing at an SMTP sink, sending
+/// as soon as the run is over.
+fn mail_state(sink_port: u16) -> AppState {
+    let dir = std::env::temp_dir().join(format!("holon-mail-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{sink_port}\n")).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    state
+}
+
+/// A mail's text, its quoted-printable undone.
+fn unquoted(data: &str) -> String {
+    let joined = data.replace("=\r\n", "");
+    let mut out = Vec::new();
+    let b = joined.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], joined.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'=', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn wait_for_mail(sink: &smtp::sink::Sink, n: usize) -> Vec<smtp::sink::Got> {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = sink.got.lock().unwrap().clone();
+        if got.len() >= n {
+            return got;
+        }
+        assert!(std::time::Instant::now() < until, "{} mails, not {n}", got.len());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The approval-mail sample (host-capabilities L4 §5.2.2): asking for a payout mails its approval
+/// link once the run is over, from the binding's sender, the payout attached; the link's page
+/// approves nothing and its button does; approved, the payout is recorded and whoever asked is
+/// mailed. One who asked from outside the binding's --to isn't: that mail is given up, and the
+/// deployment's timeline says so. The log keeps each message, its attachment by hash.
+#[test]
+fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
+    let sink = smtp::sink::start("PLAIN LOGIN");
+    let state = mail_state(sink.port);
+    let text = include_str!("../../holon-author/samples/approval-mail.holon.ts");
+    // Not bound: refused at deploy, as a folder is.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the mail \"ops\" isn't bound to send on this server"), "{said}");
+    // Bound to every address at acme.com.
+    let bind = serde_json::json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Treasury <treasury@acme.com>", "to": "*@acme.com" });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains(&format!("smtp://127.0.0.1:{}", sink.port)), "{shown}");
+    let slug = deploy_text(&state, text, "127.0.0.1");
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/payouts", r#"{"id":"p1","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com"}"#);
+    assert_eq!(status, 202, "{body}");
+    let got = wait_for_mail(&sink, 1);
+    assert_eq!((got[0].from.as_str(), got[0].to.clone()), ("treasury@acme.com", vec!["approvals@acme.com".to_string()]));
+    assert!(got[0].login.is_some(), "logged in");
+    let mail = &got[0].data;
+    for part in ["From: Treasury <treasury@acme.com>\r\n", "To: approvals@acme.com\r\n", "Subject: Approve payout p1: 5000 to DE89370400440532013000\r\n", "Content-Disposition: attachment; filename=\"payout.csv\""] {
+        assert!(mail.contains(part), "{part} in {mail}");
+    }
+    // The CSV, base64 as it is attached.
+    let csv = "id,amount,iban,by\np1,5000,DE89370400440532013000,sam@acme.com\n";
+    assert!(mail.replace("\r\n", "").contains(&smtp_base64(csv.as_bytes())), "{mail}");
+    let text_part = unquoted(mail);
+    let link = text_part.split("http://127.0.0.1:8186").nth(1).unwrap_or_else(|| panic!("{text_part}"));
+    let link: String = link.chars().take_while(|c| !c.is_whitespace()).collect();
+    assert!(link.starts_with("/approve/"), "{link}");
+
+    // Opening the link approves nothing: a page with a button.
+    let token = link.trim_start_matches("/approve/").to_string();
+    let (status, page, _) = data_call(&state, &slug, "GET", &link, "");
+    assert_eq!(status, 200);
+    assert!(page.contains("<button>Approve</button>"), "{page}");
+    assert!(!data_call(&state, &slug, "GET", "/payouts", "").1.contains("p1"), "not approved yet");
+    // Its button does: recorded, and sam is mailed.
+    assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
+    let got = wait_for_mail(&sink, 2);
+    assert_eq!(got[1].to, vec!["sam@acme.com".to_string()]);
+    assert!(got[1].data.contains("Subject: Payout p1 approved\r\n"), "{}", got[1].data);
+    assert!(got[1].data.contains("Message-ID: <") && got[0].data.contains("Message-ID: <"));
+    let listed = data_call(&state, &slug, "GET", "/payouts", "").1;
+    assert!(listed.contains("\"p1\"") && listed.contains(r#""approved_via":"POST""#), "{listed}");
+
+    // Asked from outside the binding: the approvers are mailed, the asker isn't.
+    let (status, _, _) = data_call(&state, &slug, "POST", "/payouts", r#"{"id":"p2","amount":10,"iban":"DE89370400440532013000","by":"eve@evil.example"}"#);
+    assert_eq!(status, 202);
+    let got = wait_for_mail(&sink, 3);
+    let link: String = unquoted(&got[2].data).split("http://127.0.0.1:8186").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
+    assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
+    let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !events().contains("gave up mailing") {
+        assert!(std::time::Instant::now() < until, "{}", events());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let said = events();
+    assert!(said.contains(r#"gave up mailing \"Payout p2 approved\" to eve@evil.example through ops: eve@evil.example isn't an address the binding allows now"#), "{said}");
+    assert!(said.contains(r#"mailed \"Approve payout p1: 5000 to DE89370400440532013000\" to approvals@acme.com through ops"#), "{said}");
+    assert_eq!(sink.got.lock().unwrap().len(), 3, "eve wasn't mailed");
+
+    // The log keeps the message, its attachment by size and hash.
+    let entries = log_entries(&state, &slug);
+    let asked = entries.iter().find(|e| e["route"] == "POST /payouts").unwrap();
+    let mailed = asked["performed"].as_array().unwrap().iter().find(|p| p["capability"] == r#"MailSend("ops")"#).unwrap_or_else(|| panic!("{asked}"));
+    let payload = mailed["payload"].to_string();
+    assert!(payload.contains("approvals@acme.com") && payload.contains(&blake3::hash(csv.as_bytes()).to_hex().to_string()) && !payload.contains("p1,5000"), "{payload}");
+    // And no run in it holds a live token: the page's route is unrecorded, and the button's, the
+    // route that resumes, keeps it redacted.
+    let logged = serde_json::to_string(&entries).unwrap();
+    assert!(!logged.contains(&token) && !logged.contains("GET /approve"), "{logged}");
+}
+
+fn smtp_base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// A remittance mail: from `from`, its verdict written by `verdict_by`, with a CSV of `lines`.
+fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
+    let domain = from.rsplit('@').next().unwrap();
+    format!(
+        "Authentication-Results: {verdict_by}; spf=pass smtp.mailfrom={domain}; dkim=pass header.d={domain}; dmarc=pass header.from={domain}\r\n\
+         From: Billing <{from}>\r\nTo: remittances@acme.com\r\nSubject: Remittance {id}\r\nDate: Fri, 06 Nov 2026 10:00:00 +0000\r\n\
+         Message-ID: <{id}@{domain}>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n\
+         --b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPaid, see attached.\r\n\
+         --b1\r\nContent-Type: text/csv; name=\"remit.csv\"\r\nContent-Disposition: attachment; filename=\"remit.csv\"\r\n\r\n\
+         invoice,amount\r\n{lines}\r\n--b1--\r\n"
+    )
+    .into_bytes()
+}
+
+// ── Mail received (host-capabilities 1.3b) ──
+
+/// The remittance-mail sample (host-capabilities L4 §5.2.4): refused until its mail is bound with
+/// --imap; what the mailbox holds at the first look is seen, not run on; then each new message
+/// starts one run and is moved to --done: an authenticated one settles the invoices its CSV pays in
+/// full, one whose verdict isn't the mailbox server's changes nothing, and a second copy is moved
+/// without a run. The log keeps each message whole, and the runs verify.
+#[test]
+fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_message() {
+    let imap = imap::stand_in::start("remit", "s3cret", true);
+    let dir = std::env::temp_dir().join(format!("holon-imap-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_REMIT_IMAP=imap://remit:s3cret@127.0.0.1:{}\n", imap.port)).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    let text = include_str!("../../holon-author/samples/remittance-mail.holon.ts");
+
+    // Not bound: refused at deploy.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["needs_approval"].to_string().contains(r#"MailArrival(\"remit\")"#), "{preview}");
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the mail \"remit\" isn't bound to receive on this server"), "{said}");
+    // Bound, believing mx.acme.com's verdict.
+    let bind = serde_json::json!({ "name": "remit", "imap": "env:HOLON_SECRET_REMIT_IMAP", "verdict_from": "mx.acme.com" });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains("\"done\":\"Processed\""), "{shown}");
+    imap.folders.lock().unwrap().put("INBOX", &remittance("old", "billing@customer.example", "mx.acme.com", "INV-1,100.00"));
+    let slug = deploy_text(&state, text, "");
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Http :8188", "on mail remit"]));
+    for invoice in [r#"{"id":"INV-1","amount":"100.00","customer":"customer.example"}"#, r#"{"id":"INV-2","amount":"50.00","customer":"customer.example"}"#] {
+        assert_eq!(data_call(&state, &slug, "POST", "/invoices", invoice).0, 201);
+    }
+    let mut looks = inbox::Looks::default();
+    let look = |looks: &mut inbox::Looks| inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, looks);
+    look(&mut looks);
+    assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 0, "what was there at the first look isn't new");
+    assert_eq!(imap.folders.lock().unwrap().of("INBOX").len(), 1, "nor moved");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains(&format!("listens to the mailbox of remit (imap://127.0.0.1:{} INBOX), what it holds now (1 message) isn't run on", imap.port)), "{events}");
+
+    // INV-1 paid in full, INV-2 short; the same from someone the mailbox's server didn't vouch
+    // for; and the first again.
+    for m in [
+        remittance("r1", "billing@customer.example", "mx.acme.com", "INV-1,100.00\r\nINV-2,40.00"),
+        remittance("r2", "billing@customer.example", "evil.example", "INV-2,50.00"),
+        remittance("r1", "billing@customer.example", "mx.acme.com", "INV-1,100.00\r\nINV-2,40.00"),
+    ] {
+        imap.folders.lock().unwrap().put("INBOX", &m);
+    }
+    look(&mut looks);
+    let runs: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "mail").collect();
+    assert_eq!(runs.len(), 2, "{runs:#?}");
+    assert!(runs.iter().all(|r| r["route"] == "on mail remit" && r["error"].is_null()), "{runs:#?}");
+    let sourced = runs[0]["sourced"].to_string();
+    assert!(sourced.contains(r#"MailArrival(\"remit\")"#) && sourced.contains("INV-2,40.00") && sourced.contains("r1@customer.example"), "logged whole: {sourced}");
+    let (_, invoices, _) = data_call(&state, &slug, "GET", "/invoices", "");
+    let invoices: serde_json::Value = serde_json::from_str(&invoices).unwrap();
+    assert_eq!(invoices["open"], serde_json::json!({ "INV-2": { "amount": "50.00", "customer": "customer.example" } }), "{invoices}");
+    assert_eq!(invoices["paid"]["INV-1"]["by"], "billing@customer.example", "{invoices}");
+    let (_, remittances, _) = data_call(&state, &slug, "GET", "/remittances", "");
+    assert!(remittances.contains(r#""settled":["INV-1"]"#) && remittances.contains(r#""refused":"not authenticated""#), "{remittances}");
+    let folders = imap.folders.lock().unwrap();
+    assert_eq!((folders.of("INBOX").len(), folders.of("Processed").len()), (1, 3), "each new one moved, the old one left");
+    drop(folders);
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("moved a second copy of <r1@customer.example> to Processed without a run"), "{events}");
+
+    // Nothing new: nothing runs.
+    look(&mut looks);
+    assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 2);
+
+    // Its runs check offline: the message is what the log says came.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+
+    // Another deployment can't listen to that mailbox.
+    let other = text.replace("flow(\"remittance-mail\", { port: 8188 })", "flow(\"remittance-copy\", { port: 8189 })");
+    let plan = holon_author::agent::plan(&other).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("is listened to by remittance-mail already"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── Mailboxes that log in with OAuth (host-capabilities 1.3c) ──
+
+/// A request to a support mailbox: from `from`, its verdict written by `verdict_by`.
+fn support_request(id: &str, from: &str, verdict_by: &str, subject: &str) -> Vec<u8> {
+    let domain = from.rsplit('@').next().unwrap();
+    format!(
+        "Authentication-Results: {verdict_by}; spf=pass smtp.mailfrom={domain}; dkim=pass header.d={domain}; dmarc=pass header.from={domain}\r\n\
+         From: <{from}>\r\nTo: support@acme.com\r\nSubject: {subject}\r\nDate: Mon, 09 Nov 2026 10:00:00 +0000\r\n\
+         Message-ID: <{id}@{domain}>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nIt doesn't add up.\r\n"
+    )
+    .into_bytes()
+}
+
+/// The support-inbox sample (host-capabilities L4 §5.2.6): its one mail bound with --oauth, both
+/// URLs naming a user and no password, logs in to the mailbox and to the SMTP server with the token
+/// the host asked for once and kept. An authenticated request opens a ticket and is answered
+/// through the same mail; one that isn't is kept, unanswered. A token the SMTP server refuses is
+/// dropped, and the mail goes with a new one. Nothing holds a secret: the binding, the log.
+#[test]
+fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
+    let endpoint = oauth::stand_in::start("app", "s3cret", "t0ken");
+    let imap = imap::stand_in::start_with_token("support@acme.com", "t0ken", true);
+    let sink = smtp::sink::start("PLAIN LOGIN XOAUTH2");
+    let dir = std::env::temp_dir().join(format!("holon-oauth-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    let vars = [
+        format!("HOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:{}", imap.port),
+        format!("HOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:{}", sink.port),
+        format!("HOLON_SECRET_SUPPORT_OAUTH={}", endpoint.url("app", "s3cret", "scope=mail")),
+    ];
+    std::fs::write(&env, vars.join("\n") + "\n").unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+
+    let bind = serde_json::json!({
+        "name": "support", "imap": "env:HOLON_SECRET_SUPPORT_IMAP", "done": "Answered", "verdict_from": "mx.acme.com",
+        "smtp": "env:HOLON_SECRET_SUPPORT_SMTP", "from": "Acme support <support@acme.com>", "to": "*", "oauth": "env:HOLON_SECRET_SUPPORT_OAUTH",
+    });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(shown.contains(&format!(r#""oauth":{{"address":"http://127.0.0.1:{}/token","source":"env:HOLON_SECRET_SUPPORT_OAUTH"}}"#, endpoint.port)), "{shown}");
+    assert!(!shown.contains("s3cret") && !shown.contains("t0ken"), "{shown}");
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 1, "one token for both servers");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/support-inbox.holon.ts"), "");
+
+    let mut looks = inbox::Looks::default();
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    for m in [support_request("q1", "ann@customer.example", "mx.acme.com", "Invoice INV-7"), support_request("q2", "ann@customer.example", "evil.example", "Pay me")] {
+        imap.folders.lock().unwrap().put("INBOX", &m);
+    }
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    let runs: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "mail").collect();
+    assert_eq!(runs.len(), 2, "{runs:#?}");
+    let (_, tickets, _) = data_call(&state, &slug, "GET", "/tickets", "");
+    assert!(tickets.contains(r#""T-1":{"date":1794218400,"from":"ann@customer.example","subject":"Invoice INV-7""#), "{tickets}");
+    assert!(tickets.contains(r#""unanswered:q2@customer.example""#), "{tickets}");
+    let got = wait_for_mail(&sink, 1);
+    assert_eq!(got[0].to, vec!["ann@customer.example".to_string()]);
+    assert!(got[0].data.contains("Subject: [T-1] Invoice INV-7\r\n") && got[0].data.contains("From: Acme support <support@acme.com>\r\n"), "{}", got[0].data);
+    assert_eq!(got[0].login.as_deref(), Some(smtp::xoauth2("support@acme.com", "t0ken").as_str()));
+    assert_eq!(imap.folders.lock().unwrap().of("Answered").len(), 2);
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 1, "the token kept");
+
+    // The SMTP server stops taking that token: dropped, and the answer goes with a new one.
+    *sink.refuse.lock().unwrap() = Some(smtp::xoauth2("support@acme.com", "t0ken").to_string());
+    *endpoint.token.lock().unwrap() = "t0ken-2".into();
+    imap.folders.lock().unwrap().put("INBOX", &support_request("q3", "bob@customer.example", "mx.acme.com", "Statement"));
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    let got = wait_for_mail(&sink, 2);
+    assert_eq!((got[1].to.clone(), got[1].login.as_deref()), (vec!["bob@customer.example".to_string()], Some(smtp::xoauth2("support@acme.com", "t0ken-2").as_str())));
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 2);
+
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    assert!(!logged.contains("s3cret") && !logged.contains("t0ken"), "{logged}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── Feeds (host-capabilities 1.6a) ──
+
+/// Wait until `holds`, for 10 seconds at most.
+fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !holds() {
+        assert!(std::time::Instant::now() < until, "never: {what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The price-feed sample (host-capabilities L4 §5.9.2): refused until its feed is bound; bound to
+/// a stand-in, each event the feed sends starts one run, in the order they came; the connection
+/// cut, it is opened again from the last event run on (Last-Event-ID), and an event the feed sends
+/// again is passed over. The state endpoint says where it is, nothing holds the URL's key, and the
+/// runs verify.
+#[test]
+fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
+    let feed = sse::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-feed-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_PRICES_URL={}\n", feed.url("/events?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/price-feed.holon.ts");
+
+    // Not bound: refused at deploy.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["needs_approval"].to_string().contains(r#"FeedEvent(\"prices\")"#), "{preview}");
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the feed \"prices\" isn't bound on this server"), "{said}");
+    // Bound: shown without the URL's query.
+    let bind = serde_json::json!({ "name": "prices", "url": "env:HOLON_SECRET_PRICES_URL" });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains(&format!(r#""address":"{}""#, feed.url("/events"))), "{shown}");
+    let slug = deploy_text(&state, text, "");
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Http :8187", "on feed prices"]));
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // Asked once to bind it, then by the deployment's connection.
+    eventually("the feed is listened to", || feed.asked().len() == 2);
+    feed.send("1", r#"{"symbol":"ACME","price":10.5}"#);
+    feed.send("2", r#"{"symbol":"BOLT","price":3}"#);
+    feed.send("3", r#"{"symbol":"ACME","price":11}"#);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let first = runs();
+    assert!(first.iter().all(|r| r["route"] == "on feed prices" && r["error"].is_null()), "{first:#?}");
+    let sourced = first[1]["sourced"].to_string();
+    assert!(sourced.contains(r#"FeedEvent(\"prices\")"#) && sourced.contains("BOLT"), "logged whole: {sourced}");
+    let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
+    let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
+    assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
+    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    assert_eq!((live["feeds"][0]["status"].as_str(), live["feeds"][0]["position"].as_str()), (Some("connected"), Some("3")), "{live}");
+    assert_eq!(live["feeds"][0]["label"], "on feed prices", "{live}");
+
+    // Cut: opened again from 3, which the feed sends again (passed over), then one past 1 MiB
+    // (passed over, the connection read on), then 4.
+    feed.cut();
+    eventually("the feed is opened again", || feed.asked().len() == 3);
+    assert!(feed.asked()[2].contains("Last-Event-ID: 3"), "{:?}", feed.asked());
+    feed.send_lines("3", "id: 3\ndata: {\"symbol\":\"ACME\",\"price\":99}\n\n");
+    feed.send("big", &format!(r#"{{"symbol":"HUGE","note":"{}"}}"#, "x".repeat(sse::MAX_EVENT)));
+    feed.send("4", r#"{"symbol":"CORE","price":7}"#);
+    eventually("a fourth run", || runs().len() == 4);
+    assert_eq!(feed.asked().len(), 3, "read on, not opened again");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains(&format!("listens to the feed prices ({})", feed.url("/events"))), "{events}");
+    assert!(events.contains("passed over an event of prices it ran already (3)"), "{events}");
+    assert!(events.contains("passed over an event of prices past 1 MiB"), "{events}");
+    let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
+    let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
+    assert_eq!((prices["ACME"]["price"].clone(), prices["CORE"]["price"].clone()), (serde_json::json!(11), serde_json::json!(7)), "{prices}");
+
+    // Its runs check offline: each event is what the log says came.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    assert!(!logged.contains("s3cret"), "{logged}");
+
+    // Stopped: its connection is closed, and nothing more runs.
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("its connection is closed", || feed.open() == 0);
+    feed.send("5", r#"{"symbol":"DUST","price":1}"#);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(runs().len(), 4);
+    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    assert_eq!(live["feeds"][0]["status"], "closed", "{live}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An exchange on loopback for the trading-bot sample, as Coinbase Exchange's REST API answers:
+/// each request signed (`cb-access-sign`, an HMAC-SHA256 of the time, method, path and body with
+/// the secret) or refused 401; `POST /orders` places an order once, a client id it has seen
+/// refused 409, and waits while it is held; `GET /orders` lists the orders placed.
+struct Exchange {
+    host: String,
+    asked: Arc<Mutex<Vec<serde_json::Value>>>,
+    placed: Arc<Mutex<Vec<serde_json::Value>>>,
+    held: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Exchange {
+    const KEY: &'static str = "ex-key-e2e";
+    const PASSPHRASE: &'static str = "ex-pass-e2e";
+    /// Its secret, base64 as an exchange hands it out.
+    const SECRET: &'static str = "c2VjcmV0LWJ5dGVzLWZvci10aGUtZXhjaGFuZ2U=";
+
+    fn start() -> Exchange {
+        let asked: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+        let placed: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+        let held = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (a, p, h) = (Arc::clone(&asked), Arc::clone(&placed), Arc::clone(&held));
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            use std::io::Read;
+            let mut body = String::new();
+            if let Some(mut data) = request.data() {
+                let _ = data.read_to_string(&mut body);
+            }
+            let header = |name: &str| request.header(name).unwrap_or_default().to_string();
+            let prehash = format!("{}{}{}{body}", header("cb-access-timestamp"), request.method(), request.raw_url());
+            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &holon_core::text_bytes(Exchange::SECRET, "base64").unwrap());
+            let signed = holon_core::bytes_text(ring::hmac::sign(&key, prehash.as_bytes()).as_ref(), "base64").unwrap();
+            if header("cb-access-sign") != signed || header("cb-access-key") != Exchange::KEY || header("cb-access-passphrase") != Exchange::PASSPHRASE {
+                return Response::json(&serde_json::json!({ "message": "invalid signature" })).with_status_code(401);
+            }
+            if request.method() == "GET" {
+                return Response::json(&*p.lock().unwrap());
+            }
+            let order: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            a.lock().unwrap().push(order.clone());
+            let (lock, changed) = &*h;
+            drop(changed.wait_while(lock.lock().unwrap(), |held| *held).unwrap());
+            let mut placed = p.lock().unwrap();
+            if placed.iter().any(|o| o["client_oid"] == order["client_oid"]) {
+                return Response::json(&serde_json::json!({ "message": "duplicate client_oid" })).with_status_code(409);
+            }
+            let mut order = order;
+            order["id"] = serde_json::json!(format!("ex-{}", placed.len() + 1));
+            placed.push(order.clone());
+            Response::json(&order)
+        })
+        .unwrap();
+        let host = server.server_addr().to_string();
+        thread::spawn(move || server.run());
+        Exchange { host, asked, placed, held }
+    }
+
+    fn hold(&self, held: bool) {
+        *self.held.0.lock().unwrap() = held;
+        self.held.1.notify_all();
+    }
+}
+
+/// The trading-bot sample (host-capabilities L4 §5.9.4) against a WebSocket ticker and an exchange
+/// on loopback: the binding subscribes, runs only the ticker's messages and keeps only each
+/// product's newest price while a run is slow; a price under a level places its order once, signed;
+/// the price coming again places nothing, and the action run again by hand is refused by the
+/// exchange; an order over the limit waits for approval, then is placed by a run of its own;
+/// reconcile reads the exchange's orders back. The runs verify, and no key is in the log.
+#[test]
+fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
+    let exchange = Exchange::start();
+    let ticker = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-bot-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_TICKER_URL={}\n", ticker.url("/ws?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/trading-bot.holon.ts").replace("\"host:api.exchange.coinbase.com\"", &format!("\"host:{}\"", exchange.host));
+    let subscribe = r#"{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD","ETH-USD"]}"#;
+    let bind = serde_json::json!({
+        "name": "ticker", "url": "env:HOLON_SECRET_TICKER_URL", "subscribe": [subscribe], "only": ["type=ticker"],
+        "id": "product_id,sequence", "on_full": "latest", "key": "product_id",
+    });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    let status = bound.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    let slug = deploy_text(&state, &text, &exchange.host);
+    for (name, value) in [("exchange_key", Exchange::KEY), ("exchange_secret", Exchange::SECRET), ("exchange_passphrase", Exchange::PASSPHRASE)] {
+        let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/{name}"), set)).status_code, 200);
+    }
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        assert_eq!(status, 200, "{method} {path}: {body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body))
+    };
+    let level = call("PUT", "/levels/BTC-USD", r#"{"price":"100","size":"2"}"#);
+    let id = level["id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 36, "a uuid: {id}");
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // Asked once to bind it, then by the deployment's connection, which subscribes.
+    eventually("the feed is listened to", || ticker.asked().len() == 2 && ticker.heard() == [subscribe]);
+    let price = |product: &str, price: &str, sequence: u32| ticker.text(&format!(r#"{{"type":"ticker","product_id":"{product}","price":"{price}","sequence":{sequence}}}"#));
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    // Under the level, with the exchange holding its answer: the run waits on the order while
+    // prices come, and each product's newest is kept.
+    exchange.hold(true);
+    ticker.text(r#"{"type":"subscriptions","channels":[{"name":"ticker"}]}"#);
+    price("BTC-USD", "99", 1);
+    eventually("the order is sent", || exchange.asked.lock().unwrap().len() == 1);
+    price("BTC-USD", "98", 2);
+    price("ETH-USD", "50", 1);
+    price("BTC-USD", "97", 3);
+    price("BTC-USD", "96", 4);
+    eventually("two prices replaced", || live()["replaced"] == 2);
+    let l = live();
+    assert_eq!((l["waiting"].as_u64(), l["passed_over"].as_u64()), (Some(2), Some(1)), "{l}");
+    exchange.hold(false);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let prices = call("GET", "/prices", "");
+    assert_eq!((prices["BTC-USD"]["price"].as_str(), prices["BTC-USD"]["replaced"].as_u64()), (Some("96"), Some(2)), "{prices}");
+    assert_eq!(prices["ETH-USD"]["price"], "50", "{prices}");
+    let placed = exchange.placed.lock().unwrap().clone();
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert_eq!((placed[0]["client_oid"].as_str(), placed[0]["price"].as_str(), placed[0]["size"].as_str()), (Some(id.as_str()), Some("100"), Some("2")));
+    let orders = call("GET", "/orders", "");
+    assert_eq!((orders["placed"][&id]["exchange"].as_str(), orders["placed"][&id]["approved_by"].as_str()), (Some("ex-1"), Some("under the limit")), "{orders}");
+    // BTC's newest took the place of the one that waited, ahead of ETH's.
+    assert_eq!(live()["position"], "ETH-USD/1");
+
+    // The price under the level again: placed already, nothing sent.
+    price("BTC-USD", "95", 5);
+    eventually("a fourth run", || runs().len() == 4);
+    assert_eq!(exchange.asked.lock().unwrap().len(), 1);
+    // The order run again by hand, as a crash would run its price again: the exchange refuses
+    // the client id it has seen.
+    let again = body_json(run_action_named(&state, &slug, "place", serde_json::json!({ "product": "BTC-USD", "price": "100", "size": "2", "id": id })));
+    assert_eq!(again["answer"]["status"], 409, "{again}");
+    assert_eq!((exchange.asked.lock().unwrap().len(), exchange.placed.lock().unwrap().len()), (2, 1));
+
+    // Worth more than 1000: it waits for approval, then a run of its own places it.
+    let big = call("PUT", "/levels/ETH-USD", r#"{"price":"2000","size":"1"}"#);
+    price("ETH-USD", "1999", 2);
+    eventually("the order waits for approval", || call("GET", "/orders", "")["waiting"][big["id"].as_str().unwrap()]["approve"].is_string());
+    let link = call("GET", "/orders", "")["waiting"][big["id"].as_str().unwrap()]["approve"].as_str().unwrap().to_string();
+    assert_eq!(exchange.asked.lock().unwrap().len(), 2, "nothing sent before the approval");
+    let (status, said, _) = data_call(&state, &slug, "POST", &link, r#"{"by":"ops"}"#);
+    assert_eq!(status, 200, "{said}");
+    eventually("the large order is placed", || exchange.placed.lock().unwrap().len() == 2);
+    let orders = call("GET", "/orders", "");
+    assert_eq!(orders["placed"][big["id"].as_str().unwrap()]["approved_by"], "ops", "{orders}");
+    assert_eq!(orders["waiting"], serde_json::json!({}), "{orders}");
+    // Read back from the exchange.
+    let open = body_json(run_action_named(&state, &slug, "reconcile", serde_json::json!({})));
+    assert_eq!(open["answer"].as_array().map(Vec::len), Some(2), "{open}");
+
+    // Its runs check offline, and no key is in its log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    for kept in ["s3cret", Exchange::KEY, Exchange::SECRET, Exchange::PASSPHRASE] {
+        assert!(!logged.contains(kept), "{kept} is in the log");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bluesky-mentions sample (host-capabilities L4 §5.9.6): posts from a feed shaped as
+/// Jetstream is, numbered, which replays from a cursor; a connection lost is opened again from the
+/// last post read, the posts sent meanwhile run, and the one at the cursor, sent again, is passed
+/// over.
+#[test]
+fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once() {
+    let jetstream = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-posts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_POSTS_URL={}\n", jetstream.url("/subscribe?collections=app.bsky.feed.post&key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let bind = serde_json::json!({ "name": "posts", "url": "env:HOLON_SECRET_POSTS_URL", "id": "payload.seq", "resume": ["query:cursor"], "only": ["payload.operation=create"] });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    let status = bound.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/bluesky-mentions.holon.ts"), "");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        assert_eq!(status, 200, "{method} {path}: {body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body))
+    };
+    assert_eq!(call("PUT", "/watch", r#"{"word":"Holon"}"#), serde_json::json!({ "word": "holon" }));
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // A new listener asks from now: no cursor.
+    eventually("the feed is listened to", || jetstream.asked().len() == 2);
+    assert!(jetstream.asked()[1].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret\n"), "{:?}", jetstream.asked());
+    let post = |seq: u32, operation: &str, text: &str| {
+        let payload = serde_json::json!({ "$type": "network.bsky.jetstream.subscribeEvents#commit", "did": "did:plc:ada", "seq": seq, "time": format!("2026-11-09T08:00:0{seq}Z"), "operation": operation, "collection": "app.bsky.feed.post", "rkey": format!("3k{seq}"), "record": { "text": text } });
+        jetstream.text(&serde_json::json!({ "$type": "message", "payload": payload }).to_string());
+    };
+    post(1, "create", "hello Holon");
+    post(2, "create", "nothing to see");
+    post(3, "delete", "holon, deleted");
+    post(4, "create", "holon again");
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    eventually("at 4", || live()["position"] == "4");
+    let mentions = call("GET", "/mentions", "");
+    assert_eq!(mentions.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["at://did:plc:ada/app.bsky.feed.post/3k1".to_string(), "at://did:plc:ada/app.bsky.feed.post/3k4".into()]), "{mentions}");
+    assert_eq!((mentions["at://did:plc:ada/app.bsky.feed.post/3k1"]["text"].as_str(), mentions["at://did:plc:ada/app.bsky.feed.post/3k4"]["seq"].as_str()), (Some("hello Holon"), Some("4")));
+
+    // Cut, with two posts sent while it is down: opened again from 4, the feed sends 4 again
+    // (passed over), then the two.
+    jetstream.cut();
+    post(5, "create", "a HOLON while away");
+    post(6, "create", "another while away");
+    eventually("the feed is opened again", || jetstream.asked().len() == 3);
+    assert!(jetstream.asked()[2].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret&cursor=4\n"), "{:?}", jetstream.asked());
+    eventually("five runs", || runs().len() == 5);
+    eventually("at 6", || live()["position"] == "6");
+    let ran: Vec<u32> = runs().iter().map(|r| (1..=6).find(|n| r["sourced"].to_string().contains(&format!("3k{n}"))).unwrap_or(0)).collect();
+    assert_eq!(ran, [1, 2, 4, 5, 6], "each post run once");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("passed over an event of posts it ran already (4)"), "{events}");
+    let mentions = call("GET", "/mentions", "");
+    assert_eq!(mentions.as_object().map(|m| m.len()), Some(3), "{mentions}");
+    assert_eq!(mentions["at://did:plc:ada/app.bsky.feed.post/3k5"]["text"], "a HOLON while away");
+
+    // Its runs check offline, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in for an exchange's public trades: `GET /products/<product>/trades?after=<id>&limit=<n>`
+/// answers the trades before the id, the newest first, `n` of them (1,000 at most), as Coinbase
+/// Exchange pages them. Every trade id has a trade, its size the id in thousandths.
+struct Trades {
+    host: String,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Trades {
+    fn start() -> Trades {
+        let asked: Arc<Mutex<Vec<String>>> = Default::default();
+        let a = Arc::clone(&asked);
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            a.lock().unwrap().push(request.raw_url().to_string());
+            let product = request.url().strip_prefix("/products/").and_then(|r| r.strip_suffix("/trades")).unwrap_or_default().to_string();
+            let after: u64 = request.get_param("after").and_then(|a| a.parse().ok()).unwrap_or(0);
+            let limit: u64 = request.get_param("limit").and_then(|l| l.parse().ok()).unwrap_or(100).min(1000);
+            let page: Vec<serde_json::Value> = (after.saturating_sub(limit).max(1)..after).rev().map(|id| serde_json::json!({ "trade_id": id, "product_id": product, "size": Trades::size(id), "price": "100", "side": "buy" })).collect();
+            Response::json(&page)
+        })
+        .unwrap();
+        let host = server.server_addr().to_string();
+        thread::spawn(move || server.run());
+        Trades { host, asked }
+    }
+
+    /// The size of trade `id`, or of trades whose ids add up to it: its thousandths, so a volume
+    /// says exactly which trades were added.
+    fn size(id: u64) -> String {
+        format!("{}.{:03}", id / 1000, id % 1000)
+    }
+}
+
+/// The trade-tape sample (host-capabilities L4 §5.9.6): trades from a feed shaped as Coinbase
+/// Exchange's matches channel, each product's numbered by trade_id, and its REST API on loopback.
+/// The trades the feed skipped while the host read nothing are the next one's e.gap, fetched and
+/// added: on one connection, across a reconnect, and across a restart (the binding changed: a
+/// connection opened anew from the numbers kept with the position); a gap past a page adds a page
+/// and keeps how many it couldn't. Each product's volume is the exact sum of its trades.
+#[test]
+fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
+    let exchange = Trades::start();
+    let feed = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-trades-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_TRADES_URL={}\n", feed.url("/ws?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/trade-tape.holon.ts").replace("\"host:api.exchange.coinbase.com\"", &format!("\"host:{}\"", exchange.host));
+    let subscribe = r#"{"type":"subscribe","channels":["matches"],"product_ids":["BTC-USD","ETH-USD"]}"#;
+    let bind = |buffer: u64| {
+        let bind = serde_json::json!({
+            "name": "trades", "url": "env:HOLON_SECRET_TRADES_URL", "subscribe": [subscribe], "only": ["type=match", "type=last_match"],
+            "id": "product_id,trade_id", "sequence": "trade_id", "key": "product_id", "buffer": buffer,
+        });
+        let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    };
+    bind(1000);
+    let slug = deploy_text(&state, &text, &exchange.host);
+    let volumes = || {
+        let (status, body, _) = data_call(&state, &slug, "GET", "/volumes", "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+    // A product's volume, its trades, those fetched and those not: its trade ids, each once.
+    let of = |v: &serde_json::Value, ids: &[std::ops::RangeInclusive<u64>], fetched: u64, unfetched: u64| {
+        let count = ids.iter().map(|r| r.clone().count() as u64).sum::<u64>();
+        let expected = serde_json::json!({ "volume": Trades::size(ids.iter().flat_map(|r| r.clone()).sum()), "trades": count, "fetched": fetched, "unfetched": unfetched });
+        let got = serde_json::json!({ "volume": v["volume"], "trades": v["trades"], "fetched": v["fetched"], "unfetched": v["unfetched"] });
+        assert_eq!(got, expected, "{v}");
+    };
+    let trade = |kind: &str, product: &str, id: u64| {
+        feed.text(&serde_json::json!({ "type": kind, "product_id": product, "trade_id": id, "size": Trades::size(id), "price": "100", "side": "buy" }).to_string());
+    };
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").count();
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    let asked = || exchange.asked.lock().unwrap().clone();
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("the feed is listened to", || feed.asked().len() == 2 && feed.heard() == [subscribe]);
+    // On one connection: 102 and 103 never came.
+    feed.text(r#"{"type":"subscriptions","channels":[{"name":"matches","product_ids":["BTC-USD","ETH-USD"]}]}"#);
+    trade("last_match", "BTC-USD", 100);
+    trade("match", "BTC-USD", 101);
+    trade("match", "ETH-USD", 7);
+    trade("match", "BTC-USD", 104);
+    eventually("four runs", || runs() == 4);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=104], 2, 0);
+    of(&v["ETH-USD"], &[7..=7], 0, 0);
+    assert_eq!(asked(), ["/products/BTC-USD/trades?after=104&limit=2"]);
+    eventually("at BTC-USD/104", || live()["position"] == "BTC-USD/104");
+    let l = live();
+    assert_eq!((l["gaps"].as_u64(), l["passed_over"].as_u64()), (Some(2), Some(1)), "{l}");
+
+    // Cut, with three trades while it reads nothing: opened again, its subscription sent again, the
+    // exchange sends each product's last trade, then the next.
+    feed.cut();
+    trade("match", "BTC-USD", 105);
+    trade("match", "BTC-USD", 106);
+    trade("match", "ETH-USD", 8);
+    eventually("the feed is opened again", || feed.asked().len() == 3);
+    trade("last_match", "BTC-USD", 106);
+    trade("last_match", "ETH-USD", 8);
+    trade("match", "ETH-USD", 10);
+    eventually("seven runs", || runs() == 7);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=106], 3, 0);
+    of(&v["ETH-USD"], &[7..=10], 1, 0);
+    assert_eq!(asked()[1..], ["/products/BTC-USD/trades?after=106&limit=1", "/products/ETH-USD/trades?after=10&limit=1"]);
+
+    // A restart: two trades while nothing reads, then the binding changed, so its connection is
+    // opened anew from the numbers kept with the position. Then a gap past a page: the 1,000
+    // before it fetched, the 91 before those not.
+    feed.cut();
+    trade("match", "BTC-USD", 107);
+    trade("match", "BTC-USD", 108);
+    bind(500);
+    let before = feed.asked().len();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("the feed is opened anew", || feed.asked().len() > before);
+    trade("last_match", "BTC-USD", 108);
+    trade("match", "BTC-USD", 1200);
+    trade("match", "ETH-USD", 11);
+    eventually("ten runs", || runs() == 10);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=108, 200..=1200], 1004, 91);
+    of(&v["ETH-USD"], &[7..=11], 1, 0);
+    assert_eq!(asked()[3..], ["/products/BTC-USD/trades?after=108&limit=1", "/products/BTC-USD/trades?after=1200&limit=1000"]);
+    assert_eq!(live()["gaps"].as_u64(), Some(1 + 1091), "since this connection opened");
+
+    // Its runs check offline, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The site sample (host-capabilities L4 §5.11.14), its folder bound to a build: a deep link and
+/// the root answer index.html, an asset its bytes and type, a file at the root itself, a name no
+/// file can have the page; each with its hash as its etag, a matching `If-None-Match` a 304; a
+/// missing asset a 404, the API beside it. A file changed since the run read its handle is a 503
+/// to retry; one past `max_served_bytes`, or a deployment not granted `FileServe`, a 500. Through
+/// the data plane, a big file is streamed whole, and cut, said on the timeline, when it changes
+/// while it is sent. Each run is recorded with the file it answered with, and the runs verify.
+#[test]
+fn site_serves_a_built_app_from_its_folder() {
+    use std::io::{Read, Write};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let dir = std::env::temp_dir().join(format!("holon-site-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    let index = "<!doctype html><title>App</title><script type=module src=/assets/app.4f2a.js></script>";
+    std::fs::write(dir.join("index.html"), index).unwrap();
+    std::fs::write(dir.join("assets/app.4f2a.js"), "console.log('app')\n").unwrap();
+    let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe];
+    std::fs::write(dir.join("logo.png"), png).unwrap();
+    // Bigger than a file read whole (1 MiB): streamed by the data plane. Text, so it reads back
+    // as sent.
+    let big: String = (0..1_000_000).map(|i| format!("{i:07}\n")).collect();
+    std::fs::write(dir.join("assets/big.txt"), &big).unwrap();
+    let site = serde_json::json!({ "name": "site", "path": dir.display().to_string(), "access": "read" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&site).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = include_str!("../../holon-author/samples/site.holon.ts").replace("port: 8196", &format!("port: {port}"));
+    let slug = deploy_plain_text(&state, &text);
+    let granted = state.deployments.lock().unwrap()[&slug].grant.items.clone();
+    assert!(granted.contains("FileServe(\"site\")") && granted.contains("FileRead(\"site\")"), "{granted:?}");
+
+    let ask = |url: &str, headers: &[(&str, &str)]| {
+        let headers = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &data::DataRequest { method: "GET".into(), url: url.into(), headers, body: vec![], by: None })
+    };
+    let header = |r: &data::DataResponse, k: &str| r.headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    let etag = |bytes: &[u8]| format!("\"{}\"", blake3::hash(bytes).to_hex());
+    for url in ["/docs/setup", "/", "/docs/a%20guide/part%202?x=1", "/Talk:Page", "/assets"] {
+        let page = ask(url, &[]);
+        assert_eq!((page.status, page.body.as_slice()), (200, index.as_bytes()), "{url}");
+        assert_eq!(header(&page, "content-type"), "text/html; charset=utf-8");
+        assert_eq!((header(&page, "etag"), header(&page, "cache-control")), (etag(index.as_bytes()), "no-cache".to_string()), "{url}");
+    }
+    let script = ask("/assets/app.4f2a.js", &[]);
+    assert_eq!((script.status, script.body.as_slice()), (200, &b"console.log('app')\n"[..]));
+    assert_eq!(header(&script, "content-type"), "text/javascript; charset=utf-8");
+    assert_eq!(header(&script, "cache-control"), "public, max-age=31536000, immutable", "the flow's own");
+    let logo = ask("/logo.png", &[]);
+    assert_eq!((logo.status, logo.body.as_slice(), header(&logo, "content-type")), (200, png, "image/png".to_string()), "its exact bytes");
+    // A cached copy still the file's: a 304, no body; any other etag gets the file.
+    for tag in [etag(index.as_bytes()), "*".to_string(), format!("\"x\", W/{}", etag(index.as_bytes()))] {
+        let cached = ask("/docs/setup", &[("If-None-Match", &tag)]);
+        assert_eq!((cached.status, cached.body.len(), header(&cached, "etag")), (304, 0, etag(index.as_bytes())), "{tag}");
+    }
+    assert_eq!(ask("/docs/setup", &[("If-None-Match", "\"stale\"")]).status, 200);
+    let missing = ask("/assets/nope.js", &[]);
+    assert_eq!((missing.status, String::from_utf8_lossy(&missing.body).into_owned()), (404, r#"{"error":"not found"}"#.to_string()), "never the page");
+    assert_eq!(ask("/api/hello", &[]).body, br#"{"hello":"world"}"#);
+    assert_eq!(ask("/api/nope/more", &[]).status, 404);
+
+    // Changed between the run's handle and the send: a 503 to retry, its entry saying why.
+    let (permit, folders) = {
+        let table = state.deployments.lock().unwrap();
+        (Arc::clone(&table[&slug].permit), Arc::clone(&table[&slug].folders))
+    };
+    let meta = std::fs::metadata(dir.join("index.html")).unwrap();
+    let read = data::Served {
+        folder: "site".into(),
+        name: "index.html".into(),
+        size: meta.len(),
+        hash: blake3::hash(index.as_bytes()).to_hex().to_string(),
+        modified: folders::modified(&meta),
+        content_type: "text/html; charset=utf-8".into(),
+        opened: None,
+    };
+    let answered = |file: data::Served| data::DataResponse { status: 200, headers: vec![], body: vec![], subscribe: None, file: Some(file) };
+    let (sent, error) = listeners::serve_file(answered(read.clone()), &permit, Some(&folders), &[]);
+    assert_eq!((sent.status, sent.body.as_slice(), error), (200, index.as_bytes(), None));
+    let (changed, error) = listeners::serve_file(answered(data::Served { hash: "0".repeat(64), ..read.clone() }), &permit, Some(&folders), &[]);
+    assert_eq!((changed.status, header(&changed, "retry-after")), (503, "1".to_string()));
+    assert_eq!(error.as_deref(), Some("changed: site/index.html changed since the run read it"));
+    let (gone, _) = listeners::serve_file(answered(data::Served { name: "gone.html".into(), ..read.clone() }), &permit, Some(&folders), &[]);
+    assert_eq!(gone.status, 503, "gone since");
+
+    // The record says what was sent: the file, by its hash.
+    let entries = log_entries(&state, &slug);
+    let asset = entries.iter().find(|e| e["url"] == "/assets/app.4f2a.js").expect("the script's run");
+    let hash = blake3::hash(b"console.log('app')\n").to_hex().to_string();
+    assert_eq!(asset["response_body"], format!("file site/assets/app.4f2a.js (19 bytes, blake3 {}…)", &hash[..8]));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+
+    // Through the data plane: a big file streamed whole, its length said.
+    sync_listeners(&state);
+    let got = raw_http(port, b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let (head, body) = got.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200") && head.to_ascii_lowercase().contains(&format!("content-length: {}", big.len())), "{head}");
+    assert!(body == big, "the whole file, as it is ({} of {} bytes)", body.len(), big.len());
+    // And cut when it changes while it is sent: the caller gets less than its length, and the
+    // timeline says so.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+    let mut first = [0u8; 1024];
+    let n = stream.read(&mut first).unwrap();
+    assert!(String::from_utf8_lossy(&first[..n]).starts_with("HTTP/1.1 200"));
+    let mut file = std::fs::OpenOptions::new().write(true).open(dir.join("assets/big.txt")).unwrap();
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-8)).unwrap();
+    file.write_all(b"changed\n").unwrap();
+    drop(file);
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    assert!(n + rest.len() < big.len(), "cut before its end: {} bytes", n + rest.len());
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("site/assets/big.txt changed while it was sent: the connection was cut"), "{events}");
+
+    // Past its limit, or not granted: a 500 saying so.
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut(&slug).unwrap();
+        let mut limited = Permit::new(dep.unit, &dep.grant, &state.policy());
+        limited.files.max_served_bytes = 10;
+        dep.permit = Arc::new(limited);
+    }
+    let past = ask("/docs/setup", &[]);
+    assert!(past.status == 500 && String::from_utf8_lossy(&past.body).contains("more than the 10 a route answers with (max_served_bytes)"), "{past:?}");
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut(&slug).unwrap();
+        let mut narrowed = dep.grant.clone();
+        narrowed.items.remove("FileServe(\"site\")");
+        dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
+    }
+    let refused = ask("/docs/setup", &[]);
+    assert!(refused.status == 500 && String::from_utf8_lossy(&refused.body).contains(r#"may not answer its callers with files from the folder \"site\""#), "{refused:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The ledger-watch sample (host-capabilities L4 §5.9.11), on the Postgres `HOLON_TEST_POSTGRES`
+/// names: its feed bound to a channel on the bound ledger, each entry committed starts one run, in
+/// the order committed, and a transaction rolled back sends nothing. The listener's session ended
+/// by the database (`pg_terminate_backend`), an entry written meanwhile is never sent: the timeline
+/// says so once it listens again, and the next entry's run reads it from the ledger, so the balance
+/// stays exact. A channel's binding without its database, or with what is a URL's, is refused;
+/// nothing shows the connection; the runs verify.
+#[test]
+fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
+    for fresh in fresh_databases("ledger").into_iter().filter(|f| f.engine == "postgres") {
+        let mut state = claims_state("");
+        let of = || secret_sources::Sources::of(&[("HOLON_SECRET_LEDGER_URL", fresh.url.as_str())]);
+        let databases = databases::Databases::memory().with_sources(of());
+        state.folders = Arc::new(folders::Folders::memory().with_databases(databases).with_feeds(feeds::Feeds::memory().with_sources(of())));
+        let text = include_str!("../../holon-author/samples/ledger-watch.holon.ts");
+        // The schema is ledger.sql, as the sample's comment gives it.
+        let schema: Vec<&str> = text.lines().skip_while(|l| !l.contains("where ledger.sql is")).skip(1).take_while(|l| l.trim() != "//").map(|l| l.trim_start_matches("//").trim()).collect();
+        let bind_feed = |asked: serde_json::Value| {
+            let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&asked).unwrap()));
+            (bound.status_code, String::from_utf8_lossy(&body_bytes(bound)).into_owned())
+        };
+        let channel = serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger_entries" });
+        let (status, said) = bind_feed(channel.clone());
+        assert!(status == 400 && said.contains("the database ledger isn't bound on this server"), "{said}");
+        let db = serde_json::json!({ "name": "ledger", "connection": "env:HOLON_SECRET_LEDGER_URL", "access": "read", "schema": schema.join(" ") });
+        let bound = route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&db).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+        let (status, said) = bind_feed(serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger-entries" }));
+        assert!(status == 400 && said.contains("--channel is a Postgres channel"), "{said}");
+        let (status, said) = bind_feed(serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger_entries", "url": "env:HOLON_SECRET_LEDGER_URL" }));
+        assert!(status == 400 && said.contains("a channel is listened on in its --database"), "{said}");
+        let (status, shown) = bind_feed(channel);
+        assert_eq!(status, 200, "{shown}");
+        let address = format!("{}, channel ledger_entries", fresh.url.split_once('@').map(|(_, at)| format!("postgres://{at}")).unwrap());
+        assert!(shown.contains(&format!(r#""address":"{address}""#)) && shown.contains(r#""database":"ledger""#) && !shown.contains(&fresh.url), "{shown}");
+        let slug = deploy_text(&state, text, "");
+
+        let balances = || {
+            let (status, body, _) = data_call(&state, &slug, "GET", "/balances", "");
+            assert_eq!(status, 200, "{body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        };
+        let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").count();
+        let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+        let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+        let mut ledger = postgres::Client::connect(&fresh.url, postgres::NoTls).unwrap();
+        let mut write = |sql: &str| ledger.batch_execute(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+
+        let mut held = subscriptions::Held::default();
+        subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+        eventually("the channel is listened on", || live()["status"] == "connected");
+        assert_eq!(live()["address"], address.as_str());
+        write("insert into entries (account, seq, amount) values ('acct_1', 1, 120.00), ('acct_1', 2, -20.50), ('acct_2', 1, 5.25)");
+        write("begin; insert into entries (account, seq, amount) values ('acct_2', 2, 1000.00); rollback");
+        write("begin; insert into entries (account, seq, amount, memo) values ('acct_2', 2, 0.75, 'fee'); insert into entries (account, seq, amount) values ('acct_1', 3, 0.50); commit");
+        eventually("five runs", || runs() == 5);
+        let b = balances();
+        assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("100.00"), Some(3), Some(3)), "{b}");
+        assert_eq!((b["acct_2"]["balance"].as_str(), b["acct_2"]["entries"].as_u64(), b["acct_2"]["read"].as_u64()), (Some("6.00"), Some(2), Some(0)), "{b}");
+        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| e["sourced"].to_string()).collect::<Vec<_>>().join("\n");
+        assert!(sourced.contains(r#"FeedEvent(\"entries\")"#) && sourced.contains("fee"), "logged whole: {sourced}");
+
+        // Its session ended: entry 4 is written while nothing listens, so it is never sent; once it
+        // listens again, entry 5's run reads it from the ledger.
+        write("select pg_terminate_backend(pid, 5000) from pg_stat_activity where application_name = 'holon (listen)' and datname = current_database()");
+        write("insert into entries (account, seq, amount) values ('acct_1', 4, 10.00)");
+        eventually("it listens again", || events().contains("listens to the feed entries again: what was sent meanwhile is lost"));
+        eventually("connected again", || live()["status"] == "connected");
+        write("insert into entries (account, seq, amount) values ('acct_1', 5, 2.25)");
+        eventually("six runs", || runs() == 6);
+        let b = balances();
+        assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["read"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("112.25"), Some(5), Some(1), Some(5)), "{b}");
+        let said = events();
+        assert!(said.contains(&format!("listens to the feed entries ({address})")), "{said}");
+
+        // Its runs check offline, the ledger's rows read as each run read them.
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+        assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains(&fresh.url));
+
+        // Stopped: its session is closed.
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+        subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+        let listening = |ledger: &mut postgres::Client| ledger.query_one("select count(*) from pg_stat_activity where application_name = 'holon (listen)' and datname = current_database()", &[]).unwrap().get::<_, i64>(0);
+        eventually("its session is closed", || listening(&mut ledger) == 0);
+    }
+}
+
+/// The payout-events sample (host-capabilities L4 §5.9.9): refused until its queues are bound;
+/// bound to a stand-in for SQS, each message the queue hands out starts one run, in the order
+/// received, and is deleted once its record is on disk, a failed run's too; a failed payout's retry
+/// goes to the FIFO queue once its run is over, its group the account. A message handed out again
+/// is passed over, the state endpoint says what each queue came to, a stopped listener leaves
+/// what comes in the queue, nothing holds the URL's key, and the runs verify.
+#[test]
+fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_fifo_queue() {
+    let sqs = sqs::stand_in::StandIn::start();
+    sqs.make("payout-events");
+    sqs.make("payout-retries.fifo");
+    let dir = std::env::temp_dir().join(format!("holon-payouts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_EVENTS_URL={}\nHOLON_SECRET_RETRIES_URL={}\n", sqs.url("payout-events"), sqs.url("payout-retries.fifo"))).unwrap();
+    let mut state = claims_state("");
+    let queues = queues::Queues::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_queues(queues));
+    state.folders.queues.serve(Arc::clone(&state.deployments));
+    let text = include_str!("../../holon-author/samples/payout-events.holon.ts");
+
+    // Refused until both are bound.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": [] }));
+    let body = String::from_utf8_lossy(&body_bytes(refused)).to_string();
+    assert!(body.contains("isn't bound on this server") && body.contains("holon queue add"), "{body}");
+    for (name, url) in [("payout_events", "env:HOLON_SECRET_EVENTS_URL"), ("payout_retries", "env:HOLON_SECRET_RETRIES_URL")] {
+        let bound = route(&state, &req("POST", "/admin/queues", serde_json::to_vec(&serde_json::json!({ "name": name, "url": url })).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    }
+    let shown = body_json(route(&state, &req("GET", "/admin/queues", vec![])));
+    let fifo: Vec<(&str, bool)> = shown.as_array().unwrap().iter().map(|q| (q["name"].as_str().unwrap(), q["fifo"].as_bool().unwrap())).collect();
+    assert_eq!(fifo, [("payout_events", false), ("payout_retries", true)], "{shown}");
+    assert!(!shown.to_string().contains("s3cret"), "{shown}");
+    let slug = deploy_text(&state, text, "");
+
+    let event = |kind: &str, id: &str, account: &str| serde_json::json!({ "type": kind, "payout": { "id": id, "amount": "120.00", "currency": "EUR", "account": account } }).to_string();
+    let first = sqs.put("payout-events", &event("payout.paid", "po_1", "acct_1"), None);
+    sqs.put("payout-events", &event("payout.failed", "po_2", "acct_1"), None);
+    sqs.put("payout-events", &event("payout.failed", "po_3", "acct_2"), None);
+    // One whose retry is past what the FIFO queue takes: its run fails, nothing is written or
+    // sent, and it is deleted all the same.
+    let large = serde_json::json!({ "type": "payout.failed", "payout": { "id": "po_4", "amount": "1.00", "currency": "EUR", "account": "acct_3", "memo": "x".repeat(300_000) } });
+    sqs.put("payout-events", &large.to_string(), None);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "queue").collect::<Vec<_>>();
+    let mut held = dequeue::Held::default();
+    dequeue::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("four runs", || runs().len() == 4);
+    eventually("each message deleted", || sqs.messages("payout-events").is_empty());
+    let ran = runs();
+    assert_eq!(ran.iter().map(|r| r["route"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["on queue payout_events"; 4]);
+    assert_eq!(ran.iter().map(|r| r["error"].is_string()).collect::<Vec<_>>(), [false, false, false, true]);
+    assert!(ran[3]["error"].as_str().is_some_and(|e| e.starts_with(queues::SEND_FAILED) && e.contains("payout_retries")), "{}", ran[3]["error"]);
+    let (status, body, _) = data_call(&state, &slug, "GET", "/payouts", "");
+    assert_eq!(status, 200, "{body}");
+    let payouts: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(payouts.as_object().map(|p| p.keys().cloned().collect::<Vec<_>>()), Some(vec!["po_1".to_string(), "po_2".into(), "po_3".into()]), "{payouts}");
+    assert_eq!((payouts["po_1"]["status"].as_str(), payouts["po_2"]["status"].as_str(), payouts["po_1"]["event"].as_str()), (Some("paid"), Some("failed"), Some(first.as_str())), "{payouts}");
+    assert!(payouts["po_1"]["at"].as_f64().is_some_and(|at| at.fract() == 0.0 && at > 1.7e9), "its time sent, in whole seconds: {payouts}");
+
+    // The failed payouts' retries, each in its account's group, once each run was over.
+    eventually("two retries", || sqs.messages("payout-retries.fifo").len() == 2);
+    let retries = sqs.messages("payout-retries.fifo");
+    assert_eq!(retries.iter().map(|m| m.group.as_deref().unwrap_or_default()).collect::<Vec<_>>(), ["acct_1", "acct_2"]);
+    let retried: serde_json::Value = serde_json::from_str(&retries[0].body).unwrap();
+    assert_eq!(retried, serde_json::json!({ "id": "po_2", "amount": "120.00", "currency": "EUR", "account": "acct_1" }));
+    let asked = sqs.asked();
+    assert_eq!(asked.iter().filter(|a| a.starts_with("SendMessage")).count(), 2, "{asked:?}");
+    assert_eq!(asked.iter().filter(|a| *a == "DeleteMessage payout-events").count(), 4, "{asked:?}");
+
+    // Handed out again, as a standard queue may: passed over, and deleted.
+    sqs.again("payout-events", &first, &event("payout.paid", "po_1", "acct_1"));
+    let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    eventually("passed over", || events().contains(&format!("passed over a message of payout_events it ran already ({first})")));
+    eventually("deleted again", || sqs.messages("payout-events").is_empty());
+    assert_eq!(runs().len(), 4, "run once");
+    let shown = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    let (listening, sending) = (&shown["listening"][0], &shown["sending"][0]);
+    assert_eq!((listening["queue"].as_str(), listening["status"].as_str(), listening["run"].as_u64(), listening["passed_over"].as_u64()), (Some("payout_events"), Some("receiving"), Some(4), Some(1)), "{shown}");
+    assert_eq!((sending["queue"].as_str(), sending["sent"].as_u64(), sending["waiting"].as_u64()), (Some("payout_retries"), Some(2), Some(0)), "{shown}");
+    let events = events();
+    assert!(events.contains("listens to the queue payout_events"), "{events}");
+    assert!(!events.contains("couldn't"), "{events}");
+
+    // Stopped: nothing listens once its last long poll is over, and a message put now waits.
+    drop(held);
+    eventually("the listener stops", || {
+        let n = sqs.asked().len();
+        thread::sleep(Duration::from_millis(1500));
+        sqs.asked().len() == n
+    });
+    sqs.put("payout-events", &event("payout.paid", "po_5", "acct_3"), None);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((runs().len(), sqs.messages("payout-events").len()), (4, 1));
+
+    // Bound again to keep a failed run's message, and listened to again: the one put while it was
+    // stopped runs; one whose run fails is left in the queue, handed out again once it is visible,
+    // and run again.
+    let bind = serde_json::json!({ "name": "payout_events", "url": "env:HOLON_SECRET_EVENTS_URL", "keep_failed": true });
+    assert_eq!(route(&state, &req("POST", "/admin/queues", serde_json::to_vec(&bind).unwrap())).status_code, 200);
+    let kept = sqs.put("payout-events", &large.to_string(), None);
+    let mut held = dequeue::Held::default();
+    dequeue::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    let listening = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])))["listening"][0].clone();
+    eventually("six runs", || runs().len() == 6);
+    eventually("one kept", || listening()["kept"] == 1);
+    assert_eq!(sqs.messages("payout-events").iter().map(|m| m.id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&kept), "the failed one waits out of sight");
+    sqs.expire("payout-events");
+    eventually("run again", || runs().len() == 7);
+    eventually("kept again", || listening()["kept"] == 2);
+    assert_eq!(sqs.messages("payout-events").iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [kept]);
+    assert!(runs()[6]["error"].as_str().is_some_and(|e| e.starts_with(queues::SEND_FAILED)));
+    drop(held);
+
+    // Its runs check offline, those that failed not run again, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let failed = |r: &verify::Rerun| matches!(r, verify::Rerun::Skipped(why) if why.contains("message not sent"));
+    let (matched, skipped) = (report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| failed(r)).count());
+    assert!(report.ok() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -8691,6 +10484,56 @@ route.get("/seen", () => ({{ last: seen["last"] }}))
             assert_eq!(counted, (0, 0), "logged, not counted");
             // The resume route's request is strict, the resumed part lazy: one sync between them.
             assert_eq!(log.syncs(), syncs + 2, "the resume request's sync, and the strict /seen's; not the lazy part's");
+        }
+    }
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
+}
+
+/// An action run that parks hasn't answered, and hasn't failed: its entry says where it waits,
+/// with no status, and neither the deployment's runs nor an unrecorded action's tally count it as
+/// failed, whatever its level. One that can't park (past `max_waiting_runs`) still fails, 500.
+#[test]
+fn a_parked_action_run_waits_and_isnt_counted_as_failed() {
+    let mut state = claims_state("[limits]\nmax_waiting_runs = 1\n");
+    state.deployments_path = unique_temp_path("parked-not-failed").into();
+    let text = |level: &str, port: u16| {
+        format!(
+            r#"import {{ action, event, flow, route }} from "holon"
+
+flow("parks-{level}", {{ port: {port} }})
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  return paid.method
+}}, {{ log: "{level}" }})
+
+route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
+"#
+        )
+    };
+    for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
+        let slug = deploy_plain_text(&state, &text(level, port));
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+        let held = hold();
+        assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
+        let refused = hold();
+        assert_eq!((refused.status, refused.waiting), (500, false), "{level}: one waits already, as many as may: {}", refused.reply);
+        let (runs, failed) = {
+            let table = state.deployments.lock().unwrap();
+            (table[&slug].trigger_count, table[&slug].error_count)
+        };
+        assert_eq!((runs, failed), (2, 1), "{level}: both ran, only the one that couldn't park failed");
+        if level == "unrecorded" {
+            let tally = state.deployments.lock().unwrap()[&slug].tallies["action hold"].clone();
+            assert_eq!((tally.runs, tally.failed), (2, 1), "counted, the parked one not as failed");
+            assert!(log_entries(&state, &slug).is_empty(), "neither logged");
+        } else {
+            let entries: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["route"] == "action hold").collect();
+            let [parked, failed] = &entries[..] else { panic!("{level}: both logged: {entries:?}") };
+            assert_eq!((&parked["parked"], &parked["status"]), (&serde_json::json!(["paid"]), &serde_json::Value::Null), "{level}: waiting, with no status: {parked}");
+            assert_eq!(failed["status"], 500, "{level}: {failed}");
+            assert!(failed["error"].as_str().is_some_and(|e| e.contains("max_waiting_runs")), "{level}: {failed}");
         }
     }
     let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
@@ -9910,6 +11753,10 @@ fn the_server_records_what_its_golden_record_holds() {
             for k in ["at_ms", "duration_ms", "prev", "grant"] {
                 o.remove(k);
             }
+            // The state's id is random; where the run stands among its commits stays.
+            if let Some(c) = o.get_mut("commit").and_then(|c| c.as_object_mut()) {
+                c.remove("cell");
+            }
             for t in o.get_mut("timeline").and_then(|t| t.as_array_mut()).into_iter().flatten() {
                 if let Some(t) = t.as_object_mut() {
                     t.remove("start_us");
@@ -9959,7 +11806,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
@@ -9989,7 +11836,7 @@ fn the_server_records_what_its_golden_record_holds() {
         };
         for _round in 0..2 {
             for (method, path) in &routes {
-                let url: String = path.split('/').map(|seg| if seg.starts_with(':') { "tea" } else { seg }).collect::<Vec<_>>().join("/");
+                let url: String = path.split('/').map(|seg| if seg.starts_with(':') || seg.starts_with('*') { "tea" } else { seg }).collect::<Vec<_>>().join("/");
                 let url = if url.is_empty() { "/".to_string() } else { url };
                 for body in &bodies {
                     let request = data::DataRequest { headers: vec![("content-type".into(), "application/json".into())], ..fake_data(method, &url, body.as_bytes().to_vec()) };

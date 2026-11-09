@@ -89,9 +89,9 @@ impl Kind {
 /// [`Kind`] each projects to. A variant carries the name of what it touches where a grant
 /// is given per thing: a state key or collection (`StateRead`, `StateWrite`,
 /// `CollectionRead`, `CollectionWrite`), a folder (`FileRead`, `FileWrite`,
-/// `FileArrival`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
+/// `FileArrival`, `FileServe`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
 /// channel (`ChannelSend`, `ChannelRead`), a database (`DbRead`, `DbWrite`), an action
-/// (`Action`, `RunsAction`) or a wait (`Await`, `Approval`). The rest stay atomic (`Clock`, `Random`,
+/// (`Action`, `RunsAction`), a websocket's path (`WebSocket`) or a wait (`Await`, `Approval`). The rest stay atomic (`Clock`, `Random`,
 /// `NetworkIngress`, `NetworkEgress`, `SecretAccess`, `Spawn`). State keys came first (the
 /// keyed-state-capability L4); the others followed as each capability did.
 ///
@@ -113,6 +113,18 @@ pub enum Capability {
     /// Starts a run for each new file in the named folder: `file_arrival`, whose value is the
     /// file's handle. The host watches the folder an admin bound to that name.
     FileArrival(String),
+    /// Starts a run for each message that comes to the mailbox of the named mail resource:
+    /// `mail_arrival`, whose value is the message, read. The host reads the mailbox an admin bound
+    /// to that name, and moves each message once its run is over (host-capabilities L4 §5.2.4).
+    MailArrival(String),
+    /// Starts a run for each event the named feed sends: `feed_event`, whose value is the event.
+    /// The host keeps a connection to the feed an admin bound to that name (host-capabilities L4
+    /// §5.9.2).
+    FeedEvent(String),
+    /// Starts a run for each message that comes to the named queue: `queue_message`, whose value
+    /// is the message. The host receives from the queue an admin bound to that name, and deletes
+    /// each message once its run is over (host-capabilities L4 §5.9.9).
+    QueueMessage(String),
     /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
     /// something through Holon, never the network. A server's `declare=action` child gives it.
     Action(String),
@@ -155,6 +167,14 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
+    /// Sends mail through the mail resource an admin binds, to a recipient: `"ops/approvals@acme.com"`,
+    /// or `"ops/*"` for the ones a flow computes (`mail_send`), sent once the run is over and its
+    /// writes have landed. The effect a run performs names the mail alone, `"ops"`, its recipients
+    /// in its payload, held to these by the host (mail.rs, host-capabilities L4 §5.2.2).
+    MailSend(String),
+    /// Sends messages to the queue an admin binds to the name: `queue_send`, sent once the run is
+    /// over and its writes have landed (host-capabilities L4 §5.9.9).
+    QueueSend(String),
     /// Runs the action of another deployed flow and gets its answer: `flow_call`, or starts it,
     /// another's or its own, without waiting for its end: `flow_start`. Named by the
     /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
@@ -174,6 +194,14 @@ pub enum Capability {
     /// asks for it, the graph does (`taint::answered_secrets`, a route whose response the secret
     /// reaches), so a person approves where a secret goes as well as that it is read.
     SecretAnswer(String),
+    /// Answers a route's callers with files of the named folder: `file_serve`, the host sending
+    /// the bytes of the file a handle names, if they are still the handle's (host-capabilities
+    /// L4 §5.11.4).
+    FileServe(String),
+    /// Holds WebSocket connections on the named path of the flow's port, and runs on each one's
+    /// opening, messages and end: a server's `declare=websocket` children give it
+    /// (host-capabilities L4 §5.12.14).
+    WebSocket(String),
 }
 
 /// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
@@ -197,9 +225,9 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | SecretAnswer(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -214,7 +242,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -307,6 +335,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "decimal_add" | "decimal_sub" | "decimal_mul" | "decimal_div" | "decimal_round" | "decimal_sum" | "decimal_compare"
         | "csv_parse" | "csv_format"
         | "xml_parse" | "xml_format" | "xml_find" | "xml_text" | "xml_attribute"
+        | "gzip" | "gunzip" | "zip" | "unzip"
+        | "jwt_verify" | "jwt_decode"
+        | "pgp_encrypt" | "pgp_verify" | "pgp_key"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
@@ -330,6 +361,16 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
         "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
+        // A message that comes to a mail resource's mailbox starts a run: the host reads the
+        // mailbox, and the message is the leaf's value. The mail is a frozen param, so the trigger
+        // names it.
+        "mail_arrival" => vec![MailArrival(ident(params, "mail")?)],
+        // An event a feed sends starts a run: the host keeps the connection, and the event is the
+        // leaf's value. The feed is a frozen param, so the trigger names it.
+        "feed_event" => vec![FeedEvent(ident(params, "feed")?)],
+        // A message that comes to a queue starts a run: the host receives it, and the message is
+        // the leaf's value. The queue is a frozen param, so the trigger names it.
+        "queue_message" => vec![QueueMessage(ident(params, "queue")?)],
         // A database's tables, from the statement the leaf sends: its SQL is a frozen param, so
         // what it reads and writes is known before it runs (sql.rs). A statement that can't be
         // followed classifies as nothing, and fails closed.
@@ -344,6 +385,14 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // to them. The channel is a frozen param, so the capability names it exactly.
         "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
         "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
+        // A folder's file as a route's answer: the folder is a frozen param, so the capability
+        // names it exactly. The handle it serves is its own leaf's read.
+        "file_serve" => vec![FileServe(ident(params, "folder")?)],
+        // A mail resource's message: the mail and each recipient the text names are frozen params,
+        // so the capabilities name them exactly (mail.rs).
+        "mail_send" => crate::mail::capabilities(params)?,
+        // A queue's message, sent once the run is over: the queue is a frozen param.
+        "queue_send" => vec![QueueSend(ident(params, "queue")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -355,6 +404,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A waiting point people decide, and how many: both frozen params, so the grant names them.
         "approval" => vec![Approval(approval_grant(params)?)],
         "random" => vec![Random],
+        "random_bytes" => vec![Random],
         "egress" => vec![NetworkEgress],
         // An outbound HTTP request: performed by the host between rounds, its response sourced
         // back into the next one (the run observer's `answer`). The host is a frozen param, so
@@ -650,6 +700,8 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         DbRead(SATURATED_STATE_KEY.to_string()),
         DbWrite(SATURATED_STATE_KEY.to_string()),
         SecretAnswer(SATURATED_STATE_KEY.to_string()),
+        FileServe(SATURATED_STATE_KEY.to_string()),
+        WebSocket(SATURATED_STATE_KEY.to_string()),
     ] {
         acc.insert(c);
     }
@@ -675,6 +727,10 @@ fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
             // An action is run by name, what was sent its input.
             if server && let Some(name) = resolver.resolve(&h).and_then(crate::read_action) {
                 acc.insert(Capability::Action(name));
+            }
+            // A websocket's path holds connections, each message a run.
+            if server && let Some((path, _)) = resolver.resolve(&h).and_then(crate::read_websocket) {
+                acc.insert(Capability::WebSocket(path));
             }
             if !seen.insert(h) {
                 continue;
@@ -864,6 +920,9 @@ mod tests {
             "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
             "csv_parse", "csv_format",
             "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+            "gzip", "gunzip", "zip", "unzip",
+            "jwt_verify", "jwt_decode",
+            "pgp_encrypt", "pgp_verify", "pgp_key",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {
@@ -1213,7 +1272,7 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 22); // every capability — fail closed
+        assert_eq!(caps.len(), 24); // every capability — fail closed
         assert!(caps.contains(Capability::SecretAnswer("<unknown>".to_string())), "answering with any secret");
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
@@ -1221,6 +1280,16 @@ mod tests {
         assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
         assert!(caps.contains(Capability::DbWrite("<unknown>".to_string())), "any database");
         assert!(caps.contains(Capability::RunsAction("<unknown>".to_string())), "any action");
+        assert!(caps.contains(Capability::FileServe("<unknown>".to_string())), "answering with any folder's files");
+    }
+
+    #[test]
+    fn a_served_file_names_its_folder() {
+        let site = [Param::frozen("folder", "site")];
+        assert_eq!(capabilities_of("file_serve", &site).unwrap().iter().collect::<Vec<_>>(), [Capability::FileServe("site".into())]);
+        assert_eq!(Capability::FileServe("site".into()).kind(), Kind::Sink);
+        assert!(!Capability::FileServe("site".into()).is_sourced(), "the host sends it, it is not an input");
+        assert!(capabilities_of("file_serve", &[]).is_none(), "a folder names itself");
     }
 
     #[test]

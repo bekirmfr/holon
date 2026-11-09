@@ -42,9 +42,10 @@ test("a server secret's versions, and rolling one back after its dry run", async
   await page.goto("/#resources.who-may");
   await expect(page.getByLabel("show what")).toBeVisible();
   await page.goto("/#resources.mail");
-  await expect(page.getByText(/this server binds no mail yet|no mail bound/)).toBeVisible();
+  // Its explanation, which shows whether or not a mail is bound (samples bind some on this server).
+  await expect(page.getByText("The mail flows send:")).toBeVisible();
   await resourcesTab(page, "Feeds");
-  await expect(page.getByText(/this server binds no feeds yet|no feeds bound/)).toBeVisible();
+  await expect(page.getByText("The feeds flows listen to:")).toBeVisible();
   // Databases come first.
   await resourcesTab(page, "Databases");
   await expect(page.getByLabel("database name")).toBeVisible();

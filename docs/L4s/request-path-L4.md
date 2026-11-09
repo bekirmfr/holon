@@ -851,16 +851,25 @@ record's hash as `state_after` (`firing.rs:103`, `firing.rs:230/298`).
   so it could be the commit record. The head file would go, and a writing run would make **one**
   fsync, shared with the other runs committing at that moment.
   - **The obstacle is order.** Today a run's line is appended after its commit, under a different
-    lock, so two runs can commit as A then B and log as B then A. `verify` allows for that already
-    (`verify.rs:464–468`, runs "beside" each other). But if the log is the commit, B's line could
-    reach the disk before A's. After a power loss, the state loaded from B's line would include A's
-    change while A's record is lost.
+    lock, so two runs can commit as A then B and log as B then A. `verify` allows for that (runs
+    "beside" each other, and the commit numbers below). But if the log is the commit, B's line
+    could reach the disk before A's. After a power loss, the state loaded from B's line would
+    include A's change while A's record is lost.
   - **The fix is a commit ticket.** A run takes a ticket per deployment under the cell lock as it
     commits, and appends its line in ticket order: a run whose ticket is next appends; others wait
     for their turn. A sync then covers a prefix of commits, never a commit without the ones before
     it. Load takes the state from the newest line on disk that carries one.
   - **Not in the first build.** The ticket changes the run path, and (b) is simpler and correct. Do
     this step once the throughput check shows writing runs bound by the second fsync (§6 step 10).
+  - **As built: the ticket's number, not its order.** Each commit is counted under the cell lock
+    (`StateCell::count_commit`, a restore's and a run-again's too), and a run reads the count with
+    the state it starts from: its entry's `commit` holds the cell's id (random, made as the state is
+    loaded or first deployed), the commit it began after, and its own. Lines still append in any
+    order; `verify` takes the run a run began after from the numbers (`began_after`). Before them,
+    A then B logged as B then A broke the run after both: the line before it was A's, which left a
+    state without B's write. They also tell a trimmed log's first runs: run live, 1,920 writes
+    from 48 clients at once, kept to the newest 568, broke 8 runs near the first, each begun
+    after a commit whose line was trimmed; now those are said unchecked, as the first is.
 
 **Touches.**
 

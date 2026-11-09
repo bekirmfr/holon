@@ -177,6 +177,15 @@ ops! {
     "xml_find" => XmlFind,
     "xml_text" => XmlText,
     "xml_attribute" => XmlAttribute,
+    "gzip" => Gzip,
+    "gunzip" => Gunzip,
+    "zip" => Zip,
+    "unzip" => Unzip,
+    "jwt_verify" => JwtVerify,
+    "jwt_decode" => JwtDecode,
+    "pgp_encrypt" => PgpEncrypt,
+    "pgp_verify" => PgpVerify,
+    "pgp_key" => PgpKey,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -194,7 +203,10 @@ ops! {
     "db_update" => DbUpdate,
     "db_delete" => DbDelete,
     "channel_send" => ChannelSend,
+    "mail_send" => MailSend,
+    "queue_send" => QueueSend,
     "channel_subscribe" => ChannelSubscribe,
+    "file_serve" => FileServe,
 }
 
 /// Where leaf `op` puts what it is handed a level further down than it was ([`fits`]).
@@ -234,6 +246,37 @@ fn fits<'a>(op: Op, mut inputs: impl Iterator<Item = &'a Value>) -> bool {
         Down::No => true,
         Down::All => inputs.all(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
         Down::Input(i) => inputs.nth(i).is_none_or(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
+    }
+}
+
+/// A file's content type, by its name's extension: the web's types, text ones in UTF-8, and
+/// `application/octet-stream` for any other. What a route answering with a file sends unless its
+/// flow sets one.
+pub fn content_type(name: &str) -> &'static str {
+    let last = name.rsplit('/').next().unwrap_or(name);
+    let ext = last.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "json" | "map" => "application/json",
+        "wasm" => "application/wasm",
+        "pdf" => "application/pdf",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
     }
 }
 
@@ -1022,6 +1065,55 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             crate::xml::attribute(element, name)
         }
 
+        // ── compression (compress.rs, host-capabilities L4 §5.1.7): gzip and zip both ways, the
+        // same bytes everywhere; a text is its UTF-8. Nothing for what isn't one, or past 64 MiB
+        // inflated. ──
+        Op::Gzip => {
+            let [data] = inputs else { return None };
+            Some(Value::Bytes(crate::compress::gzip(octets(data)?)))
+        }
+        Op::Gunzip => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            crate::compress::gunzip(b).map(Value::Bytes)
+        }
+        Op::Zip => {
+            let [Value::Record(files)] = inputs else { return None };
+            let files = files.iter().map(|(name, data)| Some((name.as_str(), octets(data)?))).collect::<Option<Vec<_>>>()?;
+            crate::compress::zip(files).map(Value::Bytes)
+        }
+        Op::Unzip => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            let files = crate::compress::unzip(b)?;
+            Some(Value::Record(files.into_iter().map(|(name, data)| (name, Value::Bytes(data))).collect()))
+        }
+
+        // ── JWT (jwt.rs, host-capabilities L4 §5.1.9): the key decides the algorithm, and the
+        // claims hold at `now`. Nothing for a token that doesn't verify. ──
+        Op::JwtVerify => {
+            let [Value::Text(token), key, Value::Number(now)] = inputs else { return None };
+            let leeway = param(params, "leeway")?.parse::<f64>().ok()?;
+            crate::jwt::verify(token, key, *now, param(params, "issuer")?, param(params, "audience")?, leeway)
+        }
+        Op::JwtDecode => {
+            let [Value::Text(token)] = inputs else { return None };
+            crate::jwt::decode(token)
+        }
+
+        // ── OpenPGP (pgp.rs, host-capabilities L4 §5.1.11): a key's own signatures decide what it
+        // may do; nothing for a key or signature that doesn't bear out. ──
+        Op::PgpEncrypt => {
+            let [data, keys, Value::Bytes(random), Value::Number(now)] = inputs else { return None };
+            crate::pgp::encrypt(data, keys, random, *now, param(params, "armor")? == "ascii").map(Value::Bytes)
+        }
+        Op::PgpVerify => {
+            let [data, signature, keys, Value::Number(now)] = inputs else { return None };
+            crate::pgp::verify(data, signature, keys, *now)
+        }
+        Op::PgpKey => {
+            let [key] = inputs else { return None };
+            crate::pgp::key_info(key)
+        }
+
         Op::Pair => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -1086,13 +1178,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             effect(format!("collection_delete:{name}"), Value::Text(key.clone()))
         }
 
-        // A named folder's writes: `{name, text}` to write the file, the name to delete it, each an
-        // effect the host commits when the run finishes. The folder rides in the sink name, as a
-        // collection's does. Which names are allowed is the host's to check (it knows the folder).
+        // A named folder's writes: `{name, text}` to write the file (a text, or bytes written as
+        // they are), the name to delete it, each an effect the host commits when the run finishes.
+        // The folder rides in the sink name, as a collection's does. Which names are allowed is the
+        // host's to check (it knows the folder).
         Op::FileWrite => {
             let folder = crate::kind::ident(params, "folder")?;
-            let [Value::Text(name), Value::Text(text)] = inputs else { return None };
-            let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), Value::Text(text.clone()))]));
+            let [Value::Text(name), text @ (Value::Text(_) | Value::Bytes(_))] = inputs else { return None };
+            let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), (*text).clone())]));
             effect(format!("file_write:{folder}"), file)
         }
         Op::FileDelete => {
@@ -1173,6 +1266,30 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let channel = crate::kind::ident(params, "channel")?;
             sink_effect(&format!("channel_send:{channel}"), inputs)
         }
+        // A mail: its message made regular and held to the recipients the text names (mail.rs).
+        // The mail rides in the sink name; its recipients in the payload, for the host to hold to
+        // the grant and the binding as it sends.
+        Op::MailSend => {
+            let mail = crate::kind::ident(params, "mail")?;
+            let message = crate::mail::message(inputs.first()?, param(params, "to"))?;
+            Some(Value::Effect { sink: format!("mail_send:{mail}"), payload: Box::new(message) })
+        }
+        // A queue's message: `{data, group}`, its data any value but an effect, its group text
+        // when given. The queue rides in the sink name.
+        Op::QueueSend => {
+            let queue = crate::kind::ident(params, "queue")?;
+            let Value::Record(message) = inputs.first()? else { return None };
+            let data = message.get("data").filter(|d| !matches!(d, Value::Effect { .. }))?;
+            let mut sent = BTreeMap::from([("data".to_string(), data.clone())]);
+            match message.get("group") {
+                None => {}
+                Some(Value::Text(g)) if !g.is_empty() && g.len() <= 128 => {
+                    sent.insert("group".to_string(), Value::Text(g.clone()));
+                }
+                Some(_) => return None,
+            }
+            Some(Value::Effect { sink: format!("queue_send:{queue}"), payload: Box::new(Value::Record(sent)) })
+        }
         // A subscription: what a route answers with, read by the host from the response (never
         // performed as a sink). `from` is "new" (packs from now on) or "kept" (the kept ones first).
         Op::ChannelSubscribe => {
@@ -1183,6 +1300,26 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             }
             let ask = Value::Record(BTreeMap::from([("channel".to_string(), Value::Text(channel.clone())), ("from".to_string(), Value::Text(from.to_string()))]));
             effect(format!("channel_subscribe:{channel}"), ask)
+        }
+        // A file as a route's answer: a handle of the node's folder, each part of its type, and
+        // the type its name says. The host reads the file again as it sends it (never performed
+        // as a sink).
+        Op::FileServe => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let [Value::Record(handle)] = inputs else { return None };
+            let text = |k: &str| match handle.get(k) {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let count = |k: &str| matches!(handle.get(k), Some(Value::Number(n)) if *n >= 0.0 && n.trunc() == *n && *n <= 9007199254740991.0);
+            let (name, hash) = (text("name")?, text("hash")?);
+            let blake3 = hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            if text("folder")? != folder || handle.len() != 5 || name.is_empty() || !blake3 || !count("size") || !count("modified") {
+                return None;
+            }
+            let mut served = handle.clone();
+            served.insert("type".to_string(), Value::Text(content_type(&name).to_string()));
+            effect(format!("file_serve:{folder}"), Value::Record(served))
         }
 
         // An unknown name has no Op: `compute` gives none for it, a driver or state boundary unit
@@ -1493,7 +1630,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send" | "queue_send")
 }
 
 /// The most items one `collection_list` returns.
@@ -2084,6 +2221,24 @@ mod tests {
     }
 
     #[test]
+    fn a_queues_message_is_its_data_and_its_group_naming_the_queue() {
+        let payouts = [Param::frozen("queue", "payouts")];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let data = rec(&[("id", txt("po_1")), ("amount", txt("12.50"))]);
+        let sent = |m: &Value| compute("queue_send", &[m], &payouts);
+        assert_eq!(sent(&rec(&[("data", data.clone())])), Some(Value::Effect { sink: "queue_send:payouts".into(), payload: Box::new(rec(&[("data", data.clone())])) }));
+        let grouped = rec(&[("data", data.clone()), ("group", txt("acct_9"))]);
+        assert_eq!(sent(&grouped), Some(Value::Effect { sink: "queue_send:payouts".into(), payload: Box::new(grouped.clone()) }));
+        assert_eq!(sent(&rec(&[("data", txt("a"))])).map(|e| matches!(e, Value::Effect { .. })), Some(true), "any value is data");
+        assert_eq!(sent(&rec(&[("group", txt("g"))])), None, "no data");
+        assert_eq!(sent(&rec(&[("data", data.clone()), ("group", num(1.0))])), None, "a group is text");
+        assert_eq!(sent(&rec(&[("data", data.clone()), ("group", txt(""))])), None, "an empty group");
+        let effect = sent(&grouped).unwrap();
+        assert_eq!(sent(&rec(&[("data", effect)])), None, "an effect is not data");
+        assert_eq!(compute("queue_send", &[&grouped], &[]), None, "a queue names itself");
+    }
+
+    #[test]
     fn a_pack_and_a_subscription_are_effects_naming_their_channel() {
         let updates = [Param::frozen("channel", "updates"), Param::frozen("from", "new")];
         let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
@@ -2097,6 +2252,48 @@ mod tests {
         assert!(compute("channel_subscribe", &[], &kept).is_some());
         let odd = [Param::frozen("channel", "updates"), Param::frozen("from", "yesterday")];
         assert_eq!(compute("channel_subscribe", &[], &odd), None, "from is new or kept");
+    }
+
+    #[test]
+    fn a_served_file_is_an_effect_from_a_handle_of_its_folder() {
+        let site = [Param::frozen("folder", "site")];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let hash = "7c1e2a9b".repeat(8);
+        let handle = |folder: &str, name: &str| {
+            rec(&[("folder", txt(folder)), ("name", txt(name)), ("size", Value::Number(148.0)), ("hash", txt(&hash)), ("modified", Value::Number(1_700_000_000_000.0))])
+        };
+        let served = compute("file_serve", &[&handle("site", "assets/app.js")], &site).unwrap();
+        let Value::Effect { sink, payload } = served else { panic!("an effect") };
+        assert_eq!(sink, "file_serve:site");
+        let mut want = handle("site", "assets/app.js");
+        if let Value::Record(m) = &mut want {
+            m.insert("type".into(), txt("text/javascript; charset=utf-8"));
+        }
+        assert_eq!(*payload, want);
+        assert_eq!(compute("file_serve", &[&handle("logs", "a.js")], &site), None, "another folder's handle");
+        assert_eq!(compute("file_serve", &[&txt("assets/app.js")], &site), None, "a name is not a handle");
+        let Value::Record(mut odd) = handle("site", "a.js") else { unreachable!() };
+        odd.insert("hash".into(), txt("ABC"));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd.clone())], &site), None, "a hash is blake3's hex");
+        odd.insert("hash".into(), txt(&hash));
+        odd.insert("size".into(), Value::Number(-1.0));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd.clone())], &site), None, "a size counts bytes");
+        odd.insert("size".into(), Value::Number(1.0));
+        odd.insert("extra".into(), txt("x"));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd)], &site), None, "a handle and no more");
+        assert_eq!(compute("file_serve", &[&handle("site", "a.js")], &[]), None, "a folder names itself");
+    }
+
+    #[test]
+    fn a_files_type_is_its_extensions() {
+        assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
+        assert_eq!(content_type("assets/app.4f2a.JS"), "text/javascript; charset=utf-8");
+        assert_eq!(content_type("logo.png"), "image/png");
+        assert_eq!(content_type("app.js.map"), "application/json");
+        assert_eq!(content_type("font.woff2"), "font/woff2");
+        assert_eq!(content_type("README"), "application/octet-stream");
+        assert_eq!(content_type("a.b/README"), "application/octet-stream", "a folder's dot is not an extension");
+        assert_eq!(content_type("archive.tar.gz"), "application/octet-stream");
     }
 
     #[test]

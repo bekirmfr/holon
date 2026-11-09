@@ -1,7 +1,7 @@
 # Triggers and clocks
 
-What starts a run: a request on the flow's port, a clock, a file settling in a folder, an action
-someone runs, another flow's call, and a resume. A flow is its imports and settings, its functions
+What starts a run: a request on the flow's port, a clock, a file settling in a folder, a message
+in a mailbox, an event from a feed, a message from a queue, an action someone runs, another flow's call, and a resume. A flow is its imports and settings, its functions
 and its **handlers**, each a trigger and the function it runs; they share everything the flow owns.
 The design is the [triggers L4](../../L4s/triggers-L4.md) (TL4); the language is
 [`LANGUAGE.md`](../../LANGUAGE.md) §5.1 and §5.11; how each kind of run is recorded and synced
@@ -13,8 +13,12 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 | Handler | Trigger | Its runs | Capability | Code |
 |---|---|---|---|---|
 | `route.get("/notes", (req) => …)` | a request on the flow's port | one a request, `req` the request | `NetworkIngress` | `listeners.rs`, `dataplane.rs` |
+| `route.websocket("/room/:name", { open, message, close })` | a WebSocket connection on the flow's port: its opening, each text it sends, its end | one each, a connection's messages in order, each block's record | `WebSocket("/room/:name")` | `websockets.rs` |
 | `every("2s", () => { … })` | the clock | one a period | `Clock` | `scheduler.rs` |
 | `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
+| `on.mail(remit, (m) => { … })` | a message in a bound mailbox | one a message, `m` the message read | `MailArrival("remit")` | `inbox.rs` |
+| `on.feed(prices, (e) => { … })` | an event from a bound feed of server-sent events, a WebSocket or a Postgres channel | one an event, in order, `e` the event | `FeedEvent("prices")` | `subscriptions.rs` |
+| `on.queue(payouts, (m) => { … })` | a message in a bound Amazon SQS queue | one a message, in the order received, `m` the message, deleted once its run is over | `QueueMessage("payouts")` | `dequeue.rs` |
 | `export const reset = action((input) => { … })` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
 
 Every flow has handlers. The forms without them (`every 10s` or `on file inbox` as a header, the
@@ -24,21 +28,28 @@ whole flow its unit; a flow reading `ingress` and nothing else) went with the sw
 starts nothing: a send is a sink, and a subscription is a route's run.
 
 Samples: `hello-api` (routes), `heartbeat` (a clock alone), `rolling-log` (a clock that keeps 5
-runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handler alone),
+runs), `room` (a websocket beside a route, its connections in a channel), `ticker` (a clock beside
+routes, and an action), `drop-box` (a file handler alone),
 `file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
-routes), `billing` and `shop` (actions, and a flow calling another's), `approval` (a resume route),
-`status-board` (each handler's log level).
+routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a mail handler that
+answers through the same mail, logged in with OAuth), `price-feed` (a feed handler beside routes,
+telling a page through a channel), `trading-bot` (a WebSocket feed, newest price a product, a lazy
+handler starting a strict action), `bluesky-mentions` (a WebSocket feed opened again from its
+cursor), `trade-tape` (a feed's gaps fetched), `payout-events` (a queue handler beside a route,
+sending to a FIFO queue), `ledger-watch` (a Postgres channel as a feed, what it missed read from
+the table), `billing` and `shop` (actions, and a
+flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
 
 ### What deploy reads
 
-Deploy derives the triggers from the unit: a server's `routes`, `clocks`, `files` and `actions`
-(`read_server`, `declare.rs`: a `Server`). A unit that isn't a server, or one with no handler,
+Deploy derives the triggers from the unit: a server's `routes`, `websockets`, `clocks`, `files`
+and `actions` (`read_server`, `declare.rs`: a `Server`). A unit that isn't a server, or one with no handler,
 would start nothing, and is refused with what to write (`STARTS_NOTHING`); a saved deployment of
 one is skipped at load, saying so.
-Each handler has a label core gives it (`GET /notes`, `every 2s`, `on file inbox`,
-`action reset`), the label is the log entry's `route`, and a trigger is never an optional
+Each handler has a label core gives it (`GET /notes`, `WebSocket /room/:name message`,
+`every 2s`, `on file inbox`, `action reset`), the label is the log entry's `route`, and a trigger is never an optional
 permission (`permission_kind`). A clock's period is at most `MAX_PERIOD` (366 days).
 
 ### Routes: a port per deployment
@@ -77,6 +88,97 @@ are seen, not run on; a file the flow's own runs wrote, copied or deleted starts
 starts at most `MAX_RUNS_PER_LOOK` (100) runs a deployment. A server's file handlers each run
 alone, a file two handlers are for starting a run of each, logged as `file` under the label.
 
+### Mail
+
+`inbox.rs` is the same for a mail handler (`on.mail(remit, (m) => …)`, host-capabilities L4
+§5.2.4): a thread looks every second for the mailboxes running deployments listen to whose
+binding's `--every` has come round, logs in over IMAP (`imap.rs`; with a password, or with the
+OAuth token `oauth.rs` asks for and keeps, through `Mails::open_mailbox`), and starts one run for each
+message that came since, 20 a look at most, its message read by core (`mail::received`) the run's
+input as `MailArrival("remit")`. Once the run is over the message is moved to the binding's
+`--done`; its UID is noted first, so a move a crash cut off is made at the next look. What the
+folder holds at the first look is seen, not run on, and a second copy of a message is moved without
+a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
+that fails is on the timeline once, and again when the mailbox reads again. Logged as `mail` under
+the label.
+
+### Feeds
+
+`subscriptions.rs` holds the connections a feed handler needs (`on.feed(prices, (e) => …)`,
+host-capabilities L4 §5.9.2), for every kind of feed to come: every second a thread compares the
+feeds running deployments listen to with the connections it holds, and opens or closes them, one
+a deployment and feed, opened anew when the deployment's unit or the feed's binding changes. Each
+has a reading thread, which reads the feed's events (`sse.rs`, a client over `rustls` the host
+can close from another thread; `ws.rs`, a WebSocket through `tungstenite`'s handshake and frames
+over the same stream, §5.9.4; `listen.rs`, a Postgres session of its own that says `LISTEN` and
+waits a second at a time for a notification, closed by a flag, §5.9.11, its database's connection
+read as the deployment sees the database's name, `Binding::seen_by`) into a buffer of the binding's `--buffer`, and when it is full
+waits, drops what comes (`skip`) or replaces the waiting event of its key (`latest`); and a running
+thread, which runs the handler on each, one at a time, its event the run's input as
+`FeedEvent("prices")`: `{data, event, id, missed, replaced, gap}`, `data` parsed when it is JSON. A run
+lock per deployment and feed, with where its runs moved it, outlives a connection, so a new version
+waits for the old one's run and reads where the feed is after it: no event runs twice. Where the
+feed is (the last id run on, and the last 1,000) is in `feed-seen/<slug>/<feed>.json` beside the
+log, written as the run's record is: a strict or unrecorded run's at its end, a lazy run's once
+`sync_logs` has synced its entry (`Feeds::hold` and `release`, beside the channels' packs and the
+mail); a reconnect sends it as `Last-Event-ID`, or where a WebSocket binding's `--resume` says (a
+query parameter, a header, or a message in place of the subscription, §5.9.6), and an event sent
+again by its id is passed over, on the timeline. A binding's `--sequence` numbers each key's
+messages (§5.9.6): the reading thread counts each message's gap as it reads it, before the buffer,
+from the numbers kept beside the position (`Seen.numbers`, the last 10,000 keys), which the runs
+move; a gap that `--only`, `skip` or `latest` would lose goes to the next event of its key. A connection lost is opened again after a second, or the feed's `retry:`; one that
+can't be is tried again after twice as long each time, to a minute, on the timeline once. What
+each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
+`on feed prices`.
+
+### WebSockets
+
+`websockets.rs` holds the connections pages open on a websocket's path (host-capabilities L4
+§5.12). The data plane serves its connections `with_upgrades()`, and `websockets::open` looks at a
+request before routing: a GET on a websocket's path that is a WebSocket's opening is checked (its
+`Origin` the request's own host or one of `browsers`, the deployment running, a place among
+`max_websockets` in its `Sockets`), runs `open` on the blocking pool, and answers 101 or the
+refusal; a GET there that isn't one is a 426. Each connection then has a task that reads and
+writes it: tungstenite's `WebSocket` fed the bytes hyper's upgraded connection reads (a `Pipe`,
+sans I/O), pinging every 15 s and closing one silent for 30; a token bucket (`messages_per_second`,
+bursts of twice it) and a queue of 32 in front of a worker that runs `message` on each text, one
+at a time, its answer sent back; and the channel subscription `open` asked for, each pack sent as
+text. When the connection ends, whichever side ended it, the worker finishes its queue and `close`
+runs with the code. Each block is looked up in the version deployed when it runs, so a redeploy
+keeps the connections (`Sockets` is carried over, and `close_gone` closes those on a path the new
+version lacks); pausing or stopping closes them all (`close_all`, 1001), as removing does. Logged
+as `websocket` under the block's label, the record its request, an `open`'s status 101 or its
+refusal's.
+
+### Queues
+
+`dequeue.rs` holds the listeners a queue handler needs (`on.queue(payouts, (m) => …)`,
+host-capabilities L4 §5.9.9), as `subscriptions.rs` holds a feed's connections: every second a
+thread compares the queues running deployments listen to with the listeners it holds, one a
+deployment and queue, started anew when the deployment's unit or the queue's binding changes. Each
+listener long-polls the queue (`sqs.rs`, SQS's JSON protocol, each request signed by `sigv4.rs`:
+`ReceiveMessage`, 20 s, up to 10, the binding's visibility) and runs the handler on each message
+received, one at a time, its message the run's input as `QueueMessage("payouts")`: `{data, id,
+attributes, sent, count, group}`, `data` parsed when it is JSON. A second thread keeps what was
+received and isn't deleted out of sight (`ChangeMessageVisibility`, every half of the visibility).
+A message is deleted once its run's record is on disk: a strict or unrecorded run's at its end, a
+lazy run's once `sync_logs` has synced its entry (`Queues::hold` and `release`, beside the feeds'
+positions), a failed run's too unless the binding keeps it (`--keep-failed`). The ids of the last
+1,000 run on are in `queue-seen/<slug>/<queue>.json` beside the log, and a message among them is
+deleted without a run, on the timeline. Stopped, a listener makes what it received and didn't run
+visible again at once. A queue that can't be reached is asked again after a second, twice as long
+each time, to a minute, on the timeline once. One deployment listens to a queue (`refuses`, at
+deploy, by where the binding points). What each listener is doing, and what each queue a
+deployment sends to came to, is in `GET /deployments/<slug>/queues`. Logged as `queue` under the
+label `on queue payouts`.
+
+Sending (`payouts.send({ data, group })`, a sink) is `queues.rs`'s, as mail's is `mails.rs`'s: a
+run's messages are spooled (`queue-spool/` beside `--queues`) before its record is written, held
+until it is on disk, then sent in order by an outbox thread for each queue, tried again for a day
+on what SQS says is temporary. A FIFO queue's message carries its group (the deployment's name
+unless given) and a deduplication id of the run's id and the send's place in it. A restart sends
+what the spool holds whose run its log holds.
+
 ### Actions and flow calls
 
 `POST /trigger/<slug>/<name>` (`handle_post_action`) runs one action with a JSON body (nothing is
@@ -95,7 +197,7 @@ strict when absent):
 
 | Run | Level |
 |---|---|
-| a route, an `every` handler, a file handler, an action | as its `log` option says (`Permit::log_level`) |
+| a route, an `every` handler, a file, mail, feed or queue handler, an action | as its `log` option says (`Permit::log_level`) |
 | a request no route took | `lazy` (Q12) |
 | a resumed part | strict |
 

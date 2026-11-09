@@ -34,7 +34,7 @@ use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
-use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes, find_websockets};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -423,7 +423,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request") || n.is_template("websocket"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail") || n.is_template("on_queue"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -488,6 +488,8 @@ struct Item {
     text: String,
     nodes: Vec<String>,
     body: Vec<Stmt>,
+    /// A websocket's blocks, each its trigger and its statements, in the order written.
+    blocks: Vec<(String, Vec<Stmt>)>,
 }
 
 pub struct Printer<'s> {
@@ -500,6 +502,11 @@ pub struct Printer<'s> {
     folders: BTreeSet<String>,
     databases: BTreeSet<String>,
     channels: BTreeSet<String>,
+    mails: BTreeSet<String>,
+    /// The feeds its handlers listen to.
+    feeds: BTreeSet<String>,
+    /// The queues its handlers listen to or its runs send to.
+    queues: BTreeSet<String>,
     /// The flows any `flow_call` or `flow_start` runs an action of, by slug.
     calls: BTreeSet<String>,
     secrets: BTreeSet<String>,
@@ -520,6 +527,7 @@ pub struct Printer<'s> {
     uses_state: bool,
     uses_now: bool,
     uses_random: bool,
+    uses_random_bytes: bool,
     /// Hosts requested, in the order first met.
     hosts: Vec<String>,
     /// Each flow's actions called or started, by slug.
@@ -557,6 +565,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         folders: BTreeSet::new(),
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
+        mails: BTreeSet::new(),
+        feeds: BTreeSet::new(),
+        queues: BTreeSet::new(),
         calls: BTreeSet::new(),
         secrets: BTreeSet::new(),
         state: BTreeSet::new(),
@@ -570,6 +581,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         uses_state: false,
         uses_now: false,
         uses_random: false,
+        uses_random_bytes: false,
         hosts: Vec::new(),
         flow_actions: BTreeMap::new(),
         leaf_local: HashMap::new(),
@@ -580,6 +592,10 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         vocab_used: None,
     };
     p.collect_collections(&doc.nodes)?;
+    // A mail a handler reads is imported as one it sends through is.
+    p.mails.extend(doc.nodes.iter().filter(|n| n.is_template("on_mail")).map(|n| n.param("mail").to_string()));
+    p.feeds.extend(doc.nodes.iter().filter(|n| n.is_template("on_feed")).map(|n| n.param("feed").to_string()));
+    p.queues.extend(doc.nodes.iter().filter(|n| n.is_template("on_queue")).map(|n| n.param("queue").to_string()));
     for n in doc.nodes.iter().filter(|n| n.is_template("on_file")) {
         let folder = n.param("folder").to_string();
         if !p.watched.contains(&folder) {
@@ -606,7 +622,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     p.leaves.clear();
     p.hosts.clear();
     p.flow_actions.clear();
-    (p.uses_state, p.uses_now, p.uses_random) = (false, false, false);
+    (p.uses_state, p.uses_now, p.uses_random, p.uses_random_bytes) = (false, false, false, false);
     p.avoid = p.fixed_names();
     p.avoid.extend(p.seeded.values().cloned());
     p.avoid.extend(p.leaf_local.values().cloned());
@@ -643,19 +659,59 @@ fn lines_of(text: &str, defs: &[Item], items: &[Item]) -> BTreeMap<String, u32> 
         for n in &item.nodes {
             lines.entry(n.clone()).or_insert(at);
         }
-        let Some(handler) = handler_of(s) else { continue };
-        match &handler.body {
-            js::ArrowFunctionBody::FunctionBody(b) => walk(&item.body, &b.statements, at, &line, &mut lines),
-            // An arrow whose body is its answer: every node is on that answer's line.
-            body => {
-                let at = body.as_expression().map(|e| line(e.span().start)).unwrap_or(at);
-                for st in &item.body {
-                    place(st, at, &mut lines);
+        if !item.blocks.is_empty() {
+            // A websocket: each block's trigger on its key's line, its statements on theirs.
+            let written = socket_blocks_of(s);
+            for (k, (trigger, body)) in item.blocks.iter().enumerate() {
+                match written.get(k).filter(|_| written.len() == item.blocks.len()) {
+                    Some((key, f)) => {
+                        lines.entry(trigger.clone()).or_insert(line(*key));
+                        arrow_lines(f, body, line(*key), &line, &mut lines);
+                    }
+                    None => {
+                        lines.entry(trigger.clone()).or_insert(at);
+                        body.iter().for_each(|st| place(st, at, &mut lines));
+                    }
                 }
+            }
+            continue;
+        }
+        let Some(handler) = handler_of(s) else { continue };
+        arrow_lines(handler, &item.body, at, &line, &mut lines);
+    }
+    lines
+}
+
+/// Each of a handler's statements' nodes on its line in the arrow `f` as laid out.
+fn arrow_lines(f: &js::ArrowFunctionExpression, body: &[Stmt], at: u32, line: &dyn Fn(u32) -> u32, lines: &mut BTreeMap<String, u32>) {
+    match &f.body {
+        js::ArrowFunctionBody::FunctionBody(b) => walk(body, &b.statements, at, line, lines),
+        // An arrow whose body is its answer: every node is on that answer's line.
+        answer => {
+            let at = answer.as_expression().map(|e| line(e.span().start)).unwrap_or(at);
+            for st in body {
+                place(st, at, lines);
             }
         }
     }
-    lines
+}
+
+/// A websocket's blocks as laid out, `route.websocket(path, { open: (req) => … })`: where each
+/// key starts, and its arrow.
+fn socket_blocks_of<'a>(s: &'a js::Statement<'a>) -> Vec<(u32, &'a js::ArrowFunctionExpression<'a>)> {
+    let js::Statement::ExpressionStatement(e) = s else { return vec![] };
+    let js::Expression::CallExpression(c) = &e.expression else { return vec![] };
+    let Some(js::Expression::ObjectExpression(o)) = c.arguments.get(1).and_then(|a| a.as_expression()) else { return vec![] };
+    o.properties
+        .iter()
+        .filter_map(|p| match p {
+            js::ObjectPropertyKind::ObjectProperty(p) => match &p.value {
+                js::Expression::ArrowFunctionExpression(f) => Some((p.span.start, &**f)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// The function a handler's statement passes: its last argument but the options, an arrow.
@@ -775,11 +831,12 @@ fn js_parts_ts(store: &MapResolver, unit: &holon_core::Unit) -> Option<(String, 
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder, database, channel, called flow, secret and state key any leaf
-    /// names, the functions' leaves included.
+    /// Every collection, folder, database, channel, called flow, secret, state key and mail any
+    /// leaf names, the functions' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
         /// The param naming what a leaf reads or writes: a collection's, a folder's, a
-        /// database's or a channel's (a piped call's `pipe`), a flow's, a secret's, or a state key.
+        /// database's or a channel's (a piped call's `pipe`), a flow's, a secret's, a state key, or
+        /// a mail's.
         fn named_by(leaf: &str) -> Option<&'static str> {
             if leaf == "secret" {
                 Some("name")
@@ -793,6 +850,10 @@ impl<'s> Printer<'s> {
                 Some("database")
             } else if leaf.starts_with("channel_") {
                 Some("channel")
+            } else if leaf == "mail_send" {
+                Some("mail")
+            } else if leaf == "queue_send" {
+                Some("queue")
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
@@ -802,7 +863,7 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
@@ -812,6 +873,8 @@ impl<'s> Printer<'s> {
                     "flow" => &mut out.4,
                     "name" => &mut out.5,
                     "key" => &mut out.6,
+                    "mail" => &mut out.7,
+                    "queue" => &mut out.8,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -855,7 +918,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state, self.mails, self.queues) = out;
         // A start of its own action calls no other flow.
         if let Some(own) = &self.own {
             self.calls.remove(own);
@@ -866,10 +929,10 @@ impl<'s> Printer<'s> {
     /// What the text imports by name must be a name TypeScript writes: each store, secret, state
     /// key and action.
     fn check_names(&self) -> Result<(), String> {
-        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels)];
+        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails), ("feed", &self.feeds), ("queue", &self.queues)];
         for (kind, names) in stores {
             for n in names.iter().chain(if kind == "folder" { self.watched.iter().collect::<Vec<_>>() } else { vec![] }) {
-                if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random"].contains(&n.as_str()) {
+                if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random", "random_bytes"].contains(&n.as_str()) {
                     return Err(format!("the {kind} \"{n}\" has no TypeScript form: TypeScript imports it by its name, so name it as a word (letters, digits, _)"));
                 }
             }
@@ -898,8 +961,8 @@ impl<'s> Printer<'s> {
         // `"holon"`'s words the file imports, once the first pass has found which (a function
         // never takes one, whichever).
         let vocab = VOCAB.iter().filter(|w| **w == "flow" || self.vocab_used.as_ref().is_some_and(|used| used.contains(**w)));
-        let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random"]).map(|s| s.to_string()).collect();
-        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.watched).cloned());
+        let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random", "random_bytes"]).map(|s| s.to_string()).collect();
+        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.feeds).chain(&self.queues).chain(&self.watched).cloned());
         out.extend(self.actions.iter().cloned());
         out.extend(self.calls.iter().map(|f| call_noun(f)));
         out
@@ -998,6 +1061,15 @@ impl<'s> Printer<'s> {
         for c in &self.channels {
             out.push(format!("import {c} from \"channel:{c}\""));
         }
+        for m in &self.mails {
+            out.push(format!("import {m} from \"mail:{m}\""));
+        }
+        for f in &self.feeds {
+            out.push(format!("import {f} from \"feed:{f}\""));
+        }
+        for q in &self.queues {
+            out.push(format!("import {q} from \"queue:{q}\""));
+        }
         for f in &self.watched {
             out.push(format!("import {f} from \"folder:{f}\""));
         }
@@ -1007,8 +1079,11 @@ impl<'s> Printer<'s> {
         if self.uses_now {
             out.push("import { now } from \"holon:clock\"".into());
         }
-        if self.uses_random {
-            out.push("import { random } from \"holon:random\"".into());
+        match (self.uses_random, self.uses_random_bytes) {
+            (true, true) => out.push("import { random, random_bytes } from \"holon:random\"".into()),
+            (true, false) => out.push("import { random } from \"holon:random\"".into()),
+            (false, true) => out.push("import { random_bytes } from \"holon:random\"".into()),
+            (false, false) => {}
         }
         for (slug, actions) in &self.flow_actions {
             let named: Vec<String> = actions
@@ -1058,7 +1133,7 @@ impl<'s> Printer<'s> {
         Ok(if fields.is_empty() { format!("flow({})", quote(&name)) } else { format!("flow({}, {{ {} }})", quote(&name), fields.join(", ")) })
     }
 
-    /// The handlers (routes, clocks, file handlers, actions) in the order of their nodes; the
+    /// The handlers (routes, clocks, file and mail handlers, actions) in the order of their nodes; the
     /// functions they place go to `defs` as they are met.
     fn items(&mut self, doc: &FlowDocument) -> Result<Vec<Item>, String> {
         let (routes, mut errors) = find_routes(&doc.nodes, &doc.edges);
@@ -1066,8 +1141,16 @@ impl<'s> Printer<'s> {
         errors.extend(clock_errors);
         let (files, file_errors) = find_files(&doc.nodes, &doc.edges);
         errors.extend(file_errors);
+        let (mails, mail_errors) = find_mails(&doc.nodes, &doc.edges);
+        errors.extend(mail_errors);
+        let (feeds, feed_errors) = find_feeds(&doc.nodes, &doc.edges);
+        errors.extend(feed_errors);
+        let (queues, queue_errors) = find_queues(&doc.nodes, &doc.edges);
+        errors.extend(queue_errors);
         let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
         errors.extend(action_errors);
+        let (sockets, socket_errors) = find_websockets(&doc.nodes, &doc.edges, &routes);
+        errors.extend(socket_errors);
         if !errors.is_empty() {
             return Err(format!("{}: TypeScript writes each handler with its own nodes", errors.join("; ")));
         }
@@ -1079,17 +1162,47 @@ impl<'s> Printer<'s> {
             Route(&'r crate::routes::RouteGroup),
             Clock(&'r crate::routes::ClockGroup),
             File(&'r crate::routes::FileGroup),
+            Mail(&'r crate::routes::MailGroup),
+            Feed(&'r crate::routes::FeedGroup),
+            Queue(&'r crate::routes::QueueGroup),
             Action(&'r crate::routes::ActionGroup),
+            /// A websocket's blocks on one path, in the order their nodes are.
+            Socket(&'r str, Vec<&'r crate::routes::SocketGroup>),
         }
+        let mut paths: Vec<&str> = Vec::new();
+        for s in &sockets {
+            if !paths.contains(&s.path.as_str()) {
+                paths.push(&s.path);
+            }
+        }
+        let socket_handlers = paths.into_iter().map(|path| {
+            let mut blocks: Vec<&crate::routes::SocketGroup> = sockets.iter().filter(|s| s.path == path).collect();
+            blocks.sort_by_key(|s| first(&s.node_ids));
+            (blocks.iter().map(|s| first(&s.node_ids)).min().unwrap_or(usize::MAX), Handler::Socket(path, blocks))
+        });
         let mut handlers: Vec<(usize, Handler)> = routes
             .iter()
             .map(|r| (first(&r.node_ids), Handler::Route(r)))
             .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
             .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
+            .chain(mails.iter().map(|m| (first(&m.node_ids), Handler::Mail(m))))
+            .chain(feeds.iter().map(|f| (first(&f.node_ids), Handler::Feed(f))))
+            .chain(queues.iter().map(|q| (first(&q.node_ids), Handler::Queue(q))))
             .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
+            .chain(socket_handlers)
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
-        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
+        let handled: HashSet<&String> = routes
+            .iter()
+            .flat_map(|r| &r.node_ids)
+            .chain(clocks.iter().flat_map(|c| &c.node_ids))
+            .chain(files.iter().flat_map(|f| &f.node_ids))
+            .chain(mails.iter().flat_map(|m| &m.node_ids))
+            .chain(feeds.iter().flat_map(|f| &f.node_ids))
+            .chain(queues.iter().flat_map(|q| &q.node_ids))
+            .chain(actions.iter().flat_map(|a| &a.node_ids))
+            .chain(sockets.iter().flat_map(|s| &s.node_ids))
+            .collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
             let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
@@ -1097,7 +1210,7 @@ impl<'s> Printer<'s> {
             } else {
                 ""
             };
-            return Err(format!("nothing starts this flow: add a route, a clock, a file handler or an action{what}"));
+            return Err(format!("nothing starts this flow: add a route, a clock, a file, mail, feed or queue handler or an action{what}"));
         }
         let mut items = Vec::new();
         for (_, handler) in handlers {
@@ -1124,12 +1237,31 @@ impl<'s> Printer<'s> {
                     let head = format!("on.file.{}({}, ", if f.deleted { "deleted" } else { "created" }, f.folder);
                     self.handler(doc, &f.node_ids, on, Kind::File, head, options(&[("matching", f.matching.as_str()), ("log", log_option(&f.log))]), &f.label)?
                 }
+                Handler::Mail(m) => {
+                    let on = by_id[m.on_mail_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.mail({}, ", m.mail);
+                    self.handler(doc, &m.node_ids, on, Kind::Mail, head, options(&[("log", log_option(&m.log))]), &m.label)?
+                }
+                Handler::Feed(f) => {
+                    let on = by_id[f.on_feed_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.feed({}, ", f.feed);
+                    self.handler(doc, &f.node_ids, on, Kind::Feed, head, options(&[("log", log_option(&f.log))]), &f.label)?
+                }
+                Handler::Queue(q) => {
+                    let on = by_id[q.on_queue_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.queue({}, ", q.queue);
+                    self.handler(doc, &q.node_ids, on, Kind::Queue, head, options(&[("log", log_option(&q.log))]), &q.label)?
+                }
                 Handler::Action(a) => {
                     let input = by_id[a.action_id.as_str()];
                     self.vocab.insert("action".into());
                     let head = format!("export const {} = action(", a.name);
                     self.handler(doc, &a.node_ids, input, Kind::Action, head, options(&[("log", log_option(&a.log))]), &a.label)?
                 }
+                Handler::Socket(path, blocks) => self.websocket(doc, path, &blocks)?,
             };
             items.push(item);
         }
@@ -1139,6 +1271,58 @@ impl<'s> Printer<'s> {
     /// A handler: `head`, its function, `options`, `)`; its trigger is `trigger`.
     #[allow(clippy::too_many_arguments)]
     fn handler(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, head: String, options: String, label: &str) -> Result<Item, String> {
+        let fallback = match kind {
+            Kind::Route => "req",
+            Kind::Action => "input",
+            Kind::File => "f",
+            Kind::Mail => "m",
+            Kind::Feed => "e",
+            Kind::Queue => "m",
+            _ => "",
+        };
+        let (function, body) = self.handler_function(doc, node_ids, trigger, kind, fallback, label)?;
+        Ok(Item { text: format!("{head}{function}{options})"), nodes: vec![trigger.id.clone()], body, blocks: vec![] })
+    }
+
+    /// `route.websocket(path, { open: …, message: …, close: … }, { log })`: each block's function
+    /// as a route's (`open`) or an action's (`message`, and `close`, whose only answer is the
+    /// nothing of one that calls alone), in that order.
+    fn websocket(&mut self, doc: &FlowDocument, path: &str, blocks: &[&crate::routes::SocketGroup]) -> Result<Item, String> {
+        let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        self.vocab.insert("route".into());
+        let (mut fields, mut written) = (Vec::new(), Vec::new());
+        for g in blocks {
+            let trigger = by_id[g.socket_id.as_str()];
+            let (kind, fallback) = match g.on.as_str() {
+                "open" => (Kind::Route, "req"),
+                "message" => (Kind::Action, "m"),
+                _ => (Kind::Action, "c"),
+            };
+            if g.on == "close"
+                && let Some(r) = g.node_ids.iter().map(|id| by_id[id.as_str()]).find(|n| n.is_template("respond"))
+                && (r.param("status") != "204" || doc.edges.iter().any(|w| w.target == r.id && w.input() != "request"))
+            {
+                return Err(format!("{}: a close block answers nobody", g.label));
+            }
+            let (function, body) = self.handler_function(doc, &g.node_ids, trigger, kind, fallback, &g.label)?;
+            fields.push(format!("{}: {function}", g.on));
+            written.push((trigger.id.clone(), body));
+        }
+        let levels: Vec<(&str, &str)> = blocks.iter().map(|g| (g.on.as_str(), log_option(&g.log))).collect();
+        let options = match levels.first() {
+            Some((_, first)) if !first.is_empty() && levels.iter().all(|(_, l)| l == first) => format!(", {{ log: {} }}", quote(first)),
+            _ if levels.iter().any(|(_, l)| !l.is_empty()) => {
+                let each: Vec<String> = levels.iter().filter(|(_, l)| !l.is_empty()).map(|(on, l)| format!("{on}: {}", quote(l))).collect();
+                format!(", {{ log: {{ {} }} }}", each.join(", "))
+            }
+            _ => String::new(),
+        };
+        Ok(Item { text: format!("route.websocket({}, {{ {} }}{options})", quote(path), fields.join(", ")), nodes: vec![], body: vec![], blocks: written })
+    }
+
+    /// A handler's function, `(req) => …`, and its statements; `fallback` names its parameter
+    /// when the text gave it none it can keep.
+    fn handler_function(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, fallback: &str, label: &str) -> Result<(String, Vec<Stmt>), String> {
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let nodes: Vec<&Node> = node_ids.iter().map(|id| by_id[id.as_str()]).collect();
         let ws = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
@@ -1146,12 +1330,6 @@ impl<'s> Printer<'s> {
         if let Some(why) = unwritable(&group.nodes, &group.incoming, Some(&trigger.id)) {
             return Err(format!("{label}: {why}"));
         }
-        let fallback = match kind {
-            Kind::Route => "req",
-            Kind::Action => "input",
-            Kind::File => "f",
-            _ => "",
-        };
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
         let request = (kind != Kind::Every).then(|| (trigger.id.clone(), param.clone()));
         let mut block = Block::new(self, &group, kind, request);
@@ -1172,11 +1350,11 @@ impl<'s> Printer<'s> {
             let object = value.starts_with('{') && is_one_group(value);
             if object || !value.starts_with('{') {
                 let value = if object { format!("({value})") } else { value.to_string() };
-                return Ok(Item { text: format!("{head}{asy}{params} => {value}{options})"), nodes: vec![trigger.id.clone()], body });
+                return Ok((format!("{asy}{params} => {value}"), body));
             }
         }
         let text = body.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n");
-        Ok(Item { text: format!("{head}{asy}{params} => {{\n{text}\n}}{options})"), nodes: vec![trigger.id.clone()], body })
+        Ok((format!("{asy}{params} => {{\n{text}\n}}"), body))
     }
 
     /// The name a handler's parameter goes by: the text's, or `fallback` when it has none it
@@ -1230,7 +1408,7 @@ impl<'s> Printer<'s> {
         let body = block.body()?;
         let params: Vec<String> = ins.iter().map(|(_, ts)| ts.clone()).collect();
         let text = body.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n");
-        Ok(Item { text: format!("function {hname}({}) {{\n{text}\n}}", params.join(", ")), nodes: vec![], body: vec![] })
+        Ok(Item { text: format!("function {hname}({}) {{\n{text}\n}}", params.join(", ")), nodes: vec![], body: vec![], blocks: vec![] })
     }
 
     /// A function's unit opened: its children, its wires, its boundary's inputs as `Src::In` and
@@ -1293,7 +1471,7 @@ impl<'s> Printer<'s> {
             }
         };
         let opts = if opts.is_empty() { String::new() } else { format!(", {{ {} }}", opts.join(", ")) };
-        Ok(Item { text: format!("const {hname} = js(function {fn_name}({}) {{{body}}}{opts})", ins.join(", ")), nodes: vec![], body: vec![] })
+        Ok(Item { text: format!("const {hname} = js(function {fn_name}({}) {{{body}}}{opts})", ins.join(", ")), nodes: vec![], body: vec![], blocks: vec![] })
     }
 
     /// A node's params that differ from its leaf's or template's defaults (a literal's always).
@@ -1398,6 +1576,9 @@ enum Kind {
     Action,
     Every,
     File,
+    Mail,
+    Feed,
+    Queue,
     Function,
     /// A function written in place, `(x) => …`: one expression, no statements.
     Lambda,
@@ -1505,7 +1686,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     fn handler(&self) -> bool {
-        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File)
+        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail | Kind::Feed | Kind::Queue)
     }
 
     // ── what each node is ────────────────────────────────────────────────────────────────────
@@ -1931,7 +2112,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
-                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
+                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "message" || output == "event" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
                     // A part of what the handler received, or a clock's tick: no node, so a name
                     // for it is a `const` of its own, `const r = req.json`.
                     Some(Src::Node { id, output }) if self.is_request(id) || self.is_tick(id) => {
@@ -2132,7 +2313,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
             }
             Kind::Function | Kind::Lambda => answer = self.returns()?,
-            Kind::Every | Kind::File => {}
+            Kind::Every | Kind::File | Kind::Mail | Kind::Feed | Kind::Queue => {}
         }
         if self.handler() {
             reads_first(&mut stmts);
@@ -2181,8 +2362,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// waits for: a request, another flow's action, a send, a write by method.
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
-        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
-            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes"))
+        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
+            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes" | "file_serve"))
     }
 
     /// The statements in order, those waiting for one value together in one
@@ -2279,11 +2460,14 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "file_read_bytes" => "bytes",
             "file_list" => "files",
             "file_handle" => "file",
+            "file_serve" => "served",
             "file_lines" => "lines",
             "file_slice" => "part",
             "file_write" => "written",
             "http_request" | "http_upload" | "http_stream" => "response",
             "channel_send" => "sent",
+            "mail_send" => "mailed",
+            "queue_send" => "queued",
             "flow_call" => node.param("action"),
             "flow_start" => "started",
             "stripe_verify" => "verified",
@@ -2563,6 +2747,8 @@ fn auto_names(declared: &[String], leaves: &[String]) -> Vec<String> {
             "file_delete" => "deleted",
             "store_write" => "write",
             "egress" | "channel_send" => "sent",
+            "mail_send" => "mailed",
+            "queue_send" => "queued",
             _ => "effect",
         };
         let n = counts.entry(base).or_insert(0);
@@ -2635,7 +2821,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 {
                     let name = name.clone();
                     self.param_read = true;
-                    return Ok(if ["request", "file", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
+                    return Ok(if ["request", "file", "message", "event", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
                 }
                 if self.is_tick(id) {
                     self.p.uses_now = true;
@@ -2706,6 +2892,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.p.uses_now = true;
                 atom("now".into())
             }
+            "random_bytes" => {
+                self.p.uses_random_bytes = true;
+                atom("random_bytes".into())
+            }
             "random" => {
                 self.p.uses_random = true;
                 atom("random".into())
@@ -2719,7 +2909,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let name = node.param("name").to_string();
                 let base = self.receiver(node, "record")?;
                 // A field of the request record named as one of the request's parts.
-                let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request") && REQUEST_PARTS.contains(&name.as_str());
+                let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request" && self.g.node(id).data.outputs.iter().any(|p| p.name == name))
+                    && REQUEST_PARTS.contains(&name.as_str());
                 member(if clash { format!("{base}.request.{name}") } else { format!("{base}.{name}") })
             }
             "lookup" => {
@@ -2955,6 +3146,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, if d.name == "collection_delete" { "key" } else { "name" }, COND)?;
                 member(format!("{store}.{}({key})", if d.name == "file_handle" { "file" } else { "delete" }))
             }
+            // A file as a route's answer: `site.serve(name)`, the handle its own.
+            "file_serve" => {
+                let store = self.store_of(node);
+                match self.inline_source(node, "file", "file_handle").filter(|h| h.param("folder") == store) {
+                    Some(h) => {
+                        self.touch(h);
+                        let name = self.required(h, "name", COND)?;
+                        member(format!("{store}.serve({name})"))
+                    }
+                    None => self.generic(node),
+                }
+            }
             "file_copy" | "file_create_copy" => {
                 let store = self.store_of(node);
                 let name = self.required(node, "name", COND)?;
@@ -3002,6 +3205,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 None => self.generic(node),
             },
             "channel_send" => member(format!("{}.send({})", node.param("channel"), self.required(node, "pack", COND)?)),
+            "mail_send" => member(format!("{}.send({})", node.param("mail"), self.required(node, "message", COND)?)),
+            "queue_send" => member(format!("{}.send({})", node.param("queue"), self.required(node, "message", COND)?)),
             "channel_subscribe" => match node.param("from") {
                 "kept" => member(format!("{}.subscribe({{ from: \"kept\" }})", node.param("channel"))),
                 _ => member(format!("{}.subscribe()", node.param("channel"))),
@@ -4140,7 +4345,7 @@ export const t = action((x) => {
         let heartbeat = samples::build(samples::sample("heartbeat").unwrap()).unwrap();
         assert_eq!(
             printed(Some("heartbeat"), &heartbeat, &BTreeMap::new()),
-            "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"heartbeat\")\n\nevery(\"10s\", () => {\n  state.last_beat = now\n  state.beats = (state.beats ?? 0) + 1\n  state.first_beat = state.first_beat ?? now\n})\n"
+            "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport times from \"collection:times\"\nimport { now } from \"holon:clock\"\n\nflow(\"heartbeat\")\n\nevery(\"10s\", () => {\n  state.last_beat = now\n  const default_2 = state.beats ?? 0\n  state.beats = default_2 + 1\n  times[`${default_2}`] = now\n  state.first_beat = state.first_beat ?? now\n})\n"
         );
         let likes = compile(samples::sample("likes").unwrap().text).unwrap();
         let text = printed(Some("likes"), &likes.doc, &likes.names);
@@ -4166,6 +4371,13 @@ export const t = action((x) => {
         assert!(text.contains("parseInt(input.text, 16)"), "{text}");
         assert!(text.contains("Math.hypot(x, y)"), "{text}");
         assert!(!text.contains("from \"holon\"\nimport") && text.starts_with("import { action, flow } from \"holon\"\n"), "no leaf is imported:\n{text}");
+    }
+
+    /// A file served prints back as the folder's `serve`, its handle its own.
+    #[test]
+    fn a_served_file_prints_back_as_serve() {
+        let src = "import { flow, respond, route, status } from \"holon\"\nimport site from \"folder:site\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/assets/*file\", (req) => site.serve(`assets/${req.params.file}`))\n\nroute.get(\"/gone\", () => status(410, site.serve(\"410.html\")))\n\nroute.get(\"/down\", () =>\n  respond(site.serve(\"a.zip\"), { headers: { \"content-disposition\": \"attachment\" } }),\n)\n\nroute.get(\"/*path\", (req) => site.serve(req.params.path) ?? site.serve(\"index.html\"))\n";
+        prints_back(src);
     }
 
     /// Each record, JSON and date form prints back as written: `fmt` keeps the forms.
@@ -4500,6 +4712,53 @@ export const t = action((input) => {
         );
     }
 
+    /// Mail handlers print back as written, the mail imported as one sent through is.
+    #[test]
+    fn mail_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\n\nflow(\"remit\", { port: 8080 })\n\non.mail(remit, (message) => {\n  state.last = message.subject\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\n\nflow(\"remit\")\n\non.mail(\n  remit,\n  (m) => {\n    state.from = m.from\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
+    /// Feed handlers print back as written, the feed imported.
+    #[test]
+    fn feed_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\n\nflow(\"ticks\", { port: 8080 })\n\non.feed(prices, (event) => {\n  state.last = event.data\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\n\nflow(\"ticks\")\n\non.feed(\n  prices,\n  (e) => {\n    state.name = e.event\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
+    /// Queue handlers print back as written, a queue sent to imported as one listened to is.
+    #[test]
+    fn queue_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\nimport retries from \"queue:retries\"\n\nflow(\"payouts\", { port: 8080 })\n\non.queue(payouts, (message) => {\n  state.last = message.data\n  retries.send({ data: message.data, group: message.group })\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\n\nflow(\"payouts\")\n\non.queue(\n  payouts,\n  (m) => {\n    state.count = m.count\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
+    /// A websocket prints back as one call, its blocks in order, each an arrow; its levels as
+    /// one when they are one, else by block.
+    #[test]
+    fn websockets_print_back_as_written() {
+        prints_back(
+            "import { flow, route } from \"holon\"\nimport people from \"collection:people\"\nimport room from \"channel:room\"\n\nflow(\"room\", { port: 8132 })\n\nroute.websocket(\"/room/:name\", {\n  open: (req) => {\n    people[req.conn] = req.params.name\n    return room.subscribe()\n  },\n  message: (m) => {\n    room.send({ from: people[m.conn], text: m.text })\n  },\n  close: (c) => {\n    delete people[c.conn]\n  },\n})\n",
+        );
+        prints_back("import { flow, route } from \"holon\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\"/echo\", { message: (m) => m.json.n + 1 }, { log: \"lazy\" })\n");
+        prints_back(
+            "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\n  \"/echo\",\n  {\n    message: (m) => m.text,\n    close: (c) => {\n      state.last = c.code\n    },\n  },\n  { log: { message: \"unrecorded\" } },\n)\n",
+        );
+        // A method is written as an arrow, the blocks kept in the order written; a level by block
+        // that is every block's, as one.
+        let text = reprinted("import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\"/echo\", {\n  close(c) {\n    state.last = c.code\n  },\n  message(m) {\n    return m.text\n  },\n}, { log: { message: \"lazy\", close: \"lazy\" } })\n");
+        assert_eq!(
+            text,
+            "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\n  \"/echo\",\n  {\n    close: (c) => {\n      state.last = c.code\n    },\n    message: (m) => m.text,\n  },\n  { log: \"lazy\" },\n)\n"
+        );
+    }
+
     /// Actions print back as written, each with the name of what was sent.
     #[test]
     fn actions_print_back_as_written() {
@@ -4626,7 +4885,7 @@ export const t = action((input) => {
         // Nodes under no handler.
         let mut b = FlowBuilder::new();
         b.node("uppercase", &[], None).unwrap();
-        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file handler or an action");
+        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file, mail, feed or queue handler or an action");
         // A state write whose answer is used, in a route.
         let mut b = FlowBuilder::new();
         let req = b.node("request", &[("method".into(), "POST".into()), ("path".into(), "/k".into())], None).unwrap();

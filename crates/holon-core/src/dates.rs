@@ -109,7 +109,7 @@ fn iso_year(y: i64) -> String {
 }
 
 /// Days since 1970-01-01 of a civil date, month 1 to 12.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
@@ -133,7 +133,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 /// The UTC parts of a time value: year, month (0 to 11, as JavaScript counts), date, weekday (0 is
 /// Sunday), hours, minutes, seconds, milliseconds.
-fn parts(t: i64) -> [i64; 8] {
+pub(crate) fn parts(t: i64) -> [i64; 8] {
     let day = t.div_euclid(MS_PER_DAY);
     let ms = t.rem_euclid(MS_PER_DAY);
     let (y, m, d) = civil_from_days(day);
