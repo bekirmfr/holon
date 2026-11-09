@@ -340,18 +340,20 @@ mod tests {
     fn a_flow_is_its_statements_by_trigger_with_the_nodes_under_them() {
         let g = graph(PAYOUT, false).unwrap();
         let titles: Vec<&str> = g.bands.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, ["POST /payout/:account", "action payout", "POST /approve/:token", "POST /deposit/:account", "GET /accounts/:account"]);
+        assert_eq!(titles, ["POST /payout/:account", "action payout", "POST /deposit/:account", "GET /accounts/:account"]);
         let route = &g.bands[0];
         let names: Vec<&str> = route.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["POST /payout/:account", "account", "started", "return"]);
+        assert_eq!(names, ["POST /payout/:account", "account", "payout", "return"]);
         assert_eq!(route.rows[0].does, "request");
         assert_eq!(route.rows[2].does, "flow_start");
         let payout = &g.bands[1];
         let names: Vec<&str> = payout.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["action payout", "account", "approved", "sent", "bank.exec", "bank.exec"]);
+        assert_eq!(names, ["action payout", "account", "decision", "cond_1", "sent", "bank.exec", "bank.exec", "return"]);
         assert_eq!(payout.rows[1].does, "db_one");
-        // `sent` takes from what was asked, the account and the approval; not from the plumbing.
-        assert_eq!(payout.rows[3].from, [0, 1, 2]);
+        assert_eq!(payout.rows[2].does, "approval");
+        // `sent` takes from what was asked, the account, the decision and the condition it is made
+        // under (after the return that declines); not from the plumbing.
+        assert_eq!(payout.rows[4].from, [0, 1, 2, 3]);
         assert!(payout.rows[1].parts.iter().any(|p| p.leaf == "field"), "its plumbing is its detail");
         assert!(payout.rows.iter().all(|r| r.line > 0 && r.last >= r.line));
         assert!(g.nodes > payout.rows.len() * 3, "far fewer rows than nodes");

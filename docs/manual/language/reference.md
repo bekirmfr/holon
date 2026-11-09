@@ -834,6 +834,9 @@ misled, the compiler refuses instead.
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
   that names it is refused. People signed in to Holon decide it, never an agent, and how many is
   part of what the flow asks for, `Approval("name/2")`: a version that asks fewer asks anew.
+  The target design, approvals in steps filled by roles in order, is
+  [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8; `people: n`
+  stays its short form.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other

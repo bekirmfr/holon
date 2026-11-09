@@ -7609,14 +7609,15 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The approved-payout sample: a deposit while the payout waits for its approval goes ahead (the
-/// waiting run holds nothing), and the approved run pays from the balance as it then is; one while
-/// the payout is in flight waits for the row the run holds, and runs again after it. The payout
-/// went out once; no deposit is written over.
+/// The approved-payout sample: a deposit while the payout waits for two people's approval goes
+/// ahead (the waiting run holds nothing), and once two people approve it the run pays from the
+/// balance as it then is; a deposit while the payout is in flight waits for the row the run holds,
+/// and runs again after it. The payout went out once; no deposit is written over. A second payout,
+/// declined, pays nothing.
 #[test]
 fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let (host, hits) = counting_server();
-    let state = claims_state("");
+    let mut state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let schema = "create table accounts (id integer primary key, balance integer not null); insert into accounts values (1, 100); create table payouts (account integer not null, amount integer not null, status integer)";
@@ -7624,27 +7625,57 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
+    // From here on, people sign in: two of them decide.
+    let accounts = Arc::new(crate::accounts::Accounts::memory());
+    let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    state.access = access::Access::new(accounts, vec![], vec![]);
+    let state = state;
+    let as_person = |token: &str, method: &str, url: &str, body: serde_json::Value| {
+        let bytes = if method == "GET" { vec![] } else { serde_json::to_vec(&body).unwrap() };
+        let mut headers = req(method, url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {token}")));
+        let r = route(&state, &Request::fake_http(method, url, headers, bytes));
+        (r.status_code, body_json(r))
+    };
+    let waiting = || as_person(&ada, "GET", &format!("/deployments/{slug}/runs"), serde_json::Value::Null).1["runs"].as_array().unwrap().clone();
+    let decide = |token: &str, run: &str, approve: bool, reason: Option<&str>| as_person(token, "POST", &format!("/deployments/{slug}/runs/{run}/decide"), serde_json::json!({ "name": "payout", "approve": approve, "reason": reason }));
     let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
 
     let (status, asked, _) = data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":30}"#);
     assert_eq!(status, 202, "{asked}");
-    let approve = serde_json::from_str::<serde_json::Value>(&asked).unwrap()["approve"].as_str().unwrap().to_string();
+    assert!(asked.contains("two people's approval"), "{asked}");
     assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
+    let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = decide(&ada, &run, true, None);
+    assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
+    assert_eq!(hits_of(&hits, "/slow"), 0, "one approval of two pays nothing");
     let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| data_call(&state, &slug, "POST", &approve, r#"{"by":"ops"}"#));
+        let approved = s.spawn(|| decide(&bob, &run, true, Some("the invoice matches")));
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
         approved.join().unwrap()
     });
-    assert_eq!(approved.0, 200, "{approved:?}");
+    assert_eq!((approved.0, &approved.1["outcome"]), (200, &serde_json::json!("approved")), "{approved:?}");
+    assert!(approved.1["run_error"].is_null(), "{approved:?}");
     assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
     assert_eq!(hits_of(&hits, "/slow"), 1, "paid once");
-    let entries = log_entries(&state, &slug);
+    let entries = as_person(&ada, "GET", &format!("/deployments/{slug}/log"), serde_json::Value::Null).1["entries"].as_array().unwrap().clone();
     // Resumed, it held the account's row from its payout until it committed; the deposit that came
     // meanwhile waited for it, found the balance changed, and ran again on it.
     let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
+    assert!(resumed["outputs"].to_string().contains(r#"{"type":"Text","value":"bob"}"#), "who approved it: {resumed}");
     assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
+
+    // A second payout, declined: nothing is sent or written.
+    assert_eq!(data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":10}"#).0, 202);
+    let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = decide(&bob, &run, false, Some("not this vendor"));
+    assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("declined")), "{said}");
+    assert!(said["run_error"].is_null(), "{said}");
+    assert_eq!((balance(), hits_of(&hits, "/slow")), (140, 1), "nothing paid");
+    assert!(waiting().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

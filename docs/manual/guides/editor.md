@@ -41,7 +41,10 @@ closes with its ×.
   agent's proposal with its why and note, and **Decline…** with a reason), and **Runs waiting**.
   **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
   flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
-  and Approve, keep it saved, or decline it.
+  and Approve, keep it saved, or decline it. **Runs waiting** lists the runs waiting at an
+  `approval` and who has approved each so far: **Approve**, or **Decline…** with a reason; each
+  person counts once, and an agent never decides one. Approvals in steps filled by roles are the
+  target design, [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
 - **Getting started** has the steps to start, each ticked once done, your notes (kept with your
   account) and short docs. Untick **show this on start** to stop it opening.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each

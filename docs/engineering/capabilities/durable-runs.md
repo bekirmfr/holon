@@ -93,6 +93,11 @@ event answered from its record (`approved-payout`). A waiting run holds no claim
 
 ### Decide
 
+The target design is [`access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8:
+approvals in steps (slots filled by roles, in order, separation of duties, the starter never
+deciding), principals and a permission catalogue in place of the four roles; it generalises what
+follows, `people: N` staying one step's short form. Read it before changing this.
+
 An `approval` is a waiting point people decide, never a token. Its request is an await's with
 `people` (1 to 5), kept on the waiting point (`StoredWaiting::people`; 0, not written, for an
 event). `waiting_point_of` matches no approval, so no token resumes one; a start hands none out for
@@ -225,8 +230,10 @@ In `crates/holon/src/tests.rs`:
   `decidecmd.rs`, how a waiting run, a decision and a run picked by its id's start read.
 
 End to end: `approval sends an order's progress on its channel: waiting as the run parks, paid when
-it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for its approval
-holding nothing, and pays from the balance as it is then` (`system.e2e.ts`).
+it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for two people's
+approval holding nothing, and pays from the balance as it is then` (`system.e2e.ts`): an invited
+editor and the admin approve it through the decide route, the same person twice is refused, an
+agent is refused, and a second payout one person declines pays nothing.
 
 **Gaps.** Nothing tests a lost host key or secrets key, the deployments file's cost with many
 waiting runs, or a paused deployment's runs expiring.
@@ -246,3 +253,4 @@ Durable runs, derived tokens and the host key predate the CHANGELOG's first entr
 | `b1259e3`, `f06e7a1` | Strict by default; a handler that waits can't be `lazy` or `unrecorded` |
 | `836e406` | `approved-payout` moves to the system end-to-end tests |
 | G12 | `await approval(…)`: a waiting point people signed in decide, two-person and more, never a token |
+| G12 | `approved-payout` waits at `approval("payout", { people: 2 })`, its approve link gone; a call on a path not taken is no longer made |
