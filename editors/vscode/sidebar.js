@@ -637,6 +637,13 @@ ${body}
         if (indeg[v] === 0) queue.push(v);
       });
     }
+    // A node nothing feeds sits in the column just before its first consumer, so a constant stays near
+    // the node it feeds instead of at the far left.
+    for (i = 0; i < n; i++) {
+      if (preds[i].length === 0 && succs[i].length > 0) {
+        layer[i] = Math.min.apply(null, succs[i].map(function (s) { return layer[s]; })) - 1;
+      }
+    }
     var depth = n ? Math.max.apply(null, layer) : 0;
     var rows = [];
     for (var l = 0; l <= depth; l++) rows.push([]);
