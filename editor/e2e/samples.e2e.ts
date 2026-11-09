@@ -373,11 +373,16 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   // Wired from the clock: it's a number now.
   const clockOut = overlay.locator(".react-flow__node", { hasText: "clock" }).locator(".react-flow__handle.source");
   const stampIn = outputs.locator('.react-flow__handle[data-handleid="stamp"]');
-  // Once the overlay has stopped fitting its view: both handles where they will stay.
-  await still(clockOut);
-  await still(stampIn);
-  await clockOut.dragTo(stampIn);
-  await expect(stamp).toHaveAttribute("title", /^number/);
+  // The new row widens the outputs node after the overlay fitted its view: in a narrow overlay its
+  // handle can stand past the edge, and a drag toward it pans the view instead. So the view is fitted
+  // again and the handles left to settle before the drag; a drop that still misses is tried again.
+  await expect(async () => {
+    await overlay.getByRole("button", { name: "Fit View" }).click();
+    await still(clockOut);
+    await still(stampIn);
+    await clockOut.dragTo(stampIn);
+    await expect(stamp).toHaveAttribute("title", /^number/, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await overlay.getByRole("button", { name: "apply" }).click();
   await expect(overlay).toContainText("applied");
   await overlay.getByRole("button", { name: "close" }).click();
