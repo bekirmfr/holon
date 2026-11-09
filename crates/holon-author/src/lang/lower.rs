@@ -2378,6 +2378,15 @@ impl<'a> Lowerer<'a> {
             },
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
+                // A route's answer that is a file of the folder: its handle, sent by the host.
+                if folder && method.text == "serve" {
+                    if args.len() != 1 || args[0].name.is_some() {
+                        return err(span, format!("{c}.serve takes the file's name: return {c}.serve(\"index.html\")"));
+                    }
+                    let (inputs, params) = leaf("file_handle");
+                    let handle = self.unit_call("file_handle", &inputs, &params, &[("folder".to_string(), c.to_string())], args, span)?;
+                    return self.node_with("file_serve", &[("folder".to_string(), c.to_string())], &[("file", handle)], span);
+                }
                 let leaf_name = match method.text.as_str() {
                     "get" => store.get,
                     "put" => store.put,
@@ -2393,7 +2402,7 @@ impl<'a> Lowerer<'a> {
                     "create" if folder => "file_create",
                     "create_copy" if folder => "file_create_copy",
                     other if folder => {
-                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy"));
+                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, serve, lines, slice, copy, create or create_copy"));
                     }
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
@@ -4897,7 +4906,7 @@ export const t = action(() => {
         let route = |handler: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport inbox from \"folder:inbox\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
         assert_eq!(route("route.get(\"/a\", () => inbox)"), (7, 23, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(route("route.get(\"/a\", () => {\n  inbox = 1\n  return 1\n})"), (8, 3, "\"inbox\" is imported, and stays what it is: give a value of its own a name of its own".into()));
-        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
+        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, serve, lines, slice, copy, create or create_copy".into()));
         assert_eq!(route("route.get(\"/a\", () => notes.file(\"a\"))"), (7, 29, "a collection has no \"file\": get, put, delete or list".into()));
         // A folder without its name.
         let e = error("import { flow, route } from \"holon\"\nimport inbox from \"folder:\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", () => 1)\n");
@@ -5058,6 +5067,40 @@ export const t = action(() => {
         .doc;
         let got = leaves(&d);
         assert!(got.contains(&"file_create".to_string()) && got.contains(&"file_create_copy".to_string()), "{got:?}");
+    }
+
+    /// `site.serve(name)` is a route's answer: the file's handle, served. It answers alone, in a
+    /// `respond` with headers, with a status, or falling back to another file.
+    #[test]
+    fn a_folder_serves_its_files_as_a_routes_answer() {
+        let d = compiled(
+            r#"import { flow, respond, route, status } from "holon"
+import site from "folder:site"
+
+flow("f")
+
+route.get("/assets/*file", (req) => site.serve(`assets/${req.params.file}`))
+
+route.get("/down", () => respond(site.serve("a.zip"), { headers: { "content-disposition": "attachment" } }))
+
+route.get("/gone", () => status(410, site.serve("410.html")))
+
+route.get("/*path", (req) => site.serve(req.params.path) ?? site.serve("index.html"))
+"#,
+        )
+        .doc;
+        let serves: Vec<_> = d.nodes.iter().filter(|n| n.data.name == "file_serve").collect();
+        assert_eq!(serves.len(), 5);
+        for s in &serves {
+            assert_eq!(s.param("folder"), "site");
+            let from = d.edges.iter().find(|w| w.target == s.id && w.input() == "file").expect("a handle");
+            let handle = d.nodes.iter().find(|n| n.id == from.source).unwrap();
+            assert_eq!((handle.data.name.as_str(), handle.param("folder")), ("file_handle", "site"), "each its own handle");
+        }
+        let error = |line: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport site from \"folder:site\"\n\nflow(\"f\")\n\nroute.get(\"/\", () => {line})\n")).2;
+        assert_eq!(error("site.serve()"), "site.serve takes the file's name: return site.serve(\"index.html\")");
+        assert_eq!(error("site.serve(\"a\", \"b\")"), "site.serve takes the file's name: return site.serve(\"index.html\")");
+        assert!(error("site.serves(\"a\")").contains("file, serve, lines"));
     }
 
     /// A file handler reads the file that started its run by its handle, and sends a file on by

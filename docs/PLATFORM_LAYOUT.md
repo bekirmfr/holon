@@ -222,6 +222,7 @@ Host defaults follow what the systems a flow talks to already expect:
 | File reads per run (`max_file_read_bytes`) ✅ | 64 MiB | 1 GiB | Bounds what one run holds in memory; a read past it fails the run. |
 | File writes and copies per run (`max_file_write_bytes`) ✅ | 1 GiB | 1 TiB | A copy by handle is how a big file moves; a run past it fails before any write lands. |
 | Files a run reads, writes, copies or deletes (`max_files_per_run`) ✅ | 1,000 | 100,000 | One run is one unit of work; a batch over more files is several runs. |
+| A file a route answers with (`max_served_bytes`) ✅ | 1 GiB | 1 TiB | Streamed, never held whole; the limit keeps a folder's stray giant from being sent by accident. |
 | Wait for a key another run holds (`claim_wait_ms`) ✅ | 10 s | 60 s | A claim (`docs/L4s/key-claims-L4.md`) lasts one run, so the default need only exceed a run's budget to make "busy" mean contention, not slowness. |
 
 A request that breaks a limit doesn't fail the run: its node gets a response record

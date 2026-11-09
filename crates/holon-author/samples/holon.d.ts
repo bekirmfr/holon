@@ -268,6 +268,8 @@ declare module "holon" {
     list(page?: Page): any
     /** A handle to a file of any size, no bytes. */
     file(name: string): FileHandle
+    /** A route's answer that is the file, its bytes sent by the host: `return site.serve("index.html")`. */
+    serve(name: string): Answer
     /** Lines from line `from` (from the end when negative). */
     lines(name: string, options?: { from?: number; limit?: number }): any
     /** Bytes from `offset`, as text. */
@@ -412,6 +414,7 @@ declare module "holon" {
     max_file_read_bytes?: number
     max_file_write_bytes?: number
     max_files_per_run?: number
+    max_served_bytes?: number
     max_db_rows?: number
     max_db_read_bytes?: number
     db_statement_ms?: number | Duration
@@ -1724,6 +1727,13 @@ declare module "holon" {
    * A subscription to the channel set on the node, for a route to answer with: the caller gets each pack sent on it from then on (from "kept": the packs the channel keeps first), as server-sent events. Letting callers subscribe is a permission.
    */
   export function channel_subscribe(...args: any[]): any
+
+  /**
+   * `file_serve(file: Record) -> out: Effect  {folder: site}`
+   *
+   * A route's answer that is the file a handle of the folder set on the node names: the host sends its bytes as they are, with the type its name says, if the file is still the handle's. Answering with a folder's files is a permission.
+   */
+  export function file_serve(...args: any[]): any
 
   /**
    * `mail_send(message: Record, trigger: Any) -> out: Effect  {mail: ops, to: *}`

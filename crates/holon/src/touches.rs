@@ -43,6 +43,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "FeedEvent" => ("resources", "feed", arg, s("listen")),
         "FileRead" => ("resources", "folder", arg, s("read")),
         "FileWrite" => ("resources", "folder", arg, s("write")),
+        "FileServe" => ("resources", "folder", arg, s("answer its callers with its files")),
         "DbRead" | "DbWrite" => {
             let verb = if name == "DbRead" { "read" } else { "write" };
             match arg.split_once('/') {

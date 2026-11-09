@@ -4860,6 +4860,81 @@
   [0, 7] Record({"body": Record({"error": Text("no API at /api/tea")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("no API at /api/tea")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("no API at /api/tea")}), "status": Number(404.0)})
+== site · GET /assets/*file · input 0
+  [0, 0, 0] Record({"file": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"file": Text("tea")}), "path":… #3eca0b14cffec1d0 | Record({"file": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("assets/")
+  [0, 2] Text("tea")
+  [0, 3] Text("tea")
+  [0, 4] Text("assets/tea")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] Record({})
+  [0, 8] Text("public, max-age=31536000, immutable")
+  [0, 9] Record({"cache-control": Text("public, max-age=31536000, immutable")})
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] ·
+  [0, 10, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== site · GET /assets/*file · input 1
+  [0, 0, 0] Record({"file": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #bd238baaf4fc7c7c | Record({"file": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("assets/")
+  [0, 2] Text("tea")
+  [0, 3] Text("tea")
+  [0, 4] Text("assets/tea")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] Record({})
+  [0, 8] Text("public, max-age=31536000, immutable")
+  [0, 9] Record({"cache-control": Text("public, max-age=31536000, immutable")})
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] ·
+  [0, 10, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== site · GET /assets/*file · input 2
+  [0, 0, 0] Record({"file": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #e1c7a6da72aa4086 | Record({"file": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("assets/")
+  [0, 2] Text("tea")
+  [0, 3] Text("tea")
+  [0, 4] Text("assets/tea")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] Record({})
+  [0, 8] Text("public, max-age=31536000, immutable")
+  [0, 9] Record({"cache-control": Text("public, max-age=31536000, immutable")})
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] ·
+  [0, 10, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET / · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})
@@ -4867,23 +4942,15 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1] Text("")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
+  [0, 1] Text("index.html")
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET / · input 1
@@ -4893,23 +4960,15 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1] Text("")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
+  [0, 1] Text("index.html")
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET / · input 2
@@ -4919,23 +4978,15 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1] Text("")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
+  [0, 1] Text("index.html")
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET /*path · input 0
@@ -4946,22 +4997,18 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"path": Text("tea")}), "path":… #005e6943cc0b2d57 | Record({"path": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("tea")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4] Text("index.html")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET /*path · input 1
@@ -4972,22 +5019,18 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #8989b80815f183e9 | Record({"path": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("tea")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4] Text("index.html")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == site · GET /*path · input 2
@@ -4998,22 +5041,18 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #c5633a53e1a86420 | Record({"path": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 4] Text("(path) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #f3db756db9046d5e
-  [0, 2, 1] List([])
-  [0, 2, 2] List([Text("tea")])
-  [0, 2, 0] ·
-  [0, 2, 3] ·
   [0, 2] ·
-  [0, 3] Record({})
-  [0, 4] Text("text/html; charset=utf-8")
-  [0, 5] Record({"content-type": Text("text/html; charset=utf-8")})
-  [0, 6, 0] Record({})
-  [0, 6, 1] Number(200.0)
-  [0, 6, 2] Record({"status": Number(200.0)})
-  [0, 6, 3] ·
-  [0, 6, 4] ·
-  [0, 6, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] ·
+  [0, 4] Text("index.html")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == inbox-report · POST /report · input 0
@@ -5338,6 +5377,84 @@
   [0, 5, 3] ·
   [0, 5, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== log-archive · GET /logs/:name/download · input 0
+  [0, 0, 0] Record({"name": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"name": Text("tea")}), "path":… #f43348a487c791ab | Record({"name": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Record({})
+  [0, 5] Text("attachment; filename=\"")
+  [0, 6] Text("tea")
+  [0, 7] Text("tea")
+  [0, 8] Text("\"")
+  [0, 9] Text("attachment; filename=\"tea\"")
+  [0, 10] Record({"content-disposition": Text("attachment; filename=\"tea\"")})
+  [0, 11, 0] Record({})
+  [0, 11, 1] Number(200.0)
+  [0, 11, 2] Record({"status": Number(200.0)})
+  [0, 11, 3] ·
+  [0, 11, 4] ·
+  [0, 11, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 11] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== log-archive · GET /logs/:name/download · input 1
+  [0, 0, 0] Record({"name": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #dd1140f7997e0f4d | Record({"name": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Record({})
+  [0, 5] Text("attachment; filename=\"")
+  [0, 6] Text("tea")
+  [0, 7] Text("tea")
+  [0, 8] Text("\"")
+  [0, 9] Text("attachment; filename=\"tea\"")
+  [0, 10] Record({"content-disposition": Text("attachment; filename=\"tea\"")})
+  [0, 11, 0] Record({})
+  [0, 11, 1] Number(200.0)
+  [0, 11, 2] Record({"status": Number(200.0)})
+  [0, 11, 3] ·
+  [0, 11, 4] ·
+  [0, 11, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 11] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== log-archive · GET /logs/:name/download · input 2
+  [0, 0, 0] Record({"name": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #e259ef4a57430b47 | Record({"name": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Record({})
+  [0, 5] Text("attachment; filename=\"")
+  [0, 6] Text("tea")
+  [0, 7] Text("tea")
+  [0, 8] Text("\"")
+  [0, 9] Text("attachment; filename=\"tea\"")
+  [0, 10] Record({"content-disposition": Text("attachment; filename=\"tea\"")})
+  [0, 11, 0] Record({})
+  [0, 11, 1] Number(200.0)
+  [0, 11, 2] Record({"status": Number(200.0)})
+  [0, 11, 3] ·
+  [0, 11, 4] ·
+  [0, 11, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 11] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == log-archive · POST /archive · input 0

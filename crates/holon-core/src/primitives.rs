@@ -206,6 +206,7 @@ ops! {
     "mail_send" => MailSend,
     "queue_send" => QueueSend,
     "channel_subscribe" => ChannelSubscribe,
+    "file_serve" => FileServe,
 }
 
 /// Where leaf `op` puts what it is handed a level further down than it was ([`fits`]).
@@ -245,6 +246,37 @@ fn fits<'a>(op: Op, mut inputs: impl Iterator<Item = &'a Value>) -> bool {
         Down::No => true,
         Down::All => inputs.all(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
         Down::Input(i) => inputs.nth(i).is_none_or(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
+    }
+}
+
+/// A file's content type, by its name's extension: the web's types, text ones in UTF-8, and
+/// `application/octet-stream` for any other. What a route answering with a file sends unless its
+/// flow sets one.
+pub fn content_type(name: &str) -> &'static str {
+    let last = name.rsplit('/').next().unwrap_or(name);
+    let ext = last.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "json" | "map" => "application/json",
+        "wasm" => "application/wasm",
+        "pdf" => "application/pdf",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
     }
 }
 
@@ -1269,6 +1301,26 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let ask = Value::Record(BTreeMap::from([("channel".to_string(), Value::Text(channel.clone())), ("from".to_string(), Value::Text(from.to_string()))]));
             effect(format!("channel_subscribe:{channel}"), ask)
         }
+        // A file as a route's answer: a handle of the node's folder, each part of its type, and
+        // the type its name says. The host reads the file again as it sends it (never performed
+        // as a sink).
+        Op::FileServe => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let [Value::Record(handle)] = inputs else { return None };
+            let text = |k: &str| match handle.get(k) {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let count = |k: &str| matches!(handle.get(k), Some(Value::Number(n)) if *n >= 0.0 && n.trunc() == *n && *n <= 9007199254740991.0);
+            let (name, hash) = (text("name")?, text("hash")?);
+            let blake3 = hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            if text("folder")? != folder || handle.len() != 5 || name.is_empty() || !blake3 || !count("size") || !count("modified") {
+                return None;
+            }
+            let mut served = handle.clone();
+            served.insert("type".to_string(), Value::Text(content_type(&name).to_string()));
+            effect(format!("file_serve:{folder}"), Value::Record(served))
+        }
 
         // An unknown name has no Op: `compute` gives none for it, a driver or state boundary unit
         // being the host's.
@@ -2187,6 +2239,48 @@ mod tests {
         assert!(compute("channel_subscribe", &[], &kept).is_some());
         let odd = [Param::frozen("channel", "updates"), Param::frozen("from", "yesterday")];
         assert_eq!(compute("channel_subscribe", &[], &odd), None, "from is new or kept");
+    }
+
+    #[test]
+    fn a_served_file_is_an_effect_from_a_handle_of_its_folder() {
+        let site = [Param::frozen("folder", "site")];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let hash = "7c1e2a9b".repeat(8);
+        let handle = |folder: &str, name: &str| {
+            rec(&[("folder", txt(folder)), ("name", txt(name)), ("size", Value::Number(148.0)), ("hash", txt(&hash)), ("modified", Value::Number(1_700_000_000_000.0))])
+        };
+        let served = compute("file_serve", &[&handle("site", "assets/app.js")], &site).unwrap();
+        let Value::Effect { sink, payload } = served else { panic!("an effect") };
+        assert_eq!(sink, "file_serve:site");
+        let mut want = handle("site", "assets/app.js");
+        if let Value::Record(m) = &mut want {
+            m.insert("type".into(), txt("text/javascript; charset=utf-8"));
+        }
+        assert_eq!(*payload, want);
+        assert_eq!(compute("file_serve", &[&handle("logs", "a.js")], &site), None, "another folder's handle");
+        assert_eq!(compute("file_serve", &[&txt("assets/app.js")], &site), None, "a name is not a handle");
+        let Value::Record(mut odd) = handle("site", "a.js") else { unreachable!() };
+        odd.insert("hash".into(), txt("ABC"));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd.clone())], &site), None, "a hash is blake3's hex");
+        odd.insert("hash".into(), txt(&hash));
+        odd.insert("size".into(), Value::Number(-1.0));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd.clone())], &site), None, "a size counts bytes");
+        odd.insert("size".into(), Value::Number(1.0));
+        odd.insert("extra".into(), txt("x"));
+        assert_eq!(compute("file_serve", &[&Value::Record(odd)], &site), None, "a handle and no more");
+        assert_eq!(compute("file_serve", &[&handle("site", "a.js")], &[]), None, "a folder names itself");
+    }
+
+    #[test]
+    fn a_files_type_is_its_extensions() {
+        assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
+        assert_eq!(content_type("assets/app.4f2a.JS"), "text/javascript; charset=utf-8");
+        assert_eq!(content_type("logo.png"), "image/png");
+        assert_eq!(content_type("app.js.map"), "application/json");
+        assert_eq!(content_type("font.woff2"), "font/woff2");
+        assert_eq!(content_type("README"), "application/octet-stream");
+        assert_eq!(content_type("a.b/README"), "application/octet-stream", "a folder's dot is not an extension");
+        assert_eq!(content_type("archive.tar.gz"), "application/octet-stream");
     }
 
     #[test]

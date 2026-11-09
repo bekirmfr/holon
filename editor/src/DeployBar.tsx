@@ -55,6 +55,7 @@ const LIMITS: [string, string][] = [
   ["max_file_read_bytes", "file reads per run (bytes)"],
   ["max_file_write_bytes", "file writes per run (bytes)"],
   ["max_files_per_run", "files per run"],
+  ["max_served_bytes", "file a route answers with (bytes)"],
   ["max_pack_bytes", "pack size (bytes)"],
   ["max_packs_per_run", "packs per run"],
   ["channel_keep", "packs a channel keeps"],

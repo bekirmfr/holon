@@ -68,7 +68,7 @@ pub mod primitives;
 pub mod sql;
 /// What a document database leaf's templates say (docs/L4s/databases-L4.md §3, slice 7).
 pub mod documents;
-pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
+pub use primitives::{content_type, MAX_AWAIT_SECONDS, MAX_RANGE};
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};

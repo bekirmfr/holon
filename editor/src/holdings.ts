@@ -24,7 +24,7 @@ export type Kind = "folder" | "database" | "mail" | "feed" | "queue";
 export function reaches(item: string): { kind: Kind; name: string; use: Use["use"]; table: string | null } | null {
   const { kind, arg } = itemParts(item);
   if (arg === null) return null;
-  const folder = { FileRead: "read", FileWrite: "write", FileArrival: "arrival" } as const;
+  const folder = { FileRead: "read", FileWrite: "write", FileArrival: "arrival", FileServe: "serve" } as const;
   if (kind in folder) return { kind: "folder", name: arg, use: folder[kind as keyof typeof folder], table: null };
   if (kind === "DbRead" || kind === "DbWrite") {
     const slash = arg.indexOf("/");
@@ -47,11 +47,11 @@ export function seenBy<B extends Binding>(bindings: B[], name: string, slug: str
   return bindings.find((b) => b.name === name && b.deployment === slug) ?? bindings.find((b) => b.name === name && b.deployment === null);
 }
 
-/** One way a deployment reaches a resource: reads it, writes it, starts on its new files, mails
- *  through it, starts on mail it receives or on a feed's events, starts on a queue's messages or
+/** One way a deployment reaches a resource: reads it, writes it, starts on its new files, answers
+ *  its callers with its files, mails through it, starts on mail it receives or on a feed's events, starts on a queue's messages or
  *  sends to it; a database's by table, a mail's by recipient. `revoked`: the host took it back
  *  since. */
-export type Use = { use: "read" | "write" | "arrival" | "send" | "receive" | "listen" | "dequeue" | "enqueue"; table: string | null; revoked: boolean; item: string };
+export type Use = { use: "read" | "write" | "arrival" | "serve" | "send" | "receive" | "listen" | "dequeue" | "enqueue"; table: string | null; revoked: boolean; item: string };
 export type Holder = Pick<HeldGrant, "slug" | "status" | "attention"> & { uses: Use[] };
 
 const same = (a: Binding, b: Binding) => a.name === b.name && a.deployment === b.deployment;
@@ -124,7 +124,7 @@ export function kindsHeld(held: HeldGrant[]): string[] {
 }
 
 /** How a holder reaches it, as the page says it: `reads orders, refunds`, `writes orders`,
- *  `starts on new files`, `mails approvals@acme.com, addresses it computes`, `starts on mail it
+ *  `starts on new files`, `serves its files`, `mails approvals@acme.com, addresses it computes`, `starts on mail it
  *  receives`, `starts on each event it sends`, `starts on each message it holds`, `sends messages to
  *  it`; a folder's without tables. Each with whether it was revoked. */
 export function usesText(uses: Use[]): { text: string; revoked: boolean }[] {
@@ -132,6 +132,7 @@ export function usesText(uses: Use[]): { text: string; revoked: boolean }[] {
     read: "reads",
     write: "writes",
     arrival: "starts on new files",
+    serve: "serves its files",
     send: "mails",
     receive: "starts on mail it receives",
     listen: "starts on each event it sends",
@@ -140,7 +141,7 @@ export function usesText(uses: Use[]): { text: string; revoked: boolean }[] {
   } as const;
   const out: { text: string; revoked: boolean }[] = [];
   for (const revoked of [false, true]) {
-    for (const use of ["read", "write", "arrival", "send", "receive", "listen", "dequeue", "enqueue"] as const) {
+    for (const use of ["read", "write", "arrival", "serve", "send", "receive", "listen", "dequeue", "enqueue"] as const) {
       const these = uses.filter((u) => u.use === use && u.revoked === revoked);
       if (these.length === 0) continue;
       const named = [...new Set(these.map((u) => u.table).filter((t): t is string => t !== null))].sort();

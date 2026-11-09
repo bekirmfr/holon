@@ -72,18 +72,20 @@ pub(crate) struct FileLimits {
     pub(crate) max_file_write_bytes: u64,
     /// The files a run reads, takes a handle to, writes, copies or deletes.
     pub(crate) max_files_per_run: u64,
+    /// The largest file a route answers with (`site.serve(name)`), streamed as it is read.
+    pub(crate) max_served_bytes: u64,
 }
 
 impl FileLimits {
     /// What a deployment gets without asking: a text up to 1 MiB, 64 MiB read; a gigabyte written,
-    /// since a copy by handle is how a big file moves; a thousand files.
+    /// since a copy by handle is how a big file moves; a thousand files; a gigabyte served.
     pub(crate) fn defaults() -> FileLimits {
-        FileLimits { inline_file_bytes: 1 << 20, max_file_read_bytes: 64 << 20, max_file_write_bytes: 1 << 30, max_files_per_run: 1000 }
+        FileLimits { inline_file_bytes: 1 << 20, max_file_read_bytes: 64 << 20, max_file_write_bytes: 1 << 30, max_files_per_run: 1000, max_served_bytes: 1 << 30 }
     }
 
     /// What no grant can exceed.
     pub(crate) fn ceilings() -> FileLimits {
-        FileLimits { inline_file_bytes: 16 << 20, max_file_read_bytes: 1 << 30, max_file_write_bytes: 1 << 40, max_files_per_run: 100_000 }
+        FileLimits { inline_file_bytes: 16 << 20, max_file_read_bytes: 1 << 30, max_file_write_bytes: 1 << 40, max_files_per_run: 100_000, max_served_bytes: 1 << 40 }
     }
 }
 
@@ -200,6 +202,7 @@ fn limits_to_numbers(
         ("max_file_read_bytes".into(), files.max_file_read_bytes),
         ("max_file_write_bytes".into(), files.max_file_write_bytes),
         ("max_files_per_run".into(), files.max_files_per_run),
+        ("max_served_bytes".into(), files.max_served_bytes),
         ("max_db_rows".into(), databases.max_db_rows),
         ("max_db_read_bytes".into(), databases.max_db_read_bytes),
         ("db_statement_ms".into(), ms(databases.db_statement)),
@@ -234,6 +237,7 @@ fn numbers_to_files(base: &FileLimits, numbers: &BTreeMap<String, u64>) -> FileL
         max_file_read_bytes: n("max_file_read_bytes", base.max_file_read_bytes),
         max_file_write_bytes: n("max_file_write_bytes", base.max_file_write_bytes),
         max_files_per_run: n("max_files_per_run", base.max_files_per_run),
+        max_served_bytes: n("max_served_bytes", base.max_served_bytes),
     }
 }
 

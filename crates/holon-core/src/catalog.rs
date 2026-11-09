@@ -112,6 +112,8 @@ pub const GENESIS: &[&str] = &[
     "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
     // channels: a pack sent when the run is over, and a route's answer that subscribes (2)
     "channel_send", "channel_subscribe",
+    // a route's answer that is a file of a folder, sent by the host (1)
+    "file_serve",
     // mail: a message sent through a mail resource an admin binds, once the run is over (1)
     "mail_send",
     // a queue: a message sent to a queue an admin binds, once the run is over (1)
@@ -598,6 +600,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // pass on or copy. Part of one: `limit` lines from line `from` (from the end when
         // negative), or `length` bytes from `offset`, as text.
         "file_handle" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Type::Record),
+        // A route's answer that is the file a handle of the folder names: the host sends its
+        // bytes, if they are still the handle's.
+        "file_serve" => prim(vec![port("file", Type::Record)], vec![Param::frozen("folder", "site")], Effect),
         "file_lines" => prim(
             vec![port("name", Text), port("from", Number)],
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
@@ -719,8 +724,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 pub const TRIGGER: &str = "trigger";
 
 /// The sinks: the leaves whose output is an Effect the host performs, and the calls out. Each
-/// takes a [`TRIGGER`] input last. `channel_subscribe` is a read (a route's streamed answer) and
-/// takes none.
+/// takes a [`TRIGGER`] input last. `channel_subscribe` and `file_serve` are a route's answers
+/// and take none.
 pub const TRIGGERED: &[&str] = &[
     "store_write",
     "collection_put",
@@ -840,8 +845,8 @@ mod tests {
         // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
         // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
         // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
-        // and a queue's (queue_send, queue_message).
-        assert_eq!(GENESIS.len(), 192);
+        // and a queue's (queue_send, queue_message), and a file as a route's answer (file_serve).
+        assert_eq!(GENESIS.len(), 193);
     }
 
     #[test]

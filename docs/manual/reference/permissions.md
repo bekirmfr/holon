@@ -23,8 +23,9 @@ the editor show).
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
 | `CollectionWrite("c")` | put and delete items of its collection "c" | `c[k] = …`, `delete c[k]` |
-| `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, or copying a file from `f` |
+| `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, `f.serve`, or copying a file from `f` |
 | `FileWrite("f")` | write, copy into and delete files in the folder "f" | `f[name] = …`, `delete f[name]`, `f.copy(…)` |
+| `FileServe("f")` | answer its callers with files from the folder "f" | a route answering with `f.serve(name)`: `return f.serve(name)`, `respond(f.serve(name), { headers })` |
 | `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
 | `MailSend("m/a@acme.com")`, `MailSend("m/*")` | send mail through the mail "m" to a@acme.com; with `*`, "to an address it computes, within its binding's" | `m.send({ to: "a@acme.com", … })`; `*` where a recipient is computed, `m.send({ to: req.json.by, … })` |
@@ -99,6 +100,11 @@ can change both columns
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
+| `inline_file_bytes` | a file a run reads whole, or a range of one; a file a route answers with up to this is read before it is sent | 1048576 (1 MiB) | 16777216 |
+| `max_file_read_bytes` | bytes a run reads from files | 67108864 (64 MiB) | 1073741824 |
+| `max_file_write_bytes` | bytes a run writes and copies into files | 1073741824 (1 GiB) | 1099511627776 |
+| `max_files_per_run` | files a run reads, takes a handle to, writes, copies or deletes | 1000 | 100000 |
+| `max_served_bytes` | a file a route answers with (`f.serve(name)`) | 1073741824 (1 GiB) | 1099511627776 (1 TiB) |
 | `module_fuel` | instructions a `js()` function may run per call | 200000000 per function, unless it says | 1000000000 |
 | `module_memory` | memory a `js()` function may use per call | 16 MiB per function, unless it says | 256 MiB |
 | `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |

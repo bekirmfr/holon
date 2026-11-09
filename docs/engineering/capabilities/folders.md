@@ -61,6 +61,14 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
   run's reads with the file's hash and size (`Seen`). A text up to `LOG_INLINE_BYTES` (4 KiB) is
   in the entry; past it, in the blob store, the entry naming it (`"blob"`). With `keep: hash`
   only the hash is kept; `keep: bytes for 30d` keeps the text for its window.
+- **A name no file can have** (`bad_file_name`: a `:`, a `<`, a reserved `CON`) names no file to
+  a read (`existing` answers none); one that would lead out (a `..` part, a leading `/`, a `\`)
+  fails the run. A folder's own name is no file (`open_file`).
+- **Serving** (`file_serve`, `FileServe`): a route's answer that is a handle, sent by the host after
+  the run (`listeners::serve_file`): a small file read and checked against the handle's hash, a
+  big one opened, checked by size and time, and streamed by the data plane, its hash checked as it
+  goes and the connection cut if it changed (`dataplane::stream_file`). `served_status` (304 for a
+  matching `If-None-Match`, 503 for a changed file, 500 refused) is shared with `holon verify`.
 - **Ranges** read only their bytes, up to `inline_file_bytes`; the entry keeps with them the
   BLAKE3 chaining values outside the range, which recompute the file's hash (`ranges.rs`), so the
   run checks from the range alone.
@@ -72,7 +80,7 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
   size, never its text.
 - **Limits** (`FileLimits`, the host's): `inline_file_bytes` 1 MiB (ceiling 16 MiB),
   `max_file_read_bytes` 64 MiB (1 GiB), `max_file_write_bytes` 1 GiB (1 TiB), `max_files_per_run`
-  1,000 (100,000). A read past one fails the run as it reads; writes past one fail it before
+  1,000 (100,000), `max_served_bytes` 1 GiB (1 TiB). A read past one fails the run as it reads; writes past one fail it before
   anything commits (`past_write_limits`). A write that didn't land (cap, changed source, name
   taken) answers 500 (`WRITE_FAILED`).
 - **Shared with other runs.** A file read and written is checked at commit (`still_as_read`

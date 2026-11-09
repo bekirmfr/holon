@@ -89,7 +89,7 @@ impl Kind {
 /// [`Kind`] each projects to. A variant carries the name of what it touches where a grant
 /// is given per thing: a state key or collection (`StateRead`, `StateWrite`,
 /// `CollectionRead`, `CollectionWrite`), a folder (`FileRead`, `FileWrite`,
-/// `FileArrival`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
+/// `FileArrival`, `FileServe`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
 /// channel (`ChannelSend`, `ChannelRead`), a database (`DbRead`, `DbWrite`), an action
 /// (`Action`, `RunsAction`) or a wait (`Await`). The rest stay atomic (`Clock`, `Random`,
 /// `NetworkIngress`, `NetworkEgress`, `SecretAccess`, `Spawn`). State keys came first (the
@@ -190,6 +190,10 @@ pub enum Capability {
     /// asks for it, the graph does (`taint::answered_secrets`, a route whose response the secret
     /// reaches), so a person approves where a secret goes as well as that it is read.
     SecretAnswer(String),
+    /// Answers a route's callers with files of the named folder: `file_serve`, the host sending
+    /// the bytes of the file a handle names, if they are still the handle's (host-capabilities
+    /// L4 §5.11.4).
+    FileServe(String),
 }
 
 /// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
@@ -215,7 +219,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -373,6 +377,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // to them. The channel is a frozen param, so the capability names it exactly.
         "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
         "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
+        // A folder's file as a route's answer: the folder is a frozen param, so the capability
+        // names it exactly. The handle it serves is its own leaf's read.
+        "file_serve" => vec![FileServe(ident(params, "folder")?)],
         // A mail resource's message: the mail and each recipient the text names are frozen params,
         // so the capabilities name them exactly (mail.rs).
         "mail_send" => crate::mail::capabilities(params)?,
@@ -674,6 +681,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         DbRead(SATURATED_STATE_KEY.to_string()),
         DbWrite(SATURATED_STATE_KEY.to_string()),
         SecretAnswer(SATURATED_STATE_KEY.to_string()),
+        FileServe(SATURATED_STATE_KEY.to_string()),
     ] {
         acc.insert(c);
     }
@@ -1240,7 +1248,7 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 21); // every capability — fail closed
+        assert_eq!(caps.len(), 22); // every capability — fail closed
         assert!(caps.contains(Capability::SecretAnswer("<unknown>".to_string())), "answering with any secret");
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
@@ -1248,6 +1256,16 @@ mod tests {
         assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
         assert!(caps.contains(Capability::DbWrite("<unknown>".to_string())), "any database");
         assert!(caps.contains(Capability::RunsAction("<unknown>".to_string())), "any action");
+        assert!(caps.contains(Capability::FileServe("<unknown>".to_string())), "answering with any folder's files");
+    }
+
+    #[test]
+    fn a_served_file_names_its_folder() {
+        let site = [Param::frozen("folder", "site")];
+        assert_eq!(capabilities_of("file_serve", &site).unwrap().iter().collect::<Vec<_>>(), [Capability::FileServe("site".into())]);
+        assert_eq!(Capability::FileServe("site".into()).kind(), Kind::Sink);
+        assert!(!Capability::FileServe("site".into()).is_sourced(), "the host sends it, it is not an input");
+        assert!(capabilities_of("file_serve", &[]).is_none(), "a folder names itself");
     }
 
     #[test]

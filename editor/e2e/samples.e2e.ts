@@ -1662,6 +1662,12 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   const last: string[] = await tail.json();
   expect([last.length, last[19]]).toEqual([20, "line 59999 of a log too big to read whole"]);
   await viewNewestRun(page);
+  // The whole log as a download, bigger than a file read whole: streamed by the host, as it is.
+  const download = await request.get(`http://127.0.0.1:${port}/logs/${name}/download`);
+  expect(download.status()).toBe(200);
+  expect(download.headers()["content-disposition"]).toBe(`attachment; filename="${name}"`);
+  expect(download.headers()["content-length"]).toBe(String(log.length));
+  expect(await download.text()).toBe(log);
   // Copied host to host by its handle: the bytes never entered the run.
   const archived = await request.post(`http://127.0.0.1:${port}/archive`, { data: { name } });
   expect(archived.status()).toBe(200);
@@ -1679,7 +1685,7 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   expect(exported).toContain("line 59999 ");
   expect(exported).not.toContain("line 30000 ");
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified).toContain("re-ran 3 runs: each produced what its log entry says");
+  expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
@@ -2955,15 +2961,42 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect(restored.trim().endsWith("ok")).toBe(true);
 });
 
-test("site answers its page at a deep link, its API beside it, and any other API path a JSON 404", async ({ page, request }) => {
-  await openSample(page, "Site (an app's page at every path, its API beside it)");
+test("site serves a built app from its folder: a deep link opens its page, its files as they are, a cached copy a 304, a missing asset a 404", async ({ page, request }) => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The app's build, as a bundler leaves it: its page, its script, an image.
+  const site = join(FOLDERS, "site");
+  mkdirSync(join(site, "assets"), { recursive: true });
+  const index = `<!doctype html><meta charset="utf-8"><title>Site</title><p>Opened at <code></code>.</p><p id="api">Asking the API…</p><script type="module" src="/assets/app.js"></script>`;
+  writeFileSync(join(site, "index.html"), index);
+  const script = `document.querySelector("code").textContent = location.pathname\nfetch("/api/hello").then((r) => r.json()).then((j) => { document.getElementById("api").textContent = "The API says hello, " + j.hello + "." })\n`;
+  writeFileSync(join(site, "assets", "app.js"), script);
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe]);
+  writeFileSync(join(site, "logo.png"), png);
+  await openSample(page, "Site (a built web app and its API on one port)");
   const port = await deploy(page);
-  const at = (path: string) => request.get(`http://127.0.0.1:${port}${path}`);
+  const at = (path: string, headers: Record<string, string> = {}) => request.get(`http://127.0.0.1:${port}${path}`, { headers });
   const deep = await at("/docs/a%20guide/part%202");
   expect(deep.status()).toBe(200);
   expect(deep.headers()["content-type"]).toBe("text/html; charset=utf-8");
-  expect(await deep.text()).toContain("Opened at <code>/docs/a guide/part 2</code>");
-  expect(await (await at("/")).text()).toContain("Opened at <code>/</code>");
+  expect(await deep.text()).toBe(index);
+  // Its etag is its hash (BLAKE3).
+  const etag = deep.headers()["etag"];
+  expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
+  expect(await (await at("/")).text()).toBe(index);
+  const js = await at("/assets/app.js");
+  expect(js.headers()["content-type"]).toBe("text/javascript; charset=utf-8");
+  expect(js.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+  expect(await js.text()).toBe(script);
+  const logo = await at("/logo.png");
+  expect(logo.headers()["content-type"]).toBe("image/png");
+  expect(Buffer.compare(await logo.body(), png)).toBe(0);
+  // The browser's cached copy, still the file's: a 304 and no body.
+  expect((await at("/docs/setup", { "if-none-match": etag })).status()).toBe(304);
+  expect((await at("/docs/setup", { "if-none-match": '"stale"' })).status()).toBe(200);
+  const missing = await at("/assets/nope.js");
+  expect(missing.status()).toBe(404);
+  expect(await missing.json()).toEqual({ error: "not found" });
   expect(await (await at("/api/hello")).json()).toEqual({ hello: "world" });
   const unknown = await at("/api/nope/more");
   expect(unknown.status()).toBe(404);
@@ -2975,7 +3008,7 @@ test("site answers its page at a deep link, its API beside it, and any other API
     expect(answer.status(), not).toBe(404);
     expect(await answer.json(), not).toEqual({ error: "no route for this path" });
   }
-  // In a browser, a deep link opens the app where it points, and the page asks its API.
+  // In a browser, a deep link opens the app where it points, its script runs, and it asks its API.
   await page.goto(`http://127.0.0.1:${port}/docs/setup`);
   await expect(page.locator("code")).toHaveText("/docs/setup");
   await expect(page.locator("#api")).toHaveText("The API says hello, world.");

@@ -530,6 +530,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
 | `dir.file(name)` | a handle to a file of any size: `{folder, name, size, hash, modified}`, no bytes |
+| `return dir.serve(name)`, `respond(dir.serve(name), { headers })` | a route's answer that is the file: the host sends its bytes, with the type its name says and its hash as its `etag`, if they are still the handle's; no such file is no value (`dir.serve(a) ?? dir.serve("index.html")`). See [Serving a folder](../guides/files.md#serving-a-folder) |
 | `dir.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, { offset: o, length: n })` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |

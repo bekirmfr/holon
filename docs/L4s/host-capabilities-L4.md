@@ -3207,6 +3207,169 @@ As designed (§5.11.12), with what building it found:
   export and verify: the 12 that ran re-run to what their entries say, the 7 no route took are
   logged as such.
 
+#### 5.11.14 Slice 1.8b as designed (2026-11-09, against `15d81b3`)
+
+§5.11.3–§5.11.7 stand, with what the code at `15d81b3` changes:
+
+- **No log-level amendment.** §5.11.5 has `may_record_lightly` take `FileServe` by a new
+  `is_answer()`. That rule is gone: since request-path C5's revision a handler's level is what its
+  author declares, whatever it does (`declare.rs`, `LogLevel`), and the approval says what an
+  unrecorded one leaves out. A file route is `lazy` or `unrecorded` as any route is; nothing to
+  amend, and fork 22 is moot.
+- **The record is written before the bytes go.** A strict run's record is on disk before it
+  answers (C2 e), so the checks that decide the status run before the record, in the host's
+  answer to the run (`listeners.rs`, `serve_flow`), and the record says what was sent: 200, 304 or
+  503. Only a big file's last check, its hash at the end of the stream, comes after; a mismatch
+  cuts the connection and says so on the deployment's timeline (`… changed while it was sent: the
+  connection was cut`), since the record can't be changed after it is written.
+- **A status the flow chose stays.** `return status(404, site.serve("404.html"))` answers the
+  page with a 404; only a 200 is answered 304 to a matching `If-None-Match`.
+- **A missing asset is a route of its own.** §5.11.7's "a missing asset 404 under `/assets/`" needs
+  a route without the `index.html` fallback: `GET /assets/*file`, the longer prefix (§5.11.2), so
+  a script that isn't there is a 404, never the page served as a script.
+
+**Core.**
+
+- **`file_serve`**, a genesis leaf: input `file` (a handle, `Record`), param `folder`, output an
+  Effect. Pure: from a handle of its folder (`{folder, name, size, hash, modified}`, each of its
+  type) it makes `Effect { sink: "file_serve:site", payload: {folder, name, size, hash, modified,
+  type} }`; from anything else, nothing. `type` is `content_type(name)`, a table in core by the
+  name's extension (§5.11.10's list, `text/…` with `; charset=utf-8`), else
+  `application/octet-stream`. Not a sink the host performs and not triggered: like
+  `channel_subscribe`, what a route answers with.
+- **`FileServe(folder)`**, a capability: `Sink`, not sourced, from `file_serve`'s `folder`;
+  described "answer its callers with files from the folder \"site\"". The handle's `FileRead`
+  stays the handle leaf's. `firing.rs` never performs it (as `ChannelRead`); `touches.rs`, the
+  bridge's `WCapability`, `restore.rs` and the editor's holdings (a folder's use `serve`) learn it.
+
+**The language.** `site.serve(name)`, on a folder the flow imports, lowers to
+`file_serve{folder: site}(file_handle{folder: site}(name))`; it takes a name, as `site.file(name)`
+does. It is an answer: `return site.serve(n)`, `respond(site.serve(n), { headers })`,
+`status(404, site.serve("404.html"))`, and `site.serve(a) ?? site.serve("index.html")` (the lazy
+evaluator reads the second handle only when the first file isn't there). The printer prints the
+pair back as `site.serve(name)` when the handle is the serve's alone, else each as written.
+`holon.d.ts`: `Folder.serve(name: string): Answer`.
+
+**The host.**
+
+- **`respond`** (`data.rs`) reads a `file_serve` effect as it reads a subscription, alone or as an
+  envelope's body: `DataResponse.file: Some(Served {folder, name, size, hash, modified, type})`,
+  the envelope's status and headers kept.
+- **`serve_flow`**, after the run and before its record:
+  1. `FileServe(folder)` granted, else 500 (as `ChannelRead`).
+  2. The size within `max_served_bytes`, else 500 saying so.
+  3. A 200 whose request's `If-None-Match` names `"<hash>"` (or is `*`): 304, no body.
+  4. Small (up to `inline_file_bytes`): read through the deployment's folders, hashed, sent from
+     memory if it is the handle's. Big: opened, its size and modified time the handle's, then
+     streamed by the transport. Anything else (gone, changed): 503, `retry-after: 1`, its error
+     `changed: site/x changed since the run read it`.
+  5. Headers: `content-type` the payload's `type` unless the flow set one, `etag: "<hash>"`,
+     `cache-control: no-cache` unless the flow set one. The length is the transport's.
+  6. The record's `response_body`: `file site/assets/app.js (148.2 KB, blake3 7c1e2a9b…)`.
+- **The transport** (`dataplane.rs`): `Answer::File`, the file read on the blocking pool in 64 KiB
+  chunks into a channel, hashed as it goes, its length said; a hash that isn't the handle's at the
+  end ends the body with an error, so the connection is cut before its last chunk. It holds a
+  connection as a subscription does (`max_connections`).
+- **The control plane's "send live"** gets a small file's bytes as any body, and a big one's line
+  (`file site/x (…)`): the bytes go out on the deployment's own port.
+- **`max_served_bytes`**, a file limit: 1 GiB by default, 1 TiB at most, set as any limit
+  (`limits`, the deploy bar).
+
+**Samples.** `site` in full: the folder `site` (read-only, a built app), `GET /api/hello`, `GET
+/api/*rest` (a JSON 404), `GET /assets/*file` (`site.serve(`assets/${file}`)`, 404 when missing,
+cached a year as its names carry hashes), `GET /` (`index.html`) and `GET /*path`
+(`site.serve(path) ?? site.serve("index.html")`), the page routes `lazy`. `log-archive` gains `GET
+/logs/:name/download`, the whole log as an attachment.
+
+**Tests.** Core: `file_serve` on handles of its folder and others, the content types, the
+capability and its words. The language: lowering, printing back, the errors. The host: `respond`'s
+`file`; a server test of `site` against a folder: a deep link, the script's type, a PNG's exact
+bytes, a 304, a missing asset's 404, a file changed between its handle and its send (503), a big
+file streamed (through the data plane) and cut when changed while sent, a file past
+`max_served_bytes`, a deployment not granted `FileServe`. The goldens: `site` reads a folder now,
+so the server golden leaves it out. e2e: the folder bound to a fixture `dist/`, the sample
+deployed, a deep link, the script, the PNG's bytes, a 304, a missing asset; `log-archive`'s
+download.
+
+**Docs:** the files guide (serving a folder), the permissions page, `LANGUAGE.md`, the manual's
+reference and leaves, and this L4's as built.
+
+#### 5.11.15 Slice 1.8b as built (2026-11-09)
+
+As designed (§5.11.14), with what building it found:
+
+- **Core** has `file_serve` (genesis 193), `content_type` (exported, so the host and a later
+  `Content-Type` check read one table) and `FileServe`, in the saturated set too (22). A handle is
+  taken only whole: its five fields, each of its type, the hash BLAKE3's lowercase hex, and nothing
+  more, so a record a flow builds that isn't one gives no answer.
+- **The language** lowers `site.serve(name)` on the folder's own path, before the method table, and
+  takes exactly one name; the printer prints the pair back when the handle is the serve's alone
+  (`inline_source`), else `file_serve(…)` by name. It is an expression, as `site.file(name)` is, so
+  `??`, `status(…)` and `respond(…)` take it with no rule of their own.
+- **A name no file can have names no file.** A route's path is the caller's: `/Talk:Page` or
+  `/docs/con` handed to `site.serve` made the run fail (a name with a `:`, or Windows' `CON`, is
+  `bad_file_name`'s) and answer 500 where the page was meant. A read of such a name (`existing`)
+  now has no value, so `??` falls back; a name that would lead out of its folder (a `..` part, a
+  leading `/`, a `\`) still fails the run, as the named-folders note has it. A folder's own name is
+  no file either (`open_file`): Windows won't open one as a file, so `/assets` answered 500 there
+  and nothing on Linux.
+- **The checks are `listeners::serve_file`,** run after the run's other checks and before its
+  record, its error the entry's (`changed: …`, `refused: …`). A small file is read and hashed there
+  and sent as any body; a big one is opened and checked by size and time, and handed to the
+  transport open (`Served::opened`), so what is streamed is the file checked.
+- **`holon verify` expects the host's status,** not the flow's, for a file: `served_status` is the
+  one rule, shared by the host and verify, from the flow's status, the request's `If-None-Match`
+  and the entry's error. Without it a 304 re-ran as the flow's 200 and differed.
+- **The transport** (`Answer::File`) holds back the last 64 KiB piece until the whole is the
+  handle's, says its length (`SizeHint::with_exact`), and ends a changed file with a body error, so
+  hyper cuts the connection short of its `Content-Length`. The body's error type is `io::Error`
+  now; the other answers can't fail.
+- **The record** says `file site/assets/app.4f2a.js (19 bytes, blake3 9a1c…)`, sizes as the folder
+  guide writes them (`size_text`, KiB); the control plane's "send live" gets a big file's line,
+  a small one's bytes.
+- **The editor** has the leaf in the files group of the palette, `FileServe` among the folder uses
+  (`serves its files`), and `max_served_bytes` in the deploy bar. The permissions page gains the
+  file limits, which it hadn't listed.
+- **Tested:** core (the effect from a handle and not from anything else, the types, the
+  capability), the language (lowering, the errors, printing back), `respond`'s file, the `site`
+  server test (§5.11.14's list, through a real socket for the big file, its cut on the timeline),
+  the goldens (`site` leaves the server golden; the evaluator's gains the two routes), vitest,
+  wasm, and e2e: `site` against a fixture build, a deep link opening in a browser, its script
+  running; `log-archive`'s download, 2.5 MB, so streamed.
+- **Run live** on a scratch server of the slice's build: §5.11.16.
+
+#### 5.11.16 Slice 1.8b run live (2026-11-09)
+
+A scratch server of the slice's release build, `site` bound read-only to a fixture build (its
+page, `assets/app.4f2a.js`, an 11-byte PNG, a 5.8 MB `assets/big.txt`), `logs` and `archive` for
+`log-archive`, both samples deployed as written (8196, 8124), approved with their asks
+(`FileServe("site")`, `FileServe("logs")` beside the reads):
+
+- **A deep link** (`/docs/a%20guide/part%202`) answers the page: 200, `text/html; charset=utf-8`,
+  its `etag` its BLAKE3 hash, `no-cache`, 178 bytes; `/` the same. In the browser pane
+  `/docs/setup` opened the app there, its script ran ("Opened at /docs/setup") and asked its API
+  ("The API says hello, world."), with nothing on the console.
+- **The script** is `text/javascript; charset=utf-8` with the route's `immutable` cache-control;
+  the PNG's bytes arrive as written, `image/png`.
+- **The browser's copy:** `If-None-Match` with the etag a 304 and no body; a stale one a 200.
+- **A missing asset** a 404 `{"error":"not found"}`, never the page; `/api/nope` the API's own
+  JSON 404.
+- **Names no file can have:** `/Talk:Page`, `/docs/con` and `/assets` (a folder) the page, by
+  `??`; `/%2e%2e/secret` matches no route: a 404, recorded with nothing run.
+- **The big file** streamed: 200, `content-length: 5800000`, the bytes the file's. Sent again at
+  400 KB/s with its last 8 bytes changed two seconds in, the connection was cut at 5,439,488
+  bytes (curl: a partial transfer), and the timeline said "site/assets/big.txt changed while it
+  was sent: the connection was cut".
+- **`log-archive`'s download:** `attachment; filename="app.log"`, 2,508,890 bytes as written; a
+  log that isn't there a 404.
+- **Exported and verified:** `site`'s 21 runs re-ran but one (the `..` path, where nothing ran),
+  the 304 among them, each what its entry says; the record kept `file site/assets/big.txt
+  (5.5 MiB, blake3 9538ba51…)`, never the bytes. `log-archive`'s 2 runs re-ran too.
+
+Not seen live: the 503 for a file changed between the run and its send, which needs the change to
+land inside a run's few milliseconds; the server test makes it by calling `serve_file` with a
+handle the file no longer has.
+
 ### 5.12 Inbound WebSockets: a connection whose every message is a run
 
 Designed 2026-11-04 against `450e3de` and re-checked the same day against `ff03a80`, cited by file
@@ -4211,7 +4374,7 @@ signing only for SQS (fork 8): its design settles the queue engine with 1.4 defe
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in slices (§5.9.1), all built: 1.6a the subscription runtime and server-sent events (§5.9.3), 1.6b WebSocket feeds (§5.9.5), 1.6c a feed resumed (§5.9.7), 1.6d a feed's gaps (§5.9.8), 1.6e the queue (§5.9.10, live against ElasticMQ and moto; real AWS still to come), 1.6f a Postgres channel (§5.9.12) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
-| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment (built, §5.11.13) | §5.11 (here) | — | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment (built, §5.11.13), 1.8b answering with a file (built, §5.11.15) | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
@@ -4644,7 +4807,7 @@ A section is cited as `host-capabilities §5.9` or by its link, `host-capabiliti
 | 1.5 secure connectivity | §5.3, §5.4 |
 | 1.6 messaging (feeds, queues) | §5.9, §5.5 |
 | 1.7 commands | §5.7 |
-| 1.8 static files | §5.11 (designed) |
+| 1.8 static files | §5.11 (built) |
 | 1.9 inbound WebSockets | §5.12 (designed) |
 | 2.1 approvals by role | §5.6 |
 | 2.2 telemetry and audit export | a new section of §5 |

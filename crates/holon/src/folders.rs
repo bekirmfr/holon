@@ -480,6 +480,10 @@ impl Scoped {
     pub(crate) fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
         let folder = self.folder(name)?;
         let Some(placed) = existing(&folder.path, file)? else { return Ok(None) };
+        // A folder is no file (Windows won't open one as a file at all).
+        if placed.path.is_dir() {
+            return Ok(None);
+        }
         // Opened with no link followed (a link put in its place since it was checked is refused),
         // and what it is read from the file opened.
         let mut options = std::fs::OpenOptions::new();
@@ -885,7 +889,7 @@ pub(crate) struct RangeRead {
 }
 
 /// When a file was last changed, in milliseconds since 1970.
-fn modified(meta: &std::fs::Metadata) -> u64 {
+pub(crate) fn modified(meta: &std::fs::Metadata) -> u64 {
     meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
 }
 
@@ -1124,8 +1128,11 @@ fn pinned_paths() -> bool {
 /// The file `name` names in `root`, if there is one: refused if a link on its way (or it) leads
 /// out of `root` (on Linux, if there is a link on its way at all).
 fn existing(root: &Path, name: &str) -> Result<Option<Placed>, String> {
+    // A name no file can have (a `:`, a `<`, `CON`) names no file there, as a route's path may
+    // (`/Talk:Page`); one that would lead out of the folder fails the run, as a write's does.
     if let Some(why) = bad_file_name(name) {
-        return Err(why);
+        let leads_out = name.starts_with('/') || name.contains('\\') || name.split('/').any(|s| s.is_empty() || s == "." || s == "..");
+        return if leads_out { Err(why) } else { Ok(None) };
     }
     #[cfg(target_os = "linux")]
     if pinned_paths() {

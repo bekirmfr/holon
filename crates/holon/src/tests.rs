@@ -8364,36 +8364,143 @@ fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The site sample (host-capabilities L4 §5.11.12): its page at every path that isn't its API's,
-/// a deep link's path in it as the request wrote it, each segment decoded; the API beside it, and
-/// an unknown API path a JSON 404 rather than the page. A path whose rest would name another (`..`,
-/// `%2F`, an empty segment) is no route's.
+/// The site sample (host-capabilities L4 §5.11.14), its folder bound to a build: a deep link and
+/// the root answer index.html, an asset its bytes and type, a file at the root itself, a name no
+/// file can have the page; each with its hash as its etag, a matching `If-None-Match` a 304; a
+/// missing asset a 404, the API beside it. A file changed since the run read its handle is a 503
+/// to retry; one past `max_served_bytes`, or a deployment not granted `FileServe`, a 500. Through
+/// the data plane, a big file is streamed whole, and cut, said on the timeline, when it changes
+/// while it is sent. Each run is recorded with the file it answered with, and the runs verify.
 #[test]
-fn site_answers_its_page_at_every_path_and_its_api_beside_it() {
-    let state = test_state();
-    let slug = deploy_plain_text(&state, include_str!("../../holon-author/samples/site.holon.ts"));
-    let page = |url: &str| {
-        let (status, body, _) = data_call(&state, &slug, "GET", url, "");
-        assert_eq!(status, 200, "{url}: {body}");
-        body
+fn site_serves_a_built_app_from_its_folder() {
+    use std::io::{Read, Write};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let dir = std::env::temp_dir().join(format!("holon-site-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    let index = "<!doctype html><title>App</title><script type=module src=/assets/app.4f2a.js></script>";
+    std::fs::write(dir.join("index.html"), index).unwrap();
+    std::fs::write(dir.join("assets/app.4f2a.js"), "console.log('app')\n").unwrap();
+    let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe];
+    std::fs::write(dir.join("logo.png"), png).unwrap();
+    // Bigger than a file read whole (1 MiB): streamed by the data plane. Text, so it reads back
+    // as sent.
+    let big: String = (0..1_000_000).map(|i| format!("{i:07}\n")).collect();
+    std::fs::write(dir.join("assets/big.txt"), &big).unwrap();
+    let site = serde_json::json!({ "name": "site", "path": dir.display().to_string(), "access": "read" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&site).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = include_str!("../../holon-author/samples/site.holon.ts").replace("port: 8196", &format!("port: {port}"));
+    let slug = deploy_plain_text(&state, &text);
+    let granted = state.deployments.lock().unwrap()[&slug].grant.items.clone();
+    assert!(granted.contains("FileServe(\"site\")") && granted.contains("FileRead(\"site\")"), "{granted:?}");
+
+    let ask = |url: &str, headers: &[(&str, &str)]| {
+        let headers = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &data::DataRequest { method: "GET".into(), url: url.into(), headers, body: vec![], by: None })
     };
-    assert!(page("/docs/setup").contains("Opened at <code>/docs/setup</code>"));
-    assert!(page("/").contains("Opened at <code>/</code>"));
-    assert!(page("/docs/a%20guide/part%202?x=1").contains("Opened at <code>/docs/a guide/part 2</code>"), "each segment decoded");
-    assert!(page("/%3Cb%3Ehi").contains("Opened at <code>/&lt;b&gt;hi</code>"), "and escaped by the page");
-    assert_eq!(data_call(&state, &slug, "GET", "/api/hello", "").1, r#"{"hello":"world"}"#);
-    let (status, body, _) = data_call(&state, &slug, "GET", "/api/nope/more", "");
-    assert_eq!((status, body.as_str()), (404, r#"{"error":"no API at /api/nope/more"}"#));
-    for not in ["/docs/..", "/docs/a%2Fb", "/docs/a%5Cb", "/docs//a", "/docs/", "/api/.."] {
-        let (status, body, _) = data_call(&state, &slug, "GET", not, "");
-        assert_eq!((status, body.as_str()), (404, r#"{"error":"no route for this path"}"#), "{not}");
+    let header = |r: &data::DataResponse, k: &str| r.headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    let etag = |bytes: &[u8]| format!("\"{}\"", blake3::hash(bytes).to_hex());
+    for url in ["/docs/setup", "/", "/docs/a%20guide/part%202?x=1", "/Talk:Page", "/assets"] {
+        let page = ask(url, &[]);
+        assert_eq!((page.status, page.body.as_slice()), (200, index.as_bytes()), "{url}");
+        assert_eq!(header(&page, "content-type"), "text/html; charset=utf-8");
+        assert_eq!((header(&page, "etag"), header(&page, "cache-control")), (etag(index.as_bytes()), "no-cache".to_string()), "{url}");
     }
-    let (status, _, _) = data_call(&state, &slug, "POST", "/docs/setup", "");
-    assert_eq!(status, 405, "a rest route counts for the methods a path has");
-    // Each request a run, recorded under its route, with the URL as it was written.
+    let script = ask("/assets/app.4f2a.js", &[]);
+    assert_eq!((script.status, script.body.as_slice()), (200, &b"console.log('app')\n"[..]));
+    assert_eq!(header(&script, "content-type"), "text/javascript; charset=utf-8");
+    assert_eq!(header(&script, "cache-control"), "public, max-age=31536000, immutable", "the flow's own");
+    let logo = ask("/logo.png", &[]);
+    assert_eq!((logo.status, logo.body.as_slice(), header(&logo, "content-type")), (200, png, "image/png".to_string()), "its exact bytes");
+    // A cached copy still the file's: a 304, no body; any other etag gets the file.
+    for tag in [etag(index.as_bytes()), "*".to_string(), format!("\"x\", W/{}", etag(index.as_bytes()))] {
+        let cached = ask("/docs/setup", &[("If-None-Match", &tag)]);
+        assert_eq!((cached.status, cached.body.len(), header(&cached, "etag")), (304, 0, etag(index.as_bytes())), "{tag}");
+    }
+    assert_eq!(ask("/docs/setup", &[("If-None-Match", "\"stale\"")]).status, 200);
+    let missing = ask("/assets/nope.js", &[]);
+    assert_eq!((missing.status, String::from_utf8_lossy(&missing.body).into_owned()), (404, r#"{"error":"not found"}"#.to_string()), "never the page");
+    assert_eq!(ask("/api/hello", &[]).body, br#"{"hello":"world"}"#);
+    assert_eq!(ask("/api/nope/more", &[]).status, 404);
+
+    // Changed between the run's handle and the send: a 503 to retry, its entry saying why.
+    let (permit, folders) = {
+        let table = state.deployments.lock().unwrap();
+        (Arc::clone(&table[&slug].permit), Arc::clone(&table[&slug].folders))
+    };
+    let meta = std::fs::metadata(dir.join("index.html")).unwrap();
+    let read = data::Served {
+        folder: "site".into(),
+        name: "index.html".into(),
+        size: meta.len(),
+        hash: blake3::hash(index.as_bytes()).to_hex().to_string(),
+        modified: folders::modified(&meta),
+        content_type: "text/html; charset=utf-8".into(),
+        opened: None,
+    };
+    let answered = |file: data::Served| data::DataResponse { status: 200, headers: vec![], body: vec![], subscribe: None, file: Some(file) };
+    let (sent, error) = listeners::serve_file(answered(read.clone()), &permit, Some(&folders), &[]);
+    assert_eq!((sent.status, sent.body.as_slice(), error), (200, index.as_bytes(), None));
+    let (changed, error) = listeners::serve_file(answered(data::Served { hash: "0".repeat(64), ..read.clone() }), &permit, Some(&folders), &[]);
+    assert_eq!((changed.status, header(&changed, "retry-after")), (503, "1".to_string()));
+    assert_eq!(error.as_deref(), Some("changed: site/index.html changed since the run read it"));
+    let (gone, _) = listeners::serve_file(answered(data::Served { name: "gone.html".into(), ..read.clone() }), &permit, Some(&folders), &[]);
+    assert_eq!(gone.status, 503, "gone since");
+
+    // The record says what was sent: the file, by its hash.
     let entries = log_entries(&state, &slug);
-    let deep = entries.iter().find(|e| e["route"] == "GET /*path" && e["url"] == "/docs/a%20guide/part%202?x=1").expect("the deep link's run");
-    assert!(deep["response_body"].as_str().is_some_and(|b| b.contains("<code>/docs/a guide/part 2</code>")), "{deep:#}");
+    let asset = entries.iter().find(|e| e["url"] == "/assets/app.4f2a.js").expect("the script's run");
+    let hash = blake3::hash(b"console.log('app')\n").to_hex().to_string();
+    assert_eq!(asset["response_body"], format!("file site/assets/app.4f2a.js (19 bytes, blake3 {}…)", &hash[..8]));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+
+    // Through the data plane: a big file streamed whole, its length said.
+    sync_listeners(&state);
+    let got = raw_http(port, b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let (head, body) = got.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200") && head.to_ascii_lowercase().contains(&format!("content-length: {}", big.len())), "{head}");
+    assert!(body == big, "the whole file, as it is ({} of {} bytes)", body.len(), big.len());
+    // And cut when it changes while it is sent: the caller gets less than its length, and the
+    // timeline says so.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+    let mut first = [0u8; 1024];
+    let n = stream.read(&mut first).unwrap();
+    assert!(String::from_utf8_lossy(&first[..n]).starts_with("HTTP/1.1 200"));
+    let mut file = std::fs::OpenOptions::new().write(true).open(dir.join("assets/big.txt")).unwrap();
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-8)).unwrap();
+    file.write_all(b"changed\n").unwrap();
+    drop(file);
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    assert!(n + rest.len() < big.len(), "cut before its end: {} bytes", n + rest.len());
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("site/assets/big.txt changed while it was sent: the connection was cut"), "{events}");
+
+    // Past its limit, or not granted: a 500 saying so.
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut(&slug).unwrap();
+        let mut limited = Permit::new(dep.unit, &dep.grant, &state.policy());
+        limited.files.max_served_bytes = 10;
+        dep.permit = Arc::new(limited);
+    }
+    let past = ask("/docs/setup", &[]);
+    assert!(past.status == 500 && String::from_utf8_lossy(&past.body).contains("more than the 10 a route answers with (max_served_bytes)"), "{past:?}");
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut(&slug).unwrap();
+        let mut narrowed = dep.grant.clone();
+        narrowed.items.remove("FileServe(\"site\")");
+        dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
+    }
+    let refused = ask("/docs/setup", &[]);
+    assert!(refused.status == 500 && String::from_utf8_lossy(&refused.body).contains(r#"may not answer its callers with files from the folder \"site\""#), "{refused:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The ledger-watch sample (host-capabilities L4 §5.9.11), on the Postgres `HOLON_TEST_POSTGRES`

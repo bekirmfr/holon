@@ -169,12 +169,72 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
     Ok(stop)
 }
 
-/// A response's body: whole, a subscription's events as they come, or a streamed call's answer
-/// as it is read.
+/// A response's body: whole, a subscription's events as they come, a streamed call's answer as it
+/// is read, or a big file as it is read.
 enum Answer {
     Whole(Full<Bytes>),
     Events(Events),
     Forwarded(Forwarded),
+    File(Streamed),
+}
+
+/// How much of a file is read at a time.
+const FILE_PIECE: usize = 64 << 10;
+
+/// A big file a route answered with, its pieces read on the blocking pool and hashed as they go.
+/// The last piece is held back until the whole is the handle's: one that changed while it was
+/// sent ends with an error instead, which cuts the connection before the caller has all of it.
+struct Streamed {
+    pieces: tokio::sync::mpsc::Receiver<std::io::Result<Bytes>>,
+    size: u64,
+    ended: bool,
+}
+
+/// Stream `file`, the host's checks done and the file opened (`listeners::serve_file`): a file
+/// that changed while it was sent is cut, and said so on `slug`'s timeline.
+fn stream_file(file: data::Served, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, slug: String) -> Streamed {
+    let (sender, pieces) = tokio::sync::mpsc::channel(4);
+    let size = file.size;
+    tokio::task::spawn_blocking(move || {
+        let Some(opened) = &file.opened else { return };
+        let mut reader = std::io::Read::take(&**opened, size + 1);
+        let mut hasher = blake3::Hasher::new();
+        let (mut held, mut read) = (None::<Bytes>, 0u64);
+        let failed = loop {
+            let mut piece = vec![0u8; FILE_PIECE];
+            match std::io::Read::read(&mut reader, &mut piece) {
+                Ok(0) => break None,
+                Ok(n) => {
+                    piece.truncate(n);
+                    hasher.update(&piece);
+                    read += n as u64;
+                    // The caller went away: nothing more to send.
+                    if let Some(before) = held.replace(Bytes::from(piece))
+                        && sender.blocking_send(Ok(before)).is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => break Some(format!("couldn't be read while it was sent ({e})")),
+            }
+        };
+        let failed = failed.or_else(|| (read != size || hasher.finalize().to_hex().as_str() != file.hash).then(|| "changed while it was sent".to_string()));
+        match failed {
+            None => {
+                if let Some(last) = held {
+                    let _ = sender.blocking_send(Ok(last));
+                }
+            }
+            Some(why) => {
+                let what = format!("{}/{} {why}: the connection was cut", file.folder, file.name);
+                let detail = crate::events::Detail { name: Some(file.folder.clone()), ..Default::default() };
+                crate::events::note(&deployments, &slug, "folder", what.clone(), None, detail);
+                let _ = sender.blocking_send(Err(std::io::Error::other(what)));
+            }
+        }
+    });
+    Streamed { pieces, size, ended: false }
 }
 
 /// What a run's forwarder hands the data plane: the head, then the pieces.
@@ -243,12 +303,30 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 
 impl Body for Answer {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = std::io::Error;
 
-    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+        let never = |r: Result<Frame<Bytes>, Infallible>| r.map_err(|e| match e {});
         let events = match self.get_mut() {
-            Answer::Whole(full) => return Pin::new(full).poll_frame(cx),
-            Answer::Forwarded(f) => return f.poll(cx),
+            Answer::Whole(full) => return Pin::new(full).poll_frame(cx).map(|f| f.map(never)),
+            Answer::Forwarded(f) => return f.poll(cx).map(|f| f.map(never)),
+            Answer::File(file) => {
+                if file.ended {
+                    return Poll::Ready(None);
+                }
+                return match file.pieces.poll_recv(cx) {
+                    Poll::Ready(Some(Ok(piece))) => Poll::Ready(Some(Ok(Frame::data(piece)))),
+                    Poll::Ready(Some(Err(e))) => {
+                        file.ended = true;
+                        Poll::Ready(Some(Err(e)))
+                    }
+                    Poll::Ready(None) => {
+                        file.ended = true;
+                        Poll::Ready(None)
+                    }
+                    Poll::Pending => Poll::Pending,
+                };
+            }
             Answer::Events(events) => events,
         };
         if events.ended {
@@ -273,14 +351,16 @@ impl Body for Answer {
             Answer::Whole(full) => full.is_end_stream(),
             Answer::Events(events) => events.ended,
             Answer::Forwarded(f) => f.ended,
+            Answer::File(file) => file.ended,
         }
     }
 
-    // A whole answer says its length (Content-Length), as it did before streams; a stream doesn't
-    // know it (chunked).
+    // A whole answer says its length (Content-Length), as it did before streams, and so does a
+    // file; a stream doesn't know it (chunked).
     fn size_hint(&self) -> SizeHint {
         match self {
             Answer::Whole(full) => full.size_hint(),
+            Answer::File(file) => SizeHint::with_exact(file.size),
             Answer::Events(_) | Answer::Forwarded(_) => SizeHint::default(),
         }
     }
@@ -359,6 +439,10 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
         None => run.await,
     };
     let answered = done.unwrap_or_else(|_| DataResponse::json_error(500, "the request's handler failed"));
+    // A big file: its bytes follow the headers, read from the file the host opened.
+    if let Some(file) = answered.file.clone().filter(|f| f.opened.is_some()) {
+        return with_headers(answered.status, &answered.headers, Answer::File(stream_file(file, deployments, slug)));
+    }
     let Some(ask) = answered.subscribe.clone() else { return to_hyper(answered) };
     // A subscription: its packs follow the headers, from the deployment's channel.
     let channel = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.channels), d.permit.channels.clone()));

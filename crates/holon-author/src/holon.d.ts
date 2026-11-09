@@ -263,6 +263,8 @@ declare module "holon" {
     list(page?: Page): any
     /** A handle to a file of any size, no bytes. */
     file(name: string): FileHandle
+    /** A route's answer that is the file, its bytes sent by the host: `return site.serve("index.html")`. */
+    serve(name: string): Answer
     /** Lines from line `from` (from the end when negative). */
     lines(name: string, options?: { from?: number; limit?: number }): any
     /** Bytes from `offset`, as text. */

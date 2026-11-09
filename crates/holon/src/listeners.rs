@@ -57,6 +57,7 @@ pub(crate) fn serve_data_forwarding(
             ],
             body: vec![],
             subscribe: None,
+            file: None,
         };
     }
     let mut answer = serve_flow(store, deployments, deployments_path, slug, request, forward);
@@ -251,13 +252,19 @@ fn serve_flow(
     if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(channels::SEND_FAILED)) {
         answer = data::DataResponse::json_error(500, "this flow's packs were past its channel limits: its run log says why");
     }
+    // A file it answered with, checked before its record is written, so the record says what was
+    // sent: what went wrong is its entry's error.
+    let mut file_error = None;
+    if answer.file.is_some() {
+        (answer, file_error) = serve_file(answer, &permit, waits.folders.as_deref(), &request.headers);
+    }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler. Its
     // entry is made only where it is logged: an unrecorded run that didn't fail is counted.
     let route = ran.as_ref().map(|r| r.route.clone());
     let error = match &parked {
         Err(e) => Some(e.clone()),
-        Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
+        Ok(_) => file_error.clone().or_else(|| ran.as_ref().and_then(|r| r.error.clone())),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
     // Whether an unrecorded run sent packs or mail, which go out even though it isn't logged.
@@ -275,7 +282,14 @@ fn serve_flow(
         entry.method = Some(method.to_string());
         entry.url = Some(raw_url.to_string());
         entry.status = Some(answer.status);
-        entry.response_body = Some(if answer_derived { crate::taint::WITHHELD.to_string() } else { recorder::body_text(&answer.body) });
+        entry.response_body = Some(match &answer.file {
+            _ if answer_derived => crate::taint::WITHHELD.to_string(),
+            Some(file) => file.line(),
+            None => recorder::body_text(&answer.body),
+        });
+        if file_error.is_some() {
+            entry.error = file_error;
+        }
         entry.by = request.by.clone();
         match parked {
             Ok(names) => entry.parked = names,
@@ -310,6 +324,70 @@ fn serve_flow(
         }
     }
     answer
+}
+
+/// A file a route answered with, sent (host-capabilities L4 §5.11.14): the deployment granted
+/// `FileServe` of its folder, the file within `max_served_bytes`, a 304 for a cached copy that is
+/// still the file's (`If-None-Match`), and the file still the handle's, or a 503 the caller may
+/// try again. A small file's bytes are read and checked here; a big one is opened and checked by
+/// size and time, and the transport streams it, checking its hash as it goes. With the error its
+/// entry says, if any.
+pub(crate) fn serve_file(mut answer: DataResponse, permit: &Permit, folders: Option<&folders::Scoped>, headers: &[(String, String)]) -> (DataResponse, Option<String>) {
+    let Some(file) = answer.file.take() else { return (answer, None) };
+    let path = format!("{}/{}", file.folder, file.name);
+    if !permit.allows(&Capability::FileServe(file.folder.clone())) {
+        let why = format!("this deployment may not answer its callers with files from the folder {:?}", file.folder);
+        return (data::DataResponse::json_error(500, &why), Some(format!("refused: {why}")));
+    }
+    let max = permit.files.max_served_bytes;
+    if file.size > max {
+        let why = format!("{path} is {} bytes, more than the {max} a route answers with (max_served_bytes)", file.size);
+        return (data::DataResponse::json_error(500, &why), Some(format!("refused: {why}")));
+    }
+    let if_none_match = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("if-none-match")).map(|(_, v)| v.as_str());
+    if served_status(answer.status, &file, if_none_match, None) == 304 {
+        answer.status = 304;
+        answer.file = Some(file);
+        return (answer, None);
+    }
+    let changed = || {
+        let why = format!("{path} changed since the run read it");
+        let mut r = data::DataResponse::json_error(503, &why);
+        r.headers.push(("retry-after".into(), "1".into()));
+        (r, Some(format!("changed: {why}")))
+    };
+    let Some(Ok(Some((f, meta)))) = folders.map(|s| s.open_file(&file.folder, &file.name)) else { return changed() };
+    if meta.len() != file.size || folders::modified(&meta) != file.modified {
+        return changed();
+    }
+    if file.size <= permit.files.inline_file_bytes {
+        let mut bytes = Vec::new();
+        if std::io::Read::read_to_end(&mut std::io::Read::take(&f, file.size + 1), &mut bytes).is_err() || blake3::hash(&bytes).to_hex().as_str() != file.hash {
+            return changed();
+        }
+        answer.body = bytes;
+        answer.file = Some(file);
+    } else {
+        answer.file = Some(data::Served { opened: Some(Arc::new(f)), ..file });
+    }
+    (answer, None)
+}
+
+/// The status a file is answered with ([`serve_file`]), from the flow's, the request's
+/// `If-None-Match` and the error its entry says the checks found: a 503 for a file that changed, a
+/// 500 for one refused, a 304 for a 200 whose cached copy is still the file's (the header names
+/// its hash, or any, `*`). What `holon verify` expects of a run that answered with a file.
+pub(crate) fn served_status(status: u16, file: &data::Served, if_none_match: Option<&str>, error: Option<&str>) -> u16 {
+    let cached = || {
+        let mut tags = if_none_match.unwrap_or_default().split(',').map(|t| t.trim().trim_start_matches("W/"));
+        tags.any(|t| t == "*" || t.strip_prefix('"').and_then(|t| t.strip_suffix('"')) == Some(file.hash.as_str()))
+    };
+    match error {
+        Some(e) if e.starts_with("changed: ") => 503,
+        Some(e) if e.starts_with("refused: ") => 500,
+        _ if status == 200 && cached() => 304,
+        _ => status,
+    }
 }
 
 /// Bring the running listeners in line with the deployments table: stop any whose deployment is
@@ -408,6 +486,10 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
         && let Some(d) = state.deployments.lock().unwrap().get(slug)
     {
         answer.body = d.channels.kept(&s.channel, s.kept).iter().map(|p| channels::event_text(p)).collect::<String>().into_bytes();
+    }
+    // A big file streams on the deployment's own port; sent from here, it answers with its line.
+    if let Some(file) = answer.file.as_ref().filter(|f| f.opened.is_some()) {
+        answer.body = file.line().into_bytes();
     }
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));

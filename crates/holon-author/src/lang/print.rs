@@ -2251,7 +2251,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
         matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
-            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes"))
+            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes" | "file_serve"))
     }
 
     /// The statements in order, those waiting for one value together in one
@@ -2348,6 +2348,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "file_read_bytes" => "bytes",
             "file_list" => "files",
             "file_handle" => "file",
+            "file_serve" => "served",
             "file_lines" => "lines",
             "file_slice" => "part",
             "file_write" => "written",
@@ -3031,6 +3032,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let store = self.store_of(node);
                 let key = self.required(node, if d.name == "collection_delete" { "key" } else { "name" }, COND)?;
                 member(format!("{store}.{}({key})", if d.name == "file_handle" { "file" } else { "delete" }))
+            }
+            // A file as a route's answer: `site.serve(name)`, the handle its own.
+            "file_serve" => {
+                let store = self.store_of(node);
+                match self.inline_source(node, "file", "file_handle").filter(|h| h.param("folder") == store) {
+                    Some(h) => {
+                        self.touch(h);
+                        let name = self.required(h, "name", COND)?;
+                        member(format!("{store}.serve({name})"))
+                    }
+                    None => self.generic(node),
+                }
             }
             "file_copy" | "file_create_copy" => {
                 let store = self.store_of(node);
@@ -4221,6 +4234,13 @@ export const t = action((x) => {
         assert!(text.contains("parseInt(input.text, 16)"), "{text}");
         assert!(text.contains("Math.hypot(x, y)"), "{text}");
         assert!(!text.contains("from \"holon\"\nimport") && text.starts_with("import { action, flow } from \"holon\"\n"), "no leaf is imported:\n{text}");
+    }
+
+    /// A file served prints back as the folder's `serve`, its handle its own.
+    #[test]
+    fn a_served_file_prints_back_as_serve() {
+        let src = "import { flow, respond, route, status } from \"holon\"\nimport site from \"folder:site\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/assets/*file\", (req) => site.serve(`assets/${req.params.file}`))\n\nroute.get(\"/gone\", () => status(410, site.serve(\"410.html\")))\n\nroute.get(\"/down\", () =>\n  respond(site.serve(\"a.zip\"), { headers: { \"content-disposition\": \"attachment\" } }),\n)\n\nroute.get(\"/*path\", (req) => site.serve(req.params.path) ?? site.serve(\"index.html\"))\n";
+        prints_back(src);
     }
 
     /// Each record, JSON and date form prints back as written: `fmt` keeps the forms.

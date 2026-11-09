@@ -27,6 +27,8 @@ describe("who holds what", () => {
     expect(itemParts('SecretRead("a\\"b")')).toEqual({ kind: "SecretRead", arg: 'a"b' });
     expect(reaches('DbRead("shop/sales.orders")')).toEqual({ kind: "database", name: "shop", use: "read", table: "sales.orders" });
     expect(reaches('FileArrival("inbox")')).toEqual({ kind: "folder", name: "inbox", use: "arrival", table: null });
+    expect(reaches('FileServe("site")')).toEqual({ kind: "folder", name: "site", use: "serve", table: null });
+    expect(usesText([{ use: "serve", table: null, revoked: false, item: 'FileServe("site")' }])).toEqual([{ text: "serves its files", revoked: false }]);
     expect(reaches('HttpRequest("a.com")')).toBeNull();
   });
 

@@ -200,6 +200,7 @@ pub enum WCapability {
     DbRead(String),
     DbWrite(String),
     SecretAnswer(String),
+    FileServe(String),
 }
 
 impl WCapability {
@@ -233,6 +234,7 @@ impl WCapability {
             Capability::DbRead(table) => WCapability::DbRead(table),
             Capability::DbWrite(table) => WCapability::DbWrite(table),
             Capability::SecretAnswer(name) => WCapability::SecretAnswer(name),
+            Capability::FileServe(folder) => WCapability::FileServe(folder),
         }
     }
 }

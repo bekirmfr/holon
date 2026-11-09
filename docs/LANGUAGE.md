@@ -255,7 +255,7 @@ says how the route's runs are recorded (§5.1). `respond(page, { headers: { "con
 JSON, or `respond("", { headers: { location: "/" }, status: 303 })` for a redirect; without it, a
 text body goes out as plain text and anything else as JSON (the `guestbook` sample).
 
-### site: the rest of a path
+### site: the rest of a path, and a folder served
 
 ```ts
 route.get("/api/hello", () => ({ hello: "world" }))
@@ -263,17 +263,19 @@ route.get("/api/hello", () => ({ hello: "world" }))
 route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
 
 route.get(
-  "/",
-  () => respond(page(""), { headers: { "content-type": "text/html; charset=utf-8" } }),
+  "/assets/*file",
+  (req) =>
+    respond(site.serve(`assets/${req.params.file}`), {
+      headers: { "cache-control": "public, max-age=31536000, immutable" },
+    }),
   { log: "lazy" },
 )
 
-route.get(
-  "/*path",
-  (req) =>
-    respond(page(req.params.path), { headers: { "content-type": "text/html; charset=utf-8" } }),
-  { log: "lazy" },
-)
+route.get("/", () => site.serve("index.html"), { log: "lazy" })
+
+route.get("/*path", (req) => site.serve(req.params.path) ?? site.serve("index.html"), {
+  log: "lazy",
+})
 ```
 
 `/*path` is a rest segment, only ever last: it matches the rest of the path, one segment or more,
@@ -283,7 +285,15 @@ beats any route with one, and among rest routes the most literal segments win, s
 answers itself, any other path under `/api` gets the JSON 404, and every other path gets the page:
 a single-page app's deep link opens the app where it points. A segment that is empty, `.` or
 `..`, or that decodes to `/` or `\`, matches no rest, so the param never names another path than
-the request's. `page` is a `js` holon writing the app's page (§5.11).
+the request's.
+
+`site.serve(name)` (`import site from "folder:site"`) answers with a file of the folder: the
+file's handle, served, its bytes sent by the host once the run is over, with the type its name
+says and its hash as its `etag`, so a browser's copy that is still the file's gets a 304. The host
+sends the file the run saw or nothing: one changed since is a 503 to retry, and a big one that
+changes while it is streamed is cut. No such file is no value, so `??` falls back to the page; a
+route answering with no value answers 404, as `/assets/*file` does for a script that isn't there.
+It asks for `FileServe("site")`. See the files guide (`docs/manual/guides/files.md`).
 
 ### stripe-to-slack
 
@@ -1905,6 +1915,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
 | `inbox.list({ prefix: p, after: a, limit: n })` | `file_list{folder: inbox, limit: n}(p, a)` | a page of files, `{size, hash, modified}` by name, in name order |
 | `inbox.file(n)` | `file_handle{folder: inbox}(n)` | a handle: `{folder, name, size, hash, modified}`, no bytes |
+| `return site.serve(n)`, `respond(site.serve(n), { headers })`, `site.serve(n) ?? …` | `file_serve{folder: site}(file_handle{folder: site}(n))` as `respond`'s body | answer with the file, its bytes sent by the host if they are still the handle's (`FileServe("site")`) |
 | `inbox.lines(n, { from: i, limit: k })` | `file_lines{folder: inbox, limit: k}(n, i)` | `k` lines from line `i` (from the end when negative), without line endings |
 | `inbox.slice(n, { offset: o, length: k })` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or a file handler's `f`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
@@ -1941,6 +1952,8 @@ Rules the table implies:
   `max_file_read_bytes`, writes 1 GiB, `max_file_write_bytes`, and touches 1,000 files,
   `max_files_per_run`); a read of anything else fails the run, and it writes nothing. A bigger one
   is read by handle, lines or slice; a copy also asks `FileRead` of the folder its handle names.
+  A name no file can have (a `:`, a `<`, a `CON`) names no file: a read of it has no value. One
+  that would lead out of its folder (a `..` part, a leading `/`, a `\`) fails the run.
 - A host is its import, because the host is the capability the deployment asks for: a request is
   a method of an imported host, never a host from a wire. The path, headers and body can come from
   anywhere. A database's SQL is a text literal for the same reason: its tables are

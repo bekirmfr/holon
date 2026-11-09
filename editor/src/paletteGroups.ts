@@ -86,7 +86,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
     name: "files",
     items: new Set([
       "file_read", "file_list", "file_write", "file_delete",
-      "file_handle", "file_lines", "file_slice", "file_copy",
+      "file_handle", "file_serve", "file_lines", "file_slice", "file_copy",
       "file_create", "file_create_copy", "file_read_bytes",
     ]),
   },

@@ -1150,7 +1150,8 @@ pub struct Completion {
 /// `stripe.verify`, `JSON.parse`, or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
-    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query", "db_one",
+    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_serve", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query",
+    "db_one",
     "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "mail_send", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
     "stripe_verify",
 ];

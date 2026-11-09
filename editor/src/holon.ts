@@ -204,6 +204,7 @@ export type WCapability =
   | { ChannelRead: string }
   | { MailSend: string }
   | { SecretAnswer: string }
+  | { FileServe: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —

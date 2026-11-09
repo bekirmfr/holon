@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 27] = [
+    let named: [(&str, Say); 28] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -42,6 +42,7 @@ pub fn describe_item(item: &str) -> String {
             None => format!("run an action of the flow {a}"),
         }),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
+        ("FileServe", |a| format!("answer its callers with files from the folder \"{a}\"")),
         ("DbRead", |a| table_of(a, "read")),
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
         ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),

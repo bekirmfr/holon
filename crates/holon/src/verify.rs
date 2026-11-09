@@ -1090,9 +1090,27 @@ fn rerun(
     if json(&progress) != json(&entry.progress) {
         differs.push("the packs it sent as it waited");
     }
+    // A file's status is the host's checks' too: a 304 for the request's cached copy, or what its
+    // entry's error says they found.
+    let answered = || {
+        let answer = data::respond(outcome.outputs.first().and_then(Option::as_ref));
+        let Some(file) = &answer.file else { return answer.status };
+        let headers = match inputs.first() {
+            Some(Some(Value::Record(r))) => r.get("headers"),
+            _ => None,
+        };
+        let if_none_match = match headers {
+            Some(Value::Record(h)) => match h.get("if-none-match") {
+                Some(Value::Text(v)) => Some(v.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        listeners::served_status(answer.status, file, if_none_match, entry.error.as_deref())
+    };
     if entry.kind == "request"
         && let Some(status) = entry.status
-        && data::respond(outcome.outputs.first().and_then(Option::as_ref)).status != status
+        && answered() != status
     {
         differs.push("the status it answered");
     }

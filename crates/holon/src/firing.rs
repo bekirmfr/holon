@@ -691,8 +691,9 @@ fn run_attempt(
                 return false;
             }
         }
-        // A subscription is a route's answer, read from its response, never performed.
-        !matches!(cap, Capability::ChannelRead(_))
+        // A subscription and a served file are a route's answers, read from its response, never
+        // performed.
+        !matches!(cap, Capability::ChannelRead(_) | Capability::FileServe(_))
     });
     // Writes past the run's file limits: it fails before anything it did commits.
     let files_read = waits.files.as_ref().map_or(0, |f| f.files);
