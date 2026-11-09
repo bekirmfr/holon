@@ -11970,6 +11970,705 @@
   [0, 2] Record({"body": Effect { sink: "channel_subscribe:ticks", payload: Record({"channel": Text("ticks"), "from": Text("new")}) }, "status": Number(200.0)})
   [0] Record({"body": Effect { sink: "channel_subscribe:ticks", payload: Record({"channel": Text("ticks"), "from": Text("new")}) }, "status": Number(200.0)})
   => Record({"body": Effect { sink: "channel_subscribe:ticks", payload: Record({"channel": Text("ticks"), "from": Text("new")}) }, "status": Number(200.0)})
+== trading-bot · PUT /levels/:product · input 0
+  [0, 0, 0] Record({"product": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("PUT"), "params": Record({"product": Text("tea")}), "pat… #447c7e3b365a2b77 | Record({"product": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 4] Text("tea")
+  [0, 5] Record({})
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3, 2] Boolean(true)
+  [0, 3, 16] ·
+  [0, 3, 3] Number(0.0)
+  [0, 3, 8] Number(8.0)
+  [0, 3, 19] ·
+  [0, 3, 14] ·
+  [0, 3, 24] Text("-")
+  [0, 3, 9] Number(8.0)
+  [0, 3, 1] Number(4.0)
+  [0, 3, 17] ·
+  [0, 3, 13] ·
+  [0, 3, 22] Text("-4")
+  [0, 3, 4] Number(13.0)
+  [0, 3, 5] Number(3.0)
+  [0, 3, 20] ·
+  [0, 3, 11] ·
+  [0, 3, 10] Text("-a")
+  [0, 3, 7] Number(17.0)
+  [0, 3, 6] Number(3.0)
+  [0, 3, 18] ·
+  [0, 3, 15] ·
+  [0, 3, 25] Text("-")
+  [0, 3, 26] Number(20.0)
+  [0, 3, 0] Number(12.0)
+  [0, 3, 21] ·
+  [0, 3, 12] ·
+  [0, 3, 23] ·
+  [0, 3] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] Record({})
+  [0, 13] Text("tea")
+  [0, 14] Record({"product": Text("tea")})
+  [0, 15] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20, 0] Record({})
+  [0, 20, 1] Number(200.0)
+  [0, 20, 2] Record({"status": Number(200.0)})
+  [0, 20, 3] ·
+  [0, 20, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 20] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+== trading-bot · PUT /levels/:product · input 1
+  [0, 0, 0] Record({"product": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #f744c61e91f80298 | Record({"product": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 4] Text("tea")
+  [0, 5] Record({})
+  [0, 6] Number(4.0)
+  [0, 7] Record({"price": Number(4.0)})
+  [0, 8] ·
+  [0, 9] ·
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3, 2] Boolean(true)
+  [0, 3, 16] ·
+  [0, 3, 3] Number(0.0)
+  [0, 3, 8] Number(8.0)
+  [0, 3, 19] ·
+  [0, 3, 14] ·
+  [0, 3, 24] Text("-")
+  [0, 3, 9] Number(8.0)
+  [0, 3, 1] Number(4.0)
+  [0, 3, 17] ·
+  [0, 3, 13] ·
+  [0, 3, 22] Text("-4")
+  [0, 3, 4] Number(13.0)
+  [0, 3, 5] Number(3.0)
+  [0, 3, 20] ·
+  [0, 3, 11] ·
+  [0, 3, 10] Text("-a")
+  [0, 3, 7] Number(17.0)
+  [0, 3, 6] Number(3.0)
+  [0, 3, 18] ·
+  [0, 3, 15] ·
+  [0, 3, 25] Text("-")
+  [0, 3, 26] Number(20.0)
+  [0, 3, 0] Number(12.0)
+  [0, 3, 21] ·
+  [0, 3, 12] ·
+  [0, 3, 23] ·
+  [0, 3] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] Record({})
+  [0, 13] Text("tea")
+  [0, 14] Record({"product": Text("tea")})
+  [0, 15] Number(4.0)
+  [0, 16] Record({"price": Number(4.0), "product": Text("tea")})
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20, 0] Record({})
+  [0, 20, 1] Number(200.0)
+  [0, 20, 2] Record({"status": Number(200.0)})
+  [0, 20, 3] ·
+  [0, 20, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 20] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+== trading-bot · PUT /levels/:product · input 2
+  [0, 0, 0] Record({"product": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #779771cf65163c99 | Record({"product": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 4] Text("tea")
+  [0, 5] Record({})
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3, 2] Boolean(true)
+  [0, 3, 16] ·
+  [0, 3, 3] Number(0.0)
+  [0, 3, 8] Number(8.0)
+  [0, 3, 19] ·
+  [0, 3, 14] ·
+  [0, 3, 24] Text("-")
+  [0, 3, 9] Number(8.0)
+  [0, 3, 1] Number(4.0)
+  [0, 3, 17] ·
+  [0, 3, 13] ·
+  [0, 3, 22] Text("-4")
+  [0, 3, 4] Number(13.0)
+  [0, 3, 5] Number(3.0)
+  [0, 3, 20] ·
+  [0, 3, 11] ·
+  [0, 3, 10] Text("-a")
+  [0, 3, 7] Number(17.0)
+  [0, 3, 6] Number(3.0)
+  [0, 3, 18] ·
+  [0, 3, 15] ·
+  [0, 3, 25] Text("-")
+  [0, 3, 26] Number(20.0)
+  [0, 3, 0] Number(12.0)
+  [0, 3, 21] ·
+  [0, 3, 12] ·
+  [0, 3, 23] ·
+  [0, 3] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] Record({})
+  [0, 13] Text("tea")
+  [0, 14] Record({"product": Text("tea")})
+  [0, 15] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20, 0] Record({})
+  [0, 20, 1] Number(200.0)
+  [0, 20, 2] Record({"status": Number(200.0)})
+  [0, 20, 3] ·
+  [0, 20, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 20] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+== trading-bot · GET /prices · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/prices"), "… #2e35925ae0f211de | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · GET /prices · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #7495224eb07bed68 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · GET /prices · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #ff4345bea16dd2af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · GET /orders · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/orders"), "… #5bb636f8b204ba0c | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] ·
+  [0, 6, 0] Record({})
+  [0, 6, 1] Number(200.0)
+  [0, 6, 2] Record({"status": Number(200.0)})
+  [0, 6, 3] ·
+  [0, 6, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · GET /orders · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #c0ffeb078f150e8a | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] ·
+  [0, 6, 0] Record({})
+  [0, 6, 1] Number(200.0)
+  [0, 6, 2] Record({"status": Number(200.0)})
+  [0, 6, 3] ·
+  [0, 6, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · GET /orders · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6727638a1674840f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] ·
+  [0, 6, 0] Record({})
+  [0, 6, 1] Number(200.0)
+  [0, 6, 2] Record({"status": Number(200.0)})
+  [0, 6, 3] ·
+  [0, 6, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · POST /approve/:token · input 0
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"token": Text("tea")}), "path… #3f94d391d563af8c | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("approved")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0] Record({"body": Text("approved"), "status": Number(200.0)})
+  => Record({"body": Text("approved"), "status": Number(200.0)})
+== trading-bot · POST /approve/:token · input 1
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #db94c0db910e857a | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("approved")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0] Record({"body": Text("approved"), "status": Number(200.0)})
+  => Record({"body": Text("approved"), "status": Number(200.0)})
+== trading-bot · POST /approve/:token · input 2
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #69addacde2f9098a | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("approved")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("approved"), "status": Number(200.0)})
+  [0] Record({"body": Text("approved"), "status": Number(200.0)})
+  => Record({"body": Text("approved"), "status": Number(200.0)})
+== trading-bot · action approval · input 0
+  [0, 0] Record({})
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] Text("someone")
+  [0, 6] Record({"approved_by": Text("someone")})
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · action approval · input 1
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] Text("someone")
+  [0, 6] Record({"a": Number(6.0), "amount": Number(5.0), "approved_by": Text("someone"), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0… #0a83b120b9d96798
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · action approval · input 2
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5] Text("someone")
+  [0, 6] Record({"approved_by": Text("someone"), "items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), … #5776d4da159ca169
+  [0, 7] ·
+  [0, 8, 0] Record({})
+  [0, 8, 1] Number(200.0)
+  [0, 8, 2] Record({"status": Number(200.0)})
+  [0, 8, 3] ·
+  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · action place · input 0
+  [0, 15] Text("/orders")
+  [0, 16] Text("POST")
+  [0, 17] Text("/orders")
+  [0, 1] Record({})
+  [0, 2] Text("limit")
+  [0, 3] Record({"type": Text("limit")})
+  [0, 4] Text("buy")
+  [0, 5] Record({"side": Text("buy"), "type": Text("limit")})
+  [0, 0] Record({})
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 12] Record({})
+  [0, 22, 14] Text("application/json")
+  [0, 22, 6] Record({"content-type": Text("application/json")})
+  [0, 22, 2] ·
+  [0, 22, 16] ·
+  [0, 22, 4] ·
+  [0, 22, 1] Boolean(true)
+  [0, 22, 13] ·
+  [0, 22, 11] ·
+  [0, 22, 10] Text("POST")
+  [0, 22, 9] Text("/orders")
+  [0, 22, 8] ·
+  [0, 22, 0] ·
+  [0, 22, 3] ·
+  [0, 22, 5] ·
+  [0, 22, 7] ·
+  [0, 22, 15] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 27] ·
+  [0, 24] ·
+  [0, 25] Number(200.0)
+  [0, 26] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 44] ·
+  [0, 47] ·
+  [0, 45] ·
+  [0, 48] Record({})
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] ·
+  [0, 52] ·
+  [0, 53, 0] Record({})
+  [0, 53, 1] Number(200.0)
+  [0, 53, 2] Record({"status": Number(200.0)})
+  [0, 53, 3] ·
+  [0, 53, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 53] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== trading-bot · action place · input 1
+  [0, 15] Text("/orders")
+  [0, 16] Text("POST")
+  [0, 17] Text("/orders")
+  [0, 1] Record({})
+  [0, 2] Text("limit")
+  [0, 3] Record({"type": Text("limit")})
+  [0, 4] Text("buy")
+  [0, 5] Record({"side": Text("buy"), "type": Text("limit")})
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] Number(4.0)
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] Text("x")
+  [0, 13] ·
+  [0, 14] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 12] Record({})
+  [0, 22, 14] Text("application/json")
+  [0, 22, 6] Record({"content-type": Text("application/json")})
+  [0, 22, 2] ·
+  [0, 22, 16] ·
+  [0, 22, 4] ·
+  [0, 22, 1] Boolean(true)
+  [0, 22, 13] ·
+  [0, 22, 11] ·
+  [0, 22, 10] Text("POST")
+  [0, 22, 9] Text("/orders")
+  [0, 22, 8] ·
+  [0, 22, 0] ·
+  [0, 22, 3] ·
+  [0, 22, 5] ·
+  [0, 22, 7] ·
+  [0, 22, 15] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 27] Text("x")
+  [0, 24] ·
+  [0, 25] Number(200.0)
+  [0, 26] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 44] Text("x")
+  [0, 47] ·
+  [0, 45] ·
+  [0, 48] Record({})
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] ·
+  [0, 52] ·
+  [0, 53, 0] Record({})
+  [0, 53, 1] Number(200.0)
+  [0, 53, 2] Record({"status": Number(200.0)})
+  [0, 53, 3] ·
+  [0, 53, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 53] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== trading-bot · action place · input 2
+  [0, 15] Text("/orders")
+  [0, 16] Text("POST")
+  [0, 17] Text("/orders")
+  [0, 1] Record({})
+  [0, 2] Text("limit")
+  [0, 3] Record({"type": Text("limit")})
+  [0, 4] Text("buy")
+  [0, 5] Record({"side": Text("buy"), "type": Text("limit")})
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 12] Record({})
+  [0, 22, 14] Text("application/json")
+  [0, 22, 6] Record({"content-type": Text("application/json")})
+  [0, 22, 2] ·
+  [0, 22, 16] ·
+  [0, 22, 4] ·
+  [0, 22, 1] Boolean(true)
+  [0, 22, 13] ·
+  [0, 22, 11] ·
+  [0, 22, 10] Text("POST")
+  [0, 22, 9] Text("/orders")
+  [0, 22, 8] ·
+  [0, 22, 0] ·
+  [0, 22, 3] ·
+  [0, 22, 5] ·
+  [0, 22, 7] ·
+  [0, 22, 15] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 27] ·
+  [0, 24] ·
+  [0, 25] Number(200.0)
+  [0, 26] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 44] ·
+  [0, 47] ·
+  [0, 45] ·
+  [0, 48] Record({})
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] ·
+  [0, 52] ·
+  [0, 53, 0] Record({})
+  [0, 53, 1] Number(200.0)
+  [0, 53, 2] Record({"status": Number(200.0)})
+  [0, 53, 3] ·
+  [0, 53, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 53] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== trading-bot · action reconcile · input 0
+  [0, 1] Text("/orders")
+  [0, 2] Text("GET")
+  [0, 3] Text("/orders")
+  [0, 4] Text("")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9, 12] Record({})
+  [0, 9, 14] Text("application/json")
+  [0, 9, 6] Record({"content-type": Text("application/json")})
+  [0, 9, 2] ·
+  [0, 9, 16] ·
+  [0, 9, 4] ·
+  [0, 9, 1] Boolean(true)
+  [0, 9, 13] ·
+  [0, 9, 11] ·
+  [0, 9, 10] Text("GET")
+  [0, 9, 9] Text("/orders")
+  [0, 9, 8] Text("")
+  [0, 9, 0] ·
+  [0, 9, 3] ·
+  [0, 9, 5] ·
+  [0, 9, 7] ·
+  [0, 9, 15] ·
+  [0, 9] ·
+  [0, 0] Record({})
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · action reconcile · input 1
+  [0, 1] Text("/orders")
+  [0, 2] Text("GET")
+  [0, 3] Text("/orders")
+  [0, 4] Text("")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9, 12] Record({})
+  [0, 9, 14] Text("application/json")
+  [0, 9, 6] Record({"content-type": Text("application/json")})
+  [0, 9, 2] ·
+  [0, 9, 16] ·
+  [0, 9, 4] ·
+  [0, 9, 1] Boolean(true)
+  [0, 9, 13] ·
+  [0, 9, 11] ·
+  [0, 9, 10] Text("GET")
+  [0, 9, 9] Text("/orders")
+  [0, 9, 8] Text("")
+  [0, 9, 0] ·
+  [0, 9, 3] ·
+  [0, 9, 5] ·
+  [0, 9, 7] ·
+  [0, 9, 15] ·
+  [0, 9] ·
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== trading-bot · action reconcile · input 2
+  [0, 1] Text("/orders")
+  [0, 2] Text("GET")
+  [0, 3] Text("/orders")
+  [0, 4] Text("")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9, 12] Record({})
+  [0, 9, 14] Text("application/json")
+  [0, 9, 6] Record({"content-type": Text("application/json")})
+  [0, 9, 2] ·
+  [0, 9, 16] ·
+  [0, 9, 4] ·
+  [0, 9, 1] Boolean(true)
+  [0, 9, 13] ·
+  [0, 9, 11] ·
+  [0, 9, 10] Text("GET")
+  [0, 9, 9] Text("/orders")
+  [0, 9, 8] Text("")
+  [0, 9, 0] ·
+  [0, 9, 3] ·
+  [0, 9, 5] ·
+  [0, 9, 7] ·
+  [0, 9, 15] ·
+  [0, 9] ·
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == ticker · GET / · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})

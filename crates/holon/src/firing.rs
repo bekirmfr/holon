@@ -913,6 +913,7 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     if kept.is_ok() {
         channels.release(seq + 1, &permit.channels);
         folders.all.mails.release(slug, seq + 1);
+        folders.all.feeds.release(slug, seq + 1);
     }
     Some(Logged { seq: Some(seq), kept })
 }

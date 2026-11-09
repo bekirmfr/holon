@@ -851,7 +851,7 @@ pub(crate) fn handle_delete_deployment(
             }
             dep.arrivals.forget();
             inbox::forget(deployments_path, slug);
-            subscriptions::forget(deployments_path, slug);
+            subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
             dep.channels.close();
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))

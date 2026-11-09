@@ -7975,6 +7975,179 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An exchange on loopback for the trading-bot sample, as Coinbase Exchange's REST API answers:
+/// each request signed (`cb-access-sign`, an HMAC-SHA256 of the time, method, path and body with
+/// the secret) or refused 401; `POST /orders` places an order once, a client id it has seen
+/// refused 409, and waits while it is held; `GET /orders` lists the orders placed.
+struct Exchange {
+    host: String,
+    asked: Arc<Mutex<Vec<serde_json::Value>>>,
+    placed: Arc<Mutex<Vec<serde_json::Value>>>,
+    held: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Exchange {
+    const KEY: &'static str = "ex-key-e2e";
+    const PASSPHRASE: &'static str = "ex-pass-e2e";
+    /// Its secret, base64 as an exchange hands it out.
+    const SECRET: &'static str = "c2VjcmV0LWJ5dGVzLWZvci10aGUtZXhjaGFuZ2U=";
+
+    fn start() -> Exchange {
+        let asked: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+        let placed: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+        let held = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (a, p, h) = (Arc::clone(&asked), Arc::clone(&placed), Arc::clone(&held));
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            use std::io::Read;
+            let mut body = String::new();
+            if let Some(mut data) = request.data() {
+                let _ = data.read_to_string(&mut body);
+            }
+            let header = |name: &str| request.header(name).unwrap_or_default().to_string();
+            let prehash = format!("{}{}{}{body}", header("cb-access-timestamp"), request.method(), request.raw_url());
+            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &holon_core::text_bytes(Exchange::SECRET, "base64").unwrap());
+            let signed = holon_core::bytes_text(ring::hmac::sign(&key, prehash.as_bytes()).as_ref(), "base64").unwrap();
+            if header("cb-access-sign") != signed || header("cb-access-key") != Exchange::KEY || header("cb-access-passphrase") != Exchange::PASSPHRASE {
+                return Response::json(&serde_json::json!({ "message": "invalid signature" })).with_status_code(401);
+            }
+            if request.method() == "GET" {
+                return Response::json(&*p.lock().unwrap());
+            }
+            let order: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            a.lock().unwrap().push(order.clone());
+            let (lock, changed) = &*h;
+            drop(changed.wait_while(lock.lock().unwrap(), |held| *held).unwrap());
+            let mut placed = p.lock().unwrap();
+            if placed.iter().any(|o| o["client_oid"] == order["client_oid"]) {
+                return Response::json(&serde_json::json!({ "message": "duplicate client_oid" })).with_status_code(409);
+            }
+            let mut order = order;
+            order["id"] = serde_json::json!(format!("ex-{}", placed.len() + 1));
+            placed.push(order.clone());
+            Response::json(&order)
+        })
+        .unwrap();
+        let host = server.server_addr().to_string();
+        thread::spawn(move || server.run());
+        Exchange { host, asked, placed, held }
+    }
+
+    fn hold(&self, held: bool) {
+        *self.held.0.lock().unwrap() = held;
+        self.held.1.notify_all();
+    }
+}
+
+/// The trading-bot sample (host-capabilities L4 §5.9.4) against a WebSocket ticker and an exchange
+/// on loopback: the binding subscribes, runs only the ticker's messages and keeps only each
+/// product's newest price while a run is slow; a price under a level places its order once, signed;
+/// the price coming again places nothing, and the action run again by hand is refused by the
+/// exchange; an order over the limit waits for approval, then is placed by a run of its own;
+/// reconcile reads the exchange's orders back. The runs verify, and no key is in the log.
+#[test]
+fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
+    let exchange = Exchange::start();
+    let ticker = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-bot-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_TICKER_URL={}\n", ticker.url("/ws?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/trading-bot.holon.ts").replace("\"host:api.exchange.coinbase.com\"", &format!("\"host:{}\"", exchange.host));
+    let subscribe = r#"{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD","ETH-USD"]}"#;
+    let bind = serde_json::json!({
+        "name": "ticker", "url": "env:HOLON_SECRET_TICKER_URL", "subscribe": [subscribe], "only": ["type=ticker"],
+        "id": "product_id,sequence", "on_full": "latest", "key": "product_id",
+    });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    let status = bound.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    let slug = deploy_text(&state, &text, &exchange.host);
+    for (name, value) in [("exchange_key", Exchange::KEY), ("exchange_secret", Exchange::SECRET), ("exchange_passphrase", Exchange::PASSPHRASE)] {
+        let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/{name}"), set)).status_code, 200);
+    }
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        assert_eq!(status, 200, "{method} {path}: {body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body))
+    };
+    let level = call("PUT", "/levels/BTC-USD", r#"{"price":"100","size":"2"}"#);
+    let id = level["id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 36, "a uuid: {id}");
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // Asked once to bind it, then by the deployment's connection, which subscribes.
+    eventually("the feed is listened to", || ticker.asked().len() == 2 && ticker.heard() == [subscribe]);
+    let price = |product: &str, price: &str, sequence: u32| ticker.text(&format!(r#"{{"type":"ticker","product_id":"{product}","price":"{price}","sequence":{sequence}}}"#));
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    // Under the level, with the exchange holding its answer: the run waits on the order while
+    // prices come, and each product's newest is kept.
+    exchange.hold(true);
+    ticker.text(r#"{"type":"subscriptions","channels":[{"name":"ticker"}]}"#);
+    price("BTC-USD", "99", 1);
+    eventually("the order is sent", || exchange.asked.lock().unwrap().len() == 1);
+    price("BTC-USD", "98", 2);
+    price("ETH-USD", "50", 1);
+    price("BTC-USD", "97", 3);
+    price("BTC-USD", "96", 4);
+    eventually("two prices replaced", || live()["replaced"] == 2);
+    let l = live();
+    assert_eq!((l["waiting"].as_u64(), l["passed_over"].as_u64()), (Some(2), Some(1)), "{l}");
+    exchange.hold(false);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let prices = call("GET", "/prices", "");
+    assert_eq!((prices["BTC-USD"]["price"].as_str(), prices["BTC-USD"]["replaced"].as_u64()), (Some("96"), Some(2)), "{prices}");
+    assert_eq!(prices["ETH-USD"]["price"], "50", "{prices}");
+    let placed = exchange.placed.lock().unwrap().clone();
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert_eq!((placed[0]["client_oid"].as_str(), placed[0]["price"].as_str(), placed[0]["size"].as_str()), (Some(id.as_str()), Some("100"), Some("2")));
+    let orders = call("GET", "/orders", "");
+    assert_eq!((orders["placed"][&id]["exchange"].as_str(), orders["placed"][&id]["approved_by"].as_str()), (Some("ex-1"), Some("under the limit")), "{orders}");
+    // BTC's newest took the place of the one that waited, ahead of ETH's.
+    assert_eq!(live()["position"], "ETH-USD/1");
+
+    // The price under the level again: placed already, nothing sent.
+    price("BTC-USD", "95", 5);
+    eventually("a fourth run", || runs().len() == 4);
+    assert_eq!(exchange.asked.lock().unwrap().len(), 1);
+    // The order run again by hand, as a crash would run its price again: the exchange refuses
+    // the client id it has seen.
+    let again = body_json(run_action_named(&state, &slug, "place", serde_json::json!({ "product": "BTC-USD", "price": "100", "size": "2", "id": id })));
+    assert_eq!(again["answer"]["status"], 409, "{again}");
+    assert_eq!((exchange.asked.lock().unwrap().len(), exchange.placed.lock().unwrap().len()), (2, 1));
+
+    // Worth more than 1000: it waits for approval, then a run of its own places it.
+    let big = call("PUT", "/levels/ETH-USD", r#"{"price":"2000","size":"1"}"#);
+    price("ETH-USD", "1999", 2);
+    eventually("the order waits for approval", || call("GET", "/orders", "")["waiting"][big["id"].as_str().unwrap()]["approve"].is_string());
+    let link = call("GET", "/orders", "")["waiting"][big["id"].as_str().unwrap()]["approve"].as_str().unwrap().to_string();
+    assert_eq!(exchange.asked.lock().unwrap().len(), 2, "nothing sent before the approval");
+    let (status, said, _) = data_call(&state, &slug, "POST", &link, r#"{"by":"ops"}"#);
+    assert_eq!(status, 200, "{said}");
+    eventually("the large order is placed", || exchange.placed.lock().unwrap().len() == 2);
+    let orders = call("GET", "/orders", "");
+    assert_eq!(orders["placed"][big["id"].as_str().unwrap()]["approved_by"], "ops", "{orders}");
+    assert_eq!(orders["waiting"], serde_json::json!({}), "{orders}");
+    // Read back from the exchange.
+    let open = body_json(run_action_named(&state, &slug, "reconcile", serde_json::json!({})));
+    assert_eq!(open["answer"].as_array().map(Vec::len), Some(2), "{open}");
+
+    // Its runs check offline, and no key is in its log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    for kept in ["s3cret", Exchange::KEY, Exchange::SECRET, Exchange::PASSPHRASE] {
+        assert!(!logged.contains(kept), "{kept} is in the log");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze

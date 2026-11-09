@@ -18,6 +18,7 @@ import { imapServer } from "./imap-server.mjs";
 import { smtpSink } from "./smtp-sink.mjs";
 import { tokenEndpoint } from "./token-endpoint.mjs";
 import { sseServer } from "./sse-server.mjs";
+import { wsServer } from "./ws-server.mjs";
 
 const fresh = process.argv.includes("--fresh");
 const port = fresh ? PORTS.fresh : PORTS.server;
@@ -80,11 +81,14 @@ const supportSmtp = fresh ? null : await smtpSink(join(folders, "support-mail"),
 // The price-feed sample's feed of server-sent events (sse-server.mjs): an event a .json file
 // dropped in the folders' feed/, its URL in the dotenv with a key in its query, as a provider's.
 const feed = fresh ? null : await sseServer(join(folders, "feed"));
+// The trading-bot sample's ticker, a WebSocket (ws-server.mjs): a message a .json file dropped in
+// the folders' ticker/, what it is sent in its heard.log; its URL in the dotenv, with a key.
+const ticker = fresh ? null : await wsServer(join(folders, "ticker"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,
-  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}`,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}${ticker ? `HOLON_SECRET_TICKER_URL=ws://127.0.0.1:${ticker}/ws?key=e2e-not-a-key\n` : ""}`,
 );
 const server = spawn(
   binary,
@@ -269,4 +273,21 @@ if (!fresh) {
     body: JSON.stringify({ name: "prices", url: "env:HOLON_SECRET_PRICES_URL" }),
   });
   if (!prices.ok) console.error(`e2e server: binding the feed prices failed: ${await prices.text()}`);
+  // The trading-bot sample's ticker, bound as its comment says: subscribed to, its ticker messages
+  // run, their id the product and sequence, each product's newest kept while runs are slow.
+  if (ticker) mkdirSync(join(folders, "ticker"), { recursive: true });
+  const tickerBound = await fetch(`${base}/admin/feeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "ticker",
+      url: "env:HOLON_SECRET_TICKER_URL",
+      subscribe: ['{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}'],
+      only: ["type=ticker"],
+      id: "product_id,sequence",
+      on_full: "latest",
+      key: "product_id",
+    }),
+  });
+  if (!tickerBound.ok) console.error(`e2e server: binding the feed ticker failed: ${await tickerBound.text()}`);
 }

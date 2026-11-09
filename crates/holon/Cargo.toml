@@ -70,6 +70,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 toml = "0.8"
+# A feed's WebSocket (ws.rs): the handshake and frames only, over the host's own TCP and rustls
+# stream, so a connection is closed from another thread and found quiet by its read timeout.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `holon mcp setup` (mcphosts.rs) edits Codex's config.toml with its comments kept.
 toml_edit = "0.22"
 # Backups of the runs a log lets go of, gzipped (storage.rs).
@@ -87,6 +90,11 @@ rfd = { version = "0.17", default-features = false }
 # `holon editor`'s shell line: ctrl+c stops the command it runs, not the editor (workbench/shell.rs).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# The trading-bot test's exchange checks each order's signature (HMAC-SHA256) as an exchange does:
+# rustls's own ring, already in the build.
+ring = "0.17"
 
 [target."cfg(windows)".dependencies]
 keyring = { version = "3", features = ["windows-native"] }

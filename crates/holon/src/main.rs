@@ -169,6 +169,7 @@ mod imap;
 mod oauth;
 mod inbox;
 mod sse;
+mod ws;
 mod feeds;
 mod subscriptions;
 mod deploy;

@@ -206,12 +206,47 @@ export async function unbindMail(name: string, deployment: string | null): Promi
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/mails/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
+/** What a feed's connection does with what comes while its buffer is full: waits, drops it, or
+ *  replaces the waiting event of its key. */
+export type OnFull = "wait" | "skip" | "latest";
 /** A feed bound (feeds.rs): where its URL is read from (env:…, vault:…) and where it points,
  *  without its login or query; the headers each request sends (each name, and where its value is
- *  read from); how many events may wait for their run; and how long (seconds) it may say nothing. */
-export type FeedEntry = { name: string; deployment: string | null; url: string; address: string; headers: Record<string, string>; buffer: number; idle: number };
-/** A feed to bind: `buffer` and `idle` (90s, 2m) left out for the defaults. */
-export type FeedBinding = { name: string; deployment: string | null; url: string; headers: Record<string, string>; buffer?: number; idle?: string };
+ *  read from); how many events may wait for their run, and what comes when they are that many;
+ *  how long (seconds) it may say nothing. A WebSocket's: what it is sent when it opens and to
+ *  keep it, the fields that are a message's id, and the messages it runs. */
+export type FeedEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  headers: Record<string, string>;
+  buffer: number;
+  idle: number;
+  on_full: OnFull;
+  key?: string;
+  subscribe?: string[];
+  heartbeat?: string;
+  every?: number;
+  id?: string[];
+  only?: Record<string, string[]>;
+};
+/** A feed to bind: what is left out takes its default. `id` is FIELD[,FIELD], `only` each
+ *  FIELD=VALUE, `idle` and `every` 90s, 2m. */
+export type FeedBinding = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  headers: Record<string, string>;
+  buffer?: number;
+  idle?: string;
+  on_full?: OnFull;
+  key?: string;
+  subscribe?: string[];
+  heartbeat?: string;
+  every?: string;
+  id?: string;
+  only?: string[];
+};
 export const listFeeds = async () => asJson<FeedEntry[]>(await api(`${BASE}/admin/feeds`));
 export const bindFeed = async (f: FeedBinding) => asJson<FeedEntry>(await post(`${BASE}/admin/feeds`, f));
 export async function unbindFeed(name: string, deployment: string | null): Promise<void> {
@@ -220,7 +255,8 @@ export async function unbindFeed(name: string, deployment: string | null): Promi
 }
 /** What a deployment's connection to one feed its handlers listen to is doing (`GET
  *  /deployments/<slug>/feeds`): since when (ms), why it isn't connected, the id of the last event
- *  run on, and how many wait. */
+ *  run on, how many wait, and since it opened how many its binding passed over (`--only`), its
+ *  full buffer dropped (`skip`), and newer ones of their key replaced (`latest`). */
 export type FeedState = {
   feed: string;
   label: string;
@@ -230,6 +266,9 @@ export type FeedState = {
   error?: string;
   position?: string;
   waiting: number;
+  passed_over?: number;
+  missed?: number;
+  replaced?: number;
 };
 export async function feedStates(slug: string): Promise<FeedState[]> {
   return (await asJson<{ feeds: FeedState[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/feeds`))).feeds;

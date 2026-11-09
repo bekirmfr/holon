@@ -2,14 +2,18 @@
 //! §5.9.2). Every second a thread compares the feeds running deployments listen to with the
 //! connections it holds, and opens or closes them: one a deployment and feed, opened anew when
 //! the deployment's version or the feed's binding changes. Each has a reading thread, which
-//! reads the feed's events (sse.rs) into a buffer of the binding's `--buffer`, and waits while it
-//! is full; and a running thread, which runs the handler on each, one at a time, in the order they
-//! came, `e` the event: `{data, id, event}`, `data` a value when it is JSON, else its text.
+//! reads the feed's events (sse.rs, ws.rs) into a buffer of the binding's `--buffer`, and when it
+//! is full waits, drops what comes, or replaces the waiting event of its key (`--on-full`, §5.9.4);
+//! and a running thread, which runs the handler on each, one at a time, in the order they came,
+//! `e` the event: `{data, id, event, missed, replaced}`, `data` a value when it is JSON, else its
+//! text, or a binary WebSocket message's bytes.
 //!
 //! - **Where it is** is kept beside the log (`feed-seen/<slug>/<feed>.json`): the id of the last
 //!   event run on, which a reconnect sends as `Last-Event-ID`, and the last [`RECENT`] ids run on,
-//!   so an event sent again is passed over (the timeline says so). It moves at the run's end.
-//!   With where the feed points: a binding pointed elsewhere starts anew.
+//!   so an event sent again is passed over (the timeline says so). It moves as the run's record
+//!   does: a strict or an unrecorded run's at its end, a lazy run's once the sync covering its
+//!   record is done (`Feeds::release`), kept in memory until then. With where the feed points: a
+//!   binding pointed elsewhere starts anew.
 //! - **Where a new listener starts:** at what the feed sends from now.
 //! - **A connection lost** is opened again after a second, then twice as long each time it fails,
 //!   to a minute; longer when the feed asks (`retry:`). The timeline says so once, and again
@@ -20,8 +24,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Condvar;
 
-use crate::feeds::{Binding, Feeds};
-use crate::sse::{Event, Next};
+use crate::feeds::{Binding, Event, Feeds, Incoming, OnFull};
 use crate::*;
 
 /// How often the thread compares what is listened to with what it holds.
@@ -35,7 +38,7 @@ const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_secs(60);
 
 /// Where a deployment is in one feed.
-#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
 struct Seen {
     /// Where the feed points, as its binding shows it.
     at: String,
@@ -52,8 +55,9 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
     deployments_path.beside("feed-seen").map(|dir| PathBuf::from(dir).join(slug))
 }
 
-/// Forget where `slug` is in its feeds (it is deleted).
-pub(crate) fn forget(deployments_path: &Place, slug: &str) {
+/// Forget where `slug` is in its feeds (it is deleted), with where its lazy runs moved them.
+pub(crate) fn forget(deployments_path: &Place, slug: &str, feeds: &Feeds) {
+    feeds.forget_held(slug);
     if let Some(dir) = seen_dir(deployments_path, slug) {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -89,6 +93,51 @@ impl Kept {
     }
 }
 
+/// Where a deployment is in one feed as its runs moved it, kept across its connections: a lazy
+/// run's move waits here for the sync that covers its record.
+#[derive(Default)]
+struct Made {
+    /// Where its runs moved it, once read or moved.
+    seen: Option<Seen>,
+    /// How many moves were made, and the newest kept: a move held for a sync is kept only if
+    /// none newer was.
+    moves: u64,
+    kept: Arc<Mutex<u64>>,
+}
+
+impl Made {
+    /// Where the deployment is, as moved or else as kept.
+    fn seen(&mut self, kept: &Kept) -> &mut Seen {
+        self.seen.get_or_insert_with(|| kept.read())
+    }
+
+    /// A move to where it is now: what keeps it, unless a newer move was kept first.
+    fn moved(&mut self, kept: &Kept) -> Box<dyn FnOnce() + Send> {
+        self.moves += 1;
+        let (at, newest, kept, seen) = (self.moves, Arc::clone(&self.kept), kept.clone(), self.seen(kept).clone());
+        Box::new(move || {
+            let mut newest = newest.lock().unwrap();
+            if at > *newest {
+                kept.keep(&seen);
+                *newest = at;
+            }
+        })
+    }
+
+    /// Whether a move waits for its sync.
+    fn holding(&self) -> bool {
+        self.moves > *self.kept.lock().unwrap()
+    }
+}
+
+/// The events read, waiting for their run.
+#[derive(Default)]
+struct Waiting {
+    events: VecDeque<Event>,
+    /// How many `skip` dropped since an event last found room: the next one's `e.missed`.
+    missed: u64,
+}
+
 /// What a connection's two threads share.
 struct Shared {
     slug: String,
@@ -96,13 +145,13 @@ struct Shared {
     stop: AtomicBool,
     /// The open connection's socket, shut to close it at once.
     closer: Mutex<Option<sse::Closer>>,
-    /// The events read, waiting for their run.
-    buffer: Mutex<VecDeque<Event>>,
+    buffer: Mutex<Waiting>,
     changed: Condvar,
     capacity: usize,
+    on_full: OnFull,
     /// Held while an event is run on: a connection opened anew waits for the old one's run, so
     /// where the feed is has moved past it when it looks.
-    running: Arc<Mutex<()>>,
+    made: Arc<Mutex<Made>>,
     feeds: Feeds,
 }
 
@@ -126,14 +175,37 @@ impl Shared {
         self.stopped()
     }
 
-    /// Put `event` in the buffer, waiting while it is full: false when it was closed instead.
-    fn push(&self, event: Event) -> bool {
-        let mut buffer = self.changed.wait_while(self.buffer.lock().unwrap(), |b| b.len() >= self.capacity && !self.stopped()).unwrap();
+    /// Put `event` in the buffer, as the binding says (`--on-full`): it waits while the buffer is
+    /// full; or is dropped, counted in the next event's `missed`; or replaces the waiting event of
+    /// its key, full or not, counted in its `replaced`. False when it was closed instead.
+    fn push(&self, mut event: Event) -> bool {
+        let mut buffer = self.buffer.lock().unwrap();
+        match self.on_full {
+            OnFull::Skip if buffer.events.len() >= self.capacity => {
+                buffer.missed += 1;
+                drop(buffer);
+                self.feeds.set_live(&self.slug, &self.feed, |l| l.missed += 1);
+                return !self.stopped();
+            }
+            OnFull::Latest => {
+                let waiting = event.key.as_ref().and_then(|key| buffer.events.iter_mut().find(|e| e.key.as_ref() == Some(key)));
+                if let Some(waiting) = waiting {
+                    event.replaced += waiting.replaced + 1;
+                    *waiting = event;
+                    drop(buffer);
+                    self.feeds.set_live(&self.slug, &self.feed, |l| l.replaced += 1);
+                    return !self.stopped();
+                }
+            }
+            _ => {}
+        }
+        let mut buffer = self.changed.wait_while(buffer, |b| b.events.len() >= self.capacity && !self.stopped()).unwrap();
         if self.stopped() {
             return false;
         }
-        buffer.push_back(event);
-        let waiting = buffer.len();
+        event.missed += std::mem::take(&mut buffer.missed);
+        buffer.events.push_back(event);
+        let waiting = buffer.events.len();
         drop(buffer);
         self.changed.notify_all();
         self.feeds.set_live(&self.slug, &self.feed, |l| l.waiting = waiting);
@@ -143,12 +215,12 @@ impl Shared {
     /// The next event, waiting for one: None once it is closed (what waits is read again from
     /// where the feed is, by the connection opened next).
     fn pop(&self) -> Option<Event> {
-        let mut buffer = self.changed.wait_while(self.buffer.lock().unwrap(), |b| b.is_empty() && !self.stopped()).unwrap();
+        let mut buffer = self.changed.wait_while(self.buffer.lock().unwrap(), |b| b.events.is_empty() && !self.stopped()).unwrap();
         if self.stopped() {
             return None;
         }
-        let event = buffer.pop_front();
-        let waiting = buffer.len();
+        let event = buffer.events.pop_front();
+        let waiting = buffer.events.len();
         drop(buffer);
         self.changed.notify_all();
         self.feeds.set_live(&self.slug, &self.feed, |l| l.waiting = waiting);
@@ -172,8 +244,9 @@ struct Conn {
 #[derive(Default)]
 pub(crate) struct Held {
     conns: BTreeMap<(String, String), Conn>,
-    /// Each deployment and feed's run lock, kept across its connections.
-    running: BTreeMap<(String, String), Arc<Mutex<()>>>,
+    /// Each deployment and feed's run lock, with where its runs moved it, kept across its
+    /// connections.
+    made: BTreeMap<(String, String), Arc<Mutex<Made>>>,
     /// Where each is, for a server whose deployments are kept nowhere (`:memory:`).
     memory: Arc<Mutex<BTreeMap<PathBuf, Vec<u8>>>>,
 }
@@ -214,13 +287,14 @@ pub(crate) fn reconcile(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<St
         }
         keep
     });
-    // A lock a closed connection's run still holds is kept: a connection opened again waits for it.
-    held.running.retain(|key, lock| wanted.contains_key(key) || Arc::strong_count(lock) > 1);
+    // A lock a closed connection's run still holds is kept: a connection opened again waits for
+    // it; and a move that waits for its sync, which a connection opened again goes on from.
+    held.made.retain(|key, made| wanted.contains_key(key) || Arc::strong_count(made) > 1 || made.lock().unwrap().holding());
     for (key, (version, feeds)) in wanted {
         if held.conns.contains_key(&key) {
             continue;
         }
-        let running = Arc::clone(held.running.entry(key.clone()).or_default());
+        let made = Arc::clone(held.made.entry(key.clone()).or_default());
         let kept = Kept {
             file: seen_dir(deployments_path, &key.0).map(|d| d.join(format!("{}.json", key.1))),
             key: PathBuf::from(&key.0).join(format!("{}.json", key.1)),
@@ -231,10 +305,11 @@ pub(crate) fn reconcile(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<St
             feed: key.1.clone(),
             stop: AtomicBool::new(false),
             closer: Mutex::new(None),
-            buffer: Mutex::new(VecDeque::new()),
+            buffer: Mutex::default(),
             changed: Condvar::new(),
             capacity: version.1.buffer,
-            running,
+            on_full: version.1.on_full,
+            made,
             feeds,
         });
         open(store, deployments, deployments_path, &shared, &version.1, kept);
@@ -246,7 +321,7 @@ pub(crate) fn reconcile(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<St
 fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, shared: &Arc<Shared>, binding: &Binding, kept: Kept) {
     let address = binding.address.clone();
     shared.feeds.set_live(&shared.slug, &shared.feed, |l| {
-        *l = feeds::Live { address, status: "connecting", since: feeds::now_ms(), error: None, position: None, waiting: 0 };
+        *l = feeds::Live { address, status: "connecting", since: feeds::now_ms(), ..feeds::Live::default() };
     });
     let (reader, deps, b, k) = (Arc::clone(shared), Arc::clone(deployments), binding.clone(), kept.clone());
     thread::spawn(move || read(&reader, &deps, &b, &k));
@@ -258,12 +333,13 @@ fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment
 /// over: none when it was first listened to, or the binding points elsewhere now (it starts at
 /// what the feed sends now).
 fn position(shared: &Shared, binding: &Binding, kept: &Kept) -> Option<String> {
-    let _running = shared.running.lock().unwrap();
-    let seen = kept.read();
+    let mut made = shared.made.lock().unwrap();
+    let seen = made.seen(kept);
     if seen.at == binding.address {
-        return seen.position;
+        return seen.position.clone();
     }
-    kept.keep(&Seen { at: binding.address.clone(), position: None, recent: VecDeque::new() });
+    *seen = Seen { at: binding.address.clone(), position: None, recent: VecDeque::new() };
+    made.moved(kept)();
     None
 }
 
@@ -308,14 +384,15 @@ fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, bind
         failing = false;
         shared.feeds.set_live(&shared.slug, feed, |l| (l.status, l.since, l.error) = ("connected", feeds::now_ms(), None));
         let lost = loop {
-            match conn.next_event() {
-                Ok(Some(Next::Event(event))) => {
+            match conn.next(binding) {
+                Ok(Some(Incoming::Event(event))) => {
                     last_read = Some(event.last_id.clone()).filter(|id| !id.is_empty());
                     if !shared.push(event) {
                         break None;
                     }
                 }
-                Ok(Some(Next::PassedOver)) => shared.note(deployments, format!("passed over an event of {feed} past {} MiB", sse::MAX_EVENT >> 20)),
+                Ok(Some(Incoming::PassedOver)) => shared.note(deployments, format!("passed over an event of {feed} past {} MiB", sse::MAX_EVENT >> 20)),
+                Ok(Some(Incoming::Filtered)) => shared.feeds.set_live(&shared.slug, feed, |l| l.passed_over += 1),
                 Ok(None) => break Some("the feed ended the connection".to_string()),
                 Err(why) => break Some(why),
             }
@@ -333,37 +410,47 @@ fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, bind
 /// The running thread: a run of the handler on each event, one at a time, until it is closed.
 fn run(shared: &Shared, store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, kept: &Kept) {
     while let Some(event) = shared.pop() {
-        let _running = shared.running.lock().unwrap();
+        let mut made = shared.made.lock().unwrap();
         if shared.stopped() {
             break;
         }
-        let mut seen = kept.read();
-        let position = Some(event.last_id.clone()).filter(|id| !id.is_empty());
-        if let Some(id) = event.id.as_ref().filter(|id| !id.is_empty() && seen.recent.contains(id)) {
+        let ran_already = event.id.as_ref().filter(|id| !id.is_empty() && made.seen(kept).recent.contains(id));
+        if let Some(id) = ran_already {
+            // Kept with the next run's move: it runs on no record.
             shared.note(deployments, format!("passed over an event of {} it ran already ({id})", shared.feed));
-        } else {
-            let Some(listening) = listening(deployments, &shared.slug, &shared.feed) else { break };
-            fire_one_feed(store, deployments, deployments_path, &listening, value_of(&event));
-            if let Some(id) = event.id.as_ref().filter(|id| !id.is_empty()) {
-                seen.recent.push_back(id.clone());
-                while seen.recent.len() > RECENT {
-                    seen.recent.pop_front();
-                }
+            let seen = made.seen(kept);
+            seen.position = Some(event.last_id.clone()).filter(|id| !id.is_empty()).or(seen.position.take());
+            continue;
+        }
+        let Some(listening) = listening(deployments, &shared.slug, &shared.feed) else { break };
+        let held_for = fire_one_feed(store, deployments, deployments_path, &listening, value_of(&event));
+        let seen = made.seen(kept);
+        if let Some(id) = event.id.as_ref().filter(|id| !id.is_empty()) {
+            seen.recent.push_back(id.clone());
+            while seen.recent.len() > RECENT {
+                seen.recent.pop_front();
             }
         }
-        if position.is_some() {
-            seen.position = position.clone();
+        seen.position = Some(event.last_id.clone()).filter(|id| !id.is_empty()).or(seen.position.take());
+        let position = seen.position.clone();
+        let moved = made.moved(kept);
+        match held_for {
+            Some(seq) => shared.feeds.hold(&shared.slug, seq, moved),
+            None => moved(),
         }
-        kept.keep(&seen);
-        shared.feeds.set_live(&shared.slug, &shared.feed, |l| l.position = seen.position.clone());
+        shared.feeds.set_live(&shared.slug, &shared.feed, |l| l.position = position);
     }
 }
 
-/// `e`, as the handler reads it: `{data, id, event}`, `data` a value when it is JSON, else its
-/// text, `id` only when the feed gave one.
+/// `e`, as the handler reads it: `{data, id, event, missed, replaced}`, `data` a value when it is
+/// JSON, else its text, or a binary message's bytes; `id` only when the feed gave one.
 fn value_of(event: &Event) -> Value {
-    let data = holon_core::parse_json(&event.data).unwrap_or_else(|| Value::Text(event.data.clone()));
-    let mut e = BTreeMap::from([("data".to_string(), data), ("event".to_string(), Value::Text(event.name.clone()))]);
+    let mut e = BTreeMap::from([
+        ("data".to_string(), event.data.clone()),
+        ("event".to_string(), Value::Text(event.name.clone())),
+        ("missed".to_string(), Value::Number(event.missed as f64)),
+        ("replaced".to_string(), Value::Number(event.replaced as f64)),
+    ]);
     if let Some(id) = &event.id {
         e.insert("id".to_string(), Value::Text(id.clone()));
     }
@@ -382,15 +469,16 @@ fn listening(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, feed
     Some((slug.to_string(), handler, d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)))
 }
 
-/// One run of `l`'s handler for `event`, logged under its label.
-fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, l: &Listening, event: Value) {
+/// One run of `l`'s handler for `event`, logged under its label: the seq of its entry when its
+/// record is lazy, which where it moved the feed waits for.
+fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, l: &Listening, event: Value) -> Option<u64> {
     let (slug, handler, unit_hash, state, permit, secrets, files) = l;
     let resolver = match closure(store, *unit_hash) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("feed event [{slug}]: store error while materializing closure: {e:?}");
             record_trigger(deployments, slug, true);
-            return;
+            return None;
         }
     };
     // The handler runs alone: its unit is the run's.
@@ -399,7 +487,7 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         eprintln!("feed event [{slug}]: deployed unit no longer resolves in the store");
         record_trigger(deployments, slug, true);
-        return;
+        return None;
     };
     let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let extra_sourced = [
@@ -410,7 +498,8 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     let started = started_now();
     let channels = deployments.lock().unwrap().get(slug.as_str()).map(|d| Arc::clone(&d.channels));
     let declared = handler.log;
-    let unrecorded = permit.log_level(Some(&label), declared) == holon_core::LogLevel::Unrecorded;
+    let level = permit.log_level(Some(&label), declared);
+    let unrecorded = level == holon_core::LogLevel::Unrecorded;
     let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), unrecorded, ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, permit, true, secrets, &mut waits, None);
@@ -421,7 +510,9 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
+    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared);
+    let held_for = logged.as_ref().and_then(|l| l.seq).filter(|_| level == holon_core::LogLevel::Lazy);
+    if let Some(l) = logged {
         l.said(slug);
     }
     println!("feed event [{slug}] {label}: {} effect(s) performed", run.performed.len());
@@ -429,6 +520,7 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     if parked_any {
         persist_deployments(deployments_path, deployments);
     }
+    held_for
 }
 
 /// The thread that holds the feeds' connections, comparing them with what is listened to every
@@ -448,20 +540,109 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    #[test]
-    fn an_event_is_its_data_as_a_value_its_name_and_its_own_id() {
-        let e = |data: &str, id: Option<&str>| value_of(&Event { data: data.into(), name: "price".into(), id: id.map(Into::into), last_id: "9".into() });
-        let field = |v: &Value, k: &str| match v {
+    fn event(data: Value, key: Option<&str>, id: Option<&str>) -> Event {
+        Event { data, name: "price".into(), id: id.map(Into::into), last_id: id.unwrap_or_default().into(), key: key.map(Into::into), missed: 0, replaced: 0 }
+    }
+
+    fn field(v: &Value, k: &str) -> Option<Value> {
+        match v {
             Value::Record(m) => m.get(k).cloned(),
             _ => None,
-        };
-        let json = e("{\"symbol\":\"ACME\",\"price\":10.5}", Some("41"));
+        }
+    }
+
+    #[test]
+    fn an_event_is_its_data_its_name_its_own_id_and_what_its_buffer_dropped() {
+        let price = holon_core::parse_json("{\"symbol\":\"ACME\",\"price\":10.5}").unwrap();
+        let json = value_of(&Event { missed: 3, ..event(price, None, Some("41")) });
         assert_eq!(field(&field(&json, "data").unwrap(), "price"), Some(Value::Number(10.5)));
         assert_eq!(field(&json, "id"), Some(Value::Text("41".into())));
         assert_eq!(field(&json, "event"), Some(Value::Text("price".into())));
-        let text = e("hello there", None);
+        assert_eq!((field(&json, "missed"), field(&json, "replaced")), (Some(Value::Number(3.0)), Some(Value::Number(0.0))));
+        let text = value_of(&event(Value::Text("hello there".into()), None, None));
         assert_eq!(field(&text, "data"), Some(Value::Text("hello there".into())));
         assert_eq!(field(&text, "id"), None);
+    }
+
+    fn shared(on_full: OnFull, capacity: usize) -> Shared {
+        Shared {
+            slug: "app".into(),
+            feed: "prices".into(),
+            stop: AtomicBool::new(false),
+            closer: Mutex::new(None),
+            buffer: Mutex::default(),
+            changed: Condvar::new(),
+            capacity,
+            on_full,
+            made: Arc::default(),
+            feeds: Feeds::memory(),
+        }
+    }
+
+    fn waiting(s: &Shared) -> Vec<(Option<String>, u64, u64)> {
+        s.buffer.lock().unwrap().events.iter().map(|e| (e.id.clone(), e.missed, e.replaced)).collect()
+    }
+
+    #[test]
+    fn skip_drops_what_comes_while_full_and_the_next_event_says_how_many() {
+        let s = shared(OnFull::Skip, 2);
+        for id in ["1", "2", "3", "4"] {
+            assert!(s.push(event(Value::Number(0.0), None, Some(id))));
+        }
+        assert_eq!(waiting(&s), vec![(Some("1".into()), 0, 0), (Some("2".into()), 0, 0)], "3 and 4 dropped");
+        assert_eq!(s.pop().unwrap().id.as_deref(), Some("1"));
+        assert!(s.push(event(Value::Number(0.0), None, Some("5"))));
+        assert_eq!(waiting(&s), vec![(Some("2".into()), 0, 0), (Some("5".into()), 2, 0)]);
+        assert_eq!(s.feeds.live("app", "prices").map(|l| (l.missed, l.waiting)), Some((2, 2)));
+    }
+
+    #[test]
+    fn latest_replaces_the_waiting_event_of_its_key_in_its_place_full_or_not() {
+        let s = shared(OnFull::Latest, 3);
+        assert!(s.push(event(Value::Number(0.0), Some("BTC"), Some("b1"))));
+        assert!(s.push(event(Value::Number(0.0), Some("ETH"), Some("e1"))));
+        assert!(s.push(event(Value::Number(0.0), Some("BTC"), Some("b2"))), "not full: replaced still");
+        assert!(s.push(event(Value::Number(0.0), Some("BTC"), Some("b3"))));
+        assert!(s.push(event(Value::Number(0.0), None, Some("n1"))), "no key: it waits as it came");
+        assert_eq!(waiting(&s), vec![(Some("b3".into()), 0, 2), (Some("e1".into()), 0, 0), (Some("n1".into()), 0, 0)]);
+        assert!(s.push(event(Value::Number(0.0), Some("ETH"), Some("e2"))), "full: its key still replaces");
+        assert_eq!(waiting(&s)[1], (Some("e2".into()), 0, 1));
+        assert_eq!(s.feeds.live("app", "prices").map(|l| l.replaced), Some(3));
+        // A new key finds the buffer full of others, and waits for room.
+        let s = Arc::new(s);
+        let pusher = {
+            let s = Arc::clone(&s);
+            thread::spawn(move || s.push(event(Value::Number(0.0), Some("SOL"), Some("s1"))))
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(waiting(&s).len(), 3, "SOL waits");
+        assert_eq!(s.pop().unwrap().id.as_deref(), Some("b3"));
+        assert!(pusher.join().unwrap());
+        assert_eq!(waiting(&s).last(), Some(&(Some("s1".into()), 0, 0)));
+    }
+
+    #[test]
+    fn a_lazy_runs_move_is_kept_once_its_sync_is_done_and_never_over_a_newer_one() {
+        let kept = Kept { file: None, key: Path::new("app").join("prices.json"), memory: Arc::default() };
+        let feeds = Feeds::memory();
+        let mut made = Made::default();
+        let at = |p: &str| Seen { at: "wss://feed".into(), position: Some(p.into()), recent: VecDeque::new() };
+        *made.seen(&kept) = at("1");
+        feeds.hold("app", 7, made.moved(&kept));
+        assert!(made.holding());
+        assert_eq!(kept.read(), Seen::default(), "not kept before its sync");
+        feeds.release("app", 7);
+        assert_eq!(kept.read(), Seen::default(), "a sync through 6 doesn't cover 7");
+        feeds.release("app", 8);
+        assert_eq!(kept.read(), at("1"));
+        assert!(!made.holding());
+        // A lazy move, then a strict one kept at once: the lazy one, released after, is older.
+        made.seen(&kept).position = Some("2".into());
+        feeds.hold("app", 9, made.moved(&kept));
+        made.seen(&kept).position = Some("3".into());
+        made.moved(&kept)();
+        feeds.release("app", 10);
+        assert_eq!(kept.read(), at("3"));
     }
 
     #[test]

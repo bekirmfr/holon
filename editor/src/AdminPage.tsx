@@ -26,6 +26,7 @@ import {
   unbindFeed,
   type FeedBinding,
   type FeedEntry,
+  type OnFull,
   listFolders,
   listGrants,
   listServerSecrets,
@@ -141,8 +142,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", oauth: "", deployment: null };
   const [mailDraft, setMailDraft] = useState<MailBinding>(noMail);
   const [feeds, setFeeds] = useState<FeedEntry[]>([]);
-  // A feed to bind, its headers written NAME=SOURCE, one a line.
-  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "" };
+  // A feed to bind, its headers written NAME=SOURCE and its subscription messages one a line, its
+  // --only FIELD=VALUE with spaces between.
+  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", subscribe: "", heartbeat: "", every: "", id: "", only: "" };
   const [feedDraft, setFeedDraft] = useState(noFeed);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
@@ -817,13 +819,16 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
 
           <div style={head}>feeds</div>
           <div style={about}>
-            The feeds flows listen to: each name a feed of server-sent events whose URL the server fetches from where it is kept, as a secret&apos;s
+            The feeds flows listen to: each name a feed of server-sent events, or a WebSocket (wss://), whose URL the server fetches from where it is kept, as a secret&apos;s
             (<code>env:HOLON_SECRET_PRICES_URL</code>, <code>vault:…</code>), never typed in here, stored or shown, and so are the values of the headers each
             request sends (Authorization=env:HOLON_SECRET_PRICES_AUTH, one a line). It is bound once a request to it answers as a feed does. A flow names the
             feed (<code>import prices from &quot;feed:prices&quot;</code>) and runs <code>on.feed(prices, (e) =&gt; …)</code> for each event it sends, one at
             a time, in the order they came; the server keeps the connection and where it is, opens it again from there when it is lost, and passes over an
-            event it ran already. How many may wait for their run before the connection waits too (1000), and how long the feed may say nothing before it is
-            opened again (90s).
+            event it ran already. How many may wait for their run (1000), and what comes when that many do: it waits, it is dropped (the next event&apos;s{" "}
+            <code>e.missed</code> says how many were), or it replaces the waiting event of its key (<code>e.replaced</code>); and how long the feed may say
+            nothing before it is opened again (90s). A WebSocket is also sent its subscription when it opens (a message as written, or a source for one with a
+            key in it) and a heartbeat to keep it; the fields of a message that are its id (product_id,sequence) say where it is, and only the messages whose
+            field has a value given (type=ticker) run.
           </div>
           {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
           {feeds.map((f) => (
@@ -833,7 +838,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
                   {`${f.address} (from ${f.url})`}
                   {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
-                  {` · ${f.buffer} may wait · quiet for ${f.idle}s at most`}
+                  {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
+                  {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
+                  {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
+                  {f.id && ` · its id ${f.id.join("/")}`}
+                  {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
                 </span>
                 {f.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {f.deployment} only</span>}
                 <button
@@ -869,6 +878,15 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 const binding: FeedBinding = { name, url: feedDraft.url.trim(), headers, deployment };
                 if (feedDraft.buffer.trim()) binding.buffer = Number(feedDraft.buffer.trim());
                 if (feedDraft.idle.trim()) binding.idle = feedDraft.idle.trim();
+                if (feedDraft.onFull !== "wait") binding.on_full = feedDraft.onFull;
+                if (feedDraft.key.trim()) binding.key = feedDraft.key.trim();
+                const subscribe = feedDraft.subscribe.split("\n").map((l) => l.trim()).filter(Boolean);
+                if (subscribe.length > 0) binding.subscribe = subscribe;
+                if (feedDraft.heartbeat.trim()) binding.heartbeat = feedDraft.heartbeat.trim();
+                if (feedDraft.every.trim()) binding.every = feedDraft.every.trim();
+                if (feedDraft.id.trim()) binding.id = feedDraft.id.trim();
+                const only = feedDraft.only.split(/\s+/).filter(Boolean);
+                if (only.length > 0) binding.only = only;
                 await bindFeed(binding);
                 setFeedDraft(noFeed);
               });
@@ -883,6 +901,14 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               style={{ ...input, flex: 1, minWidth: 220 }}
             />
             <input aria-label="feed buffer" placeholder="may wait (1000)" value={feedDraft.buffer} onChange={(e) => setFeedDraft({ ...feedDraft, buffer: e.target.value })} style={input} />
+            <select aria-label="feed on full" value={feedDraft.onFull} onChange={(e) => setFeedDraft({ ...feedDraft, onFull: e.target.value as OnFull })} style={input}>
+              <option value="wait">when full: wait</option>
+              <option value="skip">when full: skip</option>
+              <option value="latest">latest of each key</option>
+            </select>
+            {feedDraft.onFull === "latest" && (
+              <input aria-label="feed key" placeholder="its key (product_id)" value={feedDraft.key} onChange={(e) => setFeedDraft({ ...feedDraft, key: e.target.value })} style={input} />
+            )}
             <input aria-label="feed idle" placeholder="quiet for at most (90s)" value={feedDraft.idle} onChange={(e) => setFeedDraft({ ...feedDraft, idle: e.target.value })} style={input} />
             <input
               aria-label="feed for one deployment"
@@ -899,6 +925,24 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               rows={2}
               style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
             />
+            {/^\s*wss?:/.test(feedDraft.url) || /^\s*(env|vault):/.test(feedDraft.url) ? (
+              <>
+                <textarea
+                  aria-label="feed subscribe"
+                  placeholder={'a WebSocket\'s: what it is sent when it opens, one a line, as written or a source ({"type":"subscribe","channels":["ticker"]})'}
+                  value={feedDraft.subscribe}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, subscribe: e.target.value })}
+                  rows={2}
+                  style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+                />
+                <input aria-label="feed id" placeholder="its id fields (product_id,sequence)" value={feedDraft.id} onChange={(e) => setFeedDraft({ ...feedDraft, id: e.target.value })} style={input} />
+                <input aria-label="feed only" placeholder="runs only (type=ticker)" value={feedDraft.only} onChange={(e) => setFeedDraft({ ...feedDraft, only: e.target.value })} style={input} />
+                <input aria-label="feed heartbeat" placeholder="heartbeat (ping)" value={feedDraft.heartbeat} onChange={(e) => setFeedDraft({ ...feedDraft, heartbeat: e.target.value })} style={input} />
+                {feedDraft.heartbeat.trim() && (
+                  <input aria-label="feed every" placeholder="every (30s)" value={feedDraft.every} onChange={(e) => setFeedDraft({ ...feedDraft, every: e.target.value })} style={input} />
+                )}
+              </>
+            ) : null}
             {isUrl(feedDraft.url) && (
               <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_PRICES_URL, vault:…). It isn&apos;t sent.

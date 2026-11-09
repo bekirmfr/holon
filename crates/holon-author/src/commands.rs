@@ -205,11 +205,15 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
     // Its unrecorded handlers, each asked for at deploy, said as the approval says it (C5).
-    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
+    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log)));
+    let unrecorded = unrecorded.chain(server.mails.iter().map(|m| (m.label.clone(), &m.log))).chain(server.feeds.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
     out.extend(while_it_runs(&caps));
+    // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
+    // last sync didn't cover (host-capabilities L4 §5.9.4).
+    out.extend(server.feeds.iter().filter(|f| f.log == "lazy").map(|f| format!("{} is lazy: after a crash, the events of its last second may run again", f.label)));
     if problems.is_empty() && starts_nothing(&c, &mut store) {
         out.push(STARTS_NOTHING.into());
     }

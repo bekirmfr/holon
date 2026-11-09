@@ -16,7 +16,7 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 | `every("2s", () => { … })` | the clock | one a period | `Clock` | `scheduler.rs` |
 | `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
 | `on.mail(remit, (m) => { … })` | a message in a bound mailbox | one a message, `m` the message read | `MailArrival("remit")` | `inbox.rs` |
-| `on.feed(prices, (e) => { … })` | an event from a bound feed of server-sent events | one an event, in order, `e` the event | `FeedEvent("prices")` | `subscriptions.rs` |
+| `on.feed(prices, (e) => { … })` | an event from a bound feed of server-sent events or a WebSocket | one an event, in order, `e` the event | `FeedEvent("prices")` | `subscriptions.rs` |
 | `export const reset = action((input) => { … })` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
 
 Every flow has handlers. The forms without them (`every 10s` or `on file inbox` as a header, the
@@ -30,7 +30,8 @@ runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handl
 `file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
 routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a mail handler that
 answers through the same mail, logged in with OAuth), `price-feed` (a feed handler beside routes,
-telling a page through a channel), `billing` and `shop` (actions, and a
+telling a page through a channel), `trading-bot` (a WebSocket feed, newest price a product, a lazy
+handler starting a strict action), `billing` and `shop` (actions, and a
 flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
@@ -102,14 +103,18 @@ host-capabilities L4 §5.9.2), for every kind of feed to come: every second a th
 feeds running deployments listen to with the connections it holds, and opens or closes them, one
 a deployment and feed, opened anew when the deployment's unit or the feed's binding changes. Each
 has a reading thread, which reads the feed's events (`sse.rs`, a client over `rustls` the host
-can close from another thread) into a buffer of the binding's `--buffer`, and waits while it is
-full; and a running thread, which runs the handler on each, one at a time, its event the run's
-input as `FeedEvent("prices")`: `{data, event, id}`, `data` parsed when it is JSON. A run lock
-per deployment and feed outlives a connection, so a new version waits for the old one's run and
-reads where the feed is after it: no event runs twice. Where the feed is (the last id run on, and
-the last 1,000) is in `feed-seen/<slug>/<feed>.json` beside the log, written at each run's end; a
-reconnect sends it as `Last-Event-ID`, and an event sent again by its id is passed over, on the
-timeline. A connection lost is opened again after a second, or the feed's `retry:`; one that
+can close from another thread; `ws.rs`, a WebSocket through `tungstenite`'s handshake and frames
+over the same stream, §5.9.4) into a buffer of the binding's `--buffer`, and when it is full
+waits, drops what comes (`skip`) or replaces the waiting event of its key (`latest`); and a running
+thread, which runs the handler on each, one at a time, its event the run's input as
+`FeedEvent("prices")`: `{data, event, id, missed, replaced}`, `data` parsed when it is JSON. A run
+lock per deployment and feed, with where its runs moved it, outlives a connection, so a new version
+waits for the old one's run and reads where the feed is after it: no event runs twice. Where the
+feed is (the last id run on, and the last 1,000) is in `feed-seen/<slug>/<feed>.json` beside the
+log, written as the run's record is: a strict or unrecorded run's at its end, a lazy run's once
+`sync_logs` has synced its entry (`Feeds::hold` and `release`, beside the channels' packs and the
+mail); a reconnect sends it as `Last-Event-ID`, and an event sent again by its id is passed over,
+on the timeline. A connection lost is opened again after a second, or the feed's `retry:`; one that
 can't be is tried again after twice as long each time, to a minute, on the timeline once. What
 each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
 `on feed prices`.

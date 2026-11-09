@@ -126,12 +126,16 @@ declare module "holon" {
   }
   /** An event a feed sent. */
   export interface FeedEvent {
-    /** Its data: a value when it is JSON, else its text. */
+    /** Its data: a value when it is JSON, else its text; a binary WebSocket message's bytes. */
     data: any
-    /** Its id, when the feed gives one. */
+    /** Its id, when the feed gives one (a WebSocket's: the fields its binding names, joined with /). */
     id?: string
     /** Its name: "message" unless the feed names it. */
     event: string
+    /** How many events its full buffer dropped before it (`--on-full skip`): 0 unless some were. */
+    missed: number
+    /** How many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did. */
+    replaced: number
   }
   export const on: {
     file: {

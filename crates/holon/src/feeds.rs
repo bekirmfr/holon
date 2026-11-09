@@ -3,19 +3,24 @@
 //!
 //! - **Bound by an admin,** as a mail is (`--feeds`, owner-only; `/admin/feeds`; `holon feed`): a
 //!   name a flow imports (`import prices from "feed:prices"`) bound to a feed of server-sent
-//!   events, its URL read from a source (`env:…`, `vault:…`) each time a connection opens and never
-//!   kept (sse.rs), with the headers each request sends, their values read from sources too; how
-//!   many events may wait for their run (`--buffer`), and how long the feed may say nothing before
-//!   the connection is opened again (`--idle`). For the whole server or one deployment.
-//! - **Checked when bound:** a request to it answers 200 with `text/event-stream`, then it is
-//!   closed. The binding keeps the sources, and where the URL points without its login or query,
-//!   which is what is shown.
+//!   events (sse.rs) or a WebSocket (ws.rs, §5.9.4), its URL read from a source (`env:…`,
+//!   `vault:…`) each time a connection opens and never kept, with the headers each request sends,
+//!   their values read from sources too; how many events may wait for their run (`--buffer`), what
+//!   comes when they are that many (`--on-full`: wait, skip, or replace the one of its `--key`),
+//!   and how long the feed may say nothing before the connection is opened again (`--idle`). A
+//!   WebSocket's binding also says what it is sent when it opens (`--subscribe`) and to keep it
+//!   (`--heartbeat`), which fields are a message's id (`--id`), and which messages run (`--only`).
+//!   For the whole server or one deployment.
+//! - **Checked when bound:** a request to it answers 200 with `text/event-stream`, or a WebSocket's
+//!   101, then it is closed. The binding keeps the sources, and where the URL points without its
+//!   login or query, which is what is shown.
 //! - **The grant** names the feed (`FeedEvent("prices")`); a deploy is refused while it isn't bound
 //!   ([`Feeds::refuses`]). Several deployments may listen to one feed: each has its own
 //!   connection.
 //! - **What each connection is doing** (subscriptions.rs keeps it here) is in
 //!   `GET /deployments/<slug>/feeds`.
 
+use std::collections::VecDeque;
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -24,6 +29,7 @@ use rouille::{Request, Response};
 use crate::http::{err, read_body};
 use crate::permissions::Manifest;
 use crate::secret_sources::{Reference, Sources};
+use zeroize::Zeroizing;
 
 use crate::*;
 
@@ -53,7 +59,58 @@ pub(crate) struct Binding {
     pub(crate) buffer: usize,
     /// How long the feed may say nothing before the connection is opened again, in seconds.
     pub(crate) idle: u64,
+    /// What comes while `buffer` events wait.
+    #[serde(default, skip_serializing_if = "OnFull::is_wait")]
+    pub(crate) on_full: OnFull,
+    /// `latest`'s: the field of a message whose value one waiting is replaced by (a dotted path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) key: Option<String>,
+    /// A WebSocket's: what it is sent each time it opens, in order, each as written or the source
+    /// it is read from (`env:…`, for one that holds a key).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) subscribe: Vec<String>,
+    /// A WebSocket's: what it is sent every `every` seconds while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) heartbeat: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) every: u64,
+    /// A WebSocket's: the fields of a JSON message that are its id, joined with `/`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) id: Vec<String>,
+    /// A WebSocket's: the messages run, by the values a field may have (every field named must
+    /// match); the rest are passed over.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) only: BTreeMap<String, Vec<String>>,
 }
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// What a feed's connection does with what comes while its buffer is full.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum OnFull {
+    /// Stops reading, and the feed waits, as TCP makes it.
+    #[default]
+    Wait,
+    /// Drops it, and the next event that finds room says how many were (`e.missed`).
+    Skip,
+    /// Replaces the one of its key that waits, full or not (`e.replaced`); a new key waits.
+    Latest,
+}
+
+impl OnFull {
+    fn is_wait(&self) -> bool {
+        *self == OnFull::Wait
+    }
+}
+
+/// How often a heartbeat goes out, unless the binding says, in seconds.
+const EVERY: u64 = 30;
+
+/// The longest message a binding sends, in bytes.
+const MESSAGE_MOST: usize = 64 * 1024;
 
 /// What binding a feed asks for, as `/admin/feeds` takes it.
 #[derive(Deserialize, Default, Debug)]
@@ -68,6 +125,45 @@ pub(crate) struct Asked {
     /// `90s`, `2m`.
     #[serde(default)]
     pub(crate) idle: Option<String>,
+    /// `wait`, `skip` or `latest`.
+    #[serde(default)]
+    pub(crate) on_full: Option<String>,
+    #[serde(default)]
+    pub(crate) key: Option<String>,
+    #[serde(default)]
+    pub(crate) subscribe: Vec<String>,
+    #[serde(default)]
+    pub(crate) heartbeat: Option<String>,
+    /// `30s`.
+    #[serde(default)]
+    pub(crate) every: Option<String>,
+    /// `product_id,sequence`.
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    /// `type=ticker`, each.
+    #[serde(default)]
+    pub(crate) only: Vec<String>,
+}
+
+/// A field of a JSON message, as a binding names it: a dotted path (`data.u`), or why it isn't one.
+fn path_of(what: &str, path: &str) -> Result<String, String> {
+    let path = path.trim();
+    let ok = !path.is_empty() && path.len() <= 256 && path.split('.').all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+    ok.then(|| path.to_string()).ok_or_else(|| format!("{what} names a field of a JSON message: a name, or a dotted path (data.u); {path:?} isn't one"))
+}
+
+/// The value at `path` in `data`, as text: a text as it is, anything else as JSON writes it.
+pub(crate) fn field_text(data: &Value, path: &str) -> Option<String> {
+    let mut at = data;
+    for name in path.split('.') {
+        let Value::Record(fields) = at else { return None };
+        at = fields.get(name)?;
+    }
+    match at {
+        Value::Text(t) => Some(t.clone()),
+        Value::Record(_) | Value::List(_) => None,
+        v => holon_core::stringify_json(v),
+    }
 }
 
 /// Every binding, as [`folders::Bound`]: the server's by name, each deployment's under
@@ -81,7 +177,7 @@ pub(crate) struct Bound {
 }
 
 /// What one deployment's connection to one feed is doing.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub(crate) struct Live {
     /// Where the feed points, as its binding shows it.
     pub(crate) address: String,
@@ -97,6 +193,14 @@ pub(crate) struct Live {
     pub(crate) position: Option<String>,
     /// How many events wait for their run.
     pub(crate) waiting: usize,
+    /// Since the connection opened: how many messages `--only` passed over, a full buffer dropped
+    /// (`skip`), and a newer one of their key replaced (`latest`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub(crate) passed_over: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub(crate) missed: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub(crate) replaced: u64,
 }
 
 /// The feeds bound on this server, and what each connection to them is doing.
@@ -111,7 +215,13 @@ struct Inner {
     sources: Sources,
     /// Each connection's state, by deployment and feed.
     live: Mutex<BTreeMap<(String, String), Live>>,
+    /// Where lazy runs moved their feeds, by deployment, each written once the sync covering the
+    /// run's entry (its seq) is done, in the log's order.
+    held: Mutex<BTreeMap<String, VecDeque<(u64, Moved)>>>,
 }
+
+/// What keeps where a run moved its feed.
+type Moved = Box<dyn FnOnce() + Send>;
 
 impl std::fmt::Debug for Feeds {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -134,7 +244,7 @@ impl Feeds {
     }
 
     fn with(file: Option<PathBuf>, bound: Bound) -> Feeds {
-        Feeds(Arc::new(Inner { file, bound: RwLock::new(bound), sources: Sources::none(), live: Mutex::new(BTreeMap::new()) }))
+        Feeds(Arc::new(Inner { file, bound: RwLock::new(bound), sources: Sources::none(), live: Mutex::default(), held: Mutex::default() }))
     }
 
     /// The feeds bound in `file` (none yet if it doesn't exist).
@@ -201,11 +311,59 @@ impl Feeds {
         if idle < IDLE_LEAST {
             return Err(format!("--idle is {IDLE_LEAST}s at least: a feed that says nothing for less may only be quiet"));
         }
+        let on_full = match given(&asked.on_full) {
+            None | Some("wait") => OnFull::Wait,
+            Some("skip") => OnFull::Skip,
+            Some("latest") => OnFull::Latest,
+            Some(other) => return Err(format!("--on-full is wait, skip or latest, not {other:?}")),
+        };
+        let key = given(&asked.key).map(|k| path_of("--key", k)).transpose()?;
+        match (on_full, &key) {
+            (OnFull::Latest, None) => return Err("--on-full latest replaces the waiting message of a message's key: it takes --key FIELD".into()),
+            (OnFull::Wait | OnFull::Skip, Some(_)) => return Err("--key is --on-full latest's: which waiting message a message replaces".into()),
+            _ => {}
+        }
+        let mut subscribe = Vec::new();
+        for message in &asked.subscribe {
+            let message = message.trim();
+            if message.is_empty() || message.len() > MESSAGE_MOST {
+                return Err(format!("--subscribe is a message of 1 byte to {} KiB", MESSAGE_MOST >> 10));
+            }
+            subscribe.push(message.to_string());
+        }
+        let heartbeat = given(&asked.heartbeat).map(str::to_string);
+        if heartbeat.as_ref().is_some_and(|h| h.len() > MESSAGE_MOST || is_source(h)) {
+            return Err(format!("--heartbeat is a message as written, up to {} KiB", MESSAGE_MOST >> 10));
+        }
+        let every = match (given(&asked.every), &heartbeat) {
+            (None, None) => 0,
+            (None, Some(_)) => EVERY,
+            (Some(_), None) => return Err("--every is how often --heartbeat is sent: it takes --heartbeat MESSAGE".into()),
+            (Some(t), Some(_)) => folders::seconds_of(t).filter(|s| (1..=3600).contains(s)).ok_or_else(|| format!("--every is how often the heartbeat goes: 1s to 1h, not {t:?}"))?,
+        };
+        let id = match given(&asked.id) {
+            None => Vec::new(),
+            Some(fields) => fields.split(',').map(|p| path_of("--id", p)).collect::<Result<Vec<_>, _>>()?,
+        };
+        let mut only: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for pair in &asked.only {
+            let (field, value) = pair.split_once('=').ok_or_else(|| format!("--only is FIELD=VALUE (type=ticker), not {pair:?}"))?;
+            only.entry(path_of("--only", field)?).or_default().push(value.trim().to_string());
+        }
         let headers: BTreeMap<String, String> = asked.headers.iter().map(|(h, s)| (h.clone(), s.trim().to_string())).collect();
-        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle };
+        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, subscribe, heartbeat, every, id, only };
         let (parsed, sent) = self.request(&binding)?;
+        let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty();
+        if websocket_only && !parsed.is_websocket() {
+            return Err("--subscribe, --heartbeat, --id and --only are a WebSocket's (wss://): this URL is a feed of server-sent events, whose events have their own ids".into());
+        }
         let binding = Binding { address: parsed.address(), ..binding };
-        sse::open(&parsed, &sent, None, Duration::from_secs(10)).map_err(|why| format!("the feed wasn't read: {why}"))?;
+        let check = Duration::from_secs(10);
+        let read = match parsed.is_websocket() {
+            true => ws::open(&parsed, &sent, &[], None, check).map(drop),
+            false => sse::open(&parsed, &sent, None, check).map(drop),
+        };
+        read.map_err(|why| format!("the feed wasn't read: {why}"))?;
         let mut bound = self.0.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -228,10 +386,23 @@ impl Feeds {
         Ok((url, headers))
     }
 
-    /// A connection to `binding`'s feed, from `last_id` when the host knows where it is.
-    pub(crate) fn connect(&self, binding: &Binding, last_id: Option<&str>) -> Result<sse::Connection, String> {
+    /// A connection to `binding`'s feed, from `last_id` when the host knows where it is: what it
+    /// sends `Last-Event-ID` with, or a WebSocket's id of the last message read.
+    pub(crate) fn connect(&self, binding: &Binding, last_id: Option<&str>) -> Result<Link, String> {
         let (url, headers) = self.request(binding)?;
-        sse::open(&url, &headers, last_id, Duration::from_secs(binding.idle))
+        let idle = Duration::from_secs(binding.idle);
+        if !url.is_websocket() {
+            return Ok(Link::Sse(sse::open(&url, &headers, last_id, idle)?));
+        }
+        let mut subscribe = Vec::new();
+        for message in &binding.subscribe {
+            subscribe.push(match is_source(message) {
+                true => self.0.sources.fetch(&Reference::parse(message)?).map_err(|e| format!("the subscription: {e}"))?,
+                false => Zeroizing::new(message.clone()),
+            });
+        }
+        let heartbeat = binding.heartbeat.clone().map(|message| ws::Heartbeat { message, every: Duration::from_secs(binding.every.max(1)) });
+        Ok(Link::Ws(Box::new(ws::open(&url, &headers, &subscribe, heartbeat, idle)?), last_id.unwrap_or_default().to_string()))
     }
 
     /// Unbind `name`, the server's or one deployment's: whether it was bound. A connection to it
@@ -279,8 +450,36 @@ impl Feeds {
     /// Set what `slug`'s connection to `feed` is doing.
     pub(crate) fn set_live(&self, slug: &str, feed: &str, change: impl FnOnce(&mut Live)) {
         let mut live = self.0.live.lock().unwrap();
-        let l = live.entry((slug.to_string(), feed.to_string())).or_insert_with(|| Live { address: String::new(), status: "connecting", since: now_ms(), error: None, position: None, waiting: 0 });
+        let l = live.entry((slug.to_string(), feed.to_string())).or_insert_with(|| Live { status: "connecting", since: now_ms(), ..Live::default() });
         change(l);
+    }
+
+    /// Keep where `slug`'s run whose entry is `seq` moved its feed once the sync that covers the
+    /// entry is done ([`Feeds::release`]): a lazy run's.
+    pub(crate) fn hold(&self, slug: &str, seq: u64, keep: Moved) {
+        self.0.held.lock().unwrap().entry(slug.to_string()).or_default().push_back((seq, keep));
+    }
+
+    /// Forget where `slug`'s lazy runs moved its feeds: it is deleted.
+    pub(crate) fn forget_held(&self, slug: &str) {
+        self.0.held.lock().unwrap().remove(slug);
+    }
+
+    /// Keep where `slug`'s runs whose entries are before `synced`, which are on disk, moved their
+    /// feeds, in its log's order.
+    pub(crate) fn release(&self, slug: &str, synced: u64) {
+        let ready: Vec<Moved> = {
+            let mut held = self.0.held.lock().unwrap();
+            let Some(q) = held.get_mut(slug) else { return };
+            let mut ready = Vec::new();
+            while let Some((_, keep)) = q.pop_front_if(|(seq, _)| *seq < synced) {
+                ready.push(keep);
+            }
+            ready
+        };
+        for keep in ready {
+            keep();
+        }
     }
 
     /// Forget `slug`'s connection to `feed`: it is closed.
@@ -291,6 +490,89 @@ impl Feeds {
     /// What `slug`'s connection to `feed` is doing, if it has one.
     pub(crate) fn live(&self, slug: &str, feed: &str) -> Option<Live> {
         self.0.live.lock().unwrap().get(&(slug.to_string(), feed.to_string())).cloned()
+    }
+}
+
+/// An open feed: server-sent events, or a WebSocket with the id of the last message it read.
+pub(crate) enum Link {
+    Sse(sse::Connection),
+    Ws(Box<ws::Connection>, String),
+}
+
+/// What a feed's connection read: an event, one passed over (past 1 MiB), or a WebSocket message
+/// its binding's `--only` doesn't run.
+pub(crate) enum Incoming {
+    Event(Event),
+    PassedOver,
+    Filtered,
+}
+
+/// An event of either kind of feed, as a run takes it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Event {
+    /// A value when it is JSON, else its text; a binary WebSocket message's bytes.
+    pub(crate) data: Value,
+    /// An SSE event's name, `message` unless it gives one.
+    pub(crate) name: String,
+    /// Its own id, when it has one.
+    pub(crate) id: Option<String>,
+    /// Where the feed is once it is read: what a reconnect sends as `Last-Event-ID`. Empty:
+    /// nowhere the feed said.
+    pub(crate) last_id: String,
+    /// The value of the binding's `--key` in it, for `latest`.
+    pub(crate) key: Option<String>,
+    /// How many were dropped, or replaced, before it (`--on-full`).
+    pub(crate) missed: u64,
+    pub(crate) replaced: u64,
+}
+
+impl Link {
+    /// What shuts the connection from another thread.
+    pub(crate) fn closer(&self) -> Option<sse::Closer> {
+        match self {
+            Link::Sse(c) => c.closer(),
+            Link::Ws(c, _) => c.closer(),
+        }
+    }
+
+    /// The wait before opening it again the feed asked for, if it asked (`retry:`).
+    pub(crate) fn retry(&self) -> Option<Duration> {
+        match self {
+            Link::Sse(c) => c.retry(),
+            Link::Ws(..) => None,
+        }
+    }
+
+    /// What it reads next, as `binding` says it is read; None when the feed ended the connection,
+    /// or why it was read no further.
+    pub(crate) fn next(&mut self, binding: &Binding) -> Result<Option<Incoming>, String> {
+        let key = |data: &Value| binding.key.as_ref().and_then(|k| field_text(data, k));
+        match self {
+            Link::Sse(c) => Ok(c.next_event()?.map(|next| match next {
+                sse::Next::PassedOver => Incoming::PassedOver,
+                sse::Next::Event(e) => {
+                    let data = holon_core::parse_json(&e.data).unwrap_or(Value::Text(e.data));
+                    Incoming::Event(Event { key: key(&data), data, name: e.name, id: e.id, last_id: e.last_id, missed: 0, replaced: 0 })
+                }
+            })),
+            Link::Ws(c, last) => Ok(c.next_message()?.map(|said| {
+                let data = match said {
+                    ws::Said::PassedOver => return Incoming::PassedOver,
+                    ws::Said::Text(t) => holon_core::parse_json(&t).unwrap_or(Value::Text(t)),
+                    ws::Said::Binary(b) => Value::Bytes(b),
+                };
+                let runs = binding.only.iter().all(|(field, values)| field_text(&data, field).is_some_and(|v| values.contains(&v)));
+                if !runs {
+                    return Incoming::Filtered;
+                }
+                let parts: Option<Vec<String>> = binding.id.iter().map(|p| field_text(&data, p)).collect();
+                let id = parts.filter(|p| !p.is_empty()).map(|p| p.join("/"));
+                if let Some(id) = &id {
+                    last.clone_from(id);
+                }
+                Incoming::Event(Event { key: key(&data), data, name: "message".into(), id, last_id: last.clone(), missed: 0, replaced: 0 })
+            })),
+        }
     }
 }
 
@@ -328,7 +610,15 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
 // ── admin ──
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle })
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
+    let extra = serde_json::json!({ "key": b.key, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only });
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty) || v.as_u64() == Some(0);
+        if !empty {
+            shown[k] = v.clone();
+        }
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -400,7 +690,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+/// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--on-full …] [--idle T]
+/// [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id FIELD,…] [--only FIELD=VALUE]… [--for SLUG]
 /// | list | remove NAME`: bind, show and unbind the feeds of the server this user runs here (or
 /// `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
@@ -414,7 +705,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--url" | "--buffer" | "--idle" | "--header" => {
+            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" => {
                 let Some(v) = args.next() else {
                     eprintln!("holon feed: {a} takes a value\n\n{FEED_USAGE}");
                     return 2;
@@ -434,8 +725,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                         };
                         asked.insert("buffer".into(), serde_json::json!(n));
                     }
+                    "--subscribe" | "--only" => {
+                        let list = asked.entry(a[2..].to_string()).or_insert_with(|| serde_json::json!([]));
+                        if let Some(list) = list.as_array_mut() {
+                            list.push(serde_json::Value::String(v.clone()));
+                        }
+                    }
                     _ => {
-                        asked.insert(a[2..].to_string(), serde_json::Value::String(v.clone()));
+                        asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
                     }
                 }
             }
@@ -476,14 +773,34 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     let line = |f: &serde_json::Value| {
-        let only = f["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
         let headers: Vec<String> = f["headers"].as_object().into_iter().flatten().map(|(h, s)| format!("{h} from {}", s.as_str().unwrap_or(""))).collect();
         let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), format!("reads {} (from {})", f["address"].as_str().unwrap_or(""), f["url"].as_str().unwrap_or(""))];
         if !headers.is_empty() {
             said.push(format!("sends {}", headers.join(", ")));
         }
-        said.push(format!("{} may wait  quiet for {} at most", f["buffer"].as_u64().unwrap_or(BUFFER as u64), folders::span_text(f["idle"].as_u64().unwrap_or(IDLE))));
-        format!("{}{only}", said.join("  "))
+        let texts = |k: &str| -> Vec<String> { f[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
+        let subscribe = texts("subscribe");
+        if !subscribe.is_empty() {
+            said.push(format!("subscribes with {}", subscribe.join(", ")));
+        }
+        if let Some(beat) = f["heartbeat"].as_str() {
+            said.push(format!("sends {beat} every {}", folders::span_text(f["every"].as_u64().unwrap_or(EVERY))));
+        }
+        let only: Vec<String> = f["only"].as_object().into_iter().flatten().map(|(k, vs)| format!("{k} {}", vs.as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" or "))).collect();
+        if !only.is_empty() {
+            said.push(format!("runs only {}", only.join(" and ")));
+        }
+        let id = texts("id");
+        if !id.is_empty() {
+            said.push(format!("its id {}", id.join("/")));
+        }
+        let full = match (f["on_full"].as_str(), f["key"].as_str()) {
+            (Some("skip"), _) => ", the rest dropped".to_string(),
+            (Some("latest"), Some(key)) => format!(", one a {key}, the newest"),
+            _ => String::new(),
+        };
+        said.push(format!("{} may wait{full}  quiet for {} at most", f["buffer"].as_u64().unwrap_or(BUFFER as u64), folders::span_text(f["idle"].as_u64().unwrap_or(IDLE))));
+        format!("{}{}", said.join("  "), f["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only")))
     };
     match words[0] {
         "list" => {
@@ -501,28 +818,45 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N]
+                       [--on-full wait|skip|latest [--key FIELD]] [--idle T] [--for SLUG]
+                       [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
+                       [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
        holon feed list
        holon feed remove NAME [--for SLUG]
        (each with [--server PORT|URL])
 
   Binds a name a flow imports (import prices from \"feed:prices\") to a feed of server-sent
-  events, whose events start its runs (on.feed(prices, (e) => …)), one at a time, in the order
-  they came. A flow never sees the feed's URL or its headers. Admins.
+  events or a WebSocket, whose events start its runs (on.feed(prices, (e) => …)), one at a time,
+  in the order they came. A flow never sees the feed's URL or its headers. Admins.
 
   add NAME                 bind NAME, once a request to it answers as a feed does
     --url SOURCE           where the server reads the feed's URL, as it reads a secret:
                            env:HOLON_SECRET_PRICES_URL (its environment or --dotenv file) or
                            vault:<mount>/<path>#<field>. The URL is never stored, shown or
                            logged: https://stream.example.com/v1/prices?key=…, a login in it
-                           sent as Basic authentication; plain http:// only to this machine
+                           sent as Basic authentication; wss://… for a WebSocket; plain http://
+                           and ws:// only to this machine
     --header NAME=SOURCE   a header each request sends, its value read from a source:
                            Authorization=env:HOLON_SECRET_PRICES_AUTH (again for another)
-    --buffer N             how many events may wait for their run before the connection waits
-                           too (1000)
+    --buffer N             how many events may wait for their run (1000)
+    --on-full WHAT         what comes while that many wait: wait (the connection waits too, as
+                           unless given), skip (it is dropped, and the next event's e.missed
+                           says how many were), latest (it replaces the waiting event of its
+                           --key, full or not, its e.replaced saying how many it did)
+    --key FIELD            latest's: the field whose value one event a key waits by: product_id
     --idle T               how long the feed may say nothing before the connection is opened
                            again: 90s, 2m (5s at least)
     --for SLUG             bind it for that deployment only
+  A WebSocket's:
+    --subscribe MESSAGE    sent each time it opens, as written or from a source (env:…), in
+                           order: {\"type\":\"subscribe\",\"channels\":[\"ticker\"]}
+    --heartbeat MESSAGE    sent every --every T (30s) while it is open, for a feed that drops a
+                           client that says nothing
+    --id FIELD[,FIELD]     the fields of a JSON message that are its id: product_id,sequence
+                           gives BTC-USD/41; a dotted path for a field in a field (data.u)
+    --only FIELD=VALUE     run only the messages whose field has that value (again for another
+                           value, or field); the rest, a subscription's answer, are passed over
   list                     the names bound, and where each reads
   remove NAME              unbind it (--for SLUG: that deployment's); its connections close
   --server PORT|URL        which holon server to ask (see below)
@@ -530,6 +864,7 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
 examples:
   holon feed add prices --url env:HOLON_SECRET_PRICES_URL
   holon feed add prices --url env:HOLON_SECRET_PRICES_URL --header Authorization=env:HOLON_SECRET_PRICES_AUTH --idle 2m
+  holon feed add ticker --url env:HOLON_SECRET_TICKER_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"ticker\"],\"product_ids\":[\"BTC-USD\"]}' --only type=ticker --id product_id,sequence --on-full latest --key product_id
   holon feed list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -596,6 +931,84 @@ mod tests {
         assert!(refused(&Asked { buffer: Some(0), ..asked("env:HOLON_SECRET_OK") }).starts_with("--buffer is how many events may wait"));
         assert!(all.bind("pri-ces", &asked("env:HOLON_SECRET_OK"), None).unwrap_err().contains("isn't a feed's name"));
         assert_eq!(all.all(), Bound::default());
+    }
+
+    fn until(what: impl Fn() -> bool) {
+        let by = std::time::Instant::now() + Duration::from_secs(5);
+        while !what() {
+            assert!(std::time::Instant::now() < by, "it didn't come");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_websocket_is_bound_with_its_options_and_read_as_they_say() {
+        let feed = ws::stand_in::StandIn::start();
+        let url = feed.url("/ws?key=s3cret");
+        let hello = "{\"type\":\"subscribe\",\"key\":\"k3y\"}";
+        let all = feeds(&[("HOLON_SECRET_TICKER_URL", &url), ("HOLON_SECRET_TICKER_HELLO", hello)]);
+        let channels = "{\"type\":\"subscribe\",\"channels\":[\"ticker\"]}";
+        let a = Asked {
+            subscribe: vec!["env:HOLON_SECRET_TICKER_HELLO".into(), channels.into()],
+            heartbeat: Some("ping".into()),
+            id: Some("product_id, sequence".into()),
+            only: vec!["type=ticker".into(), "type=snapshot".into()],
+            on_full: Some("latest".into()),
+            key: Some("product_id".into()),
+            ..asked("env:HOLON_SECRET_TICKER_URL")
+        };
+        let b = all.bind("ticker", &a, None).unwrap();
+        assert_eq!(b.address, url.split('?').next().unwrap());
+        assert_eq!((b.every, b.id.clone(), b.on_full, b.key.as_deref()), (EVERY, vec!["product_id".to_string(), "sequence".into()], OnFull::Latest, Some("product_id")));
+        assert_eq!(b.only["type"], vec!["ticker".to_string(), "snapshot".into()]);
+        assert_eq!(b.subscribe[0], "env:HOLON_SECRET_TICKER_HELLO", "the source is kept, not what it holds");
+        assert!(feed.heard().is_empty(), "the check sends no subscription");
+        let shown = shown("ticker", None, &b).to_string();
+        assert!(!shown.contains("s3cret") && !shown.contains("k3y") && shown.contains("\"on_full\":\"latest\""), "{shown}");
+        // A connection sends its subscription, the source read, then runs what --only says.
+        let mut link = all.connect(&b, None).unwrap();
+        until(|| feed.heard().len() == 2);
+        assert_eq!(feed.heard(), vec![hello.to_string(), channels.into()]);
+        feed.text("{\"type\":\"subscriptions\"}");
+        feed.text("{\"type\":\"ticker\",\"product_id\":\"BTC-USD\",\"sequence\":41,\"price\":\"100.5\"}");
+        feed.text("{\"type\":\"ticker\",\"price\":\"7\"}");
+        assert!(matches!(link.next(&b), Ok(Some(Incoming::Filtered))));
+        let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
+        assert_eq!((e.id.as_deref(), e.last_id.as_str(), e.key.as_deref(), e.name.as_str()), (Some("BTC-USD/41"), "BTC-USD/41", Some("BTC-USD"), "message"));
+        assert_eq!(field_text(&e.data, "price").as_deref(), Some("100.5"));
+        let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
+        assert_eq!((e.id, e.last_id.as_str(), e.key), (None, "BTC-USD/41", None), "no id of its own: the feed is where it was");
+    }
+
+    #[test]
+    fn a_websockets_options_are_refused_where_they_dont_fit() {
+        let (sse, ws) = (StandIn::start(), ws::stand_in::StandIn::start());
+        let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_WS", &ws.url("/ws"))]);
+        let refused = |a: Asked| all.bind("prices", &a, None).unwrap_err();
+        let on_sse = refused(Asked { subscribe: vec!["hi".into()], ..asked("env:HOLON_SECRET_SSE") });
+        assert!(on_sse.contains("are a WebSocket's"), "{on_sse}");
+        assert!(refused(Asked { only: vec!["type=ticker".into()], ..asked("env:HOLON_SECRET_SSE") }).contains("are a WebSocket's"));
+        assert!(refused(Asked { on_full: Some("latest".into()), ..asked("env:HOLON_SECRET_WS") }).contains("it takes --key FIELD"));
+        assert!(refused(Asked { key: Some("product_id".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--key is --on-full latest's"));
+        assert!(refused(Asked { on_full: Some("drop".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--on-full is wait, skip or latest"));
+        assert!(refused(Asked { id: Some("data..u".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--id names a field"));
+        assert!(refused(Asked { only: vec!["type".into()], ..asked("env:HOLON_SECRET_WS") }).starts_with("--only is FIELD=VALUE"));
+        assert!(refused(Asked { every: Some("10s".into()), ..asked("env:HOLON_SECRET_WS") }).contains("it takes --heartbeat"));
+        assert!(refused(Asked { heartbeat: Some("ping".into()), every: Some("2h".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--every is how often"));
+        // Any feed's: an SSE binding skips or keeps the latest.
+        let b = all.bind("prices", &Asked { on_full: Some("latest".into()), key: Some("data.symbol".into()), ..asked("env:HOLON_SECRET_SSE") }, None).unwrap();
+        assert_eq!((b.on_full, b.key.as_deref()), (OnFull::Latest, Some("data.symbol")));
+    }
+
+    #[test]
+    fn a_field_is_found_by_its_path_and_read_as_text() {
+        let data = holon_core::parse_json("{\"data\":{\"u\":41,\"s\":\"BTC\",\"ok\":true,\"l\":[1]}}").unwrap();
+        assert_eq!(field_text(&data, "data.u").as_deref(), Some("41"));
+        assert_eq!(field_text(&data, "data.s").as_deref(), Some("BTC"));
+        assert_eq!(field_text(&data, "data.ok").as_deref(), Some("true"));
+        assert_eq!(field_text(&data, "data.l"), None);
+        assert_eq!(field_text(&data, "data.none"), None);
+        assert_eq!(field_text(&Value::Text("x".into()), "data"), None);
     }
 
     #[test]

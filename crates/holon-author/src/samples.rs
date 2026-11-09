@@ -815,6 +815,22 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/price-feed.holon.ts"),
     },
     Sample {
+        name: "trading-bot",
+        title: "Trading bot (a WebSocket ticker, orders to an exchange)",
+        description: "A market's ticker over a WebSocket, as Coinbase Exchange's public feed sends it; an admin binds the feed with the message that subscribes to it (--subscribe), the messages that run (--only type=ticker), their id (--id product_id,sequence), and, while runs are slower than the prices, only each product's newest kept (--on-full latest --key product_id, e.replaced saying how many it replaced). The handler is lazy: where it is in the feed moves once its record is synced, so after a crash the prices of its last second may run again. A price at or under a product's level (PUT /levels/:product) starts the order's run, an action, which is strict: it signs the order (hmac_sha256, as Coinbase Exchange asks) and places it, its client id made with the level, so a price run again, or the action run again by hand, places nothing twice. An order worth more than 1000 waits for a person's approval first (await event(\"approved\")), in a run of its own; reconcile, run by hand, reads the exchange's open orders back.",
+        shows: &["on.feed", "WebSocket feeds", "a feed's subscription", "keeping only the latest price", "lazy handlers", "strict actions started by a handler", "client order ids", "durable runs", "hmac_sha256", "decimals", "secrets"],
+        port: Some("8190"),
+        secrets: &[
+            SampleSecret { name: "exchange_key", what: "the exchange's API key", from: None },
+            SampleSecret { name: "exchange_secret", what: "its secret (base64), which signs each order", from: None },
+            SampleSecret { name: "exchange_passphrase", what: "its passphrase", from: None },
+        ],
+        optional: &[],
+        browsers: None,
+        try_it: "bind the feed (HOLON_SECRET_TICKER_URL=wss://ws-feed.exchange.coinbase.com in the server's environment, then holon feed add ticker --url env:HOLON_SECRET_TICKER_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"ticker\"],\"product_ids\":[\"BTC-USD\"]}' --only type=ticker --id product_id,sequence --on-full latest --key product_id); deploy, set its secrets, then curl http://127.0.0.1:8190/prices for each product's last price; curl -X PUT -d '{\"price\":\"64000\",\"size\":\"0.001\"}' http://127.0.0.1:8190/levels/BTC-USD sets a level, and curl http://127.0.0.1:8190/orders shows the orders placed and those waiting for approval; the server panel shows the feed's connection, where it is and how many prices it replaced",
+        text: include_str!("../samples/trading-bot.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

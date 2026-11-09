@@ -33,11 +33,14 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// The most an answer's status line and headers hold.
 const MAX_HEAD: usize = 64 * 1024;
 
-const USAGE: &str = "a feed's URL is https://host/path (plain http:// only to this machine), a login in it if the feed asks for one";
+const USAGE: &str = "a feed's URL is https://host/path, or wss://host/path for a WebSocket (plain http:// and ws:// only to this machine), a login in it if the feed asks for one";
 
-/// Where a feed is, as its binding's source holds it. Its `Debug` holds no login or query.
+/// Where a feed is, as its binding's source holds it: server-sent events (`https://`) or a
+/// WebSocket (`wss://`, ws.rs). Its `Debug` holds no login or query.
 pub(crate) struct Url {
     tls: bool,
+    /// A WebSocket's (`wss://`, `ws://`).
+    ws: bool,
     /// As the URL writes it: `stream.example.com`, `[::1]`.
     host: String,
     port: u16,
@@ -57,9 +60,11 @@ impl Url {
     /// The feed `url` names, or why it names none. The error never holds the URL.
     pub(crate) fn parse(url: &str) -> Result<Url, String> {
         let (scheme, rest) = url.trim().split_once("://").ok_or(USAGE)?;
-        let tls = match scheme.to_ascii_lowercase().as_str() {
-            "https" => true,
-            "http" => false,
+        let (tls, ws) = match scheme.to_ascii_lowercase().as_str() {
+            "https" => (true, false),
+            "http" => (false, false),
+            "wss" => (true, true),
+            "ws" => (false, true),
             _ => return Err(USAGE.into()),
         };
         let rest = rest.split('#').next().unwrap_or("");
@@ -91,11 +96,38 @@ impl Url {
             None | Some("") => if tls { 443 } else { 80 },
             Some(p) => p.parse().map_err(|_| "a feed's URL names a port that isn't one")?,
         };
-        let url = Url { tls, host, port, target, login };
+        let url = Url { tls, ws, host, port, target, login };
         if !tls && !url.is_loopback() {
-            return Err("a feed is read over https://: plain http:// only to this machine".into());
+            return Err(match ws {
+                true => "a WebSocket feed is read over wss://: plain ws:// only to this machine",
+                false => "a feed is read over https://: plain http:// only to this machine",
+            }
+            .into());
         }
         Ok(url)
+    }
+
+    /// Whether it is a WebSocket's (`wss://`, `ws://`).
+    pub(crate) fn is_websocket(&self) -> bool {
+        self.ws
+    }
+
+    /// The whole URL a request names, its query with it but no login: `wss://host:8443/v1?key=…`.
+    pub(crate) fn request_uri(&self) -> Zeroizing<String> {
+        let scheme = match (self.ws, self.tls) {
+            (true, true) => "wss",
+            (true, false) => "ws",
+            (false, true) => "https",
+            (false, false) => "http",
+        };
+        Zeroizing::new(format!("{scheme}://{}:{}{}", self.host, self.port, self.target))
+    }
+
+    /// The `Authorization` a login in the URL sends: `Basic …`.
+    pub(crate) fn basic(&self) -> Result<Option<Zeroizing<String>>, String> {
+        let Some(login) = &self.login else { return Ok(None) };
+        let decoded = crate::smtp::unpercent(login).map_err(|_| "the feed's login has a % that isn't %XX".to_string())?;
+        Ok(Some(Zeroizing::new(format!("Basic {}", crate::smtp::base64(decoded.as_bytes())))))
     }
 
     fn is_loopback(&self) -> bool {
@@ -105,7 +137,12 @@ impl Url {
 
     /// Where it points, without its login or query: `https://stream.example.com/v1/prices`.
     pub(crate) fn address(&self) -> String {
-        let scheme = if self.tls { "https" } else { "http" };
+        let scheme = match (self.ws, self.tls) {
+            (true, true) => "wss",
+            (true, false) => "ws",
+            (false, true) => "https",
+            (false, false) => "http",
+        };
         let port = if self.port == if self.tls { 443 } else { 80 } { String::new() } else { format!(":{}", self.port) };
         let path = self.target.split('?').next().unwrap_or("/");
         format!("{scheme}://{}{port}{path}", self.host)
@@ -113,7 +150,7 @@ impl Url {
 }
 
 /// The connection's socket, shut from another thread to end the connection at once.
-pub(crate) struct Closer(TcpStream);
+pub(crate) struct Closer(pub(crate) TcpStream);
 
 impl Closer {
     pub(crate) fn close(&self) {
@@ -262,14 +299,15 @@ impl<R: BufRead> Lines<R> {
     }
 }
 
-enum Stream {
+/// A connection to a feed's host: plain, or TLS on top.
+pub(crate) enum Stream {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
 
 impl Stream {
     /// How long a read waits. Set on the socket a read uses: on Windows, a clone's is its own.
-    fn set_read_timeout(&self, wait: Duration) {
+    pub(crate) fn set_read_timeout(&self, wait: Duration) {
         let _ = match self {
             Stream::Plain(s) => s.set_read_timeout(Some(wait)),
             Stream::Tls(s) => s.sock.set_read_timeout(Some(wait)),
@@ -396,10 +434,9 @@ pub(crate) fn is_header_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
-/// The feed at `url`, asked for with `headers` and, when the host knows where the feed is,
-/// `Last-Event-ID: last_id`; once open, a read that waits past `idle` ends it. The error says
-/// why it isn't open, never with the URL's login or query, nor a header's value.
-pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], last_id: Option<&str>, idle: Duration) -> Result<Connection, String> {
+/// A connection to `url`'s host, TLS for `https://` and `wss://`, the certificate checked against
+/// the public CAs; and its socket, to close it from another thread.
+pub(crate) fn connect(url: &Url) -> Result<(Stream, TcpStream), String> {
     let address = url.address();
     let unreachable = |why: String| format!("{address} can't be reached: {why}");
     let connect_to = url.host.trim_start_matches('[').trim_end_matches(']');
@@ -420,18 +457,27 @@ pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], last_id: 
     let _ = tcp.set_write_timeout(Some(TIMEOUT));
     let _ = tcp.set_nodelay(true);
     let socket = tcp.try_clone().map_err(|e| unreachable(e.to_string()))?;
-    let mut stream = match url.tls {
+    let stream = match url.tls {
         true => Stream::Tls(Box::new(crate::smtp::tls(connect_to, tcp).map_err(|f| f.why().to_string())?)),
         false => Stream::Plain(tcp),
     };
+    Ok((stream, socket))
+}
+
+/// The feed at `url`, asked for with `headers` and, when the host knows where the feed is,
+/// `Last-Event-ID: last_id`; once open, a read that waits past `idle` ends it. The error says
+/// why it isn't open, never with the URL's login or query, nor a header's value.
+pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], last_id: Option<&str>, idle: Duration) -> Result<Connection, String> {
+    let address = url.address();
+    let unreachable = |why: String| format!("{address} can't be reached: {why}");
+    let (mut stream, socket) = connect(url)?;
     let host = match url.port == if url.tls { 443 } else { 80 } {
         true => url.host.clone(),
         false => format!("{}:{}", url.host, url.port),
     };
     let mut request = Zeroizing::new(format!("GET {} HTTP/1.1\r\nHost: {host}\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nUser-Agent: holon\r\n", url.target));
-    if let Some(login) = &url.login {
-        let decoded = crate::smtp::unpercent(login).map_err(|_| "the feed's login has a % that isn't %XX".to_string())?;
-        request.push_str(&format!("Authorization: Basic {}\r\n", crate::smtp::base64(decoded.as_bytes())));
+    if let Some(basic) = url.basic()? {
+        request.push_str(&format!("Authorization: {}\r\n", basic.as_str()));
     }
     if let Some(id) = last_id.filter(|i| !i.is_empty() && !i.contains(['\r', '\n'])) {
         request.push_str(&format!("Last-Event-ID: {id}\r\n"));

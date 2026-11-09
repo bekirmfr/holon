@@ -1842,6 +1842,207 @@ As designed, with what building it found:
   opened again from `e003`; the feed stopped, `lost the feed prices: … can't be reached …; trying
   again in 1s` and the state `reconnecting`, the position kept, the flow still answering.
 
+#### 5.9.4 Slice 1.6b as designed (2026-11-09, against `22a3b56`): WebSocket feeds
+
+WebSocket feeds on 1.6a's runtime, what a full buffer does besides waiting, and the position of a
+handler that isn't strict.
+
+**The binding.** A `wss://` URL is a WebSocket feed (`ws://` only to this machine), with 1.6a's
+options and these:
+
+```
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL
+                      [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
+                      [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
+                      [--on-full wait|skip|latest [--key FIELD]]
+```
+
+- **`--subscribe`** is a text message sent each time the connection opens, in order, again for
+  another: the subscription most market feeds want
+  (`{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}`). One that starts
+  `env:` or `vault:` is read from that source, for a feed whose sign-in is a message with a key in
+  it; the binding keeps the source, and a written one as written, which is what is shown.
+- **`--heartbeat`** is a text message sent every `--every` (30 s unless given) while the
+  connection is open, for a feed that drops a client that says nothing (`ping`). WebSocket's own
+  pings are answered by the host, always. Neither starts a run or is on the timeline: what the host
+  says for the deployment comes from the binding, never from a run (fork 18).
+- **`--id`** names the field of a JSON message that is its id: a dotted path (`data.u`), or
+  several joined with `/`, for a feed whose sequence is per symbol (`--id product_id,sequence`
+  gives `BTC-USD/41`). Without it a WebSocket's messages have none.
+- **`--only`** runs only the messages whose field has one of the values given (`--only
+  type=ticker`, again for another value or field; every field named must match). The rest, the
+  answers to the subscription and the heartbeat, are passed over without a run, counted in the
+  feed's state, not on the timeline (fork 63).
+- **`--on-full`** and **`--key`**, below, are any feed's. `--subscribe`, `--heartbeat`, `--id`
+  and `--only` are a WebSocket's; an SSE binding that gives one is refused, since an SSE event
+  has its own id.
+- **Checked when bound:** the handshake answers 101, then the connection is closed. A redirect
+  isn't followed, as for SSE.
+
+**The connection** (`ws.rs`, beside `sse.rs`, sharing its URL, socket and TLS): the handshake
+through `tungstenite`, the one new dependency, with its `handshake` feature and no TLS of its own,
+reading the host's own stream, so a connection is closed from another thread and found quiet by
+its read timeout as an SSE one is; the binding's headers, and a login in the URL as Basic
+authentication. A text frame is a message, its data a value when it is JSON, else its text; a
+binary frame's data is bytes. A ping is answered with its pong; a close frame ends the connection,
+which opens again as any lost one does, and sends its subscription again. A message past 1 MiB
+ends the connection, on the timeline: unlike an SSE event, a WebSocket message can't be passed
+over without reading it, and since a reconnect doesn't resume (below), the feed doesn't send it
+again.
+
+**The position** is the last id run on, as for SSE, and the last 1,000 ids pass over a message
+sent again (the snapshot a feed sends after a reconnect, say). It isn't sent back: a WebSocket has
+no `Last-Event-ID`, and the feeds a job brings send a snapshot on subscribe, not a replay
+(fork 64). A new listener, and a reconnect, start at what the feed sends from then.
+
+**When the buffer is full** (`--on-full`, forks 17 and 26):
+
+- **`wait`,** unless given: the connection stops reading, as in 1.6a.
+- **`skip`:** what comes while the buffer is full is dropped, and the next message that finds
+  room carries how many were dropped before it, `e.missed`. A dropped message's id isn't kept: it
+  never ran.
+- **`latest --key product_id`:** a message replaces the one of its key that waits, in that one's
+  place, full or not (fork 62), and its `e.replaced` is how many it replaced, theirs counted with
+  it. A message without the key waits as it came. The buffer holds `--buffer` messages, so a key
+  that finds it full of others waits for room, as with `wait`. `--key` is a dotted path, as
+  `--id`; `latest` without it is refused.
+
+`e.missed` and `e.replaced` are on every event, 0 unless the binding skips or replaces, so a flow
+reads them whatever its binding says (an absent field would stop what reads it); SSE's events
+gain them too.
+
+**A handler that isn't strict** (fork 25). In 1.6a the position moved at every run's end. Now it
+follows the record: a strict run's at its end, its record on disk, as now; a lazy run's once the
+sync that covers its record is done, held as its channel packs and mail are and released by
+`sync_logs` beside them; an unrecorded run's at its end. Until then it is kept in memory, so the
+connection, and a new version's, go on from it. A crash loses the lazy runs the last sync didn't
+cover, and their events run again, their claims gone with their records. The deploy says so where
+it lists the handler's level: "on feed prices is lazy: after a crash, the events of its last
+second may run again"; `Unrecorded("on feed prices")` says the same. `holon check` lists a mail
+and a feed handler's level as it does a route's, which 1.3b and 1.6a left out.
+
+**Its state** adds how many were passed over by `--only`, missed and replaced since the
+connection opened: the server panel says `connected, at BTC-USD/41, 3 waiting, 120 replaced`.
+
+**The run** is 1.6a's: `kind: "feed"`, `e` sourced as `FeedEvent("prices")`, a binary message's
+bytes logged as any bytes value is.
+
+**The sample, `trading-bot`:** a market's ticker over a WebSocket, shaped as Coinbase Exchange's
+public feed is (`product_id`, `price` as a decimal in text, `sequence`), and orders to an exchange
+over HTTP, signed with `hmac_sha256`. It shows §5.9's four points:
+
+- the prices, conflated by the binding (`--on-full latest --key product_id`) and handled `lazy`:
+  each symbol's newest price kept, with how many it replaced;
+- the order strict: a price at or under a symbol's level, which a route sets, starts the flow's
+  own `order` action (a start, not awaited), which places it;
+- the order's client id the level's own, set when the level was, never the run's: a lazy run a
+  crash ran again, or the next price under the level, sends the same id, and the exchange refuses
+  it the second time;
+- an order over a limit waiting for approval (`await event("approved")`, as `approval` does), and
+  an action that reads the exchange's open orders back after a restart, run by hand, since
+  nothing starts a run at start.
+
+Its text takes what the language has now: one order a run, and no loop that waits on a call
+(the TypeScript slices 6 to 11, after Tier 1); fork 65 says what that leaves out.
+
+**Stand-ins.** The server test's WebSocket feed is `tungstenite`'s server side in a thread (it
+records what each connection was sent, and can be cut), and the exchange an HTTP stand-in that
+checks the signature and refuses a client order id twice (409). The e2e server starts the same in
+Node: `editor/e2e/ws-server.mjs`, its messages files dropped in a folder as `sse-server.mjs`'s
+are, written by hand (the handshake and text frames), since Node has no WebSocket server of its
+own; the exchange in the test.
+
+**The live run:** the prices from Coinbase Exchange's public feed
+(`wss://ws-feed.exchange.coinbase.com`, the `ticker` channel, which needs no account), bound with
+`--subscribe`, `--only type=ticker`, `--id product_id,sequence` and `--on-full latest --key
+product_id`; the orders to the stand-in exchange (fork 66).
+
+**Tests:**
+
+- **`ws.rs`:** the handshake and its headers, Basic authentication, text and binary frames, a
+  ping answered, a close and a cut, a message past 1 MiB, idle found out, a heartbeat sent when
+  due, and a subscription sent on each connection.
+- **The buffer:** `skip`'s count, `latest`'s replacement in place with its count, a key that
+  waits for room, and a message without the key.
+- **The position:** a lazy run's moved only by the sync that covers it, and an unrecorded one's at
+  its end.
+- **The binding:** `--id`, `--only` and `--key` paths; WebSocket options refused on an SSE
+  binding, and `latest` without a key.
+- **The server test** binds `prices` to the stand-in, deploys the sample, sets a level, and sends
+  prices: they are conflated while a run is slow, the order is placed once, it isn't placed again
+  when the price comes again, it is refused by the exchange when a run is made again by hand, and
+  it waits for approval over the limit. It also checks the runs verify, and that the key is in no
+  log.
+- **The e2e test** deploys it in the editor against `ws-server.mjs` and the exchange stand-in,
+  sets a level, drops prices, reads the order and the server panel's line, and approves a large
+  order.
+
+#### 5.9.5 Slice 1.6b as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A message past 1 MiB is passed over,** as an SSE event is, not a reason to close: `tungstenite`
+  reads a message whole before handing it over, so the host reads up to 16 MiB, passes over what
+  is past 1 MiB (on the timeline), and reads on. Only past 16 MiB does the connection end and open
+  again. Ending it at 1 MiB, as designed, would have lost what came after it, and the feed doesn't
+  send it again.
+- **A message sent again writes nothing.** It is passed over by its id, as designed, and where the
+  feed is moves with the next run's, not on its own: a lazy handler's position then moves only
+  with a record that a sync covers.
+- **`holon check` says it:** `on feed ticker is lazy: after a crash, the events of its last second
+  may run again`, after what the flow holds while it runs. Its unrecorded lines now take mail and
+  feed handlers too, which 1.3b and 1.6a left out.
+- **The sample, as the language has it:**
+  - The order's action is `place`. The handler marks the level `started` when a price comes under
+    it, and reads nothing `place` writes: a run that starts another holds the keys it read until it
+    commits (its claims), so `place`, writing `orders`, would wait on a handler that read
+    them. The mark is also what keeps the next price under the level from sending the order again.
+  - A call bound on a statement is made when the run reaches it, whatever a plain `if` around it
+    says: only an absent input keeps it from being made. So the handler writes
+    `place(!large ? order : undefined)` and `approval(large ? order : undefined)`, and `order` is
+    absent unless the price is under the level.
+  - The approval is an action of its own, `approval`, which waits for the event and then starts
+    `place`: a resumed run keeps the clock it began with, so an order placed from it an hour
+    later would be signed with an hour-old time, which an exchange refuses. `place` signs with the
+    time its own run began.
+  - `reconcile`, run by hand, answers the exchange's orders as one value.
+- **Its state** counts per connection, as designed: `connected, at BTC-USD/41, 1 waiting, 2
+  replaced, 1 passed over` (the subscription's answer).
+- **`ring`** is a dev-dependency of `holon`: the server test's exchange checks the signature with
+  it. It was built already, under `rustls`.
+- **The tests:**
+  - `ws.rs`: a connection opened with its headers, Basic authentication and subscription, read as
+    it comes (text, binary, a message past 1 MiB passed over and the rest read), cut, and closed
+    from another thread; heartbeats sent while it waits and a quiet feed found out; a redirect
+    refused. The stand-in (`ws::stand_in`) is `tungstenite`'s server side in a thread.
+  - The binding: options read as they say and shown, and refused where they don't fit (a
+    WebSocket's on SSE, `latest` without a key, a key without `latest`, `--every` without
+    `--heartbeat`); a field found by its dotted path and read as text.
+  - The subscription: an event's fields, `skip`'s drop and count, `latest`'s replacement in place
+    and a new key waiting for room, and a lazy run's move held until the sync that covers it.
+  - The server test binds `ticker` to the stand-in with a key in its query, deploys the sample
+    with the exchange's host replaced by an HTTP stand-in that checks the signature, and sets a
+    level of 100 x 2. With the exchange holding its answer, prices of 99, 98, 97 and 96 for BTC and
+    one for ETH come: 2 replaced, 2 waiting, the subscription's answer passed over. Released, three
+    runs: the price kept is 96 with 2 replaced, the order placed once with the level's client id,
+    and the position `ETH-USD/1` (BTC's newest kept its place, ahead of ETH). A price of 95 sends
+    nothing; `place` run by hand is refused 409. A level worth 2000 waits for approval; the link
+    approves it, and a run of its own places it. `reconcile` reads both back, the runs verify, and
+    no key or secret is in the log.
+  - The e2e test deploys the sample in the editor against `ws-server.mjs` and a Node exchange,
+    sets the secrets, reads the subscription in what the feed heard, drops prices while the
+    exchange holds, reads the server panel's line (`connected, 1 waiting, 2 replaced, 1 passed
+    over`, then `connected, at …/4, …`), the order, the approval of a large one, `reconcile`, and
+    the binding on the admin page without its key.
+- **Run live** on a scratch server, the ticker bound to `wss://ws-feed.exchange.coinbase.com` (BTC
+  and ETH), the orders to a stand-in exchange on loopback with throwaway credentials: the binding's
+  check, the handshake; prices kept within seconds, 47 replaced in the first ten and 338 in about
+  a minute, the subscription's answer passed over; a BTC level above the market placed one order
+  (signed 1 s before it was sent) and none for the prices under it after; an ETH level worth 2500
+  waited, was approved 40 s later and placed from its own run (signed 0 s before); `reconcile`
+  read both; `place` run again by hand was refused 409. 669 runs exported and verified, and no
+  credential in the data or the server's output.
+
 ### 5.10 A bytes value, and decimals with it
 
 Not a capability: a value kind, which several capabilities stand on. Binary files can't be read
@@ -3671,6 +3872,26 @@ Taken when a job or a user asks, each with its design here and its sample all th
 61. **`on.feed` and `on.queue`, or `on.event` and `on.message`** (§5.9.1). *Lean:* named for
     what they listen to, as `on.mail` and `on.file` are; *message* stays the socket's.
     *Decided* (2026-11-09) as the lean.
+62. **`latest` replaces whenever its key waits, or only once the buffer is full** (§5.9.4).
+    Only once full, a slow handler first works through `--buffer` stale prices. *Lean:* whenever:
+    a price that waits while a newer one comes is stale, full or not. The buffer then holds one
+    message a key, and a new key waits for room.
+63. **Which messages run: filtered by the binding (`--only`) or by the handler** (§5.9.4). The
+    messages a flow doesn't want are mostly the answers to the binding's own subscription and
+    heartbeat. *Lean:* the binding, which writes what they answer; a handler's own filter waits
+    for a job.
+64. **A WebSocket feed resumed from its position** (§5.9.4). *Lean:* not in 1.6b. The feeds
+    a job brings send a snapshot on subscribe, not a replay, and the position already stops a
+    message running twice. A feed that resumes from a sequence would get it written into its
+    subscription (`{position}`) when a job asks.
+65. **The trading bot's order half in 1.6b** (§5.9.4): the order a strict action, its client id,
+    approval over a limit, reading the exchange's orders back. None of it is new to 1.6b, and the
+    language has no loop that waits on a call until the TypeScript slices 6 to 11. *Lean:* in
+    1.6b, kept to what the language has: one order a run, the orders read back as one value.
+    §5.9 promises step 1.6's sample shows it.
+66. **A live run against a public feed** (§5.9.4): Coinbase Exchange's ticker, which needs no
+    account, for the prices; the orders to the stand-in. *Lean:* yes; it is an outside service
+    with no credentials to keep.
 
 ## 9. What stays true
 

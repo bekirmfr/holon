@@ -721,6 +721,7 @@ pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::D
             Ok(()) => {
                 channels.release(log.synced(), &permit.channels);
                 folders.all.mails.release(&folders.deployment, log.synced());
+                folders.all.feeds.release(&folders.deployment, log.synced());
             }
             Err(e) => drop(failed.get_or_insert(e)),
         }

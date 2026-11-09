@@ -2404,6 +2404,125 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
   await expect(page.getByLabel("feed prices")).toContainText("starts on each event it sends");
 });
 
+test("trading-bot keeps each product's newest price, places an order once, and waits for approval over the limit", async ({ page, request, adminToken }) => {
+  const { createServer } = await import("node:http");
+  const { createHmac } = await import("node:crypto");
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // An exchange on loopback, as Coinbase Exchange's REST API answers: each request signed, or
+  // refused 401; an order placed once, a client id it has seen refused 409; held while `held`.
+  const key = "e2e-exchange-key";
+  const secret = Buffer.from("e2e-exchange-secret-bytes").toString("base64");
+  const passphrase = "e2e-exchange-pass";
+  const asked: { client_oid: string; product_id: string; price: string }[] = [];
+  const placed: { client_oid: string; id: string }[] = [];
+  let release = () => {};
+  let held: Promise<void> = Promise.resolve();
+  const exchange = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      const signed = createHmac("sha256", Buffer.from(secret, "base64"))
+        .update(`${req.headers["cb-access-timestamp"]}${req.method}${req.url}${body}`)
+        .digest("base64");
+      if (req.headers["cb-access-sign"] !== signed || req.headers["cb-access-key"] !== key || req.headers["cb-access-passphrase"] !== passphrase) {
+        res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ message: "invalid signature" }));
+        return;
+      }
+      if (req.method === "GET") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(placed));
+        return;
+      }
+      const order = JSON.parse(body);
+      asked.push(order);
+      await held;
+      if (placed.some((o) => o.client_oid === order.client_oid)) {
+        res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ message: "duplicate client_oid" }));
+        return;
+      }
+      const done = { ...order, id: `ex-${placed.length + 1}` };
+      placed.push(done);
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(done));
+    });
+  });
+  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  // The e2e server's ticker (ws-server.mjs): a message is a .json file dropped in its folder, sent
+  // in the order of their names; heard.log is what its connections sent it.
+  const ticker = join(FOLDERS, "ticker");
+  const heard = () => (existsSync(join(ticker, "heard.log")) ? readFileSync(join(ticker, "heard.log"), "utf8").trim().split("\n") : []);
+  const stamp = Date.now();
+  let n = 0;
+  const drop = (message: object) => writeFileSync(join(ticker, `${stamp}-${String(++n).padStart(3, "0")}.json`), JSON.stringify(message));
+  const product = `BTC-E2E${stamp}`;
+  const price = (p: string, price: string, sequence: number) => drop({ type: "ticker", product_id: p, price, sequence });
+  try {
+    await openSample(page, "Trading bot (a WebSocket ticker, orders to an exchange)");
+    // The sample calls api.exchange.coinbase.com: here, the stand-in, over plain HTTP to this
+    // machine, as chat-proxy's test does.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/trading-bot.holon.ts", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await editor.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"host:api.exchange.coinbase.com"', `"host:${host}"`).replace("port: 8190", `port: ${8190 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8190 + SAMPLE_SHIFT));
+    const subscribed = heard().length;
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    for (const [name, value] of [["exchange_key", key], ["exchange_secret", secret], ["exchange_passphrase", passphrase]]) {
+      expect((await request.post(`${SERVER}/deployments/trading-bot/secrets/${name}`, { data: { value }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+    }
+    // Its connection subscribed, as its binding says.
+    await expect.poll(() => heard().slice(subscribed), { timeout: 15_000 }).toEqual(['{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}']);
+    const call = async (method: "get" | "put" | "post", path: string, data?: object) => (await request[method](`http://127.0.0.1:${port}${path}`, { data })).json();
+    const level = await call("put", `/levels/${product}`, { price: "100", size: "2" });
+
+    // Under the level, with the exchange holding its answer: the run waits on the order while
+    // prices come, and the binding keeps the product's newest.
+    held = new Promise<void>((r) => (release = r));
+    drop({ type: "subscriptions", channels: [{ name: "ticker" }] });
+    price(product, "99", 1);
+    await expect.poll(() => asked.length, { timeout: 15_000 }).toBe(1);
+    price(product, "98", 2);
+    price(product, "97", 3);
+    price(product, "96", 4);
+    await expect(page.getByText(/^connected, 1 waiting, 2 replaced, 1 passed over$/)).toBeVisible({ timeout: 15_000 });
+    release();
+    await expect(page.getByText(`connected, at ${product}/4, 2 replaced, 1 passed over`)).toBeVisible({ timeout: 15_000 });
+    expect(placed.map((o) => o.client_oid)).toEqual([level.id]);
+    const orders = await call("get", "/orders");
+    expect(orders.placed[level.id]).toMatchObject({ exchange: "ex-1", approved_by: "under the limit", price: "100", size: "2" });
+    const prices = await call("get", "/prices");
+    expect(prices[product]).toMatchObject({ price: "96", replaced: 2 });
+
+    // Worth more than 1000: it waits for a person's approval, then a run of its own places it.
+    const large = `ETH-E2E${stamp}`;
+    const big = await call("put", `/levels/${large}`, { price: "2000", size: "1" });
+    price(large, "1999", 1);
+    await expect.poll(async () => (await call("get", "/orders")).waiting[big.id]?.approve, { timeout: 15_000 }).toMatch(/^\/approve\//);
+    expect(asked.length).toBe(1);
+    const link = (await call("get", "/orders")).waiting[big.id].approve;
+    expect(await (await request.post(`http://127.0.0.1:${port}${link}`, { data: { by: "ops" } })).text()).toBe("approved");
+    await expect.poll(() => placed.length, { timeout: 15_000 }).toBe(2);
+    await expect.poll(async () => (await call("get", "/orders")).placed[big.id]?.approved_by, { timeout: 15_000 }).toBe("ops");
+    // Read back from the exchange, by hand.
+    const reconciled = await request.post(`${SERVER}/trigger/trading-bot/reconcile`, { data: {}, headers: { Authorization: `Bearer ${adminToken}` } });
+    expect(((await reconciled.json()) as { answer: unknown[] }).answer).toHaveLength(2);
+
+    // The admin's resources show the binding without the URL's key.
+    await page.getByRole("button", { name: "admin", exact: true }).click();
+    await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+    await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TICKER_URL\) · subscribes with .* · runs only type ticker · its id product_id\/sequence · 1000 may wait, one a product_id, the newest · quiet for 90s at most$/)).toBeVisible();
+    await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
+  } finally {
+    release();
+    exchange.close();
+  }
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

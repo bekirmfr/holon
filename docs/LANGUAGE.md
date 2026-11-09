@@ -960,6 +960,74 @@ sends again is passed over, and events that come faster than their runs wait, up
 now. The grant is `FeedEvent("prices")`, "run on each event from the feed prices"; the page
 listens to the channel the handler sends on, as live-board's does.
 
+### trading-bot: a WebSocket feed, and an order placed once
+
+Its handler and the order's run (the signing function, the approval and the routes left out):
+
+```ts
+import { action, decimal_compare, decimal_mul, flow, on } from "holon"
+import levels from "collection:levels"
+import orders from "collection:orders"
+import prices from "collection:prices"
+import ticker from "feed:ticker"
+import exchange from "host:api.exchange.coinbase.com"
+import { now } from "holon:clock"
+
+flow("trading-bot", { port: 8190 })
+
+on.feed(
+  ticker,
+  (e) => {
+    const product = e.data.product_id
+    prices[product] = { price: e.data.price, at: now, replaced: e.replaced }
+    const level = levels[product]
+    const started = level.started ?? false
+    const under = decimal_compare(e.data.price, level.price) <= 0 && started === false
+    const order = under
+      ? { product, price: level.price, size: level.size, id: level.id }
+      : undefined
+    if (order !== undefined) levels[product] = { ...level, started: now }
+    place(order)
+  },
+  { log: "lazy" },
+)
+
+export const place = action(async (order) => {
+  const body = JSON.stringify({
+    type: "limit",
+    side: "buy",
+    product_id: order.product,
+    price: order.price,
+    size: order.size,
+    client_oid: order.id,
+  })
+  const sent = await exchange.post("/orders", {
+    headers: { "content-type": "application/json" },
+    body,
+  })
+  if (sent.status === 200) {
+    orders[order.id] = { product: order.product, exchange: JSON.parse(sent.body).id }
+  }
+  return { status: sent.status }
+})
+```
+
+The feed is a WebSocket (`wss://ws-feed.exchange.coinbase.com`), bound with what the flow doesn't
+say: the message that subscribes to the ticker (`--subscribe`), the messages that run (`--only
+type=ticker`), their id (`--id product_id,sequence`), and, while runs are slower than the prices,
+only each product's newest kept (`--on-full latest --key product_id`), `e.replaced` saying how many
+waiting prices it replaced. The handler is `lazy`: it is a price, and where the host is in the
+feed moves once the record is synced, so after a crash the prices of the last second run again.
+The order is not lazy. `place(order)` starts the flow's own action, a strict run, and `order` is
+absent unless the price is under the level, so no run starts for the others: a call bound on a
+statement is made when the run reaches it, but not without its input (§6.3). The order's client
+id is the level's, made when the level was set, so a price run again after a crash, or the action
+run again by hand, sends the same order, and the exchange places it once. The handler marks the
+level as started and reads nothing the order's run writes: a run that has started another holds
+the keys it read until it commits, so the order's run would wait on them. In the sample, an order
+worth more than 1000 waits for a person's approval (`await event("approved")`) in a run of its own,
+which starts `place` once approved, so the order is signed with the time it is sent.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):
