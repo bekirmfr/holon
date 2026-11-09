@@ -49,6 +49,8 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
+        proposals: Default::default(),
     }
 }
 
@@ -61,7 +63,17 @@ fn host_header() -> (String, String) {
 /// A request as the editor sends it: our Host, and for a POST the Content-Type its body is
 /// (a JSON body starts with `{` or `[`; preimages and trigger text go as raw bytes).
 pub(crate) fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
+    req_with(method, url, body, vec![])
+}
+
+/// As `holon mcp` asks: as an agent (`X-Holon-Role`, access.rs).
+pub(crate) fn agent_req(method: &str, url: &str, body: Vec<u8>) -> Request {
+    req_with(method, url, body, vec![("X-Holon-Role".to_string(), "agent".to_string())])
+}
+
+fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
+    headers.extend(more);
     if method == "POST" {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
@@ -171,6 +183,14 @@ fn health_check() {
     let r = route(&state, &req("GET", "/health", vec![]));
     assert_eq!(r.status_code, 200);
     assert_eq!(body_bytes(r), b"ok");
+}
+
+#[test]
+fn version_says_the_hosts() {
+    let state = test_state();
+    let r = route(&state, &req("GET", "/version", vec![]));
+    assert_eq!(r.status_code, 200);
+    assert_eq!(body_bytes(r), env!("CARGO_PKG_VERSION").as_bytes());
 }
 
 // ── /unit ────────────────────────────────────────────────────────────────────────────
@@ -666,6 +686,42 @@ fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
     let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
     let seqs: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
     assert_eq!(seqs, [2, 3, 4]);
+}
+
+/// The host at a glance (summary.rs): each deployment's runs by hour, the totals and the newest
+/// runs; and a check reads every log's chain again, which the summary then says.
+#[test]
+fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"glance\")\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "glance", "unit": plan.unit })).unwrap())));
+    assert_eq!(deploy_json(&state, "glance", parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    for _ in 0..3 {
+        assert_eq!(route(&state, &req("POST", "/trigger/glance/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let summary = body_json(route(&state, &req("GET", "/summary?hours=6", vec![])));
+    assert_eq!(summary["hours"], 6);
+    let flow = &summary["deployments"][0];
+    assert_eq!(flow["slug"], "glance");
+    assert_eq!(flow["status"], "running");
+    assert_eq!(flow["runs"], serde_json::json!([0, 0, 0, 0, 0, 3]), "{flow}");
+    assert_eq!(flow["failed"], serde_json::json!([0, 0, 0, 0, 0, 0]));
+    assert_eq!(flow["on_record"], 3);
+    assert_eq!(summary["totals"], serde_json::json!({ "runs": 3, "failed": 0, "running": 1, "paused": 0, "stopped": 0 }));
+    let latest = summary["latest"].as_array().unwrap();
+    assert_eq!(latest.iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [2, 1, 0], "the newest first");
+    assert!(latest.iter().all(|r| r.get("request").is_none() && r["failed"] == false), "{latest:?}");
+    assert_eq!(summary["chain"]["checked"], serde_json::Value::Null, "no check yet");
+    // Checked: every line follows the one before, and the summary says so until the next.
+    let check = body_json(route(&state, &req("POST", "/summary/check", vec![])));
+    assert_eq!((check["runs"].as_u64(), check["breaks"].as_array().map(Vec::len)), (Some(3), Some(0)), "{check}");
+    assert_eq!(check["heads"][0][1], flow["head"]);
+    let summary = body_json(route(&state, &req("GET", "/summary", vec![])));
+    assert_eq!(summary["hours"], 24);
+    assert_eq!(summary["chain"]["checked"]["runs"], 3);
 }
 
 #[test]
@@ -1472,6 +1528,134 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)]);
 }
 
+/// A version replayed on a deployment's recent runs, offline (G11): the same version answers every
+/// run as it ran; one that prices large orders higher differs on those; one that asks a host the
+/// runs never asked can't be told; one without the action differs on every run. Nothing changes.
+#[test]
+fn a_version_replays_on_its_deployments_recent_runs() {
+    let state = test_state();
+    let quote = |body: &str| {
+        format!("import {{ action, flow }} from \"holon\"
+import state from \"state\"
+
+flow(\"quote\")
+
+export const price = action((n) => {{
+  state.last = n
+  {body}
+}})
+")
+    };
+    let v1 = stage_text(&state, &quote("return n * 2"));
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"price\")", "StateWrite(\"last\")"] });
+    assert_eq!(deploy_json(&state, "quote", v1, ack).status_code, 200);
+    for n in [1, 5, 20] {
+        assert_eq!(run_action_named(&state, "quote", "price", serde_json::json!(n)).status_code, 200);
+    }
+    let replay = |unit: Hash, more: &str| route(&state, &req("GET", &format!("/deployments/quote/replay?unit={}{more}", to_hex(&unit)), vec![]));
+    let counts = |r: &serde_json::Value| (r["replayed"].as_u64().unwrap(), r["same"].as_u64().unwrap(), r["differ"].as_u64().unwrap(), r["cant_tell"].as_u64().unwrap());
+
+    let same = body_json(replay(v1, ""));
+    assert_eq!(counts(&same), (3, 3, 0, 0), "{same}");
+    assert_eq!(same["runs"].as_array().unwrap().iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 1, 0], "newest first");
+
+    let v2 = stage_text(&state, &quote("return n > 10 ? n * 3 : n * 2"));
+    let r = body_json(replay(v2, ""));
+    assert_eq!(counts(&r), (3, 2, 1, 0), "{r}");
+    assert_eq!((&r["runs"][0]["outcome"], &r["runs"][0]["why"]), (&serde_json::json!("differs"), &serde_json::json!(["its outputs"])), "{r}");
+    assert_eq!(counts(&body_json(replay(v2, "&runs=2"))), (2, 1, 1, 0), "the last two");
+
+    let asks = "import { action, flow } from \"holon\"
+import state from \"state\"
+import api from \"host:api.example.com\"
+
+flow(\"quote\")
+
+export const price = action(async (n) => {
+  state.last = n
+  const r = await api.get(\"/rate\")
+  return r.status
+})
+";
+    let r = body_json(replay(stage_text(&state, asks), ""));
+    assert_eq!(counts(&r), (3, 0, 0, 3), "{r}");
+    let why = r["runs"][0]["why"][0].as_str().unwrap();
+    assert!(why.starts_with("it sends GET https://api.example.com/rate, which the run didn't"), "{why}");
+
+    let renamed = "import { action, flow } from \"holon\"
+
+flow(\"quote\")
+
+export const quote = action((n) => n * 2)
+";
+    let r = body_json(replay(stage_text(&state, renamed), ""));
+    assert_eq!(counts(&r), (3, 0, 3, 0), "{r}");
+    assert_eq!(r["runs"][0]["why"], serde_json::json!(["the version has no action \"price\""]));
+
+    // It changed nothing: the deployment's log and state are as the runs left them.
+    assert_eq!(log_entries(&state, "quote").len(), 3);
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/quote/state", vec![])))["state"]["last"]["value"], serde_json::json!(20.0));
+    assert_eq!(replay(v1, "&runs=0").status_code, 400);
+    assert_eq!(replay([7u8; 32], "").status_code, 404, "a unit not staged");
+    assert_eq!(route(&state, &req("GET", &format!("/deployments/nope/replay?unit={}", to_hex(&v1)), vec![])).status_code, 404);
+}
+
+/// A replayed version's outbound requests are answered by what the run was answered to the same
+/// request, wherever the version asks it from; one the run never sent can't be told.
+#[test]
+fn a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = stream.unwrap();
+            let _ = read_request(&mut stream);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK
+Content-Length: 5
+Connection: close
+
+hello");
+        }
+    });
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true").unwrap());
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    assert_eq!(deploy_json(&state, "local", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+    assert_eq!(body_json(run_action_named(&state, "local", "call", serde_json::json!("/hi")))["answer"]["body"], "hello");
+
+    let version = |body: &str| {
+        let text = format!("import {{ action, flow }} from \"holon\"
+import api from \"host:{host}\"
+
+flow(\"caller\")
+
+export const call = action(async (path) => {{
+{body}
+}})
+");
+        let unit = stage_text(&state, &text);
+        body_json(route(&state, &req("GET", &format!("/deployments/local/replay?unit={}", to_hex(&unit)), vec![])))
+    };
+    // The body alone, from the answer the run had: it differs, and is told.
+    let r = version("  const r = await api.get(path)
+  return r.body");
+    assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its outputs"])), "{r}");
+    let r = version("  const r = await api.get(path)
+  return r");
+    assert_eq!(r["same"], 1, "{r}");
+    // A second request the run never sent.
+    let r = version("  const r = await api.get(path)
+  const s = await api.get(\"/more\")
+  return [r, s]");
+    assert_eq!(r["cant_tell"], 1, "{r}");
+    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
+}
+
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
 /// the graph says. (A grant can only lose an item by being changed under a running deployment;
 /// this sets that up directly.)
@@ -1937,6 +2121,142 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// An approval is decided by people signed in, never by a token: two different people approve a
+/// two-person approval and the run goes on with who they were; one decline, with a reason, ends
+/// it; one that runs out goes on as expired, with who had approved. An agent, a viewer, an API
+/// token and the same person twice are refused, and each decision is in the run's log and the
+/// activity log.
+#[test]
+fn an_approval_is_decided_by_different_people_never_by_a_token() {
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+import state from "state"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", people: 2 })
+  state.decided = decision
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/2\")", "StateWrite(\"decided\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    let runs = |state: &AppState, token: Option<&str>| {
+        let mut headers = req("GET", "/deployments/payouts/runs", vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
+        body_json(route(state, &Request::fake_http("GET", "/deployments/payouts/runs", headers, vec![])))["runs"].as_array().unwrap().clone()
+    };
+    // Three runs wait; a start is handed no token for an approval, and none resumes it.
+    let mut ids = vec![];
+    for amount in [10, 20, 30] {
+        let started = run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": amount }));
+        assert!(started.is_success());
+        assert!(!String::from_utf8(body_bytes(started)).unwrap().contains("rt_"), "no token for an approval");
+        let waiting = runs(&state, None);
+        let new = waiting.iter().map(|r| r["run_id"].as_str().unwrap().to_string()).find(|id| !ids.contains(id)).unwrap();
+        ids.push(new);
+    }
+    let first = runs(&state, None).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
+    assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
+    assert!(durable::claim_by_token(&state.deployments, "payouts", "payout", &durable::token_for(&ids[0], "payout")).is_none(), "a token doesn't resume an approval");
+    // A run that waits has no answer yet, and hasn't failed: counted, not as an error, and its log
+    // entry says where it waits, with no status.
+    let (count, errors) = state.deployments.lock().unwrap().get("payouts").map(|d| (d.trigger_count, d.error_count)).unwrap();
+    assert_eq!((count, errors), (3, 0), "three runs, none failed");
+    let entries = body_json(route(&state, &req("GET", "/deployments/payouts/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert!(entries.iter().all(|e| e["status"].is_null() && e["parked"] == serde_json::json!(["payout"])), "{entries:?}");
+
+    // From here on, people sign in.
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ci = accounts.create_token("ci", access::Role::Editor, "ada").unwrap().0;
+    state.access = access::Access::new(accounts, vec![], vec![]);
+    let decide = |token: &str, agent: bool, run: &str, body: serde_json::Value| {
+        let url = format!("/deployments/payouts/runs/{run}/decide");
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut headers = req("POST", &url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {token}")));
+        if agent {
+            headers.push(("X-Holon-Role".into(), "agent".into()));
+        }
+        let r = route(&state, &Request::fake_http("POST", &url, headers, bytes));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let approve = serde_json::json!({ "name": "payout", "approve": true });
+    let decided = || {
+        let v = state.deployments.lock().unwrap()["payouts"].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
+        crate::wire::read_json::<serde_json::Value>(holon_core::stringify_json(&v).unwrap().as_bytes()).unwrap()
+    };
+
+    assert_eq!(decide(&cy, false, &ids[0], approve.clone()).0, 403, "a viewer only reads");
+    let (code, said) = decide(&ci, false, &ids[0], approve.clone());
+    assert_eq!(code, 403);
+    assert!(said.contains("token:ci is an API token, a script, not a person"), "{said}");
+    assert_eq!(decide(&ada, true, &ids[0], approve.clone()).0, 403, "an agent never decides");
+    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"waiting""#) && said.contains(r#""approved_by":["ada"]"#), "{said}");
+    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    assert_eq!(code, 409);
+    assert!(said.contains("ada already approved \\\"payout\\\": it needs 2 different people"), "{said}");
+    let listed = runs(&state, Some(&ada)).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
+    assert_eq!(listed["waiting"][0]["approved"][0]["by"], "ada", "{listed}");
+    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": false })).0, 400, "a decline says why");
+    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "paid", "approve": true })).0, 404);
+    let (code, said) = decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" }));
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"approved""#), "{said}");
+    let d = decided();
+    assert_eq!((&d["approved"], &d["by"]), (&serde_json::json!(true), &serde_json::json!(["ada", "bob"])), "{d}");
+    assert_eq!(d["approvals"][1]["reason"], "the invoice matches");
+    assert!(!runs(&state, Some(&ada)).iter().any(|r| r["run_id"] == ids[0].as_str()), "decided, it finished");
+    assert_eq!(decide(&bob, false, &ids[0], approve.clone()).0, 404, "decided once");
+
+    // One decline is enough.
+    let (code, said) = decide(&bob, false, &ids[1], serde_json::json!({ "name": "payout", "approve": false, "reason": "  not this vendor  " }));
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"declined""#), "{said}");
+    let d = decided();
+    assert_eq!((&d["approved"], &d["declined_by"], &d["reason"], &d["by"]), (&serde_json::json!(false), &serde_json::json!("bob"), &serde_json::json!("not this vendor"), &serde_json::json!([])), "{d}");
+
+    // Nobody else decides in time: it goes on as expired, with who approved.
+    assert_eq!(decide(&ada, false, &ids[2], approve.clone()).0, 200);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let d = decided();
+    assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
+    assert!(runs(&state, Some(&ada)).is_empty());
+
+    // Each resumed part's log entry holds the decision it was given; the activity log, who decided.
+    let as_ada = |url: &str| {
+        let mut headers = req("GET", url, vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {ada}")));
+        body_json(route(&state, &Request::fake_http("GET", url, headers, vec![])))
+    };
+    let entries = as_ada("/deployments/payouts/log")["entries"].as_array().unwrap().clone();
+    let resumed: Vec<_> = entries.iter().filter(|e| e["kind"] == "resume").collect();
+    assert_eq!(resumed.len(), 3);
+    assert!(resumed.iter().all(|e| e["events"].get("payout").is_some()), "{resumed:?}");
+    let activity = as_ada("/activity")["entries"].as_array().unwrap().clone();
+    let did = |action: &str, by: &str| activity.iter().filter(|e| e["action"] == action && e["by"] == by).count();
+    assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
+}
+
+/// Who may decide an approval: a person by their account's name, the OS user's local admin by the
+/// name it runs as; not an agent, a viewer, an API token, or anyone on a server without accounts.
+#[test]
+fn only_a_person_decides_an_approval() {
+    let caller = |name: Option<&str>, role: Option<access::Role>| access::Caller { name: name.map(String::from), role };
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    for (name, role) in [(Some("ada (agent)"), Some(access::Role::Agent)), (Some("cy"), Some(access::Role::Viewer)), (Some("token:ci"), Some(access::Role::Editor)), (None, None)] {
+        assert!(durable::decider(&caller(name, role)).is_err(), "{name:?}");
+    }
+}
+
 /// What a waiting run keeps that may hold a secret (the request that started it, the requests it
 /// made, the events delivered to it) is sealed in the deployments file under the secrets master
 /// key, which is kept apart from it, and the file is its owner's alone. The run still resumes
@@ -2238,6 +2558,8 @@ fn deployments_persist_across_a_simulated_restart() {
             activity: activity::Activity::memory(),
             editor: None,
             sweeps: Default::default(),
+            checked: Default::default(),
+            proposals: Default::default(),
         };
         let unit = stage_text(&state, ECHO);
         let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
@@ -2272,6 +2594,8 @@ fn deployments_persist_across_a_simulated_restart() {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
+        proposals: Default::default(),
     };
     let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
     assert_eq!(ran.status_code, 200);
@@ -3861,6 +4185,8 @@ fn state_persists_across_a_simulated_restart() {
             activity: activity::Activity::memory(),
             editor: None,
             sweeps: Default::default(),
+            checked: Default::default(),
+            proposals: Default::default(),
         };
         let writer = stage_writer(&state, "counter");
         let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
@@ -3895,6 +4221,8 @@ fn state_persists_across_a_simulated_restart() {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
+        proposals: Default::default(),
     };
     assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));
@@ -4757,6 +5085,38 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
 /// (and the line chained again) differs; one rewritten everywhere, that node's own output too,
 /// passes, since what the node produced is taken from the log. The report says how many nodes.
 #[test]
+fn a_replay_cant_tell_a_run_that_computes_with_a_secret() {
+    let state = claims_state("");
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": "whsec_test_123456" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let signer = |answer: &str| {
+        format!("import {{ flow, hmac_sha256, route, status }} from \"holon\"
+import signing_key from \"secret:signing_key\"
+
+flow(\"signer\", {{ port: 18199 }})
+
+route.post(\"/sign\", (req) => {answer})
+")
+    };
+    let text = signer("hmac_sha256(signing_key, req.body) ?? status(400)");
+    deploy_text(&state, &text, "127.0.0.1:9");
+    assert_eq!(data_call(&state, "signer", "POST", "/sign", "hello").0, 200);
+    let replay = |text: &str| {
+        let unit = stage_text(&state, text);
+        body_json(route(&state, &req("GET", &format!("/deployments/signer/replay?unit={}", to_hex(&unit)), vec![])))
+    };
+    // The log holds the key's placeholder: what the signing gives with it isn't the run's.
+    let r = replay(&text);
+    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret or a token, which the log never holds")), "{r}");
+    // One that passes the key along computes the same with its placeholder, and is told.
+    let r = replay(&signer("({ signed: req.body, key: signing_key }).signed"));
+    assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its answer"])), "{r}");
+    assert_eq!((&r["runs"][0]["status"], &r["runs"][0]["now_status"]), (&serde_json::json!(200), &serde_json::json!(200)));
+    let r = replay(&signer("status(503)"));
+    assert_eq!(r["runs"][0]["why"][0], "it answers 503 where it answered 200", "{r}");
+}
+
+#[test]
 fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
     let state = claims_state("");
     let value = "whsec_test_123456";
@@ -4929,6 +5289,48 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
         }
     });
     (host, hits)
+}
+
+/// A call whose answer is read is made only on the path that reaches it: after a `return` that
+/// answered, or in an `if` not taken, nothing is sent, though a later statement reads the answer.
+#[test]
+fn a_call_on_a_path_not_taken_is_not_made() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"import {{ flow, route }} from "holon"
+import api from "host:{host}"
+
+flow("paths", {{ port: 18297 }})
+
+route.post("/early", async (req) => {{
+  if (!req.json.go) {{
+    return "stopped"
+  }}
+  const sent = await api.post("/early", {{ body: "x" }})
+  return `sent ${{sent.status}}`
+}})
+
+route.post("/branch", async (req) => {{
+  let said = "skipped"
+  if (req.json.go) {{
+    const sent = await api.post("/branch", {{ body: "x" }})
+    said = `sent ${{sent.status}}`
+  }}
+  return said
+}})
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    for path in ["/early", "/branch"] {
+        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":false}"#);
+        assert_eq!(status, 200, "{body}");
+        assert!(body == "stopped" || body == "skipped", "{path}: {body}");
+        assert_eq!(hits_of(&hits, path), 0, "{path}: a path not taken sends nothing");
+        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":true}"#);
+        assert_eq!((status, body.as_str()), (200, "sent 200"), "{path}");
+        assert_eq!(hits_of(&hits, path), 1, "{path}: sent once, when taken");
+    }
 }
 
 /// A secret computed into something else is kept out of the log as surely as its value is: a
@@ -7805,14 +8207,15 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The approved-payout sample: a deposit while the payout waits for its approval goes ahead (the
-/// waiting run holds nothing), and the approved run pays from the balance as it then is; one while
-/// the payout is in flight waits for the row the run holds, and runs again after it. The payout
-/// went out once; no deposit is written over.
+/// The approved-payout sample: a deposit while the payout waits for two people's approval goes
+/// ahead (the waiting run holds nothing), and once two people approve it the run pays from the
+/// balance as it then is; a deposit while the payout is in flight waits for the row the run holds,
+/// and runs again after it. The payout went out once; no deposit is written over. A second payout,
+/// declined, pays nothing.
 #[test]
 fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let (host, hits) = counting_server();
-    let state = claims_state("");
+    let mut state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let schema = "create table accounts (id integer primary key, balance integer not null); insert into accounts values (1, 100); create table payouts (account integer not null, amount integer not null, status integer)";
@@ -7820,27 +8223,57 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
+    // From here on, people sign in: two of them decide.
+    let accounts = Arc::new(crate::accounts::Accounts::memory());
+    let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    state.access = access::Access::new(accounts, vec![], vec![]);
+    let state = state;
+    let as_person = |token: &str, method: &str, url: &str, body: serde_json::Value| {
+        let bytes = if method == "GET" { vec![] } else { serde_json::to_vec(&body).unwrap() };
+        let mut headers = req(method, url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {token}")));
+        let r = route(&state, &Request::fake_http(method, url, headers, bytes));
+        (r.status_code, body_json(r))
+    };
+    let waiting = || as_person(&ada, "GET", &format!("/deployments/{slug}/runs"), serde_json::Value::Null).1["runs"].as_array().unwrap().clone();
+    let decide = |token: &str, run: &str, approve: bool, reason: Option<&str>| as_person(token, "POST", &format!("/deployments/{slug}/runs/{run}/decide"), serde_json::json!({ "name": "payout", "approve": approve, "reason": reason }));
     let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
 
     let (status, asked, _) = data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":30}"#);
     assert_eq!(status, 202, "{asked}");
-    let approve = serde_json::from_str::<serde_json::Value>(&asked).unwrap()["approve"].as_str().unwrap().to_string();
+    assert!(asked.contains("two people's approval"), "{asked}");
     assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
+    let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = decide(&ada, &run, true, None);
+    assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
+    assert_eq!(hits_of(&hits, "/slow"), 0, "one approval of two pays nothing");
     let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| data_call(&state, &slug, "POST", &approve, r#"{"by":"ops"}"#));
+        let approved = s.spawn(|| decide(&bob, &run, true, Some("the invoice matches")));
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
         approved.join().unwrap()
     });
-    assert_eq!(approved.0, 200, "{approved:?}");
+    assert_eq!((approved.0, &approved.1["outcome"]), (200, &serde_json::json!("approved")), "{approved:?}");
+    assert!(approved.1["run_error"].is_null(), "{approved:?}");
     assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
     assert_eq!(hits_of(&hits, "/slow"), 1, "paid once");
-    let entries = log_entries(&state, &slug);
+    let entries = as_person(&ada, "GET", &format!("/deployments/{slug}/log"), serde_json::Value::Null).1["entries"].as_array().unwrap().clone();
     // Resumed, it held the account's row from its payout until it committed; the deposit that came
     // meanwhile waited for it, found the balance changed, and ran again on it.
     let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
+    assert!(resumed["outputs"].to_string().contains(r#"{"type":"Text","value":"bob"}"#), "who approved it: {resumed}");
     assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
+
+    // A second payout, declined: nothing is sent or written.
+    assert_eq!(data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":10}"#).0, 202);
+    let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = decide(&bob, &run, false, Some("not this vendor"));
+    assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("declined")), "{said}");
+    assert!(said["run_error"].is_null(), "{said}");
+    assert_eq!((balance(), hits_of(&hits, "/slow")), (140, 1), "nothing paid");
+    assert!(waiting().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

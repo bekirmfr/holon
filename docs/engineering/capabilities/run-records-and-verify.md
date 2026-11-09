@@ -15,6 +15,8 @@ itself.
 - **Exports** (`verify.rs`): `GET /deployments/<slug>/export` and `holon export`; the backup writes
   the same, gzipped ([Storage](storage.md#the-backup)).
 - **`holon verify`** (`verify.rs`, `run`, `check`): checks an export and runs every run again.
+- **A replay** (`verify/replay.rs`): `GET /deployments/<slug>/replay?unit=<hash>` runs a new
+  version, offline, on a deployment's last runs, and says which it answers the same.
 
 The sample `witness` is a flow that takes the heads a server sends (`holon serve --export-heads`),
 keeps each batch and answers a receipt; `rolling-log` shows retention.
@@ -125,6 +127,21 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 
 It exits 0 when it all checks (`Report::ok`), 1 when it doesn't, 2 when it can't read the export.
 
+### A replay of another version
+
+`replay` runs a version that isn't the run's own on the last runs of a deployment (20 unless
+`runs` says, at most 200), as `rerun` does but through the version's handler for the entry's
+route, clock, file or action, and compares status, outputs, effects, the packs sent as it waits and
+where it waits. A new version moves nodes, so nothing is matched by path: a request is answered by
+the run's answer to the same request (`ByRequest`), a read by the run's read of the same request
+(`ByRead`). What the run never asked can't be answered offline: the run is `cant_tell`, never
+sent. A pure leaf fed a placeholder is computed twice, with two placeholders (`Fed`): if what it
+gives depends on which, it computed with the secret's value, and the run is `cant_tell`; if not,
+it passed it along or picked past it, and stands. The run id isn't compared: another version's
+differs by design. The file texts come from the export machinery (`export_of`), so a file holding
+a secret isn't read back, as in an export. The editor shows it on a version's review and in the
+deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.
+
 ## 3. Why it is this way
 
 - **Answered means recorded**, a record a third party can check: most of a request's cost
@@ -203,6 +220,10 @@ a run beside the first began after: not checked, where without the numbers it br
 the handler tests that end "…and verify" (file handlers, actions, clocks, folders); and the golden
 record `the_server_records_what_its_golden_record_holds`, which holds the entries and hashes of
 every sample that needs nothing outside the server.
+
+A replay: `a_version_replays_on_its_deployments_recent_runs` (same, differs, can't tell, no
+such action, nothing changed), `a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt`,
+`a_replay_cant_tell_a_run_that_computes_with_a_secret` (and is told one that passes it along).
 
 End to end: `a deployment's runs export from view mode and from holon export, and holon verify
 runs each again`, and the `inbox-report`, `log-archive`, `journal`, `drop-box` and `file-audit`

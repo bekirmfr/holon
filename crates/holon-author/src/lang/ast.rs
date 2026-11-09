@@ -380,8 +380,9 @@ pub enum ExprKind {
     /// `switch (subject) { case …: return value … default: return els }`. `open` is the brace's
     /// span.
     Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
-    /// `await event("name", { expires: "1h" })`.
-    Await { name: Name, expires: Option<Box<Expr>> },
+    /// `await event("name", { expires: "1h" })`; with `people`, `await approval("name", { people: 2 })`,
+    /// which people decide.
+    Await { name: Name, expires: Option<Box<Expr>>, people: Option<u32> },
     /// `(params) => body`, written in place for a higher-order leaf: `map`, `fold`, `filter`, …
     Lambda { params: Vec<Name>, body: Box<Expr> },
     /// `( expr )`, kept: parentheses are the author saying "two nodes" where an operator chain

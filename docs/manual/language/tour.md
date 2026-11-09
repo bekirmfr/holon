@@ -376,6 +376,36 @@ event, and the order's run finishes: it writes the order. If nobody opens the li
 the run expires. Order in the text doesn't matter: a value is computed when what it needs has
 arrived.
 
+When what the run waits for is people's say, not a request, it waits at an approval:
+
+```ts
+import { action, approval, flow, route, status } from "holon"
+import state from "state"
+
+flow("refunds", { port: 8116 })
+
+route.post("/refunds", (req) => {
+  refund(req.json)
+  return status(202, "waiting for two people")
+})
+
+export const refund = action(async (asked) => {
+  const decision = await approval("refund", { people: 2, expires: "1d" })
+  if (!decision.approved) {
+    return { declined: decision.reason ?? "expired" }
+  }
+  state.last_refund = { ...asked, by: decision.by }
+  return { refunded: asked.amount, by: decision.by }
+})
+```
+
+No link is handed out and no route resumes it: two different people signed in to Holon approve it,
+in the editor's Approvals or with `holon decide`, or one declines, with a reason. An agent never
+decides one. The run then goes on with `decision.by`, who approved it; declined, it writes
+nothing. The `approved-payout` sample does this with a bank's balance. Where approvals go next,
+in steps filled by roles and in order, is the target design,
+[`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
+
 ## Files
 
 A flow can read and write files in folders an admin has bound to a name on the host:

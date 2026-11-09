@@ -77,10 +77,6 @@ impl App {
                 let line = self.shell.take().unwrap_or_default();
                 self.shell_command(line.trim());
             }
-            KeyCode::Backspace => {
-                line.pop();
-            }
-            KeyCode::Char(c) => line.push(c),
             KeyCode::Up | KeyCode::Down => {
                 let n = self.shell_history.len();
                 if n == 0 {
@@ -94,8 +90,11 @@ impl App {
                 };
                 self.shell_back = at;
                 *line = at.map(|i| self.shell_history[i].clone()).unwrap_or_default();
+                self.line_back = 0;
             }
-            _ => {}
+            _ => {
+                super::app::edit_typed(line, &mut self.line_back, k);
+            }
         }
     }
 

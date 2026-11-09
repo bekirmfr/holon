@@ -353,6 +353,7 @@ enum Request {
     FlowStart,
     Stream,
     Await,
+    Approval,
     CollectionGet,
     CollectionList,
     FileRead,
@@ -377,6 +378,7 @@ impl Request {
             "flow_start" => Request::FlowStart,
             "http_stream" => Request::Stream,
             "await" => Request::Await,
+            "approval" => Request::Approval,
             "collection_get" => Request::CollectionGet,
             "collection_list" => Request::CollectionList,
             "file_read" => Request::FileRead,
@@ -410,6 +412,7 @@ impl Request {
             // A durable run's waiting point and its token: also the host's to answer.
             Request::Await => primitives::await_request(params),
             Request::ResumeToken => primitives::resume_token_request(params),
+            Request::Approval => primitives::approval_request(params),
             // A collection read: the host answers it from the collection as the run found it.
             Request::CollectionGet => primitives::collection_get_request(&owned(inputs), params),
             Request::CollectionList => primitives::collection_list_request(&owned(inputs), params),

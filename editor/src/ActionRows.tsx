@@ -1,6 +1,6 @@
 // A deployment's actions as rows: each with a box for what to send it (remembered per action), run,
 // the answer under it with its run's number and view run, and the command a script would use. The
-// server panel and the deployed page both show them (docs/L4s/triggers-L4.md §7).
+// server panel and a flow's Status tab both show them (docs/L4s/triggers-L4.md §7).
 
 import { useState, type CSSProperties } from "react";
 import { actionUrl, runAction, type Role } from "./server";
@@ -8,13 +8,13 @@ import { actionUrl, runAction, type Role } from "./server";
 const field: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#e6eefb",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--ink)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "2px 4px",
 };
-const button: CSSProperties = { ...field, color: "#9fb4d4", cursor: "pointer", padding: "2px 8px" };
+const button: CSSProperties = { ...field, color: "var(--muted)", cursor: "pointer", padding: "2px 8px" };
 const link: CSSProperties = { ...button, border: "none", background: "transparent", padding: 0, textDecoration: "underline" };
 
 /** What an action's last run answered. */
@@ -54,7 +54,7 @@ export function ActionRows({
   return (
     <>
       {outOfDate && slug && (
-        <div style={{ color: "#e0c36f" }} title="deploy to run what the canvas has now">
+        <div style={{ color: "var(--warn)" }} title="deploy to run what the canvas has now">
           runs the deployed version: the canvas has changes not deployed
         </div>
       )}
@@ -63,8 +63,8 @@ export function ActionRows({
         return (
           <div key={name} aria-label={`action ${name}`} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ color: "#6fd3e0", width: 52, flexShrink: 0 }}>action</span>
-              <span style={{ flex: 1, color: "#e6eefb" }}>{name}</span>
+              <span style={{ color: "var(--accent)", width: 52, flexShrink: 0 }}>action</span>
+              <span style={{ flex: 1, color: "var(--ink)" }}>{name}</span>
               <button
                 style={{ ...button, opacity: slug && !viewer ? 1 : 0.4 }}
                 disabled={!slug || viewer}
@@ -75,7 +75,7 @@ export function ActionRows({
               </button>
             </div>
             {viewer ? (
-              <div style={{ color: "#7e8ea8" }}>an editor or an admin runs this</div>
+              <div style={{ color: "var(--faint)" }}>an editor or an admin runs this</div>
             ) : (
               <textarea
                 value={sent[name] ?? ""}
@@ -87,7 +87,7 @@ export function ActionRows({
               />
             )}
             {r && (
-              <div style={{ color: r.ok ? "#9ad29f" : "#e0916f", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <div style={{ color: r.ok ? "var(--ok)" : "var(--bad)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                 {name}: {r.text}
                 {r.seq !== undefined && onViewRun && (
                   <>
@@ -100,7 +100,7 @@ export function ActionRows({
               </div>
             )}
             {slug && !viewer && (
-              <code style={{ color: "#6f86a8", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
+              <code style={{ color: "var(--faint)", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
                 curl -X POST {actionUrl(slug, name)} -H "Authorization: Bearer $HOLON_TOKEN" -H "Content-Type: application/json" -d '{(sent[name] ?? "").trim() || "{}"}'
               </code>
             )}

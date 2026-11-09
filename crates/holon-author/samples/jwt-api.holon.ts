@@ -12,14 +12,14 @@
 // Try it: deploy it, run trust from the editor's server panel with a partner's public key, a JWK
 // or a PEM text: {"partner": "acme", "key": {"kty": "EC", "crv": "P-256", "x": "…", "y": "…"}}.
 // Then, with a token acme signed (iss acme, aud payouts-api, an exp, a jti):
-//   curl -H "authorization: Bearer $TOKEN" http://127.0.0.1:8184/whoami
-//   curl -H "authorization: Bearer $TOKEN" -d '{"amount": "120.00"}' http://127.0.0.1:8184/payouts
+//   curl -H "authorization: Bearer $TOKEN" http://127.0.0.1:8198/whoami
+//   curl -H "authorization: Bearer $TOKEN" -d '{"amount": "120.00"}' http://127.0.0.1:8198/payouts
 import { action, flow, jwt_decode, jwt_verify, respond, route } from "holon"
 import { now } from "holon:clock"
 import partners from "collection:partners"
 import payouts from "collection:payouts"
 
-flow("jwt-api", { port: 8184 })
+flow("jwt-api", { port: 8198 })
 
 // A partner's public key, trusted by a person: a JWK or a PEM text, under the partner's id.
 export const trust = action((input) => {

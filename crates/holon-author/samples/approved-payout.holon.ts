@@ -1,13 +1,18 @@
-// Approved payout: a waiting run checks what it read.
+// Approved payout: two people approve it, and the waiting run checks what it read.
 //
-// Asks for a payout from an account. The route answers with an approval link (202) and the
-// account's balance, and starts the payout's run, an action, which waits for the approval, a day at
-// most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. Once
-// approved, the run reads the balance as it is now, sends the payout (to httpbin.org, standing in
-// for a bank), and writes the new balance and a record of the payout. At its commit it checks what
-// it read: if the balance was changed outside Holon while the payout was in flight, it runs again
-// from the approval on the balance as it now is, the payout and the approval answered from its
-// record, not sent or asked again. No deposit is written over, and nothing is paid twice.
+// Asks for a payout from an account. The route answers at once (202) with the account's balance,
+// and starts the payout's run, an action, which waits for two different people to approve it, a
+// day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits.
+// People signed in to Holon decide it, in the editor's Approvals (Runs waiting) or with holon
+// decide; each counts once, and one decline, with a reason, ends it. Approved, the run reads the
+// balance as it is now, sends the payout (to httpbin.org, standing in for a bank) with who
+// approved it, and writes the new balance and a record of the payout. At its commit it checks
+// what it read: if the balance was changed outside Holon while the payout was in flight, it runs
+// again from the approval on the balance as it now is, the payout and the approval answered from
+// its record, not sent or asked again. No deposit is written over, and nothing is paid twice.
+//
+// Where it goes next (docs/L4s/access-and-approvals-L4.md, §8 and §13): an approval in steps,
+// an agent classifying, an editor reviewing, an admin approving, each a different principal.
 //
 // Before it works, an admin binds the database, with its tables and one account holding 100:
 //   holon database add bank ~/holon-bank.db --schema "create table if not exists accounts
@@ -17,36 +22,38 @@
 //     status integer)"
 //
 // Try it: deploy it, then
-//   curl -X POST -d '{"amount":30}' http://127.0.0.1:8153/payout/1    an approve link
+//   curl -X POST -d '{"amount":30}' http://127.0.0.1:8153/payout/1    waits for two people
 //   curl -X POST -d '{"amount":50}' http://127.0.0.1:8153/deposit/1   150, while the payout waits
-//   curl -X POST -d '{"by":"ops"}' http://127.0.0.1:8153<the link>    pays it
+//   holon decide approved-payout                                      the run, and who approved
+// Then two people approve it: you (holon decide approved-payout <run> payout --approve), and
+// someone you invited (holon user invite), in the editor's Approvals. It pays it:
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
-import { action, event, flow, route, status } from "holon"
+import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"
 import httpbin from "host:httpbin.org"
 
 flow("approved-payout", { port: 8153 })
 
-// Starts the payout's run and answers its approval link, with the balance as it is now.
+// Starts the payout's run and answers at once, with the balance as it is now.
 route.post("/payout/:account", (req) => {
   const account = bank.one("select id, balance from accounts where id = $1", req.params.account)
-  const started = payout({ account: account.id, amount: req.json.amount })
-  return status(202, { approve: `/approve/${started.waiting.approved}`, balance: account.balance })
+  payout({ account: account.id, amount: req.json.amount })
+  return status(202, { waiting: "two people's approval", balance: account.balance })
 })
 
-// The payout's run: waits for its approval, then pays from the balance as it is then, and
-// records it.
+// The payout's run: waits for two people to approve it, then pays from the balance as it is then,
+// and records it.
 export const payout = action(async (asked) => {
   const account = bank.one("select id, balance from accounts where id = $1", asked.account)
-  // The run waits here until the link is opened, for a day at most.
-  const approved = await event("approved", { expires: "1d" })
+  // The run waits here until two different people approve it, a day at most.
+  const decision = await approval("payout", { people: 2, expires: "1d" })
+  // Declined (with why), or nobody decided in time: nothing is sent or written.
+  if (!decision.approved) {
+    return { declined: decision.reason ?? "expired" }
+  }
   const sent = await httpbin.post("/anything/payouts", {
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      account: account.id,
-      amount: asked.amount,
-      by: JSON.parse(approved.body).by,
-    }),
+    body: JSON.stringify({ account: account.id, amount: asked.amount, by: decision.by }),
   })
   bank.exec(
     "update accounts set balance = $1 where id = $2",
@@ -60,10 +67,8 @@ export const payout = action(async (asked) => {
     asked.amount,
     sent.status,
   )
+  return { paid: asked.amount, by: decision.by }
 })
-
-// Opening the link approves the waiting payout; its body's `by` says who approved.
-route.post("/approve/:token", () => "approved", { resumes: "approved" })
 
 // Adds to an account's balance and answers the new one.
 route.post("/deposit/:account", (req) => {

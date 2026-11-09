@@ -1942,7 +1942,7 @@ impl<'a> Lowerer<'a> {
                 self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
-            ExprKind::Await { name, expires } => {
+            ExprKind::Await { name, expires, people } => {
                 if self.socket {
                     return err(e.span, SOCKET_WAITS);
                 }
@@ -1953,7 +1953,13 @@ impl<'a> Lowerer<'a> {
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
                 }
-                self.node("await", &params, e.span)
+                match people {
+                    Some(n) => {
+                        params.push(("people".into(), n.to_string()));
+                        self.node("approval", &params, e.span)
+                    }
+                    None => self.node("await", &params, e.span),
+                }
             }
             ExprKind::Lambda { .. } => err(e.span, "an arrow function goes to a list's method that takes one: xs.map((x) => …)"),
             ExprKind::Paren(inner) => self.expr(inner),
@@ -4435,6 +4441,44 @@ route.post("/hook", async (req) => {
         assert_eq!(s.endpoints.len(), 1);
     }
 
+    /// `await approval(…)` is an `approval` node, how many people it waits for a frozen param (1
+    /// when left out); it waits in an action, never a route, and no route resumes it.
+    #[test]
+    fn an_approval_waits_for_people_in_an_action() {
+        let src = |body: &str, route: &str| {
+            format!(
+                "import {{ action, approval, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n{route}\nexport const pay = action(async (order) => {{\n{body}\n  return d.approved\n}})\n"
+            )
+        };
+        let node = |body: &str| {
+            let doc = compiled(&src(body, "")).doc;
+            let n = doc.nodes.iter().find(|n| n.data.name == "approval").expect("an approval").clone();
+            (n.param("name").to_string(), n.param("expires").to_string(), n.param("people").to_string())
+        };
+        assert_eq!(node("  const d = await approval(\"payout\", { expires: \"1d\", people: 2 })"), ("payout".into(), "86400".into(), "2".into()));
+        assert_eq!(node("  const d = await approval(\"payout\")"), ("payout".into(), "604800".into(), "1".into()));
+        let refused = |body: &str| ts::compile(&src(body, "")).unwrap_err().message;
+        for people in ["0", "6", "1.5", "\"2\""] {
+            assert!(refused(&format!("  const d = await approval(\"payout\", {{ people: {people} }})")).starts_with("people is how many different people approve"), "{people}");
+        }
+        assert!(refused("  const d = await approval(\"payout\", { who: \"ada\" })").contains("approval's options are expires and people, not \"who\""));
+        let event = src("  const d = await event(\"paid\", { people: 2 })", "").replace("approval, flow", "approval, event, flow");
+        assert!(ts::compile(&event).unwrap_err().message.contains("event's options are expires, not \"people\""));
+        assert!(refused("  const d = approval(\"payout\")").starts_with("an approval is waited for"));
+        // A route doesn't wait for one, and none resumes one.
+        let in_route = "import { approval, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/a\", async (req) => {\n  const d = await approval(\"payout\")\n  return d.approved\n})\n";
+        assert!(ts::compile(in_route).unwrap_err().message.starts_with("a route answers and is done"));
+        let resumed = src("  const d = await approval(\"payout\")", "\nroute.get(\"/ok/:t\", () => \"ok\", { resumes: \"payout\" })\n");
+        let d = compiled(&resumed).doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080");
+        assert!(server.errors.iter().any(|e| e == "GET /ok/:t: \"payout\" is an approval, which people decide in Holon: no route resumes it"), "{:?}", server.errors);
+        let token = src("  const d = await approval(\"payout\")
+  const t = resume_token(\"payout\")", "").replace("approval, flow, route", "approval, flow, resume_token, route").replace("return d.approved", "return { ok: d.approved, t }");
+        let d = compiled(&token).doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080");
+        assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
+    }
+
     /// A route answers and is done: what waits is an action it starts, `pay(x)` without `await`,
     /// which answers once the run finishes or first waits (docs/L4s/typescript-syntax-L4.md §9).
     /// A route that waits, or hands out a token of its own, is refused, saying what to write
@@ -4533,6 +4577,24 @@ route.post("/a", (req) => {
             "route.get(\"/a\", async (req) => {\n  switch (req.json.op) {\n    case \"go\":\n      return (await a.get(\"/x\")).body\n    default:\n      return \"no\"\n  }\n})\n",
         ] {
             assert_eq!(kept(in_branch), (false, vec!["response".to_string()]), "{in_branch}");
+        }
+    }
+
+    /// A call bound in an `if`, or after a `return` that may have answered, is tied to the condition
+    /// it runs under, though something reads its answer: a branch not taken makes no call. (Read, it
+    /// was once tied to its block alone, and made whatever the condition.)
+    #[test]
+    fn a_call_under_a_condition_is_tied_to_it_read_or_not() {
+        for handler in [
+            "route.post(\"/a\", async (req) => {\n  if (req.json.go) {\n    const page = await a.get(\"/x\")\n    return page.body\n  }\n  return \"no\"\n})\n",
+            "route.post(\"/a\", async (req) => {\n  if (!req.json.go) {\n    return \"no\"\n  }\n  const page = await a.get(\"/x\")\n  return page.body\n})\n",
+        ] {
+            let src = format!("import {{ flow, route }} from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
+            let d = compiled(&src).doc;
+            let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
+            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
+            let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
+            assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
         }
     }
 

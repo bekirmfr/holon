@@ -91,7 +91,7 @@ impl Kind {
 /// `CollectionRead`, `CollectionWrite`), a folder (`FileRead`, `FileWrite`,
 /// `FileArrival`, `FileServe`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
 /// channel (`ChannelSend`, `ChannelRead`), a database (`DbRead`, `DbWrite`), an action
-/// (`Action`, `RunsAction`), a websocket's path (`WebSocket`) or a wait (`Await`). The rest stay atomic (`Clock`, `Random`,
+/// (`Action`, `RunsAction`), a websocket's path (`WebSocket`) or a wait (`Await`, `Approval`). The rest stay atomic (`Clock`, `Random`,
 /// `NetworkIngress`, `NetworkEgress`, `SecretAccess`, `Spawn`). State keys came first (the
 /// keyed-state-capability L4); the others followed as each capability did.
 ///
@@ -136,6 +136,10 @@ pub enum Capability {
     /// Waits for an event at the named waiting point, a run continuing when it arrives (`await`,
     /// and `resume_token`, which hands out the token that delivers it). A durable run.
     Await(String),
+    /// Waits at the named point for people to decide, as `name/people` (`payout/2`): how many
+    /// different people must approve is part of the grant, so a version that asks fewer asks
+    /// anew. Delivered by the host, never by a token (`approval`). A durable run.
+    Approval(String),
     /// Sources entropy / nondeterminism.
     Random,
     /// Reads a value retained across firings, at the named key.
@@ -221,7 +225,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
         }
@@ -238,7 +242,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -397,6 +401,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // an event arrives (or the wait expires), never computed.
         "await" => vec![Await(ident(params, "name")?)],
         "resume_token" => vec![Await(ident(params, "await")?)],
+        // A waiting point people decide, and how many: both frozen params, so the grant names them.
+        "approval" => vec![Approval(approval_grant(params)?)],
         "random" => vec![Random],
         "random_bytes" => vec![Random],
         "egress" => vec![NetworkEgress],
@@ -557,6 +563,14 @@ pub(crate) fn secret_name(params: &[Param]) -> Option<String> {
 }
 
 /// The frozen param `key` when it is a name: letters, digits, `-` and `_`, 1 to 64.
+/// An approval's grant, `name/people`: `None` for a bad name or a count not from 1 to
+/// [`MAX_APPROVAL_PEOPLE`](crate::primitives::MAX_APPROVAL_PEOPLE).
+fn approval_grant(params: &[Param]) -> Option<String> {
+    let name = ident(params, "name")?;
+    let people: u64 = params.iter().find(|p| p.name() == "people")?.value()?.parse().ok()?;
+    (1..=crate::primitives::MAX_APPROVAL_PEOPLE).contains(&people).then(|| format!("{name}/{people}"))
+}
+
 pub(crate) fn ident(params: &[Param], key: &str) -> Option<String> {
     let name = params.iter().find(|p| p.name() == key)?.value()?;
     let ok = !name.is_empty()
@@ -670,6 +684,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         SecretAccess,
         SecretRead(SATURATED_STATE_KEY.to_string()),
         Await(SATURATED_STATE_KEY.to_string()),
+        Approval(SATURATED_STATE_KEY.to_string()),
         Random,
         StateRead(SATURATED_STATE_KEY.to_string()),
         StateWrite(SATURATED_STATE_KEY.to_string()),
@@ -1257,7 +1272,7 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 23); // every capability — fail closed
+        assert_eq!(caps.len(), 24); // every capability — fail closed
         assert!(caps.contains(Capability::SecretAnswer("<unknown>".to_string())), "answering with any secret");
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
@@ -1296,6 +1311,18 @@ mod tests {
         assert_eq!(capabilities_of("resume_token", &token.params).unwrap().iter().collect::<Vec<_>>(), want);
         assert!(Capability::Await("paid".into()).is_sourced());
         assert!(capabilities_of("await", &[Param::frozen("name", "a b")]).is_none());
+    }
+
+    #[test]
+    fn an_approval_names_its_point_and_how_many_people() {
+        let approval = |name: &str, people: &str| vec![Param::frozen("name", name), Param::frozen("expires", "3600"), Param::frozen("people", people)];
+        let caps = capabilities_of("approval", &approval("payout", "2")).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), [Capability::Approval("payout/2".into())]);
+        assert!(Capability::Approval("payout/2".into()).is_sourced());
+        assert_eq!(Capability::Approval("payout/2".into()).kind(), Kind::Driver);
+        for (name, people) in [("payout", "0"), ("payout", "6"), ("payout", "two"), ("a b", "1")] {
+            assert!(capabilities_of("approval", &approval(name, people)).is_none(), "{name} {people}");
+        }
     }
 
     #[test]

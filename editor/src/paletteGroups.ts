@@ -75,7 +75,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "drivers",
-    items: new Set(["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message", "await", "resume_token"]),
+    items: new Set(["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message", "await", "resume_token", "approval"]),
   },
   {
     name: "state",

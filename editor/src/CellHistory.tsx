@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 import { cellName, cellRows, shown, type CellRow } from "./cellChanges";
 import { getChanges, getVersions, type CellHistory, type VersionEntry } from "./server";
 
-const dim = "#7e8ea8";
+const dim = "var(--faint)";
 const PAGE = 50;
 
 /** The ⧗ button for `name` (a cell, or a collection with `item` one of its items). */
@@ -25,7 +25,7 @@ export function CellHistoryButton({ slug, name, item, collection, onOpenRun }: {
         }}
         title={`${label}: the runs that changed it`}
         aria-label={label}
-        style={{ background: "transparent", border: "1px solid #1b2a45", borderRadius: 3, color: "#9fb4d4", cursor: "pointer", font: "inherit", fontSize: 10, lineHeight: 1.4, padding: "0 4px", flexShrink: 0 }}
+        style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 3, color: "var(--muted)", cursor: "pointer", font: "inherit", fontSize: 10, lineHeight: 1.4, padding: "0 4px", flexShrink: 0 }}
       >
         ⧗
       </button>
@@ -63,7 +63,7 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
   };
   const rows = history ? cellRows(history, versions) : [];
   const title = history ? cellName(history) : cellName({ name, item: item ?? null, collection: item !== undefined });
-  const cell: CSSProperties = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid #111d30", verticalAlign: "top" };
+  const cell: CSSProperties = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid var(--surface)", verticalAlign: "top" };
   return (
     <div
       role="dialog"
@@ -71,9 +71,9 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
       aria-label="cell history"
       className="hl-cellhistory"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      style={{ position: "fixed", inset: 0, background: "rgba(5, 10, 20, 0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100 }}
+      style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100 }}
     >
-      <div style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, padding: 16, width: 760, maxWidth: "calc(100vw - 32px)", color: "#e6eefb", fontSize: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, padding: 16, width: 760, maxWidth: "calc(100vw - 32px)", color: "var(--ink)", fontSize: 13, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
           <span style={{ fontWeight: 600, fontFamily: "var(--mono)" }}>{title}</span>
           <span style={{ color: dim, flex: 1 }}>
@@ -86,7 +86,7 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
         <div style={{ color: dim }}>The runs that changed it, newest first, each with its value before and after it; a restore or a deploy between runs that moved it has a row of its own.</div>
         <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
           {error ? (
-            <span style={{ color: "#e07a6f" }}>{error}</span>
+            <span style={{ color: "var(--bad)" }}>{error}</span>
           ) : !history ? (
             <span style={{ color: dim }}>reading the log…</span>
           ) : rows.length === 0 ? (
@@ -103,7 +103,7 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
             </table>
           )}
           {history?.more && (
-            <button onClick={older} disabled={loadingOlder} style={{ marginTop: 8, background: "transparent", border: "1px solid #1b2a45", borderRadius: 3, color: "#9fb4d4", cursor: "pointer", font: "inherit", fontSize: 12, padding: "2px 10px" }}>
+            <button onClick={older} disabled={loadingOlder} style={{ marginTop: 8, background: "transparent", border: "1px solid var(--border)", borderRadius: 3, color: "var(--muted)", cursor: "pointer", font: "inherit", fontSize: 12, padding: "2px 10px" }}>
               {loadingOlder ? "reading…" : "older changes"}
             </button>
           )}
@@ -116,16 +116,16 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
 function Row({ row, cell, onOpen }: { row: CellRow; cell: CSSProperties; onOpen?: () => void }) {
   const between = row.seq === undefined;
   return (
-    <tr className="hl-cellhistory__row" data-seq={row.seq ?? ""} style={{ background: between ? "#13223b" : undefined }}>
-      <td style={{ ...cell, whiteSpace: "nowrap", color: between ? "#e0c36f" : "#e6eefb" }}>
+    <tr className="hl-cellhistory__row" data-seq={row.seq ?? ""} style={{ background: between ? "var(--surface)" : undefined }}>
+      <td style={{ ...cell, whiteSpace: "nowrap", color: between ? "var(--warn)" : "var(--ink)" }}>
         {onOpen ? (
-          <button onClick={onOpen} title={`open ${row.label} in view mode`} style={{ background: "transparent", border: "none", color: "#9fb4d4", cursor: "pointer", font: "inherit", padding: 0, textDecoration: "underline" }}>
+          <button onClick={onOpen} title={`open ${row.label} in view mode`} style={{ background: "transparent", border: "none", color: "var(--muted)", cursor: "pointer", font: "inherit", padding: 0, textDecoration: "underline" }}>
             {row.label}
           </button>
         ) : (
           row.label
         )}
-        {row.failed ? <span style={{ color: "#e07a6f" }}> · failed</span> : null}
+        {row.failed ? <span style={{ color: "var(--bad)" }}> · failed</span> : null}
         <div style={{ color: dim, fontSize: 11 }}>{row.at_ms ? new Date(row.at_ms).toLocaleString() : ""}</div>
       </td>
       <td style={{ ...cell, color: dim }}>{row.what}</td>

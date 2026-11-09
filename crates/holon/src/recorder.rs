@@ -23,7 +23,7 @@
 //! outside holon) is a break, reported by its seq. Entries from before the chain (no `prev`)
 //! check only once one with a `prev` has been seen.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::path::{Path, PathBuf};
@@ -471,6 +471,10 @@ pub struct Log {
     /// Every run it keeps, oldest first, by its seq and when it ran: in memory are only the newest
     /// `IN_MEMORY` of them (`entries`) when it has a file; the rest are read from it when asked.
     kept: VecDeque<(u64, u64)>,
+    /// The seqs of the runs it keeps that failed (`ran_failed`), noted as each is written or read
+    /// as it opens: what a summary counts failures by without reading a line (summary.rs). Runs
+    /// kept again from its index (`retain`, keeping more) aren't in it until it opens again.
+    failed: BTreeSet<u64>,
     /// The length of the line each entry in memory was written as, in step with `entries`: what
     /// the host's view counts a log's memory by (storage.rs; an entry takes 1.1 to 3.6 times its
     /// line in memory, measured by `measure_log_memory`).
@@ -830,6 +834,11 @@ struct LineAt {
     at_ms: u64,
     seq: u64,
     prev: String,
+}
+
+/// Whether a run failed: an error, or a 5xx it answered (the editor's `runOutcome`, runs.ts).
+pub fn ran_failed(entry: &LogEntry) -> bool {
+    entry.error.is_some() || entry.status.is_some_and(|s| s >= 500)
 }
 
 /// The lines of a log file's `text`, as `open_retaining` reads them: each line (as `str::lines`
@@ -1217,6 +1226,7 @@ impl Log {
             next_seq: 0,
             entries: VecDeque::new(),
             kept: VecDeque::new(),
+            failed: BTreeSet::new(),
             entry_lines: VecDeque::new(),
             entry_bytes: 0,
             keep: keep.max(1),
@@ -1310,6 +1320,7 @@ impl Log {
                 log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
                 log.kept.push_back((entry.seq, entry.at_ms));
+                log.note_failed(&entry);
                 log.entries.push_back(entry);
                 log.entry_lines.push_back(line.len());
                 log.entry_bytes += line.len() as u64;
@@ -1355,6 +1366,7 @@ impl Log {
         self.head = line_hash(line);
         self.next_seq = self.next_seq.max(entry.seq + 1);
         self.kept.push_back((entry.seq, entry.at_ms));
+        self.note_failed(&entry);
         self.entries.push_back(entry);
         self.entry_lines.push_back(line.len());
         self.entry_bytes += line.len() as u64;
@@ -1460,6 +1472,7 @@ impl Log {
         }
         // In memory: what it keeps, and with a file only the newest few of it.
         let oldest = self.kept.front().map_or(u64::MAX, |(seq, _)| *seq);
+        self.failed = self.failed.split_off(&oldest);
         let most = if self.file.is_some() { IN_MEMORY } else { usize::MAX };
         while self.entries.front().is_some_and(|e| e.seq < oldest) || self.entries.len() > most {
             if let Some(n) = self.entry_lines.pop_front() {
@@ -1521,6 +1534,7 @@ impl Log {
         self.export("run", entry.seq, &self.head, entry.at_ms);
         let at = LineAt { offset: 0, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() };
         self.kept.push_back((entry.seq, entry.at_ms));
+        self.note_failed(&entry);
         self.entries.push_back(entry);
         self.entry_lines.push_back(line.len());
         self.entry_bytes += line.len() as u64;
@@ -1915,6 +1929,43 @@ impl Log {
         self.next_seq
     }
 
+    /// Note `entry` failed, if it did.
+    fn note_failed(&mut self, entry: &LogEntry) {
+        if ran_failed(entry) {
+            self.failed.insert(entry.seq);
+        }
+    }
+
+    /// The runs it keeps that started in each of `hours` hours ending at `to_ms` (the oldest
+    /// first), and how many of them failed: counted from what it keeps of each run, no line read.
+    pub fn hourly(&self, to_ms: u64, hours: usize) -> (Vec<u64>, Vec<u64>) {
+        const HOUR_MS: u64 = 3600 * 1000;
+        let from_ms = to_ms.saturating_sub(hours as u64 * HOUR_MS);
+        let (mut runs, mut failed) = (vec![0; hours], vec![0; hours]);
+        // Newest first, so a log keeping a year stops at the window's start.
+        for (seq, at) in self.kept.iter().rev().take_while(|(_, at)| *at >= from_ms) {
+            if *at >= to_ms {
+                continue;
+            }
+            let hour = ((at - from_ms) / HOUR_MS) as usize;
+            runs[hour] += 1;
+            if self.failed.contains(seq) {
+                failed[hour] += 1;
+            }
+        }
+        (runs, failed)
+    }
+
+    /// How many runs it keeps.
+    pub fn runs_kept(&self) -> usize {
+        self.kept.len()
+    }
+
+    /// The newest of the runs it keeps in memory, the newest first: at most `IN_MEMORY`.
+    pub fn newest(&self) -> impl Iterator<Item = &LogEntry> {
+        self.entries.iter().rev()
+    }
+
 }
 
 /// Whether a run `wanted` reads had `text` in cell `key` before it ran: only the file's lines
@@ -2238,6 +2289,35 @@ mod tests {
         assert_eq!(on_disk, known, "every segment on disk is one the log knows");
         let back = Log::open_keeping(Some(path.clone()), 10);
         assert_eq!(back.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>(), [3, 4, 5]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log in a folder whose files' names run past Windows' 260 characters seals its older runs
+    /// as any does: a segment written aside there is made its owner's alone, as the rest of the
+    /// log's files are (`restrict_to_owner`), however long its name.
+    #[test]
+    fn a_log_in_a_deep_folder_seals_its_runs() {
+        let dir = temp_dir("long-folder");
+        let deep = dir.join("a-folder-name-long-enough-to-push-the-segments-past-what-windows-allows".repeat(3));
+        let path = deep.join("slug.jsonl");
+        assert!(sealed_dir(&path).join(format!("{:020}-{:020}.jsonl.gz.cut-0-0", 0, 0)).as_os_str().len() > 260);
+        for deferred in [true, false] {
+            let _ = std::fs::remove_dir_all(&deep);
+            let mut log = Log::open_keeping(Some(path.clone()), 10);
+            log.set_hot(2);
+            log.defer_cuts = deferred;
+            for _ in 0..6 {
+                log.push(entry());
+            }
+            if deferred {
+                let made = log.plan_cut().expect("a cut wanted").make();
+                assert!(made.as_ref().is_ok_and(|m| m.is_some()), "deferred: {:?}", made.err());
+                log.finish_cut(made);
+            }
+            assert!(!log.sealed.is_empty(), "deferred {deferred}: no segment sealed");
+            let back = Log::open_keeping(Some(path.clone()), 10);
+            assert_eq!(back.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5], "deferred {deferred}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

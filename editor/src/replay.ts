@@ -612,8 +612,9 @@ export function replay(
     // The message that started a queue handler's run, as the log keeps it.
     if ((primitive && name === "queue_message") || (node.data.body.kind === "Template" && name === "on_queue"))
       return { inputs, outputs: [sourced.get(`QueueMessage(${JSON.stringify(param("queue"))})`) ?? null] };
-    // A waiting point answers with the event the log says was delivered, if any.
-    if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
+    // A waiting point answers with the event the log says was delivered, if any: an approval, with
+    // the decision.
+    if (primitive && (name === "await" || name === "approval")) return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.

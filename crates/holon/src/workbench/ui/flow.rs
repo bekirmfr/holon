@@ -12,11 +12,11 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use serde_json::Value;
 
-use super::{bold, chips, coloured, dim, fit, list, pad, panel, reach, scrollbar, status, tile, tone, ACCENT, BAD, DARK, DIM, GOOD, WARN};
+use super::{bold, chips, coloured, dim, fit, list, pad, panel, reach, scrollbar, status, tile, tone, kind_colour, ACCENT, BAD, DARK, DATA, DIM, GOOD, OUTSIDE, WARN};
 use crate::workbench::app::{App, Click, List, Tone};
 use crate::workbench::client::{Detail, Moment};
 use crate::workbench::flow::{access_rows, at_ms, came_in, failed, tabs, took, Access, Held, Row, Section, SECTIONS};
-use crate::workbench::graph::GraphView;
+use crate::workbench::graph::{GraphView, Kind};
 
 pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(d) = app.detail.as_ref() else { return };
@@ -90,12 +90,12 @@ fn draw_sections(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 
 // ── the dashboard ────────────────────────────────────────────────────────────────────────────
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or_default()
 }
 
 /// How long ago, in a word or two.
-fn ago(ms: u64) -> String {
+pub(super) fn ago(ms: u64) -> String {
     let s = now_ms().saturating_sub(ms) / 1000;
     match s {
         0..=59 => format!("{s} s ago"),
@@ -110,6 +110,32 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 }
 
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// The last 24 hours in `cells` bars, as a list's row draws it: how many runs, red where some
+/// failed, a dot where none ran.
+pub(super) fn spark(runs: &[Value], cells: usize) -> Line<'static> {
+    let now = now_ms();
+    let span = 24 * 3_600_000 / cells.max(1) as u64;
+    let mut each = vec![(0usize, 0usize); cells];
+    for r in runs {
+        let Some(at) = r["at_ms"].as_u64() else { continue };
+        let back = (now.saturating_sub(at) / span) as usize;
+        if back < cells {
+            let c = &mut each[cells - 1 - back];
+            c.0 += 1;
+            c.1 += failed(r) as usize;
+        }
+    }
+    let top = each.iter().map(|c| c.0).max().unwrap_or(0).max(1);
+    Line::from(
+        each.into_iter()
+            .map(|(n, bad)| {
+                let c = if n == 0 { '·' } else { BARS[((n * 7) / top).min(7)] };
+                Span::styled(c.to_string(), Style::new().fg(if bad > 0 { BAD } else if n == 0 { DIM } else { ACCENT }))
+            })
+            .collect::<Vec<_>>(),
+    )
+}
 
 /// The last 24 hours, an hour a bar: how many runs, red where some failed.
 fn sparkline(d: &Detail, width: usize) -> (Line<'static>, usize, usize) {
@@ -171,7 +197,8 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     let holds_h = if holds.is_empty() { 0 } else { holds.len() as u16 + 2 };
     let [day, may_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(holds_h)]).areas(left);
     if holds_h > 0 {
-        f.render_widget(Paragraph::new(holds.into_iter().map(|l| Line::from(Span::raw(l))).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);
+        let room = holds_area.width.saturating_sub(2) as usize;
+        f.render_widget(Paragraph::new(holds.into_iter().map(|l| super::fit_line(Line::from(Span::raw(l)), room)).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);
     }
     let block = panel("Last 24 h", false);
     let inner = block.inner(day);
@@ -179,7 +206,7 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     let (spark, n, bad) = sparkline(d, inner.width as usize);
     let in_view = if d.runs.len() as u64 >= crate::workbench::client::RUNS { " (of the newest runs read)" } else { "" };
     f.render_widget(
-        Paragraph::new(vec![spark, Line::from(vec![dim("runs "), bold(n.to_string()), dim("   failed "), Span::styled(bad.to_string(), Style::new().fg(if bad > 0 { BAD } else { GOOD }).add_modifier(Modifier::BOLD)), dim(format!("   an hour a bar, now on the right{in_view}"))])]),
+        Paragraph::new(vec![spark, super::fit_line(Line::from(vec![dim("runs "), bold(n.to_string()), dim("   failed "), Span::styled(bad.to_string(), Style::new().fg(if bad > 0 { BAD } else { GOOD }).add_modifier(Modifier::BOLD)), dim(format!("   an hour a bar, now on the right{in_view}"))]), inner.width as usize)]),
         inner,
     );
     let not_granted = crate::workbench::client::strings(&d.manifest, "not_granted");
@@ -187,6 +214,10 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     for i in &may {
         let missing = not_granted.contains(i);
         lines.push(Line::from(vec![if missing { coloured("✗ ", BAD) } else { coloured("✓ ", GOOD) }, Span::raw(agent::describe(i)), if missing { coloured("  its grant doesn't cover this", BAD) } else { Span::raw("") }]));
+    }
+    // What a version saved since asks besides: it may, once a person approves it.
+    for ask in app.asks(&d.slug) {
+        lines.push(Line::from(vec![coloured("+ ", WARN), Span::raw(ask), dim("  if the version waiting is approved")]));
     }
     let reads = crate::secretcmd::reads(&d.manifest);
     let set: Vec<&str> = d.secrets["secrets"].as_array().into_iter().flatten().filter_map(|s| s["name"].as_str()).collect();
@@ -295,9 +326,51 @@ fn run_row(d: &Detail, r: &Value, width: usize) -> Line<'static> {
         (None, _) => coloured(format!("{:>6}", "ok"), GOOD),
     };
     let duration = format!("{:>9}", took(r["duration_ms"].as_f64().unwrap_or(0.0)));
-    let fixed = 7 + when.chars().count() + 4 + 6 + 9;
-    let what = pad(&came_in(r), width.saturating_sub(fixed).max(4));
-    Line::from(vec![dim(format!("#{:<6}", r["seq"].as_u64().unwrap_or_default())), dim(when), dim(format!("{version:<4}")), Span::raw(what), answer, dim(duration)])
+    let (_, what, outside) = run_columns(width);
+    let what = pad(&came_in(r), what);
+    let mut spans = vec![dim(format!("#{:<6}", r["seq"].as_u64().unwrap_or_default())), dim(when), dim(format!("{version:<4}")), Span::raw(what), answer, dim(duration)];
+    if outside {
+        let outside = did_outside(r);
+        let used: usize = outside.iter().map(|s| s.content.chars().count()).sum();
+        spans.push(Span::raw("  "));
+        spans.extend(outside);
+        spans.push(Span::raw(" ".repeat(7usize.saturating_sub(used))));
+    }
+    Line::from(spans)
+}
+
+/// How a run's row is laid out at `width`: how wide its time and what came in are, and
+/// whether there is room for what it did outside (the column given up first).
+fn run_columns(width: usize) -> (usize, usize, bool) {
+    let when = if width >= 60 { 15 } else { 9 };
+    let fixed = 7 + when + 4 + 6 + 9;
+    let outside = width >= fixed + 4 + 9;
+    (when, width.saturating_sub(fixed + if outside { 9 } else { 0 }).max(4), outside)
+}
+
+/// The runs list's columns, as [`run_row`] lays them out at `width`.
+fn runs_head(width: usize) -> Line<'static> {
+    let (when, what, outside) = run_columns(width);
+    let came = pad("came in", what);
+    Line::from(dim(format!("{:<7}{:<when$}{:<4}{came}{:>6}{:>9}{}", "run", "at", "ver", "answer", "took", if outside { "  outside" } else { "" })))
+}
+
+/// What a run did outside itself, in a few marks: `↗2` for its calls out, `✎1` for what it
+/// performed (writes, sends), each in its colour; nothing when it only computed.
+pub(super) fn did_outside(r: &Value) -> Vec<Span<'static>> {
+    let calls = r["rounds"].as_array().into_iter().flatten().filter_map(|x| x["exchanges"].as_array()).map(Vec::len).sum::<usize>();
+    let did = r["performed"].as_array().map_or(0, Vec::len);
+    let mut out = vec![];
+    if calls > 0 {
+        out.push(coloured(format!("↗{calls}"), OUTSIDE));
+    }
+    if did > 0 {
+        if !out.is_empty() {
+            out.push(Span::raw(" "));
+        }
+        out.push(coloured(format!("✎{did}"), DATA));
+    }
+    out
 }
 
 /// A tag for a moment in the history: what kind, in its colour.
@@ -356,7 +429,9 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
     let (_, _, lanes) = &g.rows[i];
     let Some(row) = g.row(i) else { return Line::default() };
     let reached = (row.line..=row.last).any(|n| g.reached.contains(&n));
-    let dot = if reached { GOOD } else if row.head { ACCENT } else if row.effect { Color::White } else { Color::Gray };
+    // Its data purple, a call outside teal, wherever they show; what the newest run reached green.
+    let kind = kind_colour(Kind::of_row(row));
+    let dot = if reached { GOOD } else if row.head { ACCENT } else if let Some(k) = kind { k } else if row.effect { Color::White } else { Color::Gray };
     let (before, after) = lanes.split_once('●').unwrap_or((lanes, ""));
     let mut spans = vec![dim(format!("{:>4} ", row.line)), Span::styled(before.to_string(), Style::new().fg(Color::Indexed(244))), Span::styled("●", Style::new().fg(dot)), Span::styled(format!("{after}  "), Style::new().fg(Color::Indexed(244)))];
     let used = 5 + lanes.chars().count() + 2;
@@ -374,7 +449,10 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
         let does = format!("  {}", fit(&row.does, 16));
         let style = if row.effect { Style::new().fg(Color::White) } else { Style::new() };
         spans.push(Span::styled(pad(&fit(&row.text, rest.saturating_sub(does.chars().count())), rest.saturating_sub(does.chars().count())), style));
-        spans.push(dim(does));
+        spans.push(match kind {
+            Some(k) => coloured(does, k),
+            None => dim(does),
+        });
     }
     // Over a run, what it didn't play is dimmed.
     if g.dim && !reached {
@@ -427,7 +505,11 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
             let counted: u64 = unrecorded_runs(d);
             // Runs of unrecorded handlers, counted, not logged: a line each in the latest runs.
             let more = if counted > 0 { format!(", +{counted} unrecorded") } else { String::new() };
-            (format!("Runs, newest first ({}{more})", d.runs.len()), d.runs.len())
+            let filter = app.filter_of(crate::workbench::app::Page::Flow);
+            let n = d.shown_runs(filter).len();
+            let count = if filter.is_empty() { d.runs.len().to_string() } else { format!("{n} of {}", d.runs.len()) };
+            let filtered = if filter.is_empty() { String::new() } else { format!("  /{filter}") };
+            (format!("Runs, newest first ({count}{more}){filtered}"), n)
         }
         Section::History => ("History, newest first: one chain".to_string(), d.moments().len()),
         Section::State => (format!("Its state ({})", app.flow.cells.len()), app.flow.cells.len()),
@@ -453,7 +535,12 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         let app_ref: &App = app;
         match s {
-            Section::Runs => list(f, app_ref, inner, List::Section, n, Some(sel), focused, |i, w| run_row(d, &d.runs[d.runs.len() - 1 - i], w)),
+            Section::Runs => {
+                let [head, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+                f.render_widget(Paragraph::new(runs_head(head.width.saturating_sub(1) as usize)), Rect { x: head.x + 1, width: head.width.saturating_sub(1), ..head });
+                let shown = d.shown_runs(app_ref.filter_of(crate::workbench::app::Page::Flow));
+                list(f, app_ref, rows, List::Section, n, Some(sel), focused, |i, w| run_row(d, &d.runs[shown[i]], w))
+            }
             Section::History => {
                 let moments = d.moments();
                 list(f, app_ref, inner, List::Section, n, Some(sel), focused, |i, w| history_row(d, moments[i], w, i == 0, i + 1 == n));
@@ -513,8 +600,10 @@ fn pane(f: &mut Frame, app: &mut App, area: Rect) {
     scrollbar(f, inner, lines.len(), top);
 }
 
-/// A step on a timeline: its label, then a bar for when it ran, from 0 to `total`, then how long.
-pub(super) fn bar(label: &str, from: f64, to: f64, total: f64, note: &str, width: usize) -> Line<'static> {
+/// A step on a timeline: its label, then a bar for when it ran, from 0 to `total`, in its kind's
+/// colour, then how long.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn bar(label: &str, from: f64, to: f64, total: f64, note: &str, kind: Kind, width: usize) -> Line<'static> {
     let label_w = (width / 3).clamp(10, 28);
     let note_w = 9;
     let bar_w = width.saturating_sub(label_w + note_w + 1).max(4);
@@ -524,23 +613,39 @@ pub(super) fn bar(label: &str, from: f64, to: f64, total: f64, note: &str, width
     Line::from(vec![
         Span::raw(pad(label, label_w)),
         Span::styled("·".repeat(a), Style::new().fg(Color::Indexed(238))),
-        Span::styled("█".repeat(b - a), Style::new().fg(ACCENT)),
+        Span::styled("█".repeat(b - a), Style::new().fg(kind_colour(kind).unwrap_or(ACCENT))),
         Span::styled("·".repeat(bar_w - b), Style::new().fg(Color::Indexed(238))),
         dim(format!(" {note:>8}")),
     ])
 }
 
-/// Long text cut into lines of `width`.
+/// What a timeline's colours say.
+pub(super) fn legend() -> Line<'static> {
+    Line::from(vec![coloured("█", ACCENT), dim(" computes  "), coloured("█", DATA), dim(" its data  "), coloured("█", OUTSIDE), dim(" outside")])
+}
+
+/// Long text cut into lines of `width`, between words where it can be (a word longer than
+/// a line, a hash say, is cut where the line ends).
 fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
     let mut out = vec![];
     for line in s.split('\n') {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
+        let mut rest: Vec<char> = line.chars().collect();
+        if rest.is_empty() {
             out.push(String::new());
         }
-        for chunk in chars.chunks(width) {
-            out.push(chunk.iter().collect());
+        while !rest.is_empty() {
+            if rest.len() <= width {
+                out.push(rest.drain(..).collect());
+                break;
+            }
+            match rest[..=width].iter().rposition(|c| *c == ' ').filter(|&at| at > 0) {
+                Some(at) => {
+                    out.push(rest[..at].iter().collect());
+                    rest.drain(..=at);
+                }
+                None => out.push(rest.drain(..width).collect()),
+            }
         }
     }
     out
@@ -565,7 +670,8 @@ pub(super) fn render_rows(rows: &[Row], width: usize) -> Vec<Line<'static>> {
                     lines.push(Line::from(vec![dim(key), Span::styled(p, tone(*t))]));
                 }
             }
-            Row::Bar { label, from, to, total, note } => lines.push(bar(label, *from, *to, *total, note, width)),
+            Row::Bar { label, from, to, total, note, kind } => lines.push(bar(label, *from, *to, *total, note, *kind, width)),
+            Row::Legend => lines.push(legend()),
             Row::Code { n, text, notes } => {
                 let ran = !notes.is_empty();
                 lines.push(Line::from(vec![dim(format!("{n:>3} ")), Span::styled(fit(text, width.saturating_sub(4)), if ran { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() })]));
@@ -579,4 +685,14 @@ pub(super) fn render_rows(rows: &[Row], width: usize) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    /// Text in a pane wraps between words; a word longer than the line is cut where it ends.
+    #[test]
+    fn panes_wrap_between_words() {
+        assert_eq!(super::wrap("enter: the options, then a dry run, then the restore", 50), ["enter: the options, then a dry run, then the", "restore"]);
+        assert_eq!(super::wrap("0123456789abcdef", 8), ["01234567", "89abcdef"]);
+    }
 }

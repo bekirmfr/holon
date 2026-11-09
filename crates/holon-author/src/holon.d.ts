@@ -251,6 +251,19 @@ declare module "holon" {
   /** Parks the run until the event arrives, or its deadline: in an action, not a route. */
   export function event(name: string, options?: { expires?: Duration }): Promise<any>
 
+  /** Parks the run until that many different people approve it in Holon, or one declines, or
+   *  its deadline: in an action, not a route. */
+  export function approval(name: string, options?: { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }): Promise<Decision>
+  /** What people decided on an approval. */
+  export interface Decision {
+    approved: boolean
+    /** Who approved, by account. */
+    by: string[]
+    declined_by?: string
+    reason?: string
+    expired?: true
+  }
+
   /** A host's answer. */
   export interface Response {
     status: number

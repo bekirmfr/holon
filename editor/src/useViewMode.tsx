@@ -32,7 +32,7 @@ import {
 } from "./replay";
 import { stable } from "./textSync";
 import { printHolon } from "./holonText";
-import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
+import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
@@ -59,17 +59,17 @@ export type ViewModeInput = {
   viewDoc: MutableRefObject<FlowDocument | null>;
   ev: Evaluator;
   deployments: DeploymentEntry[];
+  /** Whether nodes show their outputs' values as chips (on), or the flow exactly as designed. */
+  showValues: boolean;
   fitView: (options: { nodes: { id: string }[]; duration: number; maxZoom: number; padding: number }) => unknown;
 };
 
 export function useViewMode(input: ViewModeInput) {
   const { flow, setSelectedRun, setStep, setInspectNode, setViewTrace, setViewUnit } = input;
-  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, deployments, fitView } = input;
+  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, deployments, fitView, showValues } = input;
   const { viewing, viewUnit, viewTrace, selectedRun, step } = flow;
 
-  // Values as chips beside each output (on), or the flow exactly as designed (off); and the wire
-  // under the pointer, which shows the value it carried.
-  const [showValues, setShowValues] = useState(true);
+  // The wire under the pointer, which shows the value it carried.
   const [hoveredWire, setHoveredWire] = useState<string | null>(null);
 
   // A run shows on the canvas of the version it ran on: selecting one logged on an earlier
@@ -102,28 +102,6 @@ export function useViewMode(input: ViewModeInput) {
       stale = true;
     };
   }, [viewing, runUnit, viewUnit, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit]);
-  // A version picked in the history, its canvas shown with no run selected: which, or why not.
-  const [shownVersion, setShownVersion] = useState<string | null>(null);
-  const showVersion = useCallback(
-    (v: VersionEntry) => {
-      if (!viewing) return;
-      setSelectedRun(null);
-      setStep(null);
-      getDeployedDocument(viewing, v.unit)
-        .then((doc) => {
-          restoreDocument(doc, ev);
-          restoring.current = true;
-          setNodes(doc.nodes as PrimitiveNodeType[]);
-          setEdges(doc.edges as Edge[]);
-          viewDoc.current = doc;
-          setViewTrace(doc.trace);
-          setViewUnit(v.unit);
-          setShownVersion(`version ${v.number}'s canvas${v.current ? ", deployed now" : ""}`);
-        })
-        .catch(() => setShownVersion(`version ${v.number}'s canvas isn't kept`));
-    },
-    [viewing, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit, setSelectedRun, setStep],
-  );
   // A version's flow as text, for the diff of a restore's dry run: printed, and with the names
   // its text gave its nodes when it was deployed from text, so two versions compare as they read.
   const codeText = useCallback(
@@ -136,9 +114,7 @@ export function useViewMode(input: ViewModeInput) {
   );
   const note = onOtherVersion
     ? versionNote || "loading the version it ran on…"
-    : !selectedRun && shownVersion
-      ? shownVersion
-      : viewUnit && currentUnit && viewUnit !== currentUnit
+    : viewUnit && currentUnit && viewUnit !== currentUnit
         ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
         : "";
 
@@ -342,8 +318,8 @@ export function useViewMode(input: ViewModeInput) {
         hoveredWire === e.id
           ? {
               label: valueChip(value),
-              labelStyle: { fill: value === null ? "#7e8ea8" : "#bfe8c2", fontSize: 11, fontFamily: "var(--mono)" },
-              labelBgStyle: { fill: "#0b1527", stroke: "#6fd3e0" },
+              labelStyle: { fill: value === null ? "var(--faint)" : "var(--ok)", fontSize: 11, fontFamily: "var(--mono)" },
+              labelBgStyle: { fill: "var(--bg)", stroke: "var(--accent)" },
               labelBgPadding: [6, 3] as [number, number],
               labelBgBorderRadius: 6,
             }
@@ -370,8 +346,6 @@ export function useViewMode(input: ViewModeInput) {
     inside,
     viewNodes,
     viewEdges,
-    showValues,
-    toggleValues: () => setShowValues((v) => !v),
     setHoveredWire,
     showNode,
     fitToNodes,
@@ -381,7 +355,6 @@ export function useViewMode(input: ViewModeInput) {
     openRun,
     onStep,
     onNodeClick,
-    showVersion,
   };
 }
 
@@ -407,6 +380,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
     openRun: view.openRun,
+    verdict: view.verdict,
   };
 }
 
@@ -435,7 +409,6 @@ export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMod
         diagnosis={replayed?.diagnosis ?? null}
         onShowNode={view.showNode}
         onFitToNodes={view.fitToNodes}
-        onShowVersion={view.showVersion}
         onRestored={onRestored}
         codeText={view.codeText}
       />

@@ -147,7 +147,9 @@
 mod access;
 mod accounts;
 mod accountscmd;
+mod decidecmd;
 mod deploycmd;
+mod replaycmd;
 mod activity;
 mod arrivals;
 mod auth;
@@ -208,12 +210,14 @@ mod outbound;
 mod paths;
 mod permissions;
 mod persist;
+mod proposals;
 mod pick;
 mod ranges;
 mod recorder;
 mod restore;
 mod scheduler;
 mod storage;
+mod summary;
 mod sweep;
 mod sealing;
 mod secret_sources;
@@ -381,6 +385,9 @@ struct AppState {
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
     /// nowhere to opt out.
     flows_path: Place,
+    /// The versions proposed for a person to deploy, and what became of each (proposals.rs): kept
+    /// beside `flows`.
+    proposals: proposals::Proposals,
     /// Who may use the control plane: tokens, and hosts and origins beyond loopback (access.rs).
     access: access::Access,
     /// The port this server listens on — the one a request's `Host` must name
@@ -409,6 +416,8 @@ struct AppState {
     editor: Option<editor::Source>,
     /// The server's own sweeps, on `[storage] sweep_every`'s schedule (storage.rs).
     sweeps: storage::Sweeps,
+    /// What the last check of every run log found, since the server started (summary.rs).
+    checked: Mutex<Option<summary::Check>>,
 }
 
 impl AppState {
@@ -532,6 +541,8 @@ struct Deployment {
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,
+    /// A person turned off agents proposing its versions (proposals.rs). Persisted.
+    agents_propose_off: bool,
     /// Every version deployed, oldest first, the current one last (`wire::Version`): a run
     /// logged on an earlier version is shown on its own canvas, and any version with its request
     /// kept can be deployed again (`holon restore`). Kept for good. Persisted.
@@ -550,6 +561,8 @@ const USAGE: &str = "usage: holon <command>
   fmt <file>                         rewrite a flow in the canonical form
   types [dir]                        write holon.d.ts, for an editor's TypeScript
   deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server (--approve)
+  replay <file> [--on SLUG]          a new version run offline on a deployment's recent runs:
+                                     which it answers the same, and how the others differ
   editor [file|slug] [--server …]    the editor in this terminal: flows, runs, approvals, and
                                      flows' text in tabs, checked as you type
   deployments [<slug>]               what is deployed; one's details and its waiting runs
@@ -560,6 +573,8 @@ const USAGE: &str = "usage: holon <command>
   action <slug> <name>               run one of a deployment's actions (--input JSON)
   tick <slug> CLOCK                  fire one of a flow's clocks now
   state <slug>                       its live state (--collection NAME, --sessions)
+  decide <slug> [<run> <name>]       approve, or decline with --reason, an approval a run waits
+                                     at (--approve|--decline); the slug alone lists what waits
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
   secret list|history|set|rollback|remove|env
@@ -679,18 +694,21 @@ fn main() {
         Some("serve") => serve(rest),
         Some(cmd @ ("new" | "check" | "show" | "fmt" | "types")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("deploy") => std::process::exit(deploycmd::run(&rest)),
+        Some("replay") => std::process::exit(replaycmd::run(&rest)),
         Some("editor") => std::process::exit(workbench::run(&rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("restore") => std::process::exit(restore::cli(&rest)),
         Some("history") => std::process::exit(history::cli(&rest)),
         Some("deployments") => std::process::exit(opscmd::deployments(&rest)),
+        Some("runs") => std::process::exit(opscmd::runs(&rest)),
         Some(cmd @ ("run" | "pause" | "stop" | "remove")) => std::process::exit(opscmd::lifecycle(cmd, &rest)),
         Some("call") => std::process::exit(opscmd::call(&rest)),
         Some("load") => std::process::exit(load::cli(&rest)),
         Some("action") => std::process::exit(opscmd::action(&rest)),
         Some("tick") => std::process::exit(opscmd::tick(&rest)),
         Some("state") => std::process::exit(opscmd::state(&rest)),
+        Some("decide") => std::process::exit(decidecmd::run(&rest)),
         Some("grant") => std::process::exit(grantcmd::grant(&rest)),
         Some("grants") => std::process::exit(grantcmd::grants(&rest)),
         Some("policy") => std::process::exit(grantcmd::policy(&rest)),
@@ -1169,6 +1187,7 @@ fn serve(args: Vec<String>) {
     // And the messages to its queues (queues.rs).
     folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
+    let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     folders.mails.serve(Arc::clone(&deployments));
     folders.queues.serve(Arc::clone(&deployments));
@@ -1233,6 +1252,7 @@ fn serve(args: Vec<String>) {
         deployments,
         deployments_path: deployments_at,
         flows,
+        proposals,
         flows_path: flows_at,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
@@ -1245,6 +1265,7 @@ fn serve(args: Vec<String>) {
         access,
         editor: editor::Source::pick(editor_dir.map(paths::normalize)),
         sweeps: storage::Sweeps::default(),
+        checked: Default::default(),
     };
     sync_listeners(&state);
 

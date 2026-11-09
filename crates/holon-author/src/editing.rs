@@ -70,7 +70,7 @@ pub fn format(source: &str) -> Result<String, String> {
 // ── what the words are ──────────────────────────────────────────────────────────────────────
 
 /// Holon's vocabulary, imported from `"holon"` (docs/manual/language/reference.md).
-const VOCABULARY: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event"];
+const VOCABULARY: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event", "approval"];
 
 /// The language's words, TypeScript's and Holon's vocabulary, said in a line each.
 const KEYWORDS: &[(&str, &str)] = &[
@@ -85,13 +85,14 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("respond", "`return respond(body, { status: 201, headers: { … }, stream: true })`: a route's answer with its status, its headers (a record of texts), or streamed. Like `status(…)`, it is a route's answer and nothing else: return it."),
     ("status", "`return status(201, body)`: a route's answer with that status (200 to 599); `status(204)`, the status alone; `body ?? status(404)`, 404 when `body` has no value."),
     ("event", "`await event(\"paid\", { expires: \"1d\" })`: parks an action's run until the event arrives; a route with `{ resumes: \"paid\" }` delivers it. A route doesn't wait: it starts the action that does."),
+    ("approval", "`await approval(\"payout\", { expires: \"1d\", people: 2 })`: parks an action's run until that many different people, signed in to Holon, approve it, or one declines; the run gets `{ approved, by }` (with `declined_by` and `reason`, or `expired`). Only Holon delivers it: no token or route resumes it."),
     ("export", "`export const reset = action(…)`: only actions are exported, as nothing else reaches the flow from outside."),
     ("const", "`const name = expr`: binds a name, one value wherever it is read. At the top level, only literals (`const limit = 50`), functions and `js()` functions."),
     ("let", "`let name = expr`: a name that may be bound again; each assignment is a new value, and where branches assign it, the value is the branch taken's."),
     ("var", "`var name = expr`: read as `let`; `holon fmt` writes `const`, or `let` where it is assigned again."),
     ("function", "`function slugify(text) { … return slug }`: a piece of flow placed as one node where it is called; its outputs are what it returns (`return slug` gives `slug`, `return { a, b }` gives `a` and `b`)."),
     ("async", "`async (req) => { … }`: a handler that `await`s, as TypeScript requires."),
-    ("await", "`await api.get(path)`: a request, made when the run gets to it; also another flow's action called, `await charge(x)`, and `await event(…)`, which parks an action's run. A handler that awaits is `async`."),
+    ("await", "`await api.get(path)`: a request, made when the run gets to it; also another flow's action called, `await charge(x)`, and `await event(…)` and `await approval(…)`, which park an action's run. A handler that awaits is `async`."),
     ("return", "`return value`: what a route or an action answers; several `return`s are one answer, each chosen where its branch is taken. In a clock or a file handler, it only ends the run."),
     ("if", "`if (c) … else …`: writes and calls in a branch happen only when it is taken. `if (x !== undefined) { … }` ties them to `x`: they happen once `x` has a value. Only the branch taken runs."),
     ("switch", "`switch (s) { case \"a\": … default: … }`: the first case equal to `s` is chosen, and only its body runs; each body returns or assigns, with no fall-through. With no case equal and no `default`, no value."),
@@ -214,6 +215,8 @@ fn option(call: &str, key: &str) -> Option<&'static str> {
         ("route", "resumes") => "`{ resumes: \"paid\" }`: the route delivers the event a run parked at `await event(\"paid\")` waits for, the request carrying the token its start was answered with, `started.waiting.paid`.",
         ("on", "matching") => "`{ matching: \"*.csv\" }`: only the files whose names match (`*` and `?` within a folder, `**/` any number of folders, letters either case).",
         ("event", "expires") => "`{ expires: \"1d\" }`: how long the run waits for the event.",
+        ("approval", "expires") => "`{ expires: \"1d\" }`: how long the run waits for people to decide; then it goes on with `expired: true`.",
+        ("approval", "people") => "`{ people: 2 }`: how many different people must approve, 1 to 5 (1 when left out); one decline is enough to refuse.",
         ("js", "fuel") => "`fuel: 50_000_000`: the instructions a call may run (200M when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "memory") => "`memory: 16_777_216`: the memory a call may take (16 MiB when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "outputs") => "`outputs: [\"best\", \"distance\"]`: the function returns a record with those fields, each an output.",
@@ -1149,7 +1152,7 @@ pub struct Completion {
 /// `notes[k]`, `shop.query(…)`, `now`, a secret, an action called), as `await event(…)`,
 /// `stripe.verify`, `JSON.parse`, or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
-    "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "approval", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_serve", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query",
     "db_one",
     "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "mail_send", "record", "json_parse", "json_stringify", "flow_start", "flow_call",

@@ -12,6 +12,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon types`](#holon-types) | write `holon.d.ts`, so an editor's TypeScript completes and checks flows |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
+| [`holon replay`](#holon-replay) | a new version run offline on a deployment's recent runs, before it is deployed |
 | [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
 | [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
@@ -20,6 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon action`](#holon-action) | run one of a deployment's actions |
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
+| [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
@@ -187,6 +189,28 @@ approve it in the editor, by deploying it from there. `--approve` approves it he
 prints what it approved, in the deployment's timeline as yours. Agents' tools
 ([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
 
+## `holon replay`
+
+```
+holon replay <file> [--on SLUG] [--runs N] [--server PORT|URL]
+```
+
+Compiles the flow and runs it, offline, on the newest runs of the deployment `--on` names (the
+flow's own name unless it says), 20 unless `--runs` says (at most 200), before anything is
+deployed: each run's request, tick or action again, through this version. It prints how many it
+answers the same, then each run that differs, and how, or can't be told, and why:
+
+```
+This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or written): 3 replayed · 2 same · 1 differs
+  run 0  POST /price  differs: its answer
+```
+
+Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
+when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
+hold back a deploy that would answer differently. What "can't tell" means is under
+[Replayed on recent runs](../guides/deploying.md#replayed-on-recent-runs). It reaches the server as
+`holon deploy` does.
+
 ## `holon editor`
 
 ```
@@ -195,16 +219,19 @@ holon editor [file.holon.ts | slug] [--server PORT|URL]
 
 The editor in this terminal, on one screen: a bar along the top with the server and what waits
 for you, the pages down the side (folded away below 110 columns), and the keys that work at the
-bottom. It reaches the server as `holon deploy` does, signed in as you.
+bottom. It reaches the server as `holon deploy` does, signed in as you. The sidebar ends with the
+server's health: what runs, what is paused, and whether the run logs' chains hold. The top bar
+says where you are after the server's name (`server › Flows › refunds › Runs`), a click on a
+crumb going back to it; the line above the keys says what just happened.
 
 | Page | |
 |---|---|
-| 1 Overview | what is deployed, what waits for a person, the saved flows |
-| 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
-| 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
-| 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
-| 6 Library | the samples; enter opens a copy |
+| 1 Overview | the page in a line, the last day's runs and failures, what is deployed (each with its version, its last day and its last run, and `v4 waits for you` when a version saved since waits), what waits for a person with what it would add (`+`), and what was done lately |
+| 2 Approvals | each thing waiting for you, and beside it the one picked, reviewed as its deploy would be, with what it may do once approved (`+` the new); enter approves it there, `→` reads the review, `]` `[` go to the next and the one before, `e` opens it in the editor |
+| 3 Flows | every deployment and saved flow; enter opens its page, `e` its text; `/` filters them, `f` goes round all, live, waiting and paused |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, what a version waiting would add, the secrets it reads), its runs (enter shows one over its text, with each statement's value; `/` filters them, `i` explains one, `F` follows the newest, `o` writes them to `<slug>-runs.json` for [`holon verify`](#holon-verify); each run says where it is on record), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
+| 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is; each tab's dot is its deployment's state, and the text's title says how it stands against what is live (`v3, live`, `changed from v3 *`). `⌂ Home` starts a draft or opens a sample, a tab closed lately or a flow on the server |
+| 6 Library | the samples, with what each shows and its `holon new` line; enter opens a copy, `/` filters them |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases, mail and feeds flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database), [`holon mail`](#holon-mail) and [`holon feed`](#holon-feed)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
 A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
@@ -218,16 +245,22 @@ In the editor, keys type; `esc` leaves the text for the page keys and `i` comes 
 (or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
 editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
 server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
-deploying it, `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
+deploying it (`s` there saves it on the server instead, for whoever may approve it), `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
 statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
 and shows them again). Under it, as in the web editor, a panel: the runs on its left
 (`↑`/`↓` pick one), and on its right the run picked, in tabs (`tab` goes round them): Details
 (what it answered, did and called), Errors (when it failed: why, and on which line) and its
-Timeline, whose steps `←`/`→` go through, each marked in the code and the graph. `alt+f`
+Timeline, whose steps `←`/`→` (or a click on the line under the code) go through, each marked
+in the code and the graph, coloured by what it touches (its data purple, a call outside teal);
+`,` and `.` go to the run before and after. `alt+f`
 formats it, and `ctrl+pgup`/`pgdn` and `ctrl+w` move
 between and close tabs. `:` takes a command (`open <file|slug>`, `new [sample]`, `w [file]`,
 `deploy`, `flow <slug>`, `call`, `restore`, `sessions`, `run`, `pause` or `stop <slug>`,
-`server <port|url>`, `q`), `ctrl+p` finds anything by name, and `?` lists the keys.
+`server <port|url>`, `theme [light|dark]`, `q`), suggested as it is typed (`tab` takes the
+first), `ctrl+p` finds anything by name, and `?` lists the keys. Every line you type (`:`,
+`/`, find, the palette, the shell line, a dialog's field) edits where its cursor is: `←`/`→`,
+`home`/`end`, `del` and backspace, and a click puts the cursor there. On a light terminal,
+`:theme light` (or `HOLON_THEME=light`) makes its dark grounds light.
 
 The shell line at the bottom right (`!`, or `` ctrl+` `` from anywhere) runs a command in this
 terminal, in the folder its prompt shows. The prompt then stays, as the folder is now, for the
@@ -252,7 +285,9 @@ holon deployments [<slug>] [--json]
 Every deployment, a line each: its status, how it starts (its port, its schedule), its runs and
 failures, the runs waiting for an approval or an event, and who deployed it when. `!` marks one
 that needs attention. With a slug, that one's details, why it needs attention, and each waiting
-run: what it waits for, until when. A waiting run is approved by its own link, on the flow's port.
+run: what it waits for, until when, and who has approved an approval so far. People decide an
+approval in the editor's Approvals or with [`holon decide`](#holon-decide); an event comes through
+the flow's own route.
 
 ### `holon run`, `pause`, `stop`, `remove`
 
@@ -353,6 +388,30 @@ A deployment's live state, a line per value, written as the language writes valu
 collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
 `--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
 it ran, from where, how many runs, and the state it left.
+
+### `holon decide`
+
+```
+holon decide <slug> [--json]
+holon decide <slug> <run> <name> --approve [--reason TEXT]
+holon decide <slug> <run> <name> --decline --reason TEXT
+```
+
+Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
+the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
+run (the first 12 characters of its id), what started it and since when, then an approval with
+how many people it asks and who has approved it so far, or an event, and until when:
+
+```
+run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout", 2 people's, 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+```
+
+Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
+reason optional, or `--decline`, which needs one. It says what the decision did: still waiting for
+more people, approved by whom, or declined; the run goes on with the decision once it is made.
+Each person counts once; one decline ends it. Only a person decides: an editor or an admin
+signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
+`holon mcp`, which asks as an agent.
 
 ## Grants and policy
 

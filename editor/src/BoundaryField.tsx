@@ -27,9 +27,9 @@ export function defaultBoundaryValue(ty: WType): WValue | null {
 const boundaryFieldStyle: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#cfe3ff",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--body)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "1px 4px",
   width: 64,
@@ -107,7 +107,7 @@ export function BoundaryField({
   return (
     <div style={row}>
       {label}
-      <span style={{ ...boundaryFieldStyle, color: "#5a6d8c", textAlign: "center" }}>wire in</span>
+      <span style={{ ...boundaryFieldStyle, color: "var(--faintest)", textAlign: "center" }}>wire in</span>
     </div>
   );
 }

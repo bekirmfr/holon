@@ -19,8 +19,8 @@
 //   cp pain.001.xml ~/holon-payments/             encrypted to ~/holon-upload/pain.001.xml.asc
 //   gpg --decrypt ~/holon-upload/pain.001.xml.asc  what the bank reads, with its secret key
 //   cp pain.002.xml pain.002.xml.sig ~/holon-download/
-//   curl http://127.0.0.1:8185/sent                each payment file sent, and to which key
-//   curl http://127.0.0.1:8185/received            each report, verified or refused
+//   curl http://127.0.0.1:8149/sent                each payment file sent, and to which key
+//   curl http://127.0.0.1:8149/received            each report, verified or refused
 import { action, flow, on, pgp_encrypt, pgp_key, pgp_verify, route, sha256 } from "holon"
 import { now } from "holon:clock"
 import { random_bytes } from "holon:random"
@@ -31,7 +31,7 @@ import download from "folder:download"
 import payments from "folder:payments"
 import upload from "folder:upload"
 
-flow("pgp-outbox", { port: 8185 })
+flow("pgp-outbox", { port: 8149 })
 
 // The bank's public key, trusted by a person, kept with its fingerprint; nothing kept for what
 // isn't one. It answers the fingerprint, its user IDs, when it expires and whether it is revoked.

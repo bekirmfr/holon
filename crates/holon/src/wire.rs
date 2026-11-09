@@ -290,6 +290,12 @@ pub(crate) struct DeployRequestBody {
     /// (`https://example.com`); none by default, as a browser then refuses them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) browsers: Vec<String>,
+    /// An agent's, when it needs a person's approval and is kept as a proposal: what it changes,
+    /// in a line, and more to say (proposals.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) why: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -384,6 +390,9 @@ pub(crate) struct DeploymentRecord {
     /// The saved flows its version places as nodes (`FlowRecord::uses`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<Vec<HolonUse>>,
+    /// A person turned off agents proposing its versions (proposals.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) agents_propose_off: bool,
 }
 
 #[derive(Serialize)]
@@ -452,6 +461,11 @@ pub(crate) struct DeploymentEntry {
     pub(crate) listen_error: Option<String>,
     /// How many of its runs are waiting for an event.
     pub(crate) waiting: usize,
+    /// Whether agents may propose its versions (proposals.rs).
+    pub(crate) agents_propose: bool,
+    /// The number of the version deployed now (`v3`), as `/versions` counts them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<u32>,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape

@@ -39,6 +39,11 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
+        "Approval" => match arg.split_once('/') {
+            Some((name, "1")) => ("triggers", "approval", name.to_string(), s("a person approves")),
+            Some((name, people)) => ("triggers", "approval", name.to_string(), format!("{people} people approve")),
+            None => ("triggers", "approval", arg, s("people approve")),
+        },
         "FileArrival" => ("resources", "folder", arg, s("watch")),
         "MailArrival" => ("resources", "mail", arg, s("receive")),
         "FeedEvent" => ("resources", "feed", arg, s("listen")),

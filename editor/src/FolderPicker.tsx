@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { browseFolders, pickFolder, type FolderListing } from "./server";
 
 const button: CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 12px", borderRadius: 3, cursor: "pointer" };
-const quiet: CSSProperties = { ...button, color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45" };
+const quiet: CSSProperties = { ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" };
 const chip: CSSProperties = { ...quiet, fontSize: 11, padding: "2px 8px" };
 
 export function FolderPicker({ start, onChoose, onClose }: { start: string; onChoose: (path: string) => void; onClose: () => void }) {
@@ -78,27 +78,27 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
       aria-modal="true"
       aria-label="choose a folder"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      style={{ position: "fixed", inset: 0, background: "rgba(5, 10, 20, 0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
     >
       <div
         style={{
-          background: "#0e1a2f",
-          border: "1px solid #1b2a45",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
           borderRadius: 6,
           padding: 16,
           width: 560,
           maxWidth: "calc(100vw - 32px)",
-          color: "#e6eefb",
+          color: "var(--ink)",
           fontSize: 13,
           display: "flex",
           flexDirection: "column",
           gap: 10,
         }}
       >
-        <div style={{ color: "#cfe3ff" }}>Choose a folder on the server&apos;s machine</div>
+        <div style={{ color: "var(--body)" }}>Choose a folder on the server&apos;s machine</div>
         {waiting ? (
           <>
-            <div style={{ color: "#9fb4d4", lineHeight: 1.45 }}>A folder dialog opened on this machine: choose the folder there.</div>
+            <div style={{ color: "var(--muted)", lineHeight: 1.45 }}>A folder dialog opened on this machine: choose the folder there.</div>
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button type="button" style={quiet} onClick={() => setWaiting(false)}>
                 browse here instead
@@ -122,7 +122,7 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
                   typedSince.current = true;
                   setTyped(e.target.value);
                 }}
-                style={{ flex: 1, font: "inherit", fontSize: 12, color: "#e6eefb", background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: "4px 6px" }}
+                style={{ flex: 1, font: "inherit", fontSize: 12, color: "var(--ink)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, padding: "4px 6px" }}
               />
               <button type="submit" style={chip}>
                 go
@@ -140,27 +140,27 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
                 ))}
               </div>
             )}
-            <div aria-label="folders" style={{ maxHeight: "45vh", minHeight: 120, overflowY: "auto", border: "1px solid #1b2a45", borderRadius: 3, background: "#0b1527" }}>
-              {listing?.folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 12, padding: "6px 8px" }}>no folders in this one</div>}
+            <div aria-label="folders" style={{ maxHeight: "45vh", minHeight: 120, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg)" }}>
+              {listing?.folders.length === 0 && <div style={{ color: "var(--faint)", fontSize: 12, padding: "6px 8px" }}>no folders in this one</div>}
               {listing?.folders.map((f) => (
                 <button
                   type="button"
                   key={f.path}
                   title={f.path}
                   onClick={() => go(f.path)}
-                  style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", fontSize: 12, color: "#e6eefb", background: "transparent", border: "none", padding: "4px 8px", cursor: "pointer" }}
+                  style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", fontSize: 12, color: "var(--ink)", background: "transparent", border: "none", padding: "4px 8px", cursor: "pointer" }}
                 >
                   ▸ {f.name}
                 </button>
               ))}
-              {listing?.more && <div style={{ color: "#7e8ea8", fontSize: 11, padding: "4px 8px" }}>more folders than shown: type the path</div>}
+              {listing?.more && <div style={{ color: "var(--faint)", fontSize: 11, padding: "4px 8px" }}>more folders than shown: type the path</div>}
             </div>
-            {error && <div style={{ color: "#f08a8a", fontSize: 12, overflowWrap: "anywhere" }}>{error}</div>}
+            {error && <div style={{ color: "var(--bad)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button type="button" style={quiet} onClick={onClose}>
                 Cancel
               </button>
-              <button type="button" style={{ ...button, color: "#0e1a2f", background: "#6fd3e0", border: "none" }} disabled={!listing} onClick={() => listing && onChoose(listing.path)}>
+              <button type="button" style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }} disabled={!listing} onClick={() => listing && onChoose(listing.path)}>
                 Choose this folder
               </button>
             </div>

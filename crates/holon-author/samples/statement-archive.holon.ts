@@ -14,8 +14,8 @@
 // Try it: deploy it, zip a day's camt.053 statements and drop the zip in the inbox
 //   zip 2026-11-06.zip *.xml && cp 2026-11-06.zip ~/holon-statements/
 // then
-//   curl http://127.0.0.1:8183/deliveries                    each delivery's statements
-//   curl --compressed http://127.0.0.1:8183/deliveries/2026-11-06.zip/<a file>.xml
+//   curl http://127.0.0.1:8197/deliveries                    each delivery's statements
+//   curl --compressed http://127.0.0.1:8197/deliveries/2026-11-06.zip/<a file>.xml
 //                                                            a statement, from the archive
 //   unzip -l ~/holon-archive/2026-11-06.zip                  the archive, with its manifest
 import {
@@ -39,7 +39,7 @@ import deliveries from "collection:deliveries"
 import archive from "folder:archive"
 import inbox from "folder:inbox"
 
-flow("statement-archive", { port: 8183 })
+flow("statement-archive", { port: 8197 })
 
 // A camt.053 statement's account, the date and amount of its closing balance (CLBD, negative when
 // a debit), and its SHA-256.

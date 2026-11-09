@@ -23,8 +23,11 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { linter, lintGutter } from "@codemirror/lint";
-import { textColours, textCompletions, textFormatted, textHover, textMistakes, type TextRange } from "./holonText";
+import { forEachDiagnostic, linter, lintGutter } from "@codemirror/lint";
+import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { foldGutter, foldKeymap, foldService, matchBrackets } from "@codemirror/language";
+import { useDark } from "./look";
+import { inspectAt, textColours, textCompletions, textFormatted, textHover, textMistakes, type Inspected, type TextRange } from "./holonText";
 
 /** A change that came from outside the pane (the canvas, a tab switch): not the person typing. */
 const outside = Annotation.define<boolean>();
@@ -164,6 +167,24 @@ const mistakes = linter(
   { delay: 250 },
 );
 
+/** Folding by what a line leaves open at its end (`{`, `[`, `(`) to where it closes: the text has
+ *  no syntax tree, so its brackets are matched as written. */
+const braces = foldService.of((state, from) => {
+  const line = state.doc.lineAt(from);
+  const open = line.text.trimEnd();
+  if (!/[{[(]$/.test(open)) return null;
+  const at = line.from + open.length - 1;
+  const m = matchBrackets(state, at, 1);
+  if (!m?.matched || !m.end || state.doc.lineAt(m.end.from).number === line.number) return null;
+  return { from: at + 1, to: m.end.from };
+});
+
+/** Find and replace (Ctrl+F; the selection is what is looked for), with Ctrl+D left to deploy. */
+const finding = [search({ top: true }), highlightSelectionMatches(), keymap.of(searchKeymap.filter((k) => k.key !== "Mod-d"))];
+
+/** One mistake in the Problems list: where it is, and what `holon check` says. */
+type Problem = { from: number; line: number; message: string };
+
 const hover = hoverTooltip((view, pos) => {
   const said = textHover(view.state.doc.toString(), pos);
   if (!said) return null;
@@ -207,23 +228,33 @@ function complete(ctx: CompletionContext): CompletionResult | null {
   };
 }
 
-const theme = EditorView.theme(
+/** The editor's look: the tokens do the colours; `dark` is CodeMirror's own (its defaults and
+ *  what extensions read), set as the editor is. */
+const theme = (dark: boolean) => EditorView.theme(
   {
     "&": { height: "100%", fontSize: "12.5px", background: "var(--bg)", color: "var(--ink)" },
     ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.55" },
     ".cm-content": { caretColor: "var(--accent)" },
-    ".cm-gutters": { background: "var(--panel-2)", color: "#4d5f7d", border: "none", borderRight: "1px solid var(--line-soft)" },
-    ".cm-activeLine": { background: "#ffffff07" },
-    ".cm-activeLineGutter": { background: "#ffffff07", color: "var(--ink-dim)" },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { background: "#2d4a73 !important" },
-    ".cm-tooltip": { background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: "6px" },
-    ".cm-tooltip-autocomplete ul li[aria-selected]": { background: "#22406a", color: "var(--ink)" },
-    ".cm-completionDetail": { color: "var(--ink-dim)", fontStyle: "normal", marginLeft: "8px" },
-    ".cm-diagnostic-error": { borderLeft: "3px solid #e0916f" },
-    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy #e0916f", textUnderlineOffset: "3px" },
+    ".cm-gutters": { background: "var(--surface-2)", color: "var(--faintest)", border: "none", borderRight: "1px solid var(--border)" },
+    ".cm-activeLine": { background: "color-mix(in srgb, var(--ink) 3%, transparent)" },
+    ".cm-activeLineGutter": { background: "color-mix(in srgb, var(--ink) 3%, transparent)", color: "var(--faint)" },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { background: "var(--sel) !important" },
+    ".cm-tooltip": { background: "var(--surface)", border: "1px solid var(--border-strong)", color: "var(--ink)", borderRadius: "6px" },
+    ".cm-tooltip-autocomplete ul li[aria-selected]": { background: "var(--sel)", color: "var(--ink)" },
+    ".cm-completionDetail": { color: "var(--faint)", fontStyle: "normal", marginLeft: "8px" },
+    ".cm-diagnostic-error": { borderLeft: "3px solid var(--bad)" },
+    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--bad)", textUnderlineOffset: "3px" },
   },
-  { dark: true },
+  { dark },
 );
+
+/** What the command palette (`:12`, `:fmt`) asks of the text pane. */
+export type TextAsk = { do: "line"; line: number } | { do: "format" };
+
+/** Ask the open text pane to go to a line or format; false when no pane is open to take it. */
+export function askText(ask: TextAsk): boolean {
+  return !window.dispatchEvent(new CustomEvent<TextAsk>("holon:text", { detail: ask, cancelable: true }));
+}
 
 /** Format the text as `holon fmt` writes it; false (and the text as it was) when it has a mistake. */
 function format(view: EditorView): boolean {
@@ -244,6 +275,7 @@ export function TextPane({
   onEdit,
   linked: link = NOTHING_LINKED,
   onCursor,
+  onInspect,
   status,
   width,
   onWidth,
@@ -259,6 +291,9 @@ export function TextPane({
   linked?: TextLinked;
   /** Where the cursor moved to, by the person (an offset). */
   onCursor: (offset: number) => void;
+  /** The name at the cursor (its hover, forms and example), for the Inspector; null once the
+   *  pane closes. */
+  onInspect?: (said: Inspected | null) => void;
   /** A line above the text: what the canvas shows, what a change cost. */
   status: string;
   width: number;
@@ -268,9 +303,15 @@ export function TextPane({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editable = useRef(new Compartment());
-  const handlers = useRef({ onEdit, onCursor });
-  handlers.current = { onEdit, onCursor };
+  const look = useRef(new Compartment());
+  const dark = useDark();
+  const handlers = useRef({ onEdit, onCursor, onInspect });
+  handlers.current = { onEdit, onCursor, onInspect };
   const [formatError, setFormatError] = useState("");
+  // The mistakes the lint shows, listed under the text: a click goes to one.
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const problemsKey = useRef("");
+  const [checked, setChecked] = useState("");
 
   useEffect(() => {
     const v = new EditorView({
@@ -283,13 +324,16 @@ export function TextPane({
           drawSelection(),
           highlightActiveLine(),
           lintGutter(),
+          foldGutter(),
+          braces,
+          ...finding,
           colours,
           // After the colours: a later source's marks wrap an earlier's, so each range is one element.
           linked,
           mistakes,
           hover,
           autocompletion({ override: [complete], icons: false }),
-          keymap.of([{ key: "Shift-Alt-f", run: (view) => (setFormatError(format(view) ? "" : "it has a mistake: fix it, then format"), true) }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]),
+          keymap.of([{ key: "Shift-Alt-f", run: (view) => (setFormatError(format(view) ? "" : "it has a mistake: fix it, then format"), true) }, indentWithTab, ...completionKeymap, ...historyKeymap, ...foldKeymap, ...defaultKeymap]),
           // Read only still takes a cursor: in view mode it picks the node under it.
           editable.current.of(EditorState.readOnly.of(readOnly)),
           EditorView.updateListener.of((u) => {
@@ -298,8 +342,21 @@ export function TextPane({
               handlers.current.onEdit(u.state.doc.toString(), u.transactions.some((t) => t.isUserEvent("format")));
             }
             if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
+            // The name at the cursor, for the Inspector; the last one stays while it is elsewhere.
+            if ((u.selectionSet || u.docChanged) && u.view.hasFocus) {
+              const said = inspectAt(u.state.doc.toString(), u.state.selection.main.head);
+              if (said) handlers.current.onInspect?.(said);
+            }
+            const found: Problem[] = [];
+            forEachDiagnostic(u.state, (d, from) => found.push({ from, line: u.state.doc.lineAt(from).number, message: d.message }));
+            const key = found.map((p) => `${p.from} ${p.message}`).join("\n");
+            if (key !== problemsKey.current) {
+              problemsKey.current = key;
+              setProblems(found);
+              setChecked("");
+            }
           }),
-          theme,
+          look.current.of(theme(dark)),
           EditorView.contentAttributes.of({ "aria-label": "the flow as text" }),
         ],
       }),
@@ -308,6 +365,7 @@ export function TextPane({
     return () => {
       v.destroy();
       view.current = null;
+      handlers.current.onInspect?.(null);
     };
     // The editor is made once; what changes reaches it through the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -322,9 +380,32 @@ export function TextPane({
     });
   }, [text]);
 
+  // Asked by the command palette (askText): a line gone to, or the text formatted.
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const v = view.current;
+      if (!v) return;
+      e.preventDefault();
+      const ask = (e as CustomEvent<TextAsk>).detail;
+      if (ask.do === "format") {
+        setFormatError(format(v) ? "" : "it has a mistake: fix it, then format");
+        return;
+      }
+      const line = v.state.doc.line(Math.min(ask.line, v.state.doc.lines));
+      v.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
+      v.focus();
+    };
+    window.addEventListener("holon:text", onAsk);
+    return () => window.removeEventListener("holon:text", onAsk);
+  }, []);
+
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorState.readOnly.of(readOnly)) });
   }, [readOnly]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: look.current.reconfigure(theme(dark)) });
+  }, [dark]);
 
   // After the text: a text replaced takes the ranges that go with it.
   const shownStep = useRef<string>("");
@@ -354,12 +435,29 @@ export function TextPane({
     window.addEventListener("pointerup", up);
   };
 
-  const said = formatError || status;
+  const said = formatError || checked || status;
+  const goTo = (from: number) => {
+    const v = view.current;
+    if (!v) return;
+    v.dispatch({ selection: { anchor: Math.min(from, v.state.doc.length) }, effects: EditorView.scrollIntoView(from, { y: "center" }) });
+    v.focus();
+  };
+  // Check: the text's mistakes now, as `holon check` finds them, without waiting for the lint.
+  const check = () => {
+    const v = view.current;
+    if (!v) return;
+    const found = textMistakes(v.state.doc.toString());
+    setChecked(found.length === 0 ? "no mistakes" : `${found.length} mistake${found.length === 1 ? "" : "s"}: listed under the text`);
+    if (found.length > 0) goTo(found[0].from);
+  };
   return (
     <div className="nodrag nowheel hl-text" role="region" aria-label="Text">
       <div className="hl-text__edge" onPointerDown={onEdge} title="drag to resize" />
       <div className="hl-text__head">
         <span className="hl-text__title">Text</span>
+        <kbd className="hl-pane-key" aria-hidden="true">
+          x
+        </kbd>
         {readOnly ? <span className="hl-text__note">the deployed version, read only</span> : null}
         <span style={{ flex: 1 }} />
         {!readOnly && (
@@ -373,6 +471,9 @@ export function TextPane({
             Format
           </button>
         )}
+        <button className="hl-text__button" title="look for mistakes now, as holon check does" onClick={check}>
+          Check
+        </button>
         <button className="hl-text__button" onClick={onClose} title="close the text" aria-label="close the text">
           ×
         </button>
@@ -383,6 +484,17 @@ export function TextPane({
         </div>
       ) : null}
       <div className="hl-text__editor" ref={host} />
+      {problems.length > 0 && (
+        <ul className="hl-text__problems" aria-label="problems">
+          {problems.map((p) => (
+            <li key={`${p.from} ${p.message}`}>
+              <button onClick={() => goTo(p.from)}>
+                <span className="hl-text__problem-line">line {p.line}</span> {p.message}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

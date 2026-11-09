@@ -1815,6 +1815,19 @@ pub(crate) fn await_request(params: &[Param]) -> Option<Value> {
     ])))
 }
 
+/// The most people an approval waits for.
+pub const MAX_APPROVAL_PEOPLE: u64 = 5;
+
+/// What an `approval` node asks the host: `{await: <name>, expires: <seconds>, people: <n>}`,
+/// an `await`'s request with how many different people must approve. `None` for a bad name, an
+/// `expires` as an `await`'s, or `people` not from 1 to [`MAX_APPROVAL_PEOPLE`].
+pub(crate) fn approval_request(params: &[Param]) -> Option<Value> {
+    let Some(Value::Record(mut r)) = await_request(params) else { return None };
+    let people: u64 = param(params, "people")?.parse().ok().filter(|n| (1..=MAX_APPROVAL_PEOPLE).contains(n))?;
+    r.insert("people".to_string(), Value::Number(people as f64));
+    Some(Value::Record(r))
+}
+
 /// What a `resume_token` node asks the host: `{resume_token: <await name>}`.
 pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
     let name = crate::kind::ident(params, "await")?;

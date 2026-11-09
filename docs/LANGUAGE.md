@@ -463,6 +463,15 @@ template's `resume` param), and the order's run finishes: the state write happen
 order carries no meaning beyond names being defined before use. `{ ...order, paid_via: … }` is
 `with_field` over an existing record (§5.5).
 
+`await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
+`approval{name: payout, expires: 86400, people: 2}`, for people rather than a request: no token is
+handed out for it and no route resumes it. Two different people signed in to Holon approve it (or
+one declines), and the run gets `{approved, by}`. Its permission, `Approval("payout/2")`, names
+how many. Where it goes next is the target design,
+[`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8: an approval in steps,
+each filled by a principal holding a role, in order and by different principals (not the one who
+started the run), of which `people: N` stays the short form of one step.
+
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
 `progress`); the rest when it finishes. The resumed part runs again from the start and settles the
@@ -1551,7 +1560,7 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Comments:** `//` to the end of the line, and `/* … */`. They are the text's and never the
   unit's. `fmt` keeps every comment where it was written, with its statement (§7).
 - **Keywords** are TypeScript's; Holon adds none. Its vocabulary is names imported from `"holon"`:
-  `flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe` and `event`, and
+  `flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe`, `event` and `approval`, and
   every leaf, each imported by name before it is used (`import { sha256 } from "holon"`). A name
   is imported once.
 - **Identifiers** are TypeScript's. Any name may be bound; names aren't in the hash (§7), except a
@@ -2569,9 +2578,11 @@ A binding isn't a branch. A call written in a branch, `ids[name] ?? JSON.parse((
 httpbin.get("/uuid")).body).uuid` (the `cache-aside` sample) or `c ? await api.get(…) : undefined`,
 is made only when the branch needs it; a call bound on a statement of its own, `const page = await
 api.get(…)`, is made when the run reaches the statement, whatever reads `page`, even a branch not
-taken (§5.4). In the graph the difference is the call's trigger: one bound on a statement is tied
-to its handler's trigger, or to what an `if (x !== undefined)` around it names, and its handler
-keeps it as an output; one written in a branch is left untied, and is made when its answer is
+taken (§5.4). A statement in an `if` whose condition doesn't hold, or after a `return` that
+answered, isn't reached: its call isn't made, though a later statement reads its answer. In the
+graph the difference is the call's trigger: one bound on a statement is tied to its handler's
+trigger, to what an `if (x !== undefined)` around it names, or to the conditions it runs under
+(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
 needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
 else. The printer keeps each where it was written. (In a function, a call bound on a statement is
@@ -3097,6 +3108,11 @@ the syntax to TypeScript's, keeping the lowering.
      RustCrypto's primitives. A run's randomness is 32 recorded bytes, `random` read from them and
      `random_bytes` them, so an encrypted message replays byte for byte. The pgp-outbox sample,
      run live against GnuPG.
+   - *A call under a condition* (2026-11-09): a call bound on a statement in an `if`, or after a
+     `return` that may have answered, is tied to the conditions it runs under whether or not
+     something reads its answer. One that was read had been tied to its handler alone, since calls
+     became made where their statement is, and so was made whatever the condition: moving
+     approved-payout onto `approval`, a declined payout was still sent.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

@@ -1,11 +1,12 @@
 // Accounts, from installing a server onwards (holon-server's accounts.rs, access.rs, auth.rs; the
-// editor's AuthGate.tsx, AdminPage.tsx), on a server left as installed (7521 on slot 0, ports.mjs)
+// editor's AuthGate.tsx, HostPages.tsx), on a server left as installed (7521 on slot 0, ports.mjs)
 // and the editor pointed at it (5274): set up with the code it prints, people invited and joining by link,
 // each role doing what it may, an API token, and signing in through an identity provider set
-// in the admin panel (the stand-in on 7530). In order: each step builds on the one before.
+// in People and access (the stand-in on 7530). In order: each step builds on the one before.
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
+import { gotoPage, menuEntry } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -39,8 +40,8 @@ test("installing: the server answers nothing until its admin is set up with the 
   // Now everyone signs in.
   expect((await request.get(`${SERVER}/flows`)).status()).toBe(401);
 
-  // The admin panel: add cy as a viewer, with the email she signs in with at the provider.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  // People and access: add cy as a viewer, with the email she signs in with at the provider.
+  await gotoPage(page, "people");
   await page.getByLabel("new person's name").fill("cy");
   await page.getByLabel("new person's role").selectOption("viewer");
   await page.getByLabel("new person's email").fill("cy@example.com");
@@ -58,12 +59,13 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await fill(cy, "the password again", PASSWORD);
   await join.getByRole("button", { name: "join" }).click();
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
-  await expect(cy.getByRole("button", { name: "admin", exact: true })).toHaveCount(0);
-  await cy.getByRole("button", { name: "new", exact: true }).click();
+  await expect(menuEntry(cy, "resources")).toHaveCount(0);
+  await expect(menuEntry(cy, "people")).toHaveCount(0);
+  await gotoPage(cy, "new");
   await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await cy.locator('[aria-modal="true"] input').fill("cys-flow");
   await cy.keyboard.press("Enter");
-  await expect(cy.locator(".hl-canvas")).toContainText("cy may not do that: a viewer only reads");
+  await expect(cy.getByRole("region", { name: "notices" })).toContainText("cy may not do that: a viewer only reads");
   // The link is used up.
   const again = await someoneElse(browser);
   await again.goto(invite);
@@ -77,7 +79,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   await fill(ada, "name", "ada");
   await fill(ada, "password", PASSWORD);
   await signIn.getByRole("button", { name: "sign in" }).click();
-  await ada.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(ada, "people");
   await ada.getByLabel("new token's label").fill("ci");
   await ada.getByLabel("new token's role").selectOption("editor");
   await ada.getByRole("button", { name: "make token" }).click();
@@ -117,7 +119,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
-  await cy.getByRole("button", { name: "deployed", exact: true }).click({ timeout: 5_000 }).catch(() => {});
+  await menuEntry(cy, "library").click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
   await fill(cy, "name", "cy");
   await fill(cy, "password", PASSWORD);
@@ -133,8 +135,8 @@ test("signing in through the identity provider an admin set, matched by email", 
   await fill(ada, "name", "ada");
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
-  await ada.getByRole("button", { name: "admin", exact: true }).click();
-  // The page reads the settings it has when it opens and puts them in these fields (AdminPage.tsx's
+  await gotoPage(ada, "people");
+  // The page reads the settings it has when it opens and puts them in these fields (HostPages.tsx's
   // refresh): a read answering after the fill empties them, and "turn on" stays disabled. So fill
   // and click again until the click lands, which it does only with both fields filled.
   await expect(async () => {

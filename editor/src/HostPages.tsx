@@ -1,15 +1,13 @@
-// The admin panel (admins only; holon-server's auth.rs), in three tabs (docs/L4s/databases-L4.md
-// §9.1): people and sign-in (the people who use this server, the API tokens scripts use, signing
-// in through an identity provider); resources (the folders and databases flows read and write,
-// the mail they send through, the feeds they listen to and the queues they take messages from and
-// send to: folders.rs, databases.rs, mails.rs, feeds.rs, queues.rs); and permissions (what this
-// host allows, and who holds what). Below
-// each, what was done, by whom.
-// Adding someone gives a one-time link for them to set their password; resetting gives a new
-// one. The server refuses any change that would leave no admin. A grant changes only on its
-// deployment's card: permissions links there.
-
-import { Fragment, useCallback, useEffect, useState, type CSSProperties } from "react";
+// The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
+// address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
+// .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may),
+// People and access (#people: accounts, API tokens, agents, signing in through an identity
+// provider) and Policy (#policy: what holon.toml allows, its limits and ceilings, and the
+// deployments it holds off). A section of People and access has its place in the address too
+// (#people.tokens). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
+// new one. The server refuses any change that would leave no admin. A grant changes only on its
+// deployment's page: who may touch what links there.
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   changeAccount,
   bindDatabase,
@@ -67,6 +65,11 @@ import {
   type Role,
   type SecretInfo,
   type TokenEntry,
+  getSecretHistory,
+  previewSecretRollback,
+  rollbackSecret,
+  type DeploymentEntry,
+  type SecretHistory,
 } from "./server";
 import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
@@ -74,6 +77,10 @@ import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 import { describeItem } from "./holon";
 import { holdersOf, kindsHeld, othersHeld, usesText, type Holder } from "./holdings";
+
+import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
+import { useDryRun } from "./DryRun";
+import { secretRollbackReport, sourceLabel } from "./DeployBar";
 
 const ROLES: Role[] = ["viewer", "editor", "admin", "agent"];
 const ROLE_TITLE: Record<Role, string> = {
@@ -83,28 +90,15 @@ const ROLE_TITLE: Record<Role, string> = {
   agent: "reads, proposes flows and calls them; never approves, starts, stops or deletes",
 };
 
-type Tab = "people" | "resources" | "permissions";
-const TABS: { tab: Tab; label: string; about: string }[] = [
-  { tab: "people", label: "people and sign-in", about: "who uses this server, and how they get in" },
-  { tab: "resources", label: "resources", about: "what exists on this host for flows to use: its folders, databases, mail and secrets" },
-  { tab: "permissions", label: "permissions", about: "what this host allows, and who holds what" },
-];
-
-const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "#9fb4d4", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };
-const primary: CSSProperties = { ...small, color: "#0e1a2f", background: "#6fd3e0", border: "none" };
-const input: CSSProperties = { font: "inherit", fontSize: 12, padding: "3px 6px", color: "#e6eefb", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3 };
-const head: CSSProperties = { color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "20px 0 6px" };
-const row: CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 4, fontSize: 12 };
-const about: CSSProperties = { color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 };
-const quiet: CSSProperties = { color: "#7e8ea8", fontSize: 11 };
-const tabButton = (on: boolean): CSSProperties => ({
-  ...small,
-  fontSize: 12,
-  padding: "4px 12px",
-  color: on ? "#0e1a2f" : "#9fb4d4",
-  background: on ? "#6fd3e0" : "transparent",
-  border: on ? "1px solid #6fd3e0" : "1px solid #1b2a45",
-});
+// The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
+// a row (a card of its own), what a section is about, and a quiet note. A section's heading is
+// styles.css's hl-host-page__head.
+const small: CSSProperties = { font: "inherit", fontSize: "var(--fs-xs)", fontWeight: 500, minHeight: 26, padding: "2px 9px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)", cursor: "pointer", whiteSpace: "nowrap" };
+const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", borderColor: "var(--accent)" };
+const input: CSSProperties = { font: "inherit", fontSize: "var(--fs-sm)", minHeight: 30, padding: "4px 10px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)" };
+const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow)", fontSize: "var(--fs-sm)" };
+const about: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-sm)", marginBottom: 12, lineHeight: 1.55, maxWidth: "100ch" };
+const quiet: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-xs)" };
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
 
@@ -120,9 +114,14 @@ const named = (holders: Holder[]) => {
   return slugs.length <= 1 ? (slugs[0] ?? "") : `${slugs.slice(0, -1).join(", ")} and ${slugs[slugs.length - 1]}`;
 };
 
-export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployment: (slug: string) => void }) {
+/** Where a server secret's value is: sealed here, an env variable of the server's, a Vault field. */
+type SecretKind = "value" | "env" | "vault";
+
+/** What the host's pages read and do: every list (one page shows a part), what was said, and
+ *  `act`, which does a change and reads everything again. `shown`: the databases' tables are
+ *  read (Resources). */
+function useHost(shown = false) {
   const dialog = useDialog();
-  const [tab, setTab] = useState<Tab>("people");
   const [people, setPeople] = useState<AccountEntry[]>([]);
   const [tokens, setTokens] = useState<TokenEntry[]>([]);
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
@@ -174,7 +173,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const noQueue = { name: "", url: "", visibility: "", keepFailed: false, deployment: "" };
   const [queueDraft, setQueueDraft] = useState(noQueue);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
-  const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
+  // A server secret being bound: its name, its value or where that is kept, and where it may go.
+  const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "", kind: "value" as SecretKind });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   // What reading the policy again said: when, and the deployments it holds off.
@@ -230,9 +230,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   }, []);
   // Each database's tables, read when the resources are shown and for a binding not read yet.
   useEffect(() => {
-    if (tab !== "resources") return;
+    if (!shown) return;
     for (const d of databases) if (!(keyOf(d) in tables)) readTables(d);
-  }, [tab, databases, tables, readTables]);
+  }, [shown, databases, tables, readTables]);
 
   /** Do `f`, say what failed, and read everything again. */
   const act = async (f: () => Promise<unknown>) => {
@@ -253,220 +253,426 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   /** Which deployments use it, said under its row. */
   const usedBy = (holders: Holder[]) => (
     <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
-      {holders.length === 0 ? "no deployment uses it" : <>used by {named(holders)} (permissions says how)</>}
+      {holders.length === 0 ? (
+        "no deployment uses it"
+      ) : (
+        <>
+          used by {named(holders)} (
+          <a href={format({ kind: "resources", tab: "who-may" })} style={{ color: "var(--accent)", textDecoration: "none" }}>
+            who may touch what
+          </a>{" "}
+          says how)
+        </>
+      )}
     </div>
   );
   /** What unbinding (or binding again) does to the deployments that use it, as the server does it now. */
   const unbindingSays = (holders: Holder[]) =>
     holders.length === 0 ? "No deployment uses it." : `${named(holders)} ${holders.length === 1 ? "uses" : "use"} it: they keep running, and their calls to it fail until it is bound again.`;
 
-  const current = TABS.find((t) => t.tab === tab) ?? TABS[0];
+  return {
+    people, setPeople, tokens, setTokens, oidc, setOidc, msg, setMsg, link, setLink, secret,
+    setSecret, draft, setDraft, tokenDraft, setTokenDraft, issuer, setIssuer, clientId, setClientId,
+    folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
+    databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
+    setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
+    setReloaded, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
+    fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, version, setVersion,
+    dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays,
+    mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft,
+    setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders,
+  };
+}
+type Host = ReturnType<typeof useHost>;
+
+/** A host page: its title, what it is for, what failed, its sections, and what was done. */
+function HostPage({ title, about: what, tab, host, children }: { title: string; about: string; tab: string | null; host: Host; children: ReactNode }) {
+  const at = useRef<HTMLDivElement>(null);
+  // A section named in the address is scrolled to, once it is there.
+  useEffect(() => {
+    if (tab) at.current?.querySelector(`[data-section="${tab}"]`)?.scrollIntoView({ block: "start" });
+  }, [tab, host.version]);
   return (
-    <div style={{ maxWidth: 760 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 6 }}>admin</div>
-      <div role="tablist" aria-label="admin sections" style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-        {TABS.map((t) => (
-          <button key={t.tab} role="tab" aria-selected={t.tab === tab} style={tabButton(t.tab === tab)} onClick={() => setTab(t.tab)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 8 }}>{current.about}</div>
-      {msg && (
-        <div role="alert" style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>
-          {msg}
+    <div ref={at} className="hl-flow hl-host-page" aria-label={title}>
+      <header className="hl-flow__head">
+        <h1 className="hl-flow__name">{title}</h1>
+        <span className="hl-flow__status">{what}</span>
+      </header>
+      {host.msg && (
+        <div role="alert" style={{ color: "var(--bad)", fontSize: 12 }}>
+          {host.msg}
         </div>
       )}
+      <div>{children}</div>
+      <ActivityList version={String(host.version)} />
+    </div>
+  );
+}
 
-      {tab === "people" && (
+export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
+  const h = useHost();
+  const { people, tokens, oidc, link, setLink, secret, setSecret, draft, setDraft, tokenDraft, setTokenDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
+  return (
+    <HostPage title="People and access" about="who uses this server, the tokens scripts and agents use, and how people sign in" tab={tab} host={h}>
+      <div className="hl-host-page__head" data-section="accounts">people</div>
+      {link && (
+        <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
+          <span>
+            Send <span style={{ color: "var(--ink)" }}>{link.name}</span> this link: they set their password with it (once, within 7 days).
+          </span>
+          <span style={{ display: "flex", gap: 6 }}>
+            <input aria-label="invite link" readOnly value={link.url} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
+            <button style={small} onClick={() => navigator.clipboard?.writeText(link.url)}>
+              copy
+            </button>
+            <button style={small} onClick={() => setLink(null)}>
+              done
+            </button>
+          </span>
+        </div>
+      )}
+      {people.map((p) => (
+        <div key={p.name} style={row}>
+          <span style={{ color: "var(--accent)", minWidth: 90 }}>
+            {p.name}
+            {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
+          </span>
+          <select
+            aria-label={`${p.name}'s role`}
+            value={p.role}
+            style={input}
+            title={ROLE_TITLE[p.role]}
+            onChange={(e) => act(() => changeAccount(p.name, { role: e.target.value as Role }))}
+          >
+            {ROLES.map((r) => (
+              <option key={r} value={r} title={ROLE_TITLE[r]}>
+                {r}
+              </option>
+            ))}
+          </select>
+          <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+            {p.email ?? ""}
+            {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
+            {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
+          </span>
+          <button
+            style={small}
+            title="the email they sign in with through the identity provider"
+            onClick={async () => {
+              const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
+              if (email !== null) act(() => changeAccount(p.name, { email }));
+            }}
+          >
+            email
+          </button>
+          <button
+            style={small}
+            title="a new link to set a new password; their sign-ins end"
+            onClick={async () => {
+              if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
+              act(async () => {
+                const r = await resetAccount(p.name);
+                setLink({ name: p.name, url: linkFor(r.invite) });
+              });
+            }}
+          >
+            reset
+          </button>
+          <button style={small} onClick={() => act(() => changeAccount(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+            {p.disabled ? "enable" : "disable"}
+          </button>
+          <button
+            style={small}
+            title="remove the account"
+            onClick={async () => {
+              if (await dialog.confirm(`Remove ${p.name}'s account? This can't be undone.`, "Remove")) act(() => removeAccount(p.name));
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <form
+        style={{ ...row, background: "transparent" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          act(async () => {
+            const r = await inviteAccount(draft.name.trim(), draft.role, draft.email.trim());
+            setLink({ name: r.name, url: linkFor(r.invite) });
+            setDraft({ name: "", role: draft.role, email: "" });
+          });
+        }}
+      >
+        <input aria-label="new person's name" placeholder="name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={input} />
+        <select aria-label="new person's role" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })} style={input}>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <input aria-label="new person's email" placeholder="email (optional)" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} style={{ ...input, flex: 1 }} />
+        <button type="submit" style={primary} disabled={!draft.name.trim()}>
+          add person
+        </button>
+      </form>
+
+      <div className="hl-host-page__head" data-section="tokens">API tokens</div>
+      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
+      {secret && (
+        <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
+          <span>
+            The token for <span style={{ color: "var(--ink)" }}>{secret.label}</span>. Copy it now: it isn't shown again.
+          </span>
+          <span style={{ display: "flex", gap: 6 }}>
+            <input aria-label="new API token" readOnly value={secret.token} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
+            <button style={small} onClick={() => navigator.clipboard?.writeText(secret.token)}>
+              copy
+            </button>
+            <button style={small} onClick={() => setSecret(null)}>
+              done
+            </button>
+          </span>
+        </div>
+      )}
+      {tokens.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
+      {tokens.map((t) => (
+        <div key={t.id} style={row}>
+          <span style={{ color: "var(--accent)", minWidth: 90 }}>{t.label}</span>
+          <span>{t.role}</span>
+          <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+            made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
+          </span>
+          <button
+            style={small}
+            onClick={async () => {
+              if (await dialog.confirm(`Revoke the token "${t.label}"? Whatever uses it stops working.`, "Revoke")) act(() => revokeToken(t.id));
+            }}
+          >
+            revoke
+          </button>
+        </div>
+      ))}
+      <form
+        style={{ ...row, background: "transparent" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          act(async () => {
+            const r = await createToken(tokenDraft.label.trim(), tokenDraft.role);
+            setSecret({ label: r.entry.label, token: r.token });
+            setTokenDraft({ label: "", role: tokenDraft.role });
+          });
+        }}
+      >
+        <input aria-label="new token's label" placeholder="what it's for (e.g. ci)" value={tokenDraft.label} onChange={(e) => setTokenDraft({ ...tokenDraft, label: e.target.value })} style={{ ...input, flex: 1 }} />
+        <select aria-label="new token's role" value={tokenDraft.role} onChange={(e) => setTokenDraft({ ...tokenDraft, role: e.target.value as Role })} style={input}>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <button type="submit" style={primary} disabled={!tokenDraft.label.trim()}>
+          make token
+        </button>
+      </form>
+
+      <div className="hl-host-page__head" data-section="sign-in">signing in through an identity provider</div>
+      <div style={about}>
+        Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
+        with PKCE and this page's address as its redirect. Someone signing in is matched to the account with their email (set under people).
+      </div>
+      <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
+        <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
+        <input aria-label="client id" placeholder="client id" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...input, flex: 1, minWidth: 120 }} />
+        <button style={primary} disabled={!issuer.trim() || !clientId.trim()} onClick={() => act(() => setOidcSettings({ issuer: issuer.trim(), client_id: clientId.trim() }))}>
+          {oidc ? "update" : "turn on"}
+        </button>
+        {oidc && (
+          <button style={small} onClick={() => act(() => setOidcSettings(null))}>
+            turn off
+          </button>
+        )}
+      </div>
+      <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
+
+      <div className="hl-host-page__head" data-section="agents">agents</div>
+      <div style={about}>
+        An agent writes flows, checks them, saves and deploys them, and runs their actions, but never approves what a flow may do: that stays with a person. It
+        connects through <code>holon mcp</code>. On this server&apos;s machine it signs in as you and asks as the agent role; from another, it uses an API token with
+        role agent (make one above). Which actions agents may run is each deployment&apos;s own setting.
+      </div>
+      <div style={{ ...row, background: "transparent" }}>
+        <input aria-label="the holon mcp line" readOnly value={`holon mcp setup claude-code --server ${location.origin}`} style={{ ...input, flex: 1, fontFamily: "ui-monospace, Menlo, Consolas, monospace" }} onFocus={(e) => e.target.select()} />
+        <button style={small} onClick={() => navigator.clipboard?.writeText(`holon mcp setup claude-code --server ${location.origin}`)}>
+          copy
+        </button>
+      </div>
+      {[
+        ...people.filter((p) => p.role === "agent").map((p) => ({ key: `account:${p.name}`, name: p.name, said: "an account" })),
+        ...tokens.filter((t) => t.role === "agent").map((t) => ({ key: `token:${t.id}`, name: t.label, said: `a token, made by ${t.created_by}` })),
+      ].map((a) => (
+        <div key={a.key} style={row}>
+          <span style={{ color: "var(--accent)", minWidth: 90 }}>{a.name}</span>
+          <span style={quiet}>{a.said}</span>
+        </div>
+      ))}
+      {!people.some((p) => p.role === "agent") && !tokens.some((t) => t.role === "agent") && <div style={{ ...quiet, marginBottom: 6 }}>no agent account or token yet</div>}
+      <a href={format({ kind: "docs", page: "guides/agents.md", anchor: null })} style={{ color: "var(--accent)", fontSize: 11, textDecoration: "none" }}>
+        working with agents, in the manual ›
+      </a>
+    </HostPage>
+  );
+}
+
+export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
+  const h = useHost(true);
+  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
+  return (
+    <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
+      <nav className="hl-flow__tabs" aria-label="resources tabs">
+        {RESOURCES_TABS.map((t) => (
+          <a key={t} href={format({ kind: "resources", tab: t })} aria-current={t === tab ? "page" : undefined}>
+            {RESOURCES_LABELS[t]}
+          </a>
+        ))}
+      </nav>
+
+      {tab === "databases" && (
         <>
-          <div style={head}>people</div>
-          {link && (
-            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "#2a5f68" }}>
-              <span>
-                Send <span style={{ color: "#e6eefb" }}>{link.name}</span> this link: they set their password with it (once, within 7 days).
-              </span>
-              <span style={{ display: "flex", gap: 6 }}>
-                <input aria-label="invite link" readOnly value={link.url} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
-                <button style={small} onClick={() => navigator.clipboard?.writeText(link.url)}>
-                  copy
-                </button>
-                <button style={small} onClick={() => setLink(null)}>
-                  done
-                </button>
-              </span>
-            </div>
-          )}
-          {people.map((p) => (
-            <div key={p.name} style={row}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>
-                {p.name}
-                {p.name === me && <span style={{ color: "#7e8ea8" }}> (you)</span>}
-              </span>
-              <select
-                aria-label={`${p.name}'s role`}
-                value={p.role}
-                style={input}
-                title={ROLE_TITLE[p.role]}
-                onChange={(e) => act(() => changeAccount(p.name, { role: e.target.value as Role }))}
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r} title={ROLE_TITLE[r]}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
-                {p.email ?? ""}
-                {p.invited && <span style={{ color: "#e0c36f" }}> · link not used yet</span>}
-                {p.disabled && <span style={{ color: "#e0916f" }}> · disabled</span>}
-              </span>
-              <button
-                style={small}
-                title="the email they sign in with through the identity provider"
-                onClick={async () => {
-                  const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
-                  if (email !== null) act(() => changeAccount(p.name, { email }));
-                }}
-              >
-                email
-              </button>
-              <button
-                style={small}
-                title="a new link to set a new password; their sign-ins end"
-                onClick={async () => {
-                  if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
-                  act(async () => {
-                    const r = await resetAccount(p.name);
-                    setLink({ name: p.name, url: linkFor(r.invite) });
-                  });
-                }}
-              >
-                reset
-              </button>
-              <button style={small} onClick={() => act(() => changeAccount(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
-                {p.disabled ? "enable" : "disable"}
-              </button>
-              <button
-                style={small}
-                title="remove the account"
-                onClick={async () => {
-                  if (await dialog.confirm(`Remove ${p.name}'s account? This can't be undone.`, "Remove")) act(() => removeAccount(p.name));
-                }}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          <form
-            style={{ ...row, background: "transparent" }}
-            onSubmit={(e) => {
-              e.preventDefault();
-              act(async () => {
-                const r = await inviteAccount(draft.name.trim(), draft.role, draft.email.trim());
-                setLink({ name: r.name, url: linkFor(r.invite) });
-                setDraft({ name: "", role: draft.role, email: "" });
-              });
-            }}
-          >
-            <input aria-label="new person's name" placeholder="name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={input} />
-            <select aria-label="new person's role" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })} style={input}>
-              {ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-            <input aria-label="new person's email" placeholder="email (optional)" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} style={{ ...input, flex: 1 }} />
-            <button type="submit" style={primary} disabled={!draft.name.trim()}>
-              add person
-            </button>
-          </form>
-
-          <div style={head}>API tokens</div>
-          <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
-          {secret && (
-            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "#2a5f68" }}>
-              <span>
-                The token for <span style={{ color: "#e6eefb" }}>{secret.label}</span>. Copy it now: it isn't shown again.
-              </span>
-              <span style={{ display: "flex", gap: 6 }}>
-                <input aria-label="new API token" readOnly value={secret.token} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
-                <button style={small} onClick={() => navigator.clipboard?.writeText(secret.token)}>
-                  copy
-                </button>
-                <button style={small} onClick={() => setSecret(null)}>
-                  done
-                </button>
-              </span>
-            </div>
-          )}
-          {tokens.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
-          {tokens.map((t) => (
-            <div key={t.id} style={row}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>{t.label}</span>
-              <span>{t.role}</span>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
-                made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
-              </span>
-              <button
-                style={small}
-                onClick={async () => {
-                  if (await dialog.confirm(`Revoke the token "${t.label}"? Whatever uses it stops working.`, "Revoke")) act(() => revokeToken(t.id));
-                }}
-              >
-                revoke
-              </button>
-            </div>
-          ))}
-          <form
-            style={{ ...row, background: "transparent" }}
-            onSubmit={(e) => {
-              e.preventDefault();
-              act(async () => {
-                const r = await createToken(tokenDraft.label.trim(), tokenDraft.role);
-                setSecret({ label: r.entry.label, token: r.token });
-                setTokenDraft({ label: "", role: tokenDraft.role });
-              });
-            }}
-          >
-            <input aria-label="new token's label" placeholder="what it's for (e.g. ci)" value={tokenDraft.label} onChange={(e) => setTokenDraft({ ...tokenDraft, label: e.target.value })} style={{ ...input, flex: 1 }} />
-            <select aria-label="new token's role" value={tokenDraft.role} onChange={(e) => setTokenDraft({ ...tokenDraft, role: e.target.value as Role })} style={input}>
-              {ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-            <button type="submit" style={primary} disabled={!tokenDraft.label.trim()}>
-              make token
-            </button>
-          </form>
-
-          <div style={head}>signing in through an identity provider</div>
           <div style={about}>
-            Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
-            with PKCE and this page's address as its redirect. Someone signing in is matched to the account with their email (set under people).
+            Databases flows read and write: a SQLite file on this server&apos;s machine, or a Postgres, MySQL or MongoDB database whose URL the server fetches
+            from where it is kept, as a secret&apos;s (<code>env:HOLON_SECRET_SHOP_URL</code>, <code>vault:…</code>), never typed in here, stored or shown. A
+            flow names a database (<code>database shop</code>), never where it is, and is granted each table its SQL reads or writes (each collection its
+            calls name). A schema (create table …) is run when it is bound, creating a SQLite file if there is none; flows run no DDL. Read only: flows may
+            read it, not write it. A writable database gets a table holon_commits, where each run&apos;s commit marks it done. Held for whole runs: each run
+            that touches it holds it from before it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole
+            length, across every deployment bound to it (and, on Postgres, MySQL or MongoDB, every server); one that waits past its claim_wait is turned
+            away (503). For what a commit&apos;s check can&apos;t cover: a sequence&apos;s next value, a queue, or contention so high that running again costs
+            more than waiting.
           </div>
-          <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
-            <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
-            <input aria-label="client id" placeholder="client id" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...input, flex: 1, minWidth: 120 }} />
-            <button style={primary} disabled={!issuer.trim() || !clientId.trim()} onClick={() => act(() => setOidcSettings({ issuer: issuer.trim(), client_id: clientId.trim() }))}>
-              {oidc ? "update" : "turn on"}
-            </button>
-            {oidc && (
-              <button style={small} onClick={() => act(() => setOidcSettings(null))}>
-                turn off
-              </button>
+          {databases.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
+          {databases.map((d) => {
+            const read = tables[keyOf(d)];
+            return (
+              <Fragment key={keyOf(d)}>
+                <div style={row}>
+                  <span style={{ color: "var(--accent)", minWidth: 90 }}>database {d.name}</span>
+                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
+                  <span style={{ color: "var(--faint)", fontSize: 11 }}>
+                    {d.engine} · {d.access === "read" ? "read only" : "read and write"}
+                    {d.lock === "run" ? " · held for whole runs" : ""}
+                    {d.deployment ? ` · for ${d.deployment} only` : ""}
+                  </span>
+                  <button
+                    style={small}
+                    title="unbind the name: the database stays where it is"
+                    onClick={async () => {
+                      const whose = d.deployment ? ` for ${d.deployment}` : "";
+                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(databaseHolders(d))}`, "Unbind"))
+                        act(() => unbindDatabase(d.name, d.deployment));
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div aria-label={`${d.name}'s tables`} style={{ ...quiet, padding: "0 10px 2px", marginTop: -2, display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ flex: 1, overflowWrap: "anywhere" }}>
+                    {read === undefined
+                      ? "reading its tables…"
+                      : "error" in read
+                        ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
+                        : read.length === 0
+                          ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
+                          : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
+                  </span>
+                  <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
+                    read the schema again
+                  </button>
+                </div>
+                {usedBy(databaseHolders(d))}
+              </Fragment>
+            );
+          })}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const { where, ...d } = databaseDraft;
+              const at = where.trim();
+              if (isUrl(at)) {
+                setMsg("Give where the URL is kept (env:HOLON_SECRET_SHOP_URL or vault:…), not the URL: the server fetches it from there, and this page never sends it.");
+                return;
+              }
+              const name = d.name.trim();
+              const deployment = d.deployment?.trim() || null;
+              const there = databases.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(databaseHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const target = at.startsWith("env:") || at.startsWith("vault:") ? { connection: at } : { path: at };
+                await bindDatabase({ ...d, ...target, name, schema: d.schema?.trim() || null, deployment });
+                setTables((all) => Object.fromEntries(Object.entries(all).filter(([k]) => k !== keyOf({ name, deployment }))));
+                setDatabaseDraft({ ...databaseDraft, name: "", where: "", schema: null, lock: "commit", deployment: null });
+              });
+            }}
+          >
+            <input aria-label="database name" placeholder="name (shop)" value={databaseDraft.name} onChange={(e) => setDatabaseDraft({ ...databaseDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="database path"
+              placeholder="a SQLite file's whole path on this server's machine, or where a Postgres, MySQL or MongoDB URL is kept (env:HOLON_SECRET_SHOP_URL, vault:…)"
+              value={databaseDraft.where}
+              onChange={(e) => setDatabaseDraft({ ...databaseDraft, where: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <select
+              aria-label="database access"
+              value={databaseDraft.access}
+              onChange={(e) => setDatabaseDraft({ ...databaseDraft, access: e.target.value as DatabaseEntry["access"] })}
+              style={input}
+            >
+              <option value="read-write">read and write</option>
+              <option value="read">read only</option>
+            </select>
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
+              <input
+                type="checkbox"
+                aria-label="database held for whole runs"
+                checked={databaseDraft.lock === "run"}
+                onChange={(e) => setDatabaseDraft({ ...databaseDraft, lock: e.target.checked ? "run" : "commit" })}
+              />
+              held for whole runs
+            </label>
+            <input
+              aria-label="database for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={databaseDraft.deployment ?? ""}
+              onChange={(e) => setDatabaseDraft({ ...databaseDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {databaseDraft.lock === "run" && <div style={{ ...quiet, color: "var(--warn)", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
+            {isUrl(databaseDraft.where) && (
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_SHOP_URL, vault:…). It isn&apos;t sent.
+              </div>
             )}
-          </div>
-          <div style={{ color: "#7e8ea8", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
+            <textarea
+              aria-label="database schema"
+              placeholder="schema, run when it is bound (create table orders (id integer primary key, …)); empty: the database is there already (a MongoDB has none)"
+              value={databaseDraft.schema ?? ""}
+              onChange={(e) => setDatabaseDraft({ ...databaseDraft, schema: e.target.value })}
+              rows={2}
+              style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+            />
+            <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.where.trim() || isUrl(databaseDraft.where)}>
+              bind database
+            </button>
+          </form>
         </>
       )}
 
-      {tab === "resources" && (
+      {tab === "folders" && (
         <>
-          <div style={head}>folders</div>
           <div style={about}>
             Files flows read and write on this server&apos;s machine. A flow names a folder (<code>folder inbox</code>), never a path: bind each name to a real folder here.
             Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text; for a while (7d, 12h):
@@ -476,13 +682,13 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to
             it; one that waits past its claim_wait is turned away (503). For files a program expects one writer for.
           </div>
-          {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
+          {folders.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
           {folders.map((f) => (
             <Fragment key={keyOf(f)}>
               <div style={row}>
-                <span style={{ color: "#6fd3e0", minWidth: 90 }}>folder {f.name}</span>
-                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
-                <span style={{ color: "#7e8ea8", fontSize: 11 }}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>folder {f.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
+                <span style={{ color: "var(--faint)", fontSize: 11 }}>
                   {f.access === "read" ? "read only" : "read and write"}
                   {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
                   {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
@@ -552,11 +758,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setFolderDraft({ ...folderDraft, cap: e.target.value })}
               style={{ ...input, width: 150 }}
             />
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title="a network share other Holon servers bind too: a commit also locks a file in it">
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title="a network share other Holon servers bind too: a commit also locks a file in it">
               <input type="checkbox" checked={folderDraft.shared ?? false} onChange={(e) => setFolderDraft({ ...folderDraft, shared: e.target.checked })} />
               other servers bind it too
             </label>
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
               <input
                 type="checkbox"
                 aria-label="folder held for whole runs"
@@ -572,7 +778,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setFolderDraft({ ...folderDraft, deployment: e.target.value })}
               style={input}
             />
-            {folderDraft.lock === "run" && <div style={{ ...quiet, color: "#e0c36f", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
+            {folderDraft.lock === "run" && <div style={{ ...quiet, color: "var(--warn)", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
             <button
               type="submit"
               style={primary}
@@ -592,138 +798,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onClose={() => setBrowsing(false)}
             />
           )}
+        </>
+      )}
 
-          <div style={head}>databases</div>
-          <div style={about}>
-            Databases flows read and write: a SQLite file on this server&apos;s machine, or a Postgres, MySQL or MongoDB database whose URL the server fetches
-            from where it is kept, as a secret&apos;s (<code>env:HOLON_SECRET_SHOP_URL</code>, <code>vault:…</code>), never typed in here, stored or shown. A
-            flow names a database (<code>database shop</code>), never where it is, and is granted each table its SQL reads or writes (each collection its
-            calls name). A schema (create table …) is run when it is bound, creating a SQLite file if there is none; flows run no DDL. Read only: flows may
-            read it, not write it. A writable database gets a table holon_commits, where each run&apos;s commit marks it done. Held for whole runs: each run
-            that touches it holds it from before it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole
-            length, across every deployment bound to it (and, on Postgres, MySQL or MongoDB, every server); one that waits past its claim_wait is turned
-            away (503). For what a commit&apos;s check can&apos;t cover: a sequence&apos;s next value, a queue, or contention so high that running again costs
-            more than waiting.
-          </div>
-          {databases.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
-          {databases.map((d) => {
-            const read = tables[keyOf(d)];
-            return (
-              <Fragment key={keyOf(d)}>
-                <div style={row}>
-                  <span style={{ color: "#6fd3e0", minWidth: 90 }}>database {d.name}</span>
-                  <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
-                  <span style={{ color: "#7e8ea8", fontSize: 11 }}>
-                    {d.engine} · {d.access === "read" ? "read only" : "read and write"}
-                    {d.lock === "run" ? " · held for whole runs" : ""}
-                    {d.deployment ? ` · for ${d.deployment} only` : ""}
-                  </span>
-                  <button
-                    style={small}
-                    title="unbind the name: the database stays where it is"
-                    onClick={async () => {
-                      const whose = d.deployment ? ` for ${d.deployment}` : "";
-                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(databaseHolders(d))}`, "Unbind"))
-                        act(() => unbindDatabase(d.name, d.deployment));
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div aria-label={`${d.name}'s tables`} style={{ ...quiet, padding: "0 10px 2px", marginTop: -2, display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ flex: 1, overflowWrap: "anywhere" }}>
-                    {read === undefined
-                      ? "reading its tables…"
-                      : "error" in read
-                        ? <span style={{ color: "#e0916f" }}>its tables couldn&apos;t be read: {read.error}</span>
-                        : read.length === 0
-                          ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
-                          : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
-                  </span>
-                  <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
-                    read the schema again
-                  </button>
-                </div>
-                {usedBy(databaseHolders(d))}
-              </Fragment>
-            );
-          })}
-          <form
-            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const { where, ...d } = databaseDraft;
-              const at = where.trim();
-              if (isUrl(at)) {
-                setMsg("Give where the URL is kept (env:HOLON_SECRET_SHOP_URL or vault:…), not the URL: the server fetches it from there, and this page never sends it.");
-                return;
-              }
-              const name = d.name.trim();
-              const deployment = d.deployment?.trim() || null;
-              const there = databases.find((b) => b.name === name && b.deployment === deployment);
-              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(databaseHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
-                return;
-              act(async () => {
-                const target = at.startsWith("env:") || at.startsWith("vault:") ? { connection: at } : { path: at };
-                await bindDatabase({ ...d, ...target, name, schema: d.schema?.trim() || null, deployment });
-                setTables((all) => Object.fromEntries(Object.entries(all).filter(([k]) => k !== keyOf({ name, deployment }))));
-                setDatabaseDraft({ ...databaseDraft, name: "", where: "", schema: null, lock: "commit", deployment: null });
-              });
-            }}
-          >
-            <input aria-label="database name" placeholder="name (shop)" value={databaseDraft.name} onChange={(e) => setDatabaseDraft({ ...databaseDraft, name: e.target.value })} style={input} />
-            <input
-              aria-label="database path"
-              placeholder="a SQLite file's whole path on this server's machine, or where a Postgres, MySQL or MongoDB URL is kept (env:HOLON_SECRET_SHOP_URL, vault:…)"
-              value={databaseDraft.where}
-              onChange={(e) => setDatabaseDraft({ ...databaseDraft, where: e.target.value })}
-              style={{ ...input, flex: 1, minWidth: 220 }}
-            />
-            <select
-              aria-label="database access"
-              value={databaseDraft.access}
-              onChange={(e) => setDatabaseDraft({ ...databaseDraft, access: e.target.value as DatabaseEntry["access"] })}
-              style={input}
-            >
-              <option value="read-write">read and write</option>
-              <option value="read">read only</option>
-            </select>
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
-              <input
-                type="checkbox"
-                aria-label="database held for whole runs"
-                checked={databaseDraft.lock === "run"}
-                onChange={(e) => setDatabaseDraft({ ...databaseDraft, lock: e.target.checked ? "run" : "commit" })}
-              />
-              held for whole runs
-            </label>
-            <input
-              aria-label="database for one deployment"
-              placeholder="for one deployment (empty: all)"
-              value={databaseDraft.deployment ?? ""}
-              onChange={(e) => setDatabaseDraft({ ...databaseDraft, deployment: e.target.value })}
-              style={input}
-            />
-            {databaseDraft.lock === "run" && <div style={{ ...quiet, color: "#e0c36f", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
-            {isUrl(databaseDraft.where) && (
-              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
-                That is a URL: give where it is kept instead (env:HOLON_SECRET_SHOP_URL, vault:…). It isn&apos;t sent.
-              </div>
-            )}
-            <textarea
-              aria-label="database schema"
-              placeholder="schema, run when it is bound (create table orders (id integer primary key, …)); empty: the database is there already (a MongoDB has none)"
-              value={databaseDraft.schema ?? ""}
-              onChange={(e) => setDatabaseDraft({ ...databaseDraft, schema: e.target.value })}
-              rows={2}
-              style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
-            />
-            <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.where.trim() || isUrl(databaseDraft.where)}>
-              bind database
-            </button>
-          </form>
-
-          <div style={head}>mail</div>
+      {tab === "mail" && (
+        <>
           <div style={about}>
             The mail flows send: each name an SMTP server whose URL, with its login, the server fetches from where it is kept, as a secret&apos;s
             (<code>env:HOLON_SECRET_OPS_SMTP</code>, <code>vault:…</code>), never typed in here, stored or shown; it logs in when it is bound. A flow names
@@ -735,19 +814,19 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             (without one, no message is authenticated). A server that takes no password (Microsoft 365, Google Workspace) logs in with a token: its URL names
             the user and no password, and the OAuth source keeps the token request (https://id:secret@host/…/token?scope=…), which the server sends to get one.
           </div>
-          {mails.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
+          {mails.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
           {mails.map((m) => (
             <Fragment key={keyOf(m)}>
               <div style={row}>
-                <span style={{ color: "#6fd3e0", minWidth: 90 }}>mail {m.name}</span>
-                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>mail {m.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
                   {m.smtp && `${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`}
                   {m.smtp && m.mailbox && " · "}
                   {m.mailbox &&
                     `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
                   {m.oauth && ` · logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`}
                 </span>
-                {m.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {m.deployment} only</span>}
+                {m.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {m.deployment} only</span>}
                 <button
                   style={small}
                   title="unbind the name: mail on its way through it is given up"
@@ -826,7 +905,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               style={input}
             />
             {(isUrl(mailDraft.smtp) || isUrl(mailDraft.imap ?? "") || isUrl(mailDraft.oauth ?? "")) && (
-              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_OPS_SMTP, vault:…). It isn&apos;t sent.
               </div>
             )}
@@ -845,8 +924,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               bind mail
             </button>
           </form>
+        </>
+      )}
 
-          <div style={head}>feeds</div>
+      {tab === "feeds" && (
+        <>
           <div style={about}>
             The feeds flows listen to: each name a feed of server-sent events, or a WebSocket (wss://), whose URL the server fetches from where it is kept, as a secret&apos;s
             (<code>env:HOLON_SECRET_PRICES_URL</code>, <code>vault:…</code>), never typed in here, stored or shown, and so are the values of the headers each
@@ -864,12 +946,12 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             listens on it (<code>LISTEN</code>) in a database bound here, the one each deployment sees by that name, and each notification
             (<code>pg_notify</code>, from a trigger) is an event; what is sent while it isn&apos;t listening is lost, for the flow to read from the table.
           </div>
-          {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
+          {feeds.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
           {feeds.map((f) => (
             <Fragment key={keyOf(f)}>
               <div style={row}>
-                <span style={{ color: "#6fd3e0", minWidth: 90 }}>feed {f.name}</span>
-                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>feed {f.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
                   {f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`}
                   {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
                   {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
@@ -882,7 +964,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
                   {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
                 </span>
-                {f.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {f.deployment} only</span>}
+                {f.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {f.deployment} only</span>}
                 <button
                   style={small}
                   title="unbind the name: its connections close"
@@ -1035,7 +1117,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               </>
             ) : null}
             {feedDraft.from === "url" && isUrl(feedDraft.url) && (
-              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_PRICES_URL, vault:…). It isn&apos;t sent.
               </div>
             )}
@@ -1047,8 +1129,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               bind feed
             </button>
           </form>
+        </>
+      )}
 
-          <div style={head}>queues</div>
+      {tab === "queues" && (
+        <>
           <div style={about}>
             The queues flows take messages from and send to: each name an Amazon SQS queue, whose URL with its access key
             (https://&lt;key id&gt;:&lt;secret&gt;@sqs.&lt;region&gt;.amazonaws.com/&lt;account&gt;/&lt;queue&gt;) the server fetches from where it is kept, as a
@@ -1061,18 +1146,18 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             received is kept out of sight at first (5m, kept so while it runs); and whether a failed run&apos;s message is left in the queue, for its redrive
             policy to move, rather than deleted.
           </div>
-          {queues.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
+          {queues.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
           {queues.map((q) => (
             <Fragment key={keyOf(q)}>
               <div style={row}>
-                <span style={{ color: "#6fd3e0", minWidth: 90 }}>queue {q.name}</span>
-                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>queue {q.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
                   {`${q.address} (from ${q.url})`}
                   {q.fifo && " · FIFO"}
                   {` · ${Math.round(q.largest / 1024)} KiB at most · out of sight for ${q.visibility}s`}
                   {q.keep_failed && " · a failed run's message is left for the redrive"}
                 </span>
-                {q.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {q.deployment} only</span>}
+                {q.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {q.deployment} only</span>}
                 <button
                   style={small}
                   title="unbind the name: its listeners stop"
@@ -1131,7 +1216,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               style={input}
             />
             {isUrl(queueDraft.url) && (
-              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_EVENTS_URL, vault:…). It isn&apos;t sent.
               </div>
             )}
@@ -1139,18 +1224,22 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               bind queue
             </button>
           </form>
+        </>
+      )}
 
-          <div style={head}>secrets</div>
+      {tab === "secrets" && (
+        <>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
             under its ⚙, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
             refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
           </div>
-          {serverSecrets.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
+          {serverSecrets.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
           {serverSecrets.map((s) => (
-            <div key={s.name} style={row} aria-label={`server secret ${s.name}`}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>secret {s.name}</span>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
+            <Fragment key={s.name}>
+            <div style={row} aria-label={`server secret ${s.name}`}>
+              <span style={{ color: "var(--accent)", minWidth: 90 }}>secret {s.name}</span>
+              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
                 v{s.version} · {s.source === "local" ? "a value" : s.source}
                 {s.problem ? ` · can't be read: ${s.problem}` : ""}
                 {" · "}
@@ -1179,6 +1268,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 ×
               </button>
             </div>
+            <ServerSecretHistory name={s.name} onChanged={refresh} />
+            </Fragment>
           ))}
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -1186,19 +1277,30 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               e.preventDefault();
               const to = secretDraft.to.split(",").map((d) => d.trim()).filter(Boolean);
               act(async () => {
-                await bindServerSecret(secretDraft.name.trim(), { value: secretDraft.value, ...(to.length ? { to } : {}) });
-                setSecretDraft({ name: "", value: "", to: "" });
+                const kept = secretDraft.kind === "value" ? { value: secretDraft.value } : { from: `${secretDraft.kind}:${secretDraft.value.trim()}` };
+                await bindServerSecret(secretDraft.name.trim(), { ...kept, ...(to.length ? { to } : {}) });
+                setSecretDraft({ ...secretDraft, name: "", value: "", to: "" });
               });
             }}
           >
             <input aria-label="secret name" placeholder="name (stripe_key)" value={secretDraft.name} onChange={(e) => setSecretDraft({ ...secretDraft, name: e.target.value })} style={input} />
+            <select
+              aria-label="where its value is kept"
+              value={secretDraft.kind}
+              onChange={(e) => setSecretDraft({ ...secretDraft, kind: e.target.value as SecretKind, value: "" })}
+              style={input}
+            >
+              <option value="value">a value</option>
+              <option value="env">an env variable</option>
+              <option value="vault">a Vault field</option>
+            </select>
             <input
               aria-label="secret value"
-              type="password"
-              autoComplete="new-password"
+              type={secretDraft.kind === "value" ? "password" : "text"}
+              autoComplete={secretDraft.kind === "value" ? "new-password" : "off"}
               data-1p-ignore
               data-lpignore="true"
-              placeholder="its value (sealed here, never shown)"
+              placeholder={secretDraft.kind === "value" ? "its value (sealed here, never shown)" : secretDraft.kind === "env" ? "HOLON_SECRET_STRIPE_KEY" : "secret/path#field"}
               value={secretDraft.value}
               onChange={(e) => setSecretDraft({ ...secretDraft, value: e.target.value })}
               style={input}
@@ -1214,15 +1316,19 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               bind secret
             </button>
           </form>
+        </>
+      )}
 
+      {tab === "host" && (
+        <>
           {host && (
             <>
-              <div style={head}>the host</div>
+              <div className="hl-host-page__head">the host</div>
               {host.warnings.length > 0 && (
-                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "#e5484d" }}>
+                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "var(--bad)" }}>
                   {host.warnings.map((w) => (
                     <div key={w.key}>
-                      <div style={{ color: "#ffb3b5" }}>⚠ {w.says}</div>
+                      <div style={{ color: "var(--bad-ink)" }}>⚠ {w.says}</div>
                       <div style={quiet}>{w.todo}</div>
                     </div>
                   ))}
@@ -1242,8 +1348,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               {host.disks.map((d) => (
                 <div key={d.path} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }} title={d.path}>
                   <div>disk: {diskLine(d)}</div>
-                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "#1b2a45", borderRadius: 3 }}>
-                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "#e5484d" : "#3b82f6" }} />
+                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "var(--border)", borderRadius: 3 }}>
+                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "var(--bad)" : "var(--accent)" }} />
                   </div>
                 </div>
               ))}
@@ -1258,8 +1364,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                         <span style={{ width: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.slug}</span>
                         <span style={{ width: 90 }}>~{sizeText(h.memory)}</span>
                         <span style={{ width: 90 }}>{sizeText(h.disk)}</span>
-                        <div style={{ flex: 1, height: 6, background: "#1b2a45", borderRadius: 3 }}>
-                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "#3b82f6" }} />
+                        <div style={{ flex: 1, height: 6, background: "var(--border)", borderRadius: 3 }}>
+                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "var(--accent)" }} />
                         </div>
                       </div>
                     );
@@ -1302,8 +1408,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               >
                 <span style={{ flex: 1, minWidth: 260 }}>
                   when a disk is full <span style={quiet}>· {whenFullLine(host.full_at, host.when_full)}</span>
-                  {host.acting.paused.length > 0 && <div style={{ color: "#ffb3b5" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
-                  {host.acting.rolled.length > 0 && <div style={{ color: "#ffb3b5" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
+                  {host.acting.paused.length > 0 && <div style={{ color: "var(--bad-ink)" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
+                  {host.acting.rolled.length > 0 && <div style={{ color: "var(--bad-ink)" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
                 </span>
                 <input
                   aria-label="when the host acts on a full disk"
@@ -1375,7 +1481,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </>
           )}
 
-          <div style={head}>storage</div>
+          <div className="hl-host-page__head">storage</div>
           <div style={about}>
             What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
             the last hour, and code, is never swept. The same as <code>holon store sweep</code> and <code>holon folder sweep</code>.
@@ -1454,67 +1560,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
         </>
       )}
 
-      {tab === "permissions" && (
+      {tab === "who-may" && (
         <>
-          <div style={head}>the policy</div>
-          <div style={about}>
-            What this host allows at all, from its <code>holon.toml</code> (edited there, on the server&apos;s machine). Reading it again holds every deployment
-            to it at once: one a lowered ceiling or a withdrawn exception no longer covers pauses, unless it is set to keep running.
-          </div>
-          {policy && (
-            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-              <div>
-                granted without asking:{" "}
-                {policy.auto.length === 0 ? <span style={quiet}>nothing</span> : policy.auto.map((i) => describeItem(i)).join("; ")}
-              </div>
-              <div>
-                plain HTTP {policy.allow_plain_http ? "may be granted" : "is never granted"} · private addresses {policy.allow_private_addresses ? "may be granted" : "are never granted"}
-              </div>
-              <table aria-label="limits" style={{ fontSize: 11, color: "#9fb4d4", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ color: "#7e8ea8", textAlign: "left" }}>
-                    <th style={{ fontWeight: "normal", paddingRight: 16 }}>limit</th>
-                    <th style={{ fontWeight: "normal", paddingRight: 16 }}>default</th>
-                    <th style={{ fontWeight: "normal" }}>at most</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.keys({ ...policy.defaults, ...policy.ceilings })
-                    .sort()
-                    .map((name) => (
-                      <tr key={name}>
-                        <td style={{ color: "#e6eefb", paddingRight: 16 }}>{name}</td>
-                        <td style={{ paddingRight: 16 }}>{policy.defaults[name] ?? "—"}</td>
-                        <td>{policy.ceilings[name] ?? "no ceiling"}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-            <button
-              style={small}
-              title="read holon.toml again and hold every deployment to it"
-              onClick={() =>
-                act(async () => {
-                  const r = await reloadPermissions();
-                  setPolicy(r);
-                  setReloaded({ at: Date.now(), attention: Object.entries(r.attention).filter((e): e is [string, string] => e[1] !== null) });
-                })
-              }
-            >
-              read the policy again
-            </button>
-            {reloaded && (
-              <span style={quiet}>
-                read again at {new Date(reloaded.at).toLocaleTimeString()}:{" "}
-                {reloaded.attention.length === 0 ? "every deployment is covered" : `${reloaded.attention.map(([s]) => s).join(", ")} can't run as granted`}
-              </span>
-            )}
-          </div>
-
-          <div style={head}>who may touch what</div>
           <div style={about}>
             Each resource, and the deployments granted it, by table for a database, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
             is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
@@ -1567,7 +1614,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>
-                <span style={{ color: "#e6eefb", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
+                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
                 {o.holders.map((h) => (
                   <button key={h.slug} style={{ ...small, textDecoration: h.revoked ? "line-through" : "none" }} title={h.revoked ? `${h.slug}: revoked; open its card` : `open ${h.slug}'s card`} onClick={() => onOpenDeployment(h.slug)}>
                     {h.slug} →
@@ -1578,8 +1625,161 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
           {grants.length === 0 && <div style={quiet}>nothing deployed: no deployment holds anything</div>}
         </>
       )}
+    </HostPage>
+  );
+}
 
-      <ActivityList version={String(version)} />
+export function PolicyPage({ deployments, onOpenDeployment }: { deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
+  const h = useHost();
+  const { policy, setPolicy, reloaded, setReloaded, act } = h;
+  return (
+    <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
+      <div className="hl-host-page__head" data-section="policy">the policy</div>
+      <div style={about}>
+        What this host allows at all, from its <code>holon.toml</code> (edited there, on the server&apos;s machine). Reading it again holds every deployment
+        to it at once: one a lowered ceiling or a withdrawn exception no longer covers pauses, unless it is set to keep running.
+      </div>
+      {policy && (
+        <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+          <div>
+            granted without asking:{" "}
+            {policy.auto.length === 0 ? <span style={quiet}>nothing</span> : policy.auto.map((i) => describeItem(i)).join("; ")}
+          </div>
+          <div>
+            plain HTTP {policy.allow_plain_http ? "may be granted" : "is never granted"} · private addresses {policy.allow_private_addresses ? "may be granted" : "are never granted"}
+          </div>
+          <div>
+            agents{" "}
+            {policy.agents_propose === false ? (
+              <>
+                may not propose: a version of theirs that needs a person is refused <span style={quiet}>(agents.propose = false)</span>
+              </>
+            ) : (
+              "may propose: a version of theirs that needs a person waits in Approvals"
+            )}
+          </div>
+          <table aria-label="limits" className="hl-table">
+            <thead>
+              <tr>
+                <th>limit</th>
+                <th>default</th>
+                <th>at most</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.keys({ ...policy.defaults, ...policy.ceilings })
+                .sort()
+                .map((name) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    <td className="hl-table__num">{policy.defaults[name] ?? "—"}</td>
+                    <td className="hl-table__num">{policy.ceilings[name] ?? "no ceiling"}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+        <button
+          style={small}
+          title="read holon.toml again and hold every deployment to it"
+          onClick={() =>
+            act(async () => {
+              const r = await reloadPermissions();
+              setPolicy(r);
+              setReloaded({ at: Date.now(), attention: Object.entries(r.attention).filter((e): e is [string, string] => e[1] !== null) });
+            })
+          }
+        >
+          read the policy again
+        </button>
+        {reloaded && (
+          <span style={quiet}>
+            read again at {new Date(reloaded.at).toLocaleTimeString()}:{" "}
+            {reloaded.attention.length === 0 ? "every deployment is covered" : `${reloaded.attention.map(([s]) => s).join(", ")} can't run as granted`}
+          </span>
+        )}
+      </div>
+
+      <div className="hl-host-page__head" data-section="held-off">held off</div>
+      <div style={about}>
+        The deployments that can&apos;t run as they were granted: under a ceiling lowered or an exception withdrawn since, or for want of something they need. Each
+        one&apos;s page says what to change.
+      </div>
+      {deployments
+        .filter((d) => d.attention)
+        .map((d) => (
+          <div key={d.slug} style={row} aria-label={`held off: ${d.slug}`}>
+            <span style={{ color: "var(--accent)", minWidth: 110 }}>{d.slug}</span>
+            <span style={{ color: "var(--warn)", flex: 1, fontSize: 11 }}>{d.attention}</span>
+            <button style={small} onClick={() => onOpenDeployment(d.slug)}>
+              open →
+            </button>
+          </div>
+        ))}
+      {!deployments.some((d) => d.attention) && <div style={quiet}>none: every deployment runs as granted</div>}
+    </HostPage>
+  );
+}
+
+/** A server secret's versions and changes, folded under its row; an older version is made
+ *  current again after a dry run, as a deployment's is (DeployBar.tsx's SecretRow). Never a
+ *  value: versions are told apart by their fingerprints. */
+function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () => void }) {
+  const [history, setHistory] = useState<SecretHistory | null>(null);
+  const [said, setSaid] = useState("");
+  const dryRun = useDryRun();
+  const load = () => getSecretHistory(null, name).then(setHistory).catch((e: unknown) => setSaid(messageOf(e)));
+  const rollback = async (to: number) => {
+    try {
+      if (!(await dryRun.ask(secretRollbackReport(null, name, await previewSecretRollback(null, name, to))))) return;
+      const v = await rollbackSecret(null, name, to);
+      setSaid(`version ${to} is current again, as version ${v}`);
+      onChanged();
+      void load();
+    } catch (e) {
+      setSaid(messageOf(e));
+    }
+  };
+  const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+  return (
+    <div style={{ padding: "0 10px 6px", marginTop: -2, fontSize: 11 }}>
+      <button style={{ ...small, padding: "0 6px" }} aria-expanded={history !== null} aria-label={`versions of ${name}`} onClick={() => (history ? setHistory(null) : void load())}>
+        {history ? "▾" : "▸"} versions and changes
+      </button>
+      {said && <span style={{ ...quiet, marginLeft: 8 }}>{said}</span>}
+      {history && (
+        <div style={{ display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid var(--border)", marginTop: 4 }}>
+          {history.versions.map((v) => (
+            <div key={v.version} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ color: v.current ? "var(--ok)" : "var(--muted)", minWidth: 24 }}>v{v.version}</span>
+              <span style={{ flex: 1 }}>{sourceLabel(v.source)}</span>
+              <span style={quiet}>{when(v.set_at)}</span>
+              {v.current ? (
+                <span style={{ color: "var(--ok)", width: 64, textAlign: "right" }}>current</span>
+              ) : (
+                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} title={`make version ${v.version} current again`}>
+                  roll back
+                </button>
+              )}
+            </div>
+          ))}
+          {history.events
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <div key={i} style={quiet}>
+                {when(e.at)} · {e.action}
+                {e.version ? ` v${e.version}` : ""}
+                {e.source ? ` · ${sourceLabel(e.source)}` : ""}
+                {e.detail ? ` · ${e.detail}` : ""}
+                {e.by ? ` · by ${e.by}` : ""}
+              </div>
+            ))}
+        </div>
+      )}
+      {dryRun.modal}
     </div>
   );
 }
@@ -1589,21 +1789,21 @@ function Resource({ title, detail, holders, onOpen }: { title: string; detail: s
   return (
     <div aria-label={title} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
       <div style={{ display: "flex", gap: 8 }}>
-        <span style={{ color: "#6fd3e0" }}>{title}</span>
+        <span style={{ color: "var(--accent)" }}>{title}</span>
         <span style={{ ...quiet, flex: 1, overflowWrap: "anywhere" }}>{detail}</span>
       </div>
       {holders.length === 0 && <div style={quiet}>no deployment is granted it</div>}
       {holders.map((h) => (
         <div key={h.slug} style={{ display: "flex", gap: 8, alignItems: "center", paddingLeft: 10, fontSize: 11 }}>
-          <span style={{ color: "#e6eefb", minWidth: 110 }}>{h.slug}</span>
-          <span style={{ color: h.status === "running" ? "#9ad29f" : "#e0c36f", minWidth: 54 }} title={h.attention ?? h.status}>
+          <span style={{ color: "var(--ink)", minWidth: 110 }}>{h.slug}</span>
+          <span style={{ color: h.status === "running" ? "var(--ok)" : "var(--warn)", minWidth: 54 }} title={h.attention ?? h.status}>
             {h.status}
           </span>
-          <span style={{ flex: 1, color: "#9fb4d4" }}>
+          <span style={{ flex: 1, color: "var(--muted)" }}>
             {usesText(h.uses).map((u, i) => (
               <Fragment key={i}>
                 {i > 0 && " · "}
-                <span style={u.revoked ? { textDecoration: "line-through", color: "#e0916f" } : undefined} title={u.revoked ? "revoked" : undefined}>
+                <span style={u.revoked ? { textDecoration: "line-through", color: "var(--bad)" } : undefined} title={u.revoked ? "revoked" : undefined}>
                   {u.text}
                 </span>
               </Fragment>

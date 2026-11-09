@@ -547,6 +547,20 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out, steps })
 }
 
+/// One recorded run as [`run_view`]'s parts, in JSON: what the Runs panel reads for its steps,
+/// its timeline and its errors. `notes` is keyed by line (1-based) as a string.
+pub fn run_json(name: &str, document: &Value, entry: &Value) -> Result<Value, String> {
+    let v = run_view(name, document, entry)?;
+    Ok(json!({
+        "head": v.head,
+        "no_steps": v.no_steps,
+        "text": v.text,
+        "notes": v.notes.iter().map(|(line, notes)| (line.to_string(), json!(notes))).collect::<serde_json::Map<String, Value>>(),
+        "after": v.after,
+        "steps": v.steps.iter().map(|s| json!({ "line": s.line, "start_us": s.start_us, "end_us": s.end_us })).collect::<Vec<_>>(),
+    }))
+}
+
 /// When each line's nodes ran: the timeline's steps at the run's own depth, by line.
 fn steps_of(document: &Value, entry: &Value, line_of: &HashMap<&str, u32>) -> Vec<Step> {
     let (map, depth) = run_trace(document, entry);
@@ -578,7 +592,8 @@ is granted, and keeps a record of every run that replays exactly.
 
 A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import { flow, route, status } from "holon"   the vocabulary (flow, route, every, on, action, js,
-                                                respond, status, stripe, event) and the leaves
+                                                respond, status, stripe, event, approval) and
+                                                the leaves
   import api_token from "secret:api_token"      a secret it reads, as api_token; set before it works
   import key from "secret:key" with { optional: "true" }   a secret it can run without
   import state from "state"                     its state, its keys by use: state.count
@@ -665,6 +680,9 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   const paid = await event("paid", { expires: "1d" })   in an action: park the run until the
                                            event arrives; a route answers and is done
   route.get("/paid/:token", () => "ok", { resumes: "paid" })   the route that delivers it
+  const d = await approval("payout", { people: 2 })   in an action: park the run until 2
+                                           different people approve it in Holon (or one
+                                           declines): d is {approved, by}; no route resumes it
   ops.send({ to, subject, text })          mails through the mail ops an admin bound (cc, html
                                            and attachments too), once the run is over: quoted
                                            recipients are granted by name, computed ones within
@@ -913,6 +931,23 @@ mod tests {
     /// A js node that gave nothing says why, in the engine's words, under the statement that
     /// placed it: the reason rides one level deeper in the timeline (the engine's own step) and
     /// is read back to the node of the text.
+    #[test]
+    fn run_json_gives_the_lines_notes_and_steps_a_screen_lays_out() {
+        let p = plan(samples::sample("hello-api").unwrap().text).unwrap();
+        let trace: Vec<String> = serde_json::from_value(p.document["trace"]["GET /hello/:name"].clone()).unwrap();
+        let timeline: Vec<Value> = (0..trace.len()).map(|k| json!({ "path": [0, k], "round": 0, "start_us": k as f64, "end_us": k as f64 + 1.0, "outputs": [{ "type": "Text", "value": "x" }] })).collect();
+        let entry = json!({ "seq": 1, "kind": "request", "route": "GET /hello/:name", "method": "GET", "url": "/hello/ada", "status": 200, "duration_ms": 1.0, "at_ms": 0, "timeline": timeline });
+        let v = run_json("hello-api", &p.document, &entry).unwrap();
+        let lines = v["text"].as_array().unwrap();
+        let steps = v["steps"].as_array().unwrap();
+        assert!(!steps.is_empty(), "{v}");
+        for s in steps {
+            let line = s["line"].as_u64().unwrap() as usize;
+            assert!(line >= 1 && line <= lines.len(), "{v}");
+        }
+        assert!(v["notes"].as_object().unwrap().keys().all(|k| k.parse::<usize>().is_ok()), "{v}");
+    }
+
     #[test]
     fn explain_says_why_a_js_node_gave_nothing() {
         let p = plan(samples::sample("nearest").unwrap().text).unwrap();

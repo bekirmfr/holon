@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
 use super::client::{Client, Detail, Moment, Point};
-use super::graph::GraphView;
+use super::graph::{GraphView, Kind};
 use super::review::{self, Review};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,7 +44,9 @@ pub(crate) enum Row {
     /// A name and its value, the names lined up.
     Field(String, String, Tone),
     /// A step on a timeline: from and to, of `total`.
-    Bar { label: String, from: f64, to: f64, total: f64, note: String },
+    Bar { label: String, from: f64, to: f64, total: f64, note: String, kind: Kind },
+    /// What a timeline's colours mean.
+    Legend,
     /// A line of a run's text, and what its statements gave there.
     Code { n: u32, text: String, notes: Vec<String> },
 }
@@ -156,6 +158,8 @@ pub(crate) struct FlowView {
     pub(crate) graph: Option<GraphView>,
     /// The graph shows every node, not only the statements (as it does unless a says otherwise).
     pub(crate) every: bool,
+    /// Runs follows the newest: as runs come in, the newest is picked.
+    pub(crate) follow: bool,
 }
 
 impl App {
@@ -169,7 +173,7 @@ impl App {
             self.flow.sel[Section::Graph as usize] = g.row_at(line);
             self.flow_load();
         }
-        self.say(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
+        self.tell(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
     }
 }
 
@@ -242,7 +246,7 @@ impl App {
         let Some(d) = &self.detail else { return 0 };
         match self.flow.section {
             Section::Status => d.versions.len(),
-            Section::Runs => d.runs.len(),
+            Section::Runs => d.shown_runs(self.filter_of(Page::Flow)).len(),
             Section::History => d.moments().len(),
             Section::State => self.flow.cells.len(),
             Section::Access => access_rows(d).len(),
@@ -266,6 +270,10 @@ impl App {
         }
         let n = self.flow_rows();
         let s = self.flow.section as usize;
+        // Following, the newest run stays picked as runs come in.
+        if self.flow.follow && self.flow.section == Section::Runs {
+            self.flow.sel[s] = 0;
+        }
         self.flow.sel[s] = self.flow.sel[s].min(n.saturating_sub(1));
         let scroll = self.flow.scroll;
         let key = self.flow.pane.take().map(|(k, _)| k);
@@ -288,7 +296,7 @@ impl App {
                 return;
             }
             Section::Runs => {
-                let Some(r) = d.runs.iter().rev().nth(sel) else {
+                let Some(r) = d.shown_runs(self.filter_of(Page::Flow)).get(sel).map(|&i| &d.runs[i]) else {
                     self.flow.pane = None;
                     return;
                 };
@@ -383,7 +391,7 @@ impl App {
         }
     }
 
-    fn flow_move(&mut self, by: isize) {
+    pub(crate) fn flow_move(&mut self, by: isize) {
         let n = self.flow_rows();
         let s = self.flow.section as usize;
         self.flow.sel[s] = (self.flow.sel[s] as isize + by).clamp(0, n.saturating_sub(1) as isize) as usize;
@@ -473,12 +481,43 @@ impl App {
                 }
             }
             (Section::Runs, KeyCode::Enter) => {
-                if let Some(seq) = d.runs.iter().rev().nth(sel).and_then(|r| r["seq"].as_u64()) {
+                if let Some(seq) = d.shown_runs(self.filter_of(Page::Flow)).get(sel).and_then(|&i| d.runs[i]["seq"].as_u64()) {
                     self.step_through(slug, seq);
                 }
             }
+            // Explained as `holon explain` prints it: its text with each statement's value.
+            (Section::Runs, KeyCode::Char('i')) => {
+                let Some(&i) = d.shown_runs(self.filter_of(Page::Flow)).get(sel) else { return };
+                let r = &d.runs[i];
+                let Some(c) = self.client.as_ref() else { return };
+                let path = match r["unit"].as_str().filter(|u| !u.is_empty()) {
+                    Some(u) => format!("/deployments/{}/document?unit={u}", crate::mcp::seg(slug)),
+                    None => format!("/deployments/{}/document", crate::mcp::seg(slug)),
+                };
+                match c.get(&path).and_then(|doc| agent::explain(slug, &doc, r)) {
+                    Ok(said) => self.modal = Some(Modal::Lines { title: format!("Run #{} of {slug}, explained", r["seq"]), lines: said.lines().map(|l| (Tone::Plain, l.to_string())).collect(), scroll: 0 }),
+                    Err(e) => self.fail(e),
+                }
+            }
+            // Its runs to a file, as `holon export` writes them, for `holon verify`.
+            (Section::Runs, KeyCode::Char('o')) => {
+                let Some(c) = self.client.as_ref() else { return };
+                let to = std::path::PathBuf::from(format!("{slug}-runs.json"));
+                let written = c.get(&format!("/deployments/{}/export", crate::mcp::seg(slug))).and_then(|e| std::fs::write(&to, serde_json::to_vec_pretty(&e).unwrap_or_default()).map_err(|e| e.to_string()));
+                match written {
+                    Ok(()) => self.say(format!("wrote {}: holon verify {} checks it offline", to.display(), to.display())),
+                    Err(e) => self.fail(format!("not exported: {e}")),
+                }
+            }
+            (Section::Runs, KeyCode::Char('F')) => {
+                self.flow.follow = !self.flow.follow;
+                if self.flow.follow {
+                    self.flow_pick(List::Section, 0);
+                }
+                self.tell(if self.flow.follow { "following the newest run: F stops" } else { "not following" });
+            }
             (Section::Runs, KeyCode::Char('b')) => {
-                let Some(i) = d.runs.len().checked_sub(sel + 1) else { return };
+                let Some(&i) = d.shown_runs(self.filter_of(Page::Flow)).get(sel) else { return };
                 if let Some(p) = d.point(Moment::Run(i)) {
                     self.ask_restore(slug, p);
                 }
@@ -621,7 +660,7 @@ impl App {
             _ if review.key(k) => {}
             KeyCode::Esc | KeyCode::Char('x') => {
                 self.modal = None;
-                self.say("nothing changed");
+                self.tell("nothing changed");
             }
             KeyCode::Enter | KeyCode::Char('y') if !*refused => self.restore(),
             KeyCode::Enter => self.modal = None,
@@ -743,7 +782,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => c.sel = (c.sel + 1).min(choices.len() - 1),
             KeyCode::Enter => {
                 let (slug, name, set) = (c.slug.clone(), c.name.clone(), c.set);
-                let ask = |title: String, lines: Vec<String>, value: &str, masked: bool, then: Ask| Modal::Input { title, lines, value: value.to_string(), masked, then };
+                let ask = |title: String, lines: Vec<String>, value: &str, masked: bool, then: Ask| Modal::input(title, lines, value.to_string(), masked, then);
                 self.modal = Some(match &choices[c.sel] {
                     Source::Env(var) => {
                         let from = format!("env:{var}");
@@ -819,20 +858,17 @@ impl App {
             KeyCode::Up => form.field -= 1,
             KeyCode::Down => form.field = (form.field + 1).min(fields),
             KeyCode::Enter => self.send_call(),
-            KeyCode::Backspace => {
-                if let Some(s) = form.focused() {
-                    s.pop();
-                }
-            }
-            KeyCode::Char(ch) => {
-                if form.field == 0 && fields > 0 {
+            _ => {
+                // Typing on the list goes to the first field.
+                if form.field == 0 && fields > 0 && matches!(k.code, KeyCode::Char(_)) {
                     form.field = 1;
+                    self.line_back = 0;
+                    self.line_on = Some(super::app::Field::Call(1));
                 }
                 if let Some(s) = form.focused() {
-                    s.push(ch);
+                    super::app::edit_typed(s, &mut self.line_back, k);
                 }
             }
-            _ => {}
         }
     }
 
@@ -959,7 +995,7 @@ impl CallForm {
         }
     }
 
-    fn focused(&mut self) -> Option<&mut String> {
+    pub(crate) fn focused(&mut self) -> Option<&mut String> {
         match (&self.items[self.sel], self.field) {
             (_, 0) | (Callable::Clock(_), _) => None,
             (Callable::Route { .. }, 1) => Some(&mut self.url),
@@ -981,14 +1017,6 @@ impl CallForm {
         }
     }
 
-    pub(crate) fn paste(&mut self, text: &str) {
-        if self.field == 0 && self.fields() > 0 {
-            self.field = 1;
-        }
-        if let Some(s) = self.focused() {
-            s.push_str(&text.replace(['\r', '\n'], " "));
-        }
-    }
 }
 
 // ── the right pane ───────────────────────────────────────────────────────────────────────────
@@ -1015,8 +1043,11 @@ fn run_pane(c: &Client, d: &Detail, r: &Value, tab: usize) -> Vec<Row> {
         2 => match c.run_view(&d.slug, r) {
             Ok(v) if !v.steps.is_empty() => {
                 let total = v.steps.iter().map(|s| s.end_us).fold(0.0, f64::max).max(r["duration_ms"].as_f64().unwrap_or(0.0) * 1000.0).max(1.0);
-                let mut rows = vec![text(Tone::Dim, format!("0 to {}, each statement as it ran", took(total / 1000.0)))];
+                let mut rows = vec![text(Tone::Dim, format!("0 to {}, each statement as it ran", took(total / 1000.0))), Row::Legend];
+                let kinds = Kind::by_line(&v.text.join("
+"));
                 rows.extend(v.steps.iter().map(|s| Row::Bar {
+                    kind: kinds.get(&s.line).copied().unwrap_or(Kind::Compute),
                     label: v.text.get(s.line as usize - 1).map(|l| l.trim().to_string()).unwrap_or_default(),
                     from: s.start_us,
                     to: s.end_us,
@@ -1098,7 +1129,16 @@ fn run_detail(d: &Detail, r: &Value) -> Vec<Row> {
         rows.push(text(Tone::Head, "What it called"));
         rows.extend(calls.iter().map(|x| text(Tone::Plain, format!("{} → {}", agent::show(&x["request"]), agent::show(&x["response"])))));
     }
-    rows.push(text(Tone::Dim, "enter: step through it in the editor · b: go back to it"));
+    // On record: its line's hash on the chain, the one before it, and how to check it offline.
+    rows.push(text(Tone::Head, "On record"));
+    let (hash, prev, follows) = d.on_record(r);
+    let short = |h: &str| if h.len() > 16 { format!("{}…", &h[..16]) } else { h.to_string() };
+    rows.push(field("Hash", hash.as_deref().map(short).unwrap_or_else(|| "–".into())));
+    rows.push(field("After", if prev.is_empty() { "the first line of its log".into() } else { short(&prev) }));
+    rows.push(if follows { Row::Field("Chain".into(), "follows the run before it".into(), Tone::Good) } else { Row::Field("Chain".into(), "breaks here: the log was changed outside holon".into(), Tone::Bad) });
+    rows.push(text(Tone::Dim, "Check it anywhere, offline:"));
+    rows.push(text(Tone::Plain, format!("  holon export {} && holon verify {}-runs.json", d.slug, d.slug)));
+    rows.push(text(Tone::Dim, "enter: step through it in the editor · b: go back to it · i: explain it · o: export the runs"));
     rows
 }
 

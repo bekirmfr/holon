@@ -55,7 +55,7 @@ const GLOBALS: &[&str] = &[
 ];
 
 /// `"holon"`'s own words: the top level's, the answers', and the waits'.
-const VOCAB: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event"];
+const VOCAB: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event", "approval"];
 
 /// Precedence of a printed expression, for parentheses: higher binds tighter (to_ts.rs's).
 const COND: u8 = 1;
@@ -1707,7 +1707,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// Whether `node` may fold into an expression: no name of its own, and one output.
     fn free(&self, node: &Node) -> bool {
-        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.named(node)) && node.data.outputs.len() == 1
+        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || matches!(node.data.name.as_str(), "await" | "approval") || self.bound.contains_key(&node.id) || self.named(node)) && node.data.outputs.len() == 1
     }
 
     /// Whether `node`'s one output prints inline at its one consumer.
@@ -2450,7 +2450,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         let d = &node.data;
         let s = match d.name.as_str() {
-            "field" | "secret" | "await" => node.param("name"),
+            "field" | "secret" | "await" | "approval" => node.param("name"),
             "store_read" => node.param("key"),
             "collection_get" => "item",
             "collection_list" => "page",
@@ -3284,6 +3284,30 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 };
                 self.awaits = true;
                 Ok((format!("await event({}{options})", quote(node.param("name"))), UNARY))
+            }
+            "approval" => {
+                if function {
+                    return Err("a function computes: waiting for people to decide is a handler's".into());
+                }
+                if self.kind == Kind::Route {
+                    return Err("a route answers and is done, so it doesn't wait for an approval: start an action that waits".into());
+                }
+                self.p.vocab.insert("approval".into());
+                let expires = node.param("expires");
+                let mut options = vec![];
+                match expires.parse::<u64>() {
+                    Ok(604800) => {}
+                    Ok(s) if s > 0 => options.push(format!("expires: {}", quote(&duration(s)))),
+                    _ => return Err(format!("an approval's expiry of {expires} seconds has no TypeScript form")),
+                }
+                match node.param("people") {
+                    "1" => {}
+                    n if n.parse::<u32>().is_ok_and(|n| (2..=5).contains(&n)) => options.push(format!("people: {n}")),
+                    n => return Err(format!("an approval by {n} people has no TypeScript form: 1 to 5")),
+                }
+                let options = if options.is_empty() { String::new() } else { format!(", {{ {} }}", options.join(", ")) };
+                self.awaits = true;
+                Ok((format!("await approval({}{options})", quote(node.param("name"))), UNARY))
             }
             _ => self.generic(node),
         }
@@ -4654,6 +4678,16 @@ export const t = action((input) => {
         prints_back(
             "import { flow, route } from \"holon\"\nimport { charge } from \"flow:billing\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/a\", (req) => {\n  charge(req.json)\n})\n",
         );
+    }
+
+    /// An approval prints as it is written, its options only where they aren't the defaults.
+    #[test]
+    fn approvals_print_back() {
+        for options in ["", ", { people: 2 }", ", { expires: \"1d\" }", ", { expires: \"1h\", people: 3 }"] {
+            prints_back(&format!(
+                "import {{ action, approval, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n\nexport const pay = action(async (order) => {{\n  const payout = await approval(\"payout\"{options})\n  return payout.approved\n}})\n"
+            ));
+        }
     }
 
     /// The ties the lowering makes aren't written: a route's writes, a function's own trigger;
