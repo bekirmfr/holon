@@ -287,6 +287,7 @@ pub(crate) fn policy_lines(v: &Value) -> Vec<String> {
         format!("granted unasked    {}", if v["auto"].as_array().is_some_and(|a| !a.is_empty()) { words(&v["auto"]) } else { "nothing".into() }),
         format!("plain http         {}", allowed(&v["allow_plain_http"])),
         format!("private addresses  {}", allowed(&v["allow_private_addresses"])),
+        format!("agents propose     {}", if v["agents_propose"] == false { "refused: what needs a person is turned away" } else { "allowed: what needs a person waits for one" }),
         format!("sweeps             {}", v["storage"]["sweep_every"].as_str().map_or("every 10m".into(), |e| if e == "off" { "off: only an admin's".to_string() } else { format!("every {e}") })),
         format!("warns at           {}", v["storage"]["warn_at"].as_str().map_or("85%".to_string(), |w| if w.ends_with('%') { format!("{w} full") } else { format!("{w} free") })),
         format!("when full          {}", match (v["storage"]["full_at"].as_str(), v["storage"]["when_full"].as_str()) {
@@ -360,13 +361,14 @@ mod tests {
 
     #[test]
     fn the_policy_and_who_holds_what_read_as_lines() {
-        let v = json!({ "defaults": { "max_body_bytes": 65536, "keep_runs": 500 }, "ceilings": { "keep_runs": 20000, "module_fuel": 1000 }, "auto": ["Clock"], "allow_plain_http": false, "allow_private_addresses": true, "storage": { "sweep_every": "2h", "warn_at": "5G", "full_at": "1G", "when_full": "pause" }, "attention": { "shop": null, "beats": "a ceiling" } });
+        let v = json!({ "defaults": { "max_body_bytes": 65536, "keep_runs": 500 }, "ceilings": { "keep_runs": 20000, "module_fuel": 1000 }, "auto": ["Clock"], "allow_plain_http": false, "allow_private_addresses": true, "agents_propose": false, "storage": { "sweep_every": "2h", "warn_at": "5G", "full_at": "1G", "when_full": "pause" }, "attention": { "shop": null, "beats": "a ceiling" } });
         assert_eq!(
             policy_lines(&v),
             [
                 "granted unasked    Clock",
                 "plain http         refused",
                 "private addresses  allowed",
+                "agents propose     refused: what needs a person is turned away",
                 "sweeps             every 2h",
                 "warns at           5G free",
                 "when full          past 1G: pause",

@@ -117,7 +117,10 @@ and the agent tells you so. In the editor:
 Opening the flow from the **flows** page and deploying it there approves the proposal too.
 
 A flow's settings have **agents may propose versions**. Turned off, an agent's deploy of it is
-refused, neither proposed nor saved. The **Proposal** sample is a flow to try this with.
+refused, neither proposed nor saved. The **Proposal** sample is a flow to try this with. For the
+whole host, the policy's `[agents] propose = false` refuses every agent version that needs a
+person, on every flow ([The policy](../reference/server.md#the-policy)); the **Policy** page and
+`holon policy` say which it is.
 
 From then on, a new version that asks for nothing more deploys from the agent at once. A version
 that asks for something new (another host, another secret, a site in its `browsers` line whose

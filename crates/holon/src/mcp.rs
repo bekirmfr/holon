@@ -1611,6 +1611,32 @@ mod tests {
         assert_eq!(person.send("POST", "/deployments/proposed/stop", None).unwrap().0, 200);
     }
 
+    /// A host whose policy takes no proposals from agents (holon.toml: agents.propose = false)
+    /// turns an agent's version that needs a person away, saving nothing and proposing nothing;
+    /// the policy says so; a person deploys it as before. The default policy takes them.
+    #[test]
+    fn a_host_that_takes_no_proposals_turns_an_agents_version_away() {
+        assert!(crate::permissions::Policy::default().agents_propose, "on by default");
+        assert!(crate::permissions::Policy::parse("[agents]\npropose = true").unwrap().agents_propose);
+        assert!(crate::permissions::Policy::parse("[agents]\nask = true").is_err(), "an unknown key is an error");
+        let mut state = test_state();
+        *state.policy.write().unwrap() = std::sync::Arc::new(crate::permissions::Policy::parse("[agents]\npropose = false").unwrap());
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let refused = deploy(&agent, SLUGS_TEXT, Some("proposed")).unwrap_err();
+        assert!(refused.contains("this host takes no proposals from agents (holon.toml: agents.propose = false)") && refused.contains("A person deploys it"), "{refused}");
+        assert!(state.proposals.all().is_empty(), "nothing proposed");
+        let saved = json_of(&person, "GET", "/flows", None).unwrap().to_string();
+        assert!(!saved.contains("proposed") && !saved.contains("slugs"), "nothing saved: {saved}");
+        assert_eq!(json_of(&person, "GET", "/permissions", None).unwrap()["agents_propose"], false);
+        let plan = agent::plan(SLUGS_TEXT).unwrap();
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        assert_eq!(person.send("POST", "/deployments/proposed/stop", None).unwrap().0, 200);
+    }
+
     /// A saved flow reads back as the text the agent wrote; what is deployed reads in full,
     /// text and all, before it has ever run.
     #[test]

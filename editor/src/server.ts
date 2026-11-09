@@ -652,6 +652,9 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
+   *  proposal (off: it is refused, and nothing is saved). */
+  agents_propose?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
 };

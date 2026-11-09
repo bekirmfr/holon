@@ -1151,6 +1151,16 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
           <div>
             plain HTTP {policy.allow_plain_http ? "may be granted" : "is never granted"} · private addresses {policy.allow_private_addresses ? "may be granted" : "are never granted"}
           </div>
+          <div>
+            agents{" "}
+            {policy.agents_propose === false ? (
+              <>
+                may not propose: a version of theirs that needs a person is refused <span style={quiet}>(agents.propose = false)</span>
+              </>
+            ) : (
+              "may propose: a version of theirs that needs a person waits in Approvals"
+            )}
+          </div>
           <table aria-label="limits" className="hl-table">
             <thead>
               <tr>

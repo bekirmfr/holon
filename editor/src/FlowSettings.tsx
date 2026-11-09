@@ -15,6 +15,7 @@ import {
   getGrant,
   getHolds,
   getManifest,
+  getPermissions,
   getSessions,
   listSecrets,
   listWaitingRuns,
@@ -80,6 +81,18 @@ export function SettingsTab({
 function Agents({ slug, entry, viewer, onChanged }: { slug: string; entry: DeploymentEntry; viewer: boolean; onChanged: () => void }) {
   const [on, setOn] = useState(entry.agents_propose !== false);
   const [msg, setMsg] = useState("");
+  // Whether the host takes agents' proposals at all (its policy's `[agents] propose`).
+  const [hostTakes, setHostTakes] = useState(true);
+  useEffect(() => {
+    let live = true;
+    getPermissions().then(
+      (p) => live && setHostTakes(p.agents_propose !== false),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   useEffect(() => setOn(entry.agents_propose !== false), [entry.agents_propose]);
   const change = (next: boolean) => {
     // Shown at once; back as it was if the server refuses.
@@ -101,6 +114,11 @@ function Agents({ slug, entry, viewer, onChanged }: { slug: string; entry: Deplo
       <p className="hl-flow__note">
         {on ? "An agent's version that asks for nothing new deploys at once; one that does waits in Approvals, for a person." : "An agent's deploy of it is refused."} Which actions agents may run is among the settings it was deployed with.
       </p>
+      {on && !hostTakes && (
+        <p className="hl-flow__note" role="note">
+          This host takes no proposals from agents (its policy's agents.propose = false): an agent's version that asks for something new is refused, whatever this says.
+        </p>
+      )}
     </section>
   );
 }

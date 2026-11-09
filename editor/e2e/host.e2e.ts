@@ -58,5 +58,6 @@ test("people and access says how an agent connects; policy says what it holds of
   await gotoPage(page, "policy");
   await expect(page.getByRole("heading", { level: 1, name: "Policy" })).toBeVisible();
   await expect(page.getByLabel("limits")).toBeVisible();
+  await expect(page.getByText("agents may propose: a version of theirs that needs a person waits in Approvals")).toBeVisible();
   await expect(page.locator('[data-section="held-off"]')).toBeVisible();
 });

@@ -218,8 +218,19 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
-    // An agent approves nothing: what needs a person waits for one, as a proposal.
+    // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
+    // host takes none.
     if agent && !missing.is_empty() {
+        if !policy.agents_propose {
+            return err(
+                403,
+                format!(
+                    "this host takes no proposals from agents (holon.toml: agents.propose = false), and this version of {:?} needs a person to approve: {}. A person deploys it",
+                    body.slug,
+                    missing.join(", ")
+                ),
+            );
+        }
         return crate::proposals::propose(state, &body, missing, by);
     }
     if !missing.is_empty() {
@@ -710,6 +721,7 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_plain_http": policy.allow_plain_http,
         "allow_private_addresses": policy.allow_private_addresses,
         "allow_unrecorded": policy.allow_unrecorded,
+        "agents_propose": policy.agents_propose,
         "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
     })
 }
