@@ -87,11 +87,14 @@ const ticker = fresh ? null : await wsServer(join(folders, "ticker"));
 // The bluesky-mentions sample's posts, a WebSocket that replays from a cursor (ws-server.mjs): a
 // post a .json file dropped in the folders' posts/, what each connection asked for in its asked.log.
 const posts = fresh ? null : await wsServer(join(folders, "posts"));
+// The trade-tape sample's trades, a WebSocket that numbers each product's (ws-server.mjs): a trade a
+// .json file dropped in the folders' trades/.
+const trades = fresh ? null : await wsServer(join(folders, "trades"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,
-  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}${ticker ? `HOLON_SECRET_TICKER_URL=ws://127.0.0.1:${ticker}/ws?key=e2e-not-a-key\n` : ""}${posts ? `HOLON_SECRET_POSTS_URL=ws://127.0.0.1:${posts}/ws?collections=app.bsky.feed.post\n` : ""}`,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}${ticker ? `HOLON_SECRET_TICKER_URL=ws://127.0.0.1:${ticker}/ws?key=e2e-not-a-key\n` : ""}${posts ? `HOLON_SECRET_POSTS_URL=ws://127.0.0.1:${posts}/ws?collections=app.bsky.feed.post\n` : ""}${trades ? `HOLON_SECRET_TRADES_URL=ws://127.0.0.1:${trades}/ws\n` : ""}`,
 );
 const server = spawn(
   binary,
@@ -302,4 +305,21 @@ if (!fresh) {
     body: JSON.stringify({ name: "posts", url: "env:HOLON_SECRET_POSTS_URL", id: "payload.seq", resume: ["query:cursor"], only: ["payload.operation=create"] }),
   });
   if (!postsBound.ok) console.error(`e2e server: binding the feed posts failed: ${await postsBound.text()}`);
+  // The trade-tape sample's trades, bound as its comment says: subscribed to, its trades run, each
+  // product's numbered by trade_id.
+  if (trades) mkdirSync(join(folders, "trades"), { recursive: true });
+  const tradesBound = await fetch(`${base}/admin/feeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "trades",
+      url: "env:HOLON_SECRET_TRADES_URL",
+      subscribe: ['{"type":"subscribe","channels":["matches"],"product_ids":["BTC-USD","ETH-USD"]}'],
+      only: ["type=match", "type=last_match"],
+      id: "product_id,trade_id",
+      sequence: "trade_id",
+      key: "product_id",
+    }),
+  });
+  if (!tradesBound.ok) console.error(`e2e server: binding the feed trades failed: ${await tradesBound.text()}`);
 }

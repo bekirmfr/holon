@@ -214,7 +214,8 @@ export type OnFull = "wait" | "skip" | "latest";
  *  read from); how many events may wait for their run, and what comes when they are that many;
  *  how long (seconds) it may say nothing. A WebSocket's: what it is sent when it opens and to
  *  keep it, the fields that are a message's id, the messages it runs, and where a feed that
- *  replays takes the id it is opened again from (`resume`). */
+ *  replays takes the id it is opened again from (`resume`). Any feed's: the field that numbers a
+ *  message (`sequence`), each `key` on its own. */
 export type FeedEntry = {
   name: string;
   deployment: string | null;
@@ -225,6 +226,7 @@ export type FeedEntry = {
   idle: number;
   on_full: OnFull;
   key?: string;
+  sequence?: string;
   subscribe?: string[];
   heartbeat?: string;
   every?: number;
@@ -243,6 +245,7 @@ export type FeedBinding = {
   idle?: string;
   on_full?: OnFull;
   key?: string;
+  sequence?: string;
   subscribe?: string[];
   heartbeat?: string;
   every?: string;
@@ -259,7 +262,8 @@ export async function unbindFeed(name: string, deployment: string | null): Promi
 /** What a deployment's connection to one feed its handlers listen to is doing (`GET
  *  /deployments/<slug>/feeds`): since when (ms), why it isn't connected, the id of the last event
  *  run on, how many wait, and since it opened how many its binding passed over (`--only`), its
- *  full buffer dropped (`skip`), and newer ones of their key replaced (`latest`). */
+ *  full buffer dropped (`skip`), newer ones of their key replaced (`latest`), and numbers the feed
+ *  skipped (`--sequence`). */
 export type FeedState = {
   feed: string;
   label: string;
@@ -272,6 +276,7 @@ export type FeedState = {
   passed_over?: number;
   missed?: number;
   replaced?: number;
+  gaps?: number;
 };
 export async function feedStates(slug: string): Promise<FeedState[]> {
   return (await asJson<{ feeds: FeedState[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/feeds`))).feeds;

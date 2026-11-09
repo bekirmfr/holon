@@ -2199,6 +2199,80 @@ As designed, with what building it found:
   buffer stayed full, Jetstream ended the connection it read too slowly, and the host opened it
   again from the last post read.
 
+#### 5.9.8 Slice 1.6d as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding** keeps `sequence` beside `key`. `/admin/feeds` and `holon feed add --sequence`
+  take a field's path, a dotted one too, and refuse one that isn't a path. `--key` with neither
+  `latest` nor `--sequence` is refused. The admin page and `holon feed list` say `numbered by
+  trade_id, each product_id on its own`, and the admin page's form takes it (`feed sequence`, with
+  the key's input shown for it as for `latest`).
+- **The count is the reading thread's** (`Counting` in `subscriptions.rs`). It holds each key's last
+  number read, the gaps `--only` passed over (carried to the next of their key that runs), and the
+  keys read since the connection opened. It starts from the numbers kept when a link is made (a
+  restart, a new version, a binding changed), and keeps its own across a reconnect, as the
+  position does.
+- **A number not above the last** begins the count anew only as the first of its key on a
+  connection. A later one is a message sent again: its gap is 0 and the last is unchanged, so a
+  replayed run of old numbers can't make the next message count again what already ran.
+- **The buffer's drops still say their gap.** The design had a message `skip` dropped be no gap,
+  which holds (it is `e.missed`), but the numbers the feed skipped before it would have gone
+  unsaid. So the dropped event's gap is kept for its key (`Waiting.gaps`) and added to the next of
+  its key that finds room. An event that replaces another (`latest`) adds the other's gap, as
+  designed.
+- **The numbers kept** (`Seen.numbers`, at most 10,000 keys, the least recent forgotten) move with
+  the runs, as the position does: a strict run's at its end, a lazy one's once synced. One known
+  limit follows, recorded and not fixed. After a restart, the messages of a key that `--only`
+  passed over, or `skip` dropped, since its last run count in its next gap: they never ran, and
+  the kept numbers don't know they were read. A flow that fetches its gaps fetches those too.
+  Keeping the reader's numbers instead would cost a write for each message read. trade-tape isn't
+  touched by it: `--only` passes over none of Coinbase's numbered trades.
+- **Its state:** `Live.gaps` counts the numbers skipped since the link was made, across its
+  reconnects: `connected, at BTC-USD/1117483559, 301 in gaps` on the server panel, `gaps` in
+  `GET /deployments/<slug>/feeds`.
+- **The sample** is as designed. The language asked for two changes:
+  - `page` is absent when no gap asks for one, so is what is read from it, and `(page.status ===
+    200 ? JSON.parse(page.body) : undefined) ?? []` falls to `[]`. A page that doesn't answer 200
+    adds no trades, and the gap stays `unfetched`.
+  - The count of what was fetched is `sizes.length`, of the `map`: a parsed page's own length isn't
+    known to the compiler.
+
+  Its port is 8193. Coinbase's REST API answers 400 (`User-Agent header is required.`) to a request
+  without a User-Agent. A flow's request carries `ureq`'s own unless it sets one, so the sample
+  sets none.
+- **The stand-ins** (`sse.rs`, `ws.rs`) record what each connection asked for before they answer
+  its handshake. Two of 1.6a's and 1.6c's tests read it as soon as the connection opened and failed
+  now and then.
+- **The tests:**
+  - The binding: `--sequence` and `--key` kept and shown, a path refused, `--key` alone refused.
+    The link numbers each message by its key, gives a filtered message's number, and gives none
+    without the field.
+  - The count: the next number, one skipped, several, per key, a key's first, a number not above
+    the last (first on a connection, then again), and a gap `--only` passed over carried. Also
+    `skip`'s dropped gaps carried to the next of their key, `latest`'s added, the 10,000th key
+    forgetting the least recent, and a lazy position's numbers moving once synced.
+  - The server test (`trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact`)
+    binds `trades` to the WebSocket stand-in and the REST API to an HTTP stand-in whose trade sizes
+    are their ids in thousandths, so a volume says exactly which trades were added. On one
+    connection it skips 2. Cut, it skips one of each product. After a restart (the binding
+    changed) it skips 1, then a gap past a page: 1,000 fetched, 91 unfetched. Each volume is exact,
+    the runs verify, and the URL's key is in no log.
+  - The e2e test deploys it in the editor against `ws-server.mjs` and a REST stand-in, then reads
+    the server panel (`2 in gaps`, then `3 in gaps` after a cut with two trades lost) and the
+    binding on the admin page.
+- **Run live** on a scratch server (a release build) against Coinbase Exchange's matches for
+  BTC-USD and ETH-USD:
+  - It ran 36 s, then was killed. BTC-USD's kept number was 1117483263. It started again 38 s
+    later.
+  - The first trade of each product after the restart was its `last_match`, with a gap of 204
+    (BTC-USD) and 97 (ETH-USD). Both pages were fetched and nothing was left unfetched.
+  - Unbound about 50 s later: 676 runs. In each product, every run's gap is exactly the ids between it
+    and the one before.
+  - BTC-USD's volume, 4.90093013 over 616 trades (ids 1117483081 to 1117483696), equals the sum
+    REST gives for the same 616 ids, and ETH-USD's 91.64382809 over 361 trades does too.
+  - The 682 runs (with the `/volumes` calls) verify.
+
 ### 5.10 A bytes value, and decimals with it
 
 Not a capability: a value kind, which several capabilities stand on. Binary files can't be read

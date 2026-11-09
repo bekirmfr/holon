@@ -144,7 +144,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [feeds, setFeeds] = useState<FeedEntry[]>([]);
   // A feed to bind, its headers written NAME=SOURCE and its subscription messages one a line, its
   // --only FIELD=VALUE with spaces between.
-  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", subscribe: "", heartbeat: "", every: "", id: "", only: "", resume: "" };
+  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", sequence: "", subscribe: "", heartbeat: "", every: "", id: "", only: "", resume: "" };
   const [feedDraft, setFeedDraft] = useState(noFeed);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
@@ -829,7 +829,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             nothing before it is opened again (90s). A WebSocket is also sent its subscription when it opens (a message as written, or a source for one with a
             key in it) and a heartbeat to keep it; the fields of a message that are its id (product_id,sequence) say where it is, and only the messages whose
             field has a value given (type=ticker) run. A WebSocket that replays is opened again from its id where the binding says the feed takes it:
-            query:cursor, header:NAME, or message:… sent in place of the subscription, <code>{"{position}"}</code> in it the id.
+            query:cursor, header:NAME, or message:… sent in place of the subscription, <code>{"{position}"}</code> in it the id. A feed whose JSON messages
+            a whole number counts one by one (trade_id), each key on its own (product_id), says on each event how many numbers were skipped before it (
+            <code>e.gap</code>): what came while the server wasn&apos;t reading, for the flow to fetch.
           </div>
           {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
           {feeds.map((f) => (
@@ -843,6 +845,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
                   {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
                   {f.id && ` · its id ${f.id.join("/")}`}
+                  {f.sequence && ` · numbered by ${f.sequence}${f.key ? `, each ${f.key} on its own` : ""}`}
                   {f.resume?.query && ` · resumes from its position with ${f.resume.query}= in the URL`}
                   {f.resume?.header && ` · resumes from its position with the header ${f.resume.header}`}
                   {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
@@ -884,6 +887,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 if (feedDraft.idle.trim()) binding.idle = feedDraft.idle.trim();
                 if (feedDraft.onFull !== "wait") binding.on_full = feedDraft.onFull;
                 if (feedDraft.key.trim()) binding.key = feedDraft.key.trim();
+                if (feedDraft.sequence.trim()) binding.sequence = feedDraft.sequence.trim();
                 const subscribe = feedDraft.subscribe.split("\n").map((l) => l.trim()).filter(Boolean);
                 if (subscribe.length > 0) binding.subscribe = subscribe;
                 if (feedDraft.heartbeat.trim()) binding.heartbeat = feedDraft.heartbeat.trim();
@@ -912,7 +916,14 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               <option value="skip">when full: skip</option>
               <option value="latest">latest of each key</option>
             </select>
-            {feedDraft.onFull === "latest" && (
+            <input
+              aria-label="feed sequence"
+              placeholder="numbered by (trade_id)"
+              value={feedDraft.sequence}
+              onChange={(e) => setFeedDraft({ ...feedDraft, sequence: e.target.value })}
+              style={input}
+            />
+            {(feedDraft.onFull === "latest" || feedDraft.sequence.trim() !== "") && (
               <input aria-label="feed key" placeholder="its key (product_id)" value={feedDraft.key} onChange={(e) => setFeedDraft({ ...feedDraft, key: e.target.value })} style={input} />
             )}
             <input aria-label="feed idle" placeholder="quiet for at most (90s)" value={feedDraft.idle} onChange={(e) => setFeedDraft({ ...feedDraft, idle: e.target.value })} style={input} />

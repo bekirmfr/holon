@@ -131,6 +131,8 @@ declare module "holon" {
     missed: number
     /** How many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did. */
     replaced: number
+    /** How many numbers of its key the feed skipped before it, theirs counted (`--sequence`): what came while the host wasn't reading. 0 unless some were. */
+    gap: number
   }
   export const on: {
     file: {

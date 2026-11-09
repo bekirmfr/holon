@@ -29,7 +29,8 @@ holon feed remove prices
 | `--header NAME=SOURCE` | a header each request sends, its value read from a source; again for another |
 | `--buffer N` | how many events may wait for their run: 1000 unless given, 100,000 at most |
 | `--on-full WHAT` | what comes while that many wait: `wait` (the connection waits too, unless given), `skip` (it is dropped) or `latest` (it replaces the waiting event of its `--key`): [below](#faster-than-their-runs) |
-| `--key FIELD` | `latest`'s: the field of an event whose value one event waits by (`product_id`, or a dotted path, `data.s`) |
+| `--key FIELD` | `latest`'s and `--sequence`'s: the field of an event whose value one event waits by, or is numbered on its own by (`product_id`, or a dotted path, `data.s`) |
+| `--sequence FIELD` | the field of a JSON event that numbers it, one after another (`trade_id`), each `--key` on its own: each event says how many numbers were skipped before it ([below](#a-feed-that-numbers-its-messages)) |
 | `--idle T` | how long the feed may say nothing before the connection is opened again: `90s` unless given, `5s` at least |
 | `--for SLUG` | for that deployment only |
 
@@ -51,7 +52,8 @@ A WebSocket's binding takes these too ([below](#a-websocket)):
   followed, since the headers it would carry are the binding's.
 - `--subscribe`, `--heartbeat`, `--id`, `--only` and `--resume` are a WebSocket's: an SSE binding
   that gives one is refused, since an SSE event has its own id and resumes with `Last-Event-ID`.
-  `--on-full latest` without `--key` is refused.
+  `--on-full latest` without `--key` is refused, and so is `--key` with neither `latest` nor
+  `--sequence`.
 - The URL and the headers' values are never stored, shown or logged: the binding keeps
   `env:HOLON_SECRET_PRICES_URL`, and where the URL points without its login or query
   (`https://stream.example.com/v1/prices`), which is what the admin page and `holon feed list`
@@ -87,6 +89,7 @@ The handler runs once for each event, one at a time, in the order they came. `e`
 | `id` | its id (`id:`, or a WebSocket's `--id` fields), only when it has one: a write built from `e.id` waits for nothing when it hasn't |
 | `missed` | how many events the full buffer dropped before it (`--on-full skip`): 0 unless some were |
 | `replaced` | how many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did |
+| `gap` | how many numbers of its key the feed skipped before it (`--sequence`): what came while the host wasn't reading. 0 unless some were |
 
 - One handler a feed. It answers nobody, so it has no `respond`.
 - What it may do: "run on each event from the feed "prices"", the grant `FeedEvent("prices")`.
@@ -131,8 +134,8 @@ is the binding's `--on-full`:
   An event without the key waits as it came, and a key that finds the buffer full of others waits
   for room, as with `wait`.
 
-`e.missed` and `e.replaced` are on every event, 0 unless the binding drops or replaces, so a flow
-reads them whatever its binding says.
+`e.missed`, `e.replaced` and `e.gap` are on every event, 0 unless the binding drops, replaces or
+numbers, so a flow reads them whatever its binding says.
 
 ## A WebSocket
 
@@ -190,12 +193,46 @@ holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume 
   host can't ask for again.
 - The `bluesky-mentions` sample binds Jetstream this way and keeps each post that mentions a word.
 
+## A feed that numbers its messages
+
+Some feeds number what they send, one after another, and never send it again: an exchange's
+trades, each product's on its own. What came while the host wasn't reading (a connection lost,
+the server stopped) is the feed's to forget, but the next message says how much: its number is
+past the last one read by more than one. The binding names the field, and the key each is
+numbered by:
+
+```sh
+export HOLON_SECRET_TRADES_URL='wss://ws-feed.exchange.coinbase.com'
+holon feed add trades --url env:HOLON_SECRET_TRADES_URL \
+  --subscribe '{"type":"subscribe","channels":["matches"],"product_ids":["BTC-USD","ETH-USD"]}' \
+  --only type=match --only type=last_match --id product_id,trade_id --sequence trade_id --key product_id
+```
+
+- **`e.gap`** is how many numbers of its key were skipped before it: 2 for 41 after 38. It is 0
+  for the first of a key, and for a message whose field isn't a whole number. The flow fetches
+  what was skipped, from the feed's own API, or counts it.
+- **Across a reconnect or a restart:** each key's last number is kept with where the feed is (the
+  last 10,000 keys, the least recent forgotten), so the first message after the server stopped
+  says what came meanwhile.
+- **A number not above the last:** the first of its key on a new connection begins the count
+  anew from it, for a feed that numbers each connection on its own, or replays; a later one is
+  one sent again, its gap 0.
+- **None goes unsaid:** a message `--only` passes over still counts, and its gap goes to the next
+  of its key that runs; so does the gap of one the full buffer drops (`skip`), and an event that
+  replaces another (`latest`) adds the other's.
+- **After a restart,** the numbers kept are the last runs': the messages of a key that `--only`
+  passed over, or `skip` dropped, since its last run count in its next gap.
+- It is any feed's: an SSE event's numbers too, when its data is JSON.
+- The `trade-tape` sample binds Coinbase Exchange's trades this way, adds each trade to its
+  product's volume, and fetches the trades a gap skipped from the exchange's REST API.
+
 ## Its state
 
 The server panel lists each feed handler with what its connection is doing: `connected, at 41`
 (the last event run on), or `reconnecting: <why>`, how many events wait, and, since its
 connection opened, how many newer ones replaced (`latest`), the full buffer dropped (`skip`) and
-`--only` passed over: `connected, at BTC-USD/41, 3 waiting, 120 replaced`. The deployment's
+`--only` passed over, and how many numbers the feed skipped (`--sequence`): `connected, at
+BTC-USD/41, 3 waiting, 120 replaced`, `connected, at BTC-USD/1117440338, 49 in gaps`. The deployment's
 timeline says when it starts listening, when the feed can't be opened again (once, until it is
 read again), and each event it passed over. A run's title is `event from prices: message (on feed prices)`.
 
@@ -206,11 +243,11 @@ The same is in `GET /deployments/<slug>/feeds`:
             "address": "https://stream.example.com/v1/prices", "position": "41", "waiting": 0}]}
 ```
 
-`replaced`, `missed` and `passed_over` are there too once they aren't 0.
+`replaced`, `missed`, `passed_over` and `gaps` are there too once they aren't 0.
 
 `status` is `connected`, `reconnecting` (with `error`) or `closed` (a deployment stopped).
 
 ## What the run log keeps
 
 Each event as it came, `FeedEvent("prices")`: its data (a binary message's bytes as any bytes
-value is), name, id, `missed` and `replaced`. `holon verify` runs the handler again on it.
+value is), name, id, `missed`, `replaced` and `gap`. `holon verify` runs the handler again on it.

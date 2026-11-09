@@ -1,5 +1,5 @@
-// A stand-in WebSocket feed for the end-to-end tests (the trading-bot sample's ticker and the
-// bluesky-mentions sample's posts, server.mjs):
+// A stand-in WebSocket feed for the end-to-end tests (the trading-bot sample's ticker, the
+// bluesky-mentions sample's posts and the trade-tape sample's trades, server.mjs):
 // plain ws:// on loopback, at /ws, written by hand (the handshake and its frames), since Node has
 // no WebSocket server of its own. Its messages are files dropped in `dir`: each .json file is one
 // text message, sent to every connection open once it is seen (the folder is looked at every

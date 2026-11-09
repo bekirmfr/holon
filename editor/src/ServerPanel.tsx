@@ -382,7 +382,8 @@ export function ToolsPanel({
 
 /** @deprecated Use ToolsPanel. */
 /** A feed connection's state as one line: `connected, at BTC-USD/41`, `reconnecting: <why>`, how
- *  many events wait, and how many its buffer dropped or replaced and its binding passed over. */
+ *  many events wait, how many its buffer dropped or replaced and its binding passed over, and how
+ *  many numbers the feed skipped (`49 in gaps`). */
 export function feedLine(f: FeedState): string {
   const at = f.position ? `, at ${f.position}` : "";
   const counts: [number | undefined, string][] = [
@@ -390,6 +391,7 @@ export function feedLine(f: FeedState): string {
     [f.replaced, "replaced"],
     [f.missed, "missed"],
     [f.passed_over, "passed over"],
+    [f.gaps, "in gaps"],
   ];
   const said = counts.map(([n, what]) => (n ? `, ${n} ${what}` : "")).join("");
   return f.status === "reconnecting" && f.error ? `reconnecting: ${f.error}${said}` : `${f.status}${at}${said}`;

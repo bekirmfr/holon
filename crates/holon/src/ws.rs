@@ -222,25 +222,25 @@ pub(crate) mod stand_in {
     #[allow(clippy::result_large_err)]
     fn serve(stream: TcpStream, inner: &Inner) {
         let Ok(socket) = stream.try_clone() else { return };
-        let mut head = String::new();
+        // What it was asked, and where it starts, are known before it answers: a test that reads
+        // them once its connection is open finds them, and what is sent after is sent.
+        let mut next = 0;
         let record = |req: &Request, res: Response| {
-            head = req.uri().to_string();
+            let mut head = req.uri().to_string();
             for (name, value) in req.headers() {
                 head.push_str(&format!("\n{}: {}", name.as_str(), value.to_str().unwrap_or("")));
             }
-            Ok(res)
-        };
-        let Ok(mut ws) = tungstenite::accept_hdr(stream, record) else { return };
-        let cursor = head.lines().next().and_then(|uri| uri.split(['?', '&']).find_map(|p| p.strip_prefix("cursor="))).and_then(|c| c.parse::<f64>().ok());
-        let mut next = {
+            let cursor = req.uri().query().and_then(|q| q.split('&').find_map(|p| p.strip_prefix("cursor="))).and_then(|c| c.parse::<f64>().ok());
             let sent = inner.sent.lock().unwrap();
             let seq = |m: &Message| {
                 let v: serde_json::Value = serde_json::from_str(m.to_text().ok()?).ok()?;
                 v["seq"].as_f64().or(v["payload"]["seq"].as_f64())
             };
-            cursor.and_then(|c| sent.iter().position(|m| seq(m).is_some_and(|s| s >= c))).unwrap_or(sent.len())
+            next = cursor.and_then(|c| sent.iter().position(|m| seq(m).is_some_and(|s| s >= c))).unwrap_or(sent.len());
+            inner.asked.lock().unwrap().push(head);
+            Ok(res)
         };
-        inner.asked.lock().unwrap().push(head);
+        let Ok(mut ws) = tungstenite::accept_hdr(stream, record) else { return };
         inner.open.lock().unwrap().push(socket.try_clone().unwrap());
         // On the socket the reads use: on Windows, a clone's timeout is its own.
         let _ = ws.get_ref().set_read_timeout(Some(Duration::from_millis(20)));

@@ -1072,6 +1072,51 @@ over by its id. `kept` is absent unless the post mentions the word, so the write
 sends at least once may, writes the same item. Until `PUT /watch` sets a word, `watch["word"]` is
 absent, and so is everything read from it: nothing is kept.
 
+### trade-tape: what a feed skipped, fetched
+
+```ts
+import { decimal_sum, flow, on, route } from "holon"
+import volumes from "collection:volumes"
+import trades from "feed:trades"
+import exchange from "host:api.exchange.coinbase.com"
+
+flow("trade-tape", { port: 8193 })
+
+on.feed(trades, async (e) => {
+  const trade = e.data
+  const product = trade.product_id
+  const was = volumes[product] ?? { volume: "0", trades: 0, fetched: 0, unfetched: 0 }
+  const page =
+    e.gap > 0
+      ? await exchange.get(
+          `/products/${product}/trades?after=${trade.trade_id}&limit=${Math.min(e.gap, 1000)}`,
+        )
+      : undefined
+  const skipped = (page.status === 200 ? JSON.parse(page.body) : undefined) ?? []
+  const sizes = skipped.map((t) => t.size)
+  volumes[product] = {
+    volume: decimal_sum([was.volume, trade.size, ...sizes]),
+    trades: was.trades + 1 + sizes.length,
+    fetched: was.fetched + sizes.length,
+    unfetched: was.unfetched + e.gap - sizes.length,
+    last: trade.trade_id,
+  }
+})
+
+route.get("/volumes", () => volumes.list())
+```
+
+The feed is Coinbase Exchange's matches channel, a WebSocket that numbers each product's trades
+(`trade_id`) and never sends one again. The binding numbers them (`--sequence trade_id --key
+product_id`), so each event's `e.gap` says how many of its product's trades came while the host
+wasn't reading: across a reconnect, or a restart, from the numbers the host keeps with where the
+feed is. When it is above 0, the handler asks the exchange's REST API for the trades before this
+one (`after=`), as many as the gap, a page of 1,000 at most, and adds their sizes with
+`decimal_sum`: the volume stays exact. `page` is absent when no gap asks, and so is everything read
+from it, so `skipped` falls to `[]`; a page that doesn't answer 200 adds none, and the gap is kept
+as `unfetched`. The handler is strict (the default log): where the host is in the feed moves once
+a run's record is on disk, so a trade a crash cut short is in the next one's gap.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):

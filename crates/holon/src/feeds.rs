@@ -7,7 +7,9 @@
 //!   `vault:…`) each time a connection opens and never kept, with the headers each request sends,
 //!   their values read from sources too; how many events may wait for their run (`--buffer`), what
 //!   comes when they are that many (`--on-full`: wait, skip, or replace the one of its `--key`),
-//!   and how long the feed may say nothing before the connection is opened again (`--idle`). A
+//!   the field that numbers a JSON message, one more each message of its `--key`, which says how
+//!   many were skipped (`--sequence`, §5.9.6), and how long the feed may say nothing before the
+//!   connection is opened again (`--idle`). A
 //!   WebSocket's binding also says what it is sent when it opens (`--subscribe`) and to keep it
 //!   (`--heartbeat`), which fields are a message's id (`--id`), which messages run (`--only`), and
 //!   where the feed takes the position a connection opens from (`--resume`, §5.9.6). For the whole
@@ -63,9 +65,14 @@ pub(crate) struct Binding {
     /// What comes while `buffer` events wait.
     #[serde(default, skip_serializing_if = "OnFull::is_wait")]
     pub(crate) on_full: OnFull,
-    /// `latest`'s: the field of a message whose value one waiting is replaced by (a dotted path).
+    /// The field of a message that is its key (a dotted path): `latest` replaces the one waiting
+    /// of its key, and `sequence` numbers each key on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) key: Option<String>,
+    /// The field of a JSON message that numbers it, a whole number one more each message of its
+    /// key: what `e.gap` counts the numbers skipped of (a dotted path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sequence: Option<String>,
     /// A WebSocket's: what it is sent each time it opens, in order, each as written or the source
     /// it is read from (`env:…`, for one that holds a key).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,6 +158,9 @@ pub(crate) struct Asked {
     pub(crate) on_full: Option<String>,
     #[serde(default)]
     pub(crate) key: Option<String>,
+    /// `trade_id`.
+    #[serde(default)]
+    pub(crate) sequence: Option<String>,
     #[serde(default)]
     pub(crate) subscribe: Vec<String>,
     #[serde(default)]
@@ -256,6 +266,9 @@ pub(crate) struct Live {
     pub(crate) missed: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) replaced: u64,
+    /// How many numbers the feed skipped (`--sequence`): what came while the host wasn't reading.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub(crate) gaps: u64,
 }
 
 /// The feeds bound on this server, and what each connection to them is doing.
@@ -373,9 +386,12 @@ impl Feeds {
             Some(other) => return Err(format!("--on-full is wait, skip or latest, not {other:?}")),
         };
         let key = given(&asked.key).map(|k| path_of("--key", k)).transpose()?;
-        match (on_full, &key) {
-            (OnFull::Latest, None) => return Err("--on-full latest replaces the waiting message of a message's key: it takes --key FIELD".into()),
-            (OnFull::Wait | OnFull::Skip, Some(_)) => return Err("--key is --on-full latest's: which waiting message a message replaces".into()),
+        let sequence = given(&asked.sequence).map(|s| path_of("--sequence", s)).transpose()?;
+        match (on_full, &key, &sequence) {
+            (OnFull::Latest, None, _) => return Err("--on-full latest replaces the waiting message of a message's key: it takes --key FIELD".into()),
+            (OnFull::Wait | OnFull::Skip, Some(_), None) => {
+                return Err("--key is a message's key for --on-full latest (which waiting message it replaces) and for --sequence (each key numbered on its own): it takes one of them".into());
+            }
             _ => {}
         }
         let mut subscribe = Vec::new();
@@ -410,7 +426,7 @@ impl Feeds {
             return Err("--resume sends the feed the id of the message the host is at, which a cursor is one value of: it takes an --id of one field (--id seq)".into());
         }
         let headers: BTreeMap<String, String> = asked.headers.iter().map(|(h, s)| (h.clone(), s.trim().to_string())).collect();
-        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, subscribe, heartbeat, every, id, only, resume };
+        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, sequence, subscribe, heartbeat, every, id, only, resume };
         let (parsed, sent) = self.request(&binding)?;
         let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty() || binding.resume.is_some();
         if websocket_only && !parsed.is_websocket() {
@@ -572,11 +588,12 @@ pub(crate) enum Link {
 }
 
 /// What a feed's connection read: an event, one passed over (past 1 MiB), or a WebSocket message
-/// its binding's `--only` doesn't run.
+/// its binding's `--only` doesn't run, with its number (`--sequence`), which counts though it
+/// doesn't run.
 pub(crate) enum Incoming {
     Event(Event),
     PassedOver,
-    Filtered,
+    Filtered(Option<(String, u64)>),
 }
 
 /// An event of either kind of feed, as a run takes it.
@@ -596,6 +613,17 @@ pub(crate) struct Event {
     /// How many were dropped, or replaced, before it (`--on-full`).
     pub(crate) missed: u64,
     pub(crate) replaced: u64,
+    /// Its number by the binding's `--sequence`, with the value of its `--key` ("" without one).
+    pub(crate) number: Option<(String, u64)>,
+    /// How many numbers of its key were skipped before it.
+    pub(crate) gap: u64,
+}
+
+/// A message's number by its binding's `--sequence`, with its key: none when the binding names no
+/// sequence, or the field isn't a whole number.
+fn numbered(binding: &Binding, data: &Value) -> Option<(String, u64)> {
+    let n = field_text(data, binding.sequence.as_deref()?)?.parse::<u64>().ok()?;
+    Some((binding.key.as_ref().and_then(|k| field_text(data, k)).unwrap_or_default(), n))
 }
 
 impl Link {
@@ -624,7 +652,7 @@ impl Link {
                 sse::Next::PassedOver => Incoming::PassedOver,
                 sse::Next::Event(e) => {
                     let data = holon_core::parse_json(&e.data).unwrap_or(Value::Text(e.data));
-                    Incoming::Event(Event { key: key(&data), data, name: e.name, id: e.id, last_id: e.last_id, missed: 0, replaced: 0 })
+                    Incoming::Event(Event { key: key(&data), number: numbered(binding, &data), data, name: e.name, id: e.id, last_id: e.last_id, missed: 0, replaced: 0, gap: 0 })
                 }
             })),
             Link::Ws(c, last) => Ok(c.next_message()?.map(|said| {
@@ -635,14 +663,14 @@ impl Link {
                 };
                 let runs = binding.only.iter().all(|(field, values)| field_text(&data, field).is_some_and(|v| values.contains(&v)));
                 if !runs {
-                    return Incoming::Filtered;
+                    return Incoming::Filtered(numbered(binding, &data));
                 }
                 let parts: Option<Vec<String>> = binding.id.iter().map(|p| field_text(&data, p)).collect();
                 let id = parts.filter(|p| !p.is_empty()).map(|p| p.join("/"));
                 if let Some(id) = &id {
                     last.clone_from(id);
                 }
-                Incoming::Event(Event { key: key(&data), data, name: "message".into(), id, last_id: last.clone(), missed: 0, replaced: 0 })
+                Incoming::Event(Event { key: key(&data), number: numbered(binding, &data), data, name: "message".into(), id, last_id: last.clone(), missed: 0, replaced: 0, gap: 0 })
             })),
         }
     }
@@ -683,7 +711,7 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
     let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
-    let extra = serde_json::json!({ "key": b.key, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume });
+    let extra = serde_json::json!({ "key": b.key, "sequence": b.sequence, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume });
     for (k, v) in extra.as_object().into_iter().flatten() {
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty) || v.as_u64() == Some(0);
         if !empty {
@@ -762,10 +790,10 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--on-full …] [--idle T]
-/// [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id FIELD,…] [--only FIELD=VALUE]…
-/// [--resume WHERE]… [--for SLUG] | list | remove NAME`: bind, show and unbind the feeds of the server this user runs here (or
-/// `--server`), as an admin.
+/// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--on-full …] [--key
+/// FIELD] [--sequence FIELD] [--idle T] [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id
+/// FIELD,…] [--only FIELD=VALUE]… [--resume WHERE]… [--for SLUG] | list | remove NAME`: bind, show
+/// and unbind the feeds of the server this user runs here (or `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
@@ -777,7 +805,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" => {
+            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--sequence" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" => {
                 let Some(v) = args.next() else {
                     eprintln!("holon feed: {a} takes a value\n\n{FEED_USAGE}");
                     return 2;
@@ -866,6 +894,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         if !id.is_empty() {
             said.push(format!("its id {}", id.join("/")));
         }
+        if let Some(sequence) = f["sequence"].as_str() {
+            said.push(format!("numbered by {sequence}{}", f["key"].as_str().map_or(String::new(), |k| format!(", each {k} on its own"))));
+        }
         let resume = &f["resume"];
         if let Some(name) = resume["query"].as_str() {
             said.push(format!("resumes from its position with {name}= in the URL"));
@@ -899,7 +930,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 }
 
 const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N]
-                       [--on-full wait|skip|latest [--key FIELD]] [--idle T] [--for SLUG]
+                       [--on-full wait|skip|latest] [--key FIELD] [--sequence FIELD]
+                       [--idle T] [--for SLUG]
                        [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
                        [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
                        [--resume query:NAME|header:NAME|message:MESSAGE…]
@@ -925,7 +957,11 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
                            unless given), skip (it is dropped, and the next event's e.missed
                            says how many were), latest (it replaces the waiting event of its
                            --key, full or not, its e.replaced saying how many it did)
-    --key FIELD            latest's: the field whose value one event a key waits by: product_id
+    --key FIELD            the field that is a message's key, for latest (one event of a key
+                           waits) and --sequence (each key numbered on its own): product_id
+    --sequence FIELD       for a feed whose JSON messages a whole number counts one by one, of
+                           each --key: each event's e.gap says how many numbers were skipped
+                           before it, across a reconnect or a restart: trade_id
     --idle T               how long the feed may say nothing before the connection is opened
                            again: 90s, 2m (5s at least)
     --for SLUG             bind it for that deployment only
@@ -952,6 +988,7 @@ examples:
   holon feed add prices --url env:HOLON_SECRET_PRICES_URL --header Authorization=env:HOLON_SECRET_PRICES_AUTH --idle 2m
   holon feed add ticker --url env:HOLON_SECRET_TICKER_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"ticker\"],\"product_ids\":[\"BTC-USD\"]}' --only type=ticker --id product_id,sequence --on-full latest --key product_id
   holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume query:cursor --only payload.operation=create
+  holon feed add trades --url env:HOLON_SECRET_TRADES_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"matches\"],\"product_ids\":[\"BTC-USD\"]}' --only type=match --only type=last_match --id product_id,trade_id --sequence trade_id --key product_id
   holon feed list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -1059,7 +1096,7 @@ mod tests {
         feed.text("{\"type\":\"subscriptions\"}");
         feed.text("{\"type\":\"ticker\",\"product_id\":\"BTC-USD\",\"sequence\":41,\"price\":\"100.5\"}");
         feed.text("{\"type\":\"ticker\",\"price\":\"7\"}");
-        assert!(matches!(link.next(&b), Ok(Some(Incoming::Filtered))));
+        assert!(matches!(link.next(&b), Ok(Some(Incoming::Filtered(None)))));
         let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
         assert_eq!((e.id.as_deref(), e.last_id.as_str(), e.key.as_deref(), e.name.as_str()), (Some("BTC-USD/41"), "BTC-USD/41", Some("BTC-USD"), "message"));
         assert_eq!(field_text(&e.data, "price").as_deref(), Some("100.5"));
@@ -1076,7 +1113,8 @@ mod tests {
         assert!(on_sse.contains("are a WebSocket's"), "{on_sse}");
         assert!(refused(Asked { only: vec!["type=ticker".into()], ..asked("env:HOLON_SECRET_SSE") }).contains("are a WebSocket's"));
         assert!(refused(Asked { on_full: Some("latest".into()), ..asked("env:HOLON_SECRET_WS") }).contains("it takes --key FIELD"));
-        assert!(refused(Asked { key: Some("product_id".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--key is --on-full latest's"));
+        assert!(refused(Asked { key: Some("product_id".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--key is a message's key for --on-full latest"));
+        assert!(refused(Asked { sequence: Some("trade id".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--sequence names a field"));
         assert!(refused(Asked { on_full: Some("drop".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--on-full is wait, skip or latest"));
         assert!(refused(Asked { id: Some("data..u".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--id names a field"));
         assert!(refused(Asked { only: vec!["type".into()], ..asked("env:HOLON_SECRET_WS") }).starts_with("--only is FIELD=VALUE"));
@@ -1148,6 +1186,31 @@ mod tests {
         assert!(refused(Some("seq"), &["header:X:Y"], ws).starts_with("--resume header: names the header"));
         assert!(refused(Some("seq"), &["message:{\"from\":1}"], ws).contains("writes {position}"));
         assert_eq!(all.all(), Bound::default());
+    }
+
+    #[test]
+    fn a_feed_numbers_its_messages_by_its_sequence_each_key_on_its_own() {
+        let (sse, ws) = (StandIn::start(), ws::stand_in::StandIn::start());
+        let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_TRADES", &ws.url("/ws"))]);
+        // Any feed's whose data is JSON: one of server-sent events too, without a key.
+        let b = all.bind("prices", &Asked { sequence: Some("data.n".into()), ..asked("env:HOLON_SECRET_SSE") }, None).unwrap();
+        assert_eq!((b.sequence.as_deref(), b.key.as_deref()), (Some("data.n"), None));
+        let a = Asked { sequence: Some("trade_id".into()), key: Some("product_id".into()), only: vec!["type=match".into()], ..asked("env:HOLON_SECRET_TRADES") };
+        let b = all.bind("trades", &a, None).unwrap();
+        assert!(shown("trades", None, &b).to_string().contains("\"sequence\":\"trade_id\""));
+        let mut link = all.connect(&b, None).unwrap();
+        until(|| ws.asked().len() == 2);
+        ws.text(r#"{"type":"match","product_id":"BTC-USD","trade_id":104}"#);
+        ws.text(r#"{"type":"open","product_id":"BTC-USD","trade_id":105}"#);
+        ws.text(r#"{"type":"match","product_id":"BTC-USD","trade_id":"106.5"}"#);
+        ws.text(r#"{"type":"match","trade_id":7}"#);
+        let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
+        assert_eq!(e.number, Some(("BTC-USD".into(), 104)));
+        assert!(matches!(link.next(&b), Ok(Some(Incoming::Filtered(Some((k, 105))))) if k == "BTC-USD"), "passed over, its number counts");
+        let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
+        assert_eq!(e.number, None, "not a whole number");
+        let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
+        assert_eq!(e.number, Some((String::new(), 7)), "no key: a count of its own");
     }
 
     #[test]

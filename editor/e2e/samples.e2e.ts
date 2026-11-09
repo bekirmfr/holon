@@ -2575,6 +2575,84 @@ test("bluesky-mentions keeps the posts that mention a word, and opens the feed a
   await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_POSTS_URL\) · runs only payload\.operation create · its id payload\.seq · resumes from its position with cursor= in the URL · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
 });
 
+test("trade-tape fetches the trades its feed skipped, across a reconnect, and keeps each product's volume exact", async ({ page, request }) => {
+  const { createServer } = await import("node:http");
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // A trade's size: its id in thousandths, so a volume says exactly which trades were added.
+  const size = (id: number) => `${Math.floor(id / 1000)}.${String(id % 1000).padStart(3, "0")}`;
+  // The exchange's public trades on loopback, as Coinbase Exchange pages them: the trades before
+  // `after`, the newest first, `limit` of them.
+  const asked: string[] = [];
+  const exchange = createServer((req, res) => {
+    asked.push(req.url ?? "");
+    const url = new URL(req.url ?? "/", "http://exchange");
+    const product = url.pathname.replace(/^\/products\//, "").replace(/\/trades$/, "");
+    const after = Number(url.searchParams.get("after"));
+    const limit = Math.min(Number(url.searchParams.get("limit")), 1000);
+    const page = [];
+    for (let id = after - 1; id >= Math.max(1, after - limit); id--) page.push({ trade_id: id, product_id: product, size: size(id), price: "100", side: "buy" });
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(page));
+  });
+  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  // The e2e server's trades (ws-server.mjs): a trade is a .json file dropped in its folder, sent in
+  // the order of their names to the connections open; asked.log is what each connection asked for.
+  const folder = join(FOLDERS, "trades");
+  const opened = () => (existsSync(join(folder, "asked.log")) ? readFileSync(join(folder, "asked.log"), "utf8").trim().split("\n").length : 0);
+  const stamp = Date.now();
+  const product = `BTC-E2E${stamp}`;
+  let n = 0;
+  const trade = (type: string, id: number) =>
+    writeFileSync(join(folder, `${stamp}-${String(++n).padStart(3, "0")}.json`), JSON.stringify({ type, trade_id: id, product_id: product, size: size(id), price: "100", side: "buy" }));
+  try {
+    await openSample(page, "Trade tape (what a feed skipped, fetched)");
+    // The sample calls api.exchange.coinbase.com: here, the stand-in, over plain HTTP to this
+    // machine, as trading-bot's test does.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/trade-tape.holon.ts", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"host:api.exchange.coinbase.com"', `"host:${host}"`).replace("port: 8193", `port: ${8193 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8193 + SAMPLE_SHIFT));
+    const before = opened();
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    await expect.poll(opened, { timeout: 15_000 }).toBe(before + 1);
+    const volume = async () => (await (await request.get(`http://127.0.0.1:${port}/volumes`)).json())[product];
+
+    // 102 and 103 never came: the trade after them says so, and they are fetched.
+    trade("last_match", 100);
+    trade("match", 101);
+    trade("match", 104);
+    await expect.poll(async () => (await volume())?.trades, { timeout: 15_000 }).toBe(5);
+    expect(asked).toEqual([`/products/${product}/trades?after=104&limit=2`]);
+    await expect(page.getByText(`connected, at ${product}/104, 2 in gaps`)).toBeVisible({ timeout: 15_000 });
+
+    // Cut, with two trades while it reads nothing: opened again, the exchange's last trade (106)
+    // says one came before it (105).
+    writeFileSync(join(folder, "cut"), "");
+    trade("match", 105);
+    trade("match", 106);
+    await expect.poll(opened, { timeout: 15_000 }).toBe(before + 2);
+    trade("last_match", 106);
+    trade("match", 107);
+    await expect.poll(async () => (await volume())?.trades, { timeout: 15_000 }).toBe(8);
+    expect(await volume()).toMatchObject({ volume: size(100 + 101 + 102 + 103 + 104 + 105 + 106 + 107), fetched: 3, unfetched: 0, last: 107 });
+    expect(asked).toEqual([`/products/${product}/trades?after=104&limit=2`, `/products/${product}/trades?after=106&limit=1`]);
+    await expect(page.getByText(`connected, at ${product}/107, 3 in gaps`)).toBeVisible({ timeout: 15_000 });
+
+    // The admin's resources show what numbers its messages.
+    await page.getByRole("button", { name: "admin", exact: true }).click();
+    await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+    await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TRADES_URL\) · subscribes with .* · runs only type match or last_match · its id product_id\/trade_id · numbered by trade_id, each product_id on its own · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+  } finally {
+    exchange.close();
+  }
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

@@ -564,7 +564,8 @@ pub(crate) mod stand_in {
         /// The connections open, by number.
         open: Mutex<Vec<(u64, TcpStream)>>,
         opened: std::sync::atomic::AtomicU64,
-        /// Each connection's request head, in order, noted once it is answered.
+        /// Each connection's request head, in order, noted before it is answered: a test that reads
+        /// it once its request is answered finds it.
         asked: Mutex<Vec<String>>,
     }
 
@@ -638,16 +639,15 @@ pub(crate) mod stand_in {
         }
         let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
         let mut out = conn;
+        inner.asked.lock().unwrap().push(head.clone());
         match path.as_str() {
             "/events" => {}
             "/plain" => {
                 let _ = out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi");
-                inner.asked.lock().unwrap().push(head);
                 return;
             }
             _ => {
                 let _ = out.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-                inner.asked.lock().unwrap().push(head);
                 return;
             }
         }
@@ -665,7 +665,6 @@ pub(crate) mod stand_in {
         }
         let n = inner.opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         inner.open.lock().unwrap().push((n, out.try_clone().unwrap()));
-        inner.asked.lock().unwrap().push(head);
         let gone = || inner.open.lock().unwrap().retain(|(o, _)| *o != n);
         loop {
             let lines: Vec<String> = {

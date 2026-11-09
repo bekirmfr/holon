@@ -8220,6 +8220,150 @@ fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A stand-in for an exchange's public trades: `GET /products/<product>/trades?after=<id>&limit=<n>`
+/// answers the trades before the id, the newest first, `n` of them (1,000 at most), as Coinbase
+/// Exchange pages them. Every trade id has a trade, its size the id in thousandths.
+struct Trades {
+    host: String,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Trades {
+    fn start() -> Trades {
+        let asked: Arc<Mutex<Vec<String>>> = Default::default();
+        let a = Arc::clone(&asked);
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            a.lock().unwrap().push(request.raw_url().to_string());
+            let product = request.url().strip_prefix("/products/").and_then(|r| r.strip_suffix("/trades")).unwrap_or_default().to_string();
+            let after: u64 = request.get_param("after").and_then(|a| a.parse().ok()).unwrap_or(0);
+            let limit: u64 = request.get_param("limit").and_then(|l| l.parse().ok()).unwrap_or(100).min(1000);
+            let page: Vec<serde_json::Value> = (after.saturating_sub(limit).max(1)..after).rev().map(|id| serde_json::json!({ "trade_id": id, "product_id": product, "size": Trades::size(id), "price": "100", "side": "buy" })).collect();
+            Response::json(&page)
+        })
+        .unwrap();
+        let host = server.server_addr().to_string();
+        thread::spawn(move || server.run());
+        Trades { host, asked }
+    }
+
+    /// The size of trade `id`, or of trades whose ids add up to it: its thousandths, so a volume
+    /// says exactly which trades were added.
+    fn size(id: u64) -> String {
+        format!("{}.{:03}", id / 1000, id % 1000)
+    }
+}
+
+/// The trade-tape sample (host-capabilities L4 §5.9.6): trades from a feed shaped as Coinbase
+/// Exchange's matches channel, each product's numbered by trade_id, and its REST API on loopback.
+/// The trades the feed skipped while the host read nothing are the next one's e.gap, fetched and
+/// added: on one connection, across a reconnect, and across a restart (the binding changed: a
+/// connection opened anew from the numbers kept with the position); a gap past a page adds a page
+/// and keeps how many it couldn't. Each product's volume is the exact sum of its trades.
+#[test]
+fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
+    let exchange = Trades::start();
+    let feed = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-trades-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_TRADES_URL={}\n", feed.url("/ws?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/trade-tape.holon.ts").replace("\"host:api.exchange.coinbase.com\"", &format!("\"host:{}\"", exchange.host));
+    let subscribe = r#"{"type":"subscribe","channels":["matches"],"product_ids":["BTC-USD","ETH-USD"]}"#;
+    let bind = |buffer: u64| {
+        let bind = serde_json::json!({
+            "name": "trades", "url": "env:HOLON_SECRET_TRADES_URL", "subscribe": [subscribe], "only": ["type=match", "type=last_match"],
+            "id": "product_id,trade_id", "sequence": "trade_id", "key": "product_id", "buffer": buffer,
+        });
+        let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    };
+    bind(1000);
+    let slug = deploy_text(&state, &text, &exchange.host);
+    let volumes = || {
+        let (status, body, _) = data_call(&state, &slug, "GET", "/volumes", "");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+    // A product's volume, its trades, those fetched and those not: its trade ids, each once.
+    let of = |v: &serde_json::Value, ids: &[std::ops::RangeInclusive<u64>], fetched: u64, unfetched: u64| {
+        let count = ids.iter().map(|r| r.clone().count() as u64).sum::<u64>();
+        let expected = serde_json::json!({ "volume": Trades::size(ids.iter().flat_map(|r| r.clone()).sum()), "trades": count, "fetched": fetched, "unfetched": unfetched });
+        let got = serde_json::json!({ "volume": v["volume"], "trades": v["trades"], "fetched": v["fetched"], "unfetched": v["unfetched"] });
+        assert_eq!(got, expected, "{v}");
+    };
+    let trade = |kind: &str, product: &str, id: u64| {
+        feed.text(&serde_json::json!({ "type": kind, "product_id": product, "trade_id": id, "size": Trades::size(id), "price": "100", "side": "buy" }).to_string());
+    };
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").count();
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    let asked = || exchange.asked.lock().unwrap().clone();
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("the feed is listened to", || feed.asked().len() == 2 && feed.heard() == [subscribe]);
+    // On one connection: 102 and 103 never came.
+    feed.text(r#"{"type":"subscriptions","channels":[{"name":"matches","product_ids":["BTC-USD","ETH-USD"]}]}"#);
+    trade("last_match", "BTC-USD", 100);
+    trade("match", "BTC-USD", 101);
+    trade("match", "ETH-USD", 7);
+    trade("match", "BTC-USD", 104);
+    eventually("four runs", || runs() == 4);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=104], 2, 0);
+    of(&v["ETH-USD"], &[7..=7], 0, 0);
+    assert_eq!(asked(), ["/products/BTC-USD/trades?after=104&limit=2"]);
+    eventually("at BTC-USD/104", || live()["position"] == "BTC-USD/104");
+    let l = live();
+    assert_eq!((l["gaps"].as_u64(), l["passed_over"].as_u64()), (Some(2), Some(1)), "{l}");
+
+    // Cut, with three trades while it reads nothing: opened again, its subscription sent again, the
+    // exchange sends each product's last trade, then the next.
+    feed.cut();
+    trade("match", "BTC-USD", 105);
+    trade("match", "BTC-USD", 106);
+    trade("match", "ETH-USD", 8);
+    eventually("the feed is opened again", || feed.asked().len() == 3);
+    trade("last_match", "BTC-USD", 106);
+    trade("last_match", "ETH-USD", 8);
+    trade("match", "ETH-USD", 10);
+    eventually("seven runs", || runs() == 7);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=106], 3, 0);
+    of(&v["ETH-USD"], &[7..=10], 1, 0);
+    assert_eq!(asked()[1..], ["/products/BTC-USD/trades?after=106&limit=1", "/products/ETH-USD/trades?after=10&limit=1"]);
+
+    // A restart: two trades while nothing reads, then the binding changed, so its connection is
+    // opened anew from the numbers kept with the position. Then a gap past a page: the 1,000
+    // before it fetched, the 91 before those not.
+    feed.cut();
+    trade("match", "BTC-USD", 107);
+    trade("match", "BTC-USD", 108);
+    bind(500);
+    let before = feed.asked().len();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("the feed is opened anew", || feed.asked().len() > before);
+    trade("last_match", "BTC-USD", 108);
+    trade("match", "BTC-USD", 1200);
+    trade("match", "ETH-USD", 11);
+    eventually("ten runs", || runs() == 10);
+    let v = volumes();
+    of(&v["BTC-USD"], &[100..=108, 200..=1200], 1004, 91);
+    of(&v["ETH-USD"], &[7..=11], 1, 0);
+    assert_eq!(asked()[3..], ["/products/BTC-USD/trades?after=108&limit=1", "/products/BTC-USD/trades?after=1200&limit=1000"]);
+    assert_eq!(live()["gaps"].as_u64(), Some(1 + 1091), "since this connection opened");
+
+    // Its runs check offline, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze

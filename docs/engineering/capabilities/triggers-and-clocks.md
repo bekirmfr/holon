@@ -108,7 +108,7 @@ can close from another thread; `ws.rs`, a WebSocket through `tungstenite`'s hand
 over the same stream, §5.9.4) into a buffer of the binding's `--buffer`, and when it is full
 waits, drops what comes (`skip`) or replaces the waiting event of its key (`latest`); and a running
 thread, which runs the handler on each, one at a time, its event the run's input as
-`FeedEvent("prices")`: `{data, event, id, missed, replaced}`, `data` parsed when it is JSON. A run
+`FeedEvent("prices")`: `{data, event, id, missed, replaced, gap}`, `data` parsed when it is JSON. A run
 lock per deployment and feed, with where its runs moved it, outlives a connection, so a new version
 waits for the old one's run and reads where the feed is after it: no event runs twice. Where the
 feed is (the last id run on, and the last 1,000) is in `feed-seen/<slug>/<feed>.json` beside the
@@ -116,7 +116,10 @@ log, written as the run's record is: a strict or unrecorded run's at its end, a 
 `sync_logs` has synced its entry (`Feeds::hold` and `release`, beside the channels' packs and the
 mail); a reconnect sends it as `Last-Event-ID`, or where a WebSocket binding's `--resume` says (a
 query parameter, a header, or a message in place of the subscription, §5.9.6), and an event sent
-again by its id is passed over, on the timeline. A connection lost is opened again after a second, or the feed's `retry:`; one that
+again by its id is passed over, on the timeline. A binding's `--sequence` numbers each key's
+messages (§5.9.6): the reading thread counts each message's gap as it reads it, before the buffer,
+from the numbers kept beside the position (`Seen.numbers`, the last 10,000 keys), which the runs
+move; a gap that `--only`, `skip` or `latest` would lose goes to the next event of its key. A connection lost is opened again after a second, or the feed's `retry:`; one that
 can't be is tried again after twice as long each time, to a minute, on the timeline once. What
 each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
 `on feed prices`.

@@ -843,6 +843,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/bluesky-mentions.holon.ts"),
     },
     Sample {
+        name: "trade-tape",
+        title: "Trade tape (what a feed skipped, fetched)",
+        description: "A market's trades over a WebSocket, as Coinbase Exchange's public matches channel sends them, each product's trade ids one after another. An admin binds the feed with the field that numbers them, each product on its own (--sequence trade_id --key product_id): each event's e.gap says how many of its product's trades the feed skipped before it, those that came while the host wasn't reading, across a reconnect or a restart, which a feed that can't send them again never will. The handler adds each trade's size to its product's volume (decimal_sum), and when e.gap is above 0 fetches the trades skipped from the exchange's public REST API, a page of 1,000 at most, and adds theirs, so the volume stays exact; a gap past a page keeps how many it couldn't fetch. Its runs are strict, so a trade a crash cut short is in the next one's gap. GET /volumes answers each product's.",
+        shows: &["on.feed", "WebSocket feeds", "a feed's gaps", "fetching what a feed skipped", "outbound requests", "decimals"],
+        port: Some("8193"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "bind the feed (HOLON_SECRET_TRADES_URL=wss://ws-feed.exchange.coinbase.com in the server's environment, then holon feed add trades --url env:HOLON_SECRET_TRADES_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"matches\"],\"product_ids\":[\"BTC-USD\",\"ETH-USD\"]}' --only type=match --only type=last_match --id product_id,trade_id --sequence trade_id --key product_id); deploy, then curl http://127.0.0.1:8193/volumes; stop the server for a minute and start it again: the first trade of each product says how many it skipped, they are fetched, and the server panel shows the gaps",
+        text: include_str!("../samples/trade-tape.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",
