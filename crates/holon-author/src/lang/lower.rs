@@ -1093,6 +1093,17 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// Whether this block does anything: it places a sink, tied to its trigger or to the value an
+    /// `if (x !== undefined)` waits for, or a function with an effect, and no choice makes it only
+    /// when it needs it.
+    fn does_something(&self) -> bool {
+        let f = self.cur();
+        f.created.iter().any(|id| {
+            !f.in_branches.contains(id)
+                && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER) || d.outputs.iter().any(|p| p.ty == WType::Effect))
+        })
+    }
+
     /// Whether this block's only effects are calls: it makes one, and writes nothing.
     fn calls_alone(&self) -> bool {
         let f = self.cur();
@@ -1230,9 +1241,10 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&tick, e.head)?;
+        self.tie_block(&tick, e.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(e.head, "the handler does nothing: write something in it (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, e.head, ("the tick", "now".into())));
@@ -1267,9 +1279,10 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&file, o.head)?;
+        self.tie_block(&file, o.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(o.head, "the handler does nothing: write something in it (a folder, state, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
@@ -1296,9 +1309,10 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&message, o.head)?;
+        self.tie_block(&message, o.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
@@ -1325,9 +1339,10 @@ impl<'a> Lowerer<'a> {
             }
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&event, o.head)?;
+        self.tie_block(&event, o.head)?;
+        let does = self.does_something();
         let frame = self.frames.pop().expect("the block's frame");
-        if !tied {
+        if !does {
             return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the event", o.event.text.clone())));
@@ -1353,7 +1368,8 @@ impl<'a> Lowerer<'a> {
         for s in &a.body {
             self.stmt(s)?;
         }
-        let tied = self.tie_block(&node, a.head)?;
+        self.tie_block(&node, a.head)?;
+        let does = self.does_something();
         if let FrameKind::Action { responded: None, .. } = &self.cur().kind
             && self.calls_alone()
         {
@@ -1361,7 +1377,7 @@ impl<'a> Lowerer<'a> {
         }
         let frame = self.frames.pop().expect("the block's frame");
         let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
-        if responded.is_none() && !tied {
+        if responded.is_none() && !does {
             return err(a.head, "the action does nothing: return something, or write something (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, a.head, ("what was sent", a.input.text.clone())));
@@ -4557,6 +4573,40 @@ route.get("/last", () => state.last)
             let (_, _, e) = error(&format!("{head}{body}"));
             assert!(e.contains(said), "{said}: {e}");
         }
+    }
+
+    /// A handler whose only write waits for a value, in an `if (x !== undefined)`, does something:
+    /// the write is tied to that value, not to the handler's trigger. Without the write it does
+    /// nothing, as before.
+    #[test]
+    fn a_handler_whose_only_write_waits_for_a_value_does_something() {
+        let head = "import { action, every, flow, on } from \"holon\"\nimport state from \"state\"\nimport kept from \"collection:kept\"\nimport drop from \"folder:drop\"\nimport remit from \"mail:remit\"\nimport posts from \"feed:posts\"\n\nflow(\"f\", { port: 8080 })\n\n";
+        for (open, k, write, nothing) in [
+            ("every(\"2s\", (now) => {\n", "  const k = state.on ? now : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.file.created(drop, (f) => {\n", "  const k = f.size > 0 ? f.name : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.mail(remit, (m) => {\n", "  const k = m.subject !== \"\" ? m.subject : undefined\n", "  if (k !== undefined) state.last = k\n", "the handler does nothing"),
+            ("on.feed(posts, (e) => {\n", "  const k = e.data.x ? e.data : undefined\n", "  if (k !== undefined) kept[\"a\"] = k\n", "the handler does nothing"),
+            ("export const keep = action((input) => {\n", "  const k = input.x ? input : undefined\n", "  if (k !== undefined) state.last = k\n", "the action does nothing"),
+        ] {
+            let src = format!("{head}{open}{k}{write}}})\n");
+            let d = compiled(&src).doc;
+            let sink = d.nodes.iter().find(|n| n.data.inputs.iter().any(|p| p.name == TRIGGER)).expect("the write");
+            let tied = d.edges.iter().find(|w| w.target == sink.id && w.input() == TRIGGER).and_then(|w| d.nodes.iter().find(|n| n.id == w.source));
+            assert_eq!(tied.map(|n| n.data.name.as_str()), Some("guard"), "{open}: tied to k, the choice");
+            let mut store = MapResolver::new();
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+
+            let (line, _, e) = error(&format!("{head}{open}{k}}})\n"));
+            assert_eq!((line, e.split(':').next()), (10, Some(nothing)), "{open}");
+        }
+
+        // So does one whose only write is a function's, waiting for a value in it.
+        let src = format!("{head}function keep(x) {{\n  const k = x.x ? x : undefined\n  if (k !== undefined) state.last = k\n  return x.n + 1\n}}\n\non.feed(posts, (e) => {{\n  keep(e.data)\n}})\n");
+        let d = compiled(&src).doc;
+        let mut store = MapResolver::new();
+        text::restore(&d, &mut store, &Names::new());
+        assert_eq!(crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080").errors, Vec::<String>::new(), "{src}");
     }
 
     #[test]

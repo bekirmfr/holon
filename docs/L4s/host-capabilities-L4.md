@@ -2162,10 +2162,12 @@ As designed, with what building it found:
   percent-encoded: `?collections=app.bsky.feed.post&cursor=26984957930`. Nothing else in the
   connection changed: the position, the 1,000 ids and the lazy hold are 1.6a's and 1.6b's.
 - **The sample** writes `mentions[address] = kept`, with `kept` absent unless the post mentions
-  the word, not `if (kept !== undefined) mentions[address] = kept`: a handler whose only write is
-  under such an `if` is refused as doing nothing, though the same `if` beside another write
-  compiles and runs (trading-bot's). That is the compiler's check, not the feed's; it is left for
-  its own change. A collection is read and written by key, `watch["word"]`. Its port is 8192:
+  the word. Building it found that `if (kept !== undefined) mentions[address] = kept` was refused
+  as doing nothing when it was the handler's only write, though the same `if` beside another write
+  compiled and ran (trading-bot's): the compiler asked whether anything was left to tie to the
+  handler's trigger, and the `if` had tied its write to `kept`. That was the compiler's check, not
+  the feed's, fixed in its own change: a handler does something when it places a write or a call,
+  however it is tied. A collection is read and written by key, `watch["word"]`. Its port is 8192:
   8191 is an e2e test's own flow.
 - **The stand-ins** replay from `cursor=N`: what was sent from the message whose `seq` (or
   `payload.seq`) is N. The e2e's `ws-server.mjs` also writes what each connection asked for to
