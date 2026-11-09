@@ -126,7 +126,7 @@ function Canvas({
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView } =
+  const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView, getInternalNode } =
     useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
   // The one in-browser workspace every placed composite lives in (see Projection below).
@@ -242,9 +242,15 @@ function Canvas({
   // Tidy: the shared layout (graphLayout.ts) lays the nodes out, as the VS Code graph does. It moves the
   // nodes only, not the view; the move is one undoable step. Fit is its own button.
   const tidyCanvas = useCallback(() => {
-    const at = tidyPositions(live.current.nodes, live.current.edges);
+    // The layout reads each node's drawn size: the page's own box for the node, which is what it occupies.
+    const sized = live.current.nodes.map((n) => {
+      const el = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(n.id)}"]`);
+      const measured = el ? { width: el.offsetWidth, height: el.offsetHeight } : (getInternalNode(n.id)?.measured ?? n.measured);
+      return measured ? { ...n, measured } : n;
+    });
+    const at = tidyPositions(sized, live.current.edges);
     setNodes((ns) => ns.map((n) => ({ ...n, position: at.get(n.id) ?? n.position })));
-  }, [setNodes]);
+  }, [setNodes, getInternalNode]);
   const fitCanvas = useCallback(() => {
     fitView({ padding: 0.1, duration: 200 });
   }, [fitView]);

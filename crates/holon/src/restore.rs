@@ -84,6 +84,8 @@ const RESTORE_USAGE: &str = "usage: holon restore <slug>
                            point and what they did outside, which a restore doesn't undo
   --approve                approve, as you, what the code needs that the grant it has now
                            doesn't cover (it is checked against today's grant, not the old one)
+  --json                   print the answer as JSON: with --dry-run, the preview with what it
+                           touches and the code's diff; else what the restore did
   --server PORT|URL        which holon server to ask (see below)
 
   A state put back starts a new session, the state it replaces kept as the last one's, so that
@@ -102,7 +104,7 @@ examples:
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon restore";
     let (mut slug, mut server, mut to, mut to_run) = (None, None, None, None);
-    let (mut code, mut state, mut dry_run, mut approve) = (false, false, false, false);
+    let (mut code, mut state, mut dry_run, mut approve, mut as_json) = (false, false, false, false, false);
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -125,6 +127,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "--state" => state = true,
             "--dry-run" => dry_run = true,
             "--approve" => approve = true,
+            "--json" => as_json = true,
             "--help" | "-h" => {
                 println!("{RESTORE_USAGE}");
                 return 0;
@@ -152,7 +155,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 eprintln!("{WHO}: say which point: --to N, a version (holon restore {slug} lists them), or --to-run SEQ, a run");
                 return 2;
             }
-            return list(&slug, server.as_deref());
+            return list(&slug, server.as_deref(), as_json);
         }
     };
     if !code && !state {
@@ -188,6 +191,19 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     if !missing.is_empty() && !dry_run {
         println!("its secrets not set now (those nodes stay empty until they are): {}", missing.join(", "));
     }
+    if dry_run && as_json {
+        let local = Local { who: WHO, server: server.as_deref() };
+        let diff = match deploys {
+            Some(n) => match crate::mcp::code_diff_lines(&local, &slug, n) {
+                Ok((lines, note)) => serde_json::json!({ "lines": lines, "note": note }),
+                Err(e) => serde_json::json!({ "error": e }),
+            },
+            None => serde_json::Value::Null,
+        };
+        let touches = crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
+        crate::cmdline::print_json(&serde_json::json!({ "preview": preview, "touches": touches, "code_diff": diff }));
+        return 0;
+    }
     if dry_run {
         println!("what it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
         for line in crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"])) {
@@ -220,6 +236,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(done) => done,
         Err(code) => return code,
     };
+    if as_json {
+        crate::cmdline::print_json(&done);
+        return 0;
+    }
     if let Some(n) = done["code"].as_u64() {
         let unit = done["unit"].as_str().unwrap_or_default();
         println!("{slug}: version {n}'s code is deployed again, as version {} ({})", done["version"], &unit[..unit.len().min(12)]);
@@ -350,7 +370,7 @@ fn effect_word(name: &str) -> &str {
 }
 
 /// Print `slug`'s versions, newest first.
-fn list(slug: &str, server: Option<&str>) -> i32 {
+fn list(slug: &str, server: Option<&str>, as_json: bool) -> i32 {
     const WHO: &str = "holon restore";
     let answer = match admin_call(WHO, server, "GET", &format!("/deployments/{slug}/versions"), None) {
         Ok((_, a)) => a,
@@ -360,6 +380,10 @@ fn list(slug: &str, server: Option<&str>) -> i32 {
         eprintln!("{WHO}: the server's answer isn't JSON");
         return 1;
     };
+    if as_json {
+        crate::cmdline::print_json(&listed);
+        return 0;
+    }
     for v in listed["versions"].as_array().into_iter().flatten() {
         println!("{}", version_line(v));
     }
