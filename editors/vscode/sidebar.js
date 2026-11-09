@@ -10,6 +10,7 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const DEFAULT_SERVER = "http://127.0.0.1:7420";
 const SCHEME = "holon";
@@ -426,7 +427,6 @@ function graphHtml(name, document) {
   const NODE_W = 232;
   const HEAD = 30;
   const ROW = 22;
-  const PAD = 40;
   const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
   const typeText = (ty) => {
     if (typeof ty === "string") return ty;
@@ -490,24 +490,20 @@ function graphHtml(name, document) {
   });
 
   if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
-  const minX = Math.min(...laid.map((l) => l.x)) - PAD;
-  const minY = Math.min(...laid.map((l) => l.y)) - PAD;
-  const maxX = Math.max(...laid.map((l) => l.x + NODE_W)) + PAD;
-  const maxY = Math.max(...laid.map((l) => l.y + l.h)) + PAD;
-  const width = maxX - minX;
-  const height = maxY - minY;
-  return graphPage(`<svg width="${width}" height="${height}" viewBox="${minX} ${minY} ${width} ${height}">${wires.join("")}${nodes.join("")}</svg>`);
+  return graphPage(`<svg id="canvas"><g id="view">${wires.join("")}${nodes.join("")}</g></svg>`);
 }
 
 function graphPage(body) {
+  const nonce = crypto.randomBytes(16).toString("base64");
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
-  html, body { margin: 0; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
   body { background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+  svg { display: block; width: 100%; height: 100%; cursor: grab; user-select: none; }
   .node { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
   .head { fill: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editorWidget-background)); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
   .title { fill: var(--vscode-editor-foreground); font-size: 13px; font-weight: 600; dominant-baseline: middle; }
@@ -516,9 +512,72 @@ function graphPage(body) {
   .type { fill: var(--vscode-descriptionForeground); font-size: 11px; }
   .wire { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.5; }
   .trigger { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.2; stroke-dasharray: 4 3; }
+  .bar { position: fixed; top: 8px; right: 8px; display: flex; gap: 4px; }
+  .bar button { width: 26px; height: 26px; border: none; cursor: pointer; font-size: 14px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+  .bar button:hover { background: var(--vscode-button-secondaryHoverBackground); }
 </style>
 </head>
-<body>${body}</body>
+<body>
+<div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
+${body}
+<script nonce="${nonce}">
+(function () {
+  var svg = document.getElementById("canvas");
+  var view = document.getElementById("view");
+  if (!svg || !view) return;
+  var scale = 1, x = 0, y = 0, drag = null;
+  function apply() {
+    view.setAttribute("transform", "translate(" + x + " " + y + ") scale(" + scale + ")");
+  }
+  function zoomAt(px, py, factor) {
+    var next = Math.min(4, Math.max(0.1, scale * factor));
+    factor = next / scale;
+    x = px - (px - x) * factor;
+    y = py - (py - y) * factor;
+    scale = next;
+    apply();
+  }
+  function local(e) {
+    var r = svg.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+  function fit() {
+    var box = view.getBBox();
+    var W = svg.clientWidth, H = svg.clientHeight;
+    scale = Math.min(W / box.width, H / box.height, 1.5) * 0.95;
+    x = (W - box.width * scale) / 2 - box.x * scale;
+    y = (H - box.height * scale) / 2 - box.y * scale;
+    apply();
+  }
+  svg.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var p = local(e);
+    zoomAt(p[0], p[1], e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  }, { passive: false });
+  svg.addEventListener("pointerdown", function (e) {
+    drag = { x: e.clientX, y: e.clientY };
+    svg.setPointerCapture(e.pointerId);
+    svg.style.cursor = "grabbing";
+  });
+  svg.addEventListener("pointermove", function (e) {
+    if (!drag) return;
+    x += e.clientX - drag.x;
+    y += e.clientY - drag.y;
+    drag = { x: e.clientX, y: e.clientY };
+    apply();
+  });
+  svg.addEventListener("pointerup", function () {
+    drag = null;
+    svg.style.cursor = "grab";
+  });
+  svg.addEventListener("dblclick", fit);
+  document.getElementById("zoom-in").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25); });
+  document.getElementById("zoom-out").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8); });
+  document.getElementById("fit").addEventListener("click", fit);
+  fit();
+})();
+</script>
+</body>
 </html>`;
 }
 
@@ -527,7 +586,7 @@ async function showGraph(arg) {
   const record = await holon(["flows", "show", name], { json: true });
   let panel = graphs.get(name);
   if (!panel) {
-    panel = vscode.window.createWebviewPanel("holon.graph", `Graph: ${name}`, vscode.ViewColumn.Active, { enableScripts: false });
+    panel = vscode.window.createWebviewPanel("holon.graph", `Graph: ${name}`, vscode.ViewColumn.Active, { enableScripts: true });
     graphs.set(name, panel);
     panel.onDidDispose(() => graphs.delete(name));
   }
