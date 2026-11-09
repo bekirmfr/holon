@@ -202,6 +202,33 @@ class HolonFiles {
   }
 }
 
+/** What `holon deploy` says a deploy needs approval for, as the approval dialog reads it: its headings
+ *  kept, the change marks in words ("New", "No longer", …), its command's own advice left out. */
+function approvalDetail(text) {
+  const marks = { "+": "New", "-": "No longer", "~": "Changed", "!": "Not ready on this server" };
+  const headings = [
+    [/^What starts it/, "What starts it", "start"],
+    [/^It asks to/, "It asks for", "asks"],
+  ];
+  const lines = [];
+  let section = "";
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    if (!line.trim() || /needs approval before|^What it touches|^Approve it here/.test(line)) continue;
+    const heading = headings.find(([pattern]) => pattern.test(line));
+    if (heading) {
+      section = heading[2];
+      lines.push(heading[1]);
+      continue;
+    }
+    const change = line.match(/^\s*([+\-~!])\s+(.*)$/);
+    if (change && !(change[1] === "-" && section === "asks")) lines.push(`  • ${marks[change[1]]}: ${change[2]}`);
+    else if (change) lines.push(`  • ${change[2]}`);
+    else lines.push(`  ${line.trim()}`);
+  }
+  return lines.join("\n");
+}
+
 /** Deploys a saved flow as a deployment of the same name: its text is compiled and sent, as the
  *  editor's Deploy does. What it asks for that a person hasn't granted yet is shown, and approved on
  *  a yes (`holon deploy --approve`). */
@@ -213,7 +240,7 @@ async function deployFlow(arg) {
     await holon(["flows", "show", name, "--out", file]);
     await deploy(file, name, false).catch(async (e) => {
       if (!/needs approval/.test(e.message)) throw e;
-      const answer = await vscode.window.showWarningMessage(`Deploy "${name}"? It asks for:\n\n${e.message}`, { modal: true }, "Approve and deploy");
+      const answer = await vscode.window.showWarningMessage(`Deploy "${name}"?`, { modal: true, detail: approvalDetail(e.message) }, "Approve and deploy");
       if (answer !== "Approve and deploy") return;
       await deploy(file, name, true);
     });
@@ -244,52 +271,103 @@ async function openText(kind, name) {
 
 const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** A flow's canvas as a static picture: its nodes where the canvas has them, its edges between,
- *  coloured by the editor's theme, so it reads as the rest of VS Code does. */
+/** A flow's canvas as a picture: each node as the canvas draws it (its name, its input ports on the
+ *  left and output ports on the right, each with its type, its params), and each wire from the
+ *  output port it leaves to the input port it reaches. Sized to the canvas, so it scrolls. */
 function graphHtml(name, document) {
-  const nodes = document.nodes ?? [];
-  const edges = document.edges ?? [];
-  const W = 176;
-  const H = 46;
-  const PAD = 24;
-  const at = new Map(nodes.map((n) => [n.id, n.position ?? { x: 0, y: 0 }]));
-  const xs = [...at.values()].map((p) => p.x);
-  const ys = [...at.values()].map((p) => p.y);
-  const minX = Math.min(0, ...xs) - PAD;
-  const minY = Math.min(0, ...ys) - PAD;
-  const width = Math.max(0, ...xs) + W + PAD - minX;
-  const height = Math.max(0, ...ys) + H + PAD - minY;
-  const lines = edges
-    .filter((e) => at.has(e.source) && at.has(e.target))
-    .map((e) => {
-      const a = at.get(e.source);
-      const b = at.get(e.target);
-      const x1 = a.x + W;
-      const y1 = a.y + H / 2;
-      const x2 = b.x;
-      const y2 = b.y + H / 2;
-      const bend = Math.max(40, Math.abs(x2 - x1) / 2);
-      return `<path d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}"/>`;
-    });
-  const boxes = nodes.map((n) => {
-    const p = at.get(n.id);
-    const label = String(n.data?.name ?? n.type ?? n.id);
-    const shown = label.length > 22 ? `${label.slice(0, 21)}…` : label;
-    return `<g><rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="6"/><text x="${p.x + W / 2}" y="${p.y + H / 2}" text-anchor="middle">${escapeHtml(shown)}</text></g>`;
+  const NODE_W = 232;
+  const HEAD = 30;
+  const ROW = 22;
+  const PAD = 40;
+  const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
+  const typeText = (ty) => {
+    if (typeof ty === "string") return ty;
+    if (ty.List) return `List<${typeText(ty.List)}>`;
+    if (ty.Product) return `(${ty.Product.map(typeText).join(", ")})`;
+    if (ty.Sum) return ty.Sum.map(typeText).join(" | ");
+    return "?";
+  };
+  const laid = (document.nodes ?? []).map((n) => {
+    const d = n.data ?? {};
+    const inputs = d.inputs ?? [];
+    const outputs = d.outputs ?? [];
+    const params = d.params ?? [];
+    const rows = Math.max(inputs.length, outputs.length, 1);
+    const h = HEAD + rows * ROW + (params.length ? 8 + params.length * ROW : 0) + 8;
+    return { n, d, inputs, outputs, params, rows, x: n.position?.x ?? 0, y: n.position?.y ?? 0, h };
   });
-  const body = nodes.length === 0 ? `<p>${escapeHtml(name)} has no nodes.</p>` : `<svg viewBox="${minX} ${minY} ${width} ${height}" preserveAspectRatio="xMidYMid meet">${lines.join("")}${boxes.join("")}</svg>`;
+  const byId = new Map(laid.map((l) => [l.n.id, l]));
+  const portY = (l, i) => l.y + HEAD + i * ROW + ROW / 2;
+
+  const wires = (document.edges ?? []).flatMap((e) => {
+    const from = byId.get(e.source);
+    const to = byId.get(e.target);
+    if (!from || !to) return [];
+    const out = Math.max(0, from.outputs.findIndex((p) => p.name === e.sourceHandle));
+    const inp = to.inputs.findIndex((p) => p.name === e.targetHandle);
+    const x1 = from.x + NODE_W;
+    const y1 = portY(from, out);
+    const x2 = to.x;
+    const y2 = inp < 0 ? to.y + HEAD / 2 : portY(to, inp);
+    const bend = Math.max(60, Math.abs(x2 - x1) / 2);
+    const cls = e.targetHandle === "trigger" ? "trigger" : "wire";
+    return [`<path class="${cls}" d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}"/>`];
+  });
+
+  const nodes = laid.map((l) => {
+    const parts = [
+      `<rect class="node" x="${l.x}" y="${l.y}" width="${NODE_W}" height="${l.h}" rx="6"/>`,
+      `<path class="head" d="M ${l.x} ${l.y + HEAD} V ${l.y + 6} Q ${l.x} ${l.y} ${l.x + 6} ${l.y} H ${l.x + NODE_W - 6} Q ${l.x + NODE_W} ${l.y} ${l.x + NODE_W} ${l.y + 6} V ${l.y + HEAD} Z"/>`,
+      `<text class="title" x="${l.x + 10}" y="${l.y + HEAD / 2}">${escapeHtml(clip(l.d.name ?? l.n.id, 26))}</text>`,
+    ];
+    for (let i = 0; i < l.rows; i++) {
+      const y = portY(l, i);
+      const input = l.inputs[i];
+      const output = l.outputs[i];
+      if (input) {
+        parts.push(`<circle class="port" cx="${l.x}" cy="${y}" r="4"/>`);
+        parts.push(`<text class="port-name" x="${l.x + 10}" y="${y}">${escapeHtml(input.name)} <tspan class="type">${escapeHtml(typeText(input.ty))}</tspan></text>`);
+      }
+      if (output) {
+        parts.push(`<circle class="port" cx="${l.x + NODE_W}" cy="${y}" r="4"/>`);
+        parts.push(`<text class="port-name" text-anchor="end" x="${l.x + NODE_W - 10}" y="${y}"><tspan class="type">${escapeHtml(typeText(output.ty))}</tspan> ${escapeHtml(output.name)}</text>`);
+      }
+    }
+    l.params.forEach((p, i) => {
+      const y = l.y + HEAD + l.rows * ROW + 8 + i * ROW + ROW / 2;
+      const value = p.kind === "Frozen" ? p.value : `← ${p.bind}`;
+      parts.push(`<text class="param" x="${l.x + 10}" y="${y}">${escapeHtml(p.name)} <tspan class="type">${escapeHtml(clip(value, 26))}</tspan></text>`);
+    });
+    return `<g>${parts.join("")}</g>`;
+  });
+
+  if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
+  const minX = Math.min(...laid.map((l) => l.x)) - PAD;
+  const minY = Math.min(...laid.map((l) => l.y)) - PAD;
+  const maxX = Math.max(...laid.map((l) => l.x + NODE_W)) + PAD;
+  const maxY = Math.max(...laid.map((l) => l.y + l.h)) + PAD;
+  const width = maxX - minX;
+  const height = maxY - minY;
+  return graphPage(`<svg width="${width}" height="${height}" viewBox="${minX} ${minY} ${width} ${height}">${wires.join("")}${nodes.join("")}</svg>`);
+}
+
+function graphPage(body) {
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
 <style>
-  html, body { margin: 0; height: 100%; }
+  html, body { margin: 0; }
   body { background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
-  svg { width: 100%; height: 100%; }
-  rect { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-focusBorder); }
-  text { fill: var(--vscode-editor-foreground); font-size: 13px; dominant-baseline: middle; }
-  path { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.5; }
+  .node { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
+  .head { fill: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editorWidget-background)); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
+  .title { fill: var(--vscode-editor-foreground); font-size: 13px; font-weight: 600; dominant-baseline: middle; }
+  .port { fill: var(--vscode-focusBorder); }
+  .port-name, .param { fill: var(--vscode-editor-foreground); font-size: 12px; dominant-baseline: middle; }
+  .type { fill: var(--vscode-descriptionForeground); font-size: 11px; }
+  .wire { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.5; }
+  .trigger { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.2; stroke-dasharray: 4 3; }
 </style>
 </head>
 <body>${body}</body>
