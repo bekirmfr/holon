@@ -48,7 +48,7 @@ as a read-only editor. Its collections open their items as JSON (`holon state --
 
 The Flows view also lists, under **Not on the server**, the `.holon.ts` files of the workspace that the server does not keep yet. **Save flow to server** (the cloud button on an open flow file, on a flow in the explorer, or on an item under Not on the server) saves a flow file to the server, where it shows in Flows.
 
-Each deployment has pause (or resume, when it is paused or stopped), stop, runs and history icon buttons, set by its status. Runs opens its recent runs as a document. Each flow has a trash button: a saved flow is deleted from the server, and a flow file of the workspace is moved to the trash. Both ask first.
+Each deployment has pause (or resume, when it is paused or stopped), stop, runs and history icon buttons, set by its status. Runs opens the Holon Runs panel at the bottom of the window, with the deployment's last 200 runs: the runs on the left, newest first, and the record of the selected run on the right, its values as an expandable list. A checkbox shows only the failed runs, and Open as JSON opens the selected run's whole record beside the editor. Each flow has a trash button: a saved flow is deleted from the server, and a flow file of the workspace is moved to the trash. Both ask first.
 
 A flow has explain and manifest buttons. Explain opens what the flow does, as `holon show` outlines it: its routes, and each node with what feeds it. Manifest opens the Holon manifest: what the flow touches, what starts it and what it may do, as `holon deploy --manifest` shows it. Nothing is deployed. A click on a flow still opens its text.
 

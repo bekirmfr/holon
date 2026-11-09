@@ -23,7 +23,8 @@
     "onLanguage:typescript",
     "onView:holon.deployments",
     "onView:holon.flows",
-    "onView:holon.activity"
+    "onView:holon.activity",
+    "onView:holon.runsPanel"
   ],
   "contributes": {
     "viewsContainers": {
@@ -31,6 +32,13 @@
         {
           "id": "holon",
           "title": "Holon",
+          "icon": "media/holon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "holon-runs",
+          "title": "Holon Runs",
           "icon": "media/holon.svg"
         }
       ]
@@ -48,6 +56,13 @@
         {
           "id": "holon.activity",
           "name": "Activity"
+        }
+      ],
+      "holon-runs": [
+        {
+          "id": "holon.runsPanel",
+          "name": "Runs",
+          "type": "webview"
         }
       ]
     },

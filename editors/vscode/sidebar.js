@@ -12,6 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { tidy } = require("../../editor/src/graphLayout.ts");
+const { register: registerRuns } = require("./runsPanel");
 
 const DEFAULT_SERVER = "http://127.0.0.1:7420";
 const SCHEME = "holon";
@@ -32,6 +33,8 @@ let deployments;
 let flows;
 /** @type {Listing | undefined} */
 let activity;
+/** The Runs panel: a deployment's runs in the bottom panel, with the record of the selected one. */
+let runsPanel;
 /** @type {HolonFiles | undefined} */
 let flowFiles;
 /** @type {Map<string, { panel: vscode.WebviewPanel, document: object }>} */
@@ -1149,9 +1152,9 @@ async function deleteFlow(arg) {
   refreshAll();
 }
 /** Opens a document with `text` in it, for reading. */
-async function openReadOnly(text, language) {
+async function openReadOnly(text, language, beside = false) {
   const doc = await vscode.workspace.openTextDocument({ language, content: text });
-  await vscode.window.showTextDocument(doc, { preview: true });
+  await vscode.window.showTextDocument(doc, { preview: true, viewColumn: beside ? vscode.ViewColumn.Beside : undefined, preserveFocus: beside });
 }
 
 /** What a flow does, as `holon show` outlines it: its routes, and each node with what feeds it. */
@@ -1186,14 +1189,14 @@ async function manifestFlow(arg) {
   }
 }
 
-/** A deployment's recent runs, as `holon runs` lists them, in a document. */
+/** Shows a deployment's runs in the Runs panel: its runs on the left, the record of the selected run on the right. */
 async function showRuns(arg) {
-  const name = named(arg);
-  try {
-    await openReadOnly(await holon(['runs', name, '--last', '50']), 'plaintext');
-  } catch (e) {
-    vscode.window.showErrorMessage(`Holon: ${e.message}`);
-  }
+  await runsPanel.choose(named(arg));
+}
+
+/** Opens a run's record beside the panel, as JSON. */
+function openJson(value) {
+  return openReadOnly(JSON.stringify(value, null, 2), "json", true);
 }
 
 function refreshAll() {
@@ -1208,6 +1211,7 @@ function register(context) {
   deployments = new Listing(async () => (await holon(["deployments"], { json: true })).deployments.map(deploymentItem), "No deployments yet. `holon deploy <file>` puts a flow here.");
   flows = new Listing(loadFlows, "No saved flows yet. `holon flows save <file>` saves one.");
   activity = new Listing(async () => (await holon(["activity", "--last", "100"], { json: true })).entries.map(activityItem), "Nothing has happened yet.");
+  runsPanel = registerRuns(context, { holon, openJson });
   flowFiles = new HolonFiles();
 
   const timer = setInterval(refreshAll, REFRESH_MS);
@@ -1242,7 +1246,7 @@ function register(context) {
     vscode.commands.registerCommand("holon.signIn", signIn),
     vscode.commands.registerCommand("holon.startServer", startServer),
   );
-  return { deployments, flows, activity };
+  return { deployments, flows, activity, runs: runsPanel };
 }
 
 /** Stops the server this extension started, if it did. */

@@ -67,7 +67,7 @@ async function checks() {
 async function sidebarChecks() {
   const ext = vscode.extensions.getExtension("bekirmfr.holon");
   if (!ext) throw new Error(`no bekirmfr.holon among: ${vscode.extensions.all.map((e) => e.id).join(", ")}`);
-  const { deployments, flows, activity } = (await ext.activate()).sidebar();
+  const { deployments, flows, activity, runs: auditRuns } = (await ext.activate()).sidebar();
 
   const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
   assert.equal(item.contextValue, "flow");
@@ -101,10 +101,19 @@ async function sidebarChecks() {
   }, "the server's activity");
   assert.ok(events.some((e) => /deployed hello/.test(e.label)), `activity: ${events.map((e) => e.label).join(", ")}`);
 
-  // Runs: a deployment's recent runs open as a document (the call made above is among them).
+  // Runs: the Runs panel lists the chosen deployment's runs; a run is selected to show its record, and the failed-only filter
+  // hides the runs that succeeded.
   const deployedHello = (await deployments.getChildren()).find((i) => i.label === "hello");
   await vscode.commands.executeCommand("holon.showRuns", deployedHello);
-  await eventually(() => vscode.window.activeTextEditor && /\/hello\//.test(vscode.window.activeTextEditor.document.getText()), "the runs of hello");
+  const helloRun = auditRuns.snapshot().runs.find((r) => /GET \/hello/.test(r.label));
+  assert.ok(helloRun, "the GET /hello run in the Runs panel");
+  auditRuns.receive({ type: "select", seq: helloRun.seq });
+  assert.equal(auditRuns.snapshot().selected, helloRun.seq, "the run is selected in the panel");
+  assert.match(auditRuns.recordOf(helloRun.seq).startedBy, /GET \/hello/, "the record names the call");
+  auditRuns.receive({ type: "failedOnly", value: true });
+  assert.ok(!auditRuns.snapshot().runs.some((r) => /GET \/hello/.test(r.label)), "the successful run hidden");
+  auditRuns.receive({ type: "failedOnly", value: false });
+  assert.ok(auditRuns.snapshot().runs.some((r) => /GET \/hello/.test(r.label)), "the run back in the list");
   // Explain: the flow's outline (its routes) opens as a document; manifest: what it touches and may do.
   const hello = (await flows.getChildren()).find((i) => i.label === "hello");
   await vscode.commands.executeCommand("holon.explainFlow", hello);
