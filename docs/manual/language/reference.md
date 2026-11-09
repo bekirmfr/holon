@@ -820,10 +820,12 @@ misled, the compiler refuses instead.
   its own writes. When two runs change the same item at once, one is run again, so none is lost.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
   continues with the answer. One bound on a statement of its own (`const page = await
-  api.get(…)`) is made when the run reaches the statement, whatever reads `page`; one written in
-  a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is made only when
-  the branch needs it, so a branch not taken makes no call. To make a bound call only sometimes,
-  tie it: `if (first !== undefined) charged = await api.post(…)`.
+  api.get(…)`) is made when the run reaches the statement, whatever reads `page`, and not when it
+  isn't reached: in an `if` whose condition doesn't hold, or after a `return` that answered. One
+  written in a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is
+  made only when the branch needs it, so a branch not taken makes no call. To make a bound call
+  only sometimes, put it in an `if`, or tie it to a value: `if (first !== undefined) charged =
+  await api.post(…)`.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and
   starts the action that waits by calling it without `await`. A later request to a route with
   `{ resumes: name }`, carrying the token, delivers the event and the run continues. `expires`

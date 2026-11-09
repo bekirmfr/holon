@@ -4147,6 +4147,24 @@ route.post("/a", (req) => {
         }
     }
 
+    /// A call bound in an `if`, or after a `return` that may have answered, is tied to the condition
+    /// it runs under, though something reads its answer: a branch not taken makes no call. (Read, it
+    /// was once tied to its block alone, and made whatever the condition.)
+    #[test]
+    fn a_call_under_a_condition_is_tied_to_it_read_or_not() {
+        for handler in [
+            "route.post(\"/a\", async (req) => {\n  if (req.json.go) {\n    const page = await a.get(\"/x\")\n    return page.body\n  }\n  return \"no\"\n})\n",
+            "route.post(\"/a\", async (req) => {\n  if (!req.json.go) {\n    return \"no\"\n  }\n  const page = await a.get(\"/x\")\n  return page.body\n})\n",
+        ] {
+            let src = format!("import {{ flow, route }} from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
+            let d = compiled(&src).doc;
+            let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
+            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
+            let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
+            assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
+        }
+    }
+
     /// `every("2s", () => { … })` is a clock handler: its tick node, everything wired to it, its
     /// sinks tied to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
     #[test]

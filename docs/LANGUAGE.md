@@ -2082,9 +2082,11 @@ A binding isn't a branch. A call written in a branch, `ids[name] ?? JSON.parse((
 httpbin.get("/uuid")).body).uuid` (the `cache-aside` sample) or `c ? await api.get(…) : undefined`,
 is made only when the branch needs it; a call bound on a statement of its own, `const page = await
 api.get(…)`, is made when the run reaches the statement, whatever reads `page`, even a branch not
-taken (§5.4). In the graph the difference is the call's trigger: one bound on a statement is tied
-to its handler's trigger, or to what an `if (x !== undefined)` around it names, and its handler
-keeps it as an output; one written in a branch is left untied, and is made when its answer is
+taken (§5.4). A statement in an `if` whose condition doesn't hold, or after a `return` that
+answered, isn't reached: its call isn't made, though a later statement reads its answer. In the
+graph the difference is the call's trigger: one bound on a statement is tied to its handler's
+trigger, to what an `if (x !== undefined)` around it names, or to the conditions it runs under
+(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
 needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
 else. The printer keeps each where it was written. (In a function, a call bound on a statement is
@@ -2597,6 +2599,11 @@ the syntax to TypeScript's, keeping the lowering.
    - *XML* (2026-11-08, host-capabilities L4 §5.1.5, slice 1.2c): an element as JsonML's list,
      `xml_parse` without a DTD and `xml_format`, compact or indented, and `xml_find`, `xml_text`
      and `xml_attribute` along paths. The payment-batch sample, run live.
+   - *A call under a condition* (2026-11-09): a call bound on a statement in an `if`, or after a
+     `return` that may have answered, is tied to the conditions it runs under whether or not
+     something reads its answer. One that was read had been tied to its handler alone, since calls
+     became made where their statement is, and so was made whatever the condition: moving
+     approved-payout onto `approval`, a declined payout was still sent.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

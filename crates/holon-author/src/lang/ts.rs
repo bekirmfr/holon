@@ -1049,20 +1049,17 @@ impl<'s, 't> Reader<'s, 't> {
             Some(Answer::Value { value, .. }) if block == Block::Action => stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None }),
             _ => {}
         }
-        self.settle(stmts, &[]);
+        self.settle(stmts);
         Ok(())
     }
 
-    /// What a body still owes once read. A call bound under a condition that nothing reads is
-    /// tied to the condition (`after`), as a call nothing reads is made whatever else holds; one
-    /// read is asked for only where it is read. A hidden condition read once is written back
-    /// where it is read. `outputs` are a function's.
-    fn settle(&mut self, stmts: &mut Vec<Stmt>, outputs: &[String]) {
-        let live = live_bindings(stmts, outputs);
+    /// What a body still owes once read. A call bound under a condition is tied to the condition
+    /// (`after`), read or not: a call is made where its statement is, whatever reads it, so one in
+    /// a branch not taken, or after a return that answered, would be made all the same. A hidden
+    /// condition read once is written back where it is read.
+    fn settle(&mut self, stmts: &mut Vec<Stmt>) {
         for (name, trigger) in std::mem::take(&mut self.frame.guarded_calls) {
-            if !live.contains(&name)
-                && let Some(s) = stmts.iter_mut().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name))
-            {
+            if let Some(s) = stmts.iter_mut().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name)) {
                 s.after = Some(trigger);
             }
         }
@@ -2763,7 +2760,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let e = body.as_expression().expect("an expression body");
                 me.exit(e, Block::Function)?;
                 let outputs = me.outputs(Ret::Always, stmts, at)?;
-                me.settle(stmts, &outputs);
+                me.settle(stmts);
                 Ok(outputs)
             }
         })
@@ -2801,7 +2798,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn function_statements(&mut self, body: &[js::Statement], stmts: &mut Vec<Stmt>, at: Span) -> R<Vec<String>> {
         let ret = self.top(body, Block::Function, stmts)?;
         let outputs = self.outputs(ret, stmts, at)?;
-        self.settle(stmts, &outputs);
+        self.settle(stmts);
         Ok(outputs)
     }
 
@@ -5506,43 +5503,6 @@ fn uses(stmts: &mut [Stmt], name: &str) -> usize {
         true
     });
     n
-}
-
-/// The bindings something reads: a statement that isn't a binding, `outputs`, or a binding read
-/// so, through any number of others.
-fn live_bindings(stmts: &mut [Stmt], outputs: &[String]) -> BTreeSet<String> {
-    let mut reads = Vec::new();
-    for s in stmts.iter_mut() {
-        let bound = match &s.kind {
-            StmtKind::Bind { name, .. } => Some(name.text.clone()),
-            _ => None,
-        };
-        let mut names = BTreeSet::new();
-        each_expr(std::slice::from_mut(s), &mut |e| {
-            if let ExprKind::Name(n) = &e.kind {
-                names.insert(n.clone());
-            }
-            true
-        });
-        reads.push((bound, names));
-    }
-    let mut live: BTreeSet<String> = outputs.iter().cloned().collect();
-    for (bound, names) in &reads {
-        if bound.is_none() {
-            live.extend(names.iter().cloned());
-        }
-    }
-    loop {
-        let before = live.len();
-        for (bound, names) in &reads {
-            if bound.as_ref().is_some_and(|b| live.contains(b)) {
-                live.extend(names.iter().cloned());
-            }
-        }
-        if live.len() == before {
-            return live;
-        }
-    }
 }
 
 /// `from` renamed `to`, where it is bound and where it is read.
