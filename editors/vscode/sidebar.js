@@ -454,7 +454,7 @@ function graphHtml(name, document) {
     nodeW: NODE_W,
     head: HEAD,
     row: ROW,
-    nodes: laid.map((l) => ({ key: `n:${l.n.id}`, title: String(l.d.name ?? l.n.id), x: l.x, y: l.y, h: l.h })),
+    nodes: laid.map((l) => ({ key: `n:${l.n.id}`, title: String(l.d.name ?? l.n.id), params: Object.fromEntries(l.params.filter((p) => p.kind === "Frozen").map((p) => [p.name, p.value])), x: l.x, y: l.y, h: l.h })),
     wires: (document.edges ?? []).flatMap((e, i) => {
       const from = index.get(e.source);
       const to = index.get(e.target);
@@ -499,7 +499,7 @@ function graphHtml(name, document) {
 
   // JSON is safe inside the script as long as no "<" can end the script element early.
   const json = JSON.stringify(model).split("<").join(String.fromCharCode(92) + "u003c");
-  return graphPage(`<svg id="canvas"><g id="view"><g id="wires"></g><g id="nodes">${nodes.join("")}</g></g><rect id="marquee" class="marquee" display="none"/></svg>`, json);
+  return graphPage(`<svg id="canvas"><g id="view"><g id="domains"></g><g id="wires"></g><g id="nodes">${nodes.join("")}</g></g><rect id="marquee" class="marquee" display="none"/></svg>`, json);
 }
 
 function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\":0,\"row\":0}") {
@@ -522,6 +522,8 @@ function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\
   .wire { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.5; }
   .trigger { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.2; stroke-dasharray: 4 3; }
   .hit { fill: none; stroke: transparent; stroke-width: 12; }
+  .domain { fill: var(--vscode-editorWidget-background); fill-opacity: 0.4; stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); stroke-dasharray: 6 4; }
+  .domain-label { fill: var(--vscode-descriptionForeground); font-size: 12px; font-weight: 600; dominant-baseline: middle; }
   .marquee { fill: var(--vscode-editor-selectionBackground); fill-opacity: 0.35; stroke: var(--vscode-focusBorder); stroke-width: 1; }
   .selected > .node { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .selected > .wire, .selected > .trigger { stroke: var(--vscode-focusBorder); stroke-width: 2.5; }
@@ -593,6 +595,7 @@ ${body}
   function place(i) {
     nodeEls[i].setAttribute("transform", "translate(" + M.nodes[i].x + " " + M.nodes[i].y + ")");
   }
+  // A wire runs from its output port to its input port as one S-curve.
   function wireD(w) {
     var a = M.nodes[w.from], b = M.nodes[w.to];
     var x1 = a.x + NW, y1 = a.y + HD + w.out * RW + RW / 2;
@@ -600,98 +603,206 @@ ${body}
     var bend = Math.max(60, Math.abs(x2 - x1) / 2);
     return "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 + ", " + (x2 - bend) + " " + y2 + ", " + x2 + " " + y2;
   }
+
   function drawWires() {
     wirePaths.forEach(function (p) {
       var d = wireD(p.w);
       p.hit.setAttribute("d", d);
       p.line.setAttribute("d", d);
     });
+    updateDomains();
   }
-  // The tidy layout: each node in the column of its depth (the longest chain of wires into it), so every
-  // wire runs left to right; the columns' order is set to shorten the wires (a few sweeps of the
-  // barycentre); each node sits level with what feeds it, pushed down only to keep a gap.
-  function tidyLayout() {
-    var n = M.nodes.length;
+
+  // The tidy layout. Each handler's nodes form one domain: the nodes wired together, so a handler's nodes
+  // never mix with another's. Each domain is laid out on its own, left to right: each node sits in the
+  // column of its depth (the longest chain of wires into it), as late as its consumers allow. Within a
+  // column the order comes from a few barycentre sweeps, and the heights from a few relaxations toward the
+  // nodes each one is wired to. The domains are stacked, each framed and labelled by its request.
+  var PAD = 24, LABEL = 34, DOMAIN_GAP = 90;
+  var domainLayer = document.getElementById("domains");
+  var domainList = [];
+
+  function domainLabel(ids) {
+    var request = ids.map(function (id) { return M.nodes[id]; }).find(function (nd) { return nd.title === "request" && nd.params && nd.params.method; });
+    if (request) return request.params.method + " " + (request.params.path || "");
+    return M.nodes[ids[0]].title;
+  }
+
+  function makeDomains(groups) {
+    while (domainLayer.firstChild) domainLayer.removeChild(domainLayer.firstChild);
+    domainList = groups.map(function (ids) {
+      var rect = document.createElementNS(svg.namespaceURI, "rect");
+      rect.setAttribute("class", "domain");
+      var text = document.createElementNS(svg.namespaceURI, "text");
+      text.setAttribute("class", "domain-label");
+      text.textContent = domainLabel(ids);
+      domainLayer.appendChild(rect);
+      domainLayer.appendChild(text);
+      return { ids: ids, rect: rect, text: text };
+    });
+  }
+
+  // A domain's frame follows its nodes, so it stays round them while they are dragged.
+  function updateDomains() {
+    domainList.forEach(function (d) {
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      d.ids.forEach(function (id) {
+        var nd = M.nodes[id];
+        x0 = Math.min(x0, nd.x);
+        y0 = Math.min(y0, nd.y);
+        x1 = Math.max(x1, nd.x + NW);
+        y1 = Math.max(y1, nd.y + nd.h);
+      });
+      var fx = x0 - PAD, fy = y0 - LABEL;
+      d.rect.setAttribute("x", fx);
+      d.rect.setAttribute("y", fy);
+      d.rect.setAttribute("width", x1 - x0 + 2 * PAD);
+      d.rect.setAttribute("height", y1 - y0 + LABEL + PAD);
+      d.text.setAttribute("x", fx + 10);
+      d.text.setAttribute("y", fy + LABEL / 2);
+    });
+  }
+
+  // The layers and heights of one domain, from its own nodes (ids) and the wires among them.
+  function layoutGroup(ids) {
+    var g = ids.length;
+    var COL = NW + 96, GAP = 28;
+    var loc = {};
+    ids.forEach(function (id, k) { loc[id] = k; });
     var preds = [], succs = [];
-    for (var i = 0; i < n; i++) {
+    var i, k2, l, u, v;
+    for (k2 = 0; k2 < g; k2++) {
       preds.push([]);
       succs.push([]);
     }
     M.wires.forEach(function (w) {
-      if (w.from !== w.to) {
-        succs[w.from].push(w.to);
-        preds[w.to].push(w.from);
+      if (w.from !== w.to && loc[w.from] !== undefined && loc[w.to] !== undefined) {
+        succs[loc[w.from]].push(loc[w.to]);
+        preds[loc[w.to]].push(loc[w.from]);
       }
     });
-    var layer = [], indeg = [], queue = [];
-    for (i = 0; i < n; i++) {
+    var layer = [], indeg = [], queue = [], topo = [];
+    for (i = 0; i < g; i++) {
       layer.push(0);
       indeg.push(preds[i].length);
       if (indeg[i] === 0) queue.push(i);
     }
     while (queue.length) {
-      var u = queue.shift();
-      succs[u].forEach(function (v) {
-        layer[v] = Math.max(layer[v], layer[u] + 1);
-        indeg[v] -= 1;
-        if (indeg[v] === 0) queue.push(v);
+      u = queue.shift();
+      topo.push(u);
+      succs[u].forEach(function (s) {
+        layer[s] = Math.max(layer[s], layer[u] + 1);
+        indeg[s] -= 1;
+        if (indeg[s] === 0) queue.push(s);
       });
     }
-    // A node nothing feeds sits in the column just before its first consumer, so a constant stays near
-    // the node it feeds instead of at the far left.
-    for (i = 0; i < n; i++) {
-      if (preds[i].length === 0 && succs[i].length > 0) {
-        layer[i] = Math.min.apply(null, succs[i].map(function (s) { return layer[s]; })) - 1;
+    for (k2 = topo.length - 1; k2 >= 0; k2--) {
+      v = topo[k2];
+      if (succs[v].length) {
+        layer[v] = Math.min.apply(null, succs[v].map(function (s) { return layer[s]; })) - 1;
       }
     }
-    var depth = n ? Math.max.apply(null, layer) : 0;
+
+    var hgt = ids.map(function (id) { return M.nodes[id].h; });
+    var depth = 0;
+    layer.forEach(function (c) { depth = Math.max(depth, c); });
     var rows = [];
-    for (var l = 0; l <= depth; l++) rows.push([]);
-    for (i = 0; i < n; i++) rows[layer[i]].push(i);
+    for (l = 0; l <= depth; l++) rows.push([]);
+    for (i = 0; i < g; i++) rows[layer[i]].push(i);
+
     var pos = [];
-    function index() {
-      rows.forEach(function (row) {
-        row.forEach(function (v, k) { pos[v] = k; });
-      });
-    }
+    rows.forEach(function (row) {
+      row.forEach(function (x, j) { pos[x] = j; });
+    });
     function order(row, neighbours) {
       var key = {};
-      row.forEach(function (v) {
-        var around = neighbours(v);
-        key[v] = around.length ? around.reduce(function (a, b) { return a + b; }, 0) / around.length : pos[v];
+      row.forEach(function (x) {
+        var around = neighbours(x);
+        key[x] = around.length ? around.reduce(function (a, b) { return a + b; }, 0) / around.length : pos[x];
       });
       row.sort(function (a, b) { return key[a] - key[b] || pos[a] - pos[b]; });
-      row.forEach(function (v, k) { pos[v] = k; });
+      row.forEach(function (x, j) { pos[x] = j; });
     }
-    index();
     for (var sweep = 0; sweep < 4; sweep++) {
       for (l = 1; l <= depth; l++) {
-        order(rows[l], function (v) { return preds[v].map(function (p) { return pos[p]; }); });
+        order(rows[l], function (x) { return preds[x].map(function (p) { return pos[p]; }); });
       }
       for (l = depth - 1; l >= 0; l--) {
-        order(rows[l], function (v) { return succs[v].map(function (s) { return pos[s]; }); });
+        order(rows[l], function (x) { return succs[x].map(function (s) { return pos[s]; }); });
       }
     }
-    var GAP = 28;
-    var COL = NW + 96;
-    var ys = [];
-    for (l = 0; l <= depth; l++) {
-      var end = null;
-      rows[l].forEach(function (v) {
-        var h = M.nodes[v].h;
-        var fed = preds[v].filter(function (p) { return ys[p] !== undefined; });
-        var want = fed.length ? fed.reduce(function (a, p) { return a + ys[p] + M.nodes[p].h / 2; }, 0) / fed.length - h / 2 : 0;
-        var top = end === null ? want : Math.max(want, end);
-        ys[v] = top;
-        end = top + h + GAP;
+
+    // A column is packed from its top and from its bottom, each keeping the gap; the average of the two
+    // keeps the gap too, and sits as near the wanted tops as the column allows.
+    function pack(row, wanted) {
+      var down = [], up = [], end = -Infinity, start = Infinity;
+      row.forEach(function (x, j) {
+        var top = Math.max(wanted[j], end);
+        down.push(top);
+        end = top + hgt[x] + GAP;
       });
+      for (var j2 = row.length - 1; j2 >= 0; j2--) {
+        var bottom = Math.min(wanted[j2], start - hgt[row[j2]] - GAP);
+        up[j2] = bottom;
+        start = bottom;
+      }
+      return row.map(function (x, j3) { return (down[j3] + up[j3]) / 2; });
     }
-    var minY = Math.min.apply(null, ys);
+    var ys = new Array(g).fill(0);
+    for (l = 0; l <= depth; l++) {
+      var stacked = pack(rows[l], rows[l].map(function () { return 0; }));
+      rows[l].forEach(function (x, j) { ys[x] = stacked[j]; });
+    }
+    function centre(x) { return ys[x] + hgt[x] / 2; }
+    for (var iter = 0; iter < 8; iter++) {
+      for (l = 0; l <= depth; l++) {
+        var wanted = rows[l].map(function (x) {
+          var around = preds[x].concat(succs[x]);
+          if (!around.length) return ys[x];
+          return around.reduce(function (a, y) { return a + centre(y); }, 0) / around.length - hgt[x] / 2;
+        });
+        var placed = pack(rows[l], wanted);
+        rows[l].forEach(function (x, j) { ys[x] = placed[j]; });
+      }
+    }
+    return { layer: layer, ys: ys, COL: COL };
+  }
+
+  function tidyLayout() {
+    var n = M.nodes.length;
+    var parent = [];
+    var i;
+    for (i = 0; i < n; i++) parent.push(i);
+    function root(a) {
+      while (parent[a] !== a) a = parent[a];
+      return a;
+    }
+    M.wires.forEach(function (w) { parent[root(w.from)] = root(w.to); });
+    var byRoot = {}, groups = [];
     for (i = 0; i < n; i++) {
-      M.nodes[i].x = layer[i] * COL;
-      M.nodes[i].y = ys[i] - minY;
-      place(i);
+      var r = root(i);
+      if (!byRoot[r]) {
+        byRoot[r] = [];
+        groups.push(byRoot[r]);
+      }
+      byRoot[r].push(i);
     }
+    var top = 0;
+    groups.forEach(function (ids) {
+      var lay = layoutGroup(ids);
+      var minY = Infinity, bottom = -Infinity;
+      ids.forEach(function (id, k) {
+        minY = Math.min(minY, lay.ys[k]);
+        bottom = Math.max(bottom, lay.ys[k] + M.nodes[id].h);
+      });
+      ids.forEach(function (id, k) {
+        M.nodes[id].x = PAD + lay.layer[k] * lay.COL;
+        M.nodes[id].y = top + LABEL + lay.ys[k] - minY;
+        place(id);
+      });
+      top += LABEL + (bottom - minY) + PAD + DOMAIN_GAP;
+    });
+    makeDomains(groups);
     drawWires();
   }
 
