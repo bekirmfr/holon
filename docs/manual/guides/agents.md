@@ -59,7 +59,7 @@ The tools `holon mcp` offers:
 | `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
 | `flows` | the saved flows; with a name, its text |
-| `runs` | a deployment's latest runs, one line each |
+| `runs` | a deployment's latest runs, one line each; then the runs waiting now, at an approval with who has approved it so far, or at an event |
 | `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
@@ -68,8 +68,8 @@ The tools `holon mcp` offers:
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
-secret, restores one, or replaces a flow someone else saved. The server enforces this, not the
-tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
+secret, restores one, decides an [approval](../language/leaves.md#approval) a run waits at, or
+replaces a flow someone else saved. The server enforces this, not the tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
 (`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
 41 left", by *you* (agent); in the editor's history, pick that row and restore what it asks, after
 the same dry run as any restore. Nothing changes until you do.
@@ -79,6 +79,11 @@ An agent runs a flow's [action](actions.md) only once you let it: in the deploy 
 which you approve at the next deploy. Until then, `run` answers that agents may not run it, and
 revoking it on the deployed page refuses them again. The agent's runs are logged as anyone's,
 "by *you* (agent)".
+
+A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
+`runs` shows which run waits and who has approved it so far, and the agent tells you. You decide
+it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide);
+no tool decides one, and the server refuses an agent's decision.
 
 ## Approving what an agent proposes
 

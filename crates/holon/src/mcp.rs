@@ -48,7 +48,10 @@ shows what each may do before it runs. Call `reference` first for the language a
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
 show what is already there, with its text, and `save` keeps a flow without deploying it. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
 deploy, and any version that needs a new permission, waits for a person to approve it in the \
-editor: tell the user what it asks for and where, and deploy again once they have.";
+editor: tell the user what it asks for and where, and deploy again once they have. A run that \
+waits at an approval (`await approval(…)`) goes on when people decide it, in the editor's \
+Approvals or with `holon decide`; no tool decides one: `runs` shows which run waits, and who has \
+approved it so far, for you to tell the user.";
 
 // ── reaching a server ───────────────────────────────────────────────────────────────────────
 
@@ -232,7 +235,7 @@ fn tool_list() -> Value {
         {
             "name": "runs",
             "title": "List a flow's runs",
-            "description": "A deployed flow's latest runs, one line each: what started it, its answer, how long it took, and why it failed.",
+            "description": "A deployed flow's latest runs, one line each: what started it, its answer, how long it took, and why it failed. Then the runs waiting now: at an approval, with who has approved it so far (a person decides it; no tool does), or at an event.",
             "inputSchema": { "type": "object", "properties": { "slug": slug, "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "how many, newest last (default 10)" } }, "required": ["slug"] },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
@@ -508,7 +511,7 @@ fn deployment_line(d: &Value) -> String {
     let runs = n("trigger_count");
     line.push_str(&format!("; {runs} run{}, {} failed", if runs == 1 { "" } else { "s" }, n("error_count")));
     if n("waiting") > 0 {
-        line.push_str(&format!(", {} waiting for an event", n("waiting")));
+        line.push_str(&format!(", {} waiting (`runs` says for what)", n("waiting")));
     }
     let by = d.get("deployed_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default();
     line.push_str(&format!("; deployed{by} at {}", when(&d["deployed_at_epoch_seconds"])));
@@ -712,7 +715,7 @@ fn run_action(api: &dyn Api, slug: &str, name: &str, input: Value) -> Result<Str
         return Ok(format!("action {name} → {answer}\n\nRuns of action {name} aren't recorded (its line says unrecorded): this one was counted, not logged, so there is no run to explain."));
     };
     if ran.get("waiting").and_then(Value::as_bool) == Some(true) {
-        return Ok(format!("action {name} is waiting for an event: run {seq}, which `explain` shows."));
+        return Ok(format!("action {name} is waiting: run {seq}, which `explain` shows; `runs` says what it waits for, an approval or an event."));
     }
     let answer = ran.get("answer").cloned().unwrap_or(Value::Null);
     Ok(format!("action {name} → {answer}\n\nThis was run {seq}: `explain` with run {seq} shows what each statement did."))
@@ -721,12 +724,22 @@ fn run_action(api: &dyn Api, slug: &str, name: &str, input: Value) -> Result<Str
 fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
     let log = json_of(api, "GET", &format!("/deployments/{}/log?limit={limit}", seg(slug)), None)?;
     let entries = log.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
-    if entries.is_empty() {
+    let waiting = list_of(json_of(api, "GET", &format!("/deployments/{}/runs", seg(slug)), None)?, Some("runs"));
+    if entries.is_empty() && waiting.is_empty() {
         return Ok(format!("\"{slug}\" has no runs yet."));
     }
     let mut out: Vec<String> = entries.iter().map(agent::run_line).collect();
     if let Some(breaks) = log.get("breaks").and_then(Value::as_array).filter(|b| !b.is_empty()) {
         out.push(format!("The log was changed outside holon before runs {}: their record can't be trusted.", breaks.iter().map(Value::to_string).collect::<Vec<_>>().join(", ")));
+    }
+    let points = crate::decidecmd::waiting_lines(&waiting);
+    if !points.is_empty() {
+        out.push(String::new());
+        out.push("Waiting now:".into());
+        out.extend(points);
+        if waiting.iter().flat_map(|r| r["waiting"].as_array().cloned().unwrap_or_default()).any(|w| w["people"].as_u64().unwrap_or(0) > 0) {
+            out.push(format!("An approval is a person's to decide, and no tool decides it: tell the user which run waits, and that they decide it in the editor (Approvals, Runs waiting) or with `holon decide {slug} <run> <name> --approve` (or --decline --reason …)."));
+        }
     }
     Ok(out.join("\n"))
 }
@@ -1513,6 +1526,44 @@ mod tests {
         let versions = json_of(&person, "GET", "/deployments/price/versions", None).unwrap();
         assert_eq!(versions["versions"].as_array().unwrap().len(), 1, "{versions}");
         assert_eq!(person.send("POST", "/deployments/price/stop", None).unwrap().0, 200);
+    }
+
+    /// An agent reads which run waits at an approval, and who has approved it so far, to tell the
+    /// user; it can't decide one (G12): no tool does, and the route refuses it.
+    #[test]
+    fn an_agent_reads_who_approved_a_waiting_run_and_never_decides_it() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        let dan = accounts.accept(&accounts.invite("dan", crate::access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person, other) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false }, Signed { state: &state, token: &dan, agent: false });
+        let text = "import { action, approval, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  state.decided = decision\n  return decision.approved\n})\n";
+        let plan = agent::plan(text).unwrap();
+        for u in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
+        }
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+
+        // Started by a person (agents run an action only once it lets them).
+        let ran = tool_as(&person, "run", json!({ "slug": "payouts", "action": "pay", "input": { "amount": 900 } })).unwrap();
+        assert!(ran.starts_with("action pay is waiting: run "), "{ran}");
+        let run_id = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap()["runs"][0]["run_id"].as_str().unwrap().to_string();
+        let decide = format!("/deployments/payouts/runs/{run_id}/decide");
+        json_of(&other, "POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true, "reason": "matches the invoice" })))).unwrap();
+
+        let listed = tool_as(&agent, "runs", json!({ "slug": "payouts" })).unwrap();
+        assert!(listed.contains(&format!("run {} (action pay, since ", &run_id[..12])), "{listed}");
+        assert!(listed.contains("waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
+        assert!(listed.contains("no tool decides it") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
+        assert!(tool_as(&agent, "deployments", json!({})).unwrap().contains("1 waiting (`runs` says for what)"));
+        // The agent's own decision is refused before the route: it signs in as ada, an admin, but asks as an agent.
+        let (status, body) = agent.send("POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true })))).unwrap();
+        assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
+        assert!(String::from_utf8_lossy(&body).contains("approving, granting, starting, stopping and deleting are a person's"), "{}", String::from_utf8_lossy(&body));
+        let waiting = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap();
+        assert_eq!(waiting["runs"][0]["waiting"][0]["approved"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
     }
 
     fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {

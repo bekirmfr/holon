@@ -147,6 +147,7 @@
 mod access;
 mod accounts;
 mod accountscmd;
+mod decidecmd;
 mod deploycmd;
 mod replaycmd;
 mod activity;
@@ -554,6 +555,8 @@ const USAGE: &str = "usage: holon <command>
   action <slug> <name>               run one of a deployment's actions (--input JSON)
   tick <slug> CLOCK                  fire one of a flow's clocks now
   state <slug>                       its live state (--collection NAME, --sessions)
+  decide <slug> [<run> <name>]       approve, or decline with --reason, an approval a run waits
+                                     at (--approve|--decline); the slug alone lists what waits
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
   secret list|history|set|rollback|remove|env
@@ -678,6 +681,7 @@ fn main() {
         Some("action") => std::process::exit(opscmd::action(&rest)),
         Some("tick") => std::process::exit(opscmd::tick(&rest)),
         Some("state") => std::process::exit(opscmd::state(&rest)),
+        Some("decide") => std::process::exit(decidecmd::run(&rest)),
         Some("grant") => std::process::exit(grantcmd::grant(&rest)),
         Some("grants") => std::process::exit(grantcmd::grants(&rest)),
         Some("policy") => std::process::exit(grantcmd::policy(&rest)),

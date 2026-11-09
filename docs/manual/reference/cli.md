@@ -21,6 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon action`](#holon-action) | run one of a deployment's actions |
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
+| [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
@@ -271,7 +272,9 @@ holon deployments [<slug>] [--json]
 Every deployment, a line each: its status, how it starts (its port, its schedule), its runs and
 failures, the runs waiting for an approval or an event, and who deployed it when. `!` marks one
 that needs attention. With a slug, that one's details, why it needs attention, and each waiting
-run: what it waits for, until when. A waiting run is approved by its own link, on the flow's port.
+run: what it waits for, until when, and who has approved an approval so far. People decide an
+approval in the editor's Approvals or with [`holon decide`](#holon-decide); an event comes through
+the flow's own route.
 
 ### `holon run`, `pause`, `stop`, `remove`
 
@@ -372,6 +375,30 @@ A deployment's live state, a line per value, written as the language writes valu
 collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
 `--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
 it ran, from where, how many runs, and the state it left.
+
+### `holon decide`
+
+```
+holon decide <slug> [--json]
+holon decide <slug> <run> <name> --approve [--reason TEXT]
+holon decide <slug> <run> <name> --decline --reason TEXT
+```
+
+Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
+the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
+run (the first 12 characters of its id), what started it and since when, then an approval with
+how many people it asks and who has approved it so far, or an event, and until when:
+
+```
+run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout", 2 people's, 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+```
+
+Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
+reason optional, or `--decline`, which needs one. It says what the decision did: still waiting for
+more people, approved by whom, or declined; the run goes on with the decision once it is made.
+Each person counts once; one decline ends it. Only a person decides: an editor or an admin
+signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
+`holon mcp`, which asks as an agent.
 
 ## Grants and policy
 

@@ -110,6 +110,12 @@ the decision as its event: `{approved, by, approvals}`, with `declined_by` and `
 decline. So the resumed part's log entry, and what `holon verify` and a replay read, hold who
 decided. Each decision is in the activity log too (`approved`, `declined`).
 
+People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
+--approve|--decline --reason …` (decidecmd.rs), signed in as the OS user's local admin; `holon
+decide <slug>` and `holon deployments <slug>` list what runs wait at, with who has approved so far
+(`decidecmd::waiting_lines`). `holon mcp`'s `runs` adds the same lines for an agent to tell the user;
+no tool decides, and the access layer refuses an agent's POST before the route.
+
 ### Expire
 
 The clock scheduler's thread, every second, calls `expire_waiting`: each waiting point past its
@@ -215,6 +221,8 @@ In `crates/holon/src/tests.rs`:
   two people approve and the run goes on with who they were; one decline with a reason ends it; one
   that runs out goes on expired, with who approved; each decision is in the log and the activity
   log. `only_a_person_decides_an_approval`.
+- In `mcp.rs`, `an_agent_reads_who_approved_a_waiting_run_and_never_decides_it`; in
+  `decidecmd.rs`, how a waiting run, a decision and a run picked by its id's start read.
 
 End to end: `approval sends an order's progress on its channel: waiting as the run parks, paid when
 it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for its approval
