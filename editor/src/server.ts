@@ -546,7 +546,7 @@ export type Summary = {
     head: string;
     breaks: number[];
   }[];
-  latest: { slug: string; seq: number; at_ms: number; duration_ms: number; kind: string; route: string | null; status: number | null; failed: boolean }[];
+  latest: { slug: string; seq: number; at_ms: number; duration_ms: number; kind: string; route: string | null; status: number | null; failed: boolean; waited?: boolean }[];
   chain: {
     on_record: number;
     breaks: number;
@@ -697,13 +697,13 @@ export type DeploymentEntry = {
   /** Why a server deployment isn't answering on its port (it couldn't listen there, say another
    *  program holds it), until a deploy or run listens there again. */
   listen_error?: string;
-  /** How many of its runs are waiting for an event. */
+  /** How many of its runs are waiting for an approval or an event. */
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
 };
 
-/** A run waiting for an event (`GET /deployments/<slug>/runs`; never its tokens). */
+/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;

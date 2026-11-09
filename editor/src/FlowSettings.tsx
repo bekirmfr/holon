@@ -295,7 +295,7 @@ function DeploySettings({ manifest }: { manifest: ManifestReply | null }) {
   );
 }
 
-/** Its runs waiting for an event: what each waits for and until when, and what was delivered
+/** Its runs waiting for an approval or an event: what each waits for and until when, and what was delivered
  *  to it so far. Never their tokens (the server doesn't list them). */
 function Waiting({ slug, count }: { slug: string; count: number }) {
   const [runs, setRuns] = useState<WaitingRun[] | null>(null);

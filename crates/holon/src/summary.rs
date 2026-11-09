@@ -85,6 +85,9 @@ struct Latest {
     route: Option<String>,
     status: Option<u16>,
     failed: bool,
+    /// It waited, for an approval or an event, rather than answering: a later run goes on with it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    waited: bool,
 }
 
 #[derive(Serialize)]
@@ -152,6 +155,7 @@ fn summary(state: &AppState, at_ms: u64, hours: usize) -> Summary {
                 route: e.route.clone(),
                 status: e.status,
                 failed: crate::recorder::ran_failed(e),
+                waited: !e.parked.is_empty(),
             }));
             (log.hourly(at_ms, hours), log.runs_kept(), log.head().to_string(), log.breaks().to_vec())
         });

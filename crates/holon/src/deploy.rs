@@ -1004,8 +1004,6 @@ pub(crate) fn run_action(
         Some(other) => (200, Some(other)),
         None => (500, None),
     };
-    let failed = run.error.is_some() || status >= 500;
-    record_trigger(deployments, slug, failed);
     let mut entry = run_entry("trigger", started, &sourced, &run);
     entry.route = Some(action.label.clone());
     entry.request = Some(SValue::from_core(&input));
@@ -1016,6 +1014,9 @@ pub(crate) fn run_action(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
+    // A run that waits has no answer yet, which isn't a failure (its log entry says it waits).
+    let failed = run.error.is_some() || entry.error.is_some() || (status >= 500 && entry.parked.is_empty());
+    record_trigger(deployments, slug, failed);
     // A failed one says so in its entry (an unrecorded action's tally takes it from there).
     if failed {
         entry.status = Some(status.max(500));

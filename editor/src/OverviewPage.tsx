@@ -131,7 +131,7 @@ export function OverviewPage({
             <div className="hl-needs__row">
               <span className="hl-flow__what">waiting runs</span>
               <span className="hl-needs__said">
-                {waiting} run{waiting === 1 ? " waits" : "s wait"} for an event
+                {waiting} run{waiting === 1 ? " waits" : "s wait"} for an approval or an event
               </span>
               <a className="hl-flow__button" href={format(toWaiting)} onClick={follow(toWaiting, navigate)}>
                 Open
@@ -209,7 +209,7 @@ export function OverviewPage({
                       <span className="hl-table__dim">#{r.seq}</span>
                       <span className="hl-flow__what">{r.slug}</span>
                       <span className="hl-overview__route">{r.route ?? r.kind}</span>
-                      <span className={r.failed ? "hl-flow__bad" : "hl-flow__now"}>{r.failed ? "failed" : r.status ?? "ok"}</span>
+                      <span className={r.failed ? "hl-flow__bad" : "hl-flow__now"}>{r.failed ? "failed" : r.waited ? "waited" : (r.status ?? "ok")}</span>
                     </a>
                   </li>
                 );

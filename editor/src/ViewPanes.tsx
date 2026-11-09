@@ -756,7 +756,7 @@ function LogTab({
                       <span key={a.label} title={a.title} style={{ color: a.color, fontSize: 9, letterSpacing: "0.02em" }}>{a.label}</span>
                     ))}
                     {e.error && <span style={{ color: bad, fontSize: 9 }}>err</span>}
-                    {(e.parked ?? []).length > 0 && <span style={{ color: "var(--warn)", fontSize: 9 }} title="waiting for an event">⏸</span>}
+                    {(e.parked ?? []).length > 0 && <span style={{ color: "var(--warn)", fontSize: 9 }} title="waiting for an approval or an event">⏸</span>}
                   </span>
                   <span style={{ color: e.status !== null && e.status < 400 ? good : bad, width: 26, flexShrink: 0 }}>
                     {e.status ?? ""}

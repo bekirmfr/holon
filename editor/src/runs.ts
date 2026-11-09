@@ -35,8 +35,8 @@ export function runActions(e: LogEntry): { label: string; title: string; color: 
   return acts;
 }
 
-/** How a run ended: answered, failed (an error, or a 5xx it answered), or waiting for an event
- *  at a waiting point (a durable run's part). */
+/** How a run ended: answered, failed (an error, or a 5xx it answered), or waiting for an
+ *  approval or an event at a waiting point (a durable run's part). */
 export type Outcome = "ok" | "failed" | "waiting";
 export function runOutcome(e: LogEntry): Outcome {
   if (e.error !== null || (e.status ?? 0) >= 500) return "failed";

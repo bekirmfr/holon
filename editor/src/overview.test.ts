@@ -38,6 +38,6 @@ describe("the overview's words", () => {
   it("greet by the hour and sum up the host", () => {
     expect([9, 13, 20].map(greeting)).toEqual(["Good morning", "Good afternoon", "Good evening"]);
     expect(hostLine(4, 0, 0)).toBe("4 flows on this host. Nothing waits for approval.");
-    expect(hostLine(1, 1, 34)).toBe("1 flow on this host. One thing waits for approval. 34 runs wait for an event.");
+    expect(hostLine(1, 1, 34)).toBe("1 flow on this host. One thing waits for approval. 34 runs wait for an approval or an event.");
   });
 });

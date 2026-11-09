@@ -15,7 +15,7 @@ type Show = "all" | "live" | "waiting" | "paused";
 const SHOWS: [Show, string, string][] = [
   ["all", "All", "every flow, saved or deployed"],
   ["live", "Live", "deployed and running"],
-  ["waiting", "Waiting", "with runs waiting for an event"],
+  ["waiting", "Waiting", "with runs waiting for an approval or an event"],
   ["paused", "Paused", "deployed, paused or stopped"],
 ];
 

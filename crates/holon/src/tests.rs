@@ -2161,6 +2161,12 @@ export const pay = action(async (order) => {
     let first = runs(&state, None).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
     assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
     assert!(durable::claim_by_token(&state.deployments, "payouts", "payout", &durable::token_for(&ids[0], "payout")).is_none(), "a token doesn't resume an approval");
+    // A run that waits has no answer yet, and hasn't failed: counted, not as an error, and its log
+    // entry says where it waits, with no status.
+    let (count, errors) = state.deployments.lock().unwrap().get("payouts").map(|d| (d.trigger_count, d.error_count)).unwrap();
+    assert_eq!((count, errors), (3, 0), "three runs, none failed");
+    let entries = body_json(route(&state, &req("GET", "/deployments/payouts/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert!(entries.iter().all(|e| e["status"].is_null() && e["parked"] == serde_json::json!(["payout"])), "{entries:?}");
 
     // From here on, people sign in.
     let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());

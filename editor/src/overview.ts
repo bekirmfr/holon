@@ -52,6 +52,6 @@ export function greeting(hour: number): string {
 export function hostLine(flows: number, approvals: number, waiting: number): string {
   const parts = [`${flows} flow${flows === 1 ? "" : "s"} on this host.`];
   parts.push(approvals === 0 ? "Nothing waits for approval." : `${approvals === 1 ? "One thing waits" : `${approvals} things wait`} for approval.`);
-  if (waiting > 0) parts.push(`${waiting} run${waiting === 1 ? " waits" : "s wait"} for an event.`);
+  if (waiting > 0) parts.push(`${waiting} run${waiting === 1 ? " waits" : "s wait"} for an approval or an event.`);
   return parts.join(" ");
 }
