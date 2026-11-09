@@ -4039,6 +4039,11 @@ route.post("/hook", async (req) => {
         let d = compiled(&resumed).doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080");
         assert!(server.errors.iter().any(|e| e == "GET /ok/:t: \"payout\" is an approval, which people decide in Holon: no route resumes it"), "{:?}", server.errors);
+        let token = src("  const d = await approval(\"payout\")
+  const t = resume_token(\"payout\")", "").replace("approval, flow, route", "approval, flow, resume_token, route").replace("return d.approved", "return { ok: d.approved, t }");
+        let d = compiled(&token).doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080");
+        assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
     }
 
     /// A route answers and is done: what waits is an action it starts, `pay(x)` without `await`,

@@ -2121,6 +2121,136 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// An approval is decided by people signed in, never by a token: two different people approve a
+/// two-person approval and the run goes on with who they were; one decline, with a reason, ends
+/// it; one that runs out goes on as expired, with who had approved. An agent, a viewer, an API
+/// token and the same person twice are refused, and each decision is in the run's log and the
+/// activity log.
+#[test]
+fn an_approval_is_decided_by_different_people_never_by_a_token() {
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+import state from "state"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", people: 2 })
+  state.decided = decision
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/2\")", "StateWrite(\"decided\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    let runs = |state: &AppState, token: Option<&str>| {
+        let mut headers = req("GET", "/deployments/payouts/runs", vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
+        body_json(route(state, &Request::fake_http("GET", "/deployments/payouts/runs", headers, vec![])))["runs"].as_array().unwrap().clone()
+    };
+    // Three runs wait; a start is handed no token for an approval, and none resumes it.
+    let mut ids = vec![];
+    for amount in [10, 20, 30] {
+        let started = run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": amount }));
+        assert!(started.is_success());
+        assert!(!String::from_utf8(body_bytes(started)).unwrap().contains("rt_"), "no token for an approval");
+        let waiting = runs(&state, None);
+        let new = waiting.iter().map(|r| r["run_id"].as_str().unwrap().to_string()).find(|id| !ids.contains(id)).unwrap();
+        ids.push(new);
+    }
+    let first = runs(&state, None).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
+    assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
+    assert!(durable::claim_by_token(&state.deployments, "payouts", "payout", &durable::token_for(&ids[0], "payout")).is_none(), "a token doesn't resume an approval");
+
+    // From here on, people sign in.
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ci = accounts.create_token("ci", access::Role::Editor, "ada").unwrap().0;
+    state.access = access::Access::new(accounts, vec![], vec![]);
+    let decide = |token: &str, agent: bool, run: &str, body: serde_json::Value| {
+        let url = format!("/deployments/payouts/runs/{run}/decide");
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut headers = req("POST", &url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {token}")));
+        if agent {
+            headers.push(("X-Holon-Role".into(), "agent".into()));
+        }
+        let r = route(&state, &Request::fake_http("POST", &url, headers, bytes));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let approve = serde_json::json!({ "name": "payout", "approve": true });
+    let decided = || {
+        let v = state.deployments.lock().unwrap()["payouts"].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
+        crate::wire::read_json::<serde_json::Value>(holon_core::stringify_json(&v).unwrap().as_bytes()).unwrap()
+    };
+
+    assert_eq!(decide(&cy, false, &ids[0], approve.clone()).0, 403, "a viewer only reads");
+    let (code, said) = decide(&ci, false, &ids[0], approve.clone());
+    assert_eq!(code, 403);
+    assert!(said.contains("token:ci is an API token, a script, not a person"), "{said}");
+    assert_eq!(decide(&ada, true, &ids[0], approve.clone()).0, 403, "an agent never decides");
+    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"waiting""#) && said.contains(r#""approved_by":["ada"]"#), "{said}");
+    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    assert_eq!(code, 409);
+    assert!(said.contains("ada already approved \\\"payout\\\": it needs 2 different people"), "{said}");
+    let listed = runs(&state, Some(&ada)).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
+    assert_eq!(listed["waiting"][0]["approved"][0]["by"], "ada", "{listed}");
+    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": false })).0, 400, "a decline says why");
+    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "paid", "approve": true })).0, 404);
+    let (code, said) = decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" }));
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"approved""#), "{said}");
+    let d = decided();
+    assert_eq!((&d["approved"], &d["by"]), (&serde_json::json!(true), &serde_json::json!(["ada", "bob"])), "{d}");
+    assert_eq!(d["approvals"][1]["reason"], "the invoice matches");
+    assert!(!runs(&state, Some(&ada)).iter().any(|r| r["run_id"] == ids[0].as_str()), "decided, it finished");
+    assert_eq!(decide(&bob, false, &ids[0], approve.clone()).0, 404, "decided once");
+
+    // One decline is enough.
+    let (code, said) = decide(&bob, false, &ids[1], serde_json::json!({ "name": "payout", "approve": false, "reason": "  not this vendor  " }));
+    assert_eq!(code, 200, "{said}");
+    assert!(said.contains(r#""outcome":"declined""#), "{said}");
+    let d = decided();
+    assert_eq!((&d["approved"], &d["declined_by"], &d["reason"], &d["by"]), (&serde_json::json!(false), &serde_json::json!("bob"), &serde_json::json!("not this vendor"), &serde_json::json!([])), "{d}");
+
+    // Nobody else decides in time: it goes on as expired, with who approved.
+    assert_eq!(decide(&ada, false, &ids[2], approve.clone()).0, 200);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let d = decided();
+    assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
+    assert!(runs(&state, Some(&ada)).is_empty());
+
+    // Each resumed part's log entry holds the decision it was given; the activity log, who decided.
+    let as_ada = |url: &str| {
+        let mut headers = req("GET", url, vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {ada}")));
+        body_json(route(&state, &Request::fake_http("GET", url, headers, vec![])))
+    };
+    let entries = as_ada("/deployments/payouts/log")["entries"].as_array().unwrap().clone();
+    let resumed: Vec<_> = entries.iter().filter(|e| e["kind"] == "resume").collect();
+    assert_eq!(resumed.len(), 3);
+    assert!(resumed.iter().all(|e| e["events"].get("payout").is_some()), "{resumed:?}");
+    let activity = as_ada("/activity")["entries"].as_array().unwrap().clone();
+    let did = |action: &str, by: &str| activity.iter().filter(|e| e["action"] == action && e["by"] == by).count();
+    assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
+}
+
+/// Who may decide an approval: a person by their account's name, the OS user's local admin by the
+/// name it runs as; not an agent, a viewer, an API token, or anyone on a server without accounts.
+#[test]
+fn only_a_person_decides_an_approval() {
+    let caller = |name: Option<&str>, role: Option<access::Role>| access::Caller { name: name.map(String::from), role };
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    for (name, role) in [(Some("ada (agent)"), Some(access::Role::Agent)), (Some("cy"), Some(access::Role::Viewer)), (Some("token:ci"), Some(access::Role::Editor)), (None, None)] {
+        assert!(durable::decider(&caller(name, role)).is_err(), "{name:?}");
+    }
+}
+
 /// What a waiting run keeps that may hold a secret (the request that started it, the requests it
 /// made, the events delivered to it) is sealed in the deployments file under the secrets master
 /// key, which is kept apart from it, and the file is its owner's alone. The run still resumes

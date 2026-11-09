@@ -1022,9 +1022,14 @@ pub(crate) fn run_action(
     }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
     // Where it waits, each point with its token, for a start to hand back: derived from the run's
-    // id as the run's own `resume_token` is.
+    // id as the run's own `resume_token` is. Not an approval's: people decide it, and no token does.
     let waiting_at: Vec<(String, String)> = match &waits.run_id {
-        Some(id) => entry.parked.iter().map(|name| (name.clone(), durable::token_for(id, name))).collect(),
+        Some(id) => entry
+            .parked
+            .iter()
+            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.people == 0))
+            .map(|name| (name.clone(), durable::token_for(id, name)))
+            .collect(),
         None => Vec::new(),
     };
     // The seq its entry got, not the next one read beforehand: another run may log between.
