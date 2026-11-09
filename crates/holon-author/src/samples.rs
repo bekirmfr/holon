@@ -887,6 +887,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -d '{"id":"o1","lines":[{"price":2},{"price":3}]}' http://127.0.0.1:8178/orders answers 201 and keeps it; -d '{"id":"o2","lines":[]}' answers 400, "an order has lines" in the run's log; -d 'not json' answers 400; curl http://127.0.0.1:8178/stats counts all three; a /check of an order without lines answers 422"#,
         text: include_str!("../samples/intake.holon.ts"),
     },
+    Sample {
+        name: "price-rules",
+        title: "Price rules (a new version replayed on recent runs)",
+        description: "Prices an order, a member's 10% less, one without a total refused 422. A new version of it is replayed on the orders it answered before it goes live: the deploy and the version's review say how many runs it answers the same and how the others differ, offline, with nothing sent or written.",
+        shows: &["replay on recent runs", "versions", "status"],
+        port: Some("8185"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"total":80,"member":true}' http://127.0.0.1:8185/price answers 72; without member, 80; -d '{}' answers 422. Then change 0.9 to 0.85 and deploy: before it goes live, 3 replayed, 2 same, 1 differs (68 where it answered 72)"#,
+        text: include_str!("../samples/price-rules.holon.ts"),
+    },
 ];
 
 #[cfg(test)]

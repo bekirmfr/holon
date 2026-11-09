@@ -267,6 +267,26 @@ Every deploy is a version, numbered from 1 and kept for good: its unit, its canv
 whom, what its deploy asked, and the state it was deployed with. `GET /deployments/<slug>/versions`
 lists them. Every run keeps the state it left, too: its line in the log names it.
 
+### Replayed on recent runs
+
+Before a new version goes live, the approval dialog and the version's review (**Approvals** →
+**Review**) replay it on the deployment's last 20 runs: each run's request, tick or action again,
+with the state, clock and random that run had, through the new version's handler for it. The card
+**On recent runs** says how it went, `20 replayed · 17 same · 3 differ`, and for each run that
+differs, how: the status it answers where it answered another (`it answers 422 where it answered
+200`), its answer, the effects it performs (`StateWrite("count") 2 where 1`), where it waits.
+The **Price rules** sample is a flow to try it with.
+
+A replay is offline: nothing is sent and nothing is written. Each request the version sends is
+answered as that run was answered to the same request, and each read as that run read it, wherever
+in the flow it is asked from. So a run can't always be told, and it is counted as **can't tell**,
+with why, rather than as one that differs: one where the version sends a request, or reads
+something, that run didn't; one where it reads the clock or a random number that run didn't; one
+where a node computes with a secret or a token, which the log never holds (a node that only passes
+one along, or picks a field past it, computes the same and is told); one that failed then.
+`GET /deployments/<slug>/replay?unit=<hash>&runs=N` answers the same for any version staged
+(`POST /unit`) or proposed, for anyone who may read the deployment.
+
 ### Going back to an earlier version
 
 `holon restore <slug>` lists the versions. Going back takes a point, a version (`--to N`) or a run

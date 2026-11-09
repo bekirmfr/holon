@@ -39,8 +39,9 @@ closes with its ×.
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
 - **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
   agent's proposal with its why and note, and **Decline…** with a reason), and **Runs waiting**.
-  **Review** opens one: what it may do, its changes, *If approved*, and Approve, keep it saved, or
-  decline it.
+  **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
+  flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
+  and Approve, keep it saved, or decline it.
 - **Getting started** has the steps to start, each ticked once done, your notes (kept with your
   account) and short docs. Untick **show this on start** to stop it opening.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each

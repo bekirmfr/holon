@@ -10,7 +10,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 
@@ -739,6 +739,53 @@ test("price-rollback: an earlier version's code restored from its page's history
   expect(said.map((e) => e.kind)).toEqual(["deploy", "deploy", "deploy", "restore", "restore"]);
   expect(said[2].what).toBe(`restored version ${before}'s code, as version ${now + 1}`);
   expect(said.every((e) => typeof e.by === "string")).toBe(true);
+});
+
+test("price-rules: a new version is replayed on its recent runs before it goes live, in the deploy and in its review", async ({ page, request }) => {
+  await openSample(page, "Price rules (a new version replayed on recent runs)");
+  const port = await deploy(page);
+  const price = (order: object) => request.post(`http://127.0.0.1:${port}/price`, { data: order });
+  expect(await (await price({ total: 80, member: true })).json()).toEqual({ total: 80, price: 72 });
+  expect(await (await price({ total: 80 })).json()).toEqual({ total: 80, price: 80 });
+  expect((await price({})).status()).toBe(422);
+  // A bigger discount, in the text: before it goes live, the deploy replays it on those runs.
+  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rules.holon.ts", import.meta.url), "utf8").replace("port: 8185", `port: ${port}`);
+  const typed = async (discount: string) => {
+    await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replace("total * 0.9", `total * ${discount}`));
+    await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
+    await settingsSayPort(page, String(port));
+  };
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await typed("0.85");
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  const replayed = dialog.getByRole("group", { name: "on recent runs" });
+  await expect(replayed.getByLabel("replay summary")).toHaveText("3 replayed · 2 same · 1 differs");
+  await expect(replayed.locator(".hl-replay__run--differs")).toContainText("its answer");
+  await expect(replayed.locator(".hl-replay__run--differs")).toContainText("POST /price");
+  // Nothing was sent or changed: the version deployed still answers 72.
+  expect(await (await price({ total: 80, member: true })).json()).toEqual({ total: 80, price: 72 });
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Update)$/ }).click();
+  await expect.poll(async () => (await (await price({ total: 80, member: true })).json()).price).toBe(68);
+  // Another, saved: its review replays it on the runs too. A save waits for a person when it is
+  // newer than the deploy, both kept to the second: a second later.
+  const deployedAt = Date.now();
+  await typed("0.8");
+  await page.waitForTimeout(Math.max(0, 1_100 - (Date.now() - deployedAt)));
+  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
+  const name = page.locator('[aria-modal="true"] input');
+  if (await name.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await name.fill("price-rules");
+    await page.keyboard.press("Enter");
+  }
+  await expect(notices(page)).toContainText("saved");
+  await page.getByRole("navigation", { name: "main" }).getByRole("link", { name: /^Approvals/ }).click();
+  await page.getByRole("region", { name: "deploys" }).getByRole("row").filter({ hasText: "price-rules" }).getByRole("link", { name: "review price-rules" }).click();
+  const card = page.getByRole("group", { name: "on recent runs" });
+  await expect(card.getByLabel("replay summary")).toHaveText(/^\d+ replayed · \d+ same · \d+ differs?/);
+  await expect(card.locator(".hl-replay__run--differs").first()).toContainText("its answer");
 });
 
 test("live-board's page gets each ticket posted as a pack on its channel, and a reconnect gets the ones it missed", async ({ page, browser, request }) => {

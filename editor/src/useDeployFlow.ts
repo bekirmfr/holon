@@ -18,6 +18,7 @@ import { touchLines } from "./touches";
 import type { useDialog } from "./Dialog";
 import { codeHunk, touchHunks, type Hunk } from "./hunks";
 import { Review } from "./Review";
+import { ReplayRuns } from "./ReplayRuns";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = Pick<ReturnType<typeof useDialog>, "confirm" | "prompt">;
@@ -142,7 +143,10 @@ export function useDeployFlow({
       if (pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
       if (existing) lines.push("", "Its state and sessions are kept.");
       const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
-      if (!(await dialog.confirm(lines.join("\n"), action, hunks.length > 0 ? createElement(Review, { hunks }) : undefined))) return;
+      // A deployed flow's new version, replayed on its recent runs first (G11).
+      const review = hunks.length > 0 ? createElement(Review, { hunks }) : null;
+      const shown = existing ? createElement("div", { style: { display: "grid", gap: 10 } }, createElement(ReplayRuns, { slug: name, unit: hash }), review) : review;
+      if (!(await dialog.confirm(lines.join("\n"), action, shown ?? undefined))) return;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return;

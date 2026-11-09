@@ -1528,6 +1528,134 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)]);
 }
 
+/// A version replayed on a deployment's recent runs, offline (G11): the same version answers every
+/// run as it ran; one that prices large orders higher differs on those; one that asks a host the
+/// runs never asked can't be told; one without the action differs on every run. Nothing changes.
+#[test]
+fn a_version_replays_on_its_deployments_recent_runs() {
+    let state = test_state();
+    let quote = |body: &str| {
+        format!("import {{ action, flow }} from \"holon\"
+import state from \"state\"
+
+flow(\"quote\")
+
+export const price = action((n) => {{
+  state.last = n
+  {body}
+}})
+")
+    };
+    let v1 = stage_text(&state, &quote("return n * 2"));
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"price\")", "StateWrite(\"last\")"] });
+    assert_eq!(deploy_json(&state, "quote", v1, ack).status_code, 200);
+    for n in [1, 5, 20] {
+        assert_eq!(run_action_named(&state, "quote", "price", serde_json::json!(n)).status_code, 200);
+    }
+    let replay = |unit: Hash, more: &str| route(&state, &req("GET", &format!("/deployments/quote/replay?unit={}{more}", to_hex(&unit)), vec![]));
+    let counts = |r: &serde_json::Value| (r["replayed"].as_u64().unwrap(), r["same"].as_u64().unwrap(), r["differ"].as_u64().unwrap(), r["cant_tell"].as_u64().unwrap());
+
+    let same = body_json(replay(v1, ""));
+    assert_eq!(counts(&same), (3, 3, 0, 0), "{same}");
+    assert_eq!(same["runs"].as_array().unwrap().iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2, 1, 0], "newest first");
+
+    let v2 = stage_text(&state, &quote("return n > 10 ? n * 3 : n * 2"));
+    let r = body_json(replay(v2, ""));
+    assert_eq!(counts(&r), (3, 2, 1, 0), "{r}");
+    assert_eq!((&r["runs"][0]["outcome"], &r["runs"][0]["why"]), (&serde_json::json!("differs"), &serde_json::json!(["its outputs"])), "{r}");
+    assert_eq!(counts(&body_json(replay(v2, "&runs=2"))), (2, 1, 1, 0), "the last two");
+
+    let asks = "import { action, flow } from \"holon\"
+import state from \"state\"
+import api from \"host:api.example.com\"
+
+flow(\"quote\")
+
+export const price = action(async (n) => {
+  state.last = n
+  const r = await api.get(\"/rate\")
+  return r.status
+})
+";
+    let r = body_json(replay(stage_text(&state, asks), ""));
+    assert_eq!(counts(&r), (3, 0, 0, 3), "{r}");
+    let why = r["runs"][0]["why"][0].as_str().unwrap();
+    assert!(why.starts_with("it sends GET https://api.example.com/rate, which the run didn't"), "{why}");
+
+    let renamed = "import { action, flow } from \"holon\"
+
+flow(\"quote\")
+
+export const quote = action((n) => n * 2)
+";
+    let r = body_json(replay(stage_text(&state, renamed), ""));
+    assert_eq!(counts(&r), (3, 0, 3, 0), "{r}");
+    assert_eq!(r["runs"][0]["why"], serde_json::json!(["the version has no action \"price\""]));
+
+    // It changed nothing: the deployment's log and state are as the runs left them.
+    assert_eq!(log_entries(&state, "quote").len(), 3);
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/quote/state", vec![])))["state"]["last"]["value"], serde_json::json!(20.0));
+    assert_eq!(replay(v1, "&runs=0").status_code, 400);
+    assert_eq!(replay([7u8; 32], "").status_code, 404, "a unit not staged");
+    assert_eq!(route(&state, &req("GET", &format!("/deployments/nope/replay?unit={}", to_hex(&v1)), vec![])).status_code, 404);
+}
+
+/// A replayed version's outbound requests are answered by what the run was answered to the same
+/// request, wherever the version asks it from; one the run never sent can't be told.
+#[test]
+fn a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = stream.unwrap();
+            let _ = read_request(&mut stream);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK
+Content-Length: 5
+Connection: close
+
+hello");
+        }
+    });
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true").unwrap());
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    assert_eq!(deploy_json(&state, "local", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+    assert_eq!(body_json(run_action_named(&state, "local", "call", serde_json::json!("/hi")))["answer"]["body"], "hello");
+
+    let version = |body: &str| {
+        let text = format!("import {{ action, flow }} from \"holon\"
+import api from \"host:{host}\"
+
+flow(\"caller\")
+
+export const call = action(async (path) => {{
+{body}
+}})
+");
+        let unit = stage_text(&state, &text);
+        body_json(route(&state, &req("GET", &format!("/deployments/local/replay?unit={}", to_hex(&unit)), vec![])))
+    };
+    // The body alone, from the answer the run had: it differs, and is told.
+    let r = version("  const r = await api.get(path)
+  return r.body");
+    assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its outputs"])), "{r}");
+    let r = version("  const r = await api.get(path)
+  return r");
+    assert_eq!(r["same"], 1, "{r}");
+    // A second request the run never sent.
+    let r = version("  const r = await api.get(path)
+  const s = await api.get(\"/more\")
+  return [r, s]");
+    assert_eq!(r["cant_tell"], 1, "{r}");
+    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
+}
+
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
 /// the graph says. (A grant can only lose an item by being changed under a running deployment;
 /// this sets that up directly.)
@@ -4622,6 +4750,38 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
 /// stands in, and the rest of the run is checked against it: the entry with its answer rewritten
 /// (and the line chained again) differs; one rewritten everywhere, that node's own output too,
 /// passes, since what the node produced is taken from the log. The report says how many nodes.
+#[test]
+fn a_replay_cant_tell_a_run_that_computes_with_a_secret() {
+    let state = claims_state("");
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": "whsec_test_123456" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let signer = |answer: &str| {
+        format!("import {{ flow, hmac_sha256, route, status }} from \"holon\"
+import signing_key from \"secret:signing_key\"
+
+flow(\"signer\", {{ port: 18199 }})
+
+route.post(\"/sign\", (req) => {answer})
+")
+    };
+    let text = signer("hmac_sha256(signing_key, req.body) ?? status(400)");
+    deploy_text(&state, &text, "127.0.0.1:9");
+    assert_eq!(data_call(&state, "signer", "POST", "/sign", "hello").0, 200);
+    let replay = |text: &str| {
+        let unit = stage_text(&state, text);
+        body_json(route(&state, &req("GET", &format!("/deployments/signer/replay?unit={}", to_hex(&unit)), vec![])))
+    };
+    // The log holds the key's placeholder: what the signing gives with it isn't the run's.
+    let r = replay(&text);
+    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret or a token, which the log never holds")), "{r}");
+    // One that passes the key along computes the same with its placeholder, and is told.
+    let r = replay(&signer("({ signed: req.body, key: signing_key }).signed"));
+    assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its answer"])), "{r}");
+    assert_eq!((&r["runs"][0]["status"], &r["runs"][0]["now_status"]), (&serde_json::json!(200), &serde_json::json!(200)));
+    let r = replay(&signer("status(503)"));
+    assert_eq!(r["runs"][0]["why"][0], "it answers 503 where it answered 200", "{r}");
+}
+
 #[test]
 fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
     let state = claims_state("");

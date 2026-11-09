@@ -281,6 +281,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return verify::handle_get_export(&state.store, &state.folders, &state.deployments, slug, request);
             }
+        } else if let Some(slug) = rest.strip_suffix("/replay") {
+            if method == "GET" {
+                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, slug, request);
+            }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
                 return handle_get_document(&state.store, &state.deployments, slug, request);

@@ -898,6 +898,30 @@ export async function getLog(slug: string, after?: number): Promise<{ entries: L
   return asJson(res);
 }
 
+/** One run a version was replayed on: what it did then against what the version does with it. */
+export type RunReplayed = {
+  seq: number;
+  at_ms: number;
+  kind: string;
+  route?: string;
+  outcome: "same" | "differs" | "cant_tell";
+  /** How it differs, each a phrase; or why it can't be told, one. */
+  why?: string[];
+  /** A request's status then, and the version's. */
+  status?: number;
+  now_status?: number;
+};
+
+/** `GET /deployments/<slug>/replay`: a version replayed offline on the deployment's recent runs. */
+export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; runs: RunReplayed[] };
+
+/** `GET /deployments/<slug>/replay?unit=<hash>` — the version `unit` (staged, or a proposal's)
+ *  replayed on the deployment's last `runs` runs, offline: nothing is sent or changed. */
+export async function replayVersion(slug: string, unit: string, runs = 20): Promise<Replayed> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/replay?unit=${encodeURIComponent(unit)}&runs=${runs}`);
+  return asJson(res);
+}
+
 /** `GET /deployments/<slug>/export` — the deployment's runs as one file (its log, exactly as
  *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`. */
 export async function downloadRuns(slug: string): Promise<void> {

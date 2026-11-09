@@ -381,6 +381,14 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__why b { color: var(--ink); }
 .hl-review-page__note { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border-strong); color: var(--muted); white-space: pre-wrap; }
 .hl-review-page__if { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--body); }
+/* A version replayed on recent runs (ReplayRuns.tsx): the count, then each run that differs. */
+.hl-replay__summary { margin: 0 0 6px; font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
+.hl-replay__runs { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.hl-replay__run { padding-left: 8px; border-left: 3px solid var(--border-strong); }
+.hl-replay__run--differs { border-left-color: var(--warn); }
+.hl-replay__what { font-family: var(--font-mono); color: var(--body); }
+.hl-replay__outcome { color: var(--muted); }
+.hl-replay__run--differs .hl-replay__outcome { color: var(--warn-ink); }
 .hl-flow__button--bad { color: var(--bad); }
 .hl-review-page__text { font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 6px 0; overflow: auto; max-height: 70vh; white-space: pre; }
 .hl-review-page__line { display: flex; gap: 10px; padding: 0 10px; color: var(--body); }

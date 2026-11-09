@@ -6,12 +6,13 @@
 // note), what approving it does, the gate ("I read …"), Approve, keep it saved without deploying,
 // or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
 // A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
-// saved since. A replay on recent runs comes later (G11).
+// saved since. A version of a deployed flow is replayed on its recent runs (G11, ReplayRuns.tsx).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
 import { codeHunk, touchHunks } from "./hunks";
+import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
 import { mayGroups, textLines } from "./reviewMay";
 import { touchLines } from "./touches";
@@ -294,6 +295,7 @@ export function ReviewPage({
                 {gone.length > 0 && <li>It no longer may {gone.map((r) => r.line.text).join(", ")}.</li>}
               </ul>
             </div>
+            {entry && <ReplayRuns slug={slug} unit={data.hash} navigate={navigate} />}
             {data.preview.refused ? (
               <div className="hl-flow__banner">This host can't grant it: {data.preview.refused}</div>
             ) : (
