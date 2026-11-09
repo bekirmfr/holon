@@ -5,6 +5,7 @@
 // server says so.
 
 const assert = require("node:assert");
+const path = require("node:path");
 const vscode = require("vscode");
 
 /** `get()`'s first truthy answer, asked every 100 ms for up to 20 s. */
@@ -109,6 +110,18 @@ async function sidebarChecks() {
     return children.some((i) => i.label === "hits") ? children : null;
   }, "the hits value under State");
   assert.ok(values.some((i) => i.label === "hits"));
+
+  // New flow: the command writes a starter and opens it, without asking (given a name and a folder).
+  const folder = vscode.workspace.workspaceFolders[0].uri.fsPath;
+  await vscode.commands.executeCommand("holon.newFlow", "fresh-flow", folder);
+  const fresh = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.fsPath === path.join(folder, "fresh-flow.holon.ts")), "the new flow opened");
+  assert.equal(fresh.languageId, "typescript");
+  assert.match(fresh.getText(), /flow\(/);
+  // Saved on the server, the new flow is listed in the Flows view.
+  const config = vscode.workspace.getConfiguration("holon");
+  require("node:child_process").execFileSync(config.get("path"), ["flows", "save", path.join(folder, "fresh-flow.holon.ts"), "--server", config.get("consoleUrl")], { stdio: "inherit" });
+  const listed = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "fresh-flow"), "the saved new flow in the Flows view");
+  assert.equal(listed.contextValue, "flow");
 
   // Editable: an edit saved from the editor is written to the server, and read back from it.
   const at = text.getText().indexOf("Hello");

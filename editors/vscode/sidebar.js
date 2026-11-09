@@ -962,6 +962,85 @@ async function startServer() {
   refreshAll();
 }
 
+/** `holon ARGS` in a folder, with no server, for what does not need one (`holon new`). */
+function holonIn(args, cwd) {
+  const { command } = settings();
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(command, args, { cwd }, (error, stdout, stderr) => {
+      if (error) reject(new Error((stderr || error.message).trim()));
+      else resolve(stdout);
+    });
+  });
+}
+
+/** The folder a new flow goes in: the one workspace folder, or the one the user picks. */
+async function folderForNewFlow() {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    vscode.window.showErrorMessage("Holon: open a folder first, the new flow goes in it.");
+    return undefined;
+  }
+  if (folders.length === 1) return folders[0].uri.fsPath;
+  const picked = await vscode.window.showQuickPick(folders.map((f) => ({ label: f.name, description: f.uri.fsPath, folder: f.uri.fsPath })), { placeHolder: "Which folder the new flow goes in" });
+  return picked?.folder;
+}
+
+/** Writes a new flow with `holon new` (a starter, with the TypeScript it needs beside it), opens it, and
+ *  offers to save it to the server, where it shows in the Flows view. With a name and a folder, it does
+ *  not ask (the tests). */
+async function newFlow(nameArg, folderArg) {
+  const folder = folderArg ?? (await folderForNewFlow());
+  if (!folder) return;
+  const name = nameArg ?? (await vscode.window.showInputBox({
+    prompt: "Name for the new flow",
+    value: "flow",
+    ignoreFocusOut: true,
+    validateInput: (v) => (/^[a-z][a-z0-9-]*$/.test(v.trim()) ? undefined : "Lowercase letters, digits and dashes, starting with a letter"),
+  }));
+  if (!name) return;
+  const file = path.join(folder, `${name.trim()}.holon.ts`);
+  if (fs.existsSync(file)) {
+    vscode.window.showErrorMessage(`Holon: ${file} is already there. Choose another name.`);
+    return;
+  }
+  try {
+    await holonIn(["new", file], folder);
+    // `holon new` names the flow in the text "my-flow", whatever the file is called; the flow takes the file's
+    // name, so the server, the Flows view and deploy all agree.
+    const written = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(file, written.replace(/flow\("[^"]*"/, `flow("${name.trim()}"`));
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(file);
+  await vscode.window.showTextDocument(doc);
+  // Not awaited: the prompt waits for a choice, and the flow is already written and open.
+  vscode.window.showInformationMessage(`Holon: ${name.trim()} is written. Save it to the server to see it in Flows.`, "Save to server").then(async (choice) => {
+    if (choice !== "Save to server") return;
+    try {
+      await saveFlow(file, name.trim(), false);
+      vscode.window.setStatusBarMessage(`Holon: ${name.trim()} saved to the server`, 4000);
+    } catch (e) {
+      vscode.window.showErrorMessage(`Holon: ${e.message}`);
+    }
+    refreshAll();
+  });
+}
+/** Reveals a flow's file in the file explorer. A flow the server keeps has no file until one is written:
+ *  when the workspace has none, this writes the flow into the folder (`holon flows show --out`) and reveals it. */
+async function revealFlow(arg) {
+  const name = named(arg);
+  const folder = await folderForNewFlow();
+  if (!folder) return;
+  const file = path.join(folder, `${name}.holon.ts`);
+  try {
+    if (!fs.existsSync(file)) await holon(["flows", "show", name, "--out", file]);
+    await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(file));
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  }
+}
 function refreshAll() {
   deployments?.refresh();
   flows?.refresh();
@@ -991,6 +1070,8 @@ function register(context) {
     vscode.commands.registerCommand("holon.showFlow", (arg) => openText("flow", named(arg))),
     vscode.commands.registerCommand("holon.openGraph", showGraph),
     vscode.commands.registerCommand("holon.deployFlow", deployFlow),
+    vscode.commands.registerCommand("holon.newFlow", newFlow),
+    vscode.commands.registerCommand("holon.revealFlow", revealFlow),
     vscode.commands.registerCommand("holon.showRun", openRun),
     vscode.commands.registerCommand("holon.approveGrant", approveGrant),
     vscode.commands.registerCommand("holon.showCell", (slug, name) => openDocument(`/cell/${slug}/${name}.txt`)),

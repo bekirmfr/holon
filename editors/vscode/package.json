@@ -126,6 +126,18 @@
         "command": "holon.stop",
         "title": "Stop",
         "category": "Holon"
+      },
+      {
+        "command": "holon.newFlow",
+        "title": "New flow",
+        "icon": "$(add)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.revealFlow",
+        "title": "Reveal in File Explorer",
+        "icon": "$(folder-opened)",
+        "category": "Holon"
       }
     ],
     "menus": {
@@ -134,9 +146,24 @@
           "command": "holon.refresh",
           "when": "view == holon.deployments || view == holon.flows",
           "group": "navigation"
+        },
+        {
+          "command": "holon.newFlow",
+          "when": "view == holon.flows",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
+        {
+          "command": "holon.revealFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@0"
+        },
+        {
+          "command": "holon.revealFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@4"
+        },
         {
           "command": "holon.approveGrant",
           "when": "view == holon.deployments && viewItem == grant",

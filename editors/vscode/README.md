@@ -45,6 +45,8 @@ as a read-only editor. Its collections open their items as JSON (`holon state --
 
 - **Activity**: what has happened on the server, newest first (`holon activity`).
 
+**New flow** (the + on the Flows view, or `Holon: New flow` in the palette) asks for a name and writes a starter flow with `holon new`, beside the TypeScript it needs. It opens the file, and offers to save it to the server so it shows in Flows.
+
 The views refresh every 10 seconds and on the refresh button.
 
 The server is `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). The
