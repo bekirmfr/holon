@@ -1,6 +1,8 @@
 // Inside VS Code, through the extension and `holon lsp`: a flow's mistake shows as you open it and
 // goes when it is fixed; completion offers what may be written; a hover says what a word is;
-// formatting writes what `holon fmt` does.
+// formatting writes what `holon fmt` does. Then the sidebar, against the server run.js started: the
+// saved flow is listed, its text opens as an editor, its graph as a panel, and a deployment-less
+// server says so.
 
 const assert = require("node:assert");
 const vscode = require("vscode");
@@ -59,11 +61,60 @@ async function checks() {
   assert.equal(doc.getText(), 'import { flow, route } from "holon"\n\nflow("hello", { port: 8200 })\n\nroute.get("/hello/:name", (req) => `Hello, ${req.params.name}`)\n');
 }
 
+/** The sidebar: the saved flow is listed; opening it shows its text as TypeScript; its graph opens as
+ *  a panel; with no deployments the view says so rather than showing nothing. */
+async function sidebarChecks() {
+  const ext = vscode.extensions.getExtension("bekirmfr.holon");
+  if (!ext) throw new Error(`no bekirmfr.holon among: ${vscode.extensions.all.map((e) => e.id).join(", ")}`);
+  const { deployments, flows, activity } = (await ext.activate()).sidebar();
+
+  const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
+  assert.equal(item.contextValue, "flow");
+
+  // The deployment is listed; its recent runs are a group under it, and a run's record opens as JSON.
+  const deployed = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "hello"), "the deployment hello");
+  const runs = (await deployments.getChildren(deployed)).find((g) => g.label === "Recent runs");
+  assert.ok(runs, "a Recent runs group under the deployment");
+  const [run] = await eventually(async () => {
+    const children = await deployments.getChildren(runs);
+    return children.length > 0 ? children : null;
+  }, "the run of the call");
+  assert.match(run.label, /GET \/hello\/:name/);
+  await vscode.commands.executeCommand("holon.showRun", "hello", run.seq);
+  const record = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.scheme === "holon" && d.uri.path === `/run/hello/${run.seq}.json`), "the run's record");
+  assert.match(record.getText(), /"route": "GET \/hello\/:name"/);
+
+  await vscode.commands.executeCommand("holon.showFlow", item);
+  const text = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.scheme === "holon" && d.uri.path === "/flow/hello.holon.ts"), "the flow's text as an editor");
+  assert.equal(text.languageId, "typescript");
+  assert.match(text.getText(), /flow\("hello"/);
+
+  await vscode.commands.executeCommand("holon.openGraph", item);
+  const graph = await eventually(() => vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((tab) => tab.label === "Graph: hello"), "the graph panel");
+  assert.ok(graph.input instanceof vscode.TabInputWebview);
+
+  // The server's activity is listed, the deploy of hello among it.
+  const events = await eventually(async () => {
+    const children = await activity.getChildren();
+    return children.length > 0 ? children : null;
+  }, "the server's activity");
+  assert.ok(events.some((e) => /deployed hello/.test(e.label)), `activity: ${events.map((e) => e.label).join(", ")}`);
+
+  // Editable: an edit saved from the editor is written to the server, and read back from it.
+  const at = text.getText().indexOf("Hello");
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(text.uri, new vscode.Range(text.positionAt(at), text.positionAt(at + "Hello".length)), "Howdy");
+  assert.ok(await vscode.workspace.applyEdit(edit));
+  assert.ok(await text.save(), "the flow saved to the server");
+  assert.match(Buffer.from(await vscode.workspace.fs.readFile(text.uri)).toString(), /Howdy/);
+}
+
 /** The checks; what failed is written to the workspace's failure.txt for run.js to print, since
  *  VS Code's test host doesn't always pass its console through. */
 async function run() {
   try {
     await checks();
+    await sidebarChecks();
   } catch (e) {
     const file = require("node:path").join(vscode.workspace.workspaceFolders[0].uri.fsPath, "failure.txt");
     require("node:fs").writeFileSync(file, e instanceof Error ? e.stack ?? e.message : String(e));

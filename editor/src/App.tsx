@@ -64,6 +64,7 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { tidyPositions } from "./canvasTidy";
 import { DeployedPage, FlowsPage, type AppPage, type PageTab } from "./Pages";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
@@ -238,6 +239,15 @@ function Canvas({
   // The canvas as of this render, for callbacks that read it without depending on it.
   const live = useRef({ nodes, edges });
   live.current = { nodes, edges };
+  // Tidy: the shared layout (graphLayout.ts) lays the nodes out, as the VS Code graph does. It moves the
+  // nodes only, not the view; the move is one undoable step. Fit is its own button.
+  const tidyCanvas = useCallback(() => {
+    const at = tidyPositions(live.current.nodes, live.current.edges);
+    setNodes((ns) => ns.map((n) => ({ ...n, position: at.get(n.id) ?? n.position })));
+  }, [setNodes]);
+  const fitCanvas = useCallback(() => {
+    fitView({ padding: 0.1, duration: 200 });
+  }, [fitView]);
   // The text a save keeps with the flow (the pane's, as typed, while it stands for the canvas).
   const source = useMemo(() => sourceToSave(flow.text, syncKeyOf(nodes, edges, settings, flowName)), [flow.text, nodes, edges, settings, flowName]);
   const dirty = useMemo(
@@ -865,6 +875,8 @@ function Canvas({
               canUndo={history.current.past.length > 0}
               canRedo={history.current.future.length > 0}
               onUndo={undo}
+              onTidy={tidyCanvas}
+              onFit={fitCanvas}
               onRedo={redo}
               deployBar={
                 <DeployBar

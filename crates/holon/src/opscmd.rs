@@ -571,9 +571,96 @@ pub(crate) fn produced_lines(v: &Value) -> Vec<String> {
     lines
 }
 
+const RUNS_USAGE: &str = "usage: holon runs <slug> [--last N] [--waiting] [--json] [--server PORT|URL]
+
+  A deployment's runs, oldest first: what started each, its answer, how long it took, and why it
+  failed. --waiting lists the runs parked for an event instead: what each waits for, and until when.
+
+  --last N                 how many runs, the newest (default 10, at most 200)
+  --waiting                the runs waiting for an event, not the log
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon runs shop
+  holon runs shop --last 50 --json
+  holon runs shop --waiting
+";
+
+/// One waiting run as a line: its id, what it is (its route, else its kind), and what it waits for.
+fn waiting_line(run: &Value) -> String {
+    let waits = run["waiting"].as_array().into_iter().flatten().map(|w| format!("{} until {}", w["name"].as_str().unwrap_or("?"), w["expires_at"])).collect::<Vec<_>>().join(", ");
+    let what = run["route"].as_str().or(run["kind"].as_str()).unwrap_or("run");
+    format!("{}  {what}  waits for {waits}", run["run_id"].as_str().unwrap_or("?"))
+}
+
+pub(crate) fn runs(args: &[String]) -> i32 {
+    const WHO: &str = "holon runs";
+    let usage = usage(RUNS_USAGE);
+    let args = match cmdline::parse(WHO, &usage, args, &["--last"], &["--waiting", "--json"]) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let Some(slug) = args.word(0) else {
+        eprintln!("{usage}");
+        return 2;
+    };
+    let last = match args.value("--last").map(str::parse::<u32>) {
+        None => 10,
+        Some(Ok(n)) if (1..=200).contains(&n) => n,
+        Some(_) => {
+            eprintln!("{WHO}: --last is 1 to 200");
+            return 2;
+        }
+    };
+    let path = format!("/deployments/{}", seg(slug));
+    if args.flag("--waiting") {
+        let waiting = match cmdline::json(WHO, &args, "GET", &format!("{path}/runs"), None) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        if args.flag("--json") {
+            cmdline::print_json(&waiting);
+        } else if waiting["runs"].as_array().is_none_or(|r| r.is_empty()) {
+            println!("{slug} has no runs waiting for an event");
+        } else {
+            for run in waiting["runs"].as_array().into_iter().flatten() {
+                println!("{}", waiting_line(run));
+            }
+        }
+        return 0;
+    }
+    let log = match cmdline::json(WHO, &args, "GET", &format!("{path}/log?limit={last}"), None) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if args.flag("--json") {
+        cmdline::print_json(&log);
+        return 0;
+    }
+    let entries = log["entries"].as_array().cloned().unwrap_or_default();
+    if entries.is_empty() {
+        println!("{slug} has no runs yet");
+    }
+    for entry in &entries {
+        println!("{}", holon_author::agent::run_line(entry));
+    }
+    if let Some(breaks) = log["breaks"].as_array().filter(|b| !b.is_empty()) {
+        println!("The log was changed outside holon before runs {}: their record can't be trusted.", breaks.iter().map(Value::to_string).collect::<Vec<_>>().join(", "));
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_runs_say_what_they_wait_for() {
+        let run = json!({ "run_id": "rt_1", "kind": "request", "route": "POST /orders", "parked_at": 0, "waiting": [{ "name": "approval", "expires_at": 60 }] });
+        assert_eq!(waiting_line(&run), "rt_1  POST /orders  waits for approval until 60");
+    }
+
 
     #[test]
     fn deployments_list_as_columns_and_mark_what_needs_attention() {

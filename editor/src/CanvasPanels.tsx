@@ -160,6 +160,8 @@ export function FlowToolbar({
   error,
   textOpen,
   onToggleText,
+  onTidy,
+  onFit,
 }: {
   histVersion: number;
   mode: Mode;
@@ -182,6 +184,10 @@ export function FlowToolbar({
   /** Whether the flow's text is shown beside the canvas (TextPane.tsx). */
   textOpen: boolean;
   onToggleText: () => void;
+  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
+  onTidy: () => void;
+  /** Fits the whole flow in the view. */
+  onFit: () => void;
 }) {
   return (
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
@@ -194,6 +200,9 @@ export function FlowToolbar({
       <ModeSwitch mode={mode} canView={canView} onMode={onMode} />
       <button onClick={onToggleText} aria-pressed={textOpen} title={textOpen ? "close the flow's text" : "the flow as text, beside the canvas"} style={historyBtn(true)}>
         text {textOpen ? "on" : "off"}
+      </button>
+      <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
+        ⤢
       </button>
       {mode === "view" ? (
         <>
@@ -216,6 +225,9 @@ export function FlowToolbar({
           </button>
           <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
             ⟳
+          </button>
+          <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
+            ▤
           </button>
           {deployBar}
           {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
