@@ -1,7 +1,7 @@
 {
   "name": "holon",
   "displayName": "Holon",
-  "description": "Holon flows (.holon.ts): each mistake holon check finds as you type, hover, completion and formatting, through holon lsp; and the Holon console beside the code.",
+  "description": "Holon flows (.holon.ts): each mistake holon check finds as you type, hover, completion and formatting, through holon lsp; and the Holon sidebar: deployments, flows, history and graphs.",
   "version": "0.1.0",
   "publisher": "bekirmfr",
   "license": "SEE LICENSE IN LICENSE",
@@ -21,28 +21,142 @@
   "activationEvents": [
     "workspaceContains:**/*.holon.ts",
     "onLanguage:typescript",
-    "onCommand:holon.openConsole"
+    "onView:holon.deployments",
+    "onView:holon.flows"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "holon",
+          "title": "Holon",
+          "icon": "media/holon.svg"
+        }
+      ]
+    },
+    "views": {
+      "holon": [
+        {
+          "id": "holon.deployments",
+          "name": "Deployments"
+        },
+        {
+          "id": "holon.flows",
+          "name": "Flows"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "holon.openConsole",
-        "title": "Open console",
+        "command": "holon.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.signIn",
+        "title": "Sign in to the server",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.startServer",
+        "title": "Start the local server",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.showHistory",
+        "title": "Show history",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.showFlow",
+        "title": "Show flow text",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.openGraph",
+        "title": "Open graph",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.run",
+        "title": "Run",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.pause",
+        "title": "Pause",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.stop",
+        "title": "Stop",
         "category": "Holon"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "holon.refresh",
+          "when": "view == holon.deployments || view == holon.flows",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "holon.showHistory",
+          "when": "view == holon.deployments && viewItem == deployment",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.run",
+          "when": "view == holon.deployments && viewItem == deployment",
+          "group": "1_lifecycle@1"
+        },
+        {
+          "command": "holon.pause",
+          "when": "view == holon.deployments && viewItem == deployment",
+          "group": "1_lifecycle@2"
+        },
+        {
+          "command": "holon.stop",
+          "when": "view == holon.deployments && viewItem == deployment",
+          "group": "1_lifecycle@3"
+        },
+        {
+          "command": "holon.showHistory",
+          "when": "view == holon.deployments && viewItem == deployment",
+          "group": "2_show@1"
+        },
+        {
+          "command": "holon.showFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.openGraph",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@2"
+        },
+        {
+          "command": "holon.openGraph",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Holon",
       "properties": {
         "holon.path": {
           "type": "string",
           "default": "holon",
-          "markdownDescription": "The `holon` command the extension starts as `holon lsp` and `holon serve`: its name on the PATH, or its full path."
+          "markdownDescription": "The `holon` command the extension runs: `holon lsp`, `holon serve`, and the sidebar's commands. Its name on the PATH, or its full path."
         },
         "holon.consoleUrl": {
           "type": "string",
           "default": "http://127.0.0.1:7420",
-          "markdownDescription": "Where the Holon console is (`holon serve --at`). When nothing answers there and the address is on this machine, opening the console starts `holon serve` at it."
+          "markdownDescription": "The Holon server the sidebar shows (`holon serve --at`). When nothing answers there and the address is on this machine, the sidebar can start `holon serve` at it."
         }
       }
     }

@@ -23,19 +23,28 @@ It starts `holon lsp`, so `holon` must be installed (see the repository's README
 named by the `holon.path` setting. The language server is any editor's: one with a language client
 starts `holon lsp` on stdin and stdout. Design: `docs/L4s/language-server-L4.md`.
 
-## The console
+## The sidebar
 
-`Holon: Open console` (the command palette) shows the Holon console beside the code: the editor
-that `holon serve` hosts, with the flows, the canvas, the deployed flows, their runs and history,
-and the admin page, all from the server it shows. The panel is the server's own page in a frame,
-so it is the same as the browser's; it keeps its state while hidden.
+The Holon icon in the activity bar opens the server's deployments and saved flows as VS Code's own
+views, read through the `holon` command with `--server` and `--json`:
 
-The console is at `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). If
-nothing answers there and the address is on this machine, the command starts `holon serve` at it,
-its output in the Holon output channel. A new server prints the setup code for its first admin
-there; the console asks for it. A server the extension started stops when VS Code closes; one
-already running is left alone. A console elsewhere (`holon.consoleUrl` on another machine) is only
-shown when something answers there.
+- **Deployments**: each deployment, its status and errors. Click one to open its history (the
+  timeline `holon history` prints) as an editor; its right-click menu runs, pauses or stops it.
+- **Flows**: each saved flow. Click one to open its text as TypeScript, the way `holon flows show`
+  prints it; its menu opens its **graph**, drawn in the editor's colours.
+
+The views refresh every 10 seconds and on the refresh button.
+
+The server is `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). The
+sidebar needs a signed-in server. `Holon: Sign in to the server` asks for a name and password (on a
+new server, the setup code `holon serve` prints in the Holon output channel, for the first admin).
+The sign-in is kept in VS Code's secret storage for that server, and passed to `holon` as
+`HOLON_TOKEN`. `Holon: Start the local server` starts `holon serve` at a loopback `consoleUrl`
+when nothing answers there, with its output in the Holon output channel; a server the extension
+started stops when VS Code closes, and one already running is left alone.
+
+Not yet in the sidebar: the editor's other pages (state, secrets, folders, admin, deploying from
+the sidebar). The browser console at `holon serve` has them.
 
 ## Installing
 

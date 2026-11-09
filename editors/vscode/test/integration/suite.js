@@ -1,7 +1,8 @@
 // Inside VS Code, through the extension and `holon lsp`: a flow's mistake shows as you open it and
 // goes when it is fixed; completion offers what may be written; a hover says what a word is;
-// formatting writes what `holon fmt` does. Then the console: it opens beside the code, its server
-// answers, and a second open shows the same panel.
+// formatting writes what `holon fmt` does. Then the sidebar, against the server run.js started: the
+// saved flow is listed, its text opens as an editor, its graph as a panel, and a deployment-less
+// server says so.
 
 const assert = require("node:assert");
 const vscode = require("vscode");
@@ -60,16 +61,27 @@ async function checks() {
   assert.equal(doc.getText(), 'import { flow, route } from "holon"\n\nflow("hello", { port: 8200 })\n\nroute.get("/hello/:name", (req) => `Hello, ${req.params.name}`)\n');
 }
 
-/** The console: opening it starts the server at holon.consoleUrl, its panel opens beside the code,
- *  and opening it again shows that panel rather than another. */
-async function consoleChecks() {
-  const panels = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => tab.label === "Holon console");
-  await vscode.commands.executeCommand("holon.openConsole");
-  const [tab] = await eventually(() => panels().length > 0 && panels(), "the console's panel");
-  assert.ok(tab.input instanceof vscode.TabInputWebview);
-  assert.equal((await fetch("http://127.0.0.1:7431/health")).status, 200);
-  await vscode.commands.executeCommand("holon.openConsole");
-  assert.equal(panels().length, 1);
+/** The sidebar: the saved flow is listed; opening it shows its text as TypeScript; its graph opens as
+ *  a panel; with no deployments the view says so rather than showing nothing. */
+async function sidebarChecks() {
+  const ext = vscode.extensions.getExtension("bekirmfr.holon");
+  if (!ext) throw new Error(`no bekirmfr.holon among: ${vscode.extensions.all.map((e) => e.id).join(", ")}`);
+  const { deployments, flows } = (await ext.activate()).sidebar();
+
+  const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
+  assert.equal(item.contextValue, "flow");
+
+  const [none] = await deployments.getChildren();
+  assert.match(none.label, /No deployments yet/);
+
+  await vscode.commands.executeCommand("holon.showFlow", item);
+  const text = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.scheme === "holon" && d.uri.path === "/flow/hello.holon.ts"), "the flow's text as an editor");
+  assert.equal(text.languageId, "typescript");
+  assert.match(text.getText(), /flow\("hello"/);
+
+  await vscode.commands.executeCommand("holon.openGraph", item);
+  const graph = await eventually(() => vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((tab) => tab.label === "Graph: hello"), "the graph panel");
+  assert.ok(graph.input instanceof vscode.TabInputWebview);
 }
 
 /** The checks; what failed is written to the workspace's failure.txt for run.js to print, since
@@ -77,7 +89,7 @@ async function consoleChecks() {
 async function run() {
   try {
     await checks();
-    await consoleChecks();
+    await sidebarChecks();
   } catch (e) {
     const file = require("node:path").join(vscode.workspace.workspaceFolders[0].uri.fsPath, "failure.txt");
     require("node:fs").writeFileSync(file, e instanceof Error ? e.stack ?? e.message : String(e));
