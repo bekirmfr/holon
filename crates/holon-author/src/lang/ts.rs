@@ -126,6 +126,7 @@ enum Block {
     File,
     Mail,
     Feed,
+    Queue,
     Function,
 }
 
@@ -526,7 +527,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let local = one("the state", "import state from \"state\"")?;
                 self.imports.insert(local, Noun::State);
             }
-            (k @ ("collection" | "folder" | "database" | "channel" | "mail" | "feed"), name) if is_word(name) => {
+            (k @ ("collection" | "folder" | "database" | "channel" | "mail" | "feed" | "queue"), name) if is_word(name) => {
                 let local = one(&format!("a {k}"), &format!("import {name} from \"{k}:{name}\""))?;
                 let (word, header): (&'static str, HeaderKind) = match k {
                     "collection" => ("collection", HeaderKind::Collection(name.into())),
@@ -534,7 +535,8 @@ impl<'s, 't> Reader<'s, 't> {
                     "database" => ("database", HeaderKind::Database(name.into())),
                     "channel" => ("channel", HeaderKind::Channel(name.into())),
                     "mail" => ("mail", HeaderKind::Mail(name.into())),
-                    _ => ("feed", HeaderKind::Feed(name.into())),
+                    "feed" => ("feed", HeaderKind::Feed(name.into())),
+                    _ => ("queue", HeaderKind::Queue(name.into())),
                 };
                 if local != name {
                     return fail(at, format!("a {k} is imported under its own name, for now: import {name} from \"{k}:{name}\""));
@@ -566,7 +568,7 @@ impl<'s, 't> Reader<'s, 't> {
             _ => {
                 return fail(
                     self.span(i.source.span),
-                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"mail:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
+                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"mail:NAME\", \"feed:NAME\", \"queue:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
                 );
             }
         }
@@ -723,7 +725,8 @@ impl<'s, 't> Reader<'s, 't> {
                 }
                 (js::Expression::Identifier(o), "mail") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_mail(c).map(|o| Some(Item::OnMail(o))),
                 (js::Expression::Identifier(o), "feed") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_feed(c).map(|o| Some(Item::OnFeed(o))),
-                _ => fail(at, "a handler is route.get(…), every(…), on.file.created(…), on.mail(…), on.feed(…) or an exported action(…)"),
+                (js::Expression::Identifier(o), "queue") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_queue(c).map(|o| Some(Item::OnQueue(o))),
+                _ => fail(at, "a handler is route.get(…), every(…), on.file.created(…), on.mail(…), on.feed(…), on.queue(…) or an exported action(…)"),
             },
             js::Expression::Identifier(i) if self.vocab(i.name.as_str()) == Some(Vocab::Action) => fail(at, "an action is exported, as nothing else could reach it: export const approve = action(…)"),
             _ => fail(at, "the top level holds imports, the flow(…) line, handlers, functions and consts of literals: move this into a handler"),
@@ -978,6 +981,24 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(OnFeedDef { feed, event: self.name(&event, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
     }
 
+    /// `on.queue(payouts, (m) => …, { log })`: a run for each message from the queue `payouts`,
+    /// imported from `"queue:payouts"`.
+    fn on_queue(&mut self, c: &js::CallExpression) -> R<OnQueueDef> {
+        let shape = "on.queue(queue, (m) => …)";
+        let queue = match c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) {
+            Some(js::Expression::Identifier(i)) => match self.imports.get(i.name.as_str()) {
+                Some(Noun::Declared("queue", name)) => name.clone(),
+                _ => return fail(self.span(i.span), format!("\"{}\" isn't an imported queue: import {} from \"queue:{}\"", i.name, i.name, i.name)),
+            },
+            _ => return fail(self.span(c.span), format!("a queue handler takes its queue first: {shape}")),
+        };
+        let (handler, options) = self.handler_args(c, 1, shape)?;
+        let log = self.options(options, &["log"])?.remove("log").map(|(v, s)| self.name(&v, s));
+        let message = self.handler_param(handler, Block::Queue, "m")?;
+        let body = self.handler_body(handler, Block::Queue, &message)?;
+        Ok(OnQueueDef { queue, message: self.name(&message, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
+    }
+
     /// The name a handler's run knows what it received by: its parameter's, `fallback` when it has
     /// none or destructures it. A clock's tick has no name (`now` is it).
     fn handler_param(&mut self, handler: &js::Expression, block: Block, fallback: &str) -> R<String> {
@@ -1039,7 +1060,7 @@ impl<'s, 't> Reader<'s, 't> {
                         return fail(self.span(rest.span), "the request's parts are named one by one: params, query, headers, body, json, method, path");
                     }
                 }
-                (pattern, Block::Action | Block::File | Block::Mail | Block::Feed) => {
+                (pattern, Block::Action | Block::File | Block::Mail | Block::Feed | Block::Queue) => {
                     let whole = Expr { kind: ExprKind::Name(received.to_string()), span: self.span(pattern.span()) };
                     self.destructure(pattern, whole, Decl::Const, stmts)?;
                 }
@@ -1086,7 +1107,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// or what a clock's or a file's run does.
     fn arrow_answer(&mut self, e: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let mark = stmts.len();
-        if matches!(block, Block::Every | Block::File | Block::Mail | Block::Feed) {
+        if matches!(block, Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue) {
             if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_) | js::Expression::UpdateExpression(_)) {
                 self.effect(e, stmts, 0)?;
                 self.flush_updates(stmts, mark, 0)?;
@@ -1431,7 +1452,7 @@ impl<'s, 't> Reader<'s, 't> {
                         Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
                         Noun::Declared(kind, name) if *name == receiver.text => match *kind {
                             "channel" => matches!(m, "send" | "pipe"),
-                            "mail" => m == "send",
+                            "mail" | "queue" => m == "send",
                             "collection" => matches!(m, "put" | "delete"),
                             "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
                             "database" => matches!(m, "exec" | "insert" | "update" | "delete"),
@@ -2227,7 +2248,7 @@ impl<'s, 't> Reader<'s, 't> {
             return Ok(Ret::Always);
         }
         let answer = match block {
-            Block::Every | Block::File | Block::Mail | Block::Feed => {
+            Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue => {
                 // Its message only where the throw is reached, as nothing reads it to choose.
                 let ExprKind::Leaf { args, .. } = &mut failed.kind else { unreachable!("a leaf") };
                 args[0].value = self.guarded(args[0].value.clone());
@@ -2522,7 +2543,7 @@ impl<'s, 't> Reader<'s, 't> {
                 Answer::Value { value: self.expr(e)?, name: None, fields: None }
             }
             Block::Function => self.returned(e)?,
-            Block::Every | Block::File | Block::Mail | Block::Feed => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
+            Block::Every | Block::File | Block::Mail | Block::Feed | Block::Queue => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
         };
         self.push_exit(ExitKind::One(answer), at)
     }
@@ -5039,6 +5060,7 @@ fn block_word(b: Block) -> &'static str {
         Block::File => "file handler",
         Block::Mail => "mail handler",
         Block::Feed => "feed handler",
+        Block::Queue => "queue handler",
         Block::Function => "function",
     }
 }

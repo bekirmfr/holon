@@ -104,6 +104,20 @@ pub struct MailGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One queue handler of the server: its `on_queue` node, its queue, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct QueueGroup {
+    pub queue: String,
+    /// `on queue payouts`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onQueueId")]
+    pub on_queue_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 /// One feed handler of the server: its `on_feed` node, its feed, and every node wired to it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FeedGroup {
@@ -157,6 +171,8 @@ fn trigger_label(n: &Node) -> Option<String> {
         Some(holon_core::mail_label(n.param("mail")))
     } else if n.is_template("on_feed") {
         Some(holon_core::feed_label(n.param("feed")))
+    } else if n.is_template("on_queue") {
+        Some(holon_core::queue_label(n.param("queue")))
     } else if n.is_template("action") {
         Some(format!("action {}", n.param("name")))
     } else {
@@ -284,6 +300,37 @@ pub fn find_feeds(nodes: &[Node], wires: &[Wire]) -> (Vec<FeedGroup>, Vec<String
     // In the order they are written.
     feeds.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_feed_id));
     (feeds, errors)
+}
+
+/// The queue handlers the flow declares (each connected group holding an `on_queue` node and no
+/// other trigger), and why any can't be one.
+pub fn find_queues(nodes: &[Node], wires: &[Wire]) -> (Vec<QueueGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut queues, mut errors): (Vec<QueueGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_queue] = triggers.as_slice() else { continue };
+        if !on_queue.is_template("on_queue") {
+            continue;
+        }
+        let queue = match crate::templates::queue_name(&on_queue.data.params) {
+            Ok(q) => q,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::queue_label(&queue);
+        if queues.iter().any(|q| q.queue == queue) {
+            errors.push(format!("{label} is written twice: one handler per queue"));
+            continue;
+        }
+        queues.push(QueueGroup { queue, label, on_queue_id: on_queue.id.clone(), log: on_queue.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    queues.sort_by_key(|q| node_ids.iter().position(|id| *id == q.on_queue_id));
+    (queues, errors)
 }
 
 /// The actions the flow declares (each connected group holding an `action` node and no other
@@ -496,6 +543,12 @@ pub fn feed_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapS
     handler_spec(spec, group, label, "an event's run")
 }
 
+/// A queue handler's boundary, as a feed's: no inputs (the message is its `on_queue` node's) and
+/// its effects as outputs.
+pub fn queue_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run")
+}
+
 /// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
 fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
@@ -579,6 +632,21 @@ pub fn feed_unit(handler: Hash, outputs: &[Port], feed: &str) -> Unit {
             edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
         },
         params: vec![frozen("declare", "on_feed"), frozen("feed", feed)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// Wrap a queue handler's handler as a queue handler unit (core's `read_queue_handler`): no
+/// inputs, each of its effects an output, `declare = "on_queue"` and `queue`.
+pub fn queue_unit(handler: Hash, outputs: &[Port], queue: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_queue"), frozen("queue", queue)],
         inputs: vec![],
         outputs: outputs.to_vec(),
     }

@@ -47,6 +47,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   password (Microsoft 365, Google Workspace).
 - **[Feeds](guides/feeds.md):** binding a feed of server-sent events, a run on each event, and
   where the host keeps the feed when its connection is lost.
+- **[Queues](guides/queues.md):** binding an Amazon SQS queue, a run on each message it holds,
+  deleted once its run is over, and sending to one once a run's writes have landed.
 - **[Checking runs](guides/checking-runs.md):** exporting a deployment's runs, verifying them
   offline, and witnesses.
 

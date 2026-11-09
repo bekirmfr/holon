@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `load`, `folder`, `database`, `mail`, `feed`, `mcp` and `lsp` say more with `--help`.
+`verify`, `load`, `folder`, `database`, `mail`, `feed`, `queue`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -37,6 +37,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
 | [`holon feed`](#holon-feed) | bind the feeds of server-sent events flows listen to |
+| [`holon queue`](#holon-queue) | bind the SQS queues flows take messages from and send to |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -164,7 +165,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
-| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails` |
+| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--queues`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails`, the messages to queues in `queue-spool` beside `--queues` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
@@ -712,6 +713,33 @@ reads the feed when it is bound, and refuses one that doesn't answer 200 with
 | `--header NAME=SOURCE` | a header each request sends, its value read from a source (`Authorization=env:HOLON_SECRET_PRICES_AUTH`); again for another |
 | `--buffer N` | how many events may wait for their run before the connection waits too: 1000 unless given |
 | `--idle T` | how long the feed may say nothing before the connection is opened again: `90s` unless given, `5s` at least |
+| `--for SLUG` | for that deployment only |
+
+## `holon queue`
+
+```
+holon queue add NAME --url SOURCE [--visibility T] [--keep-failed] [--for SLUG]
+holon queue list
+holon queue remove NAME [--for SLUG]
+```
+
+Binds a name flows import (`"queue:payout_events"`) to an Amazon SQS queue, or a service that
+speaks its API (ElasticMQ, LocalStack). A flow sends to it once its run is over
+(`payout_events.send({ data, group })`), and its messages start runs
+(`on.queue(payout_events, …)`), one at a time, each deleted once its run is over. The queue's
+URL, with its access key, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`,
+`vault:<mount>/<path>#<field>`), never storing or showing it:
+`https://<key id>:<secret>@sqs.<region>.amazonaws.com/<account>/<queue>`, the secret
+percent-encoded; `?region=` for a service under another name, `?token=` for a temporary key; plain
+`http://` only to this machine. It asks the queue when it is bound, and refuses one that doesn't
+answer. Removing it stops its listener. Needs an admin; each takes `--server PORT|URL`. See
+[Queues](../guides/queues.md).
+
+| Option | |
+|---|---|
+| `--url SOURCE` | where the server reads the queue's URL |
+| `--visibility T` | how long a message received is kept out of sight while it waits for its run and runs: `30s` to `12h`, `5m` unless given |
+| `--keep-failed` | leave a failed run's message for the queue to hand out again, for its redrive policy to count, rather than delete it |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

@@ -73,15 +73,15 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Nothing would start a run of it: no route, clock, file, mail or feed handler or action. It is a holon, placed
+/// Nothing would start a run of it: no route, clock, file, mail, feed or queue handler or action. It is a holon, placed
 /// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.actions.is_empty()
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.actions.is_empty()
 }
 
 /// What `check` says of a flow nothing would start.
-pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file, mail or feed handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
+pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file, mail, feed or queue handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
@@ -181,8 +181,13 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(if alone { "a server of feed handlers, listening on no port" } else { "and its feed handlers" }.into());
         out.extend(server.feeds.iter().map(|f| format!("  {}", f.label)));
     }
-    if !server.actions.is_empty() {
+    if !server.queues.is_empty() {
         let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty();
+        out.push(if alone { "a server of queue handlers, listening on no port" } else { "and its queue handlers" }.into());
+        out.extend(server.queues.iter().map(|q| format!("  {}", q.label)));
+    }
+    if !server.actions.is_empty() {
+        let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty();
         out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
         out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
@@ -206,7 +211,7 @@ pub fn check(file: &str, source: &str) -> Report {
     }
     // Its unrecorded handlers, each asked for at deploy, said as the approval says it (C5).
     let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log)));
-    let unrecorded = unrecorded.chain(server.mails.iter().map(|m| (m.label.clone(), &m.log))).chain(server.feeds.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
+    let unrecorded = unrecorded.chain(server.mails.iter().map(|m| (m.label.clone(), &m.log))).chain(server.feeds.iter().map(|f| (f.label.clone(), &f.log))).chain(server.queues.iter().map(|q| (q.label.clone(), &q.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
@@ -214,6 +219,9 @@ pub fn check(file: &str, source: &str) -> Report {
     // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
     // last sync didn't cover (host-capabilities L4 §5.9.4).
     out.extend(server.feeds.iter().filter(|f| f.log == "lazy").map(|f| format!("{} is lazy: after a crash, the events of its last second may run again", f.label)));
+    // A lazy queue handler's message is deleted once the sync covering its record is done: a
+    // crash before it hands out again what it didn't cover (§5.9.9).
+    out.extend(server.queues.iter().filter(|q| q.log == "lazy").map(|q| format!("{} is lazy: after a crash, the messages of its last second may run again", q.label)));
     if problems.is_empty() && starts_nothing(&c, &mut store) {
         out.push(STARTS_NOTHING.into());
     }
@@ -291,6 +299,10 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.feeds.is_empty() {
         out.push("  feeds".into());
         out.extend(server.feeds.iter().map(|f| format!("    {}", f.label)));
+    }
+    if !server.queues.is_empty() {
+        out.push("  queues".into());
+        out.extend(server.queues.iter().map(|q| format!("    {}", q.label)));
     }
     if !server.actions.is_empty() {
         out.push("  actions".into());

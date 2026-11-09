@@ -172,6 +172,10 @@ mod sse;
 mod ws;
 mod feeds;
 mod subscriptions;
+mod sigv4;
+mod sqs;
+mod queues;
+mod dequeue;
 mod deploy;
 mod editor;
 mod durable;
@@ -568,6 +572,7 @@ const USAGE: &str = "usage: holon <command>
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   mail add|list|remove               bind a name flows send mail through to an SMTP server (admin)
   feed add|list|remove               bind a name flows listen to to a feed of server-sent events (admin)
+  queue add|list|remove              bind a name flows send to and listen to to an SQS queue (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
   host                               what the host holds: memory, its disks, what it keeps (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
@@ -621,6 +626,8 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --mails PATH             the mail resources an admin bound (holon mail --help); the mail on
                            its way waits in mail-spool beside it
   --feeds PATH             the feeds an admin bound (holon feed --help)
+  --queues PATH            the queues an admin bound (holon queue --help); the messages on
+                           their way wait in queue-spool beside it
   --accounts PATH          the accounts: who may sign in, and as what
   --policy PATH            the host's policy file
   --host-key PATH          the key the tokens it hands out are signed with
@@ -694,6 +701,7 @@ fn main() {
         Some("database") => std::process::exit(databases::cli(&rest)),
         Some("mail") => std::process::exit(mails::cli(&rest)),
         Some("feed") => std::process::exit(feeds::cli(&rest)),
+        Some("queue") => std::process::exit(queues::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
         Some("pick-folder") => std::process::exit(pick::cli(&rest)),
         Some("mcp") => std::process::exit(mcp::run(&rest)),
@@ -759,6 +767,7 @@ fn serve(args: Vec<String>) {
     let mut databases_arg = ".holon-databases.json".to_string();
     let mut mails_arg = ".holon-mails.json".to_string();
     let mut feeds_arg = ".holon-feeds.json".to_string();
+    let mut queues_arg = ".holon-queues.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut accounts_arg = ".holon-accounts.json".to_string();
@@ -846,6 +855,10 @@ fn serve(args: Vec<String>) {
         } else if a == "--feeds" {
             if let Some(v) = args.next() {
                 feeds_arg = v;
+            }
+        } else if a == "--queues" {
+            if let Some(v) = args.next() {
+                queues_arg = v;
             }
         } else if a == "--secrets-key" {
             // Where the secrets file's master key is kept: `os` (the OS key store, the default
@@ -1002,10 +1015,11 @@ fn serve(args: Vec<String>) {
     inside(&mut databases_arg, ".holon-databases.json", "databases.json");
     inside(&mut mails_arg, ".holon-mails.json", "mails.json");
     inside(&mut feeds_arg, ".holon-feeds.json", "feeds.json");
+    inside(&mut queues_arg, ".holon-queues.json", "queues.json");
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
     // Each in its platform's form, whole (paths.rs): as it is kept, joined, shown and compared.
-    for arg in [&mut store_arg, &mut deployments_arg, &mut flows_arg, &mut policy_arg, &mut secrets_arg, &mut folders_arg, &mut databases_arg, &mut mails_arg, &mut feeds_arg, &mut accounts_arg, &mut host_key_arg] {
+    for arg in [&mut store_arg, &mut deployments_arg, &mut flows_arg, &mut policy_arg, &mut secrets_arg, &mut folders_arg, &mut databases_arg, &mut mails_arg, &mut feeds_arg, &mut queues_arg, &mut accounts_arg, &mut host_key_arg] {
         if arg.as_str() != ":memory:" {
             *arg = paths::normalize(&*arg).to_string_lossy().into_owned();
         }
@@ -1108,7 +1122,7 @@ fn serve(args: Vec<String>) {
     }
     // The folders an admin bound (folders.rs): never the server's own files, nor what holds them.
     let mut own = server_files(
-        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &mails_arg, &feeds_arg, &accounts_arg, &host_key_arg],
+        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &mails_arg, &feeds_arg, &queues_arg, &accounts_arg, &host_key_arg],
         &deployments_arg,
         &secrets_arg,
         dotenv_arg.as_deref(),
@@ -1124,8 +1138,11 @@ fn serve(args: Vec<String>) {
     let mail_sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let folders = folders.with_mails(mails::Mails::open(&mails_arg).unwrap_or_else(|e| refuse_to_start(e)).with_sources(mail_sources));
     // And the feeds (feeds.rs): a feed's URL and headers are read as a mail server's are.
-    let feed_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
+    let feed_sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let folders = folders.with_feeds(feeds::Feeds::open(&feeds_arg).unwrap_or_else(|e| refuse_to_start(e)).with_sources(feed_sources));
+    // And the queues (queues.rs): a queue's URL with its key is read as a feed's is.
+    let queue_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
+    let folders = folders.with_queues(queues::Queues::open(&queues_arg).unwrap_or_else(|e| refuse_to_start(e)).with_sources(queue_sources));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
@@ -1144,13 +1161,17 @@ fn serve(args: Vec<String>) {
     // The mail its runs sent that wasn't delivered when the server stopped, sent now: what its
     // deployment's log holds of it (mails.rs).
     folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
+    // And the messages to its queues (queues.rs).
+    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     folders.mails.serve(Arc::clone(&deployments));
+    folders.queues.serve(Arc::clone(&deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     inbox::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     subscriptions::spawn(store.clone(), Arc::clone(&deployments), deployments_at.clone());
+    dequeue::spawn(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     {
         // The run logs and event logs are synced to disk every second, so a power loss loses at most
         // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes

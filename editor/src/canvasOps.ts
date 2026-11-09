@@ -53,11 +53,15 @@ export type MailDraft = { mail: string; label: string; hash: string; log?: LogWo
  *  its label (`on feed prices`) and its handler unit's hash. */
 export type FeedDraft = { feed: string; label: string; hash: string; log?: LogWord };
 
+/** One queue handler of the derived server (an `on_queue` node's group): the queue it listens to,
+ *  its label (`on queue payout_events`) and its handler unit's hash. */
+export type QueueDraft = { queue: string; label: string; hash: string; log?: LogWord };
+
 /** One action of the derived server (an `action` node's group): its name, its label (`action
  *  reset`) and its handler unit's hash. */
 export type ActionDraft = { name: string; label: string; hash: string; log?: LogWord };
 
-/** The server a canvas declares: its endpoints, clocks, file, mail and feed handlers and actions, why any handler can't be one, the
+/** The server a canvas declares: its endpoints, clocks, file, mail, feed and queue handlers and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
  *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
@@ -66,6 +70,7 @@ export type DerivedServer = {
   files: FileDraft[];
   mails: MailDraft[];
   feeds: FeedDraft[];
+  queues: QueueDraft[];
   actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;

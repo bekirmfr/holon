@@ -121,6 +121,10 @@ pub enum Capability {
     /// The host keeps a connection to the feed an admin bound to that name (host-capabilities L4
     /// §5.9.2).
     FeedEvent(String),
+    /// Starts a run for each message that comes to the named queue: `queue_message`, whose value
+    /// is the message. The host receives from the queue an admin bound to that name, and deletes
+    /// each message once its run is over (host-capabilities L4 §5.9.9).
+    QueueMessage(String),
     /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
     /// something through Holon, never the network. A server's `declare=action` child gives it.
     Action(String),
@@ -164,6 +168,9 @@ pub enum Capability {
     /// writes have landed. The effect a run performs names the mail alone, `"ops"`, its recipients
     /// in its payload, held to these by the host (mail.rs, host-capabilities L4 §5.2.2).
     MailSend(String),
+    /// Sends messages to the queue an admin binds to the name: `queue_send`, sent once the run is
+    /// over and its writes have landed (host-capabilities L4 §5.9.9).
+    QueueSend(String),
     /// Runs the action of another deployed flow and gets its answer: `flow_call`, or starts it,
     /// another's or its own, without waiting for its end: `flow_start`. Named by the
     /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
@@ -206,9 +213,9 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -223,7 +230,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -349,6 +356,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // An event a feed sends starts a run: the host keeps the connection, and the event is the
         // leaf's value. The feed is a frozen param, so the trigger names it.
         "feed_event" => vec![FeedEvent(ident(params, "feed")?)],
+        // A message that comes to a queue starts a run: the host receives it, and the message is
+        // the leaf's value. The queue is a frozen param, so the trigger names it.
+        "queue_message" => vec![QueueMessage(ident(params, "queue")?)],
         // A database's tables, from the statement the leaf sends: its SQL is a frozen param, so
         // what it reads and writes is known before it runs (sql.rs). A statement that can't be
         // followed classifies as nothing, and fails closed.
@@ -366,6 +376,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A mail resource's message: the mail and each recipient the text names are frozen params,
         // so the capabilities name them exactly (mail.rs).
         "mail_send" => crate::mail::capabilities(params)?,
+        // A queue's message, sent once the run is over: the queue is a frozen param.
+        "queue_send" => vec![QueueSend(ident(params, "queue")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.

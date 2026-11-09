@@ -855,6 +855,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/trade-tape.holon.ts"),
     },
     Sample {
+        name: "payout-events",
+        title: "Payout events (an SQS queue in, a FIFO queue of retries out)",
+        description: "A payment provider's payout events, as a forwarder of its own puts its webhooks on an Amazon SQS queue; an admin binds the queue (holon queue add payout_events --url env:…, its URL with its access key in a secret source) and the host long-polls it: each message starts one run of on.queue(payout_events, (m) => …), one at a time, in the order received, m the message ({data, id, attributes, sent, count, group}, data a value when it is JSON), and is deleted once its run's record is on disk, so a crash runs it again rather than losing it, and one handed out twice is passed over. Each payout's status is kept by its id in a collection; a failed one is sent to a FIFO queue of retries (payout_retries.send({ data, group })), its group the account, so one account's retries keep their order: it goes once the run is over and its writes have landed, tried again if SQS can't take it yet, and deduplicated by its run, so it is sent once. GET /payouts answers each payout's status.",
+        shows: &["on.queue", "Amazon SQS", "a queue's messages as runs", "deleted once the record is on disk", "sending to a queue", "FIFO message groups", "collections"],
+        port: Some("8194"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "put each queue's URL with its key in the server's environment (HOLON_SECRET_EVENTS_URL=https://<key id>:<secret>@sqs.<region>.amazonaws.com/<account>/payout-events, HOLON_SECRET_RETRIES_URL=…/payout-retries.fifo) and bind them (holon queue add payout_events --url env:HOLON_SECRET_EVENTS_URL, holon queue add payout_retries --url env:HOLON_SECRET_RETRIES_URL); deploy, send the first queue an event (aws sqs send-message --queue-url … --message-body '{\"type\":\"payout.failed\",\"payout\":{\"id\":\"po_1\",\"amount\":\"120.00\",\"currency\":\"EUR\",\"account\":\"acct_1\"}}'), then curl http://127.0.0.1:8194/payouts; the retry is in payout-retries.fifo, and the server panel shows what the queue handed out and what was sent",
+        text: include_str!("../samples/payout-events.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

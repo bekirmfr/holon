@@ -1134,6 +1134,11 @@ impl Permit {
         self.named("MailSend")
     }
 
+    /// The queues it may send to, by name.
+    pub(crate) fn queues_sent(&self) -> BTreeSet<String> {
+        self.named("QueueSend")
+    }
+
     /// The folders it may read, by name.
     pub(crate) fn folders_read(&self) -> BTreeSet<String> {
         self.named("FileRead")

@@ -68,6 +68,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
             Some((mail, to)) => ("outside", "mail", mail.to_string(), format!("send to {to}")),
             None => ("outside", "mail", arg, s("send")),
         },
+        "QueueSend" => ("outside", "queue", arg, s("send")),
         "Spawn" => ("outside", "process", arg, s("start")),
         "Browser" => ("outside", "browser", arg, s("answer pages")),
         "StateRead" => ("state", "key", arg, s("read")),

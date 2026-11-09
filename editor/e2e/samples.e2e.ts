@@ -2653,6 +2653,61 @@ test("trade-tape fetches the trades its feed skipped, across a reconnect, and ke
   }
 });
 
+test("payout-events runs each message its queue holds once, and sends a failed payout's retry to the FIFO queue", async ({ page, request, adminToken }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's SQS (sqs-server.mjs): a message is a file dropped in its queue's folder;
+  // sent.log and deleted.log say what the host sent and deleted.
+  const sqs = join(FOLDERS, "sqs");
+  type Line = { queue: string; id: string; body: string; group?: string | null };
+  const lines = (file: string): Line[] =>
+    existsSync(join(sqs, file))
+      ? readFileSync(join(sqs, file), "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as Line)
+      : [];
+  const stamp = Date.now();
+  const id = (n: number) => `po_${stamp}_${n}`;
+  const event = (type: string, n: number) => JSON.stringify({ type, payout: { id: id(n), amount: "120.00", currency: "EUR", account: `acct_${stamp}` } });
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/payout-events/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Payout events (an SQS queue in, a FIFO queue of retries out)");
+  const port = await deploy(page);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the queue payout_events (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  // Its key never shown.
+  expect((await said()).some((w) => w.includes("e2e-not-a-secret"))).toBe(false);
+  writeFileSync(join(sqs, "payout-events", `${stamp}-1.json`), event("payout.paid", 1));
+  writeFileSync(join(sqs, "payout-events", `${stamp}-2.json`), event("payout.failed", 2));
+  type Payout = { status: string; event: string; account: string };
+  const payouts = async () => (await (await request.get(`http://127.0.0.1:${port}/payouts`)).json()) as Record<string, Payout>;
+  await expect.poll(async () => [(await payouts())[id(1)]?.status, (await payouts())[id(2)]?.status], { timeout: 15_000 }).toEqual(["paid", "failed"]);
+  // Each deleted once its run was over; the failed one's retry in the FIFO queue, its group the
+  // account, sent once.
+  await expect.poll(() => lines("deleted.log").filter((d) => d.body.includes(String(stamp))).length, { timeout: 15_000 }).toBe(2);
+  await expect.poll(() => lines("sent.log").filter((s) => s.body.includes(String(stamp))).map((s) => [s.queue, JSON.parse(s.body).id, s.group]), { timeout: 15_000 }).toEqual([
+    ["payout-retries.fifo", id(2), `acct_${stamp}`],
+  ]);
+  // The server panel says what the listener did and what was sent.
+  await expect(page.getByText("receiving, 2 run")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("1 sent")).toBeVisible({ timeout: 15_000 });
+
+  // The admin's resources show each queue without its key; permissions, who takes and who sends.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/000000000000\/payout-retries\.fifo \(from env:HOLON_SECRET_RETRIES_URL\) · FIFO · 256 KiB at most · out of sight for 300s$/)).toBeVisible();
+  await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByLabel("queue payout_events")).toContainText("starts on each message it holds");
+  await expect(page.getByLabel("queue payout_retries")).toContainText("sends messages to it");
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

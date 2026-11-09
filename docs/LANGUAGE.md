@@ -85,7 +85,7 @@ unit.
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | Its syntax | TypeScript's: a flow is a valid TypeScript module, read by a TypeScript parser (oxc's). The meanings that differ from JavaScript's are Holon's; where a JavaScript reader would be misled, the compiler refuses and says what to write instead | §1, §2, §6 |
 | What it is not | General-purpose. No loops, recursion, classes, generics, imports of code, or standard library growth | §2 |
-| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"feed:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
+| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
 | Settings | `flow("name", { port, keep, limits, browsers })`, once, after the imports | §5.1 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
@@ -96,7 +96,7 @@ unit.
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
-| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `on.mail(mail, (m) => …)`, `on.feed(feed, (e) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
+| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `on.mail(mail, (m) => …)`, `on.feed(feed, (e) => …)`, `on.queue(queue, (m) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
 | Another flow's action | `import { charge } from "flow:billing"`, then `await charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | A run that waits | A route answers and is done: what waits (`await event(…)`) is an action, which the route starts by calling it without `await`, `payment(x)`, answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
@@ -1117,6 +1117,45 @@ from it, so `skipped` falls to `[]`; a page that doesn't answer 200 adds none, a
 as `unfetched`. The handler is strict (the default log): where the host is in the feed moves once
 a run's record is on disk, so a trade a crash cut short is in the next one's gap.
 
+### payout-events: a queue in, a FIFO queue out
+
+```ts
+import { flow, on, route } from "holon"
+import payouts from "collection:payouts"
+import payout_events from "queue:payout_events"
+import payout_retries from "queue:payout_retries"
+
+flow("payout-events", { port: 8194 })
+
+on.queue(payout_events, (m) => {
+  const payout = m.data.payout
+  payouts[payout.id] = {
+    amount: payout.amount,
+    currency: payout.currency,
+    account: payout.account,
+    status: m.data.type.replace("payout.", ""),
+    event: m.id,
+    at: m.sent,
+  }
+  if (m.data.type === "payout.failed") {
+    payout_retries.send({ data: payout, group: payout.account })
+  }
+})
+
+route.get("/payouts", () => payouts.list())
+```
+
+`import payout_events from "queue:payout_events"` names a queue an admin bound to an Amazon SQS
+queue (`holon queue add payout_events --url env:…`, `docs/L4s/host-capabilities-L4.md` §5.9.9),
+its URL and the access key in it the binding's, never the flow's. `on.queue(payout_events, (m) =>
+{ … })` runs for each message the queue holds, one at a time, in the order received: `m.data` is
+its body, a value since it is JSON, `m.id` the queue's id for it, `m.sent` when it was sent. The
+host deletes it once the run's record is on disk, so a crash runs it again rather than losing it,
+and a message it ran already is passed over. `payout_retries.send({ data, group })` is an effect,
+`queue_send{queue: payout_retries}(message)`, performed once the run is over and its writes have
+landed: a failed payout goes to a FIFO queue, its group the account, so one account's retries keep
+their order, and its deduplication id is the run's, so a send tried again is taken once.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):
@@ -1398,7 +1437,7 @@ it reaches it as an input after the item (§5.9): `tax` here.
   `parse_path` accepts.
 - **Import sources** are text literals of a fixed shape: `"holon"`, `"state"`, `"secret:NAME"`,
   `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`,
-  `"feed:NAME"`, `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
+  `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
   }`, is in quotes, as an attribute's value is a text.
 
 ## 5. Syntax and lowering
@@ -1413,7 +1452,7 @@ same flow drawn on the canvas are the same unit. A file, in shapes:
 import { flow, route, every, on, action, js, respond, status, stripe, event, LEAF… } from "holon"
 import NAME from "secret:NAME"                       (with { optional: "true" })
 import state from "state"
-import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:, feed:)
+import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:, feed:, queue:)
 import NAME from "host:HOST"
 import { now } from "holon:clock"
 import { random } from "holon:random"
@@ -1431,6 +1470,7 @@ on.file.created(FOLDER, (f) => { … }, { matching, log })
 on.file.deleted(FOLDER, (f) => { … }, { matching, log })
 on.mail(MAIL, (m) => { … }, { log })
 on.feed(FEED, (e) => { … }, { log })
+on.queue(QUEUE, (m) => { … }, { log })
 export const NAME = action((input) => { … }, { log })
 ```
 
@@ -1450,6 +1490,7 @@ An import names something the flow uses from outside a run; its source says what
 | `import updates from "channel:updates"` | a channel | `channel_send`, `channel_subscribe`, a piped call |
 | `import ops from "mail:ops"` | a mail an admin bound to an SMTP server, a mailbox, or both | `mail_send{mail}`; `on.mail`'s trigger |
 | `import prices from "feed:prices"` | a feed an admin bound to a stream of server-sent events | `on.feed`'s trigger |
+| `import payouts from "queue:payouts"` | a queue an admin bound to an Amazon SQS queue | `queue_send{queue}`; `on.queue`'s trigger |
 | `import api from "host:api.example.com"` | a host the flow calls | `http_request{host}` and its kin |
 | `import { now } from "holon:clock"` | the time the run started | `clock()`; in a clock, the tick |
 | `import { random } from "holon:random"` | one random number for the run | `random()` |
@@ -1512,6 +1553,15 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
   run answers nobody, so a `respond` in it is refused. It lowers to an `on_feed{feed, log}` node,
   its trigger, whose output `event` is the event (a `feed_event{feed}` leaf inside it, sourced:
   `FeedEvent("prices")`).
+- **A queue handler,** `on.queue(payouts, (m) => { … })`, runs for each message the queue
+  `payouts` imports holds, one at a time, in the order received; `m` is the message (`.data`, a
+  value when its body is JSON and its text when it isn't; `.id`; `.attributes`; `.sent`, in
+  seconds since 1970; `.count`, how many times the queue handed it out; `.group`, a FIFO queue's),
+  and the host deletes it once its run's record is on disk. One handler a queue, and one
+  deployment listening to it; its first argument is an imported queue, and its run answers
+  nobody, so a `respond` in it is refused. It lowers to an `on_queue{queue, log}` node, its
+  trigger, whose output `message` is the message (a `queue_message{queue}` leaf inside it,
+  sourced: `QueueMessage("payouts")`).
 - **An action,** `export const reset = action((input) => { … })`, runs when someone runs it by its
   name, `input` what they sent (a JSON value; `{}` when they sent nothing). It answers with what it
   returns, a value alone (a route's `status(…)` and `respond(…)` are not an action's); an action
@@ -1792,6 +1842,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `notes.update(c, { … }, { "$set": … }, { expect: n })` | `db_update{database: notes, collection: c, filter, update, expect: n}(list(v…))` | update what the filter selects when the run finishes (only if it matches `n`) |
 | `notes.delete(c, { … }, { expect: n })` | `db_delete{database: notes, collection: c, filter, expect: n}(list(v…))` | delete what the filter selects when the run finishes (only if it deletes `n`) |
 | `updates.send(e)` (`import updates from "channel:updates"`) | `channel_send{channel: updates}(e)` | send `e` to the channel's subscribers once the run is over |
+| `payouts.send({ data, group })` (`import payouts from "queue:payouts"`) | `queue_send{queue: payouts}({ data, group })` | send a message to the queue once the run is over and its writes have landed; `group` a FIFO queue's |
 | `return updates.subscribe({ from: "kept" })` | `channel_subscribe{channel: updates, from: kept}` as `respond`'s body | answer with the channel's packs, as server-sent events (`from: "new"`, the default: only those sent from now on) |
 | `await api.get(path, { headers: h, body: b })` (`import api from "host:api.example.com"`), and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host: api.example.com}(path, h, b)` | a call to that host: `{status, headers, body}` |
 | `await api.put(path, { headers: h, file: f })` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |

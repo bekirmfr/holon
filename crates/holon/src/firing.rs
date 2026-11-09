@@ -677,7 +677,7 @@ fn run_attempt(
         }
         // A file too: another deployment that reads it logs its text, redacted only of its own
         // secrets, and a part of it read is kept as it is.
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::FileWrite(key) = cap {
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::QueueSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
                 return false;
@@ -701,7 +701,10 @@ fn run_attempt(
     let past_packs = (failed_read.is_none() && past_limit.is_none()).then(|| channels::past_pack_limits(&host.performed, &permit.channels)).flatten();
     // Mails past what a run may send: likewise.
     let past_mails = (failed_read.is_none() && past_limit.is_none() && past_packs.is_none()).then(|| mails::past_limit(&host.performed)).flatten();
-    if past_limit.is_some() || past_packs.is_some() || past_mails.is_some() {
+    // Messages a queue won't take, held to the largest its binding says: likewise.
+    let largest = |queue: &str| waits.folders.as_ref().and_then(|f| f.all.queues.resolve(&f.deployment, queue)).map(|b| b.largest);
+    let past_queued = (failed_read.is_none() && past_limit.is_none() && past_packs.is_none() && past_mails.is_none()).then(|| queues::past_limit(&host.performed, largest)).flatten();
+    if past_limit.is_some() || past_packs.is_some() || past_mails.is_some() || past_queued.is_some() {
         host.performed.clear();
     }
     // A run that settled waiting performs nothing yet, but the packs it settled that didn't wait
@@ -728,6 +731,7 @@ fn run_attempt(
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
             .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
             .or(past_mails.map(|e| format!("{}{e}", mails::SEND_FAILED)))
+            .or(past_queued.map(|e| format!("{}{e}", queues::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
         run_id: run_hex,
         unit: to_hex(&permit.deployment),
@@ -914,6 +918,7 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
         channels.release(seq + 1, &permit.channels);
         folders.all.mails.release(slug, seq + 1);
         folders.all.feeds.release(slug, seq + 1);
+        folders.all.queues.release(slug, seq + 1);
     }
     Some(Logged { seq: Some(seq), kept })
 }
@@ -970,10 +975,12 @@ pub(crate) fn log_or_count(
 /// it settled, redacted as a logged run's are, but sent live, with no id, and never kept. A pack's
 /// id is its run's log seq and the kept packs are rebuilt from the log, which doesn't hold the
 /// run: a subscriber there now gets them, and one that reconnects, or comes after a restart,
-/// doesn't. Its mails are spooled and sent (mails.rs).
+/// doesn't. Its mails and its queues' messages are spooled and sent (mails.rs, queues.rs).
 fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, folders: &folders::Scoped, mut entry: LogEntry, tokens: Redactor) {
     let mails = std::mem::take(&mut entry.mails);
     folders.all.mails.send_unlogged(&folders.deployment, &entry, mails);
+    let queued = std::mem::take(&mut entry.queued);
+    folders.all.queues.send_unlogged(&folders.deployment, &entry, queued);
     if entry.performed.iter().chain(&entry.progress).any(|p| p.capability.starts_with("ChannelSend(")) {
         let answered = std::mem::take(&mut entry.answered);
         tokens.and(Redactor::of(secrets)).and(Redactor::answers(&answered.0, secrets)).entry(&mut entry);
@@ -1069,6 +1076,9 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     // sends one whose record is on disk, and drops one whose record a crash lost.
     let mails = std::mem::take(&mut entry.mails);
     let spooled = folders.all.mails.spool_logged(slug, &entry, mails);
+    // Its queues' messages likewise (queues.rs).
+    let queued = std::mem::take(&mut entry.queued);
+    let queued = folders.all.queues.spool_logged(slug, &entry, queued);
     let answered = std::mem::take(&mut entry.answered);
     let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
     entry.session = session;
@@ -1083,6 +1093,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         let seq = log.push_made(entry, made);
         channels.hold(seq, packs);
         folders.all.mails.hold(slug, seq, spooled);
+        folders.all.queues.hold_sends(slug, seq, queued);
         seq
     });
     Some(Some(Pushed { log, seq, level, channels, permit, folders }))
@@ -1279,6 +1290,7 @@ fn entry_with(
         secrets: run.secrets.clone(),
         answered: run.answered.clone(),
         mails: mails::of(&run.performed),
+        queued: queues::of(&run.performed),
         escaped: false,
         reads: run
             .reads

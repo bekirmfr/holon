@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 25] = [
+    let named: [(&str, Say); 27] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -53,6 +53,8 @@ pub fn describe_item(item: &str) -> String {
         }),
         ("MailArrival", |a| format!("run on each mail that comes to \"{a}\", read it, and move it once its run is over")),
         ("FeedEvent", |a| format!("run on each event from the feed \"{a}\"")),
+        ("QueueMessage", |a| format!("run on each message from the queue \"{a}\", and delete it once its run is over")),
+        ("QueueSend", |a| format!("send messages to the queue \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
@@ -216,6 +218,8 @@ mod tests {
         assert_eq!(describe_item(r#"MailSend("ops/*")"#), r#"send mail through "ops" to an address it computes, within its binding's"#);
         assert_eq!(describe_item(r#"MailArrival("remit")"#), r#"run on each mail that comes to "remit", read it, and move it once its run is over"#);
         assert_eq!(describe_item(r#"FeedEvent("prices")"#), r#"run on each event from the feed "prices""#);
+        assert_eq!(describe_item(r#"QueueMessage("payouts")"#), r#"run on each message from the queue "payouts", and delete it once its run is over"#);
+        assert_eq!(describe_item(r#"QueueSend("retries")"#), r#"send messages to the queue "retries""#);
         // A module's budgets read as what the code may consume, not as a limit raised.
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");

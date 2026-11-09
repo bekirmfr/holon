@@ -160,6 +160,10 @@ pub struct LogEntry {
     /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
     #[serde(skip)]
     pub mails: Vec<(String, holon_core::Value)>,
+    /// The messages it sent to queues, to which and each message whole, until the entry is logged
+    /// and they are spooled (queues.rs): the log keeps them in `performed`.
+    #[serde(skip)]
+    pub queued: Vec<(String, holon_core::Value)>,
 }
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
@@ -722,6 +726,7 @@ pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::D
                 channels.release(log.synced(), &permit.channels);
                 folders.all.mails.release(&folders.deployment, log.synced());
                 folders.all.feeds.release(&folders.deployment, log.synced());
+                folders.all.queues.release(&folders.deployment, log.synced());
             }
             Err(e) => drop(failed.get_or_insert(e)),
         }
@@ -1951,6 +1956,7 @@ mod tests {
             escaped: false,
             answered: AnswerTokens::default(),
             mails: Vec::new(),
+            queued: Vec::new(),
         }
     }
 

@@ -1,7 +1,7 @@
 # Triggers and clocks
 
 What starts a run: a request on the flow's port, a clock, a file settling in a folder, a message
-in a mailbox, an event from a feed, an action someone runs, another flow's call, and a resume. A flow is its imports and settings, its functions
+in a mailbox, an event from a feed, a message from a queue, an action someone runs, another flow's call, and a resume. A flow is its imports and settings, its functions
 and its **handlers**, each a trigger and the function it runs; they share everything the flow owns.
 The design is the [triggers L4](../../L4s/triggers-L4.md) (TL4); the language is
 [`LANGUAGE.md`](../../LANGUAGE.md) §5.1 and §5.11; how each kind of run is recorded and synced
@@ -17,6 +17,7 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 | `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
 | `on.mail(remit, (m) => { … })` | a message in a bound mailbox | one a message, `m` the message read | `MailArrival("remit")` | `inbox.rs` |
 | `on.feed(prices, (e) => { … })` | an event from a bound feed of server-sent events or a WebSocket | one an event, in order, `e` the event | `FeedEvent("prices")` | `subscriptions.rs` |
+| `on.queue(payouts, (m) => { … })` | a message in a bound Amazon SQS queue | one a message, in the order received, `m` the message, deleted once its run is over | `QueueMessage("payouts")` | `dequeue.rs` |
 | `export const reset = action((input) => { … })` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
 
 Every flow has handlers. The forms without them (`every 10s` or `on file inbox` as a header, the
@@ -32,7 +33,8 @@ routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a ma
 answers through the same mail, logged in with OAuth), `price-feed` (a feed handler beside routes,
 telling a page through a channel), `trading-bot` (a WebSocket feed, newest price a product, a lazy
 handler starting a strict action), `bluesky-mentions` (a WebSocket feed opened again from its
-cursor), `billing` and `shop` (actions, and a
+cursor), `trade-tape` (a feed's gaps fetched), `payout-events` (a queue handler beside a route,
+sending to a FIFO queue), `billing` and `shop` (actions, and a
 flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
@@ -124,6 +126,35 @@ can't be is tried again after twice as long each time, to a minute, on the timel
 each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
 `on feed prices`.
 
+### Queues
+
+`dequeue.rs` holds the listeners a queue handler needs (`on.queue(payouts, (m) => …)`,
+host-capabilities L4 §5.9.9), as `subscriptions.rs` holds a feed's connections: every second a
+thread compares the queues running deployments listen to with the listeners it holds, one a
+deployment and queue, started anew when the deployment's unit or the queue's binding changes. Each
+listener long-polls the queue (`sqs.rs`, SQS's JSON protocol, each request signed by `sigv4.rs`:
+`ReceiveMessage`, 20 s, up to 10, the binding's visibility) and runs the handler on each message
+received, one at a time, its message the run's input as `QueueMessage("payouts")`: `{data, id,
+attributes, sent, count, group}`, `data` parsed when it is JSON. A second thread keeps what was
+received and isn't deleted out of sight (`ChangeMessageVisibility`, every half of the visibility).
+A message is deleted once its run's record is on disk: a strict or unrecorded run's at its end, a
+lazy run's once `sync_logs` has synced its entry (`Queues::hold` and `release`, beside the feeds'
+positions), a failed run's too unless the binding keeps it (`--keep-failed`). The ids of the last
+1,000 run on are in `queue-seen/<slug>/<queue>.json` beside the log, and a message among them is
+deleted without a run, on the timeline. Stopped, a listener makes what it received and didn't run
+visible again at once. A queue that can't be reached is asked again after a second, twice as long
+each time, to a minute, on the timeline once. One deployment listens to a queue (`refuses`, at
+deploy, by where the binding points). What each listener is doing, and what each queue a
+deployment sends to came to, is in `GET /deployments/<slug>/queues`. Logged as `queue` under the
+label `on queue payouts`.
+
+Sending (`payouts.send({ data, group })`, a sink) is `queues.rs`'s, as mail's is `mails.rs`'s: a
+run's messages are spooled (`queue-spool/` beside `--queues`) before its record is written, held
+until it is on disk, then sent in order by an outbox thread for each queue, tried again for a day
+on what SQS says is temporary. A FIFO queue's message carries its group (the deployment's name
+unless given) and a deduplication id of the run's id and the send's place in it. A restart sends
+what the spool holds whose run its log holds.
+
 ### Actions and flow calls
 
 `POST /trigger/<slug>/<name>` (`handle_post_action`) runs one action with a JSON body (nothing is
@@ -142,7 +173,7 @@ strict when absent):
 
 | Run | Level |
 |---|---|
-| a route, an `every` handler, a file, mail or feed handler, an action | as its `log` option says (`Permit::log_level`) |
+| a route, an `every` handler, a file, mail, feed or queue handler, an action | as its `log` option says (`Permit::log_level`) |
 | a request no route took | `lazy` (Q12) |
 | a resumed part | strict |
 

@@ -224,6 +224,8 @@ enum FrameKind {
     OnMail,
     /// A feed handler.
     OnFeed,
+    /// A queue handler.
+    OnQueue,
     /// An action's block: its `action` node, and where it responded.
     Action { node: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
@@ -297,6 +299,8 @@ struct Lowerer<'a> {
     mails: HashSet<String>,
     /// The feeds it imports (`import prices from "feed:prices"`): listened to.
     feeds: HashSet<String>,
+    /// The queues it imports (`import payouts from "queue:payouts"`): listened to, sent to.
+    queues: HashSet<String>,
     /// The flows whose actions it imports (`import { charge } from "flow:billing"`), by the noun
     /// that calls them (`billing`, or `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
@@ -335,6 +339,7 @@ impl<'a> Lowerer<'a> {
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let mails = file.headers.iter().filter_map(|h| if let HeaderKind::Mail(m) = &h.kind { Some(m.clone()) } else { None }).collect();
         let feeds = file.headers.iter().filter_map(|h| if let HeaderKind::Feed(f) = &h.kind { Some(f.clone()) } else { None }).collect();
+        let queues = file.headers.iter().filter_map(|h| if let HeaderKind::Queue(q) = &h.kind { Some(q.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let secrets = file
             .headers
@@ -368,6 +373,7 @@ impl<'a> Lowerer<'a> {
             channels,
             mails,
             feeds,
+            queues,
             calls,
             flow,
             actions,
@@ -433,6 +439,12 @@ impl<'a> Lowerer<'a> {
                 return err(b.head, format!("{} is written twice: one handler per feed", holon_core::feed_label(&b.feed)));
             }
         }
+        let queue_blocks: Vec<&OnQueueDef> = file.items.iter().filter_map(|i| if let Item::OnQueue(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in queue_blocks.iter().enumerate() {
+            if queue_blocks[..i].iter().any(|o| o.queue == b.queue) {
+                return err(b.head, format!("{} is written twice: one handler per queue", holon_core::queue_label(&b.queue)));
+            }
+        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one handler per period", b.text));
@@ -468,6 +480,7 @@ impl<'a> Lowerer<'a> {
                 Item::OnFile(o) => self.on_file(o)?,
                 Item::OnMail(o) => self.on_mail(o)?,
                 Item::OnFeed(o) => self.on_feed(o)?,
+                Item::OnQueue(o) => self.on_queue(o)?,
                 Item::Action(a) => self.action(a)?,
                 _ => {}
             }
@@ -534,7 +547,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) | HeaderKind::Queue(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -564,7 +577,8 @@ impl<'a> Lowerer<'a> {
             || self.databases.contains(&noun)
             || self.channels.contains(&noun)
             || self.mails.contains(&noun)
-            || self.feeds.contains(&noun);
+            || self.feeds.contains(&noun)
+            || self.queues.contains(&noun);
         if taken {
             return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so"));
         }
@@ -766,6 +780,9 @@ impl<'a> Lowerer<'a> {
         }
         if self.feeds.contains(n) {
             return err(name.span, format!("\"{n}\" is a feed; a binding may not shadow it"));
+        }
+        if self.queues.contains(n) {
+            return err(name.span, format!("\"{n}\" is a queue; a binding may not shadow it"));
         }
         if self.calls.contains_key(n) {
             return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
@@ -1349,6 +1366,36 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// `on.queue(payouts, (m) => …)`: a queue handler. Its `on_queue` node is its trigger, `m` in it
+    /// the message, and its sinks are tied to it (host-capabilities L4 §5.9.9).
+    fn on_queue(&mut self, o: &'a OnQueueDef) -> R<()> {
+        let mut params = vec![("queue".to_string(), o.queue.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let message = self.node("on_queue", &params, o.head)?;
+        let Val::Out { id, .. } = &message else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.message.text.clone());
+        self.check_name_free(&o.message)?;
+        let mut frame = Frame::new(FrameKind::OnQueue);
+        frame.created.push(id.clone());
+        frame.env.insert(o.message.text.clone(), message.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a message's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        self.tie_block(&message, o.head)?;
+        let does = self.does_something();
+        let frame = self.frames.pop().expect("the block's frame");
+        if !does {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a queue)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
+        Ok(())
+    }
+
     /// `export const reset = action((input) => …)`: an action, run by hand by its name. Its `action`
     /// node is its trigger, `input` in it what was sent, and its sinks are tied to it
     /// (docs/L4s/triggers-L4.md §2, §3); what it returns answers.
@@ -1386,7 +1433,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.queues.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -1396,7 +1443,7 @@ impl<'a> Lowerer<'a> {
     /// not after a keyword, a collection or a function.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.is_def(n) {
+        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.queues.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1854,6 +1901,9 @@ impl<'a> Lowerer<'a> {
         if self.feeds.contains(n) {
             return err(span, format!("\"{n}\" is a feed: listen to it with on.feed({n}, (e) => {{ … }})"));
         }
+        if self.queues.contains(n) {
+            return err(span, format!("\"{n}\" is a queue: send to it with {n}.send({{ data }}), or listen to it with on.queue({n}, (m) => {{ … }})"));
+        }
         if self.calls.contains_key(n) {
             return err(span, format!("\"{n}\" is a flow: import the action you call, import {{ charge }} from \"flow:{n}\""));
         }
@@ -2038,6 +2088,23 @@ impl<'a> Lowerer<'a> {
             Some(to) => Ok(to.join(",")),
             None => err(message.span, format!("a mail goes to one recipient at least, and {} at most", holon_core::mail::MAX_RECIPIENTS)),
         }
+    }
+
+    /// `payouts.send({ data, group })`: one message, its data and, for a FIFO queue, its group. A
+    /// record written out is checked here; a computed one when it is sent.
+    fn queue_message(&self, queue: &str, args: &[Arg], span: Span) -> R<()> {
+        let message = match args {
+            [only] if only.name.is_none() => &only.value,
+            _ => return err(span, format!("{queue}.send takes one message: {queue}.send({{ data: … }})")),
+        };
+        let ExprKind::Record { spread: None, fields } = &message.kind else { return Ok(()) };
+        if let Some((k, _)) = fields.iter().find(|(k, _)| !matches!(k.text.as_str(), "data" | "group")) {
+            return err(k.span, format!("a queue's message has no \"{}\": data, and group for a FIFO queue", k.text));
+        }
+        if !fields.iter().any(|(k, _)| k.text == "data") {
+            return err(message.span, format!("a queue's message needs its data: {queue}.send({{ data: … }})"));
+        }
+        Ok(())
     }
 
     fn literal_text(&self, e: &Expr) -> R<String> {
@@ -2301,6 +2368,14 @@ impl<'a> Lowerer<'a> {
                 other => err(method.span, format!("a mail has no \"{other}\": send({{ to, subject, text }})")),
             },
             c if self.feeds.contains(c) => err(method.span, format!("a feed has no \"{}\": listen to it with on.feed({c}, (e) => {{ … }})", method.text)),
+            c if self.queues.contains(c) => match method.text.as_str() {
+                "send" => {
+                    self.queue_message(c, args, span)?;
+                    let (inputs, params) = leaf("queue_send");
+                    self.unit_call("queue_send", &inputs, &params, &[("queue".to_string(), c.to_string())], args, span)
+                }
+                other => err(method.span, format!("a queue has no \"{other}\": send({{ data, group }}), or on.queue({c}, (m) => {{ … }}) to listen")),
+            },
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
                 let leaf_name = match method.text.as_str() {
@@ -4607,6 +4682,65 @@ route.get("/last", () => state.last)
         let mut store = MapResolver::new();
         text::restore(&d, &mut store, &Names::new());
         assert_eq!(crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080").errors, Vec::<String>::new(), "{src}");
+    }
+
+    /// `on.queue(payouts, (m) => { … })` is a queue handler: its `on_queue` node, its sinks tied to
+    /// the message, `m` the message; `retries.send({ data, group })` sends one (host-capabilities
+    /// L4 §5.9.9).
+    #[test]
+    fn on_queue_blocks_are_queue_handlers_and_a_queue_is_sent_to() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import payouts from "queue:payouts"
+import retries from "queue:retries"
+
+flow("f", { port: 8080 })
+
+on.queue(payouts, (m) => {
+  state.last = m.data
+  retries.send({ data: m.data, group: "acct_1" })
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_queue")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("queue"), n.param("log"))).collect::<Vec<_>>(), [("payouts", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "queue_message"), "m in a block is its on_queue node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "message".to_string())), "the write is tied to the message");
+        let send = d.nodes.iter().find(|n| n.data.name == "queue_send").unwrap();
+        assert_eq!(send.param("queue"), "retries");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.queues.iter().map(|q| (q.queue.as_str(), q.label.as_str())).collect::<Vec<_>>(), [("payouts", "on queue payouts")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.queues.len(), read.queues[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        let caps = holon_core::capabilities(unit, &store);
+        assert!(caps.contains(holon_core::Capability::QueueMessage("payouts".into())));
+        assert!(caps.contains(holon_core::Capability::QueueSend("retries".into())));
+
+        // A queue is an imported one; one handler a queue; a message's run answers nobody; a queue
+        // is listened to or sent one message.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\nimport remit from \"mail:remit\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.queue(remit, (m) => {\n  state.a = m.data\n})\n", "\"remit\" isn't an imported queue: import remit from \"queue:remit\""),
+            ("on.queue((m) => {\n  state.a = m.data\n})\n", "a queue handler takes its queue first"),
+            ("on.queue(payouts, (m) => {\n  state.a = m.data\n})\non.queue(payouts, (n) => {\n  state.b = n.data\n})\n", "on queue payouts is written twice: one handler per queue"),
+            ("on.queue(payouts, (m) => {\n  return 1\n})\n", "a queue handler's run answers nobody: return alone ends it"),
+            ("on.queue(payouts, (m) => {\n  state.a = payouts\n})\n", "\"payouts\" is a queue: send to it with payouts.send({ data })"),
+            ("on.queue(payouts, (m) => {\n  state.a = payouts.read()\n})\n", "a queue has no \"read\""),
+            ("on.queue(payouts, (m) => {\n  payouts.send(m.data, \"g\")\n})\n", "payouts.send takes one message"),
+            ("on.queue(payouts, (m) => {\n  payouts.send({ body: m.data })\n})\n", "a queue's message has no \"body\": data, and group for a FIFO queue"),
+            ("on.queue(payouts, (m) => {\n  payouts.send({ group: \"g\" })\n})\n", "a queue's message needs its data"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
     }
 
     #[test]

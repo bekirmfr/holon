@@ -204,6 +204,7 @@ ops! {
     "db_delete" => DbDelete,
     "channel_send" => ChannelSend,
     "mail_send" => MailSend,
+    "queue_send" => QueueSend,
     "channel_subscribe" => ChannelSubscribe,
 }
 
@@ -1241,6 +1242,22 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let message = crate::mail::message(inputs.first()?, param(params, "to"))?;
             Some(Value::Effect { sink: format!("mail_send:{mail}"), payload: Box::new(message) })
         }
+        // A queue's message: `{data, group}`, its data any value but an effect, its group text
+        // when given. The queue rides in the sink name.
+        Op::QueueSend => {
+            let queue = crate::kind::ident(params, "queue")?;
+            let Value::Record(message) = inputs.first()? else { return None };
+            let data = message.get("data").filter(|d| !matches!(d, Value::Effect { .. }))?;
+            let mut sent = BTreeMap::from([("data".to_string(), data.clone())]);
+            match message.get("group") {
+                None => {}
+                Some(Value::Text(g)) if !g.is_empty() && g.len() <= 128 => {
+                    sent.insert("group".to_string(), Value::Text(g.clone()));
+                }
+                Some(_) => return None,
+            }
+            Some(Value::Effect { sink: format!("queue_send:{queue}"), payload: Box::new(Value::Record(sent)) })
+        }
         // A subscription: what a route answers with, read by the host from the response (never
         // performed as a sink). `from` is "new" (packs from now on) or "kept" (the kept ones first).
         Op::ChannelSubscribe => {
@@ -1561,7 +1578,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send" | "queue_send")
 }
 
 /// The most items one `collection_list` returns.
@@ -2136,6 +2153,24 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn a_queues_message_is_its_data_and_its_group_naming_the_queue() {
+        let payouts = [Param::frozen("queue", "payouts")];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let data = rec(&[("id", txt("po_1")), ("amount", txt("12.50"))]);
+        let sent = |m: &Value| compute("queue_send", &[m], &payouts);
+        assert_eq!(sent(&rec(&[("data", data.clone())])), Some(Value::Effect { sink: "queue_send:payouts".into(), payload: Box::new(rec(&[("data", data.clone())])) }));
+        let grouped = rec(&[("data", data.clone()), ("group", txt("acct_9"))]);
+        assert_eq!(sent(&grouped), Some(Value::Effect { sink: "queue_send:payouts".into(), payload: Box::new(grouped.clone()) }));
+        assert_eq!(sent(&rec(&[("data", txt("a"))])).map(|e| matches!(e, Value::Effect { .. })), Some(true), "any value is data");
+        assert_eq!(sent(&rec(&[("group", txt("g"))])), None, "no data");
+        assert_eq!(sent(&rec(&[("data", data.clone()), ("group", num(1.0))])), None, "a group is text");
+        assert_eq!(sent(&rec(&[("data", data.clone()), ("group", txt(""))])), None, "an empty group");
+        let effect = sent(&grouped).unwrap();
+        assert_eq!(sent(&rec(&[("data", effect)])), None, "an effect is not data");
+        assert_eq!(compute("queue_send", &[&grouped], &[]), None, "a queue names itself");
     }
 
     #[test]

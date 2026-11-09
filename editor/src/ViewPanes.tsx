@@ -54,7 +54,9 @@ const runLabel = (e: LogEntry) =>
             ? `${mailRun(e.sourced.find(([cap]) => cap.startsWith("MailArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
             : e.kind === "feed"
               ? `${feedRun(e.sourced.find(([cap]) => cap.startsWith("FeedEvent(")))}${e.route ? ` (${e.route})` : ""}`
-              : (e.route ?? "trigger");
+              : e.kind === "queue"
+                ? `${queueRun(e.sourced.find(([cap]) => cap.startsWith("QueueMessage(")))}${e.route ? ` (${e.route})` : ""}`
+                : (e.route ?? "trigger");
 /** A file run's label: what happened to which file (`deleted file a.csv`). */
 const fileRun = (handle: WValue | undefined) => `${text(field(handle, "event")) || "new"} file ${text(field(handle, "name")) || ""}`.trim();
 /** A mail run's label: who it came from, and its subject (`mail from billing@customer.example: Remittance May`). */
@@ -64,6 +66,12 @@ const feedRun = (sourced: [string, WValue] | undefined) => {
   const feed = sourced ? (/^FeedEvent\("(.*)"\)$/.exec(sourced[0])?.[1] ?? "?") : "?";
   const name = text(field(sourced?.[1], "event"));
   return `event from ${feed}${name ? `: ${name}` : ""}`;
+};
+/** A queue run's label: which queue, and its message's id (`message from payout_events: 5fb2…`). */
+const queueRun = (sourced: [string, WValue] | undefined) => {
+  const queue = sourced ? (/^QueueMessage\("(.*)"\)$/.exec(sourced[0])?.[1] ?? "?") : "?";
+  const id = text(field(sourced?.[1], "id"));
+  return `message from ${queue}${id ? `: ${id}` : ""}`;
 };
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);

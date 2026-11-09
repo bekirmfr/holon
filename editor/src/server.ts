@@ -281,6 +281,50 @@ export type FeedState = {
 export async function feedStates(slug: string): Promise<FeedState[]> {
   return (await asJson<{ feeds: FeedState[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/feeds`))).feeds;
 }
+/** A queue bound (queues.rs): where its URL is read from (env:…, vault:…) and the queue it points
+ *  to, without its key; whether it is FIFO, the largest message it takes (bytes), how long a
+ *  message received is kept out of sight at first (seconds), and whether a failed run's message is
+ *  left in the queue for its redrive rather than deleted. */
+export type QueueEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  fifo: boolean;
+  largest: number;
+  visibility: number;
+  keep_failed: boolean;
+};
+/** A queue to bind: what is left out takes its default. `visibility` 5m, 90s. */
+export type QueueBinding = { name: string; deployment: string | null; url: string; visibility?: string; keep_failed?: boolean };
+export const listQueues = async () => asJson<QueueEntry[]>(await api(`${BASE}/admin/queues`));
+export const bindQueue = async (q: QueueBinding) => asJson<QueueEntry>(await post(`${BASE}/admin/queues`, q));
+export async function unbindQueue(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/queues/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** What a deployment's listener to one queue its handlers listen to is doing (`GET
+ *  /deployments/<slug>/queues`): since when (ms), why it can't receive, how many received wait
+ *  for their run, and since it started how many ran, were passed over (run already) and were
+ *  left for the queue's redrive (`keep_failed`). */
+export type QueueListening = {
+  queue: string;
+  label: string;
+  address?: string;
+  status: "receiving" | "unreachable" | "stopped";
+  since?: number;
+  error?: string;
+  waiting: number;
+  run: number;
+  passed_over?: number;
+  kept?: number;
+};
+/** What a deployment's messages to one queue came to since the server started: how many it
+ *  sent, gave up on, and wait to be sent. */
+export type QueueSending = { queue: string; address?: string; sent: number; gave_up?: number; waiting: number };
+export async function queueStates(slug: string): Promise<{ listening: QueueListening[]; sending: QueueSending[] }> {
+  return asJson(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/queues`));
+}
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
 /** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry
@@ -811,7 +855,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed";
+  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed" | "queue";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

@@ -139,6 +139,21 @@ declare module "holon" {
     /** How many numbers of its key the feed skipped before it, theirs counted (`--sequence`): what came while the host wasn't reading. 0 unless some were. */
     gap: number
   }
+  /** A message from a queue. */
+  export interface QueueMessage {
+    /** Its body: a value when it is JSON, else its text. */
+    data: any
+    /** The queue's id for it. */
+    id: string
+    /** Its message attributes whose type is String or Number, as text. */
+    attributes: Record<string, string>
+    /** When it was sent, in seconds since 1970, as `now` is. */
+    sent: number
+    /** How many times the queue has handed it out: more than 1 once a run of it failed or was cut off. */
+    count: number
+    /** A FIFO queue's message group. */
+    group?: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -150,6 +165,8 @@ declare module "holon" {
     mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
     /** Runs for each event the feed sends, one at a time, in the order they came. */
     feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
+    /** Runs for each message from the queue, one at a time, deleted once its run is over. */
+    queue(queue: Queue, handler: (message: QueueMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -298,6 +315,15 @@ declare module "holon" {
   export interface Feed {
     readonly kind: "feed"
   }
+  /** A queue an admin binds on the host: sent to once the run is over, listened to by `on.queue`. */
+  export interface Queue {
+    send(message: {
+      /** The body: JSON, or text as it is. */
+      data: any
+      /** A FIFO queue's message group: one group's messages come out in the order sent. */
+      group?: string
+    }): any
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -339,6 +365,11 @@ declare module "feed:*" {
   import type { Feed } from "holon"
   const feed: Feed
   export default feed
+}
+declare module "queue:*" {
+  import type { Queue } from "holon"
+  const queue: Queue
+  export default queue
 }
 declare module "host:*" {
   import type { Host } from "holon"
@@ -1491,6 +1522,13 @@ declare module "holon" {
   export function feed_event(...args: any[]): any
 
   /**
+   * `queue_message() -> out: Record  {queue: payouts}`
+   *
+   * The message that came to the queue an admin bound to the name set on the node (queue), which started the run: {data, id, attributes, sent, count, group}. data is its body, a value when it is JSON, else its text; id is the queue's id for it; attributes its message attributes of type String or Number, as text; sent when it was sent, in seconds since 1970; count how many times the queue has handed it out; group a FIFO queue's message group. A server's on.queue handler runs once for each message, one at a time, in the order they came; the host deletes it once its run is over, and a message run on already isn't run again.
+   */
+  export function queue_message(...args: any[]): any
+
+  /**
    * `resume_token() -> out: Text  {await: event}`
    *
    * The token that delivers an event to the waiting point (await) named on the node: put it in a link or a callback. Never logged.
@@ -1692,6 +1730,13 @@ declare module "holon" {
    * Sends message through the mail resource an admin bound to the name set on the node (mail), once the run is over and its writes have landed: {to, cc, subject, text, html, attachments}, to and cc an address or a list, attachments a record of a file name to its text or bytes. From is the binding's, never the flow's. to set on the node is the recipients the text names, or * when one is computed: a recipient it doesn't name gives nothing, and the host sends only to those the binding allows. At most 50 recipients and 10 MiB. Sending through it, to each recipient, is a permission.
    */
   export function mail_send(...args: any[]): any
+
+  /**
+   * `queue_send(message: Record, trigger: Any) -> out: Effect  {queue: payouts}`
+   *
+   * Sends message to the queue an admin bound to the name set on the node (queue), once the run is over and its writes have landed: {data, group}. data is the body, sent as JSON (text as it is); group, text, is a FIFO queue's message group, whose messages come out in the order sent. Sending to it is a permission.
+   */
+  export function queue_send(...args: any[]): any
 
   /**
    * `egress(payload: Any, trigger: Any) -> out: Effect`

@@ -8364,6 +8364,134 @@ fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The payout-events sample (host-capabilities L4 §5.9.9): refused until its queues are bound;
+/// bound to a stand-in for SQS, each message the queue hands out starts one run, in the order
+/// received, and is deleted once its record is on disk, a failed run's too; a failed payout's retry
+/// goes to the FIFO queue once its run is over, its group the account. A message handed out again
+/// is passed over, the state endpoint says what each queue came to, a stopped listener leaves
+/// what comes in the queue, nothing holds the URL's key, and the runs verify.
+#[test]
+fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_fifo_queue() {
+    let sqs = sqs::stand_in::StandIn::start();
+    sqs.make("payout-events");
+    sqs.make("payout-retries.fifo");
+    let dir = std::env::temp_dir().join(format!("holon-payouts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_EVENTS_URL={}\nHOLON_SECRET_RETRIES_URL={}\n", sqs.url("payout-events"), sqs.url("payout-retries.fifo"))).unwrap();
+    let mut state = claims_state("");
+    let queues = queues::Queues::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_queues(queues));
+    state.folders.queues.serve(Arc::clone(&state.deployments));
+    let text = include_str!("../../holon-author/samples/payout-events.holon.ts");
+
+    // Refused until both are bound.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": [] }));
+    let body = String::from_utf8_lossy(&body_bytes(refused)).to_string();
+    assert!(body.contains("isn't bound on this server") && body.contains("holon queue add"), "{body}");
+    for (name, url) in [("payout_events", "env:HOLON_SECRET_EVENTS_URL"), ("payout_retries", "env:HOLON_SECRET_RETRIES_URL")] {
+        let bound = route(&state, &req("POST", "/admin/queues", serde_json::to_vec(&serde_json::json!({ "name": name, "url": url })).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    }
+    let shown = body_json(route(&state, &req("GET", "/admin/queues", vec![])));
+    let fifo: Vec<(&str, bool)> = shown.as_array().unwrap().iter().map(|q| (q["name"].as_str().unwrap(), q["fifo"].as_bool().unwrap())).collect();
+    assert_eq!(fifo, [("payout_events", false), ("payout_retries", true)], "{shown}");
+    assert!(!shown.to_string().contains("s3cret"), "{shown}");
+    let slug = deploy_text(&state, text, "");
+
+    let event = |kind: &str, id: &str, account: &str| serde_json::json!({ "type": kind, "payout": { "id": id, "amount": "120.00", "currency": "EUR", "account": account } }).to_string();
+    let first = sqs.put("payout-events", &event("payout.paid", "po_1", "acct_1"), None);
+    sqs.put("payout-events", &event("payout.failed", "po_2", "acct_1"), None);
+    sqs.put("payout-events", &event("payout.failed", "po_3", "acct_2"), None);
+    // One whose retry is past what the FIFO queue takes: its run fails, nothing is written or
+    // sent, and it is deleted all the same.
+    let large = serde_json::json!({ "type": "payout.failed", "payout": { "id": "po_4", "amount": "1.00", "currency": "EUR", "account": "acct_3", "memo": "x".repeat(300_000) } });
+    sqs.put("payout-events", &large.to_string(), None);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "queue").collect::<Vec<_>>();
+    let mut held = dequeue::Held::default();
+    dequeue::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("four runs", || runs().len() == 4);
+    eventually("each message deleted", || sqs.messages("payout-events").is_empty());
+    let ran = runs();
+    assert_eq!(ran.iter().map(|r| r["route"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["on queue payout_events"; 4]);
+    assert_eq!(ran.iter().map(|r| r["error"].is_string()).collect::<Vec<_>>(), [false, false, false, true]);
+    assert!(ran[3]["error"].as_str().is_some_and(|e| e.starts_with(queues::SEND_FAILED) && e.contains("payout_retries")), "{}", ran[3]["error"]);
+    let (status, body, _) = data_call(&state, &slug, "GET", "/payouts", "");
+    assert_eq!(status, 200, "{body}");
+    let payouts: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(payouts.as_object().map(|p| p.keys().cloned().collect::<Vec<_>>()), Some(vec!["po_1".to_string(), "po_2".into(), "po_3".into()]), "{payouts}");
+    assert_eq!((payouts["po_1"]["status"].as_str(), payouts["po_2"]["status"].as_str(), payouts["po_1"]["event"].as_str()), (Some("paid"), Some("failed"), Some(first.as_str())), "{payouts}");
+    assert!(payouts["po_1"]["at"].as_f64().is_some_and(|at| at.fract() == 0.0 && at > 1.7e9), "its time sent, in whole seconds: {payouts}");
+
+    // The failed payouts' retries, each in its account's group, once each run was over.
+    eventually("two retries", || sqs.messages("payout-retries.fifo").len() == 2);
+    let retries = sqs.messages("payout-retries.fifo");
+    assert_eq!(retries.iter().map(|m| m.group.as_deref().unwrap_or_default()).collect::<Vec<_>>(), ["acct_1", "acct_2"]);
+    let retried: serde_json::Value = serde_json::from_str(&retries[0].body).unwrap();
+    assert_eq!(retried, serde_json::json!({ "id": "po_2", "amount": "120.00", "currency": "EUR", "account": "acct_1" }));
+    let asked = sqs.asked();
+    assert_eq!(asked.iter().filter(|a| a.starts_with("SendMessage")).count(), 2, "{asked:?}");
+    assert_eq!(asked.iter().filter(|a| *a == "DeleteMessage payout-events").count(), 4, "{asked:?}");
+
+    // Handed out again, as a standard queue may: passed over, and deleted.
+    sqs.again("payout-events", &first, &event("payout.paid", "po_1", "acct_1"));
+    let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    eventually("passed over", || events().contains(&format!("passed over a message of payout_events it ran already ({first})")));
+    eventually("deleted again", || sqs.messages("payout-events").is_empty());
+    assert_eq!(runs().len(), 4, "run once");
+    let shown = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    let (listening, sending) = (&shown["listening"][0], &shown["sending"][0]);
+    assert_eq!((listening["queue"].as_str(), listening["status"].as_str(), listening["run"].as_u64(), listening["passed_over"].as_u64()), (Some("payout_events"), Some("receiving"), Some(4), Some(1)), "{shown}");
+    assert_eq!((sending["queue"].as_str(), sending["sent"].as_u64(), sending["waiting"].as_u64()), (Some("payout_retries"), Some(2), Some(0)), "{shown}");
+    let events = events();
+    assert!(events.contains("listens to the queue payout_events"), "{events}");
+    assert!(!events.contains("couldn't"), "{events}");
+
+    // Stopped: nothing listens once its last long poll is over, and a message put now waits.
+    drop(held);
+    eventually("the listener stops", || {
+        let n = sqs.asked().len();
+        thread::sleep(Duration::from_millis(1500));
+        sqs.asked().len() == n
+    });
+    sqs.put("payout-events", &event("payout.paid", "po_5", "acct_3"), None);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((runs().len(), sqs.messages("payout-events").len()), (4, 1));
+
+    // Bound again to keep a failed run's message, and listened to again: the one put while it was
+    // stopped runs; one whose run fails is left in the queue, handed out again once it is visible,
+    // and run again.
+    let bind = serde_json::json!({ "name": "payout_events", "url": "env:HOLON_SECRET_EVENTS_URL", "keep_failed": true });
+    assert_eq!(route(&state, &req("POST", "/admin/queues", serde_json::to_vec(&bind).unwrap())).status_code, 200);
+    let kept = sqs.put("payout-events", &large.to_string(), None);
+    let mut held = dequeue::Held::default();
+    dequeue::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    let listening = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])))["listening"][0].clone();
+    eventually("six runs", || runs().len() == 6);
+    eventually("one kept", || listening()["kept"] == 1);
+    assert_eq!(sqs.messages("payout-events").iter().map(|m| m.id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&kept), "the failed one waits out of sight");
+    sqs.expire("payout-events");
+    eventually("run again", || runs().len() == 7);
+    eventually("kept again", || listening()["kept"] == 2);
+    assert_eq!(sqs.messages("payout-events").iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [kept]);
+    assert!(runs()[6]["error"].as_str().is_some_and(|e| e.starts_with(queues::SEND_FAILED)));
+    drop(held);
+
+    // Its runs check offline, those that failed not run again, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let failed = |r: &verify::Rerun| matches!(r, verify::Rerun::Skipped(why) if why.contains("message not sent"));
+    let (matched, skipped) = (report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| failed(r)).count());
+    assert!(report.ok() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze
@@ -10694,7 +10822,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

@@ -79,7 +79,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("flow", "`flow(\"name\", { port: 8080 })`: what the flow is, once, after its imports: the name it deploys as, and its deploy settings (`port`, `keep`, `limits`, `browsers`)."),
     ("route", "`route.post(\"/path/:id\", (req) => answer, { resumes, log })`: answers requests on the flow's port, by `get`, `post`, `put`, `patch` or `delete`; `:id` in the path is read as `req.params.id`. `req` names the request (any name; destructured, or left out when the route reads nothing of it); `async` goes on one that `await`s."),
     ("every", "`every(\"1h\", (now) => { … })`: a run every period, a whole number of seconds from `\"1s\"` to `\"366d\"`, one clock per period; `now` is the tick's time, left out when it isn't read."),
-    ("on", "`on.file.created(inbox, (f) => { … }, { matching: \"*.csv\" })`: a run for each file new or changed in the folder `inbox` imports, once it stops changing; `on.file.deleted`, for each file removed. `f` is the file's handle. `on.mail(remit, (m) => { … })`: a run for each message that comes to the mailbox a mail is bound to. `on.feed(prices, (e) => { … })`: a run for each event a feed sends, one at a time."),
+    ("on", "`on.file.created(inbox, (f) => { … }, { matching: \"*.csv\" })`: a run for each file new or changed in the folder `inbox` imports, once it stops changing; `on.file.deleted`, for each file removed. `f` is the file's handle. `on.mail(remit, (m) => { … })`: a run for each message that comes to the mailbox a mail is bound to. `on.feed(prices, (e) => { … })`: a run for each event a feed sends, one at a time. `on.queue(payouts, (m) => { … })`: a run for each message from a queue, deleted once its run is over."),
     ("action", "`export const reset = action((input) => { … })`: a run by hand, by its name, `input` what was sent (`{}` for nothing); it answers with what it returns, a value alone. It is exported, as nothing else could reach it; a route starts one by calling it without `await`, `const started = reset(req.json)`."),
     ("js", "`const page = js(function html(past) { … }, { fuel, memory, outputs })`: a function whose body is JavaScript, run as written with no clock, randomness or I/O, under its budgets (200M instructions and 16 MiB when not written). Its text is its identity: `holon fmt` leaves it alone."),
     ("respond", "`return respond(body, { status: 201, headers: { … }, stream: true })`: a route's answer with its status, its headers (a record of texts), or streamed. Like `status(…)`, it is a route's answer and nothing else: return it."),
@@ -115,6 +115,7 @@ const NOUNS: &[(&str, &str)] = &[
     ("channel", "Packs the flow sends to whoever subscribes, `import updates from \"channel:updates\"`: `updates.send(v)` sends one once the run is over and its writes have landed; a route answers with `updates.subscribe()`, a stream of server-sent events (`{ from: \"kept\" }`, the ones it keeps first); `updates.pipe(…)` passes a call's answer on as it arrives. One permission to send, one to let callers subscribe."),
     ("mail", "Mail sent through a mail resource an admin binds on the host, `import ops from \"mail:ops\"`: `ops.send({ to: \"approvals@acme.com\", cc, subject, text, html, attachments: { \"payout.csv\": csv } })` sends it once the run is over and its writes have landed, from the binding's address, never the flow's. Each recipient written in quotes is a permission of its own; a computed one is one permission, held to the addresses the binding allows. At most 50 recipients and 10 MiB."),
     ("feed", "A feed an admin binds on the host, `import prices from \"feed:prices\"`: a stream of events (server-sent events) the host keeps a connection to. `on.feed(prices, (e) => { … })` runs once for each event, one at a time, in the order they came: `e.data` (a value when it is JSON, else its text), `e.id` and `e.event`. The host keeps where the feed is, so a reconnect resumes after the last event run on, and none runs twice. One permission: running on its events."),
+    ("queue", "A queue an admin binds on the host (Amazon SQS, or a service that speaks its API), `import payouts from \"queue:payouts\"`. `payouts.send({ data, group })` sends a message once the run is over and its writes have landed: `data` as JSON (text as it is), `group` a FIFO queue's message group. `on.queue(payouts, (m) => { … })` runs once for each message, one at a time, and deletes it once its run is over: `m.data` (a value when it is JSON, else its text), `m.id`, `m.attributes`, `m.sent`, `m.count` (how many times it was handed out) and `m.group`. One deployment listens to a queue. Two permissions: running on its messages, and sending to it."),
     ("host", "`await api.get(path, { headers: h, body: b })`, `import api from \"host:api.example.com\"`: a request to the host over HTTPS; also `post`, `put`, `patch`, `delete` and `head`. The host is the permission; the answer, `{status, headers, body}`, is recorded with the run. `file: handle` in place of `body` sends a file's bytes, streamed by the server."),
     ("flow", "`import { charge } from \"flow:billing\"`: an action of another deployed flow. `await charge(x)` runs it and answers `{answer, run}`, or `{error, message}` when it didn't run; `charge(x)` without `await` starts it. One permission: running it."),
     ("stripe", "`stripe.verify(req, secret, now, { tolerance: 300 })`: the request as a verified Stripe webhook (`.event`), or no value."),
@@ -904,6 +905,7 @@ fn classify(source: &str, imported: &str, optional: bool) -> Option<Imported> {
         ("channel", _) => declared("channel"),
         ("mail", _) => declared("mail"),
         ("feed", _) => declared("feed"),
+        ("queue", _) => declared("queue"),
         ("host", host) => Some(Imported::Host(host.to_string())),
         ("flow", slug) => Some(Imported::Action { flow: slug.to_string(), action: imported.to_string() }),
         _ => None,
@@ -1210,6 +1212,7 @@ const CHANNEL: &[(&str, &str)] = &[
     ("subscribe", "subscribe({ from: \"kept\" }): a route's answer, the packs as server-sent events"),
 ];
 const MAIL: &[(&str, &str)] = &[("send", "send({ to, cc, subject, text, html, attachments }): mailed once the run is over")];
+const QUEUE: &[(&str, &str)] = &[("send", "send({ data, group }): sent once the run is over")];
 const HOST: &[&str] = &["get", "post", "put", "patch", "delete", "head"];
 const REQUEST_PARTS: &[(&str, &str)] = &[
     ("params", "the path's :names"),
@@ -1268,6 +1271,7 @@ fn members(o: &Outline, code: &[&Lexeme], head: usize, at: Pos) -> Vec<Completio
                 "database" => DATABASE,
                 "mail" => MAIL,
                 "feed" => &[],
+                "queue" => QUEUE,
                 _ => CHANNEL,
             },
         ),
@@ -1277,6 +1281,7 @@ fn members(o: &Outline, code: &[&Lexeme], head: usize, at: Pos) -> Vec<Completio
             word("file", Kind::Member, format!("{h}.file.created(folder, (f) => …), {h}.file.deleted(…)"), keyword("on").map(str::to_string)),
             word("mail", Kind::Member, format!("{h}.mail(mail, (m) => …)"), keyword("on").map(str::to_string)),
             word("feed", Kind::Member, format!("{h}.feed(feed, (e) => …)"), keyword("on").map(str::to_string)),
+            word("queue", Kind::Member, format!("{h}.queue(queue, (m) => …)"), keyword("on").map(str::to_string)),
         ],
         Some(Imported::Vocab("stripe")) => vec![word("verify", Kind::Member, format!("{h}.verify(req, secret, now)"), Some(noun("stripe").into()))],
         _ if o.received(h) == Some(Received::Request) => REQUEST_PARTS.iter().map(|(m, d)| word(m, Kind::Member, format!("{h}.{m}: {d}"), None)).collect(),
@@ -1724,7 +1729,7 @@ mod tests {
         assert_eq!(offered(state), ["count"], "the keys the text uses, not the one typed");
         let outside = "import { flow, on, route } from \"holon\"\nimport inbox from \"folder:inbox\"\nimport shop from \"database:shop\"\nimport updates from \"channel:updates\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8200 })\n\n";
         assert_eq!(offered(&format!("{outside}route.p|")), ["post", "put", "patch"]);
-        assert_eq!(offered(&format!("{outside}on.|")), ["file", "mail", "feed"]);
+        assert_eq!(offered(&format!("{outside}on.|")), ["file", "mail", "feed", "queue"]);
         assert_eq!(offered(&format!("{outside}on.file.|")), ["created", "deleted"]);
         assert_eq!(offered(&format!("{outside}route.get(\"/\", () => inbox.c|)")), ["copy", "create", "create_copy"]);
         assert_eq!(offered(&format!("{outside}route.get(\"/\", () => shop.f|)")), ["find", "find_one"]);

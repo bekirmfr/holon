@@ -2273,6 +2273,238 @@ As designed, with what building it found:
     REST gives for the same 616 ids, and ETH-USD's 91.64382809 over 361 trades does too.
   - The 682 runs (with the `/volumes` calls) verify.
 
+#### 5.9.9 Slice 1.6e as designed (2026-11-09, against `f2055a1`): a queue
+
+§5.9.1 gives the queue its shape: SQS's API, a send that goes once the run's writes land, a
+handler that deletes each message once its run is over. What it leaves open:
+
+**The binding.** As a feed's, the URL with its key read from a source, never kept or shown:
+
+```
+HOLON_SECRET_PAYOUTS_URL=https://AKIA…:<secret, percent-encoded>@sqs.eu-west-1.amazonaws.com/123456789012/payouts
+holon queue add payouts --url env:HOLON_SECRET_PAYOUTS_URL [--visibility T] [--keep-failed] [--for SLUG]
+holon queue list
+holon queue remove payouts
+```
+
+- **The URL is the queue's own** (`QueueUrl`), the access key id and secret its login,
+  percent-encoded (a secret holds `/` and `+`). The region is the host's
+  (`sqs.<region>.amazonaws.com`), or `?region=` for a service that copies the API under another
+  name (ElasticMQ, LocalStack). `http://` only to this machine, as a feed's. A session token
+  (`?token=`) is taken for temporary keys; an instance's own role waits for a job (fork 75).
+- **Checked when bound:** `GetQueueAttributes`, signed, so a wrong key, a wrong region or a queue
+  that isn't there is refused, saying what the service answered. It reads whether the queue is
+  FIFO (`FifoQueue`, or a name ending `.fifo`) and its largest message (`MaximumMessageSize`),
+  kept with the binding.
+- **The binding keeps** the source, where it points without its login or query
+  (`https://sqs.eu-west-1.amazonaws.com/123456789012/payouts`), `fifo`, `largest`, `visibility` (30 s to
+  12 h, 5 minutes unless given) and `keep_failed`. `/admin/queues`, `holon queue`, and a
+  **queues** list on the admin page's resources, as feeds have.
+
+**The API.** SQS's JSON protocol (`application/x-amz-json-1.0`, `X-Amz-Target:
+AmazonSQS.<Action>`), which AWS has answered since 2023 and ElasticMQ and LocalStack copy: a
+JSON body each way, no XML (fork 76). Five actions: `GetQueueAttributes`, `SendMessage`,
+`ReceiveMessage`, `DeleteMessage`, `ChangeMessageVisibility`. Each request is signed with
+Signature Version 4 (`sigv4.rs`): the canonical request, the scope `<date>/<region>/sqs/aws4_request`,
+the key derived by HMAC-SHA256 from the secret, as AWS's documents give it, tested on their
+published example. Step 1.4's S3 signs with it too, its payload hashed the same way.
+
+**Sending: `payouts.send(data, { group })`.** A statement, as `ops.send(…)` is:
+
+- **The body** is `data` as JSON (text sent as it is), at most the queue's
+  `MaximumMessageSize`, read when it is bound (256 KiB to 1 MiB); past it the run fails, before
+  anything is sent.
+- **Once the run's writes land,** as mail: spooled before the run's record is written (one file a
+  message in `queue-spool/`, beside the bindings file), held until the record is on disk, then
+  sent in order, a queue for each binding on its own thread. An unrecorded run's message is
+  spooled and sent all the same.
+- **Tried again** on what SQS says is temporary (no connection, a 5xx, a throttle), after 1 s,
+  10 s, a minute, then every 5 minutes, for a day; refused (any other 4xx), or a day of trying,
+  gives up. Each outcome is on the deployment's timeline, as mail's (fork 77). A restart sends
+  what the spool holds whose run its log holds.
+- **A FIFO queue** takes a message group (`group`, text): messages of one group come out in the
+  order sent. Without one, the run's messages go in a group named for the deployment, so they
+  keep their order. Its deduplication id is the run's id and the send's place in it, so a send
+  tried again after a lost answer is one message. A standard queue has no such id: a retry after
+  a lost answer can send twice, which its listener's once-per-message can't tell, since SQS gives
+  each send its own id (fork 78).
+- **At most 100 sends a run,** as mail's limit is; past it the run fails, before anything is sent.
+- **A message computed from a secret** is refused, as a channel's pack is.
+
+**Listening: `on.queue(payouts, (m) => …, { log })`.** One deployment listens to a queue, as to a
+mailbox: a deploy is refused while another listens to it, or it isn't bound.
+
+- **A thread for each deployment and queue** long-polls (`ReceiveMessage`, 20 s, up to 10, its
+  visibility the binding's), runs the messages received one at a time in the order they came, and
+  receives again once their runs are over. A FIFO queue's order holds.
+- **Deleted once its run's record is on disk**, as a feed's position moves: a strict or
+  unrecorded run's at its end, a lazy one's once the sync covering its record is done. A failed
+  run's message is deleted too, its record saying why (fork 60), unless the binding says
+  `--keep-failed`: then it comes back once its visibility runs out, and the queue's redrive policy
+  counts it.
+- **Kept out of sight while it waits or runs:** every half of the visibility, the reading thread
+  extends what it received and hasn't deleted (`ChangeMessageVisibility`).
+- **Once per message:** the last 1,000 message ids run on are kept beside the log
+  (`queue-seen/<slug>/<queue>.json`), written as the record is; a message among them (one whose
+  delete a crash cut off, or a standard queue's second delivery) is deleted without a run, on the
+  timeline.
+- **Unreachable:** tried again after a second, twice as long each time, up to a minute; the
+  timeline says so once, and again when it is read again.
+- **Its state,** on the server panel and in `GET /deployments/<slug>/queues`: `receiving`, how
+  many wait for their run, and since the thread started how many ran, were passed over, and
+  were kept for the redrive (`--keep-failed`): `receiving, 2 waiting, 120 run`.
+
+`m` is the message:
+
+| Field | |
+|---|---|
+| `data` | its body: a value when it is JSON, else its text |
+| `id` | SQS's message id |
+| `attributes` | its message attributes whose type is `String` or `Number`, as text |
+| `sent` | when it was sent, in seconds since 1970, as `now` is |
+| `count` | how many times the queue has handed it out (`ApproximateReceiveCount`) |
+| `group` | a FIFO queue's message group, when it has one |
+
+**The run** is `kind: "queue"`, its label the handler's (`on queue payouts`), the message sourced
+as `QueueMessage("payouts")` with the clock and the random bytes. A parked run keeps it.
+
+**The grant.** `QueueMessage("payouts")`, a driver: "run on each message from payouts
+(https://sqs.eu-west-1.amazonaws.com/123456789012/payouts), and delete it once its run is over";
+`QueueSend("payouts")`, a sink: "send messages to payouts". A flow may do both, to one queue or
+two.
+
+**The sample, `payout-events`** (fork 79): a payment provider's payout events, as a provider's
+webhooks forwarded to SQS deliver them (`{"type": "payout.paid" | "payout.failed", "payout":
+{"id", "amount", "currency", "account"}}`), each payout's status kept by its id; a failed one
+sent to a FIFO queue `payout-retries`, its group the account, so one account's retries keep their
+order. `GET /payouts` lists them. Strict, the default: a payout's status is money.
+
+**Stand-ins.** The server test's SQS (`sqs.rs`'s, on loopback) keeps its queues in memory,
+standard and FIFO, with visibility, receive counts and deduplication, and refuses a request whose
+signature isn't the one its secret makes. The e2e's `sqs-server.mjs` does the same in Node.
+
+**The live run** (fork 80): against AWS SQS with a key the owner makes (an IAM user whose policy
+allows these five actions on two queues), or against ElasticMQ on this machine. The sample
+deployed, its queue sent events from outside (the AWS console or `aws sqs send-message`), each
+run once, deleted, the failed one's retry in `payout-retries`; the server stopped mid-batch and
+started again, no message run twice.
+
+**Tests:**
+
+- **`sigv4.rs`:** AWS's published example, and a request the stand-in checks.
+- **The binding:** each URL form, the region from the host or `?region=`, a token, refused
+  without a login, plain HTTP elsewhere, a wrong key or a missing queue (the service's answer),
+  `--visibility` out of range; `fifo` read.
+- **Sending:** held for the record, in order, the group and deduplication id, tried again on a
+  5xx and a throttle, given up on a 4xx, a restart sending the spool, the limit and the size.
+- **Listening:** one run a message, deleted after its record (a lazy one's after its sync), a
+  failed one deleted or kept (`--keep-failed`), a message received again passed over, its
+  visibility extended through a long run, another deployment refused.
+- **Server test**, the sample: events sent to the stand-in, each payout kept, the failed one's
+  retry in `payout-retries` with its group, every message deleted; a restart with messages in
+  flight runs none twice; the runs verify.
+- **e2e test**, the sample in the editor against `sqs-server.mjs`.
+
+#### 5.9.10 Slice 1.6e as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A queue's name is a flow's name:** letters, digits and `_`, as `import payout_events from
+  "queue:payout_events"` takes it, so the binding names are `payout_events` and `payout_retries`;
+  the SQS queues behind them keep their own (`payout-events`, `payout-retries.fifo`).
+- **The send is one record,** `payout_retries.send({ data, group })`, as `ops.send({ … })` is,
+  not `send(data, { group })`: the message is a value the run can build and pass. It lowers to
+  `queue_send{queue}(message)`, whose payload is `{data, group}`. A message without `data`, or a
+  `group` that isn't text of 1 to 128 characters (SQS's limit), has no value and sends nothing, as
+  a mail that isn't one sends nothing. The body is `data`: text as it is, anything else as JSON;
+  bytes, an empty body, a body past the binding's `largest` or a run's 101st send fail the run
+  before anything is sent (`message not sent: …`).
+- **A standard queue isn't sent the group:** SQS takes `MessageGroupId` only on a FIFO queue's
+  send, so the group (the given one, or the deployment's name) goes to a FIFO queue alone, with
+  the deduplication id `<run id>-<n>`.
+- **Each queue's outbox keeps order strictly:** the message at its front is tried again while the
+  ones behind it wait, so a group's messages reach a FIFO queue in the order sent even across a
+  retry. A queue's outbox doesn't wait for another queue's.
+- **The timeline says what is worth a person's look,** not each send (fork 77 had each outcome
+  there, as mail's): a queue's first failure (`couldn't send a message to payout_retries yet: …;
+  trying again`), a give-up, `sends to payout_retries again` once it takes one, and a message to a
+  queue no longer bound. A deployment's events are kept for as long as it is, and a queue may take
+  thousands of messages an hour. What was sent is counted instead, since the server started:
+  `sent`, `gave_up` and `waiting` for each queue a deployment sends to.
+- **Its state** is `GET /deployments/<slug>/queues`: `{listening: [{queue, label, address, status,
+  since, error, waiting, run, passed_over, kept}], sending: [{queue, address, sent, gave_up,
+  waiting}]}`. The server panel says each on a line (`receiving, 4 run, 1 passed over`; `2 sent`).
+- **The listener** is as designed: a thread for each deployment and queue started by a reconcile
+  every second, a second thread keeping what it received out of sight, the message deleted once
+  its record is on disk (a lazy run's once synced, held with the feeds' positions). A message is
+  added to the ids run on as it is deleted; a failed run's kept for the redrive is not, so it runs
+  again when the queue hands it out again. Stopped mid-batch, the messages not run are made
+  visible at once (`ChangeMessageVisibility` to 0). `m.sent` is whole seconds, as `now` is.
+- **One deployment listens to a queue** by where its binding points, under whatever name: a deploy
+  is refused while another deployment's handler listens to the same address.
+- **The admin page** has a queues list and form in its resources (name, where the URL is kept,
+  visibility, whether a failed run's message is left, for one deployment); permissions reads
+  `QueueMessage` as "starts on each message it holds" and `QueueSend` as "sends messages to it".
+- **The tests:**
+  - `sigv4.rs`: AWS's published example, and `X-Amz-Date`'s form. `sqs.rs`: each URL form (the
+    region from the host or `?region=`, a token, a port, plain HTTP refused off this machine, no
+    login, no queue, a query it doesn't take), and the stand-in refusing a request signed with
+    another secret.
+  - `queues.rs`: a binding read from its source and shown without its key, refused bindings,
+    the limits and the body, sends held until their record is on disk and then sent in order (a
+    FIFO queue's group and deduplication id), retried and given up, a restart sending what the
+    spool holds whose run the log holds, and a deploy refused while another listens.
+    `dequeue.rs`: a message as the handler reads it, and the ids run on kept, the oldest forgotten.
+  - The server test (`payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_fifo_queue`)
+    deploys the sample against the stand-in: refused until both queues are bound; four events,
+    four runs in order, each message deleted; the two failed payouts' retries in the FIFO queue,
+    each in its account's group; one whose retry is past the queue's largest fails, writes nothing
+    and is deleted. The first message handed out again is passed over and deleted, and the state
+    says `run 4, passed_over 1` and `sent 2`. Stopped, a message put waits in the queue. Bound
+    again with `keep_failed`, the waiting message runs and a failing one is left, comes back once
+    visible, runs again and is left again. The runs verify (the failed ones not run again), and
+    the key is in no log.
+  - The e2e test deploys it in the editor against `sqs-server.mjs` (SQS's JSON protocol, each
+    request's signature checked), drops two events, reads both payouts, both deletes, the retry
+    in the FIFO queue in its account's group, the server panel's `receiving, 2 run` and `1 sent`,
+    and the bindings and holders on the admin page.
+- **Run live** (2026-11-09) against ElasticMQ 1.7.1, in Docker: SQS's JSON protocol, though it
+  doesn't check a signature. Both queues bound (it answered `GetQueueAttributes`, the retries'
+  FIFO, 256 KiB), the sample's deploy refused until they were. Beside the sample, a flow sending
+  events with `payout_events.send` and one listening to the retries. 540 events, 40 through that
+  flow and 500 put on the queue: 540 runs of 540 message ids, each message run once, and the
+  queue empty after.
+  - The server killed mid-batch: the two messages it had received and not run came back once
+    their 30 s were up, and ran then, after later ones. A standard queue's order, which the
+    retries followed.
+  - The binding removed mid-batch, five times: what the listener held and hadn't run was visible
+    again at once (`ChangeMessageVisibility` to 0), 15 messages handed out again, each run once.
+  - 85 retries of the first 320 events in the FIFO queue, each in its account's group, a group's
+    in the order its runs sent them. The kill held one group back for the binding's 5 minutes:
+    a FIFO queue keeps a group waiting while one of its messages is out of sight.
+  - Both deployments' runs verify (`holon verify`, 342 and 89 runs), and the key is in no file
+    the server wrote.
+- **Run live against moto** 5.2.5 (2026-11-09), in Docker, checking keys as IAM does
+  (`INITIAL_NO_AUTH_ACTION_COUNT`): each request's signature computed again by botocore's signer,
+  the key one its IAM made, a temporary key's session token matched, the key's policy evaluated
+  for the action. (moto evaluates SQS's actions against the resource `*`, so the policy there names
+  the actions and not the queues.) A user allowed the five actions, one allowed all but
+  `SendMessage`, and a role the first may assume.
+  - A wrong secret is refused at bind with what moto answered, `SignatureDoesNotMatch`. That
+    took a change: moto refuses a key in the query protocol's XML (`<Code>`, `<Message>`), which
+    the client didn't read, so it said only `answered 403`; it reads both now (`sqs::said`).
+  - Bound with the first user's key (moto's queues take 1 MiB, which the binding read), the
+    sample, the flow sending events and the one reading the retries ran 20 events: 20 runs, 5
+    retries in their accounts' groups, both queues empty after.
+  - The retries bound for payout-events to the key without `SendMessage`: a failed payout's run
+    succeeds, and its retry is given up on the timeline, `answered 403 to SendMessage:
+    AccessDenied: …`; the state says `gave_up: 1`.
+  - The events queue bound again to the role's temporary key (`?token=`): 20 more events
+    received, run and deleted, and sent by the flow sending them, with it.
+  - The three deployments' runs verify (43, 41 and 16), and none of the six secrets and tokens
+    is in a file the server wrote.
+  - Real AWS is still to come: no account yet.
+
 ### 5.10 A bytes value, and decimals with it
 
 Not a capability: a value kind, which several capabilities stand on. Binary files can't be read
@@ -4148,6 +4380,24 @@ Taken when a job or a user asks, each with its design here and its sample all th
     (Jetstream's `seq` skips the collections it filters out; Coinbase's trades can't be replayed).
 74. **Live runs against Jetstream and Coinbase Exchange's trades** (§5.9.6): public, no account.
     *Lean:* yes.
+75. **Which AWS credentials** (§5.9.9). A key id and secret in the URL, with a session token for
+    temporary keys; or the credential chain AWS's SDKs read (environment, profile, an instance's
+    role). *Lean:* the URL, as every other binding's login is, read from a source each time; the
+    chain when a job runs on AWS and has a role to use.
+76. **SQS's JSON protocol or its query protocol** (§5.9.9). The query protocol (form-encoded, XML
+    answers) is older and every copy speaks it; JSON is what AWS's SDKs send now. *Lean:* JSON:
+    serde already reads it, and ElasticMQ and LocalStack answer it.
+77. **How a queue's send is tried again** (§5.9.9). Mail waits a minute, then 5, 30, an hour: a
+    person reads it. A queue's reader is a program waiting on it. *Lean:* 1 s, 10 s, a minute,
+    then every 5 minutes, for a day.
+78. **A standard queue's send tried again** (§5.9.9): SQS has no deduplication there. The host
+    could add an attribute with the run and the send, for listeners to check. *Lean:* no:
+    at-least-once is a standard queue's contract, and a FIFO queue is the one that dedupes;
+    the guide says so.
+79. **The sample** (§5.9.9): `payout-events`, a provider's events in, a FIFO queue of retries out:
+    one flow listens and sends. *Lean:* yes: the use payment ops have, and it shows both halves.
+80. **The live run's queue** (§5.9.9): AWS SQS needs the owner's account and a key; ElasticMQ
+    runs here, but is a copy. *Lean:* AWS, if the owner makes the key; ElasticMQ otherwise.
 
 ## 9. What stays true
 

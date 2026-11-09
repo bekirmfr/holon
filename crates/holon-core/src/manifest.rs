@@ -57,8 +57,8 @@ pub fn manifest_items(
 
 /// What starts the runs of a unit with `capabilities`: `NetworkIngress` for one with routes, else
 /// `FileArrival("inbox")` for one a new file starts, else `MailArrival("remit")` for one a message
-/// starts, else `FeedEvent("prices")` for one a feed's event starts, else `Clock` for one the clock
-/// fires, else
+/// starts, else `FeedEvent("prices")` for one a feed's event starts, else `QueueMessage("payouts")`
+/// for one a queue's message starts, else `Clock` for one the clock fires, else
 /// `Action("reset")` for one run by hand by name; none for one only triggered by hand.
 pub fn trigger(capabilities: &[String]) -> Option<&str> {
     let find = |p: fn(&str) -> bool| capabilities.iter().find(|c| p(c)).map(String::as_str);
@@ -66,6 +66,7 @@ pub fn trigger(capabilities: &[String]) -> Option<&str> {
         .or_else(|| find(|c| c.starts_with("FileArrival(")))
         .or_else(|| find(|c| c.starts_with("MailArrival(")))
         .or_else(|| find(|c| c.starts_with("FeedEvent(")))
+        .or_else(|| find(|c| c.starts_with("QueueMessage(")))
         .or_else(|| find(|c| c == "Clock"))
         .or_else(|| find(|c| c.starts_with("Action(")))
 }
@@ -99,7 +100,7 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 /// the network, a waiting point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "MailArrival", "FeedEvent", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "RunsAction", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "MailArrival", "FeedEvent", "QueueMessage", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "RunsAction", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 

@@ -954,6 +954,9 @@ fn rerun(
         Some(label) if entry.kind == "feed" => {
             read_server(deployed, resolver).ok().and_then(|s| s.feeds.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
         }
+        Some(label) if entry.kind == "queue" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.queues.into_iter().find(|q| q.label == *label)).map(|q| (q.handler, false))
+        }
         Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
             read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
         }
@@ -1059,7 +1062,7 @@ fn rerun(
     // hash, differs too): the run isn't checked.
     let keeps = |c: &holon_core::Capability| {
         use holon_core::Capability::*;
-        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | FileWrite(_))
+        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | QueueSend(_) | FileWrite(_))
     };
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
         return Rerun::Skipped("it wrote a secret's value, which the server refuses: not run again".into());

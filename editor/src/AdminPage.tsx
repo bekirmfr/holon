@@ -1,8 +1,9 @@
 // The admin panel (admins only; holon-server's auth.rs), in three tabs (docs/L4s/databases-L4.md
 // §9.1): people and sign-in (the people who use this server, the API tokens scripts use, signing
 // in through an identity provider); resources (the folders and databases flows read and write,
-// the mail they send through and the feeds they listen to: folders.rs, databases.rs, mails.rs,
-// feeds.rs); and permissions (what this host allows, and who holds what). Below
+// the mail they send through, the feeds they listen to and the queues they take messages from and
+// send to: folders.rs, databases.rs, mails.rs, feeds.rs, queues.rs); and permissions (what this
+// host allows, and who holds what). Below
 // each, what was done, by whom.
 // Adding someone gives a one-time link for them to set their password; resetting gives a new
 // one. The server refuses any change that would leave no admin. A grant changes only on its
@@ -27,6 +28,10 @@ import {
   type FeedBinding,
   type FeedEntry,
   type OnFull,
+  listQueues,
+  bindQueue,
+  unbindQueue,
+  type QueueEntry,
   listFolders,
   listGrants,
   listServerSecrets,
@@ -146,6 +151,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   // --only FIELD=VALUE with spaces between.
   const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", sequence: "", subscribe: "", heartbeat: "", every: "", id: "", only: "", resume: "" };
   const [feedDraft, setFeedDraft] = useState(noFeed);
+  const [queues, setQueues] = useState<QueueEntry[]>([]);
+  const noQueue = { name: "", url: "", visibility: "", keepFailed: false, deployment: "" };
+  const [queueDraft, setQueueDraft] = useState(noQueue);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
@@ -171,6 +179,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
     listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
     listFeeds().then(setFeeds).catch((e: unknown) => setMsg(messageOf(e)));
+    listQueues().then(setQueues).catch((e: unknown) => setMsg(messageOf(e)));
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
@@ -221,6 +230,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const databaseHolders = (d: DatabaseEntry) => holdersOf("database", d, databases, grants);
   const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
   const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
+  const queueHolders = (q: QueueEntry) => holdersOf("queue", q, queues, grants);
   /** Which deployments use it, said under its row. */
   const usedBy = (holders: Holder[]) => (
     <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
@@ -978,6 +988,98 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </button>
           </form>
 
+          <div style={head}>queues</div>
+          <div style={about}>
+            The queues flows take messages from and send to: each name an Amazon SQS queue, whose URL with its access key
+            (https://&lt;key id&gt;:&lt;secret&gt;@sqs.&lt;region&gt;.amazonaws.com/&lt;account&gt;/&lt;queue&gt;) the server fetches from where it is kept, as a
+            secret&apos;s (<code>env:HOLON_SECRET_EVENTS_URL</code>, <code>vault:…</code>), never typed in here, stored or shown. It is bound once the queue
+            answers. A flow names the queue (<code>import payout_events from &quot;queue:payout_events&quot;</code>) and runs{" "}
+            <code>on.queue(payout_events, (m) =&gt; …)</code> for each message it holds, one at a time, in the order received: the message is deleted once its
+            run&apos;s record is on disk, so a crash runs it again rather than losing it, and one handed out again is passed over. One deployment listens to a
+            queue. A flow sends with <code>payout_retries.send({"{ data, group }"})</code>: the message goes once the run is over and its writes have landed,
+            tried again for a day if the queue can&apos;t take it yet, a FIFO queue&apos;s in the group given and deduplicated by its run. How long a message
+            received is kept out of sight at first (5m, kept so while it runs); and whether a failed run&apos;s message is left in the queue, for its redrive
+            policy to move, rather than deleted.
+          </div>
+          {queues.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
+          {queues.map((q) => (
+            <Fragment key={keyOf(q)}>
+              <div style={row}>
+                <span style={{ color: "#6fd3e0", minWidth: 90 }}>queue {q.name}</span>
+                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                  {`${q.address} (from ${q.url})`}
+                  {q.fifo && " · FIFO"}
+                  {` · ${Math.round(q.largest / 1024)} KiB at most · out of sight for ${q.visibility}s`}
+                  {q.keep_failed && " · a failed run's message is left for the redrive"}
+                </span>
+                {q.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {q.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: its listeners stop"
+                  onClick={async () => {
+                    const whose = q.deployment ? ` for ${q.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the queue "${q.name}"${whose}? Its listeners stop, and what it holds stays in it. ${unbindingSays(queueHolders(q))}`, "Unbind"))
+                      act(() => unbindQueue(q.name, q.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(queueHolders(q))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = queueDraft.name.trim();
+              const deployment = queueDraft.deployment.trim() || null;
+              const there = queues.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(queueHolders(there)).replace(/: they keep running.*/, ": their listeners start again on the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const visibility = queueDraft.visibility.trim();
+                await bindQueue({ name, url: queueDraft.url.trim(), deployment, ...(visibility ? { visibility } : {}), ...(queueDraft.keepFailed ? { keep_failed: true } : {}) });
+                setQueueDraft(noQueue);
+              });
+            }}
+          >
+            <input aria-label="queue name" placeholder="name (payout_events)" value={queueDraft.name} onChange={(e) => setQueueDraft({ ...queueDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="queue url"
+              placeholder="where the queue's URL is kept (env:HOLON_SECRET_EVENTS_URL, vault:…)"
+              value={queueDraft.url}
+              onChange={(e) => setQueueDraft({ ...queueDraft, url: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
+              aria-label="queue visibility"
+              placeholder="out of sight for (5m)"
+              value={queueDraft.visibility}
+              onChange={(e) => setQueueDraft({ ...queueDraft, visibility: e.target.value })}
+              style={input}
+            />
+            <label style={{ ...quiet, display: "flex", gap: 4, alignItems: "center" }}>
+              <input aria-label="queue keep failed" type="checkbox" checked={queueDraft.keepFailed} onChange={(e) => setQueueDraft({ ...queueDraft, keepFailed: e.target.checked })} />
+              leave a failed run&apos;s message
+            </label>
+            <input
+              aria-label="queue for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={queueDraft.deployment}
+              onChange={(e) => setQueueDraft({ ...queueDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {isUrl(queueDraft.url) && (
+              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_EVENTS_URL, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button type="submit" style={primary} disabled={!queueDraft.name.trim() || !queueDraft.url.trim() || isUrl(queueDraft.url)}>
+              bind queue
+            </button>
+          </form>
+
           <div style={head}>secrets</div>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
@@ -1361,8 +1463,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases, folders, mail and feeds always: they're listed as resources, held or not. */}
-              {["databases", "folders", "mail", "feeds", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds"].includes(k))].map((k) => (
+              {/* Databases, folders, mail, feeds and queues always: they're listed as resources, held or not. */}
+              {["databases", "folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
@@ -1391,7 +1493,17 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             feeds.map((f) => (
               <Resource key={`feed:${keyOf(f)}`} title={`feed ${f.name}`} detail={`${f.address}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={feedHolders(f)} onOpen={onOpenDeployment} />
             ))}
-          {othersHeld(grants, folders, databases, mails, feeds)
+          {(kind === "everything" || kind === "queues") &&
+            queues.map((q) => (
+              <Resource
+                key={`queue:${keyOf(q)}`}
+                title={`queue ${q.name}`}
+                detail={`${q.address}${q.fifo ? " · FIFO" : ""}${q.deployment ? ` · for ${q.deployment} only` : ""}`}
+                holders={queueHolders(q)}
+                onOpen={onOpenDeployment}
+              />
+            ))}
+          {othersHeld(grants, folders, databases, mails, feeds, queues)
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>

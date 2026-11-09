@@ -73,6 +73,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
 | `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })`; bound to a mailbox, `on.mail(ops, (m) => …)` runs on what comes to it |
 | `import prices from "feed:NAME"` | a feed of server-sent events, bound by an admin: `on.feed(prices, (e) => …)` runs on each event it sends |
+| `import payouts from "queue:NAME"` | an Amazon SQS queue, bound by an admin: `payouts.send({ data, group })` sends to it once the run is over; `on.queue(payouts, (m) => …)` runs on each message it holds |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
@@ -546,6 +547,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route) |
 | `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
+| `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
 
 Rules:
@@ -677,6 +679,11 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   event. One handler a feed; it answers nobody. The host keeps where the feed is: a connection
   lost is opened again from the last event run on, and an event sent again is passed over
   ([Feeds](../guides/feeds.md)).
+- **`on.queue(payouts, (m) => { … })`** runs for each message the queue an admin bound `payouts`
+  to holds (`holon queue add payouts --url …`), one at a time, in the order received; `m` is the
+  message, `{data, id, attributes, sent, count, group}`, and it is deleted once its run's record
+  is on disk. One handler a queue, one deployment listening to it; it answers nobody. A message
+  run already is passed over ([Queues](../guides/queues.md)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is

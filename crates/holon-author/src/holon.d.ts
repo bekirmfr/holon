@@ -134,6 +134,21 @@ declare module "holon" {
     /** How many numbers of its key the feed skipped before it, theirs counted (`--sequence`): what came while the host wasn't reading. 0 unless some were. */
     gap: number
   }
+  /** A message from a queue. */
+  export interface QueueMessage {
+    /** Its body: a value when it is JSON, else its text. */
+    data: any
+    /** The queue's id for it. */
+    id: string
+    /** Its message attributes whose type is String or Number, as text. */
+    attributes: Record<string, string>
+    /** When it was sent, in seconds since 1970, as `now` is. */
+    sent: number
+    /** How many times the queue has handed it out: more than 1 once a run of it failed or was cut off. */
+    count: number
+    /** A FIFO queue's message group. */
+    group?: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -145,6 +160,8 @@ declare module "holon" {
     mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
     /** Runs for each event the feed sends, one at a time, in the order they came. */
     feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
+    /** Runs for each message from the queue, one at a time, deleted once its run is over. */
+    queue(queue: Queue, handler: (message: QueueMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -293,6 +310,15 @@ declare module "holon" {
   export interface Feed {
     readonly kind: "feed"
   }
+  /** A queue an admin binds on the host: sent to once the run is over, listened to by `on.queue`. */
+  export interface Queue {
+    send(message: {
+      /** The body: JSON, or text as it is. */
+      data: any
+      /** A FIFO queue's message group: one group's messages come out in the order sent. */
+      group?: string
+    }): any
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -334,6 +360,11 @@ declare module "feed:*" {
   import type { Feed } from "holon"
   const feed: Feed
   export default feed
+}
+declare module "queue:*" {
+  import type { Queue } from "holon"
+  const queue: Queue
+  export default queue
 }
 declare module "host:*" {
   import type { Host } from "holon"

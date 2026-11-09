@@ -86,4 +86,25 @@ describe("who holds what", () => {
     expect(othersHeld(listening, [], [], [], feeds).map((o) => [o.item, o.kind])).toEqual([['FeedEvent("rates")', "feeds"]]);
     expect(kindsHeld(listening)).toEqual(["feeds"]);
   });
+
+  it("reads a queue's grants as taking its messages and sending to it, through the binding each sees", () => {
+    expect(reaches('QueueMessage("payout_events")')).toEqual({ kind: "queue", name: "payout_events", use: "dequeue", table: null });
+    expect(reaches('QueueSend("payout_retries")')).toEqual({ kind: "queue", name: "payout_retries", use: "enqueue", table: null });
+    const held: HeldGrant[] = [
+      { slug: "payout-events", status: "running", attention: null, items: ['QueueMessage("payout_events")', 'QueueSend("payout_retries")', 'QueueSend("audit")'], revoked: [] },
+      { slug: "replay", status: "running", attention: null, items: ['QueueSend("payout_events")'], revoked: [] },
+    ];
+    const queues = [
+      { name: "payout_events", deployment: null },
+      { name: "payout_retries", deployment: null },
+    ];
+    const events = holdersOf("queue", queues[0], queues, held);
+    expect(events.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([
+      ["payout-events", ["starts on each message it holds"]],
+      ["replay", ["sends messages to it"]],
+    ]);
+    // A queue no binding answers is among the others.
+    expect(othersHeld(held, [], [], [], [], queues).map((o) => [o.item, o.kind])).toEqual([['QueueSend("audit")', "queues"]]);
+    expect(kindsHeld(held)).toEqual(["queues"]);
+  });
 });

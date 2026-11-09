@@ -84,6 +84,9 @@ pub enum HeaderKind {
     /// `import prices from "feed:prices"`: a feed an admin binds on the host, listened to as
     /// `on.feed(prices, (e) => …)`.
     Feed(String),
+    /// `import payouts from "queue:payouts"`: a queue an admin binds on the host, listened to as
+    /// `on.queue(payouts, (m) => …)` and sent to as `payouts.send({ data })` once the run is over.
+    Queue(String),
     /// `import { charge } from "flow:billing"`: another deployed flow, by its slug, whose actions
     /// this flow runs, `RunsAction("billing/charge")`. Its call noun is the slug with `-` as `_`.
     Calls(String),
@@ -115,6 +118,7 @@ pub enum Item {
     OnFile(OnFileDef),
     OnMail(OnMailDef),
     OnFeed(OnFeedDef),
+    OnQueue(OnQueueDef),
     Action(ActionDef),
     Stmt(Stmt),
 }
@@ -175,6 +179,22 @@ pub struct OnFeedDef {
     /// The name of the event.
     pub event: Name,
     /// `on.feed(prices, (e) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.queue(payouts, (m) => …)`: a queue handler, a run for each message from the queue
+/// `payouts`, deleted once its run is over (host-capabilities L4 §5.9.9). `m` in it is the message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnQueueDef {
+    /// The queue it listens to, as it is imported: `payouts`.
+    pub queue: String,
+    /// The name of the message.
+    pub message: Name,
+    /// `on.queue(payouts, (m) =>`.
     pub head: Span,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,

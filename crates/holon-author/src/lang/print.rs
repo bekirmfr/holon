@@ -34,7 +34,7 @@ use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
-use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -423,7 +423,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail") || n.is_template("on_queue"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -503,6 +503,8 @@ pub struct Printer<'s> {
     mails: BTreeSet<String>,
     /// The feeds its handlers listen to.
     feeds: BTreeSet<String>,
+    /// The queues its handlers listen to or its runs send to.
+    queues: BTreeSet<String>,
     /// The flows any `flow_call` or `flow_start` runs an action of, by slug.
     calls: BTreeSet<String>,
     secrets: BTreeSet<String>,
@@ -563,6 +565,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         channels: BTreeSet::new(),
         mails: BTreeSet::new(),
         feeds: BTreeSet::new(),
+        queues: BTreeSet::new(),
         calls: BTreeSet::new(),
         secrets: BTreeSet::new(),
         state: BTreeSet::new(),
@@ -590,6 +593,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     // A mail a handler reads is imported as one it sends through is.
     p.mails.extend(doc.nodes.iter().filter(|n| n.is_template("on_mail")).map(|n| n.param("mail").to_string()));
     p.feeds.extend(doc.nodes.iter().filter(|n| n.is_template("on_feed")).map(|n| n.param("feed").to_string()));
+    p.queues.extend(doc.nodes.iter().filter(|n| n.is_template("on_queue")).map(|n| n.param("queue").to_string()));
     for n in doc.nodes.iter().filter(|n| n.is_template("on_file")) {
         let folder = n.param("folder").to_string();
         if !p.watched.contains(&folder) {
@@ -806,6 +810,8 @@ impl<'s> Printer<'s> {
                 Some("channel")
             } else if leaf == "mail_send" {
                 Some("mail")
+            } else if leaf == "queue_send" {
+                Some("queue")
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
@@ -815,7 +821,7 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
@@ -826,6 +832,7 @@ impl<'s> Printer<'s> {
                     "name" => &mut out.5,
                     "key" => &mut out.6,
                     "mail" => &mut out.7,
+                    "queue" => &mut out.8,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -869,7 +876,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state, self.mails) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state, self.mails, self.queues) = out;
         // A start of its own action calls no other flow.
         if let Some(own) = &self.own {
             self.calls.remove(own);
@@ -880,7 +887,7 @@ impl<'s> Printer<'s> {
     /// What the text imports by name must be a name TypeScript writes: each store, secret, state
     /// key and action.
     fn check_names(&self) -> Result<(), String> {
-        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails), ("feed", &self.feeds)];
+        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails), ("feed", &self.feeds), ("queue", &self.queues)];
         for (kind, names) in stores {
             for n in names.iter().chain(if kind == "folder" { self.watched.iter().collect::<Vec<_>>() } else { vec![] }) {
                 if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random", "random_bytes"].contains(&n.as_str()) {
@@ -913,7 +920,7 @@ impl<'s> Printer<'s> {
         // never takes one, whichever).
         let vocab = VOCAB.iter().filter(|w| **w == "flow" || self.vocab_used.as_ref().is_some_and(|used| used.contains(**w)));
         let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random", "random_bytes"]).map(|s| s.to_string()).collect();
-        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.feeds).chain(&self.watched).cloned());
+        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.feeds).chain(&self.queues).chain(&self.watched).cloned());
         out.extend(self.actions.iter().cloned());
         out.extend(self.calls.iter().map(|f| call_noun(f)));
         out
@@ -1018,6 +1025,9 @@ impl<'s> Printer<'s> {
         for f in &self.feeds {
             out.push(format!("import {f} from \"feed:{f}\""));
         }
+        for q in &self.queues {
+            out.push(format!("import {q} from \"queue:{q}\""));
+        }
         for f in &self.watched {
             out.push(format!("import {f} from \"folder:{f}\""));
         }
@@ -1093,6 +1103,8 @@ impl<'s> Printer<'s> {
         errors.extend(mail_errors);
         let (feeds, feed_errors) = find_feeds(&doc.nodes, &doc.edges);
         errors.extend(feed_errors);
+        let (queues, queue_errors) = find_queues(&doc.nodes, &doc.edges);
+        errors.extend(queue_errors);
         let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
         errors.extend(action_errors);
         if !errors.is_empty() {
@@ -1108,6 +1120,7 @@ impl<'s> Printer<'s> {
             File(&'r crate::routes::FileGroup),
             Mail(&'r crate::routes::MailGroup),
             Feed(&'r crate::routes::FeedGroup),
+            Queue(&'r crate::routes::QueueGroup),
             Action(&'r crate::routes::ActionGroup),
         }
         let mut handlers: Vec<(usize, Handler)> = routes
@@ -1117,10 +1130,11 @@ impl<'s> Printer<'s> {
             .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
             .chain(mails.iter().map(|m| (first(&m.node_ids), Handler::Mail(m))))
             .chain(feeds.iter().map(|f| (first(&f.node_ids), Handler::Feed(f))))
+            .chain(queues.iter().map(|q| (first(&q.node_ids), Handler::Queue(q))))
             .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
-        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(feeds.iter().flat_map(|f| &f.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
+        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(feeds.iter().flat_map(|f| &f.node_ids)).chain(queues.iter().flat_map(|q| &q.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
             let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
@@ -1128,7 +1142,7 @@ impl<'s> Printer<'s> {
             } else {
                 ""
             };
-            return Err(format!("nothing starts this flow: add a route, a clock, a file, mail or feed handler or an action{what}"));
+            return Err(format!("nothing starts this flow: add a route, a clock, a file, mail, feed or queue handler or an action{what}"));
         }
         let mut items = Vec::new();
         for (_, handler) in handlers {
@@ -1167,6 +1181,12 @@ impl<'s> Printer<'s> {
                     let head = format!("on.feed({}, ", f.feed);
                     self.handler(doc, &f.node_ids, on, Kind::Feed, head, options(&[("log", log_option(&f.log))]), &f.label)?
                 }
+                Handler::Queue(q) => {
+                    let on = by_id[q.on_queue_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.queue({}, ", q.queue);
+                    self.handler(doc, &q.node_ids, on, Kind::Queue, head, options(&[("log", log_option(&q.log))]), &q.label)?
+                }
                 Handler::Action(a) => {
                     let input = by_id[a.action_id.as_str()];
                     self.vocab.insert("action".into());
@@ -1195,6 +1215,7 @@ impl<'s> Printer<'s> {
             Kind::File => "f",
             Kind::Mail => "m",
             Kind::Feed => "e",
+            Kind::Queue => "m",
             _ => "",
         };
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
@@ -1445,6 +1466,7 @@ enum Kind {
     File,
     Mail,
     Feed,
+    Queue,
     Function,
     /// A function written in place, `(x) => …`: one expression, no statements.
     Lambda,
@@ -1552,7 +1574,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     fn handler(&self) -> bool {
-        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail | Kind::Feed)
+        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail | Kind::Feed | Kind::Queue)
     }
 
     // ── what each node is ────────────────────────────────────────────────────────────────────
@@ -2179,7 +2201,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
             }
             Kind::Function | Kind::Lambda => answer = self.returns()?,
-            Kind::Every | Kind::File | Kind::Mail | Kind::Feed => {}
+            Kind::Every | Kind::File | Kind::Mail | Kind::Feed | Kind::Queue => {}
         }
         if self.handler() {
             reads_first(&mut stmts);
@@ -2228,7 +2250,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// waits for: a request, another flow's action, a send, a write by method.
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
-        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
+        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
             || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes"))
     }
 
@@ -2332,6 +2354,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "http_request" | "http_upload" | "http_stream" => "response",
             "channel_send" => "sent",
             "mail_send" => "mailed",
+            "queue_send" => "queued",
             "flow_call" => node.param("action"),
             "flow_start" => "started",
             "stripe_verify" => "verified",
@@ -2612,6 +2635,7 @@ fn auto_names(declared: &[String], leaves: &[String]) -> Vec<String> {
             "store_write" => "write",
             "egress" | "channel_send" => "sent",
             "mail_send" => "mailed",
+            "queue_send" => "queued",
             _ => "effect",
         };
         let n = counts.entry(base).or_insert(0);
@@ -3056,6 +3080,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             },
             "channel_send" => member(format!("{}.send({})", node.param("channel"), self.required(node, "pack", COND)?)),
             "mail_send" => member(format!("{}.send({})", node.param("mail"), self.required(node, "message", COND)?)),
+            "queue_send" => member(format!("{}.send({})", node.param("queue"), self.required(node, "message", COND)?)),
             "channel_subscribe" => match node.param("from") {
                 "kept" => member(format!("{}.subscribe({{ from: \"kept\" }})", node.param("channel"))),
                 _ => member(format!("{}.subscribe()", node.param("channel"))),
@@ -4538,6 +4563,15 @@ export const t = action((input) => {
         prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\n\nflow(\"ticks\")\n\non.feed(\n  prices,\n  (e) => {\n    state.name = e.event\n  },\n  { log: \"lazy\" },\n)\n");
     }
 
+    /// Queue handlers print back as written, a queue sent to imported as one listened to is.
+    #[test]
+    fn queue_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\nimport retries from \"queue:retries\"\n\nflow(\"payouts\", { port: 8080 })\n\non.queue(payouts, (message) => {\n  state.last = message.data\n  retries.send({ data: message.data, group: message.group })\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\n\nflow(\"payouts\")\n\non.queue(\n  payouts,\n  (m) => {\n    state.count = m.count\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
     /// Actions print back as written, each with the name of what was sent.
     #[test]
     fn actions_print_back_as_written() {
@@ -4664,7 +4698,7 @@ export const t = action((input) => {
         // Nodes under no handler.
         let mut b = FlowBuilder::new();
         b.node("uppercase", &[], None).unwrap();
-        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file, mail or feed handler or an action");
+        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file, mail, feed or queue handler or an action");
         // A state write whose answer is used, in a route.
         let mut b = FlowBuilder::new();
         let req = b.node("request", &[("method".into(), "POST".into()), ("path".into(), "/k".into())], None).unwrap();

@@ -1,4 +1,4 @@
-//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file`, `on_mail`, `on_feed` and `action`. They are not new
+//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file`, `on_mail`, `on_feed`, `on_queue` and `action`. They are not new
 //! primitives.
 //! Each is a small composite of genesis leaves (field, json_parse, record, with_field, const,
 //! default, …), rebuilt from the node's params whenever it is hashed, the same way a primitive
@@ -44,6 +44,9 @@
 //! - `on_feed` (param: feed) is a feed handler's trigger (host-capabilities L4 §5.9.2): a run for
 //!   each event the feed an admin bound to `feed` sends. No inputs; one output, `event`, the event
 //!   (a `feed_event` leaf, sourced), which its sinks are tied to.
+//! - `on_queue` (param: queue) is a queue handler's trigger (host-capabilities L4 §5.9.9): a run
+//!   for each message that comes to the queue an admin bound to `queue`. No inputs; one output,
+//!   `message`, the message (a `queue_message` leaf, sourced), which its sinks are tied to.
 //! - `action` (param: name) is an action's trigger (§2): a run by hand, by its name. One input,
 //!   hidden as a request node's is: what was sent, fed by the action handler it derives into; one
 //!   output, `input`, the same value, which its sinks are tied to and a `respond` answers.
@@ -57,7 +60,7 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "action"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "on_queue", "action"];
 
 /// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
 pub fn period(seconds: &str) -> Result<u64, String> {
@@ -102,6 +105,15 @@ pub fn feed_name(params: &[WParam]) -> Result<String, String> {
         return Err(format!("on feed \"{feed}\": a feed is a name (letters, digits and _)"));
     }
     Ok(feed.to_string())
+}
+
+/// A queue handler's queue, read from its `queue`: letters, digits and `_`, as a flow imports it.
+pub fn queue_name(params: &[WParam]) -> Result<String, String> {
+    let queue = frozen_value(params, "queue").unwrap_or("");
+    if queue.is_empty() || queue.len() > 64 || !queue.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(format!("on queue \"{queue}\": a queue is a name (letters, digits and _)"));
+    }
+    Ok(queue.to_string())
 }
 
 /// An action's name, read from its `name`: letters, digits, `-` and `_`, as core reads it back.
@@ -176,6 +188,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "on_feed" => {
             "A feed handler: a run for each event the feed an admin bound to the name set on the node sends, with event {data, id, event}: data a value when the event's data is JSON, else its text. One at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and none runs twice. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
+        "on_queue" => {
+            "A queue handler: a run for each message that comes to the queue an admin bound to the name set on the node, with message {data, id, attributes, sent, count, group}: data its body, a value when it is JSON, else its text. One at a time, in the order they came; the host deletes each once its run is over, and none runs twice. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
+        }
         "action" => {
             "An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
@@ -216,6 +231,7 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
         "on_file" => Interface { inputs: vec![], outputs: vec![WPort::new("file", Record)], hidden_inputs: false },
         "on_mail" => Interface { inputs: vec![], outputs: vec![WPort::new("message", Record)], hidden_inputs: false },
         "on_feed" => Interface { inputs: vec![], outputs: vec![WPort::new("event", Record)], hidden_inputs: false },
+        "on_queue" => Interface { inputs: vec![], outputs: vec![WPort::new("message", Record)], hidden_inputs: false },
         "action" => Interface { inputs: vec![WPort::new("input", Any)], outputs: vec![WPort::new("input", Any)], hidden_inputs: true },
         "stripe_verify" => Interface {
             inputs: vec![request(), WPort::new("secret", Text), WPort::new("now", Number)],
@@ -248,6 +264,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
         "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", "")],
         "on_mail" => vec![f("mail", "ops"), f("log", "")],
         "on_feed" => vec![f("feed", "prices"), f("log", "")],
+        "on_queue" => vec![f("queue", "payouts"), f("log", "")],
         "action" => vec![f("name", "run"), f("log", "")],
         _ => return None,
     })
@@ -500,6 +517,12 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             Ok(composite(vec![event], vec![e(0, 0, B, 0)], inputs, outputs))
         }
 
+        "on_queue" => {
+            let queue = queue_name(params)?;
+            let message = add_leaf(store, "queue_message", vec![frozen("queue", &queue)], None)?;
+            Ok(composite(vec![message], vec![e(0, 0, B, 0)], inputs, outputs))
+        }
+
         // What was sent, passed through: the action handler feeds it, the block reads it.
         "action" => {
             action_name(params)?;
@@ -740,6 +763,18 @@ mod tests {
         assert!(holon_core::capabilities(&unit, &store).contains(holon_core::Capability::FeedEvent("prices".into())));
         for bad in ["", "pri-ces", "../up"] {
             assert!(build("on_feed", &[WParam::frozen("feed", bad)], &mut store).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `on_queue` is a `queue_message` leaf naming its queue: the message is sourced, and core
+    /// reads its capability from it.
+    #[test]
+    fn on_queue_is_a_queue_message_naming_its_queue() {
+        let mut store = MapResolver::new();
+        let unit = build("on_queue", &[WParam::frozen("queue", "payouts")], &mut store).unwrap();
+        assert!(holon_core::capabilities(&unit, &store).contains(holon_core::Capability::QueueMessage("payouts".into())));
+        for bad in ["", "pay-outs", "../up"] {
+            assert!(build("on_queue", &[WParam::frozen("queue", bad)], &mut store).is_err(), "{bad:?}");
         }
     }
 }

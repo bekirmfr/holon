@@ -413,12 +413,19 @@ export function feedLabel(params: ReplayNode["data"]["params"]): string {
   return `on feed ${frozen(params, "feed") ?? ""}`;
 }
 
+/** An `on_queue` node's label, as the log names its handler's runs: `on queue payout_events`
+ *  (core's `queue_label`). */
+export function queueLabel(params: ReplayNode["data"]["params"]): string {
+  return `on queue ${frozen(params, "queue") ?? ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
  * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`), a mail
  * handler's its `on_mail` node (`"on mail remit"`), a feed handler's its `on_feed` node (`"on feed
- * prices"`); for an action's, the group holding its
+ * prices"`), a queue handler's its `on_queue` node (`"on queue payout_events"`); for an action's,
+ * the group holding its
  * `action` node (`"action reset"`); for anything else (a flow's tick, a trigger, a flow of
  * `on file` lines), the whole canvas.
  */
@@ -442,6 +449,11 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     const onFeed = nodes.find((n) => n.data.name === "on_feed" && n.data.body.kind === "Template" && feedLabel(n.data.params) === entry.route);
     if (!onFeed) return [];
     return components(nodes, edges).find((ids) => ids.includes(onFeed.id)) ?? [];
+  }
+  if (entry.kind === "queue" && entry.route) {
+    const onQueue = nodes.find((n) => n.data.name === "on_queue" && n.data.body.kind === "Template" && queueLabel(n.data.params) === entry.route);
+    if (!onQueue) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onQueue.id)) ?? [];
   }
   if (entry.kind === "tick" && entry.route) {
     const every = nodes.find(
@@ -584,6 +596,9 @@ export function replay(
     // The event that started a feed handler's run, as the log keeps it.
     if ((primitive && name === "feed_event") || (node.data.body.kind === "Template" && name === "on_feed"))
       return { inputs, outputs: [sourced.get(`FeedEvent(${JSON.stringify(param("feed"))})`) ?? null] };
+    // The message that started a queue handler's run, as the log keeps it.
+    if ((primitive && name === "queue_message") || (node.data.body.kind === "Template" && name === "on_queue"))
+      return { inputs, outputs: [sourced.get(`QueueMessage(${JSON.stringify(param("queue"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any.
     if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.

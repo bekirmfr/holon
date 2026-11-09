@@ -87,9 +87,9 @@ pub const GENESIS: &[&str] = &[
     // and a call to another deployed flow's action, which the host runs in-process, and a start
     // of one, which doesn't wait for it to end (2)
     "flow_call", "flow_start",
-    // drivers — sourced, no compute (7): a new file in a folder starts a run, as a request does,
-    // and so does a message that comes to a mailbox, and an event a feed sends
-    "clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event",
+    // drivers — sourced, no compute (8): a new file in a folder starts a run, as a request does,
+    // and so does a message that comes to a mailbox, an event a feed sends, and a queue's message
+    "clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -114,6 +114,8 @@ pub const GENESIS: &[&str] = &[
     "channel_send", "channel_subscribe",
     // mail: a message sent through a mail resource an admin binds, once the run is over (1)
     "mail_send",
+    // a queue: a message sent to a queue an admin binds, once the run is over (1)
+    "queue_send",
     // sink — performed (1)
     "egress",
 ];
@@ -547,6 +549,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // The event the feed an admin bound to `feed` sent, which started the run (host-capabilities
         // L4 §5.9.2). The host reads the feed from the deployed graph.
         "feed_event" => prim(vec![], vec![Param::frozen("feed", "prices")], Type::Record),
+        // The message that came to the queue an admin bound to `queue`, which started the run
+        // (host-capabilities L4 §5.9.9). The host reads the queue from the deployed graph.
+        "queue_message" => prim(vec![], vec![Param::frozen("queue", "payouts")], Type::Record),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
         // A durable run's waiting point: its event (the request that resumed the run, or
@@ -653,6 +658,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // and its writes have landed. `to` is the recipients the text names, each in quotes, or
         // `*` when one is computed: the recipients are part of the grant (mail.rs).
         "mail_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("mail", "ops"), Param::frozen("to", "*")], Effect),
+        // A message sent to the queue an admin bound to `queue`, once the run is over and its
+        // writes have landed: `{data, group}`, `group` a FIFO queue's message group.
+        "queue_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("queue", "payouts")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -728,6 +736,7 @@ pub const TRIGGERED: &[&str] = &[
     "db_delete",
     "channel_send",
     "mail_send",
+    "queue_send",
     "egress",
     "http_request",
     "http_upload",
@@ -742,10 +751,10 @@ pub const TRIGGERED: &[&str] = &[
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
 /// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
-/// run's random bytes (as a number, or as they are), a secret, the file, the mail or the feed's
-/// event that started the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
+/// run's random bytes (as a number, or as they are), a secret, the file, the mail, the feed's
+/// event or the queue's message that started the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
 /// waiting point) ask as the run goes.
-pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "store_read"];
+pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "queue_message", "store_read"];
 
 /// What a sourced leaf gives of the value the host supplied for it. The host draws 32 random
 /// bytes for a run (`Random`, host-capabilities L4 §5.1.11): `random_bytes` gives them as they
@@ -830,8 +839,9 @@ mod tests {
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
         // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
         // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
-        // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event).
-        assert_eq!(GENESIS.len(), 190);
+        // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
+        // and a queue's (queue_send, queue_message).
+        assert_eq!(GENESIS.len(), 192);
     }
 
     #[test]
