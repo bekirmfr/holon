@@ -1,4 +1,4 @@
-// The welcome tab: how to start, step by step, and the docs, one topic each (guide.ts). It opens
+// The welcome (`#start`): how to start, step by step, and the docs, one topic each (guide.ts). It opens
 // on start until "show this on start" is unticked (kept with the account, home.ts); the account
 // menu opens it again.
 

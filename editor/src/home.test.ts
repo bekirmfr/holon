@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addPane, changePane, defaultHome, movePane, readPrefs, removePane } from "./home";
+import { addPane, changePane, defaultHome, movePane, readPrefs, removePane, withPane } from "./home";
 
 describe("the home tab's panes", () => {
   it("are added with ids of their own, moved, widened and removed", () => {
@@ -19,5 +19,12 @@ describe("the home tab's panes", () => {
       welcome: false,
       home: [{ id: "a", kind: "notes", wide: false }],
     });
+    expect(readPrefs({ hidden: ["bottom", "palette", 3, "canvas"] })).toEqual({ hidden: ["canvas", "bottom"] });
+  });
+
+  it("remember which of the editor's panes are hidden", () => {
+    expect(withPane(undefined, "inspector", false)).toEqual(["inspector"]);
+    expect(withPane(["inspector", "values"], "inspector", true)).toEqual(["values"]);
+    expect(withPane(["values"], "values", false)).toEqual(["values"]);
   });
 });

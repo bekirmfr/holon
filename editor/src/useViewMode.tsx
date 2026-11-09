@@ -59,17 +59,17 @@ export type ViewModeInput = {
   viewDoc: MutableRefObject<FlowDocument | null>;
   ev: Evaluator;
   deployments: DeploymentEntry[];
+  /** Whether nodes show their outputs' values as chips (on), or the flow exactly as designed. */
+  showValues: boolean;
   fitView: (options: { nodes: { id: string }[]; duration: number; maxZoom: number; padding: number }) => unknown;
 };
 
 export function useViewMode(input: ViewModeInput) {
   const { flow, setSelectedRun, setStep, setInspectNode, setViewTrace, setViewUnit } = input;
-  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, deployments, fitView } = input;
+  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, deployments, fitView, showValues } = input;
   const { viewing, viewUnit, viewTrace, selectedRun, step } = flow;
 
-  // Values as chips beside each output (on), or the flow exactly as designed (off); and the wire
-  // under the pointer, which shows the value it carried.
-  const [showValues, setShowValues] = useState(true);
+  // The wire under the pointer, which shows the value it carried.
   const [hoveredWire, setHoveredWire] = useState<string | null>(null);
 
   // A run shows on the canvas of the version it ran on: selecting one logged on an earlier
@@ -346,8 +346,6 @@ export function useViewMode(input: ViewModeInput) {
     inside,
     viewNodes,
     viewEdges,
-    showValues,
-    toggleValues: () => setShowValues((v) => !v),
     setHoveredWire,
     showNode,
     fitToNodes,
@@ -382,6 +380,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
     openRun: view.openRun,
+    verdict: view.verdict,
   };
 }
 

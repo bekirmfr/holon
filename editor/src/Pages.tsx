@@ -9,10 +9,7 @@ import { flowAddressable, type Route } from "./routes";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "approvals" | "flows" | "library" | "flow" | "admin" | "home" | "welcome" | "docs";
-/** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows') and a
- *  flow's page (reached from the nav, the flows and the palette). */
-export type PageTab = Exclude<AppPage, "canvas" | "flow">;
+export type AppPage = "canvas" | "editor-home" | "approvals" | "flows" | "library" | "flow" | "admin" | "home" | "welcome" | "docs";
 
 /** The page that shows the place `r` names (routes.ts). A place the editor has no page of its
  *  own for yet is shown by the page that has what it names: the host's pages are admin's. */
@@ -20,6 +17,7 @@ export function pageOf(r: Route): AppPage {
   switch (r.kind) {
     case "editor":
     case "editor-home":
+      // The editor's Home tab is over the canvas, as a page is: which shows is the editor's say.
       return "canvas";
     case "approvals":
     case "review":
@@ -50,6 +48,8 @@ export function routeOfPage(p: AppPage): Route {
   switch (p) {
     case "canvas":
       return { kind: "editor", slug: null, view: false, seq: null };
+    case "editor-home":
+      return { kind: "editor-home" };
     case "home":
       return { kind: "overview" };
     case "welcome":
@@ -73,8 +73,6 @@ export function routeOfPage(p: AppPage): Route {
  *  that page's own place (a run is viewed in the editor). Null when `r` is shown as it is. */
 export function shownAt(r: Route): Route | null {
   switch (r.kind) {
-    case "editor-home":
-      return { kind: "editor", slug: null, view: false, seq: null };
     case "flow":
     case "run":
       return flowAddressable(r.slug) ? null : { kind: "flows" };

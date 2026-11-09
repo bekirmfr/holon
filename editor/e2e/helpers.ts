@@ -16,6 +16,12 @@ export function menuEntry(page: Page, name: MenuPage): Locator {
   return nav.getByRole("link", { name: label, exact: true });
 }
 
+/** The side nav's entry `label` ("Flows", "Getting started"…): the page shown is its
+ *  `aria-current`. */
+export function navLink(page: Page, label: string): Locator {
+  return page.getByRole("navigation", { name: "main" }).getByRole("link", { name: label, exact: true });
+}
+
 /** Go to `name` from the side nav, as a person would. */
 export async function gotoPage(page: Page, name: MenuPage) {
   await menuEntry(page, name).click();

@@ -32,7 +32,21 @@ export type Prefs = {
   home?: Pane[];
   /** How the editor looks (look.ts; absent: as the system says). */
   theme?: Theme;
+  /** Which of the editor's panes are hidden (`c i v b`; absent: all shown). The text is each
+   *  tab's own (tabs.ts's TextState). */
+  hidden?: EditorPane[];
 };
+
+/** The editor's panes a key shows or hides, and remembered with the account: the canvas, the
+ *  Inspector, view mode's values beside each output and its runs below. */
+export const EDITOR_PANES = ["canvas", "inspector", "values", "bottom"] as const;
+export type EditorPane = (typeof EDITOR_PANES)[number];
+
+/** `hidden` with `pane` shown, or hidden. */
+export function withPane(hidden: EditorPane[] | undefined, pane: EditorPane, shown: boolean): EditorPane[] {
+  const rest = (hidden ?? []).filter((p) => p !== pane);
+  return shown ? rest : [...rest, pane];
+}
 
 export const defaultHome = (): Pane[] => [
   { id: "start", kind: "start", wide: false },
@@ -71,5 +85,11 @@ export function readPrefs(raw: unknown): Prefs {
   const home = Array.isArray(r.home)
     ? (r.home as Pane[]).filter((p) => p && typeof p.id === "string" && (PANE_KINDS as readonly string[]).includes(p.kind)).map((p) => ({ ...p, wide: !!p.wide }))
     : undefined;
-  return { ...(typeof r.welcome === "boolean" ? { welcome: r.welcome } : {}), ...(home ? { home } : {}), ...(isTheme(r.theme) ? { theme: r.theme } : {}) };
+  const hidden = Array.isArray(r.hidden) ? EDITOR_PANES.filter((p) => (r.hidden as unknown[]).includes(p)) : undefined;
+  return {
+    ...(typeof r.welcome === "boolean" ? { welcome: r.welcome } : {}),
+    ...(home ? { home } : {}),
+    ...(isTheme(r.theme) ? { theme: r.theme } : {}),
+    ...(hidden ? { hidden } : {}),
+  };
 }

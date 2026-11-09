@@ -33,9 +33,11 @@ import {
   type WValue,
   manifestItems,
   manifestTrigger,
+  describeItem,
 } from "./holon";
 import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
+import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
@@ -68,7 +70,8 @@ import {
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { FlowPage } from "./FlowPage";
-import { pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
+import { pageOf, routeOfPage, shownAt, type AppPage } from "./Pages";
+import { EditorHome } from "./EditorHome";
 import { FlowsPage } from "./FlowsPage";
 import { ApprovalsPage } from "./ApprovalsPage";
 import { ReviewPage } from "./ReviewPage";
@@ -96,7 +99,7 @@ import type { Inspected } from "./holonText";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import type { ManualAt } from "./ManualPage";
-import { defaultHome, readPrefs, type Prefs } from "./home";
+import { defaultHome, readPrefs, withPane, type EditorPane, type Prefs } from "./home";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
@@ -127,14 +130,11 @@ function Canvas({
   variadic: Set<string>;
   /** Who is signed in (AuthGate.tsx). */
   me: Me;
-  /** The page tabs (home, welcome, flows, deployed, admin), and what home and the welcome keep
-   *  with the account (home.ts). */
+  /** What the editor keeps with the account (home.ts): home's panes, the welcome, the look,
+   *  which of the editor's panes are hidden. */
   start: {
     prefs: Prefs;
     onPrefs: (p: Prefs) => void;
-    pages: PageTab[];
-    openPage: (p: PageTab) => void;
-    closePage: (p: PageTab) => void;
     onNew: () => void;
     /** Show every key (the ? dialog). */
     showKeys: () => void;
@@ -172,22 +172,13 @@ function Canvas({
   // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
   // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
   const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
-  // Whether the Inspector is open or folded to a strip, remembered per browser.
-  const [inspectorOpen, setInspectorOpen] = useState(() => {
-    try {
-      return localStorage.getItem("holon.inspector") !== "closed";
-    } catch {
-      return true;
-    }
-  });
-  const onInspectorOpen = useCallback((open: boolean) => {
-    setInspectorOpen(open);
-    try {
-      localStorage.setItem("holon.inspector", open ? "open" : "closed");
-    } catch {
-      // Not remembered, then.
-    }
-  }, []);
+  // Which of the editor's panes show (`c i v b`; the text is each tab's own), kept with the
+  // account (home.ts).
+  const { prefs, onPrefs } = start;
+  const paneShown = (p: EditorPane) => !(prefs.hidden ?? []).includes(p);
+  const showPane = useCallback((p: EditorPane, shown: boolean) => onPrefs({ ...prefs, hidden: withPane(prefs.hidden, p, shown) }), [prefs, onPrefs]);
+  const inspectorOpen = paneShown("inspector");
+  const onInspectorOpen = useCallback((open: boolean) => showPane("inspector", open), [showPane]);
   const [paletteOpen, setPaletteOpen] = useState(() => {
     try { return localStorage.getItem("holon.palette") !== "closed"; } catch { return true; }
   });
@@ -291,7 +282,7 @@ function Canvas({
   );
 
   // ── Tabs: one per open flow (useTabs.ts) ──────────────────────────────────────────────────
-  const { tabIds, activeId, stash, captureTab, showTab, switchTab, tabOf, closeTab } = useTabs({
+  const { tabIds, activeId, stash, captureTab, showTab, switchTab, tabOf, closeTab, closed, reopen } = useTabs({
     flow,
     setFlow,
     live,
@@ -311,8 +302,9 @@ function Canvas({
     confirm: dialog.confirm,
   });
   const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean) => tabFromDoc(name, doc, saved, ev), [ev]);
-  // What the work area shows: the page asked for, or, with no flow open, home.
-  const shown: AppPage = page === "canvas" && tabIds.length === 0 ? "home" : page;
+  // What the work area shows: the page asked for; in the editor, its Home tab when asked for or
+  // with no flow open.
+  const shown: AppPage = page === "canvas" && (route.kind === "editor-home" || tabIds.length === 0) ? "editor-home" : page;
 
   // "New" from the menu: a clean, untitled canvas in a tab of its own, named when it is first
   // saved (or deployed). `nonce` makes each New fire.
@@ -730,11 +722,26 @@ function Canvas({
     viewDoc,
     ev,
     deployments,
+    showValues: paneShown("values"),
     fitView,
   });
 
+  // The panes (gaps-web.md G17): the canvas and the text, one of them always shown; the
+  // Inspector; in view mode the values beside each output and the runs below.
+  const canvasShown = paneShown("canvas");
+  const toggleCanvas = () => {
+    if (canvasShown && !textPane.open) textPane.toggle();
+    showPane("canvas", !canvasShown);
+  };
+  const toggleText = () => {
+    if (textPane.open && !canvasShown) showPane("canvas", true);
+    textPane.toggle();
+  };
+  const canView = deployedEntry !== undefined;
+
   // The flow's keys (keymap.ts): saved and deployed while it is edited, from the text too; its
-  // values shown or hidden while viewed. Stepping is the bottom pane's (ViewPanes.tsx).
+  // mode and panes; its values and runs shown or hidden while viewed. Stepping is the bottom
+  // pane's (ViewPanes.tsx).
   useKeys(
     {
       "ctrl+s": () => void onSave(),
@@ -742,7 +749,17 @@ function Canvas({
     },
     { enabled: shown === "canvas" && !viewing, whileTyping: ["ctrl+s", "ctrl+d"] },
   );
-  useKeys({ "=": () => view.toggleValues() }, { enabled: shown === "canvas" && viewing !== null });
+  useKeys(
+    {
+      e: () => (viewing ? onMode("edit") : canView ? onMode("view") : false),
+      c: toggleCanvas,
+      x: toggleText,
+      i: () => onInspectorOpen(!inspectorOpen),
+      v: () => (viewing ? showPane("values", !paneShown("values")) : false),
+      b: () => (viewing ? showPane("bottom", !paneShown("bottom")) : false),
+    },
+    { enabled: shown === "canvas" },
+  );
 
   // ── The command palette (ui/CommandPalette.tsx): Ctrl+K or / ─────────────────────────────
   // Its entries are what there is now: the pages, every deployed or saved flow and its tabs, the
@@ -929,6 +946,18 @@ function Canvas({
     () => (inspected ? sourceLineOf(inspected.id, flowName, { nodes: nodes as unknown[], edges: edges as unknown[], server: flow.settings }, ev) : null),
     [inspected, nodes, edges, flow.settings, flowName, ev],
   );
+  // What the inspected node lets the flow do, in edit mode: its unit's capabilities as the
+  // manifest says them, each marked when it is new against the deployed version (mayHere.ts).
+  const inspectedMay = useMemo((): MayHere[] | null => {
+    if (!inspected || viewing) return null;
+    try {
+      const caps = (ev.capability_names(unitFor(inspected, ev)) as string[]).sort();
+      const fresh = new Set((mayItems ?? []).filter((m) => m.change === "new").map((m) => m.item));
+      return manifestItems(caps).map((item) => ({ item, said: describeItem(item), isNew: fresh.has(item) }));
+    } catch {
+      return null;
+    }
+  }, [inspected, viewing, ev, mayItems]);
   const inspectedUnit = useMemo(() => {
     if (!inspected) return null;
     try {
@@ -1016,26 +1045,32 @@ function Canvas({
     };
   });
 
+  // The flows the editor's Home offers to open: every one saved or deployed, by name.
+  const homeFlows = [...new Set([...savedFlows, ...deployments.map((d) => d.slug)])].sort().map((name) => ({
+    name,
+    deployed: deployments.some((d) => d.slug === name),
+    saved: savedFlows.includes(name),
+    open: tabList.some((t) => t.name === name),
+  }));
+
   return (
     <NodeDocs.Provider value={describeNode}>
     <NodeActions.Provider value={nodeActions}>
     <div className="hl-main">
     {finding && <CommandPalette commands={commands} onColon={onColon} onClose={() => setFinding(false)} />}
-    {/* Every tab, pages first, then the open flows; each closes. With nothing open (or the last
-        flow closed) the canvas shows home, the default page. */}
-    <FlowTabs
-      tabs={tabList}
-      active={shown === "canvas" ? activeId : -1}
-      onSelect={switchTab}
-      onClose={closeTab}
-      pages={start.pages.map((p) => ({
-        key: p,
-        label: p,
-        active: shown === p,
-        onSelect: () => start.openPage(p),
-        onClose: () => start.closePage(p),
-      }))}
-    />
+    {/* The editor's tabs: its Home, then the open flows, each closing; + starts a draft. With
+        no flow open (or the last one closed) the editor shows its Home. */}
+    {(shown === "canvas" || shown === "editor-home") && (
+      <FlowTabs
+        tabs={tabList}
+        active={shown === "canvas" ? activeId : -1}
+        home={shown === "editor-home"}
+        onHome={() => navigate({ kind: "editor-home" })}
+        onSelect={switchTab}
+        onClose={closeTab}
+        onNew={start.onNew}
+      />
+    )}
     <div className="hl-work">
     {/* The palette is the flow tab's: edit mode places nodes from it; view mode is read only. */}
     {!viewing && shown === "canvas" && (
@@ -1053,11 +1088,59 @@ function Canvas({
     <div className="hl-edit">
     {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} />}
     <div
-      className={["hl-canvas", viewing ? "hl-canvas--viewing" : "", inspectorOpen ? "" : "hl-canvas--inspector-closed", textPane.open ? "hl-canvas--text" : ""].filter(Boolean).join(" ")}
+      className={[
+        "hl-canvas",
+        viewing ? "hl-canvas--viewing" : "",
+        viewing && !paneShown("bottom") ? "hl-canvas--no-bottom" : "",
+        inspectorOpen ? "" : "hl-canvas--inspector-closed",
+        textPane.open ? "hl-canvas--text" : "",
+        canvasShown || !textPane.open ? "" : "hl-canvas--no-canvas",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       style={textPane.open ? ({ "--text-width": `${textPane.pane.width}px` } as CSSProperties) : undefined}
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
+      {/* The editor's bar (gaps-web.md G17): the flow, its mode, the panes, save and deploy. */}
+      <div className="hl-canvas__bar">
+        <FlowToolbar
+          histVersion={histVersion}
+          mode={viewing ? "view" : "edit"}
+          canView={canView}
+          onMode={onMode}
+          panes={[
+            { key: "c", name: "canvas", on: canvasShown || !textPane.open, toggle: toggleCanvas },
+            { key: "x", name: "text", on: textPane.open, toggle: toggleText },
+            { key: "i", name: "inspector", on: inspectorOpen, toggle: () => onInspectorOpen(!inspectorOpen) },
+            ...(viewing
+              ? [
+                  { key: "v", name: "values", on: paneShown("values"), toggle: () => showPane("values", !paneShown("values")) },
+                  { key: "b", name: "runs", on: paneShown("bottom"), toggle: () => showPane("bottom", !paneShown("bottom")) },
+                ]
+              : []),
+          ]}
+          flowName={flowName}
+          dirty={dirty}
+          onSave={onSave}
+          canUndo={history.current.past.length > 0}
+          canRedo={history.current.future.length > 0}
+          onUndo={undo}
+          onRedo={redo}
+          deployBar={
+            <DeployBar
+              entry={deployedEntry}
+              outOfDate={outOfDate}
+              busy={deployBusy}
+              onDeploy={onDeployFlow}
+              onAction={onFlowAction}
+              startsNothing={startsNothing}
+              onSettingsOpen={() => onDeployPanelOpen(true)}
+            />
+          }
+          error={page === "canvas" ? deployError || listError : ""}
+        />
+      </div>
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
           colorMode={dark ? "dark" : "light"}
@@ -1087,37 +1170,6 @@ function Canvas({
         >
           <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />
           <Controls showInteractive={false} />
-          <Panel position="top-left">
-            <FlowToolbar
-              histVersion={histVersion}
-              mode={viewing ? "view" : "edit"}
-              canView={deployedEntry !== undefined}
-              onMode={onMode}
-              showValues={view.showValues}
-              onToggleValues={view.toggleValues}
-              flowName={flowName}
-              dirty={dirty}
-              onSave={onSave}
-              canUndo={history.current.past.length > 0}
-              canRedo={history.current.future.length > 0}
-              onUndo={undo}
-              onRedo={redo}
-              deployBar={
-                <DeployBar
-                  entry={deployedEntry}
-                  outOfDate={outOfDate}
-                  busy={deployBusy}
-                  onDeploy={onDeployFlow}
-                  onAction={onFlowAction}
-                  startsNothing={startsNothing}
-                  onSettingsOpen={() => onDeployPanelOpen(true)}
-                />
-              }
-              error={page === "canvas" ? deployError || listError : ""}
-              textOpen={textPane.open}
-              onToggleText={textPane.toggle}
-            />
-          </Panel>
           {!viewing && (
             <Panel position="bottom-right">
               <ProjectionPanel
@@ -1142,10 +1194,11 @@ function Canvas({
       </div>
       {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} />}
       <Inspector
-        node={inspected}
+        node={inspected && secretMarks[inspected.id] ? { ...inspected, data: { ...inspected.data, secretSinks: secretMarks[inspected.id] } } : inspected}
         unit={inspectedUnit}
         run={inspectorRun(view, flow)}
         source={inspectedSource}
+        may={inspectedMay}
         open={inspectorOpen}
         onOpen={onInspectorOpen}
         word={word}
@@ -1155,7 +1208,7 @@ function Canvas({
           if (s) void onOpenSample(s);
         }}
       />
-      <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} />
+      {paneShown("bottom") && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} />}
       {/* The pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
@@ -1171,6 +1224,21 @@ function Canvas({
             padding: 24,
           }}
         >
+          {shown === "editor-home" && (
+            <EditorHome
+              flows={homeFlows}
+              closed={closed.map((t) => ({
+                name: t.meta.name,
+                kind: tabKind(t.meta, (name) => deployments.some((d) => d.slug === name)),
+                viewing: t.meta.viewing !== null,
+                dirty: t.dirty,
+              }))}
+              navigate={navigate}
+              onNew={start.onNew}
+              onReopen={reopen}
+              onKeys={start.showKeys}
+            />
+          )}
           {shown === "flows" && (
             <FlowsPage
               deployments={deployments}
@@ -1239,8 +1307,8 @@ function Canvas({
               name={me.name}
               showOnStart={start.prefs.welcome !== false}
               onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
-              onAction={(a) => (a === "new" ? start.onNew() : start.openPage(a === "samples" ? "library" : a))}
-              onManual={() => start.openPage("docs")}
+              onAction={(a) => (a === "new" ? start.onNew() : setPage(a === "samples" ? "library" : a))}
+              onManual={() => setPage("docs")}
             />
           )}
           {shown === "home" && (
@@ -1256,8 +1324,8 @@ function Canvas({
                 openFlow: (name) => getFlow(name).then((rec) => onOpenFlow(rec)).catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e))),
                 openSample: onOpenSample,
                 viewDeployment: onView,
-                goTo: start.openPage,
-                openWelcome: () => start.openPage("welcome"),
+                goTo: setPage,
+                openWelcome: () => setPage("welcome"),
               }}
             />
           )}
@@ -1385,14 +1453,6 @@ function Editor({ me }: { me: Me }) {
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
-  // The pages open in tabs of their own, in the order opened; home to begin with, and the
-  // welcome unless they said not to.
-  const [pages, setPages] = useState<PageTab[]>(["home"]);
-  // A page gone to by its address has its tab, as one opened from the menu does (a flow's page
-  // is reached from the nav and the flows instead).
-  useEffect(() => {
-    if (page !== "canvas" && page !== "flow") setPages((ps) => (ps.includes(page) ? ps : [...ps, page]));
-  }, [page]);
   useEffect(() => {
     getPrefs()
       .then((raw) => {
@@ -1401,7 +1461,6 @@ function Editor({ me }: { me: Me }) {
         // The account's look wins over this browser's.
         if (p.theme) applyTheme(p.theme);
         if (p.welcome !== false) {
-          setPages((ps) => (ps.includes("welcome") ? ps : [...ps, "welcome"]));
           // Shown only if they are still where the editor started, at no address of their
           // own: prefs that arrive after they opened something else don't take them away from
           // it, and a place they asked for is kept.
@@ -1410,19 +1469,6 @@ function Editor({ me }: { me: Me }) {
       })
       .catch(() => undefined);
   }, []);
-  /** Show page `p`, in its tab (opened if it isn't). */
-  const openPage = useCallback((p: PageTab) => setPage(p), [setPage]);
-  /** Close page `p`'s tab; if it was showing, the tab beside it shows, else the open flow (or,
-   *  with none, home as the default page). */
-  const closePage = useCallback(
-    (p: PageTab) => {
-      const i = pages.indexOf(p);
-      const left = pages.filter((x) => x !== p);
-      setPages(left);
-      if (page === p) setPage(left[i] ?? left[i - 1] ?? "canvas");
-    },
-    [pages, page, setPage],
-  );
   const onPrefs = useCallback((p: Prefs) => {
     setPrefsState(p);
     if (p.theme) applyTheme(p.theme);
@@ -1457,7 +1503,7 @@ function Editor({ me }: { me: Me }) {
       me={me}
       onNew={onNew}
       onFind={() => setFinding(true)}
-      onWelcome={() => openPage("welcome")}
+      onWelcome={() => setPage("welcome")}
       theme={prefs.theme ?? storedTheme()}
       onTheme={(theme) => onPrefs({ ...prefs, theme })}
       waiting={waiting}
@@ -1479,7 +1525,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
-                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding, onWaiting: setWaiting }}
+                start={{ prefs, onPrefs, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding, onWaiting: setWaiting }}
               />
             )}
           </ReactFlowProvider>

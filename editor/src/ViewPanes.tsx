@@ -24,6 +24,7 @@ import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
+import { fieldMarks, type MayHere } from "./mayHere";
 
 const small: CSSProperties = {
   font: "inherit",
@@ -57,7 +58,8 @@ function exchangeLine(request: WValue, response: WValue): { line: string; ok: bo
 /** What a view-mode pane needs to know about a canvas node. */
 export type ViewNode = {
   id: string;
-  data: { name: string; body: { kind: string }; params: WParam[]; inputs: WPort[]; outputs: WPort[] };
+  /** `secretSinks`: what it does with a secret that reaches it, a line each (PrimitiveNode.tsx). */
+  data: { name: string; body: { kind: string }; params: WParam[]; inputs: WPort[]; outputs: WPort[]; secretSinks?: string[] };
 };
 
 /** A node's name as the panes show it: with its key, method/path or other frozen params. */
@@ -1200,9 +1202,11 @@ export type InspectorRun = {
   inside: InsideStep[] | null;
   /** Open another run of the deployment in view mode, by its seq: a cell's history's rows. */
   openRun?: (seq: number) => void;
+  /** Whether replaying the run reproduced what it recorded; null when not checkable. */
+  verdict?: boolean | null;
 };
 
-type InspectorTab = "node" | "state";
+type InspectorTab = "node" | "state" | "record";
 
 /**
  * The Inspector, on the canvas's right in both modes: the selected node (its docs, params and
@@ -1220,10 +1224,13 @@ export function Inspector({
   word = null,
   onManual,
   onSample,
+  may = null,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
   run: InspectorRun | null;
+  /** Edit mode: what the node lets the flow do (mayHere.ts), null when not worked out. */
+  may?: MayHere[] | null;
   /** The name at the text's cursor: its hover, the forms it is written in and a sample's lines. */
   word?: Inspected | null;
   /** Open the language reference the forms come from. */
@@ -1236,8 +1243,17 @@ export function Inspector({
   onOpen: (open: boolean) => void;
 }) {
   const [picked, setTab] = useState<InspectorTab>("node");
-  const tab = picked === "state" && !run ? "node" : picked;
-  const tabs: [InspectorTab, string][] = [["node", "Node"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
+  const tab = picked !== "node" && !run ? "node" : picked;
+  // View mode: the state as of the step shown, and the run as the log keeps it.
+  const tabs: [InspectorTab, string][] = [
+    ["node", "Node"],
+    ...(run
+      ? ([
+          ["state", run.step === null ? "State after the run" : `State at step ${run.step + 1}`],
+          ["record", "Record"],
+        ] as [InspectorTab, string][])
+      : []),
+  ];
   if (!open) {
     return (
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
@@ -1257,10 +1273,12 @@ export function Inspector({
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
+        ) : tab === "record" && run ? (
+          <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
         ) : (
           <>
             {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
-            <ComponentTab node={node} run={run} source={source ?? null} />
+            <ComponentTab node={node} run={run} source={source ?? null} may={run ? null : may} />
             {node && unit && <Section title="unit">{unit}</Section>}
           </>
         )}
@@ -1308,6 +1326,35 @@ function WordSection({ word, onManual, onSample }: { word: Inspected; onManual?:
         </Section>
       )}
     </section>
+  );
+}
+
+/** View mode's Record tab (gaps-web.md G24): the run as the log keeps it, chained to the one
+ *  before it, and whether replaying it gave what it recorded. Its page checks it offline. */
+function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null; verdict: boolean | null }) {
+  if (!run) return <div>select a run</div>;
+  const secrets = Object.entries(run.secrets ?? {});
+  return (
+    <>
+      <Section title={`run ${run.seq}, on record`}>
+        <Field name="run id" value={run.run_id || "—"} />
+        <Field name="before it" value={run.prev ? run.prev : "nothing: the first in the log"} />
+        {run.unit && <Field name="version" value={run.unit} />}
+        {run.grant && <Field name="grant" value={run.grant} />}
+        {run.nonce && <Field name="nonce" value={run.nonce} />}
+        {secrets.map(([name, mark]) => (
+          <Field key={name} name={`secret ${name}`} value={mark} />
+        ))}
+      </Section>
+      <Section title="replayed">
+        <div style={{ color: verdict === null ? dim : verdict ? "var(--ok)" : FAIL }}>
+          {verdict === null ? "not checked: its version's canvas isn't shown" : verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded"}
+        </div>
+      </Section>
+      <a href={`#${slug}.run-${run.seq}`} style={{ color: "var(--accent)", textDecoration: "none" }}>
+        its page, to check it offline ›
+      </a>
+    </>
   );
 }
 
@@ -1601,7 +1648,17 @@ function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; 
 /** One node inside a holon, as a run went: what it is, what it produced, how long it took. */
 export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us: number };
 
-function ComponentTab({ node, run, source }: { node: ViewNode | null; run: InspectorRun | null; source: { line: number; text: string } | null }) {
+function ComponentTab({
+  node,
+  run,
+  source,
+  may,
+}: {
+  node: ViewNode | null;
+  run: InspectorRun | null;
+  source: { line: number; text: string } | null;
+  may: MayHere[] | null;
+}) {
   const describe = useNodeDocs();
   if (!node) return <div>{run ? "click a node on the canvas, or step through the run" : "select a node on the canvas"}</div>;
   const { trace, timing, inside, notRun } = run ?? { trace: undefined, timing: undefined, inside: null, notRun: undefined };
@@ -1618,6 +1675,26 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
         {run && !trace && !notRun ? " · not part of this run" : ""}
       </div>
       {notRun && <div style={{ color: dim }}>↷ {notRun}</div>}
+      {may && (
+        <Section title="it may here">
+          {may.length === 0 && <div style={{ color: dim }}>nothing outside the flow: it only computes</div>}
+          {may.map((m) => (
+            <div key={m.item} style={{ color: "var(--body)", whiteSpace: "normal" }} title={m.item}>
+              {m.said}
+              {m.isNew && <span style={{ color: "var(--warn)" }}> · new: needs approval</span>}
+            </div>
+          ))}
+        </Section>
+      )}
+      {!run && (data.secretSinks ?? []).length > 0 && (
+        <Section title="secrets">
+          {data.secretSinks!.map((line) => (
+            <div key={line} style={{ color: "var(--body)", whiteSpace: "normal" }}>
+              ◆ {line}
+            </div>
+          ))}
+        </Section>
+      )}
       {source && (
         <Section title={`as text, line ${source.line}`}>
           <div
@@ -1645,9 +1722,12 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
       )}
       {data.params.length > 0 && (
         <Section title="params">
-          {data.params.map((p) => (
-            <Field key={p.name} name={p.name} value={p.kind === "Frozen" ? p.value : `open → ${p.bind}`} />
-          ))}
+          {data.params.map((p) => {
+            // A field the manifest names is a permission's (or a secret's): changing it asks again.
+            const marks = may && p.kind === "Frozen" ? fieldMarks(p.value, may.map((m) => m.item)) : null;
+            const mark = marks?.secret ? " · a secret" : marks?.permission ? " · a permission" : "";
+            return <Field key={p.name} name={p.name + mark} value={p.kind === "Frozen" ? p.value : `open → ${p.bind}`} />;
+          })}
         </Section>
       )}
       {inside && (

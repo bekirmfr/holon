@@ -1,4 +1,4 @@
-// The home tab: panes of the person's choosing, in two columns, kept with their account
+// The overview (`#overview`): panes of the person's choosing, in two columns, kept with their account
 // (home.ts). "customize" lets them add panes (start, recent flows, deployments, activity,
 // marketplace, samples, notes, getting started), move them, make one span both columns, and
 // remove them; a notes pane is edited in place.

@@ -2,24 +2,25 @@
 // flow's address opens it, and an address that names nothing says so.
 
 import { expect, test } from "./fixtures";
-import { deploy, gotoPage, notices, openSample, viewNewestRun } from "./helpers";
+import { deploy, gotoPage, navLink, notices, openSample, viewNewestRun } from "./helpers";
 
 test("a reload keeps the page, the flow and its mode; Back goes back", async ({ page }) => {
   await page.goto("/#flows");
-  const tabs = page.getByRole("tablist", { name: "open tabs" });
-  await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
+  await expect(navLink(page, "Flows")).toHaveAttribute("aria-current", "page");
   await gotoPage(page, "library");
   await expect(page).toHaveURL(/#library$/);
   await page.goBack();
   await expect(page).toHaveURL(/#flows$/);
-  await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
+  await expect(navLink(page, "Flows")).toHaveAttribute("aria-current", "page");
 
   // A flow open in the editor: its address, kept over a reload once it is saved somewhere the
   // editor can find it (here, deployed).
   await openSample(page, "Hello API", false);
   await expect(page).toHaveURL(/#editor\.hello-api$/);
   await deploy(page);
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
+  // e: View runs.
+  await page.locator(".hl-canvas__flow").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("e");
   await expect(page).toHaveURL(/#editor\.hello-api\.view(\.run-\d+)?$/);
   await page.reload();
   await expect(page.locator(".hl-canvas--viewing")).toBeVisible({ timeout: 30_000 });
@@ -49,7 +50,7 @@ test("the manual's page is in the address", async ({ page }) => {
 test("keys: a page by its number, Esc up, ? for them all, and j steps through a run", async ({ page, request }) => {
   await page.goto("/#library");
   // Once the editor is there to hear them.
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "library" })).toHaveAttribute("aria-selected", "true");
+  await expect(navLink(page, "Library")).toHaveAttribute("aria-current", "page");
   await page.keyboard.press("3");
   await expect(page).toHaveURL(/#flows$/);
   await page.keyboard.press("Escape");
@@ -102,7 +103,7 @@ test("the side nav says the page, the crumbs the way up, the host card the host"
 
 test("the command palette finds a page and a sample, and takes : commands", async ({ page }) => {
   await page.goto("/#library");
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "library" })).toHaveAttribute("aria-selected", "true");
+  await expect(navLink(page, "Library")).toHaveAttribute("aria-current", "page");
   const palette = page.getByRole("dialog", { name: "command palette" });
   const find = palette.getByRole("combobox");
 

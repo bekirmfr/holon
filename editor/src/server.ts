@@ -719,6 +719,9 @@ export async function changeDeployment(
  *  enough to replay it exactly (replay.ts). */
 export type LogEntry = {
   seq: number;
+  /** The hash of the log's line before it (hex): the chain a witness checks. Absent for the
+   *  first entry. */
+  prev?: string;
   /** The unit it ran (hex): the deployment's version then. Absent in entries from before. */
   unit?: string;
   session: number;

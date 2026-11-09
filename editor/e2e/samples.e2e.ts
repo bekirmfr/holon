@@ -10,7 +10,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 
@@ -416,7 +416,9 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
   await gotoPage(page, "flows");
   await expect(page.getByText(`placed in ${user}`, { exact: true })).toBeVisible();
-  // A save of "shout" that takes its input away asks first, naming who places it.
+  // A save of "shout" that takes its input away asks first, naming who places it. Its tab is
+  // the editor's.
+  await navLink(page, "Editor").click();
   await page.locator(".hl-tab", { hasText: shout }).click();
   await expect(page.locator(".hl-tab--active")).toContainText(shout);
   await expect(flow.locator(".react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
@@ -1325,7 +1327,7 @@ test("balance-trail: a cell's history lists the runs that changed it and the res
   // View the newest run: its flow state names the account it moved, ⧗ beside it.
   await viewNewestRun(page);
   const inspector = page.getByRole("complementary", { name: "Inspector" });
-  await inspector.getByRole("button", { name: "Flow state", exact: true }).click();
+  await inspector.getByRole("button", { name: /^State (at step|after the run)/ }).click();
   await inspector.getByRole("button", { name: `history of balances["${account}"]`, exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "cell history" });
   await expect(dialog).toContainText(`balances["${account}"]`);

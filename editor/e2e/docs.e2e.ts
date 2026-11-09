@@ -1,14 +1,14 @@
-// The docs tab (ManualPage.tsx): the manual, built into the editor from docs/manual. Its contents
+// The docs page (ManualPage.tsx): the manual, built into the editor from docs/manual. Its contents
 // move between pages, a link to a heading on another page lands on that heading, and a flow in it
 // opens in a tab of its own.
 
 import { expect, test } from "./fixtures";
-import { gotoPage } from "./helpers";
+import { gotoPage, navLink } from "./helpers";
 
 test("the docs tab shows the manual, follows its links and opens its flows", async ({ page }) => {
   await page.goto("/");
   await gotoPage(page, "docs");
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "docs" })).toHaveAttribute("aria-selected", "true");
+  await expect(navLink(page, "Docs")).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { level: 1, name: "The Holon manual" })).toBeVisible();
 
   // The contents, as the manual's index lists them.

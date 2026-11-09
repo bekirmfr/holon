@@ -477,7 +477,7 @@ body {
 }
 .hl-deploy__fold:hover { color: var(--ink); }
 
-/* ── Tabs: one per open flow, above the canvas ───────────────────────────── */
+/* ── Tabs: the editor's Home, then one per open flow, above the canvas ──── */
 .hl-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* Under the tabs: the palette (a flow tab's, in edit mode) beside the canvas. */
 .hl-work { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
@@ -502,18 +502,49 @@ body {
   color: var(--faint); background: transparent; border: none; border-radius: 3px; cursor: pointer;
 }
 .hl-tab__close:hover { color: var(--ink); background: var(--surface-2); }
+.hl-tab--home { padding-right: 10px; }
+.hl-tabs__new {
+  align-self: center; font: inherit; font-size: 14px; line-height: 1; padding: 2px 8px; margin-left: 2px;
+  color: var(--faint); background: transparent; border: none; border-radius: 3px; cursor: pointer;
+}
+.hl-tabs__new:hover { color: var(--ink); background: var(--surface); }
+
+/* The editor's Home (EditorHome.tsx): a new tab's page. */
+.hl-edhome { max-width: 1080px; }
+.hl-edhome__columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.hl-edhome__list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.hl-edhome__list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.hl-edhome__list a, .hl-edhome .hl-flow__section > a { color: var(--accent); text-decoration: none; }
+.hl-edhome__said { color: var(--faint); font-size: 11px; }
+.hl-edhome__reopen { font: inherit; padding: 0; color: var(--accent); background: none; border: 0; cursor: pointer; }
+.hl-edhome__keys { list-style: none; margin: 6px 0 10px; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--body); }
+.hl-edhome__keys .hl-kbd { margin-right: 3px; }
+
+/* The editor's bar (CanvasPanels.tsx's FlowToolbar): the panes it shows or hides. */
+.hl-panes { display: inline-flex; gap: 2px; }
+.hl-panes__toggle {
+  font: inherit; font-size: 11px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--faint); background: transparent; border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.hl-panes__toggle[aria-pressed="true"] { color: var(--ink); background: var(--surface-2); }
 
 /* ── Canvas ─────────────────────────────────────────────────────────────── */
-/* The canvas with the Inspector on its right, in both modes; in view mode the bottom pane runs
-   across both. Folded, the Inspector is a strip that opens it again. */
+/* The bar across the top, then the canvas with the Inspector on its right, in both modes; in
+   view mode the bottom pane runs across both. Folded, the Inspector is a strip that opens it
+   again. Hidden (`c`), the canvas gives its room to the text. */
 .hl-canvas {
   position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; background: var(--bg);
-  display: grid; grid-template-columns: minmax(0, 1fr) min(340px, 45%); grid-template-rows: minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(0, 1fr) min(340px, 45%); grid-template-rows: auto minmax(0, 1fr);
+}
+.hl-canvas__bar {
+  grid-column: 1 / -1; grid-row: 1; display: flex; align-items: center; min-width: 0;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); position: relative; z-index: 5;
 }
 .hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) 28px; }
-.hl-canvas__flow { position: relative; min-width: 0; min-height: 0; }
-.hl-canvas--viewing { grid-template-rows: minmax(0, 1fr) var(--view-height, 34%); }
-.hl-inspector { grid-column: 2; grid-row: 1; border-left: 1px solid var(--border-strong); }
+.hl-canvas__flow { position: relative; min-width: 0; min-height: 0; grid-column: 1; grid-row: 2; }
+.hl-canvas--viewing { grid-template-rows: auto minmax(0, 1fr) var(--view-height, 34%); }
+.hl-canvas--viewing.hl-canvas--no-bottom { grid-template-rows: auto minmax(0, 1fr); }
+.hl-inspector { grid-column: 2; grid-row: 2; border-left: 1px solid var(--border-strong); }
 .hl-panel-header {
   display: flex; align-items: center; padding: 0 4px 0 14px;
   height: 32px; flex-shrink: 0; border-bottom: 1px solid var(--border);
@@ -531,7 +562,7 @@ body {
   font: inherit; background: transparent; border: none; color: var(--faint); cursor: pointer;
 }
 .hl-inspector__fold:hover { color: var(--ink); }
-.hl-view__bottom { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--border-strong); }
+.hl-view__bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
 .hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
 .hl-view__edge:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .hl-view__edge::after {
@@ -546,8 +577,11 @@ body {
 .hl-canvas--text { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) min(340px, 30%); }
 .hl-canvas--text.hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) 28px; }
 .hl-canvas--text .hl-inspector { grid-column: 3; }
+.hl-canvas--no-canvas .hl-canvas__flow, .hl-canvas--no-canvas .hl-text__edge { display: none; }
+.hl-canvas--no-canvas.hl-canvas--text { grid-template-columns: 0 minmax(0, 1fr) min(340px, 30%); }
+.hl-canvas--no-canvas.hl-canvas--text.hl-canvas--inspector-closed { grid-template-columns: 0 minmax(0, 1fr) 28px; }
 .hl-text {
-  grid-column: 2; grid-row: 1; position: relative; min-width: 0; min-height: 0;
+  grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; border-left: 1px solid var(--border-strong); background: var(--bg);
 }
 .hl-text__edge { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
