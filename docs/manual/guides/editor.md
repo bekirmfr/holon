@@ -35,6 +35,16 @@ flow or a deployment already has asks before that one is replaced.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each
   flow in it has **open in a tab**, which opens the flow as an unsaved copy to try.
 
+The top bar's **Clean | Terminal** (or **t**, anywhere) switches the interface. Terminal is one
+dark look, mono and square, with `[ ]` buttons, each pane's key in its header, and a status bar
+under the page: the flows and how many are live, what waits for a person, the run log's newest
+head and whether it is intact, and the keys worth knowing where you are. The choice is kept with
+your account, as the theme is.
+
+On a narrow screen the nav is a rail of icons; under 880 px a page's side columns go under it; on
+a phone the top bar's **☰** opens the nav as a drawer, and the editor shows one pane at a time,
+the canvas, the text or the Inspector, as the switcher in its bar says.
+
 A flow tab shows the flow's name, **•** when it has unsaved changes, and whether it is a
 **draft**, **saved** or **deployed**. Closing a tab with changes asks first.
 

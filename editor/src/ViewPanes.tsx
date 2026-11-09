@@ -1267,6 +1267,9 @@ export function Inspector({
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
       <div className="hl-panel-header">
         <span className="hl-panel-header__title">inspector</span>
+        <kbd className="hl-pane-key" aria-hidden="true">
+          i
+        </kbd>
         <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
       </div>
       <Tabs tabs={tabs} tab={tab} onTab={setTab} />

@@ -3,7 +3,7 @@
 // editor looks and which of its panes are hidden. Read back as pure functions, tested without a
 // browser.
 
-import { isTheme, type Theme } from "./look";
+import { isTheme, isUi, type Theme, type Ui } from "./look";
 
 export type Prefs = {
   /** Whether Getting started opens on start (absent: it does). */
@@ -12,6 +12,8 @@ export type Prefs = {
   notes?: string;
   /** How the editor looks (look.ts; absent: as the system says). */
   theme?: Theme;
+  /** Its interface, Clean or Terminal (look.ts; absent: Clean). */
+  ui?: Ui;
   /** Which of the editor's panes are hidden (`c i v b`; absent: all shown). The text is each
    *  tab's own (tabs.ts's TextState). */
   hidden?: EditorPane[];
@@ -37,6 +39,7 @@ export function readPrefs(raw: unknown): Prefs {
     ...(typeof r.welcome === "boolean" ? { welcome: r.welcome } : {}),
     ...(typeof r.notes === "string" ? { notes: r.notes } : {}),
     ...(isTheme(r.theme) ? { theme: r.theme } : {}),
+    ...(isUi(r.ui) ? { ui: r.ui } : {}),
     ...(hidden ? { hidden } : {}),
   };
 }

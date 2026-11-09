@@ -1014,3 +1014,236 @@ body {
 .hl-spark rect { fill: var(--accent); opacity: 0.55; }
 .hl-spark rect.hl-spark__bad { fill: var(--bad); opacity: 0.9; }
 @media (max-width: 880px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── The pages over the canvas (App.tsx): the room a page has ── */
+.hl-pagebox { position: absolute; inset: 0; z-index: 10; background: var(--bg); overflow: auto; padding: 24px; }
+
+/* ── The nav's icons, the phone's menu, the interface switch (ui/Shell.tsx) ── */
+.hl-nav__icon { flex: 0 0 16px; text-align: center; color: var(--faint); }
+.hl-nav__link[aria-current="page"] .hl-nav__icon { color: var(--accent); }
+.hl-nav__new { display: flex; align-items: center; gap: 8px; }
+.hl-nav__new .hl-nav__icon { color: inherit; }
+.hl-nav__scrim { display: none; }
+.hl-top__menu { display: none; font: inherit; font-size: 15px; line-height: 1; padding: 3px 7px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.hl-top__ui { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.hl-top__ui button { font: inherit; font-size: 12px; padding: 3px 8px; color: var(--muted); background: var(--bg); border: 0; cursor: pointer; }
+.hl-top__ui button + button { border-left: 1px solid var(--border); }
+.hl-top__ui button[aria-pressed="true"] { color: var(--ink); background: var(--sel); }
+/* A pane's key in its header, on show in the Terminal interface. */
+.hl-pane-key { display: none; }
+/* The status bar: the Terminal interface's own. */
+.hl-status {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 18px; height: 28px; padding: 0 14px;
+  overflow-x: auto; white-space: nowrap; font-size: 11px; color: var(--muted);
+  border-top: 1px solid var(--border); background: var(--bg);
+}
+.hl-status code { color: var(--accent); font: inherit; }
+.hl-status__warn { color: var(--warn); }
+.hl-status__bad { color: var(--bad); }
+.hl-status__keys { margin-left: auto; display: inline-flex; gap: 12px; }
+.hl-status kbd { font: inherit; color: var(--accent); }
+/* The editor's one-pane switcher, on a phone only. */
+.hl-onepane { display: none; }
+
+/* ── The Terminal interface (look.ts's data-ui="b", gaps-web.md G33): one dark look, mono,
+   square corners, [ ] buttons, ~/ titles, keys on show and a status bar. ── */
+:root[data-ui="b"] {
+  color-scheme: dark;
+  --bg: #07090d;
+  --surface: #0c1016;
+  --surface-2: #0a0d12;
+  --row: #10151c;
+  --sel: rgba(94, 231, 240, 0.09);
+  --border: #1a222d;
+  --border-strong: #26303d;
+  --ink: #d9e0ea;
+  --body: #b8c2cf;
+  --muted: #7f8b9b;
+  --faint: #56616f;
+  --faintest: #3a4452;
+  --accent: #5ee7f0;
+  --accent-ink: #07090d;
+  --ok: #3ed598;
+  --warn: #f2b544;
+  --warn-bg: rgba(242, 181, 68, 0.11);
+  --bad: #ff6e6e;
+  --bad-ink: #ff8a8a;
+  --bad-bg: rgba(255, 110, 110, 0.1);
+  --ext: #7fb2ff;
+  --db: #c792ea;
+  --add-bg: rgba(62, 213, 152, 0.08);
+  --del-bg: rgba(255, 110, 110, 0.08);
+  --overlay: rgba(0, 0, 0, 0.65);
+  --com: #56616f;
+  --kw: #c792ea;
+  --noun: #f0a35e;
+  --fn: #82aaff;
+  --param: #f78c6c;
+  --member: #9fd8e8;
+  --prop: #addb67;
+  --method: #ffcb6b;
+  --str: #e6c07b;
+  --op: #89ddff;
+  --num: #f78c6c;
+  --bool: #ff9cac;
+  --type-number: #f2b441;
+  --type-boolean: #46c8d8;
+  --type-text: #5fd38a;
+  --type-list: #b48cf0;
+  --type-product: #e0729a;
+  --type-sum: #5c8ee0;
+  --type-effect: #ff6f6f;
+  --type-any: #8295b0;
+  --type-record: #e8955a;
+  --type-bytes: #c8b48c;
+  --r: 2px;
+  --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+:root[data-ui="b"] body { font-size: 12.5px; }
+/* Square: every corner but a dot's and a wire's handle. */
+:root[data-ui="b"] *:not(.hl-host__dot):not(.react-flow__handle):not([class*="dot"]) { border-radius: 0 !important; }
+/* Buttons in brackets; the brackets aren't read out ("" after the slash). */
+[data-ui="b"] .hl-flow__button, [data-ui="b"] .hl-nav__new, [data-ui="b"] .hl-history__restore-go { background: transparent; }
+[data-ui="b"] .hl-flow__button::before, [data-ui="b"] .hl-nav__new::before, [data-ui="b"] .hl-history__restore-go::before { content: "["; content: "[" / ""; color: var(--faint); margin-right: 2px; }
+[data-ui="b"] .hl-flow__button::after, [data-ui="b"] .hl-nav__new::after, [data-ui="b"] .hl-history__restore-go::after { content: "]"; content: "]" / ""; color: var(--faint); margin-left: 2px; }
+[data-ui="b"] .hl-nav__new, [data-ui="b"] .hl-history__restore-go { color: var(--accent); background: var(--sel); border: 1px solid var(--accent); }
+[data-ui="b"] .hl-nav__new .hl-nav__icon { display: none; }
+[data-ui="b"] .hl-flow__button--go { color: var(--accent); background: var(--sel); border-color: var(--accent); }
+/* Titles: a page's is a path, a card's a corner. */
+[data-ui="b"] h1::before { content: "~/"; content: "~/" / ""; color: var(--faint); font-weight: 400; }
+[data-ui="b"] section[aria-label] > h2, [data-ui="b"] .hl-review-page__card h2 { text-transform: uppercase; letter-spacing: 0.12em; font-size: 10.5px; color: var(--muted); }
+[data-ui="b"] section[aria-label] > h2::before, [data-ui="b"] .hl-review-page__card h2::before { content: "┌ "; content: "┌ " / ""; color: var(--faint); }
+/* The nav: a rule per group, the page's key where the icon was, the current page marked. */
+[data-ui="b"] .hl-nav { background: var(--bg); padding: 10px 0; gap: 0; }
+[data-ui="b"] .hl-nav__brand { padding: 4px 14px 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+[data-ui="b"] .hl-nav__brand::before { content: "▲ "; content: "▲ " / ""; color: var(--accent); }
+[data-ui="b"] .hl-nav__new { margin: 0 10px 6px; }
+[data-ui="b"] .hl-nav__link { padding: 5px 14px; border-left: 2px solid transparent; font-size: 12.5px; }
+[data-ui="b"] .hl-nav__link[aria-current="page"] { border-left-color: var(--accent); color: var(--accent); background: var(--sel); }
+[data-ui="b"] .hl-nav__icon { display: none; }
+[data-ui="b"] .hl-nav__key { border: 0; padding: 0; color: var(--faint); }
+[data-ui="b"] .hl-nav__badge { background: none; color: var(--warn); padding: 0; }
+[data-ui="b"] .hl-nav__badge::before { content: "["; content: "[" / ""; }
+[data-ui="b"] .hl-nav__badge::after { content: "]"; content: "]" / ""; }
+[data-ui="b"] .hl-host { margin: auto 10px 0; }
+/* The top bar: the prompt for the palette; the theme is the interface's own. */
+[data-ui="b"] .hl-top { background: var(--bg); }
+[data-ui="b"] .hl-top__find::before { content: "›"; content: "›" / ""; color: var(--accent); font-size: 15px; line-height: 1; }
+[data-ui="b"] .hl-top__find { justify-content: flex-start; }
+[data-ui="b"] .hl-top__find kbd { margin-left: auto; }
+[data-ui="b"] .hl-top__theme { display: none; }
+[data-ui="b"] .hl-top__ui button[aria-pressed="true"] { color: var(--accent); }
+/* Chips: words in a colour, no pill. */
+[data-ui="b"] .hl-chip { border: 0; padding: 0; }
+[data-ui="b"] .hl-chip::before { content: "‹"; content: "‹" / ""; color: var(--faint); }
+[data-ui="b"] .hl-chip::after { content: "›"; content: "›" / ""; color: var(--faint); }
+[data-ui="b"] .hl-chip--pick[aria-pressed="true"] { color: var(--accent); background: var(--sel); }
+/* Tables, tabs, panes: small caps headers, the selection a rule. */
+[data-ui="b"] .hl-table th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+[data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
+[data-ui="b"] .hl-pane-key { display: inline; margin: 0 8px 0 -4px; font: inherit; font-size: 10.5px; color: var(--accent); }
+[data-ui="b"] .hl-pane-key::before { content: "["; content: "[" / ""; color: var(--faint); }
+[data-ui="b"] .hl-pane-key::after { content: "]"; content: "]" / ""; color: var(--faint); }
+[data-ui="b"] .hl-kbd { opacity: 0.9; color: var(--accent); border-color: var(--border-strong); }
+[data-ui="b"] .hl-panes__toggle[aria-pressed="true"] { color: var(--accent); background: var(--sel); }
+[data-ui="b"] .hl-seg__opt[aria-checked="true"] { color: var(--accent); background: var(--sel); }
+[data-ui="b"] .hl-toast { border: 1px solid var(--accent); box-shadow: none; }
+[data-ui="b"] .hl-pagebox {
+  background-color: var(--bg);
+  background-image: linear-gradient(rgba(94, 231, 240, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(94, 231, 240, 0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* ── Narrow (gaps-web.md G34). Under 1180 px the nav is a rail of icons (Terminal: the keys);
+   under 880 the pages' right columns stack under them; under 560 the nav is a drawer the top
+   bar's menu opens, the editor shows one pane at a time, and a table scrolls inside itself. ── */
+@media (max-width: 1180px) {
+  .hl-nav { flex-basis: 52px; padding-inline: 6px; align-items: stretch; }
+  .hl-nav__brand { padding-inline: 0; text-align: center; font-size: 0; }
+  .hl-nav__brand::after { content: "h"; content: "h" / ""; font-size: 14px; }
+  .hl-nav__mode { display: none; }
+  .hl-nav__new { justify-content: center; margin-inline: 0; padding-inline: 0; }
+  .hl-nav__key, .hl-host__address, .hl-host__version { display: none; }
+  .hl-nav__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .hl-nav__link { justify-content: center; position: relative; padding-inline: 0; }
+  .hl-nav__badge { position: absolute; top: 0; right: 0; margin: 0; }
+  .hl-host { grid-template-columns: auto; justify-content: center; padding: 6px; }
+  [data-ui="b"] .hl-nav { padding-inline: 0; }
+  [data-ui="b"] .hl-nav__brand { padding-inline: 0; }
+  [data-ui="b"] .hl-nav__brand::before { font-size: 13px; content: "▲"; content: "▲" / ""; }
+  [data-ui="b"] .hl-nav__brand::after { content: none; }
+  [data-ui="b"] .hl-nav__new { margin-inline: 4px; font-size: 0; }
+  [data-ui="b"] .hl-nav__new::before, [data-ui="b"] .hl-nav__new::after { font-size: 12px; }
+  [data-ui="b"] .hl-nav__new .hl-nav__icon { display: inline; font-size: 12px; flex-basis: auto; }
+  [data-ui="b"] .hl-nav__key { display: inline; font-size: 12px; }
+  [data-ui="b"] .hl-nav__link:not(:has(.hl-nav__key)) .hl-nav__icon { display: inline; }
+  [data-ui="b"] .hl-host { margin-inline: 6px; }
+  .hl-review-page__columns { grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
+  .hl-review-page__decide { grid-column: 1 / -1; position: static; }
+}
+@media (max-width: 880px) {
+  .hl-review-page__columns { grid-template-columns: minmax(0, 1fr); }
+  .hl-flow__split { grid-template-columns: minmax(0, 1fr); }
+  .hl-history__details { position: static; }
+  .hl-top__find { min-width: 0; }
+  .hl-top__find span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@media (max-width: 560px) {
+  .hl-nav {
+    position: fixed; inset: 0 auto 0 0; z-index: 1050; width: min(260px, 80vw); flex-basis: auto;
+    padding-inline: 10px; transform: translateX(-100%); transition: transform 0.15s; visibility: hidden;
+  }
+  .hl-nav--open { transform: none; visibility: visible; box-shadow: 0 0 24px rgba(0, 0, 0, 0.4); }
+  .hl-nav__scrim { display: block; position: fixed; inset: 0; z-index: 1040; background: var(--overlay); }
+  .hl-nav__brand { font-size: inherit; text-align: left; padding-inline: 8px; }
+  .hl-nav__brand::after { content: none; }
+  .hl-nav__mode { display: inline; }
+  .hl-nav__new { justify-content: flex-start; margin-inline: 4px; padding-inline: 10px; font-size: 12px; }
+  .hl-nav__key, .hl-host__address, .hl-host__version { display: revert; }
+  .hl-nav__label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; flex: 1; }
+  .hl-nav__link { justify-content: flex-start; padding-inline: 8px; }
+  .hl-nav__badge { position: static; margin-left: auto; }
+  .hl-host { grid-template-columns: auto 1fr; justify-content: stretch; padding: 8px; }
+  [data-ui="b"] .hl-nav { padding-inline: 0; }
+  [data-ui="b"] .hl-nav__brand { padding-inline: 14px; }
+  [data-ui="b"] .hl-nav__brand::before { content: "▲ "; content: "▲ " / ""; }
+  [data-ui="b"] .hl-nav__new { font-size: 12px; margin-inline: 10px; }
+  [data-ui="b"] .hl-nav__new .hl-nav__icon { display: none; }
+  [data-ui="b"] .hl-nav__link:not(:has(.hl-nav__key)) .hl-nav__icon { display: none; }
+  [data-ui="b"] .hl-nav__link { padding-inline: 14px; }
+  .hl-top { flex-wrap: wrap; padding: 6px 10px; gap: 6px; }
+  .hl-top__menu { display: inline-block; }
+  .hl-crumbs { flex: 1 1 0; overflow: hidden; }
+  .hl-crumbs ol { flex-wrap: nowrap; white-space: nowrap; }
+  .hl-crumbs li:not(:last-child) { display: none; }
+  .hl-crumbs li + li::before { content: none; }
+  .hl-top__find { order: 3; flex: 1 1 100%; }
+  .hl-top__find kbd { display: none; }
+  .hl-top__theme { display: none; }
+  .hl-pagebox { padding: 14px 12px; }
+  .hl-table { display: block; overflow-x: auto; max-width: 100%; }
+  .hl-manual__doc table { display: block; overflow-x: auto; max-width: 100%; }
+  .hl-status__keys { display: none; }
+  /* The editor: one pane at a time, as the switcher in its bar says. */
+  .hl-onepane { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-left: auto; }
+  .hl-onepane button { font: inherit; font-size: 11px; padding: 2px 8px; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
+  .hl-onepane button + button { border-left: 1px solid var(--border); }
+  .hl-onepane button[aria-pressed="true"] { color: var(--ink); background: var(--sel); }
+  .hl-canvas__bar { flex-wrap: wrap; gap: 6px; }
+  .hl-canvas__bar > :first-child { min-width: 0; flex: 1 1 100%; }
+  .hl-panes { display: none; }
+  .hl-canvas, .hl-canvas.hl-canvas--text, .hl-canvas.hl-canvas--inspector-closed, .hl-canvas.hl-canvas--no-canvas.hl-canvas--text { grid-template-columns: minmax(0, 1fr); }
+  .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector { grid-column: 1; grid-row: 2; border-left: 0; }
+  .hl-text__edge { display: none; }
+  .hl-canvas[data-pane="canvas"] > .hl-text, .hl-canvas[data-pane="canvas"] > .hl-inspector,
+  .hl-canvas[data-pane="text"] > .hl-canvas__flow, .hl-canvas[data-pane="text"] > .hl-inspector,
+  .hl-canvas[data-pane="inspector"] > .hl-canvas__flow, .hl-canvas[data-pane="inspector"] > .hl-text { display: none !important; }
+  .hl-canvas[data-pane="canvas"].hl-canvas--no-canvas > .hl-canvas__flow { display: block; }
+}
+@media (max-width: 560px) {
+  /* The palette, open, lies over the canvas's left; a node is dragged from it as before. */
+  .hl-work { position: relative; }
+  .hl-palette:not(.hl-palette--closed) { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(240px, 75vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
+  /* So do the tools and the deployment settings, over its right. */
+  .hl-deploy:not(.hl-deploy--closed) { position: absolute; inset: 0 0 0 auto; z-index: 20; width: min(320px, 85vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
+}

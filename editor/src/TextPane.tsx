@@ -455,6 +455,9 @@ export function TextPane({
       <div className="hl-text__edge" onPointerDown={onEdge} title="drag to resize" />
       <div className="hl-text__head">
         <span className="hl-text__title">Text</span>
+        <kbd className="hl-pane-key" aria-hidden="true">
+          x
+        </kbd>
         {readOnly ? <span className="hl-text__note">the deployed version, read only</span> : null}
         <span style={{ flex: 1 }} />
         {!readOnly && (

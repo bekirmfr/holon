@@ -29,6 +29,7 @@ export const KEYMAP: Binding[] = [
   { keys: ["F6", "shift+F6"], scope: "anywhere", does: "move to the next or previous pane" },
   { keys: ["ctrl+k", "/"], scope: "anywhere", does: "find a page, a flow or an action; : for a command" },
   { keys: ["?"], scope: "anywhere", does: "show these keys" },
+  { keys: ["t"], scope: "anywhere", does: "switch the interface: Clean or Terminal" },
   { keys: ["ctrl+s"], scope: "editor", does: "save the flow" },
   { keys: ["ctrl+d"], scope: "editor", does: "deploy it" },
   { keys: ["e"], scope: "editor", does: "edit the flow, or view its runs" },

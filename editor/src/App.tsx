@@ -83,7 +83,7 @@ import { KeysDialog, useKeys } from "./ui/Keys";
 import { CommandPalette } from "./ui/CommandPalette";
 import type { ColonCommand, Command } from "./commands";
 import { useHashRoute, type Navigate } from "./useHashRoute";
-import { applyTheme, storedTheme, useDark } from "./look";
+import { applyTheme, applyUi, storedTheme, storedUi, useDark, type Ui } from "./look";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
@@ -179,7 +179,9 @@ function Canvas({
   const showPane = useCallback((p: EditorPane, shown: boolean) => onPrefs({ ...prefs, hidden: withPane(prefs.hidden, p, shown) }), [prefs, onPrefs]);
   const inspectorOpen = paneShown("inspector");
   const onInspectorOpen = useCallback((open: boolean) => showPane("inspector", open), [showPane]);
+  // On a phone the side panels lie over the canvas (styles.css), so they start folded there.
   const [paletteOpen, setPaletteOpen] = useState(() => {
+    if (phone()) return false;
     try { return localStorage.getItem("holon.palette") !== "closed"; } catch { return true; }
   });
   const onPaletteOpen = useCallback((open: boolean) => {
@@ -194,6 +196,7 @@ function Canvas({
     try { localStorage.setItem("holon.deploy", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
   const [toolsPanelOpen, setToolsPanelOpen] = useState(() => {
+    if (phone()) return false;
     try { return localStorage.getItem("holon.tools") !== "closed"; } catch { return true; }
   });
   const onToolsPanelOpen = useCallback((open: boolean) => {
@@ -738,6 +741,15 @@ function Canvas({
     textPane.toggle();
   };
   const canView = deployedEntry !== undefined;
+  // On a phone (styles.css, under 560 px) the editor shows one pane at a time: the switcher in its
+  // bar picks which, opening it when it is closed.
+  const [onePane, setOnePane] = useState<"canvas" | "text" | "inspector">("canvas");
+  const showOnePane = (p: "canvas" | "text" | "inspector") => {
+    setOnePane(p);
+    if (p === "canvas" && !canvasShown) showPane("canvas", true);
+    if (p === "text" && !textPane.open) textPane.toggle();
+    if (p === "inspector" && !inspectorOpen) onInspectorOpen(true);
+  };
 
   // The flow's keys (keymap.ts): saved and deployed while it is edited, from the text too; its
   // mode and panes; its values and runs shown or hidden while viewed. Stepping is the bottom
@@ -807,6 +819,8 @@ function Canvas({
     for (const q of approvals.queue) if (q.version !== null) out.push({ label: `Approve ${q.slug} v${q.version}`, kind: "review", run: go({ kind: "review", slug: q.slug, version: q.version }) });
     for (const s of samples()) out.push({ label: `New from ${s.title}`, kind: "sample", run: () => void onOpenSample(s) });
     for (const theme of ["auto", "light", "dark"] as const) out.push({ label: `Theme: ${theme}`, kind: "look", run: () => start.onPrefs({ ...start.prefs, theme }) });
+    out.push({ label: "Interface: Clean", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "clean" }) });
+    out.push({ label: "Interface: Terminal", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "terminal" }) });
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1102,6 +1116,7 @@ function Canvas({
         .filter(Boolean)
         .join(" ")}
       style={textPane.open ? ({ "--text-width": `${textPane.pane.width}px` } as CSSProperties) : undefined}
+      data-pane={onePane}
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
@@ -1143,6 +1158,13 @@ function Canvas({
           }
           error={page === "canvas" ? deployError || listError : ""}
         />
+        <span className="hl-onepane" role="group" aria-label="pane shown">
+          {(["canvas", "text", "inspector"] as const).map((p) => (
+            <button key={p} aria-pressed={onePane === p} onClick={() => showOnePane(p)}>
+              {p}
+            </button>
+          ))}
+        </span>
       </div>
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
@@ -1217,16 +1239,7 @@ function Canvas({
           so the canvas is covered, never unmounted. The deployments list used to live in a
           bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
       {shown !== "canvas" && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 10,
-            background: "var(--bg)",
-            overflow: "auto",
-            padding: 24,
-          }}
-        >
+        <div className="hl-pagebox">
           {shown === "editor-home" && (
             <EditorHome
               flows={homeFlows}
@@ -1439,6 +1452,7 @@ function Editor({ me }: { me: Me }) {
     },
     F6: () => movePane(1),
     "shift+F6": () => movePane(-1),
+    t: () => onUi(ui === "terminal" ? "clean" : "terminal"),
   });
   // The command palette (ui/CommandPalette.tsx, its entries the canvas's): Ctrl+K, /, or the top bar.
   const [finding, setFinding] = useState(false);
@@ -1453,6 +1467,7 @@ function Editor({ me }: { me: Me }) {
         setPrefsState(p);
         // The account's look wins over this browser's.
         if (p.theme) applyTheme(p.theme);
+        if (p.ui) applyUi(p.ui);
         if (p.welcome !== false) {
           // Shown only if they are still where the editor started, at no address of their
           // own: prefs that arrive after they opened something else don't take them away from
@@ -1465,8 +1480,15 @@ function Editor({ me }: { me: Me }) {
   const onPrefs = useCallback((p: Prefs) => {
     setPrefsState(p);
     if (p.theme) applyTheme(p.theme);
+    if (p.ui) applyUi(p.ui);
     setPrefs(p).catch(() => undefined);
   }, []);
+  // The interface (look.ts): Clean, or Terminal; `t` switches, and says how to switch back.
+  const ui = prefs.ui ?? storedUi();
+  const onUi = (u: Ui) => {
+    onPrefs({ ...prefs, ui: u });
+    toast(u === "terminal" ? "Terminal interface: mono, square, keys on show. t to switch back." : "Clean interface. t for Terminal.");
+  };
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   // What each primitive does, from core: on each node, the palette and the component tab.
   const [docs, setDocs] = useState<Map<string, string>>(new Map());
@@ -1499,6 +1521,8 @@ function Editor({ me }: { me: Me }) {
       onWelcome={() => setPage("welcome")}
       theme={prefs.theme ?? storedTheme()}
       onTheme={(theme) => onPrefs({ ...prefs, theme })}
+      ui={ui}
+      onUi={onUi}
       waiting={waiting}
     >
       {keysShown && <KeysDialog onClose={() => setKeysShown(false)} />}
@@ -1527,6 +1551,9 @@ function Editor({ me }: { me: Me }) {
     </Shell>
   );
 }
+
+/** Whether the editor is as narrow as a phone (styles.css's 560 px). */
+const phone = () => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 560px)").matches;
 
 /** The panes F6 moves between, in the page's order: the side nav, the top bar, the canvas, its
  *  side panes and the labelled regions of the page shown. */
