@@ -71,8 +71,18 @@ async function sidebarChecks() {
   const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
   assert.equal(item.contextValue, "flow");
 
-  const [none] = await deployments.getChildren();
-  assert.match(none.label, /No deployments yet/);
+  // The deployment is listed; its recent runs are a group under it, and a run's record opens as JSON.
+  const deployed = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "hello"), "the deployment hello");
+  const runs = (await deployments.getChildren(deployed)).find((g) => g.label === "Recent runs");
+  assert.ok(runs, "a Recent runs group under the deployment");
+  const [run] = await eventually(async () => {
+    const children = await deployments.getChildren(runs);
+    return children.length > 0 ? children : null;
+  }, "the run of the call");
+  assert.match(run.label, /GET \/hello\/:name/);
+  await vscode.commands.executeCommand("holon.showRun", "hello", run.seq);
+  const record = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.scheme === "holon" && d.uri.path === `/run/hello/${run.seq}.json`), "the run's record");
+  assert.match(record.getText(), /"route": "GET \/hello\/:name"/);
 
   await vscode.commands.executeCommand("holon.showFlow", item);
   const text = await eventually(() => vscode.workspace.textDocuments.find((d) => d.uri.scheme === "holon" && d.uri.path === "/flow/hello.holon.ts"), "the flow's text as an editor");

@@ -48,6 +48,17 @@
     },
     "commands": [
       {
+        "command": "holon.approveGrant",
+        "title": "Approve",
+        "icon": "$(check)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.showRun",
+        "title": "Show run",
+        "category": "Holon"
+      },
+      {
         "command": "holon.refresh",
         "title": "Refresh",
         "icon": "$(refresh)",
@@ -111,6 +122,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "holon.approveGrant",
+          "when": "view == holon.deployments && viewItem == grant",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.approveGrant",
+          "when": "view == holon.deployments && viewItem == grant",
+          "group": "1_grant@1"
+        },
         {
           "command": "holon.showHistory",
           "when": "view == holon.deployments && viewItem == deployment",

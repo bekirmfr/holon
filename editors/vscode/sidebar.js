@@ -78,7 +78,8 @@ class Listing {
     return item;
   }
 
-  async getChildren() {
+  async getChildren(element) {
+    if (element) return element.loadChildren ? element.loadChildren() : element.childItems ?? [];
     try {
       const items = await this.load();
       return items.length > 0 ? items : [note(this.empty)];
@@ -105,14 +106,76 @@ function problem(error) {
   return item;
 }
 
+/** A deployment's groups: the grants its version asks for that nothing has approved yet, the runs
+ *  waiting for an event, and its latest runs. */
+async function deploymentChildren(slug) {
+  try {
+    const [log, waiting, grant] = await Promise.all([
+      holon(["runs", slug, "--last", "10"], { json: true }),
+      holon(["runs", slug, "--waiting"], { json: true }),
+      holon(["grant", slug], { json: true }),
+    ]);
+    const asks = (grant.manifest?.not_granted ?? []).map((item) => grantItem(slug, item));
+    const waits = (waiting.runs ?? []).map(waitingItem);
+    const runs = (log.entries ?? []).slice(-10).reverse().map((e) => runItem(slug, e));
+    return [group("Needs approval", asks, true), group("Waiting for an event", waits, true), group("Recent runs", runs, false)];
+  } catch (e) {
+    return [problem(e)];
+  }
+}
+
+function group(label, children, expanded) {
+  const state = children.length === 0 ? vscode.TreeItemCollapsibleState.None : expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed;
+  const item = new vscode.TreeItem(label, state);
+  item.description = children.length === 0 ? "none" : `${children.length}`;
+  item.iconPath = new vscode.ThemeIcon("folder");
+  item.childItems = children;
+  return item;
+}
+
+/** One run of the log: its route (or kind), its status and how long it took, a click opens its record. */
+function runItem(slug, e) {
+  const failed = Boolean(e.error) || (e.status ?? 0) >= 400;
+  const item = new vscode.TreeItem(`#${e.seq} ${e.route ?? e.kind}`, vscode.TreeItemCollapsibleState.None);
+  item.description = [e.status, `${e.duration_ms} ms`].filter((s) => s !== null && s !== undefined).join(", ");
+  item.iconPath = new vscode.ThemeIcon(failed ? "error" : "pass");
+  item.contextValue = "run";
+  item.seq = e.seq;
+  item.command = { command: "holon.showRun", title: "Show run", arguments: [slug, e.seq] };
+  return item;
+}
+
+/** A run parked for an event. Only the flow's own link can answer it, so this only says what it waits for. */
+function waitingItem(run) {
+  const waits = (run.waiting ?? []).map((w) => w.name).join(", ");
+  const item = new vscode.TreeItem(`${run.route ?? run.kind} (${run.run_id})`, vscode.TreeItemCollapsibleState.None);
+  item.description = `waits for ${waits}`;
+  item.tooltip = "The flow answers this through the link it gave the run. Holon can't answer it from here.";
+  item.iconPath = new vscode.ThemeIcon("watch");
+  return item;
+}
+
+/** A grant a version asks for and nothing has approved yet: approving it is the inline check button. */
+function grantItem(slug, grant) {
+  const item = new vscode.TreeItem(grant, vscode.TreeItemCollapsibleState.None);
+  item.description = "its version asks for it";
+  item.tooltip = "Approve it: the deployment may do what its version asks for, as you.";
+  item.iconPath = new vscode.ThemeIcon("shield");
+  item.contextValue = "grant";
+  item.slug = slug;
+  item.grant = grant;
+  return item;
+}
+
 function deploymentItem(d) {
-  const item = new vscode.TreeItem(d.slug, vscode.TreeItemCollapsibleState.None);
+  const item = new vscode.TreeItem(d.slug, vscode.TreeItemCollapsibleState.Collapsed);
   const errors = d.error_count ? `, ${d.error_count} error${d.error_count === 1 ? "" : "s"}` : "";
   item.description = `${d.status}${errors}`;
   item.tooltip = d.port ? `${d.slug}, on port ${d.port}` : d.slug;
   item.iconPath = new vscode.ThemeIcon(STATUS_ICONS[d.status] ?? "circle-outline");
   item.contextValue = "deployment";
   item.slug = d.slug;
+  item.loadChildren = () => deploymentChildren(d.slug);
   item.command = { command: "holon.showHistory", title: "Show history", arguments: [d.slug] };
   return item;
 }
@@ -161,9 +224,11 @@ class HolonFiles {
   }
 
   async read(uri) {
-    const [, kind, file] = uri.path.split("/");
+    const [, kind, ...rest] = uri.path.split("/");
+    const file = rest.join("/");
     try {
       if (kind === "history") return await holon(["history", file]);
+      if (kind === "run") return await runText(file);
       return await holon(["flows", "show", file.replace(/\.holon\.ts$/, "")]);
     } catch (e) {
       throw vscode.FileSystemError.Unavailable(e.message);
@@ -267,6 +332,36 @@ async function openText(kind, name) {
   flowFiles.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
   const doc = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+/** A run's record, as the server logged it: `holon:/run/<slug>/<seq>.json`. */
+async function runText(file) {
+  const [slug, name] = file.split("/");
+  const seq = Number(name.replace(/\.json$/, ""));
+  const log = await holon(["runs", slug, "--last", "200"], { json: true });
+  const entry = (log.entries ?? []).find((e) => e.seq === seq);
+  if (!entry) throw new Error(`run ${seq} isn't among the last 200 runs of ${slug}`);
+  return `${JSON.stringify(entry, null, 2)}\n`;
+}
+
+async function openRun(slug, seq) {
+  const uri = vscode.Uri.from({ scheme: SCHEME, path: `/run/${slug}/${seq}.json` });
+  flowFiles.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
+  const doc = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+/** Approves one grant a deployment's version asks for, as `holon grant --grant` does. */
+async function approveGrant(arg) {
+  const answer = await vscode.window.showWarningMessage(`Approve "${arg.grant}" for ${arg.slug}?`, { modal: true, detail: "The deployment may do what its version asks for, as you." }, "Approve");
+  if (answer !== "Approve") return;
+  try {
+    await holon(["grant", arg.slug, "--grant", arg.grant]);
+    vscode.window.setStatusBarMessage(`Holon: ${arg.grant} approved for ${arg.slug}`, 4000);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  }
+  refreshAll();
 }
 
 const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -530,6 +625,8 @@ function register(context) {
     vscode.commands.registerCommand("holon.showFlow", (arg) => openText("flow", named(arg))),
     vscode.commands.registerCommand("holon.openGraph", showGraph),
     vscode.commands.registerCommand("holon.deployFlow", deployFlow),
+    vscode.commands.registerCommand("holon.showRun", openRun),
+    vscode.commands.registerCommand("holon.approveGrant", approveGrant),
     vscode.commands.registerCommand("holon.run", (arg) => lifecycle("run", arg)),
     vscode.commands.registerCommand("holon.pause", (arg) => lifecycle("pause", arg)),
     vscode.commands.registerCommand("holon.stop", (arg) => lifecycle("stop", arg)),

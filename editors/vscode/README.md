@@ -30,6 +30,10 @@ views, read through the `holon` command with `--server` and `--json`:
 
 - **Deployments**: each deployment, its status and errors. Click one to open its history (the
   timeline `holon history` prints) as an editor; its right-click menu runs, pauses or stops it.
+  Expanding a deployment shows three groups: **Needs approval** (grants its version asks for that
+  nothing has approved; the check button approves one, `holon grant --grant`), **Waiting for an
+  event** (runs parked for a flow's own link, read-only), and **Recent runs** (the last ten; a click
+  opens its record as JSON, from `holon runs --json`).
 - **Flows**: each saved flow, with three icon buttons: **edit** (its text, as TypeScript), **graph**
   (its nodes with their ports, types and params, and the wires between them, in the editor's colours) and **deploy** (`holon deploy`, as the editor's Deploy does). Edit
   saves back to the server: `Ctrl+S` writes the flow with `holon flows save`, and a flow someone else

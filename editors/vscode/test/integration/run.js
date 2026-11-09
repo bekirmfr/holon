@@ -60,6 +60,9 @@ async function main() {
     const saved = path.join(savedDir, "hello.holon.ts");
     fs.writeFileSync(saved, SAVED_FLOW);
     execFileSync(holon, ["flows", "save", saved, "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
+    // Deployed, and called once, so the sidebar has a deployment with a run to show.
+    execFileSync(holon, ["deploy", saved, "--slug", "hello", "--approve", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
+    execFileSync(holon, ["call", "hello", "GET", "/hello/ada", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
 
     const failure = path.join(workspace, "failure.txt");
     await runTests({
