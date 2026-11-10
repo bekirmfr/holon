@@ -106,10 +106,11 @@ One **file per deployment**, not per version, in a folder beside the deployments
   first. `run=17` is that run's lines; `until=17` is every line up to the end of run 17's.
 - `holon logs <slug> [--level warn] [--run N | --until N] [--limit N] [--follow] [--json]`: the same;
   `--follow` keeps reading as the file grows.
-- **The console's Logs panel** (step 4), a terminal-style pane beside the runs: every line by
-  default, following; with a run selected, the lines up to that run, and a toggle narrows it to that
-  run's own. A level filter, and a line for "N lines were dropped here". `holon editor` has the
-  same panel in its own tabs.
+- **The console's Logs panel** (step 4, built): a terminal-style pane on a flow's page, in a Logs
+  tab beside Runs: every line, following as they come (or paused), with a level filter (all,
+  warnings, errors); a line's run is a link to the run. A run's page has a Log lines section: the
+  lines up to the end of that run, and a toggle narrows it to the run's own. A dropped line shows
+  dim, as "N lines were dropped". `holon editor` has the same panel in its own tabs (not built).
 
 ## 6. Permission
 
@@ -148,7 +149,7 @@ question 4.)
 2. **The sink**: the per-deployment file, rolling, lazy writer, caps, the in-memory fallback,
    removal with the deployment; done.
 3. **Reading**: the route and `holon logs`, an agent refused; the sample `traced-payout`; done.
-4. **The console panel** and the panel in `holon editor`.
+4. **The console panel** (done: the Logs tab and a run's Log lines) and the panel in `holon editor` (not yet).
 5. **`holon serve --log-stdout`** and the settings for the caps.
 6. **The agent's grant**: the manifest item, the deploy preview line, the `holon mcp` `logs` tool.
 

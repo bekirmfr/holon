@@ -76,6 +76,7 @@ const DEPLOYED_BY_OWN_TEST = new Set([
   "Price rollback (an earlier version's code, or its prices, back)",
   "Stock sheet (its state restored, its files not)",
   "Balance trail (which run changed a value)",
+  "Traced payout (log lines, kept apart from the runs)",
 ]);
 
 const SAMPLES_PER_TEST = 8;
@@ -2814,6 +2815,42 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
   await resourcesTab(page, "Feeds");
   await expect(page.getByText(/^listens on postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries \(the database ledger\)/)).toBeVisible();
   await expect(page.getByText(login)).toHaveCount(0);
+});
+
+test("traced-payout's log lines show on its Logs tab, filtered by level, and up to a run on the run's page", async ({ page, request }) => {
+  await openSample(page, "Traced payout (log lines, kept apart from the runs)");
+  const port = await deploy(page);
+  const payout = (id: string, amount: number) => request.post(`http://127.0.0.1:${port}/payout`, { data: { id, amount } });
+  expect((await payout("p-1", 250)).status()).toBe(200);
+  expect((await payout("p-2", 5000)).status()).toBe(409);
+
+  // Its Logs tab: every line, each with its level and its run.
+  await page.goto("/#traced-payout.logs");
+  const lines = page.getByRole("log", { name: "lines" });
+  await expect(lines).toContainText("payout asked p-1 250");
+  await expect(lines).toContainText("paying p-1");
+  await expect(lines).toContainText("over the usual limit p-2");
+  await expect(lines).not.toContainText("paying p-2");
+  // Warnings only.
+  const levels = page.getByRole("group", { name: "level" });
+  await levels.getByRole("button", { name: "Warnings" }).click();
+  await expect(lines).toContainText("over the usual limit p-2");
+  await expect(lines).not.toContainText("payout asked");
+
+  // A line names its run, and the run's page shows the lines up to its end, and its own on asking.
+  await lines.getByRole("link").first().click();
+  await expect(page.getByRole("article", { name: /^run \d+$/ })).toBeVisible();
+  const upTo = page.getByRole("log", { name: "lines" });
+  await expect(upTo).toContainText("payout asked p-1 250");
+  await expect(upTo).toContainText("over the usual limit p-2");
+  await page.getByLabel(/only run #\d+'s/).check();
+  await expect(upTo).toContainText("over the usual limit p-2");
+  await expect(upTo).not.toContainText("p-1");
+  // At phone width the run's lines still fit across.
+  const wide = page.viewportSize()!;
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize(wide);
 });
 
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {

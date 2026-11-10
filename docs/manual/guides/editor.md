@@ -202,13 +202,18 @@ and after the run, or after the step you are on.
 ## A flow's page
 
 A deployed flow has a page of its own (`#pulse`): its name and state, **Pause**, **Stop** or
-**Resume**, **Open in editor**, and five tabs, each with its own address (`#pulse.history`):
+**Resume**, **Open in editor**, and six tabs, each with its own address (`#pulse.history`):
 
 - **Status**: its last 24 hours, hour by hour, and its timings; where it runs (its port and
   triggers: `Http :8156`, `every 2s`, `on file inbox`, `action reset`); what it may do, since
   which version and approved by whom; its latest runs; its versions; and its actions, each with
   its box and **run** ([Actions](actions.md)).
 - **Runs**: its runs, newest first; one opens on a page of its own, step by step.
+- **Logs**: what its flow wrote with `console.log` and the rest, as they come, in a terminal-style
+  pane: a time, a level, the run that wrote it (a link to the run), and the text. A filter shows
+  warnings or errors only; **Following** keeps reading, and pauses. A run's page shows the lines up
+  to the end of that run, and **only run #N's** narrows them to its own. They are kept beside the
+  runs, not in them; `holon logs` reads the same ([`holon logs`](../reference/cli.md#holon-logs)).
 - **History**: what happened to it, runs and what was done to it (deploys, access, lifecycle),
   with a filter. A row says what happened, and what going back to it would do; **Go back**
   restores an earlier version or state ([Going back](deploying.md#going-back-to-an-earlier-version)).

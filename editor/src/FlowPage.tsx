@@ -4,6 +4,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { HistoryTab } from "./HistoryPane";
+import { LogsPane } from "./LogsPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
 import { RunDetail } from "./RunPage";
@@ -19,6 +20,7 @@ import { useFlowLog } from "./useFlowLog";
 const TABS: [FlowTab, string][] = [
   ["status", "Status"],
   ["runs", "Runs"],
+  ["logs", "Logs"],
   ["history", "History"],
   ["state", "State"],
   ["settings", "Settings"],
@@ -122,6 +124,8 @@ export function FlowPage({
             <RunDetail slug={slug} seq={run} navigate={navigate} />
           ) : tab === "runs" ? (
             <RunsTab slug={slug} navigate={navigate} />
+          ) : tab === "logs" ? (
+            <LogsPane slug={slug} navigate={navigate} />
           ) : tab === "state" ? (
             <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "history" ? (
