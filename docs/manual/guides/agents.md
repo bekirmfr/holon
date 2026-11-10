@@ -124,7 +124,7 @@ and the agent tells you so. In the editor:
    canvas, and *If approved*, what approving it does.
 3. Tick that you read it and press **Approve and deploy** if you agree. Set any secrets it needs
    in the flow's settings.
-4. Or **Decline…** it, saying why. The reason is kept on the flow's history, and the agent reads
+4. Or **Decline with a reason…** it, saying why. The reason is kept on the flow's history, and the agent reads
    it with `deployments` and the flow's name. The version stays saved, and what runs keeps
    running.
 

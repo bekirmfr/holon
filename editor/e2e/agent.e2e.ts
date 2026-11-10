@@ -158,11 +158,19 @@ test("an agent proposes the proposal sample with a why; a person declines it wit
     await expect(row).toContainText(why);
     await expect(row).toContainText("asked for in #payments");
     await expect(row).toContainText("2 new permissions");
+    // At phone width the list still fits across, the button that says it asks why with it.
+    const wide = page.viewportSize()!;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(row.getByRole("button", { name: `decline ${slug}` })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.setViewportSize(wide);
+    await expect(row.getByRole("button", { name: `decline ${slug}` })).toHaveText("Decline with a reason…");
     await row.getByRole("button", { name: `decline ${slug}` }).click();
     const dialog = page.locator('[aria-modal="true"]');
+    await expect(dialog).toContainText("Why it was declined");
     await expect(dialog).toContainText("the agent reads it through holon mcp");
     await dialog.locator("input").fill("use our own id service, not httpbin");
-    await dialog.getByRole("button", { name: "Decline this version" }).click();
+    await dialog.getByRole("button", { name: "Submit" }).click();
     await expect(page.getByText(`Declined ${slug} v1. The agent gets your note.`)).toBeVisible();
     await expect(row).toHaveCount(0);
     // The agent reads why.
@@ -175,6 +183,10 @@ test("an agent proposes the proposal sample with a why; a person declines it wit
     await page.getByRole("link", { name: `review ${slug}` }).click();
     await expect(page).toHaveURL(new RegExp(`#approvals\\.${slug}\\.v1$`));
     const decision = page.getByRole("complementary", { name: "decision" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(decision.getByRole("button", { name: "Decline with a reason…" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.setViewportSize(wide);
     await expect(decision.getByRole("group", { name: "proposal" })).toContainText("Why: ids from httpbin, for now");
     await expect(decision.getByRole("group", { name: "if approved" })).toContainText("v1 goes live.");
     await expect(decision.getByRole("group", { name: "if approved" })).toContainText("You grant 2 new permissions");
