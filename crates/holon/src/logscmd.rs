@@ -77,7 +77,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
 }
 
 /// One line as a terminal shows it: `21:15:33.419 WARN  run 3  careful`.
-fn shown(line: &Value) -> String {
+pub(crate) fn shown(line: &Value) -> String {
     let at = line["at"].as_u64().unwrap_or(0);
     let (secs, ms) = (at / 1000, at % 1000);
     let clock = format!("{:02}:{:02}:{:02}.{ms:03}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60);

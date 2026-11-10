@@ -81,6 +81,7 @@ pub fn describe_item(item: &str) -> String {
         "Clock" => "read the clock",
         "Random" => "use randomness",
         "PrivateAddresses" => "reach private addresses (this machine and its network)",
+        "AgentReadsLogs" => "let agents read its log lines",
         "SecretAccess" => "read secrets",
         "Spawn" => "start processes",
         other => other,
@@ -235,6 +236,7 @@ mod tests {
         assert_eq!(describe_item("NetworkIngress"), "receive requests");
         assert_eq!(describe_item(r#"Action("reset")"#), "can be run by hand: reset");
         assert_eq!(describe_item(r#"AgentRuns("reset")"#), "let agents run its action reset");
+        assert_eq!(describe_item("AgentReadsLogs"), "let agents read its log lines");
         assert_eq!(describe_item(r#"Unrecorded("GET /health")"#), "keep runs of GET /health out of its log, failed or not (they are counted)");
         assert_eq!(describe_item("Something(new)"), "Something(new)");
     }

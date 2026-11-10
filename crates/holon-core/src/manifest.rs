@@ -32,6 +32,7 @@ pub fn manifest_items(
     private_addresses: bool,
     agents: &BTreeSet<String>,
     unrecorded: &BTreeSet<String>,
+    agent_logs: bool,
 ) -> BTreeSet<String> {
     // A log line reaches nothing outside the host (its own log folder), so it is no permission a
     // person approves: the capability is named in what a flow may do, not asked for.
@@ -48,6 +49,10 @@ pub fn manifest_items(
     // The actions agents may run, each a grant of its own (docs/L4s/triggers-L4.md §5).
     for action in agents {
         items.insert(format!("AgentRuns({action:?})"));
+    }
+    // Whether agents may read its log lines: one grant, `AgentReadsLogs` (docs/L4s/logs-L4.md §6).
+    if agent_logs {
+        items.insert("AgentReadsLogs".into());
     }
     // The handlers whose runs are kept out of the log, each approved by its label
     // (docs/L4s/request-path-L4.md, C5): `Unrecorded("GET /health")`.
@@ -85,10 +90,11 @@ pub enum PermissionKind {
 
 /// `item`'s kind, given what the author marked `optional` and the unit's `trigger`: optional only
 /// when marked so, and its trigger never is. Letting agents run an action (`AgentRuns("reset")`)
-/// always is: without it the flow runs, and only agents are refused. So is keeping a handler's
-/// runs out of the log (`Unrecorded("GET /health")`): without it they are recorded.
+/// always is: without it the flow runs, and only agents are refused. So is letting agents read its
+/// log lines (`AgentReadsLogs`), and keeping a handler's runs out of the log
+/// (`Unrecorded("GET /health")`): without it they are recorded.
 pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<&str>) -> PermissionKind {
-    if item.starts_with("AgentRuns(") || item.starts_with("Unrecorded(") {
+    if item.starts_with("AgentRuns(") || item == "AgentReadsLogs" || item.starts_with("Unrecorded(") {
         return PermissionKind::Optional;
     }
     if Some(item) != trigger && optional.contains(item) {
@@ -131,10 +137,11 @@ mod tests {
             true,
             &BTreeSet::from(["reset".to_string()]),
             &BTreeSet::from(["GET /health".to_string()]),
+            true,
         );
         assert_eq!(
             items.into_iter().collect::<Vec<_>>(),
-            ["AgentRuns(\"reset\")", "Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")", "Unrecorded(\"GET /health\")"]
+            ["AgentReadsLogs", "AgentRuns(\"reset\")", "Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")", "Unrecorded(\"GET /health\")"]
         );
     }
 
@@ -151,6 +158,7 @@ mod tests {
         assert_eq!(permission_kind("Clock", &optional, t), PermissionKind::Required);
         assert_eq!(permission_kind("AgentRuns(\"reset\")", &BTreeSet::new(), t), PermissionKind::Optional, "a flow runs without agents");
         assert_eq!(permission_kind("Unrecorded(\"GET /health\")", &BTreeSet::new(), t), PermissionKind::Optional, "and without keeping a handler out of its log");
+        assert_eq!(permission_kind("AgentReadsLogs", &BTreeSet::new(), t), PermissionKind::Optional, "and without letting agents read its lines");
         assert_eq!(permission_kind("NetworkIngress", &optional, t), PermissionKind::Required, "a trigger even when marked");
     }
 

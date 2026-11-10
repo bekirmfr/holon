@@ -240,6 +240,23 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
+            "name": "logs",
+            "title": "A flow's log lines",
+            "description": "What a deployed flow wrote with console.log, info, debug, warn and error, oldest first, one line each: when, its level, the run that wrote it, and the text. They are kept beside the runs, not in them. Only where a person let agents read them (the deploy settings' \"agents may read its logs\", which asks for AgentReadsLogs): otherwise this is refused, and the person is the one to ask.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "level": { "type": "string", "enum": ["warn", "error"], "description": "only this level and louder (default every line)" },
+                    "run": { "type": "integer", "minimum": 0, "description": "a run's number: the lines up to the end of that run" },
+                    "own": { "type": "boolean", "description": "with run, only the lines that run wrote" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "the newest this many (default 50)" }
+                },
+                "required": ["slug"]
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
             "name": "state",
             "title": "A deployment's state",
             "description": "What a deployed flow keeps now: each state value, as the language writes it, and its collections by name. With a collection, its items (key and value), 50 at a time from a key on; with a key too, that one item.",
@@ -332,6 +349,7 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
+        "logs" => logs(&*connect()?, arg(args, "slug")?, args),
         "state" => state(&*connect()?, arg(args, "slug")?, args),
         "history" => {
             let last = args.get("last").and_then(Value::as_u64).unwrap_or(20).clamp(1, 1000);
@@ -742,6 +760,24 @@ fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
         }
     }
     Ok(out.join("\n"))
+}
+
+/// `slug`'s log lines, as `holon logs` prints them: oldest first, at a level or louder, up to a run's end
+/// or only its own. The server refuses an agent where no grant lets it (`AgentReadsLogs`).
+fn logs(api: &dyn Api, slug: &str, args: &Value) -> Result<String, String> {
+    let mut asked = format!("limit={}", args.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 500));
+    if let Some(level) = args.get("level").and_then(Value::as_str).filter(|l| matches!(*l, "warn" | "error")) {
+        asked.push_str(&format!("&level={level}"));
+    }
+    if let Some(run) = args.get("run").and_then(Value::as_u64) {
+        asked.push_str(&format!("&{}={run}", if args.get("own").and_then(Value::as_bool) == Some(true) { "run" } else { "until" }));
+    }
+    let answer = json_of(api, "GET", &format!("/deployments/{}/logs?{asked}", seg(slug)), None)?;
+    let lines = answer.get("lines").and_then(Value::as_array).cloned().unwrap_or_default();
+    if lines.is_empty() {
+        return Ok(format!("\"{slug}\" has written no lines (console.log in its flow writes them)."));
+    }
+    Ok(lines.iter().map(crate::logscmd::shown).collect::<Vec<_>>().join("\n"))
 }
 
 /// `slug`'s state, as `holon state` prints it; or one of its collections' items.
@@ -1426,6 +1462,57 @@ mod tests {
         assert_eq!(person.send("POST", "/deployments/ticker/stop", None).unwrap().0, 200);
     }
 
+    /// An agent reads a flow's log lines only as its grant lets agents: a person asks for it (the deploy
+    /// settings' `agent_logs`) and approves `AgentReadsLogs`; taking it back refuses the agent again and
+    /// leaves the flow running. A person reads them either way.
+    #[test]
+    fn an_agent_reads_log_lines_only_as_its_grant_lets_agents() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let text = include_str!("../../holon-author/samples/traced-payout.holon.ts").replace("port: 8147", "port: 18261");
+        let plan = agent::plan(&text).unwrap();
+        for unit in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        }
+        let deploy_with = |agent_logs: bool| -> Result<Value, String> {
+            let requirements = json!({ "agent_logs": agent_logs });
+            let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "traced-payout", "unit": plan.unit, "requirements": requirements }))))?;
+            let ask = json!({ "slug": "traced-payout", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "document": plan.document });
+            json_of(&person, "POST", "/deploy", Some(Body::Json(ask)))?;
+            Ok(preview)
+        };
+        let pay = |id: &str, amount: u64| tool_as(&person, "call", json!({ "slug": "traced-payout", "method": "post", "path": "/payout", "body": { "id": id, "amount": amount } })).unwrap();
+
+        // Without the grant, a person reads the lines and an agent is refused them, and told who lets it.
+        deploy_with(false).unwrap();
+        pay("p-1", 250);
+        pay("p-2", 5000);
+        let read = tool_as(&person, "logs", json!({ "slug": "traced-payout" })).unwrap();
+        assert!(read.contains("payout asked p-1 250") && read.contains("WARN") && read.contains("over the usual limit p-2"), "a person reads them: {read}");
+        let refused = tool_as(&agent, "logs", json!({ "slug": "traced-payout" })).unwrap_err();
+        assert!(refused.contains("agents may not read") && refused.contains("agents may read its logs"), "{refused}");
+
+        // Asked for, the preview has a person approve it; granted, the agent reads them, filtered as asked.
+        let preview = deploy_with(true).unwrap();
+        assert!(preview["needs_approval"].as_array().unwrap().contains(&json!("AgentReadsLogs")), "a person approves it: {preview}");
+        let read = tool_as(&agent, "logs", json!({ "slug": "traced-payout" })).unwrap();
+        assert!(read.contains("payout asked p-1 250") && read.contains("over the usual limit p-2"), "{read}");
+        let warned = tool_as(&agent, "logs", json!({ "slug": "traced-payout", "level": "warn" })).unwrap();
+        assert!(warned.contains("over the usual limit p-2") && !warned.contains("payout asked"), "{warned}");
+        let own = tool_as(&agent, "logs", json!({ "slug": "traced-payout", "run": 0, "own": true })).unwrap();
+        assert!(own.contains("payout asked p-1 250") && !own.contains("p-2"), "{own}");
+
+        // Taken back, the agent is refused again, and the flow runs on.
+        json_of(&person, "POST", "/deployments/traced-payout/grant", Some(Body::Json(json!({ "revoke": ["AgentReadsLogs"] })))).unwrap();
+        assert!(tool_as(&agent, "logs", json!({ "slug": "traced-payout" })).unwrap_err().contains("agents may not read"));
+        assert!(state.deployments.lock().unwrap()["traced-payout"].life.status == crate::lifecycle::Status::Running, "taken back, it runs on");
+        assert!(tool_as(&person, "logs", json!({ "slug": "traced-payout" })).is_ok(), "a person reads them either way");
+        assert_eq!(person.send("POST", "/deployments/traced-payout/stop", None).unwrap().0, 200);
+    }
+
     /// An agent's deploy that asks to keep a handler's runs out of the log stops for a person, who
     /// approves `Unrecorded("GET /hello/:name")` by its words; once deployed, a call to it says its
     /// run was counted, not logged (docs/L4s/request-path-L4.md, C5).
@@ -1826,7 +1913,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "deployments", "flows", "runs", "state", "explain", "history", "restore"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "deployments", "flows", "runs", "logs", "state", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

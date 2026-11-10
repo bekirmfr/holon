@@ -38,6 +38,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "WebSocket" => ("triggers", "websocket", arg, s("hold connections")),
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
+        "AgentReadsLogs" => ("other", "log", s("its lines"), s("read by agents")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
         "Approval" => match arg.split_once('/') {
             Some((name, "1")) => ("triggers", "approval", name.to_string(), s("a person approves")),

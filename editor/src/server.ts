@@ -536,6 +536,9 @@ export type Requirements = {
   /** The actions agents may run (`action reset`'s `reset`): each is `AgentRuns("reset")`, a
    *  grant a person approves and can take back. A person runs any of them either way. */
   agents?: string[];
+  /** Whether agents may read its log lines: `AgentReadsLogs`, a grant a person approves and can
+   *  take back. A person reads them either way. */
+  agent_logs?: boolean;
 };
 
 /** `POST /deploy/preview` — what deploying would ask for, without deploying. */

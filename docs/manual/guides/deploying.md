@@ -81,6 +81,7 @@ open and deploy ([Working with agents](agents.md)).
 | private addresses | whether it may call this machine and its network (only if the policy allows it) |
 | permissions | which of its optional needs to grant |
 | agents may run | for a flow with actions, a box for each: ticked, an agent may run it, which asks for `AgentRuns("name")` ([Who may run an action](../reference/permissions.md#who-may-run-an-action)) |
+| agents may read its logs | for a flow that writes lines with `console.log`: ticked, an agent may read them, which asks for `AgentReadsLogs` ([Who may read a flow's log lines](../reference/permissions.md#who-may-read-a-flows-log-lines)) |
 | secrets | the secrets it reads, each set, replaced or removed |
 
 A limit above the host's default needs approval; one above the host's ceiling can't be granted.

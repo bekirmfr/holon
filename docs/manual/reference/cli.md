@@ -412,8 +412,9 @@ The host keeps them beside the deployment's runs: none is an effect a run perfor
 lines run N wrote, `--until N` every line up to the end of run N's; `--limit N` the newest N (200
 if left out); `--follow` keeps reading as new lines come; `--json` prints each line as JSON. A
 deployment keeps three files of 2 MB by default (`holon serve --log-size`, `--log-files`): the oldest
-lines go first, and a line says when some were dropped. A person signed in reads them. An agent, `holon mcp`, is refused: no grant lets one read a
-deployment's logs yet.
+lines go first, and a line says when some were dropped. A person signed in reads them. An agent, `holon mcp`, only where the deployment's grant lets agents
+(`AgentReadsLogs`, asked for by the deploy settings' **agents may read its logs**, [permissions](permissions.md#who-may-read-a-flows-log-lines)):
+its `logs` tool answers, and otherwise is refused.
 
 ### `holon decide`
 

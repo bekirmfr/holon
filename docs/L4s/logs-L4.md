@@ -128,13 +128,16 @@ is not asked for at deploy, though the deploy preview says the flow writes lines
 **Reading** is a person's: anyone signed in who may read the deployment reads its lines through the
 console and `holon logs`, as they read its runs. **An agent**, `holon mcp` and anything that asks
 as an agent, **reads them only by a grant**: lines hold what a flow chose to say, and an agent
-reading a deployment's runs is not an agent reading its logs. Until the grant exists (§8, step 6)
-the route refuses an agent (403).
+reading a deployment's runs is not an agent reading its logs. Without the grant the route refuses an
+agent (403), and says who lets it.
 
 The grant is the deployer's to ask for and a person's to approve, as `agents may run <action>` is
-(`AgentRuns`): an item in the manifest, shown in the deploy preview as "agents may read its logs",
-and held per deployment. `holon mcp` gets a `logs` tool that answers only where it holds. (Open
-question 4.)
+(`AgentRuns`): the requirement `agent_logs` in the deploy settings (a box, **agents may read its logs**, for a
+flow that writes lines) makes one manifest item, `AgentReadsLogs`, which the deploy preview has a person approve
+("let agents read its log lines"), optional (the flow runs without it), held per deployment and taken back like
+any grant. As `AgentRuns` is, it is asked for in the deploy settings only: the CLI and `holon mcp` deploy from
+the flow's text, which can't declare it. `holon mcp` has a `logs` tool (`slug`, `level`, `run`, `own`, `limit`)
+that reads through the same route, so the same grant answers it.
 
 ## 7. Samples and tests
 
@@ -161,7 +164,8 @@ question 4.)
    section); done.
 5. **`holon serve --log-stdout`** and the settings for the caps (`--log-size`, `--log-files`,
    `--log-rate`, and `HOLON_LOG_*`); done.
-6. **The agent's grant**: the manifest item, the deploy preview line, the `holon mcp` `logs` tool.
+6. **The agent's grant**: the manifest item `AgentReadsLogs`, the deploy settings' box, the route's check and
+   the `holon mcp` `logs` tool; done.
 
 ## 9. Open questions
 
@@ -174,9 +178,8 @@ question 4.)
    redactor writes a secret's value as a mark for what taint misses. Whether to refuse the call at
    compile time instead, as a secret into a request to a host that isn't granted it is refused, is
    open.
-4. **The grant's shape**: one item per deployment (`agents may read its logs`), or per level? And
-   whether `holon mcp`'s `logs` tool reads through the same route. To settle with the `holon mcp`
-   side (step 6).
+4. ~~**The grant's shape.**~~ One item per deployment, not per level: `AgentReadsLogs`; and `holon mcp`'s `logs`
+   tool reads through the same route, so one check serves both.
 5. ~~**The caps.**~~ The server's settings, by flags and `HOLON_LOG_*` variables, with the old
    constants as their defaults; a flow's own caps are not planned.
 6. **Does a line outlive a redeploy?** Yes, built so: the file is the deployment's, and each line

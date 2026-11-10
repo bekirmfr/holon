@@ -356,14 +356,17 @@ fn append(dir: &Path, slug: &str, bytes: &[u8], caps: &Caps) -> std::io::Result<
 
 /// `GET /deployments/<slug>/logs?level=warn&run=17&until=17&after=<at>&limit=200`: a deployment's
 /// lines, oldest first (docs/L4s/logs-L4.md §5). A person signed in reads them. An agent reads
-/// them only where the deployment's grant lets agents (§6): no grant gives that yet, so none does.
+/// them only where the deployment's grant lets agents (§6): `AgentReadsLogs`, which a person approves.
 pub(crate) fn handle_get_logs(state: &crate::AppState, slug: &str, caller: &crate::access::Caller, request: &rouille::Request) -> rouille::Response {
     use crate::http::err;
     if !state.deployments.lock().unwrap().contains_key(slug) {
         return err(404, format!("no deployment {slug:?}"));
     }
     if caller.role == Some(crate::access::Role::Agent) {
-        return err(403, "an agent reads a deployment's logs only where its grant lets agents, and none does yet (docs/L4s/logs-L4.md)");
+        let granted = state.deployments.lock().unwrap().get(slug).is_some_and(|d| d.grant.items.iter().any(|i| i == "AgentReadsLogs"));
+        if !granted {
+            return err(403, format!("agents may not read {slug:?}'s log lines: a person lets them, under \"agents may read its logs\" in its deploy settings"));
+        }
     }
     let number = |name: &str| request.get_param(name).and_then(|v| v.parse::<u64>().ok());
     let query = Query {

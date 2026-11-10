@@ -317,6 +317,10 @@ pub(crate) struct Requirements {
     /// C5). Read from the unit (`with_unrecorded`), never taken from what a client sends.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) unrecorded: BTreeSet<String>,
+    /// Whether agents may read its log lines (`holon mcp`'s `logs`): an item a person grants,
+    /// `AgentReadsLogs`; off unless asked for, and taken back like any grant (docs/L4s/logs-L4.md §6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) agent_logs: bool,
 }
 
 impl Requirements {
@@ -367,7 +371,7 @@ impl Manifest {
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
         let r = &self.requirements;
-        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded)
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded, r.agent_logs)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
