@@ -74,7 +74,7 @@ pub(crate) fn agent_req(method: &str, url: &str, body: Vec<u8>) -> Request {
 fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
     headers.extend(more);
-    if method == "POST" {
+    if matches!(method, "POST" | "PATCH") {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
         headers.push(("Content-Type".to_string(), ty.to_string()));
@@ -2243,7 +2243,8 @@ export const pay = action(async (order) => {
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
     let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let ci = accounts.create_token("ci", access::Role::Editor, "ada").unwrap().0;
+    accounts.add("ci", crate::accounts::Kind::Service, access::Role::Editor, "ada", "ada").unwrap();
+    let ci = accounts.create_token("ci", "CI on GitHub", "ada").unwrap().0;
     state.access = access::Access::new(accounts, vec![], vec![]);
     let decide = |token: &str, agent: bool, run: &str, body: serde_json::Value| {
         let url = format!("/deployments/payouts/runs/{run}/decide");
@@ -2265,7 +2266,7 @@ export const pay = action(async (order) => {
     assert_eq!(decide(&cy, false, &ids[0], approve.clone()).0, 403, "a viewer only reads");
     let (code, said) = decide(&ci, false, &ids[0], approve.clone());
     assert_eq!(code, 403);
-    assert!(said.contains("token:ci is an API token, a script, not a person"), "{said}");
+    assert!(said.contains("ci is a service, a script, not a person"), "{said}");
     assert_eq!(decide(&ada, true, &ids[0], approve.clone()).0, 403, "an agent never decides");
     let (code, said) = decide(&ada, false, &ids[0], approve.clone());
     assert_eq!(code, 200, "{said}");
@@ -2315,15 +2316,25 @@ export const pay = action(async (order) => {
     assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
 }
 
-/// Who may decide an approval: a person by their account's name, the OS user's local admin by the
-/// name it runs as; not an agent, a viewer, an API token, or anyone on a server without accounts.
+/// Who may decide an approval: a person by their name, the OS user's local admin by the name it
+/// runs as; not an agent, a service, a viewer, or anyone on a server without accounts.
 #[test]
 fn only_a_person_decides_an_approval() {
-    let caller = |name: Option<&str>, role: Option<access::Role>| access::Caller { name: name.map(String::from), role };
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(access::Role::Editor))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
-    for (name, role) in [(Some("ada (agent)"), Some(access::Role::Agent)), (Some("cy"), Some(access::Role::Viewer)), (Some("token:ci"), Some(access::Role::Editor)), (None, None)] {
-        assert!(durable::decider(&caller(name, role)).is_err(), "{name:?}");
+    use crate::accounts::Kind;
+    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    let refused = [
+        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude is an agent"),
+        (Some("ci"), Some(Kind::Service), Some(access::Role::Editor), "ci is a service"),
+        (Some("ada (agent)"), Some(Kind::Person), Some(access::Role::Agent), "an agent may not decide"),
+        (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "a viewer only reads"),
+        (None, None, None, "no accounts"),
+    ];
+    for (name, kind, role, why) in refused {
+        let said = durable::decider(&caller(name, kind, role)).unwrap_err();
+        assert!(said.contains(why), "{name:?}: {said}");
     }
 }
 
@@ -4803,26 +4814,51 @@ fn accounts_through_the_routes() {
     assert_eq!(call("GET", "/flows", null.clone(), Some(&ada)).status_code, 200);
 
     // An invite: the link's holder sets their password and is signed in, as a viewer.
-    let invite = body_json(call("POST", "/admin/users", serde_json::json!({ "name": "cy", "role": "viewer" }), Some(&ada)))["invite"].as_str().unwrap().to_string();
+    let invite = body_json(call("POST", "/people", serde_json::json!({ "name": "cy", "kind": "person", "role": "viewer" }), Some(&ada)))["invite"].as_str().unwrap().to_string();
     assert_eq!(body_json(call("GET", &format!("/auth/invite?token={invite}"), null.clone(), None))["name"], "cy");
     let cy = body_json(call("POST", "/auth/invite", serde_json::json!({ "token": invite, "password": pw }), None))["token"].as_str().unwrap().to_string();
-    assert_eq!(body_json(call("GET", "/auth/me", null.clone(), Some(&cy)))["role"], "viewer");
+    let me = body_json(call("GET", "/auth/me", null.clone(), Some(&cy)));
+    assert_eq!((&me["kind"], &me["role"]), (&serde_json::json!("person"), &serde_json::json!("viewer")));
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 403);
-    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&cy)).status_code, 403);
+    assert_eq!(call("GET", "/people", null.clone(), Some(&cy)).status_code, 403);
     // Signing in again, with the password cy set; then out.
     let again = body_json(call("POST", "/auth/sign-in", serde_json::json!({ "name": "cy", "password": pw }), None))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&again)).status_code, 204);
     assert_eq!(call("GET", "/flows", null.clone(), Some(&again)).status_code, 401);
 
-    // An admin makes cy an editor; an API token for CI writes, never the admin panel.
-    assert_eq!(body_json(call("POST", "/admin/users/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
+    // An admin makes cy an editor; a service for CI writes with its token, never managing people.
+    assert_eq!(body_json(call("PATCH", "/people/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 200);
-    let ci = body_json(call("POST", "/admin/tokens", serde_json::json!({ "label": "ci", "role": "editor" }), Some(&ada)))["token"].as_str().unwrap().to_string();
+    let added = body_json(call("POST", "/people", serde_json::json!({ "name": "ci", "kind": "service", "role": "editor" }), Some(&ada)));
+    assert_eq!((&added["kind"], &added["owner"], &added["tokens"]), (&serde_json::json!("service"), &serde_json::json!("ada"), &serde_json::json!([])), "owned by whoever added it: {added}");
+    assert_eq!(call("POST", "/people", serde_json::json!({ "name": "ops", "kind": "service", "role": "admin" }), Some(&ada)).status_code, 400, "a service is never an admin");
+    let ci = body_json(call("POST", "/people/ci/tokens", serde_json::json!({ "label": "CI on GitHub" }), Some(&ada)))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "y", "document": {} }), Some(&ci)).status_code, 200);
-    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&ci)).status_code, 403);
+    assert_eq!(call("GET", "/people", null.clone(), Some(&ci)).status_code, 403);
+    let me = body_json(call("GET", "/auth/me", null.clone(), Some(&ci)));
+    assert_eq!((&me["name"], &me["kind"], &me["owner"]), (&serde_json::json!("ci"), &serde_json::json!("service"), &serde_json::json!("ada")));
     let activity = body_json(call("GET", "/activity", null.clone(), Some(&ada)));
-    let saved_by_ci = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "token:ci");
+    let saved_by_ci = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "ci");
     assert!(saved_by_ci, "{activity}");
+
+    // An agent cy owns: cy makes and revokes its tokens, not the service's ada owns.
+    call("POST", "/people", serde_json::json!({ "name": "claude", "kind": "agent", "role": "agent", "owner": "cy" }), Some(&ada));
+    let made = body_json(call("POST", "/people/claude/tokens", serde_json::json!({ "label": "Claude Code" }), Some(&cy)));
+    let (claude, id) = (made["token"].as_str().unwrap().to_string(), made["entry"]["id"].as_str().unwrap().to_string());
+    assert_eq!(body_json(call("GET", "/auth/me", null.clone(), Some(&claude)))["name"], "claude");
+    assert_eq!(body_json(call("GET", "/people/claude/tokens", null.clone(), Some(&cy))).as_array().unwrap().len(), 1);
+    assert_eq!(call("POST", "/people/ci/tokens", serde_json::json!({ "label": "mine now" }), Some(&cy)).status_code, 403);
+    assert_eq!(call("POST", "/people/nobody/tokens", serde_json::json!({ "label": "x" }), Some(&cy)).status_code, 403);
+    assert_eq!(call("POST", "/people/claude/tokens", serde_json::json!({ "label": "x" }), Some(&claude)).status_code, 403, "an agent makes no tokens");
+    assert_eq!(call("DELETE", &format!("/people/claude/tokens/{id}"), null.clone(), Some(&cy)).status_code, 204);
+    assert_eq!(call("GET", "/flows", null.clone(), Some(&claude)).status_code, 401);
+    // cy owns claude, so stays until claude has another owner.
+    assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 400);
+    assert_eq!(body_json(call("PATCH", "/people/claude", serde_json::json!({ "owner": "ada" }), Some(&ada)))["owner"], "ada");
+    assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 204);
+    let listed = body_json(call("GET", "/people", null.clone(), Some(&ada)));
+    let kinds: Vec<_> = listed.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["kind"].as_str().unwrap())).collect();
+    assert_eq!(kinds, [("ada", "person"), ("ci", "service"), ("claude", "agent")]);
 }
 
 /// The local token (local.rs) is the OS user's admin, before setup and after, named in the
@@ -4844,7 +4880,10 @@ fn the_local_token_is_its_users_admin_for_this_run() {
     accounts.setup(&accounts.setup_code().unwrap(), "bob", "correct horse battery").unwrap();
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 401);
     assert_eq!(call("GET", "/flows", vec![], "hl_nope").status_code, 401);
-    assert_eq!(call("GET", "/admin/users", vec![], &local).status_code, 200, "an admin");
+    assert_eq!(call("GET", "/people", vec![], &local).status_code, 200, "an admin");
+    // An agent it adds is owned by the OS user, by its name, with no account of that name here.
+    let added = body_json(call("POST", "/people", br#"{"name":"ada-agent","kind":"agent","role":"agent"}"#.to_vec(), &local));
+    assert_eq!((&added["owner"], &added["created_by"]), (&serde_json::json!("ada"), &serde_json::json!("local:ada")), "{added}");
     assert!(call("POST", "/flows", br#"{"name":"mine","document":{}}"#.to_vec(), &local).is_success());
     let activity = body_json(call("GET", "/activity", vec![], &local));
     let by_local = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "local:ada");

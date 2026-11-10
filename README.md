@@ -211,7 +211,7 @@ The **web editor** has a canvas and the flow's text side by side, linked by expr
 cursor in the text picks the node under it, and a node picked on the canvas marks its
 expression. In **view** mode it replays any run of a deployment: what didn't run is dimmed, and
 the value each node made is beside it. It also manages deployments, their permissions and
-secrets, accounts and API tokens, and the folders flows may use.
+secrets, people, agents and services and their tokens, and the folders flows may use.
 
 The **VS Code extension** ([`editors/vscode`](editors/vscode)) starts `holon lsp` for `.holon.ts`
 files, which VS Code highlights as TypeScript; each release carries it as `holon-vscode.vsix`. Any
@@ -343,7 +343,7 @@ read and write of its files (`inline_file_bytes`, `max_file_read_bytes`, `max_fi
 `holon export` takes `--max-files-bytes 10M` or `--without-files` to leave those texts out.
 
 **Agents on another machine.** For a server elsewhere, `holon mcp setup HOST --server URL` asks
-for an API token with role `agent` (made on that server's admin page, or given in `HOLON_TOKEN`),
+for an agent's token (made on that server's People and access, or given in `HOLON_TOKEN`),
 checks it, and keeps it in `~/.holon/tokens.json`, readable only by you; the host's settings file
 never holds it.
 

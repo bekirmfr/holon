@@ -1,7 +1,7 @@
 // Accounts, from installing a server onwards (holon-server's accounts.rs, access.rs, auth.rs; the
 // editor's AuthGate.tsx, HostPages.tsx), on a server left as installed (7521 on slot 0, ports.mjs)
 // and the editor pointed at it (5274): set up with the code it prints, people invited and joining by link,
-// each role doing what it may, an API token, and signing in through an identity provider set
+// each role doing what it may, a service's and an agent's tokens, and signing in through an identity provider set
 // in People and access (the stand-in on 7530). In order: each step builds on the one before.
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
@@ -72,7 +72,7 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await expect(again.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("used, expired or wrong");
 });
 
-test("an admin's API token acts with its role, until revoked; a disabled account is signed out", async ({ browser, request }) => {
+test("a service's token acts with its role, until revoked; a disabled person is signed out", async ({ browser, request }) => {
   const ada = await someoneElse(browser);
   await ada.goto(EDITOR);
   const signIn = ada.getByRole("form", { name: "sign in" });
@@ -80,26 +80,36 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   await fill(ada, "password", PASSWORD);
   await signIn.getByRole("button", { name: "sign in" }).click();
   await gotoPage(ada, "people");
-  await ada.getByLabel("new token's label").fill("ci");
-  await ada.getByLabel("new token's role").selectOption("editor");
-  await ada.getByRole("button", { name: "make token" }).click();
-  const token = await ada.getByLabel("new API token").inputValue();
-  const asCi = { Authorization: `Bearer ${token}` };
+  // ci, a service ada owns, signs in with a token of its own.
+  const add = async (name: string, kind: string, role: string) => {
+    await ada.getByLabel("new agent's or service's name").fill(name);
+    await ada.getByLabel("new agent's or service's kind").selectOption(kind);
+    await ada.getByLabel("new agent's or service's role").selectOption(role);
+    await ada.getByRole("button", { name: `add ${kind}` }).click();
+    await expect(ada.getByLabel(`${name}'s owner`)).toHaveValue("ada");
+  };
+  const tokenFor = async (name: string, label: string) => {
+    await ada.getByRole("button", { name: `make a token for ${name}` }).click();
+    await ada.locator('[aria-modal="true"] input').fill(label);
+    await ada.locator('[aria-modal="true"]').getByRole("button", { name: "make token" }).click();
+    const token = await ada.getByLabel("new API token").inputValue();
+    await ada.getByRole("button", { name: "done" }).click();
+    return { Authorization: `Bearer ${token}` };
+  };
+  await add("ci", "service", "editor");
+  await expect(ada.getByText("ci has no token: it can't sign in yet")).toBeVisible();
+  const asCi = await tokenFor("ci", "a script");
   expect((await request.post(`${SERVER}/flows`, { data: { name: "from-ci", document: { nodes: [], edges: [] } }, headers: asCi })).status()).toBe(200);
-  expect((await request.get(`${SERVER}/admin/users`, { headers: asCi })).status()).toBe(403);
-  await ada.getByRole("button", { name: "done" }).click();
-  await ada.locator("div", { hasText: /^ci/ }).getByRole("button", { name: "revoke" }).first().click();
+  expect((await request.get(`${SERVER}/people`, { headers: asCi })).status()).toBe(403);
+  await ada.getByRole("button", { name: "revoke ci's token a script" }).click();
   await ada.locator('[aria-modal="true"]').getByRole("button", { name: "Revoke" }).click();
-  await expect(ada.getByText("no API tokens", { exact: true })).toBeVisible();
+  await expect(ada.getByText("ci has no token: it can't sign in yet")).toBeVisible();
   expect((await request.get(`${SERVER}/flows`, { headers: asCi })).status()).toBe(401);
   // The activity log names who did what.
-  await expect(ada.getByText(/made an API token ci · by ada/)).toBeVisible();
+  await expect(ada.getByText(/made a token for ci · by ada/)).toBeVisible();
   // An agent's token proposes, and never approves, stops or deletes.
-  await ada.getByLabel("new token's label").fill("claude");
-  await ada.getByLabel("new token's role").selectOption("agent");
-  await ada.getByRole("button", { name: "make token" }).click();
-  const asAgent = { Authorization: `Bearer ${await ada.getByLabel("new API token").inputValue()}` };
-  await ada.getByRole("button", { name: "done" }).click();
+  await add("claude", "agent", "agent");
+  const asAgent = await tokenFor("claude", "claude code");
   expect((await request.post(`${SERVER}/flows`, { data: { name: "from-claude", document: { nodes: [], edges: [] } }, headers: asAgent })).status()).toBe(200);
   const approving = await request.post(`${SERVER}/deploy`, { data: { slug: "from-claude", unit: "0".repeat(64), acknowledge: ["NetworkIngress"] }, headers: asAgent });
   expect(approving.status()).toBe(403);

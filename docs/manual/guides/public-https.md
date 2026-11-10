@@ -117,7 +117,7 @@ holon serve --allow-host holon.example.com --allow-origin https://holon.example.
   server knows.
 
 Everyone still signs in. Use long passwords, or an identity provider (the admin page), and make
-API tokens with the narrowest role that works.
+give agents and services the narrowest role that works.
 
 To reach the server from your network without a proxy, `--at 0.0.0.0:7420` listens on every
 interface, still unencrypted (the server warns so): only on a network you trust.

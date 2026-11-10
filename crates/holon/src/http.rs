@@ -52,10 +52,10 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
     {
         return Err(err(403, format!("Origin {origin:?} is not allowed")));
     }
-    if request.method() == "POST" {
+    if matches!(request.method(), "POST" | "PATCH") {
         let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
         if !["application/json", "application/octet-stream"].iter().any(|t| media_type.eq_ignore_ascii_case(t)) {
-            return Err(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
+            return Err(err(415, format!("{} bodies must be sent as application/json or application/octet-stream", request.method())));
         }
     }
     access.check(request)
@@ -70,7 +70,7 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
         && access.allows_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
-                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 .with_additional_header("Vary", "Origin");
         }

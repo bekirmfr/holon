@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Agents and services are principals of their own, with owners and tokens.** Whoever acts on a
+  server is a person, an agent or a service, each name unique across them. A person signs in with a
+  password or a provider; an agent (role agent or viewer) and a service, a script or CI (role viewer
+  or editor, never admin), sign in with tokens of their own and act by their own name. Each agent and
+  service has an owner, a person, who makes and revokes its tokens as an admin may; a person who
+  still owns one can't be removed until it has another owner, and only a person decides an
+  approval. `holon people` replaces `holon user` and `holon token` (`add --person|--agent|--service`,
+  `set --owner`, `token NAME`, `revoke NAME ID`), and the `/people` routes replace `/admin/users` and
+  `/admin/tokens`. The editor's People and access lists people, then agents and services with their
+  owners and tokens; `holon editor`'s admin page does too (`a` adds one, `o` sets its owner). An
+  accounts file from before keeps its people, but its API tokens are not read and a person with role
+  agent is dropped, which the server says when it starts: add each as an agent or a service, and make
+  it a token. No sample changes: this is who signs in, not what a flow does.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

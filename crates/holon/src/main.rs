@@ -470,7 +470,8 @@ const USAGE: &str = "usage: holon <command>
                                      a deployment's secrets (a value is piped in, never shown)
   flows [list|show|save|remove]      the flows saved on the server
   activity [--last N]                what was done on the server, by whom
-  user | token | oidc                people, API tokens, signing in through a provider (admin)
+  people | oidc                      people, agents and services, and their tokens; signing in
+                                     through a provider (admin)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
@@ -613,8 +614,7 @@ fn main() {
         Some("secret") => std::process::exit(secretcmd::cli(&rest)),
         Some("flows") => std::process::exit(flowscmd::flows(&rest)),
         Some("activity") => std::process::exit(flowscmd::activity(&rest)),
-        Some("user") => std::process::exit(accountscmd::user(&rest)),
-        Some("token") => std::process::exit(accountscmd::token(&rest)),
+        Some("people") => std::process::exit(accountscmd::people(&rest)),
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
@@ -1216,9 +1216,9 @@ fn serve(args: Vec<String>) {
     };
     sync_listeners(&state);
 
-    let gate = match accounts.users().len() {
+    let gate = match accounts.principals().len() {
         0 => "waiting to be set up".to_string(),
-        n => format!("{n} account(s); signing in required"),
+        n => format!("{n} principal(s); signing in required"),
     };
     if let Some(source) = &state.editor {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());

@@ -15,7 +15,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | `data/` | the server's state: **the one folder to back up** |
 | `keys/` | the secrets key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
-| `tokens.json` | API tokens `holon mcp setup` keeps for servers elsewhere, readable only by you |
+| `tokens.json` | agents' tokens `holon mcp setup` keeps for servers elsewhere, readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
 
 In the data folder (`--data`, `HOLON_DATA`):
@@ -27,7 +27,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.logs/` | each deployment's run log: its newest 128 runs as written, `<slug>.jsonl`, and the older ones it keeps sealed, gzipped, in `<slug>.sealed/` (`zcat` reads them) | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
-| `accounts.json` | accounts, sessions, invites and API tokens (as hashes) | `--accounts` |
+| `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
 | `folders.json` | the named folders bound | `--folders` |
 | `databases.json` | the named databases bound | `--databases` |
@@ -193,7 +193,7 @@ row refuse setting up for a minute, so the code can't be guessed.
 |---|---|
 | viewer | read: flows, deployments, logs |
 | editor | everything a viewer may, and save, deploy and approve, run, pause, stop, delete, change grants |
-| admin | everything, and set secrets, bind folders and databases, manage accounts, tokens and sign-in |
+| admin | everything, and set secrets, bind folders and databases, manage people, agents, services and sign-in |
 | agent | read, check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
@@ -203,9 +203,17 @@ row refuse setting up for a minute, so the code can't be guessed.
 - The server answers up to 512 requests at once; one more is told to try again (503).
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled admin be removed, disabled or demoted.
-- **API tokens** (admin page) act with the role they were made with, as `token:<label>`, sent as
-  `Authorization: Bearer <token>`. They are shown once and kept only as hashes; revoking one stops
-  it at once.
+- **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
+  who signs in with a password or a provider and may hold any role but agent; an **agent**, role
+  agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and
+  services sign in with tokens of their own (People and access, or `holon people token`), sent as
+  `Authorization: Bearer <token>`, and act as themselves, by their name. Each has an **owner**, a
+  person, who makes and revokes its tokens, as an admin may. Tokens are shown once and kept only
+  as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
+  decides an approval. A person who still owns an agent or a service can't be removed until it has
+  another owner. An accounts file from before principals keeps its people; its API tokens, which
+  had no owner, are not read, and a person with role agent is dropped (the server says so when it
+  starts): add each as an agent or a service, and make it a token.
 - Commands on this machine (`holon export`, `holon folder`, `holon mcp`) sign in through the run
   file in `~/.holon/run/`, as `local:<your user>`, while that server runs.
 - A request with `X-Holon-Role: agent` from an editor or an admin is treated as the agent role:

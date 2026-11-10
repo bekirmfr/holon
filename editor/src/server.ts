@@ -21,10 +21,13 @@ import type { SettingChange, Touch } from "./touches";
  *  from (holon-server serves the editor itself, editor.rs), and in development the local one. */
 const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? (import.meta.env.DEV ? "http://127.0.0.1:7420" : "");
 
-/** A role on the server: what an account or token may do (access.rs). */
+/** A role on the server: what a principal may do (access.rs). */
 export type Role = "viewer" | "editor" | "admin" | "agent";
+/** What a principal is (accounts.rs): a person signs in with a password or a provider; an agent
+ *  (an AI, through holon mcp) and a service (a script, CI) sign in with their own tokens. */
+export type Kind = "person" | "agent" | "service";
 /** Who this browser is signed in as: the session token the server gave, and who it is. */
-export type Session = { token: string; name: string; role: Role };
+export type Session = { token: string; name: string; kind?: Kind; role: Role };
 const SESSION_KEY = "holon.session";
 let memorySession: Session | null = null;
 
@@ -80,7 +83,7 @@ export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig
   return asJson(await fetch(`${BASE}/auth/state`));
 }
 
-type SignedInAs = { token: string; name: string; role: Role };
+type SignedInAs = { token: string; name: string; kind: Kind; role: Role };
 const keep = async (res: Response) => {
   const s = await asJson<SignedInAs>(res);
   setSession(s);
@@ -92,7 +95,7 @@ export const signInWith = (name: string, password: string) => post(`${BASE}/auth
 /** Whose invite link `token` is. */
 export const inviteFor = async (token: string) => asJson<{ name: string }>(await fetch(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
 export const acceptInvite = (token: string, password: string) => post(`${BASE}/auth/invite`, { token, password }).then(keep);
-export const whoAmI = async () => asJson<{ name: string; role: Role; email?: string }>(await api(`${BASE}/auth/me`));
+export const whoAmI = async () => asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null }>(await api(`${BASE}/auth/me`));
 export async function changePassword(current: string, next: string): Promise<void> {
   await asJson<void>(await post(`${BASE}/auth/password`, { current, new: next }));
 }
@@ -114,23 +117,43 @@ export function setPrefs(prefs: unknown): Promise<void> {
 }
 
 // ── the host's pages ──────────────────────────────────────────────────────────────────────
-export type AccountEntry = { name: string; role: Role; email: string | null; disabled: boolean; created_at: number; created_by: string | null; invited: boolean };
-export type TokenEntry = { id: string; label: string; role: Role; created_at: number; created_by: string };
+/** A principal (accounts.rs, `GET /people`): a person, or an agent or a service, which a person
+ *  owns (`owner`; `owner_disabled` when that person is disabled) and which has its own tokens. */
+export type Principal = {
+  name: string;
+  kind: Kind;
+  role: Role;
+  display: string | null;
+  email: string | null;
+  disabled: boolean;
+  created_at: number;
+  created_by: string | null;
+  owner: string | null;
+  owner_disabled: boolean;
+  invited: boolean;
+  tokens?: TokenEntry[];
+};
+/** An agent's or a service's token: what it is for, never its value. */
+export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string };
 export type OidcSettings = { issuer: string; client_id: string };
-export const listAccounts = async () => asJson<AccountEntry[]>(await api(`${BASE}/admin/users`));
-/** A new account; the one-time link for them to set their password. */
-export const inviteAccount = async (name: string, role: Role, email: string) =>
-  asJson<{ name: string; invite: string }>(await post(`${BASE}/admin/users`, { name, role, email: email || null }));
-export const changeAccount = async (name: string, change: { role?: Role; disabled?: boolean; email?: string }) =>
-  asJson<AccountEntry>(await post(`${BASE}/admin/users/${encodeURIComponent(name)}`, change));
-export const resetAccount = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${BASE}/admin/users/${encodeURIComponent(name)}/reset`));
-export async function removeAccount(name: string): Promise<void> {
-  await asJson<void>(await api(`${BASE}/admin/users/${encodeURIComponent(name)}`, { method: "DELETE" }));
+const principalAt = (name: string) => `${BASE}/people/${encodeURIComponent(name)}`;
+const patch = (url: string, body: unknown) => api(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+export const listPrincipals = async () => asJson<Principal[]>(await api(`${BASE}/people`));
+/** A new person; the one-time link for them to set their password. */
+export const invitePerson = async (name: string, role: Role, email: string) =>
+  asJson<{ name: string; invite: string }>(await post(`${BASE}/people`, { name, kind: "person", role, email: email || null }));
+/** A new agent or service, owned by `owner` (by whoever adds it, when empty). */
+export const addPrincipal = async (name: string, kind: Exclude<Kind, "person">, role: Role, owner: string) =>
+  asJson<Principal>(await post(`${BASE}/people`, { name, kind, role, owner: owner || null }));
+export const changePrincipal = async (name: string, change: { role?: Role; disabled?: boolean; email?: string; owner?: string }) => asJson<Principal>(await patch(principalAt(name), change));
+export const resetPerson = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${principalAt(name)}/reset`));
+export async function removePrincipal(name: string): Promise<void> {
+  await asJson<void>(await api(principalAt(name), { method: "DELETE" }));
 }
-export const listTokens = async () => asJson<TokenEntry[]>(await api(`${BASE}/admin/tokens`));
-export const createToken = async (label: string, role: Role) => asJson<{ token: string; entry: TokenEntry }>(await post(`${BASE}/admin/tokens`, { label, role }));
-export async function revokeToken(id: string): Promise<void> {
-  await asJson<void>(await api(`${BASE}/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
+/** A new token for the agent or service `principal`: its value, shown once. */
+export const createToken = async (principal: string, label: string) => asJson<{ token: string; entry: TokenEntry }>(await post(`${principalAt(principal)}/tokens`, { label }));
+export async function revokeToken(principal: string, id: string): Promise<void> {
+  await asJson<void>(await api(`${principalAt(principal)}/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in

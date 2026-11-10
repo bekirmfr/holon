@@ -1,13 +1,14 @@
 //! Who may use the control plane: the gate every request passes before routing (http.rs).
 //!
-//! Everyone is someone: an account (accounts.rs), signed in with a password, through an invite
-//! link, or through the identity provider an admin set (oidc.rs); or an API token an admin made
-//! for a script. A request carries its session or token as `Authorization: Bearer …`, and its
-//! role decides what it may do:
+//! Everyone is someone: a principal (accounts.rs). A person signs in with a password, through an
+//! invite link, or through the identity provider an admin set (oidc.rs); an agent or a service
+//! with an API token its owner or an admin made. A request carries its session or token as
+//! `Authorization: Bearer …`, and its role decides what it may do:
 //!
 //! - `viewer`: reads only (GET): flows, deployments, logs, a secret's names and history;
 //! - `editor`: everything a viewer does, and saving, deploying, running, pausing, deleting;
-//! - `admin`: everything, writing secrets and the admin panel (`/admin/…`) included;
+//! - `admin`: everything, writing secrets, the admin panel (`/admin/…`) and managing people
+//!   (`/people…`) included; a person also manages the tokens of an agent or a service they own;
 //! - `agent`: what a viewer does, and proposing: storing units, previewing and deploying a flow
 //!   that needs no approval it hasn't had, saving a flow, calling a deployed one (a run like any
 //!   other), and a restore's dry run (deploy.rs answers it nothing more). It never approves (deploy.rs refuses its `acknowledge`), never replaces a flow
@@ -34,7 +35,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::accounts::{Accounts, Who};
+use crate::accounts::{Accounts, Kind, Who};
 use crate::http::err;
 use rouille::{Request, Response};
 
@@ -48,12 +49,13 @@ pub(crate) enum Role {
     Agent,
 }
 
-/// Who a request comes from, once let through: an account's name or `token:<label>`, and its
-/// role; no one for what is open (signing in, the health check), and on a server without
-/// accounts (the tests).
+/// Who a request comes from, once let through: a principal's name (or the OS user's,
+/// `local:<user>`), its kind and its role; no one for what is open (signing in, the health
+/// check), and on a server without accounts (the tests).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
+    pub(crate) kind: Option<Kind>,
     pub(crate) role: Option<Role>,
 }
 
@@ -101,6 +103,22 @@ fn is_own(method: &str, url: &str) -> bool {
     (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/prefs"))
 }
 
+/// Whether `url` lists, makes or revokes the tokens of a principal: a person may for an agent or
+/// a service they own (auth.rs checks they own it), as an admin may for any.
+fn is_tokens_of_someone(method: &str, url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("/people/") else { return false };
+    match rest.split_once('/') {
+        Some((name, "tokens")) => !name.is_empty() && matches!(method, "GET" | "POST"),
+        Some((name, rest)) => !name.is_empty() && method == "DELETE" && rest.strip_prefix("tokens/").is_some_and(|id| !id.is_empty() && !id.contains('/')),
+        None => false,
+    }
+}
+
+/// What only an admin may do: the admin panel and managing people.
+fn is_admins(url: &str) -> bool {
+    url.starts_with("/admin/") || url == "/people" || url.starts_with("/people/")
+}
+
 impl Access {
     pub(crate) fn new(accounts: Arc<Accounts>, hosts: Vec<String>, origins: Vec<String>) -> Access {
         Access { accounts: Some(accounts), hosts, origins }
@@ -115,7 +133,7 @@ impl Access {
         let (method, url) = (request.method(), request.url());
         // With no accounts (the tests' servers), whoever asks is let in; one asking as an agent is one.
         let Some(accounts) = &self.accounts else {
-            return Ok(if asks_as_agent(request) { Caller { name: Some("agent".into()), role: Some(Role::Agent) } } else { Caller::default() });
+            return Ok(if asks_as_agent(request) { Caller { name: Some("agent".into()), kind: Some(Kind::Agent), role: Some(Role::Agent) } } else { Caller::default() });
         };
         if is_open(method, &url) {
             return Ok(Caller::default());
@@ -128,19 +146,20 @@ impl Access {
         };
         let who = match who.role {
             Role::Agent => who,
-            Role::Editor | Role::Admin if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent },
+            Role::Editor | Role::Admin if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent, ..who },
             _ => who,
         };
         let allowed = match who.role {
             Role::Admin => true,
             _ if is_own(method, &url) => true,
-            _ if url.starts_with("/admin/") => false,
+            Role::Viewer | Role::Editor if who.kind == Kind::Person && is_tokens_of_someone(method, &url) => true,
+            _ if is_admins(&url) => false,
             Role::Viewer => method == "GET",
             Role::Editor => !is_secret_write(request),
             Role::Agent => agent_may(method, &url),
         };
         if !allowed {
-            let what = if url.starts_with("/admin/") || is_secret_write(request) {
+            let what = if is_admins(&url) || is_secret_write(request) {
                 "that needs an admin"
             } else if who.role == Role::Agent {
                 "an agent proposes and calls; approving, granting, starting, stopping and deleting are a person's"
@@ -149,7 +168,7 @@ impl Access {
             };
             return Err(err(403, format!("{} may not do that: {what}", who.name)));
         }
-        Ok(Caller { name: Some(who.name), role: Some(who.role) })
+        Ok(Caller { name: Some(who.name), kind: Some(who.kind), role: Some(who.role) })
     }
 
     /// Who a session, API token or provider's sign-in is, or why it isn't let in.
@@ -249,9 +268,10 @@ mod tests {
         assert_eq!(call(&access, "POST", "/auth/password", Some(&cy)), Ok(Some("cy".into())), "their own password");
         assert_eq!(call(&access, "POST", "/flows", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&bob)), Err(403));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/people", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/admin/oidc", Some(&bob)), Err(403));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&ada)), Ok(Some("ada".into())));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&ada)), Ok(Some("ada".into())));
+        assert_eq!(call(&access, "GET", "/people", Some(&ada)), Ok(Some("ada".into())));
         // The variables an env secret can name: only for whoever sets secrets.
         assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&cy)), Err(403));
         assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&bob)), Err(403));
@@ -259,22 +279,49 @@ mod tests {
         assert_eq!(call(&access, "GET", "/health", None), Ok(None));
     }
 
+    /// A service's token acts as the service, with its role; disabled or removed, it is refused.
     #[test]
-    fn api_tokens_act_with_their_role() {
+    fn a_service_acts_with_its_role() {
         let (access, _) = server();
         let accounts = access.accounts().unwrap();
-        let (ci, _) = accounts.create_token("ci", Role::Editor, "ada").unwrap();
-        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("token:ci".into())));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&ci)), Err(403));
+        accounts.add("ci", Kind::Service, Role::Editor, "ada", "ada").unwrap();
+        let (ci, _) = accounts.create_token("ci", "CI on GitHub", "ada").unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("ci".into())));
+        assert_eq!(call(&access, "GET", "/people", Some(&ci)), Err(403));
+        assert_eq!(call(&access, "GET", "/people/ci/tokens", Some(&ci)), Err(403), "not a person");
+        accounts.set_disabled("ci", true).unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
+        accounts.set_disabled("ci", false).unwrap();
+        accounts.remove("ci").unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
+    }
+
+    /// Managing people is an admin's; a person reaches the tokens routes of any name, for auth.rs
+    /// to answer only those of what they own.
+    #[test]
+    fn people_are_an_admins_and_tokens_their_owners_too() {
+        let (access, [ada, bob, cy]) = server();
+        for (method, url) in [("GET", "/people"), ("POST", "/people"), ("PATCH", "/people/cy"), ("DELETE", "/people/cy"), ("POST", "/people/cy/reset")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Err(403), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&ada)), Ok(Some("ada".into())), "{method} {url}");
+        }
+        for (method, url) in [("GET", "/people/claude/tokens"), ("POST", "/people/claude/tokens"), ("DELETE", "/people/claude/tokens/a1")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Ok(Some("bob".into())), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&cy)), Ok(Some("cy".into())), "a viewer may own one too: {method} {url}");
+        }
+        for (method, url) in [("DELETE", "/people/claude/tokens"), ("POST", "/people/claude/tokens/a1"), ("GET", "/people/claude/tokens/a1/b"), ("GET", "/people//tokens")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Err(403), "{method} {url}");
+        }
     }
 
     #[test]
     fn an_agent_proposes_and_calls_and_does_nothing_else() {
         let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
-        let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
+        accounts.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
         for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("POST", "/trigger/a/reset"), ("POST", "/deployments/a/restore"), ("GET", "/auth/me")] {
-            assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("token:claude".into())), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("claude".into())), "{method} {url}");
         }
         for (method, url) in [
             ("POST", "/deployments/a/grant"),
@@ -291,7 +338,8 @@ mod tests {
             ("POST", "/fire"),
             ("POST", "/registry/publish"),
             ("POST", "/permissions/reload"),
-            ("GET", "/admin/users"),
+            ("GET", "/people"),
+            ("GET", "/people/claude/tokens"),
         ] {
             assert_eq!(call(&access, method, url, Some(&claude)), Err(403), "{method} {url}");
         }
@@ -307,7 +355,7 @@ mod tests {
         assert_eq!(call(&access, "POST", "/deployments/a/grant", Some(&local)), Ok(Some("local:bma".into())));
         assert_eq!(as_agent("POST", "/deployments/a/grant", &local), Err(403));
         assert_eq!(as_agent("POST", "/flows", &local), Ok((Some("local:bma (agent)".into()), Some(Role::Agent))));
-        assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("token:claude".into()), Some(Role::Agent))), "an agent's name as it is");
+        assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("claude".into()), Some(Role::Agent))), "an agent's name as it is");
         assert_eq!(as_agent("POST", "/flows", &bob), Ok((Some("bob (agent)".into()), Some(Role::Agent))));
         for (method, url) in [("POST", "/deploy"), ("POST", "/flows"), ("POST", "/unit"), ("POST", "/deployments/a/request")] {
             assert_eq!(as_agent(method, url, &cy), Err(403), "a viewer as an agent: {method} {url}");

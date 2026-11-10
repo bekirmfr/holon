@@ -26,7 +26,7 @@
 //   curl -X POST -d '{"amount":50}' http://127.0.0.1:8153/deposit/1   150, while the payout waits
 //   holon decide approved-payout                                      the run, and who approved
 // Then two people approve it: you (holon decide approved-payout <run> payout --approve), and
-// someone you invited (holon user invite), in the editor's Approvals. It pays it:
+// someone you invited (holon people add), in the editor's Approvals. It pays it:
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
 import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"

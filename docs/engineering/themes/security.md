@@ -40,8 +40,8 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
   (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
-  and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), API tokens `ht_` (made by an admin with a
-  role, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),
+  and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), an agent's or a service's tokens `ht_`
+  (`credentials`, made by its owner or an admin, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),
   compared in constant time (`same`). A new password ends every other session; disabling or
   removing an account ends its sessions; `keeping_an_admin` refuses a change that leaves no
   enabled admin.
@@ -55,7 +55,7 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token, an admin's, for this run only.
 - **Roles** (`Access::check`): `viewer` reads (GET); `editor` also saves, deploys and approves,
   runs, pauses, stops, deletes and changes grants; `admin` everything, writing secrets and every
-  `/admin/` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
+  `/admin/` and `/people` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
   `/deploy/preview`, `/deploy`, `/flows`, a deployment's `/request`, an action, a restore, which
   is a dry run or saved as an ask: `ask_restore`). `X-Holon-Role: agent` lowers an editor or admin
   to an agent, named `<name> (agent)`; it never raises a viewer. Open without signing in
@@ -85,11 +85,16 @@ address, `localhost` or a name under it, or a name given with `--allow-host` (`h
 the name: a page loaded from a name rebound to this machine can't read a flow's answers as its own
 origin's. A request with no `Host` (HTTP/1.0) is answered; a browser always sends one.
 
-### 2.3 What `/admin/` requires
+### 2.3 What `/admin/` and `/people` require
 
-The `admin` role, for every path under it: `Access::check` refuses any other role there ("that
-needs an admin"), and so for writing a deployment's secret (`is_secret_write`). The paths:
-`/admin/users[/<name>[/reset]]`, `/admin/tokens[/<id>]`, `/admin/oidc` (auth.rs);
+The `admin` role, for every path under them (`is_admins`): `Access::check` refuses any other role
+there ("that needs an admin"), and so for writing a deployment's secret (`is_secret_write`). One
+exception: a person who is a viewer or an editor reaches an agent's or a service's tokens
+(`/people/<name>/tokens[/<id>]`, `is_tokens_of_someone`), and auth.rs lets them through only for
+what they own. Principals (accounts.rs): a `Kind` (person, agent, service) and the roles it may
+hold (`may_hold`: a service is never an admin, an agent only agent or viewer), and an owner, a
+person, for an agent or a service. The paths:
+`/people[/<name>[/reset|/tokens[/<id>]]]` (PATCH changes one), `/admin/oidc` (auth.rs);
 `/admin/secrets[/<name>]` (the server's own) and `/admin/secrets/env` (variable names only);
 `/admin/grants`; `/admin/folders` and below, with `browse` and `pick` (pick.rs: the OS dialog
 only for a request from the machine itself, not one a proxy forwarded); `/admin/databases` and below; `/admin/host`, `/admin/warnings`, `/admin/storage`
@@ -299,7 +304,7 @@ What is not defended, or only partly:
   time with wrong codes.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
-  and leave it off; an `agent`-role API token is the guarantee (agent-surface L4, decision 6).
+  and leave it off; an agent's own token is the guarantee (agent-surface L4, decision 6).
 - **A folder's confinement off Linux is checked by names**: on macOS and Windows another process
   writing in the folder can swap a link between the check and the open (on Linux, without
   `/proc`, too). On Linux no link in a folder is followed, even one to inside it.

@@ -479,15 +479,15 @@ fn hide_input() -> Option<Box<dyn FnOnce()>> {
     })
 }
 
-/// Who `token` signs in as on `server`, and with what role; `None` if it can't be asked.
-fn who(server: &str, token: &str) -> Result<Option<(String, String)>, String> {
+/// Who `token` signs in as on `server`: its name, kind and role; `None` if it can't be asked.
+fn who(server: &str, token: &str) -> Result<Option<(String, String, String)>, String> {
     match ureq::get(&format!("{server}/auth/me")).timeout(Duration::from_secs(10)).set("Authorization", &format!("Bearer {token}")).call() {
         Ok(r) => {
             let me: Value = r.into_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or(Value::Null);
             let field = |k: &str| me.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
-            Ok(Some((field("name"), field("role"))))
+            Ok(Some((field("name"), field("kind"), field("role"))))
         }
-        Err(ureq::Error::Status(401, _)) => Err(format!("{server} doesn't take this token (401): make one with role agent on its admin page")),
+        Err(ureq::Error::Status(401, _)) => Err(format!("{server} doesn't take this token (401): make an agent's token there (holon people token NAME, or its People page)")),
         Err(ureq::Error::Status(code, _)) => Err(format!("{server} answered {code} to the token")),
         Err(_) => Ok(None),
     }
@@ -504,7 +504,7 @@ fn keep_token_for(server: &str) -> Result<(), String> {
             let ask = if kept.is_some() {
                 format!("An API token for {server} (Enter keeps the one holon has): ")
             } else {
-                format!("An API token for {server}, with role agent (its admin page makes one): ")
+                format!("An agent's token for {server} (holon people token NAME there, or its People page, makes one): ")
             };
             read_hidden(&ask)?
         }
@@ -512,12 +512,12 @@ fn keep_token_for(server: &str) -> Result<(), String> {
     let token = match (token.is_empty(), kept) {
         (false, _) => token,
         (true, Some(k)) => k,
-        (true, None) => return Err("no token: one with role agent, from the server's admin page, is how holon mcp signs in there".into()),
+        (true, None) => return Err("no token: an agent's token, from the server's People page or holon people token NAME, is how holon mcp signs in there".into()),
     };
     match who(server, &token)? {
-        Some((name, role)) if role == "agent" => println!("The token signs in to {server} as {name}, an agent."),
-        Some((name, role)) => println!(
-            "The token signs in to {server} as {name}, with role {role}. holon mcp still asks as an agent, but only a token with role agent keeps an agent with a shell from approving: make one on the admin page."
+        Some((name, kind, role)) if kind == "agent" => println!("The token signs in to {server} as {name}, an agent with role {role}."),
+        Some((name, kind, _)) => println!(
+            "The token signs in to {server} as {name}, a {kind}, not an agent. holon mcp still asks as an agent, but only an agent's own token keeps an agent with a shell from approving: add one there (holon people add NAME --agent) and make it a token."
         ),
         None => println!("{server} didn't answer, so the token isn't checked yet."),
     }
@@ -535,8 +535,8 @@ pub(crate) const SETUP_USAGE: &str = "usage: holon mcp setup [HOST…|--all] [op
 
   HOST…                    the hosts to set it up in (holon mcp hosts lists them)
   --all                    every host found on this machine
-  --server PORT|URL        reach that server; for a server elsewhere, holon asks for an API
-                           token with role agent, checks it and keeps it (HOLON_TOKEN gives it)
+  --server PORT|URL        reach that server; for a server elsewhere, holon asks for an agent's
+                           token, checks it and keeps it (HOLON_TOKEN gives it)
   --project DIR            write the hosts' project files in DIR instead of yours (the entry
                            runs holon found on PATH, since the file is shared)
   --name NAME              the entry's name (default holon), e.g. for a second server
