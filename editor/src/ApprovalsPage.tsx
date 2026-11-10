@@ -28,9 +28,9 @@ export function useDecline(onDeclined: (p: Proposal) => void) {
   return async (p: Proposal) => {
     const v = p.version === undefined ? "this version" : `v${p.version}`;
     const reason = await dialog.prompt(
-      `Decline ${p.slug} ${v}, proposed by ${p.by ?? "someone"}?\n\nWhy: tell them what to change. It is kept on the flow's history${p.agent ? ", and the agent reads it through holon mcp" : ""}. The version stays saved, and what runs keeps running.`,
+      `Why it was declined\n\n${p.slug} ${v}, proposed by ${p.by ?? "someone"}. Tell them what to change. It is kept on the flow's history${p.agent ? ", and the agent reads it through holon mcp" : ""}. The version stays saved, and what runs keeps running.`,
       "",
-      "Decline this version",
+      "Submit",
     );
     if (reason === null) return;
     try {
@@ -133,7 +133,7 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
                 <td className="hl-flows__do">
                   {proposal && (
                     <button className="hl-flow__button" onClick={() => void decline(proposal)} aria-label={`decline ${a.slug}`}>
-                      Decline…
+                      Decline with a reason…
                     </button>
                   )}
                   {to === null ? (

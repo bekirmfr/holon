@@ -38,7 +38,7 @@ closes with its ×.
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
 - **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
-  agent's proposal with its why and note, and **Decline…** with a reason), and **Runs waiting**.
+  agent's proposal with its why and note, and **Decline with a reason…**), and **Runs waiting**.
   **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
   flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
   and Approve, keep it saved, or decline it. **Runs waiting** lists the runs waiting at an

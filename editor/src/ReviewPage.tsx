@@ -314,7 +314,7 @@ export function ReviewPage({
             </button>
             {data.proposal && (
               <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })}>
-                Decline this version…
+                Decline with a reason…
               </button>
             )}
             {entry && <p className="hl-flow__note">Its state and sessions are kept.</p>}
