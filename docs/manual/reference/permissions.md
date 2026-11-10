@@ -146,6 +146,15 @@ import slack_webhook_path from "secret:slack_webhook_path" with { optional: "tru
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the
 nodes that need it have no value. A trigger can't be optional.
 
+## Who may read a flow's log lines
+
+The lines a flow writes with `console.log` are kept beside its runs ([`holon logs`](cli.md#holon-logs)). A person
+who may read the deployment reads them, in the console, in `holon editor` and with `holon logs`. An agent,
+`holon mcp` and anything that asks as an agent, reads them only where the deployment's grant lets agents:
+`AgentReadsLogs`, which the deploy settings' **agents may read its logs** asks for and a person approves at the
+next deploy. Until then the route and `holon mcp`'s `logs` tool answer that agents may not read them, and revoking it
+(`holon grant <slug> --revoke AgentReadsLogs`, or on the flow's Settings) refuses them again. The flow runs either way.
+
 ## Who may run an action
 
 An action is never reached from the network: the flow's port answers only its routes. It runs
@@ -168,6 +177,7 @@ An agent may run an action only when a person has let it:
 | Name | Shown as | |
 |---|---|---|
 | `AgentRuns("name")` | let agents run its action name | the deploy settings' **agents may run**, one per action |
+| `AgentReadsLogs` | let agents read its log lines | the deploy settings' **agents may read its logs**, for a flow that writes lines |
 
 It is always optional: without it the flow runs as it would, and only an agent is refused
 ("agents may not run …"). Like any item, it is approved by a person, never by an agent, and can be

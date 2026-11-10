@@ -80,6 +80,11 @@ which you approve at the next deploy. Until then, `run` answers that agents may 
 revoking it on the deployed page refuses them again. The agent's runs are logged as anyone's,
 "by *you* (agent)".
 
+An agent reads a flow's log lines, what its flow wrote with `console.log`, only once you let it too: **agents may read
+its logs** in the deploy settings asks for `AgentReadsLogs`, which you approve at the next deploy. Then the `logs` tool
+answers, oldest first, a line each (when, level, the run, the text), at a level or louder, or a run's lines; until then it
+answers that agents may not read them, and so it does once you revoke it.
+
 A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
 `runs` shows which run waits and who has approved it so far, and the agent tells you. You decide
 it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide);

@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 30] = [
+    let named: [(&str, Say); 31] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -47,6 +47,7 @@ pub fn describe_item(item: &str) -> String {
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
         ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
+        ("Log", |a| format!("write {a} lines to its log, which is kept apart from its runs")),
         ("MailSend", |a| match a.split_once('/') {
             Some((mail, "*")) => format!("send mail through \"{mail}\" to an address it computes, within its binding's"),
             Some((mail, to)) => format!("send mail through \"{mail}\" to {to}"),
@@ -80,6 +81,7 @@ pub fn describe_item(item: &str) -> String {
         "Clock" => "read the clock",
         "Random" => "use randomness",
         "PrivateAddresses" => "reach private addresses (this machine and its network)",
+        "AgentReadsLogs" => "let agents read its log lines",
         "SecretAccess" => "read secrets",
         "Spawn" => "start processes",
         other => other,
@@ -234,6 +236,7 @@ mod tests {
         assert_eq!(describe_item("NetworkIngress"), "receive requests");
         assert_eq!(describe_item(r#"Action("reset")"#), "can be run by hand: reset");
         assert_eq!(describe_item(r#"AgentRuns("reset")"#), "let agents run its action reset");
+        assert_eq!(describe_item("AgentReadsLogs"), "let agents read its log lines");
         assert_eq!(describe_item(r#"Unrecorded("GET /health")"#), "keep runs of GET /health out of its log, failed or not (they are counted)");
         assert_eq!(describe_item("Something(new)"), "Something(new)");
     }

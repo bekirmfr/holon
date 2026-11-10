@@ -16,20 +16,22 @@ pub(crate) enum Section {
     #[default]
     Status,
     Runs,
+    Logs,
     History,
     State,
     Access,
     Graph,
 }
 
-pub(crate) const SECTIONS: [(Section, &str); 6] =
-    [(Section::Status, "Status"), (Section::Runs, "Runs"), (Section::History, "History"), (Section::State, "State"), (Section::Access, "Access"), (Section::Graph, "Graph")];
+pub(crate) const SECTIONS: [(Section, &str); 7] =
+    [(Section::Status, "Status"), (Section::Runs, "Runs"), (Section::Logs, "Logs"), (Section::History, "History"), (Section::State, "State"), (Section::Access, "Access"), (Section::Graph, "Graph")];
 
 /// The right pane's tabs, by section.
 pub(crate) fn tabs(s: Section) -> &'static [&'static str] {
     match s {
         Section::Status => &[],
         Section::Runs => &["Detail", "Steps", "Timeline", "Error"],
+        Section::Logs => &["Line"],
         Section::History => &["Detail", "Code", "State"],
         Section::State => &["Value", "History"],
         Section::Access => &["Detail", "History"],
@@ -145,9 +147,9 @@ pub(crate) enum Held {
 pub(crate) struct FlowView {
     pub(crate) section: Section,
     /// The row picked, by section.
-    pub(crate) sel: [usize; 6],
+    pub(crate) sel: [usize; 7],
     /// The right pane's tab, by section.
-    pub(crate) tab: [usize; 6],
+    pub(crate) tab: [usize; 7],
     /// The right pane has the arrows: they scroll it.
     pub(crate) right: bool,
     pub(crate) scroll: usize,
@@ -160,6 +162,16 @@ pub(crate) struct FlowView {
     pub(crate) every: bool,
     /// Runs follows the newest: as runs come in, the newest is picked.
     pub(crate) follow: bool,
+    /// The log lines of the Logs section, oldest first (logs.rs): read again with the deployment.
+    pub(crate) lines: Vec<Value>,
+    /// Which lines: 0 every one, 1 warnings and louder, 2 errors only.
+    pub(crate) log_level: u8,
+    /// A run's: its lines up to the end of it, or (`true`) only its own.
+    pub(crate) log_run: Option<(u64, bool)>,
+    /// The Logs section is not following the newest line: it does, as a terminal does, unless paused.
+    pub(crate) log_paused: bool,
+    /// Why the lines couldn't be read, if they couldn't.
+    pub(crate) log_error: Option<String>,
 }
 
 impl App {
@@ -222,6 +234,27 @@ fn short(s: &str, n: usize) -> &str {
     &s[..s.len().min(n)]
 }
 
+/// What one log line holds: when, its level, the run that wrote it and the version, then its text.
+fn line_pane(l: &Value) -> Vec<Row> {
+    let tone = match l["level"].as_str() {
+        Some("error") => Tone::Bad,
+        Some("warn") => Tone::Warn,
+        Some("debug") => Tone::Dim,
+        _ => Tone::Plain,
+    };
+    let mut rows = vec![
+        field("Time", at_ms(&l["at"])),
+        Row::Field("Level".to_string(), l["level"].as_str().unwrap_or("log").to_uppercase(), tone),
+        field("Run", format!("#{}", l["run"])),
+        field("Version", l["unit"].as_str().unwrap_or("")),
+    ];
+    if let Some(n) = l["dropped"].as_u64().filter(|n| *n > 0) {
+        rows.push(text(Tone::Dim, format!("It stands for {n} lines that were dropped before it.")));
+    }
+    rows.push(text(tone, l["text"].as_str().unwrap_or("")));
+    rows
+}
+
 /// The access section's rows: the grant and what it covers, then the secrets.
 pub(crate) fn access_rows(d: &Detail) -> Vec<Access> {
     let g = &d.grant["grant"];
@@ -247,6 +280,7 @@ impl App {
         match self.flow.section {
             Section::Status => d.versions.len(),
             Section::Runs => d.shown_runs(self.filter_of(Page::Flow)).len(),
+            Section::Logs => self.flow.lines.len(),
             Section::History => d.moments().len(),
             Section::State => self.flow.cells.len(),
             Section::Access => access_rows(d).len(),
@@ -268,11 +302,16 @@ impl App {
                 _ => vec![],
             };
         }
+        self.flow_lines();
         let n = self.flow_rows();
         let s = self.flow.section as usize;
         // Following, the newest run stays picked as runs come in.
         if self.flow.follow && self.flow.section == Section::Runs {
             self.flow.sel[s] = 0;
+        }
+        // And on the Logs the newest line, unless it is paused: as a terminal does.
+        if !self.flow.log_paused && self.flow.section == Section::Logs {
+            self.flow.sel[s] = n.saturating_sub(1);
         }
         self.flow.sel[s] = self.flow.sel[s].min(n.saturating_sub(1));
         let scroll = self.flow.scroll;
@@ -302,6 +341,14 @@ impl App {
                 };
                 key = format!("run {} {tab}", r["seq"]);
                 make = Box::new(move || run_pane(c, d, r, tab));
+            }
+            Section::Logs => {
+                let Some(line) = self.flow.lines.get(sel).cloned() else {
+                    self.flow.pane = None;
+                    return;
+                };
+                key = format!("line {} {} {}", line["at"], line["run"], line["text"].as_str().map_or(0, str::len));
+                make = Box::new(move || line_pane(&line));
             }
             Section::History => {
                 let Some(m) = d.moments().get(sel).copied() else {
@@ -359,6 +406,39 @@ impl App {
     pub(crate) fn flow_section(&mut self, s: Section) {
         self.flow.section = s;
         self.flow.right = false;
+        // The Logs open on the newest line, as a terminal does.
+        if s == Section::Logs {
+            self.flow_lines();
+            self.flow.sel[s as usize] = self.flow.lines.len().saturating_sub(1);
+        }
+        self.flow_load();
+    }
+
+    /// Its log lines, read again when the Logs are open: at the level picked, and up to a run's end or
+    /// only its own.
+    pub(crate) fn flow_lines(&mut self) {
+        if self.flow.section != Section::Logs {
+            return;
+        }
+        let (Some(c), Some(d)) = (self.client.as_ref(), self.detail.as_ref()) else { return };
+        let level = [None, Some("warn"), Some("error")][self.flow.log_level as usize % 3];
+        match c.logs(&d.slug, level, self.flow.log_run) {
+            Ok(lines) => {
+                self.flow.lines = lines;
+                self.flow.log_error = None;
+            }
+            Err(e) => {
+                self.flow.lines = vec![];
+                self.flow.log_error = Some(e);
+            }
+        }
+    }
+
+    /// The Logs read again after the lines asked for changed, on the newest line.
+    fn flow_lines_changed(&mut self) {
+        self.flow_lines();
+        self.flow.sel[Section::Logs as usize] = self.flow.lines.len().saturating_sub(1);
+        self.flow.pane = None;
         self.flow_load();
     }
 
@@ -520,6 +600,50 @@ impl App {
                 let Some(&i) = d.shown_runs(self.filter_of(Page::Flow)).get(sel) else { return };
                 if let Some(p) = d.point(Moment::Run(i)) {
                     self.ask_restore(slug, p);
+                }
+            }
+            // The Runs' lines: up to the end of the run picked, on the Logs.
+            (Section::Runs, KeyCode::Char('L')) => {
+                let Some(seq) = d.shown_runs(self.filter_of(Page::Flow)).get(sel).and_then(|&i| d.runs[i]["seq"].as_u64()) else { return };
+                self.flow.log_run = Some((seq, false));
+                self.flow_section(Section::Logs);
+                self.tell(format!("the lines up to the end of run #{seq}: u for its own, again for every run's"));
+            }
+            // The Logs: the level, a run's lines, whether it follows, and the run a line is of.
+            (Section::Logs, KeyCode::Char('w')) => {
+                self.flow.log_level = (self.flow.log_level + 1) % 3;
+                self.flow_lines_changed();
+                self.tell(match self.flow.log_level {
+                    0 => "every line: w for warnings and louder",
+                    1 => "warnings and louder: w for errors only",
+                    _ => "errors only: w for every line",
+                });
+            }
+            (Section::Logs, KeyCode::Char('u')) => {
+                let picked = self.flow.lines.get(sel).and_then(|l| l["run"].as_u64());
+                self.flow.log_run = match (self.flow.log_run, picked) {
+                    (None, Some(seq)) => Some((seq, false)),
+                    (Some((seq, false)), _) => Some((seq, true)),
+                    _ => None,
+                };
+                self.flow_lines_changed();
+                self.tell(match self.flow.log_run {
+                    None => "every run's lines: u for the picked line's run".to_string(),
+                    Some((seq, false)) => format!("the lines up to the end of run #{seq}: u for its own"),
+                    Some((seq, true)) => format!("run #{seq}'s own lines: u for every run's"),
+                });
+            }
+            (Section::Logs, KeyCode::Char('F')) => {
+                self.flow.log_paused = !self.flow.log_paused;
+                if !self.flow.log_paused {
+                    self.flow.sel[Section::Logs as usize] = self.flow.lines.len().saturating_sub(1);
+                    self.flow_load();
+                }
+                self.tell(if self.flow.log_paused { "paused: F follows the newest line" } else { "following the newest line: F pauses" });
+            }
+            (Section::Logs, KeyCode::Enter) => {
+                if let Some(seq) = self.flow.lines.get(sel).and_then(|l| l["run"].as_u64()) {
+                    self.step_through(slug, seq);
                 }
             }
             (Section::History, KeyCode::Enter | KeyCode::Char('b')) => {

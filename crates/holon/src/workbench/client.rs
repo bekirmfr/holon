@@ -295,6 +295,19 @@ impl Client {
         self.get(&format!("/deployments/{}/state", seg(slug))).map(|s| s["state"].clone())
     }
 
+    /// Its log lines, oldest first (`…/logs`): at a level or louder, and with a run, up to the end of
+    /// it, or only its own (`(seq, own)`). Refused to an agent.
+    pub(crate) fn logs(&self, slug: &str, level: Option<&str>, run: Option<(u64, bool)>) -> Result<Vec<Value>, String> {
+        let mut asked = String::from("limit=500");
+        if let Some(level) = level {
+            asked.push_str(&format!("&level={level}"));
+        }
+        if let Some((seq, own)) = run {
+            asked.push_str(&format!("&{}={seq}", if own { "run" } else { "until" }));
+        }
+        self.get(&format!("/deployments/{}/logs?{asked}", seg(slug))).map(|a| a["lines"].as_array().cloned().unwrap_or_default())
+    }
+
     /// A collection's first items: (key, value).
     pub(crate) fn collection(&self, slug: &str, name: &str) -> Result<(Vec<(String, Value)>, bool), String> {
         let c = self.get(&format!("/deployments/{}/collections/{}?limit=100", seg(slug), seg(name)))?;

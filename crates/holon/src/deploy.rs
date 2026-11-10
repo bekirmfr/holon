@@ -875,6 +875,7 @@ pub(crate) fn handle_delete_deployment(
             inbox::forget(deployments_path, slug);
             subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
             dequeue::forget(deployments_path, slug, &dep.folders.all.queues);
+            dep.folders.all.logs.forget(slug);
             dep.channels.close();
             dep.sockets.close_all(websockets::REMOVED);
             persist_deployments(deployments_path, deployments);

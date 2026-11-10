@@ -63,7 +63,7 @@ fn draw_head(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 }
 
 fn draw_sections(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
-    let counts = [None, Some(d.runs.len()), Some(d.moments().len()), Some(app.flow.cells.len()), None, None];
+    let counts = [None, Some(d.runs.len()), None, Some(d.moments().len()), Some(app.flow.cells.len()), None, None];
     let mut x = area.x + 1;
     for ((s, name), n) in SECTIONS.iter().zip(counts) {
         let here = app.flow.section == *s;
@@ -493,6 +493,46 @@ pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
     app.hit(rect, Click::Every);
 }
 
+/// The Logs' title: how many lines, which ones, and whether it follows the newest.
+fn log_title(app: &App) -> String {
+    let which = match (app.flow.log_level, app.flow.log_run) {
+        (_, Some((seq, true))) => format!(", run #{seq}'s own"),
+        (_, Some((seq, false))) => format!(", up to run #{seq}"),
+        _ => String::new(),
+    };
+    let level = match app.flow.log_level {
+        1 => ", warnings and louder",
+        2 => ", errors",
+        _ => "",
+    };
+    let follow = if app.flow.log_paused { ", paused" } else { "" };
+    format!("Log lines, oldest first ({}){level}{which}{follow}", app.flow.lines.len())
+}
+
+/// A log line as a row: its time of day, its level, its run, then its text on one line.
+fn log_row(l: &serde_json::Value, w: usize) -> Line<'static> {
+    // Its time of day to the millisecond, as the rest of this page tells time (UTC).
+    let ms = l["at"].as_u64().unwrap_or(0);
+    let secs = ms / 1000;
+    let clock = format!("{:02}:{:02}:{:02}.{:03}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60, ms % 1000);
+    let level = l["level"].as_str().unwrap_or("log");
+    let t = match level {
+        "error" => Tone::Bad,
+        "warn" => Tone::Warn,
+        "debug" => Tone::Dim,
+        _ => Tone::Plain,
+    };
+    let dropped = l["dropped"].as_u64().is_some_and(|n| n > 0);
+    let text = l["text"].as_str().unwrap_or("").replace('\n', " ");
+    let head = clock.chars().count().max(12) + 1 + 6 + 6;
+    Line::from(vec![
+        dim(pad(&clock, 13)),
+        Span::styled(pad(&level.to_uppercase(), 6), tone(t)),
+        dim(pad(&format!("#{}", l["run"]), 6)),
+        if dropped { dim(fit(&format!("⋯ {text}"), w.saturating_sub(head))) } else { Span::styled(fit(&text, w.saturating_sub(head)), tone(t)) },
+    ])
+}
+
 fn split(f: &mut Frame, app: &mut App, area: Rect) {
     let wide = area.width >= 100;
     let [left, right] = if wide { Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)]).areas(area) } else { Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area) };
@@ -511,6 +551,7 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
             let filtered = if filter.is_empty() { String::new() } else { format!("  /{filter}") };
             (format!("Runs, newest first ({count}{more}){filtered}"), n)
         }
+        Section::Logs => (log_title(app), app.flow.lines.len()),
         Section::History => ("History, newest first: one chain".to_string(), d.moments().len()),
         Section::State => (format!("Its state ({})", app.flow.cells.len()), app.flow.cells.len()),
         Section::Graph => (app.flow.graph.as_ref().map(graph_title).unwrap_or_else(|| "Graph".into()), app.flow.graph.as_ref().map_or(0, |g| g.rows.len())),
@@ -525,6 +566,9 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
     if let (Section::Graph, Some(g)) = (s, app.flow.graph.as_ref()) {
         every_chip(f, app, left, g);
         graph_list(f, app, inner, g, sel, focused, List::Section);
+    } else if n == 0 && s == Section::Logs {
+        let said = app.flow.log_error.clone().unwrap_or_else(|| "No lines yet: console.log in the flow writes them, and each shows here.".to_string());
+        f.render_widget(Paragraph::new(dim(format!(" {said}"))), inner);
     } else if n == 0 {
         let empty = match s {
             Section::Runs => "No runs yet: c calls it, and each run shows here.",
@@ -540,6 +584,10 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
                 f.render_widget(Paragraph::new(runs_head(head.width.saturating_sub(1) as usize)), Rect { x: head.x + 1, width: head.width.saturating_sub(1), ..head });
                 let shown = d.shown_runs(app_ref.filter_of(crate::workbench::app::Page::Flow));
                 list(f, app_ref, rows, List::Section, n, Some(sel), focused, |i, w| run_row(d, &d.runs[shown[i]], w))
+            }
+            Section::Logs => {
+                let lines = &app_ref.flow.lines;
+                list(f, app_ref, inner, List::Section, n, Some(sel), focused, |i, w| log_row(&lines[i], w));
             }
             Section::History => {
                 let moments = d.moments();

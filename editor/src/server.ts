@@ -536,6 +536,9 @@ export type Requirements = {
   /** The actions agents may run (`action reset`'s `reset`): each is `AgentRuns("reset")`, a
    *  grant a person approves and can take back. A person runs any of them either way. */
   agents?: string[];
+  /** Whether agents may read its log lines: `AgentReadsLogs`, a grant a person approves and can
+   *  take back. A person reads them either way. */
+  agent_logs?: boolean;
 };
 
 /** `POST /deploy/preview` — what deploying would ask for, without deploying. */
@@ -1019,6 +1022,19 @@ export async function getLog(slug: string, after?: number): Promise<{ entries: L
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
   return asJson(res);
+}
+
+/** A line a flow wrote with `console.log` and the rest, kept beside its runs and not in them (logs.rs):
+ *  its time, level (`debug`, `log`, `info`, `warn`, `error`), the version that wrote it, the run, and its
+ *  text; `dropped` more than 0: it stands for that many dropped before it. */
+export type LogLine = { at: number; level: string; unit: string; run: number; text: string; dropped?: number };
+
+/** A deployment's lines, oldest first: at `level` or louder, one run's (`run`) or every line up to the end
+ *  of one's (`until`), after the time `after` (ms), the newest `limit`. An agent is refused them. */
+export async function getLogs(slug: string, q: { level?: string; run?: number; until?: number; after?: number; limit?: number } = {}): Promise<LogLine[]> {
+  const asked = Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/logs${asked.length > 0 ? `?${asked.join("&")}` : ""}`);
+  return (await asJson<{ lines: LogLine[] }>(res)).lines;
 }
 
 /** One run a version was replayed on: what it did then against what the version does with it. */

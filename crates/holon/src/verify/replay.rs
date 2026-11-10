@@ -220,7 +220,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         missed: Vec::new(),
     };
     let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
-    let mut host = RecordingHost { performed: Vec::new() };
+    let mut host = RecordingHost::new();
     let mut observer = Fed { marks, other: Marks::new(), resolver, consumed: false };
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, &limits, &mut observer, &mut waits, &[]);
 

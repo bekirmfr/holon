@@ -1473,3 +1473,25 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   /* So do the tools and the deployment settings, over its right. */
   .hl-deploy:not(.hl-deploy--closed) { position: absolute; inset: 0 0 0 auto; z-index: 20; width: min(320px, 85vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
 }
+
+/* A deployment's log lines (LogsPane.tsx, docs/L4s/logs-L4.md §5): a terminal beside its runs. */
+.hl-logs { display: flex; flex-direction: column; gap: 8px; }
+.hl-logs .hl-flow__bar { flex-wrap: wrap; }
+.hl-logs__own { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.hl-logs__term { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 0; max-height: 60vh; min-height: 96px; overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; }
+.hl-logs__term > .hl-flow__note { padding: 0 12px; margin: 6px 0; }
+.hl-logs__line { display: flex; gap: 10px; padding: 0 12px; color: var(--body); }
+.hl-logs__line:hover { background: var(--row); }
+.hl-logs__at { color: var(--faint); flex: none; }
+.hl-logs__level { flex: none; width: 5ch; color: var(--muted); }
+.hl-logs__run { flex: none; color: var(--faint); text-decoration: none; min-width: 4ch; }
+.hl-logs__run:hover { color: var(--accent); text-decoration: underline; }
+.hl-logs__text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hl-logs__line--warn .hl-logs__level, .hl-logs__line--warn .hl-logs__text { color: var(--warn); }
+.hl-logs__line--error .hl-logs__level, .hl-logs__line--error .hl-logs__text { color: var(--bad); }
+.hl-logs__line--debug .hl-logs__text { color: var(--faint); }
+.hl-logs__line--dropped .hl-logs__text { color: var(--faint); font-style: italic; }
+@media (max-width: 560px) {
+  .hl-logs__line { flex-wrap: wrap; gap: 2px 8px; }
+  .hl-logs__text { flex-basis: 100%; }
+}

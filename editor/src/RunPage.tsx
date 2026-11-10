@@ -2,6 +2,7 @@
 // server, what came in and went out, what it read, what it did outside the flow and what the log
 // holds of it; checked offline with `holon verify`, or stepped through in the editor.
 
+import { LogsPane } from "./LogsPane";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useDialog } from "./Dialog";
 import { formatValue } from "./diagnostics";
@@ -157,6 +158,10 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
           {exchanges.length === 0 && run.performed.length === 0 && <p className="hl-flow__note">nothing</p>}
         </Section>
       </div>
+
+      <Section title="Log lines">
+        <LogsPane slug={slug} run={seq} navigate={navigate} />
+      </Section>
 
       <Section title="On record">
         <dl className="hl-flow__facts">

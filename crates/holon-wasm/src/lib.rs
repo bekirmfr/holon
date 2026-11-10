@@ -195,6 +195,7 @@ pub enum WCapability {
     RunsAction(String),
     FileWrite(String),
     ChannelSend(String),
+    Log(String),
     ChannelRead(String),
     MailSend(String),
     QueueSend(String),
@@ -231,6 +232,7 @@ impl WCapability {
             Capability::RunsAction(name) => WCapability::RunsAction(name),
             Capability::FileWrite(folder) => WCapability::FileWrite(folder),
             Capability::ChannelSend(channel) => WCapability::ChannelSend(channel),
+            Capability::Log(level) => WCapability::Log(level),
             Capability::ChannelRead(channel) => WCapability::ChannelRead(channel),
             Capability::MailSend(mail) => WCapability::MailSend(mail),
             Capability::QueueSend(queue) => WCapability::QueueSend(queue),
@@ -341,11 +343,13 @@ struct AskedFor {
     agents: std::collections::BTreeSet<String>,
     /// The handlers kept out of the log, by label (each declared `unrecorded`).
     unrecorded: std::collections::BTreeSet<String>,
+    /// Whether agents may read its log lines.
+    agent_logs: bool,
 }
 
 /// A manifest's items (core's `manifest_items`, the rule the server grants by): `capabilities`
 /// (consent names), then what `requirements` (`{limits, plain_http, private_addresses, agents,
-/// unrecorded}`) ask.
+/// unrecorded, agent_logs}`) ask.
 #[wasm_bindgen]
 pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Result<Vec<String>, JsError> {
     let asked: AskedFor = if requirements.is_undefined() || requirements.is_null() {
@@ -353,7 +357,7 @@ pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Resul
     } else {
         serde_wasm_bindgen::from_value(requirements).map_err(|e| JsError::new(&format!("requirements: {e}")))?
     };
-    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents, &asked.unrecorded).into_iter().collect())
+    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents, &asked.unrecorded, asked.agent_logs).into_iter().collect())
 }
 
 /// What starts the runs of a unit with these capabilities (core's `trigger`).

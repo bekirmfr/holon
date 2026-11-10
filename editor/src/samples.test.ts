@@ -171,6 +171,11 @@ describe("sample flows", () => {
     expect(manifestItems(ticker)).not.toContain('AgentRuns("reset")');
     expect(permissionKind('AgentRuns("reset")', [], manifestTrigger(ticker)).kind).toBe("optional");
     expect(describeItem('AgentRuns("reset")')).toBe("let agents run its action reset");
+    // And whether agents may read its log lines: one item, optional, asked for by its own setting.
+    expect(manifestItems(ticker, { agent_logs: true })).toContain("AgentReadsLogs");
+    expect(manifestItems(ticker)).not.toContain("AgentReadsLogs");
+    expect(permissionKind("AgentReadsLogs", [], manifestTrigger(ticker)).kind).toBe("optional");
+    expect(describeItem("AgentReadsLogs")).toBe("let agents read its log lines");
     // Running another flow's action is a permission naming the flow and the action: the shop's
     // approval says so, and the flow it calls is the sample billing.
     const shop = derive("shop").caps;

@@ -10,7 +10,7 @@
 
 import type { MouseEvent } from "react";
 
-export const FLOW_TABS = ["status", "runs", "history", "state", "settings"] as const;
+export const FLOW_TABS = ["status", "runs", "logs", "history", "state", "settings"] as const;
 export type FlowTab = (typeof FLOW_TABS)[number];
 
 export const LIBRARY_TABS = ["tutorials", "samples", "market"] as const;

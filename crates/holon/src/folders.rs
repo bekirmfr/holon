@@ -198,6 +198,8 @@ pub(crate) struct Folders {
     /// The queues bound on this server (queues.rs), the messages on their way to them, and what
     /// each listener is doing.
     pub(crate) queues: queues::Queues,
+    /// The lines the flows write to their logs (logs.rs), kept beside their runs and not in them.
+    pub(crate) logs: crate::logs::Logs,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -241,6 +243,7 @@ impl Folders {
             mails: mails::Mails::memory(),
             feeds: feeds::Feeds::memory(),
             queues: queues::Queues::memory(),
+            logs: crate::logs::Logs::memory(),
         }
     }
 
@@ -262,6 +265,11 @@ impl Folders {
     /// The same folders, beside the queues bound in `queues`.
     pub(crate) fn with_queues(self, queues: queues::Queues) -> Folders {
         Folders { queues, ..self }
+    }
+
+    /// The same folders, the lines their flows write kept as `logs` keeps them.
+    pub(crate) fn with_logs(self, logs: crate::logs::Logs) -> Folders {
+        Folders { logs, ..self }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).

@@ -34,7 +34,7 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   const record = page.getByRole("article", { name: `run ${newest}` });
   await expect(record).toContainText("GET /hello/:name");
   await expect(record.getByRole("list", { name: "steps" }).getByRole("listitem").first()).toBeVisible();
-  await expect(record.getByRole("region", { name: "in" })).toContainText("/hello/Grace");
+  await expect(record.getByRole("region", { name: "in", exact: true })).toContainText("/hello/Grace");
   await record.getByRole("button", { name: "Check offline…" }).click();
   const offline = page.getByRole("dialog");
   await expect(offline).toContainText("holon verify hello-api-runs.json --head ");

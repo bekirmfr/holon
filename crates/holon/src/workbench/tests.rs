@@ -208,6 +208,89 @@ fn bumped(times: usize) -> (App, &'static AppState) {
     (app, state)
 }
 
+/// A flow that writes lines at three levels, and the page of one that has run it twice.
+const LOUD: &str = "import { action, flow } from \"holon\"\n\nflow(\"loud\")\n\nexport const shout = action((input) => {\n  console.log(\"asked\", input.who)\n  console.warn(\"careful\")\n  console.debug(\"quiet\")\n})\n";
+
+fn loud_page() -> App {
+    let (mut app, state) = app();
+    tab_with(&mut app, LOUD);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    for who in ["ada", "bob"] {
+        let ran = route(state, &req("POST", "/trigger/loud/shout", format!("{{\"who\":\"{who}\"}}").into_bytes()));
+        let status = ran.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(ran)));
+    }
+    app.refresh();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('3'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Flow);
+    app
+}
+
+fn texts(app: &App) -> Vec<String> {
+    app.flow.lines.iter().map(|l| l["text"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+#[test]
+fn a_flows_log_lines_are_a_section_of_their_own_beside_its_runs() {
+    let mut app = loud_page();
+    // The Logs open on the newest line, as a terminal does, each with its level and its run.
+    app.flow_section(Section::Logs);
+    assert_eq!(texts(&app), ["asked ada", "careful", "quiet", "asked bob", "careful", "quiet"]);
+    assert_eq!(app.flow.sel(), 5, "the newest is picked");
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Log lines, oldest first (6)") && shown.contains("asked bob") && shown.contains("WARN") && shown.contains("DEBUG") && shown.contains(" Line "), "{shown}");
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Run" && v == "#1")), "{:?}", pane(&app));
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t == "quiet")), "{:?}", pane(&app));
+    press(&mut app, KeyCode::Up);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Level" && v == "WARN")), "the pane follows the pick: {:?}", pane(&app));
+
+    // w: warnings and louder, then errors only (none), then every line again.
+    press(&mut app, KeyCode::Char('w'));
+    assert_eq!(texts(&app), ["careful", "careful"]);
+    assert!(screen(&mut app, 130, 40).contains("warnings and louder"));
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.flow.lines.is_empty());
+    assert!(screen(&mut app, 130, 40).contains("No lines yet"));
+    press(&mut app, KeyCode::Char('w'));
+    assert_eq!(app.flow.lines.len(), 6);
+
+    // u: the lines up to the end of the picked line's run, then its own, then every run's.
+    app.flow.sel[Section::Logs as usize] = 1;
+    press(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.flow.log_run, Some((0, false)));
+    assert_eq!(texts(&app), ["asked ada", "careful", "quiet"]);
+    assert!(screen(&mut app, 130, 40).contains("up to run #0"));
+    press(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.flow.log_run, Some((0, true)));
+    press(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.flow.log_run, None);
+    assert_eq!(app.flow.lines.len(), 6);
+
+    // F pauses it, and a new line then leaves the pick where it is; Enter steps through the run.
+    press(&mut app, KeyCode::Char('F'));
+    assert!(app.flow.log_paused);
+    assert!(screen(&mut app, 130, 40).contains("paused"));
+    press(&mut app, KeyCode::Char('F'));
+    assert!(!app.flow.log_paused);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Editor, "stepped through the run the line is of");
+}
+
+#[test]
+fn a_runs_lines_are_one_key_away() {
+    let mut app = loud_page();
+    app.flow_section(Section::Runs);
+    press(&mut app, KeyCode::Down);
+    let seq = app.detail.as_ref().and_then(|d| d.shown_runs("").get(app.flow.sel()).and_then(|&i| d.runs[i]["seq"].as_u64())).unwrap();
+    press(&mut app, KeyCode::Char('L'));
+    assert_eq!(app.flow.section, Section::Logs);
+    assert_eq!(app.flow.log_run, Some((seq, false)));
+    assert!(app.flow.lines.iter().all(|l| l["run"].as_u64().is_some_and(|r| r <= seq)), "{:?}", app.flow.lines);
+}
+
 fn pane(app: &App) -> Vec<Row> {
     app.flow.pane.as_ref().map(|(_, rows)| rows.clone()).unwrap_or_default()
 }
@@ -240,7 +323,7 @@ fn a_flows_page_is_a_dashboard_then_each_record_beside_its_tabs() {
     press(&mut app, KeyCode::Right);
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t == "It didn't fail.")));
     for (w, h) in [(130, 40), (80, 24), (60, 16)] {
-        for s in [Section::Status, Section::Runs, Section::History, Section::State, Section::Access, Section::Graph] {
+        for s in [Section::Status, Section::Runs, Section::Logs, Section::History, Section::State, Section::Access, Section::Graph] {
             app.flow_section(s);
             screen(&mut app, w, h);
         }

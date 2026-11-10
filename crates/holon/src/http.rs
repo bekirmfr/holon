@@ -260,6 +260,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return durable::handle_get_runs(&state.deployments, slug);
         }
+        if let Some(slug) = rest.strip_suffix("/logs")
+            && method == "GET"
+        {
+            return logs::handle_get_logs(state, slug, &caller, request);
+        }
         if let Some(slug) = rest.strip_suffix("/feeds")
             && method == "GET"
         {

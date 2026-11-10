@@ -522,6 +522,35 @@ function AgentsMayRun({ capabilities, settings, setSettings, readOnly = false }:
   );
 }
 
+/**
+ * Whether agents may read the flow's log lines (permissions.rs: `agent_logs`). Ticked, it is asked for
+ * as `AgentReadsLogs`, which a person approves; unticked, an agent is refused them, and a person reads
+ * them either way. Shown for a flow that writes lines, or one still asking, so it can be cleared.
+ */
+function AgentsMayReadLogs({ capabilities, settings, setSettings, readOnly = false }: { capabilities: string[]; settings: FlowSettings; setSettings: (s: FlowSettings) => void; readOnly?: boolean }) {
+  const asked = settings.requirements?.agent_logs === true;
+  const writes = capabilities.some((c) => c.startsWith("Log("));
+  if (!writes && !asked) return null;
+  return (
+    <>
+      <span style={{ gridColumn: "1 / -1", color: "var(--ink)", marginTop: 4 }} title="a person reads its lines; an agent only if this is ticked, once a person approves it">
+        agents may read
+      </span>
+      <label style={{ display: "contents" }} title="AgentReadsLogs">
+        <span style={{ color: writes ? undefined : "var(--bad)" }}>its log lines{writes ? "" : " (it writes none now)"}</span>
+        <input
+          type="checkbox"
+          aria-label="agents may read its logs"
+          checked={asked}
+          onChange={(e) => setSettings({ ...settings, requirements: { ...settings.requirements, agent_logs: e.target.checked ? true : undefined } })}
+          disabled={readOnly}
+          style={{ justifySelf: "start" }}
+        />
+      </label>
+    </>
+  );
+}
+
 function GroupHead({ label, open, onToggle, first = false }: {
   label: string; open: boolean; onToggle: () => void; first?: boolean;
 }) {
@@ -747,7 +776,8 @@ export function DeployPanel({
           <>
             <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} readOnly={readOnly} />
             <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} readOnly={readOnly} />
-            {capabilities.length === 0 && !(settings.requirements?.optional?.length) && !(settings.requirements?.agents?.length) && (
+            <AgentsMayReadLogs capabilities={capabilities} settings={settings} setSettings={setSettings} readOnly={readOnly} />
+            {capabilities.length === 0 && !(settings.requirements?.optional?.length) && !(settings.requirements?.agents?.length) && !settings.requirements?.agent_logs && (
               <span style={{ gridColumn: "1 / -1", color: "var(--faintest)", fontStyle: "italic" }}>none</span>
             )}
           </>

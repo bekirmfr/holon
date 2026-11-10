@@ -168,6 +168,10 @@ pub struct LogEntry {
     /// and they are spooled (queues.rs): the log keeps them in `performed`.
     #[serde(skip)]
     pub queued: Vec<(String, holon_core::Value)>,
+    /// The lines it wrote to its log (`console.log` and the rest), each its level and its value,
+    /// until the entry is logged and they are written beside it (logs.rs): no part of it.
+    #[serde(skip)]
+    pub lines: Vec<(String, holon_core::Value)>,
 }
 
 /// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
@@ -2000,6 +2004,7 @@ mod tests {
 
     fn entry() -> LogEntry {
         LogEntry {
+            lines: vec![],
             unit: String::new(),
             seq: 0,
             prev: String::new(),

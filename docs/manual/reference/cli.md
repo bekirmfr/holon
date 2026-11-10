@@ -22,6 +22,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
 | [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
+| [`holon logs`](#holon-logs) | the lines a flow wrote with `console.log`, kept apart from its runs |
 | [`holon wait`](#holon-wait) | hold until a person decides a flow's proposal, and say how and why |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
@@ -161,6 +162,8 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--allow-host HOST` | a host name it answers to besides localhost, on its own port and each flow's (one a proxy in front forwards); repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
 | `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
+| `--log-stdout` | also print each line a flow writes with `console.log` as it is kept, one to a line, `11:48:03.678 traced-payout: LOG   run 0  payout asked p-1 250` (or `HOLON_LOG_STDOUT=1`): for a server run under systemd or in a container that collects what it prints |
+| `--log-size SIZE`, `--log-files N`, `--log-rate N` | how each deployment's log lines are kept: the size of each file (`64K` at least; default `2M`), how many files (1 to 10; default 3), and the most lines a second it writes (default 1000), the rest dropped and counted; or `HOLON_LOG_SIZE`, `HOLON_LOG_FILES`, `HOLON_LOG_RATE` ([`holon logs`](#holon-logs)) |
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
@@ -230,7 +233,7 @@ crumb going back to it; the line above the keys says what just happened.
 | 1 Overview | the page in a line, the last day's runs and failures, what is deployed (each with its version, its last day and its last run, and `v4 waits for you` when a version saved since waits), what waits for a person with what it would add (`+`), and what was done lately |
 | 2 Approvals | each thing waiting for you, and beside it the one picked, reviewed as its deploy would be, with what it may do once approved (`+` the new); enter approves it there, `→` reads the review, `]` `[` go to the next and the one before, `e` opens it in the editor |
 | 3 Flows | every deployment and saved flow; enter opens its page, `e` its text; `/` filters them, `f` goes round all, live, waiting and paused |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, what a version waiting would add, the secrets it reads), its runs (enter shows one over its text, with each statement's value; `/` filters them, `i` explains one, `F` follows the newest, `o` writes them to `<slug>-runs.json` for [`holon verify`](#holon-verify); each run says where it is on record), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, what a version waiting would add, the secrets it reads), its runs (enter shows one over its text, with each statement's value; `/` filters them, `i` explains one, `F` follows the newest, `o` writes them to `<slug>-runs.json` for [`holon verify`](#holon-verify); each run says where it is on record; `L` opens its log lines), its logs (what its flow wrote with `console.log`, a line each, the newest picked as they come: `w` shows warnings and louder, then errors, `u` the picked line's run's lines up to its end, then its own, `F` pauses, enter steps through the run; [`holon logs`](#holon-logs) reads the same), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is; each tab's dot is its deployment's state, and the text's title says how it stands against what is live (`v3, live`, `changed from v3 *`). `⌂ Home` starts a draft or opens a sample, a tab closed lately or a flow on the server |
 | 6 Library | the samples, with what each shows and its `holon new` line; enter opens a copy, `/` filters them |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases, mail and feeds flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database), [`holon mail`](#holon-mail) and [`holon feed`](#holon-feed)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
@@ -389,6 +392,30 @@ A deployment's live state, a line per value, written as the language writes valu
 collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
 `--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
 it ran, from where, how many runs, and the state it left.
+
+### `holon logs`
+
+```
+holon logs <slug> [--level LEVEL] [--run N | --until N] [--limit N] [--follow] [--json]
+```
+
+The lines a deployment's flow wrote with `console.log`, `info`, `debug`, `warn` and `error`,
+oldest first, each with when, its level and the run that wrote it:
+
+```
+21:15:33.419 LOG   run 3  payout asked p-1 250
+21:15:33.420 WARN  run 3  over the usual limit p-2
+```
+
+The host keeps them beside the deployment's runs: none is an effect a run performed,
+[`holon verify`](#holon-verify) checks a run without them, and a flow can't read them back.
+`--level warn` shows that level and louder (`log` and `info` are the same); `--run N` only the
+lines run N wrote, `--until N` every line up to the end of run N's; `--limit N` the newest N (200
+if left out); `--follow` keeps reading as new lines come; `--json` prints each line as JSON. A
+deployment keeps three files of 2 MB by default (`holon serve --log-size`, `--log-files`): the oldest
+lines go first, and a line says when some were dropped. A person signed in reads them. An agent, `holon mcp`, only where the deployment's grant lets agents
+(`AgentReadsLogs`, asked for by the deploy settings' **agents may read its logs**, [permissions](permissions.md#who-may-read-a-flows-log-lines)):
+its `logs` tool answers, and otherwise is refused.
 
 ### `holon decide`
 

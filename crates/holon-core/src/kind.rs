@@ -164,6 +164,9 @@ pub enum Capability {
     /// Sends packs on the named channel: `channel_send`, sent to its subscribers once the run is
     /// over and its writes have landed (`docs/L4s/channels-L4.md`).
     ChannelSend(String),
+    /// Writes a line to the deployment's log, apart from its runs: `log`, kept by the host once
+    /// the run is over (`docs/L4s/logs-L4.md`). The level rides in the name.
+    Log(String),
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
@@ -227,7 +230,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Approval(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | Log(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -384,6 +387,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A named channel: packs sent when the run is over, and a route's answer that subscribes
         // to them. The channel is a frozen param, so the capability names it exactly.
         "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
+        "log" => vec![Log(ident(params, "level")?)],
         "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
         // A folder's file as a route's answer: the folder is a frozen param, so the capability
         // names it exactly. The handle it serves is its own leaf's read.
