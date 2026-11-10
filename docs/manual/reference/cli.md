@@ -22,6 +22,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
 | [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
+| [`holon wait`](#holon-wait) | hold until a person decides a flow's proposal, and say how and why |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
@@ -412,6 +413,30 @@ more people, approved by whom, or declined; the run goes on with the decision on
 Each person counts once; one decline ends it. Only a person decides: an editor or an admin
 signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
 `holon mcp`, which asks as an agent.
+
+### `holon wait`
+
+```
+holon wait <slug> [--timeout SECONDS] [--json]
+```
+
+Holds until a person has decided the proposal a flow's deploy made, then prints how they decided,
+and the reason of a decline. A deploy that needs approval and comes from an agent (`holon mcp`'s
+`deploy`, or an agent's API token) waits in the editor's Approvals, and the agent has nothing to
+do until then. An agent with a shell runs this in the background after it proposes; the command
+ends when the decision is made, which a host that restarts an agent when a background command
+ends takes as its message. Already decided, it prints that at once.
+
+```
+proposal 1 was declined by bma at 2026-11-10 09:05:31 UTC: make the nodes grouped by function area
+```
+
+It ends with 0 when the proposal was approved (and so deployed), 1 when it was declined, 2 when
+the flow has no proposal, 3 when a newer proposal replaced it (it follows the newer one while it
+waits), and 4 when `--timeout` ran out with nobody having decided. It decides nothing; that is
+[`holon decide`](#holon-decide) for an approval a run waits at, and the Approvals page for a
+proposal. Where there is no shell, `holon mcp`'s `deployments` with a slug and `wait` holds the
+same way, for up to 45 seconds a call.
 
 ## Grants and policy
 

@@ -48,7 +48,11 @@ shows what each may do before it runs. Call `reference` first for the language a
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
 show what is already there, with its text, and `save` keeps a flow without deploying it. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
 deploy, and any version that needs a new permission, waits for a person to approve it in the \
-editor: tell the user what it asks for and where, and deploy again once they have. A run that \
+editor: tell the user what it asks for and where, and deploy again once they have. A proposal \
+is decided later, and a decline comes with a reason: with a shell, run `holon wait <slug>` in the \
+background (it ends when a person decides, exit 0 approved, 1 declined with the reason); without \
+one, `deployments` with the slug and `wait` holds until they do. Read the outcome before you \
+deploy again. A run that \
 waits at an approval (`await approval(…)`) goes on when people decide it, in the editor's \
 Approvals or with `holon decide`; no tool decides one: `runs` shows which run waits, and who has \
 approved it so far, for you to tell the user.";
@@ -222,7 +226,10 @@ fn tool_list() -> Value {
             "name": "deployments",
             "title": "List what is deployed",
             "description": "What is deployed, one line each (state, version, port, runs, who deployed it), what each waits on a person for, and the flows saved but never deployed. With a slug, that one in full: its routes, what it may do, what its grant doesn't cover, the secrets it reads and which are set, what it waits for, and its text as deployed, even when it has never run.",
-            "inputSchema": { "type": "object", "properties": { "slug": { "type": "string", "description": "one deployment's name; leave out for all" } } },
+            "inputSchema": { "type": "object", "properties": {
+                "slug": { "type": "string", "description": "one deployment's name; leave out for all" },
+                "wait": { "type": "integer", "minimum": 1, "maximum": 45, "description": "with a slug whose proposal waits for a person: seconds to hold the answer for their decision (up to 45); it answers as soon as they decide, and says it is still waiting if they haven't" }
+            } },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
@@ -328,7 +335,18 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         }
         "call" => call(&*connect()?, args),
         "run" => run_action(&*connect()?, arg(args, "slug")?, arg(args, "action")?, args.get("input").cloned().unwrap_or_else(|| json!({}))),
-        "deployments" => deployments(&*connect()?, args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
+        "deployments" => {
+            let api = connect()?;
+            let slug = args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+            let waited = match (slug, args.get("wait").and_then(Value::as_u64)) {
+                (Some(slug), Some(seconds)) if seconds > 0 => wait_for_decision(&*api, slug, seconds.min(MAX_WAIT), Duration::from_secs(1)),
+                _ => None,
+            };
+            deployments(&*api, slug).map(|said| match waited {
+                Some(note) => format!("{note}\n\n{said}"),
+                None => said,
+            })
+        }
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
@@ -395,11 +413,12 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
         let version = p.get("version").and_then(Value::as_u64).unwrap_or(1);
         let why = if asked.why.is_some() { "with your why" } else { "with no why: say what it changes and why, with `why`, next time" };
         return Ok(format!(
-            "Not deployed yet: proposed as version {version} of \"{slug}\" (proposal {}), {why}. A person has to approve what it may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt waits in the editor's Approvals on {} (#approvals.{slug}.v{version}), where they approve it, which deploys it, or decline it with a reason. Tell them; `deployments` with \"{slug}\" says what they decided. Once it is deployed, a version that needs nothing more deploys from here at once.{secrets_note}",
+            "Not deployed yet: proposed as version {version} of \"{slug}\" (proposal {}), {why}. A person has to approve what it may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt waits in the editor's Approvals on {} (#approvals.{slug}.v{version}), where they approve it, which deploys it, or decline it with a reason. Tell them, and hear what they decide without polling: run `holon wait {slug} --server {}` in the background (it ends when they decide, exit 0 if approved, 1 if declined, with the reason), or `deployments` with \"{slug}\" and `wait` where your host has no shell. Once it is deployed, a version that needs nothing more deploys from here at once.{secrets_note}",
             p.get("id").and_then(Value::as_u64).unwrap_or(0),
             described(&needs),
             api.server(),
             touches.join("\n"),
+            api.server(),
             api.server()
         ));
     }
@@ -593,6 +612,56 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
 /// How many of a flow's proposals `deployments` says, the waiting one first, then the newest.
 const PROPOSALS_SAID: usize = 3;
 
+/// The longest a call waits for a person, in seconds: under what a host gives a tool before it
+/// gives up on it. An agent that wants longer asks again.
+const MAX_WAIT: u64 = 45;
+
+/// Whether a person has a proposal of `slug`'s still to decide.
+fn waits_on_a_person(api: &dyn Api, slug: &str) -> bool {
+    json_of(api, "GET", "/proposals", None)
+        .map(|all| list_of(all, Some("proposals")).iter().any(|p| p.get("slug").and_then(Value::as_str) == Some(slug) && p.get("state").and_then(Value::as_str) == Some("waiting")))
+        .unwrap_or(false)
+}
+
+/// What an agent does with a proposal that waits for a person: `deployments` with `wait` holds
+/// the answer until it is decided, up to `seconds`, looking every `every`. Holon has no way to
+/// push the decision to an agent that a host would carry to its model, so the agent asks and
+/// the call is the wait. None when nothing waits (what to say is the answer itself).
+fn wait_for_decision(api: &dyn Api, slug: &str, seconds: u64, every: Duration) -> Option<String> {
+    if !waits_on_a_person(api, slug) {
+        return None;
+    }
+    let until = std::time::Instant::now() + Duration::from_secs(seconds);
+    while std::time::Instant::now() < until {
+        std::thread::sleep(every);
+        if !waits_on_a_person(api, slug) {
+            return Some("A person decided while you waited:".into());
+        }
+    }
+    Some(format!("Still waiting for a person after {seconds} seconds: call `deployments` with this slug and `wait` again to keep watching."))
+}
+
+/// A proposal as its author reads what became of it: waiting, with who proposed it and why, or
+/// declined with its reason, approved, or replaced. `holon wait` says it too.
+pub(crate) fn proposal_line(p: &Value) -> String {
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    let at = |k: &str| when(&json!(p.get(k).and_then(Value::as_u64).unwrap_or(0) / 1000));
+    let id = p.get("id").and_then(Value::as_u64).unwrap_or(0);
+    let decider = s("decided_by").unwrap_or("a person");
+    match s("state").unwrap_or("?") {
+        "waiting" => format!(
+            "proposal {id}, version {}: waits for a person (proposed by {} at {}){}",
+            p.get("version").and_then(Value::as_u64).unwrap_or(0),
+            s("by").unwrap_or("someone"),
+            at("at_ms"),
+            s("why").filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default()
+        ),
+        "declined" => format!("proposal {id} was declined by {decider} at {}: {}", at("decided_at_ms"), s("reason").unwrap_or("no reason given")),
+        "approved" => format!("proposal {id} was approved by {decider} at {}, and deployed", at("decided_at_ms")),
+        _ => format!("proposal {id} was replaced by a newer one"),
+    }
+}
+
 /// A flow's proposals, as its author reads what became of them: the one waiting, and the newest
 /// decided, a declined one with its reason. None when it has none (or the server keeps none).
 fn proposals_of(api: &dyn Api, slug: &str) -> Option<String> {
@@ -601,24 +670,7 @@ fn proposals_of(api: &dyn Api, slug: &str) -> Option<String> {
         .iter()
         .filter(|p| p.get("slug").and_then(Value::as_str) == Some(slug))
         .take(PROPOSALS_SAID)
-        .map(|p| {
-            let s = |k: &str| p.get(k).and_then(Value::as_str);
-            let at = |k: &str| when(&json!(p.get(k).and_then(Value::as_u64).unwrap_or(0) / 1000));
-            let id = p.get("id").and_then(Value::as_u64).unwrap_or(0);
-            let decider = s("decided_by").unwrap_or("a person");
-            match s("state").unwrap_or("?") {
-                "waiting" => format!(
-                    "  - proposal {id}, version {}: waits for a person (proposed by {} at {}){}",
-                    p.get("version").and_then(Value::as_u64).unwrap_or(0),
-                    s("by").unwrap_or("someone"),
-                    at("at_ms"),
-                    s("why").filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default()
-                ),
-                "declined" => format!("  - proposal {id} was declined by {decider} at {}: {}", at("decided_at_ms"), s("reason").unwrap_or("no reason given")),
-                "approved" => format!("  - proposal {id} was approved by {decider} at {}, and deployed", at("decided_at_ms")),
-                _ => format!("  - proposal {id} was replaced by a newer one"),
-            }
-        })
+        .map(|p| format!("  - {}", proposal_line(p)))
         .collect();
     (!lines.is_empty()).then(|| format!("Its proposals, the newest first:\n{}", lines.join("\n")))
 }
@@ -1009,8 +1061,66 @@ fn line_diff(a: &str, b: &str) -> Vec<String> {
 
 // ── the protocol ────────────────────────────────────────────────────────────────────────────
 
+/// What a connection has done so far. The protocol's lifecycle starts with `initialize`: until the
+/// client has sent it, only `ping` is answered.
+#[derive(Default)]
+pub(crate) struct Session {
+    initialized: bool,
+}
+
+/// What is wrong with a call's arguments by the tool's own schema, said to the agent that sent
+/// them: one of the wrong kind is told as that, and not as one that is missing (the model that
+/// sent `text: 5` can then correct itself). None when they are what the tool takes. An argument
+/// the tool doesn't list is let through, as a client may send more than a server knows.
+fn invalid_arguments(name: &str, args: &Value) -> Option<String> {
+    fn kind(v: &Value) -> &'static str {
+        match v {
+            Value::Null => "null",
+            Value::Bool(_) => "a boolean",
+            Value::Number(_) => "a number",
+            Value::String(_) => "a text",
+            Value::Array(_) => "a list",
+            Value::Object(_) => "an object",
+        }
+    }
+    let tools = tool_list();
+    let schema = tools.as_array()?.iter().find(|t| t["name"] == name)?.get("inputSchema")?;
+    let Some(given) = args.as_object() else {
+        return Some(format!("the arguments of `{name}` must be an object, not {}", kind(args)));
+    };
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    for (key, value) in given {
+        let Some(spec) = properties.get(key) else { continue };
+        let fits = match spec.get("type").and_then(Value::as_str) {
+            Some("string") => value.is_string(),
+            Some("number" | "integer") => value.is_number(),
+            Some("boolean") => value.is_boolean(),
+            Some("object") => value.is_object(),
+            Some("array") => value.is_array(),
+            _ => true,
+        };
+        if !fits {
+            let wants = match spec["type"].as_str() {
+                Some("string") => "a text",
+                Some("number" | "integer") => "a number",
+                Some("boolean") => "true or false",
+                Some("object") => "an object",
+                _ => "a list",
+            };
+            return Some(format!("`{key}` must be {wants}, not {}", kind(value)));
+        }
+        if let Some(options) = spec.get("enum").and_then(Value::as_array) {
+            if !options.contains(value) {
+                let listed: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+                return Some(format!("`{key}` must be one of {}, not {value}", listed.join(", ")));
+            }
+        }
+    }
+    None
+}
+
 /// The answer to one JSON-RPC message; none for a notification.
-pub(crate) fn handle(message: &Value, connect: &Connect) -> Option<Value> {
+pub(crate) fn handle(message: &Value, connect: &Connect, session: &mut Session) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message.get("method").and_then(Value::as_str);
     let reply = |result: Result<Value, (i64, String)>| {
@@ -1026,10 +1136,14 @@ pub(crate) fn handle(message: &Value, connect: &Connect) -> Option<Value> {
     };
     // A notification: no answer.
     id.as_ref()?;
+    if !session.initialized && method != "initialize" && method != "ping" {
+        return reply(Err((-32600, format!("send `initialize` before `{method}`"))));
+    }
     match method {
         "initialize" => {
             let asked = message.pointer("/params/protocolVersion").and_then(Value::as_str);
             let version = asked.filter(|v| VERSIONS.contains(v)).unwrap_or(VERSIONS[VERSIONS.len() - 1]);
+            session.initialized = true;
             reply(Ok(json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false } },
@@ -1047,6 +1161,10 @@ pub(crate) fn handle(message: &Value, connect: &Connect) -> Option<Value> {
                 return reply(Err((-32602, format!("there is no tool \"{name}\""))));
             }
             let args = message.pointer("/params/arguments").cloned().unwrap_or(json!({}));
+            // A tool's failure, not the protocol's: the agent reads it and tries again.
+            if let Some(why) = invalid_arguments(name, &args) {
+                return reply(Ok(json!({ "content": [{ "type": "text", "text": why }], "isError": true })));
+            }
             let (text, failed) = match call_tool(name, &args, connect) {
                 Ok(t) => (t, false),
                 Err(e) => (e, true),
@@ -1059,13 +1177,14 @@ pub(crate) fn handle(message: &Value, connect: &Connect) -> Option<Value> {
 
 /// Serve the protocol on `input` and `output` until the input ends.
 pub(crate) fn serve(input: impl BufRead, mut output: impl Write, connect: &Connect) -> std::io::Result<()> {
+    let mut session = Session::default();
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         let answer = match serde_json::from_str::<Value>(&line) {
-            Ok(message) if message.is_object() => handle(&message, connect),
+            Ok(message) if message.is_object() => handle(&message, connect, &mut session),
             Ok(_) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "one JSON-RPC message per line, not a batch" } })),
             Err(e) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("not JSON: {e}") } })),
         };
@@ -1209,6 +1328,46 @@ mod tests {
         assert!(kept.contains("posts") && kept.contains("`state` with collection posts"), "{kept}");
         let posts = tool(&state, "state", json!({ "slug": "slugs", "collection": "posts" })).unwrap();
         assert!(posts.starts_with("\"hello-world\" → { at: ") && posts.contains("author: \"ada\""), "{posts}");
+    }
+
+    /// `deployments` with `wait` holds for a person's decision, and no longer than asked: a server
+    /// that answers its proposals as a script says (waiting, waiting, declined).
+    #[test]
+    fn deployments_waits_for_a_proposal_to_be_decided_and_says_when_it_is_still_waiting() {
+        use std::cell::Cell;
+        struct Proposals<'a> {
+            asked: Cell<usize>,
+            states: &'a [&'a str],
+        }
+        impl Api for Proposals<'_> {
+            fn server(&self) -> String {
+                "the script".into()
+            }
+            fn send(&self, _: &str, path: &str, _: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+                assert_eq!(path, "/proposals");
+                let at = self.asked.get().min(self.states.len() - 1);
+                self.asked.set(self.asked.get() + 1);
+                Ok((200, json!({ "proposals": [{ "id": 1, "slug": "tide", "state": self.states[at] }, { "id": 2, "slug": "other", "state": "waiting" }] }).to_string().into_bytes()))
+            }
+        }
+        let tick = Duration::from_millis(5);
+        // Decided on the third look: the call returns then, and says so.
+        let api = Proposals { asked: Cell::new(0), states: &["waiting", "waiting", "declined"] };
+        let said = wait_for_decision(&api, "tide", 10, tick).unwrap();
+        assert!(said.starts_with("A person decided while you waited"), "{said}");
+        assert_eq!(api.asked.get(), 3, "it looked until it was decided, and no more");
+        // Never decided: it stops at the time asked, and says how to go on.
+        let api = Proposals { asked: Cell::new(0), states: &["waiting"] };
+        let started = std::time::Instant::now();
+        let said = wait_for_decision(&api, "tide", 1, tick).unwrap();
+        assert!(said.starts_with("Still waiting for a person after 1 seconds") && said.contains("`wait`"), "{said}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        // Nothing waits: no wait, and nothing to say before the answer.
+        let api = Proposals { asked: Cell::new(0), states: &["approved"] };
+        assert_eq!(wait_for_decision(&api, "tide", 10, tick), None);
+        assert_eq!(api.asked.get(), 1);
+        // Another flow's proposal waiting is not this one's.
+        assert_eq!(wait_for_decision(&Proposals { asked: Cell::new(0), states: &["declined"] }, "other-flow", 10, tick), None);
     }
 
     /// A flow's `browsers` line reaches the server as the list its deploy request takes, so a
@@ -1808,12 +1967,17 @@ mod tests {
         let state = test_state();
         let connect = || -> Result<Box<dyn Api + '_>, String> { Ok(Box::new(InProcess(&state))) };
         let input = [
+            // Before `initialize` only `ping` is answered.
+            r#"{"jsonrpc":"2.0","id":90,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":91,"method":"ping"}"#,
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reference","arguments":{"topic":"concat"}}}"#,
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check","arguments":{"text":"import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n"}}}"#,
             r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope"}}"#,
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"check","arguments":{"text":5}}}"#,
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"call","arguments":{"slug":"s","method":"GET","path":"/","headers":"x"}}}"#,
             r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#,
             "not json",
             r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#,
@@ -1822,7 +1986,11 @@ mod tests {
         let mut out = Vec::new();
         serve(input.as_bytes(), &mut out, &connect).unwrap();
         let answers: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(answers.len(), 8, "a notification gets no answer");
+        assert_eq!(answers.len(), 12, "a notification gets no answer");
+        assert_eq!(answers[0]["error"]["code"], -32600, "before initialize: {}", answers[0]);
+        assert!(answers[0]["error"]["message"].as_str().unwrap().contains("initialize"));
+        assert_eq!(answers[1]["result"], json!({}), "a ping is answered at any time");
+        let answers: Vec<Value> = answers[2..].to_vec();
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -1832,8 +2000,13 @@ mod tests {
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);
         assert!(answers[3]["result"]["content"][0]["text"].as_str().unwrap().contains("unknown name"));
         assert_eq!(answers[4]["error"]["code"], -32602);
-        assert_eq!(answers[5]["error"]["code"], -32601);
-        assert_eq!(answers[6]["error"]["code"], -32700);
-        assert_eq!(answers[7]["result"]["protocolVersion"], VERSIONS[VERSIONS.len() - 1]);
+        // An argument of the wrong kind is a tool's failure that says so, not "missing".
+        for (k, said) in [(5, "`text` must be a text, not a number"), (6, "`headers` must be an object, not a text")] {
+            assert_eq!(answers[k]["result"]["isError"], true, "{}", answers[k]);
+            assert_eq!(answers[k]["result"]["content"][0]["text"], said);
+        }
+        assert_eq!(answers[7]["error"]["code"], -32601);
+        assert_eq!(answers[8]["error"]["code"], -32700);
+        assert_eq!(answers[9]["result"]["protocolVersion"], VERSIONS[VERSIONS.len() - 1]);
     }
 }
