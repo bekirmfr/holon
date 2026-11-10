@@ -16,7 +16,7 @@ const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
 /** The samples' titles, as holon-author lists them (samples.rs), read as the tests are collected:
- *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
+ *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (e2e.yml) rather
  *  than make one long test, without a fresh page and editor for each sample (a test each was
  *  half again as slow). */
 const samplesRs = readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8");

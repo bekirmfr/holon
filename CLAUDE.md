@@ -15,8 +15,10 @@ description, what it shows, how to try it) in `crates/holon-author/src/samples.r
 - covered by `editor/src/samples.test.ts`, which builds every sample and derives its routes
   through the real core: a sample that stops compiling fails the tests;
 - run live once (deployed, sent a request) before the commit, and the commit says so;
-- deployed by the end-to-end tests (`editor/e2e`, `npm run e2e`, in CI too) through the real
-  editor and server, so a sample that stops deploying fails CI.
+- deployed by the end-to-end tests (`editor/e2e`, `npm run e2e`) through the real editor and
+  server, so a sample that stops deploying fails them. CI runs them on main, nightly, and a pull
+  request labelled `e2e` or a release's (`.github/workflows/e2e.yml`); before merging any other
+  pull request whose change they cover, run them locally or label it.
 
 A change to an existing feature updates the samples that use it. The editor's flows page lists
 the samples; opening one starts an unsaved copy.

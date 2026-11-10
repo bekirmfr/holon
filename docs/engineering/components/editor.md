@@ -203,8 +203,9 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 `npm run build`): `serves_the_page_and_its_files_and_nothing_outside` (no `..`, no API path, no
 missing asset) and `the_built_in_editor_is_served`.
 
-**End to end** (`npm run e2e`, Playwright; CI job `e2e`, two shards, `--fully-parallel`, traces
-kept on failure). Eight files, 73 tests counted by listing their `test(` calls (one of which makes
+**End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eight
+files, 73 tests counted by listing their `test(` calls (one of which makes
 a test per eight samples); 72 pass and `atlas-notes` is skipped without `HOLON_TEST_MONGODB`
 ([Resilience §4](../themes/resilience.md)), in 7.1 minutes at `9969f8b`
 ([Testing](../themes/testing.md)).

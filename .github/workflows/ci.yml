@@ -2,7 +2,8 @@ name: ci
 
 # Main on every push; anything else through its pull request, once (a branch pushed with a PR
 # open ran twice before). A tag runs no CI of its own: its commit ran it when it reached main.
-# `workflow_dispatch` runs it by hand on any branch.
+# `workflow_dispatch` runs it by hand on any branch. The end-to-end suite is e2e.yml, which runs
+# less often: on main, nightly, and a pull request labelled `e2e` or a release's.
 on:
   push:
     branches: [main]
@@ -117,104 +118,7 @@ jobs:
         working-directory: editor
       - run: cargo test -p holon --features embed-editor editor
 
-  # 4. End to end: the editor in a real browser against a real `holon serve`, both started by
-  #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
-  #    deploys through the consent screen; requests replay exactly in view mode. In two shards,
-  #    each on its own runner with its own servers; `--fully-parallel` lets a shard take single
-  #    tests rather than whole files (samples.e2e.ts holds most of them), and each still runs
-  #    its tests one at a time, in order.
-  e2e:
-    runs-on: [self-hosted, Linux, X64]
-    env:
-      # The atlas-notes sample's MongoDB, and the ledger-watch sample's Postgres
-      # (editor/e2e/server.mjs binds them).
-      HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
-      HOLON_TEST_POSTGRES: postgres://postgres:holon@127.0.0.1:5433/postgres
-      # Builds go beside the checkout, which this runner keeps between runs (checkout's clean
-      # removes target/ inside it), in place of GitHub's cache: saving 600 MB to that from this
-      # runner hung at 0%.
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../e2e-target
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      # This runner keeps what a run leaves, and both filled their disks mid-run (ENOSPC,
-      # 2026-11-02). Every run: the MongoDB volumes earlier runs left behind (start-mongodb.sh now
-      # removes its own) and dangling images. Under 5 GB free, the kept build and npm's cache too:
-      # the build is redone, in minutes. Not more: the disks are 25 GB, one has 6 GB free with its
-      # build kept (3.5 GB), and a higher mark would rebuild there every run.
-      - name: Room on the runner's disk
-        run: |
-          free_gb() { df --output=avail -BG "$GITHUB_WORKSPACE" | tail -1 | tr -dc 0-9; }
-          echo "$(free_gb) GB free"
-          docker volume prune -f || true
-          docker image prune -f || true
-          if [ "$(free_gb)" -lt 5 ]; then
-            du -sh "$CARGO_TARGET_DIR" ~/.npm ~/.cache/ms-playwright ~/.rustup 2>/dev/null || true
-            echo "under 5 GB free: removing the kept build and npm's cache"
-            rm -rf "$CARGO_TARGET_DIR" ~/.npm/_cacache
-          fi
-          df -h "$GITHUB_WORKSPACE"
-          # rustup, installed by an earlier run, on the PATH: the toolchain action looks for it and
-          # otherwise downloads its installer again (a minute or more from one runner).
-          if [ -x "$HOME/.cargo/bin/rustup" ]; then echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; fi
-      - uses: actions/checkout@v4
-      - run: bash .github/start-mongodb.sh
-      - run: bash .github/start-postgres.sh
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: v0.15.0
-      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
-        timeout-minutes: 10
-      # Without GitHub's npm cache: npm ci reads the runner's own ~/.npm, kept between runs. Restoring
-      # GitHub's (27 MB) from one runner went at 0.1 MB/s and once took ten minutes (2026-11-02).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-        working-directory: editor
-      # Chromium alone (seconds). Each try gets five minutes and a second try follows: an install
-      # once hung past twelve, with no limit short of the job's six hours.
-      - run: timeout 300 npx playwright install chromium || timeout 300 npx playwright install chromium
-        working-directory: editor
-        timeout-minutes: 11
-      # Its system packages from apt only if it can't start without them: one launch is Playwright's
-      # own check of the system, which names what is missing. The runner image has had every library
-      # (a trial without apt passed, 6a3db69 on ci-no-apt), and apt's fonts were what waited on
-      # Ubuntu's mirror; if the image drops one, this installs it (fonts and all) and goes on.
-      - name: Chromium's system packages, only if it can't start without them
-        run: |
-          if node -e "require('@playwright/test').chromium.launch().then((b) => b.close())"; then
-            echo "Chromium starts: no system packages needed"
-          else
-            echo "Chromium can't start without its system packages: installing them"
-            timeout 300 npx playwright install-deps chromium || timeout 300 npx playwright install-deps chromium
-          fi
-        working-directory: editor
-        timeout-minutes: 12
-      - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/2
-        working-directory: editor
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-traces-${{ matrix.shard }}
-          path: editor/test-results
-      # And after, however the run ended (failed, cancelled): its MongoDB and Postgres with their
-      # volumes, and what an e2e server killed before its own cleanup left in the temp folder. The
-      # kept build stays.
-      - name: Clean up after the run
-        if: always()
-        run: |
-          docker rm -f -v mongo || true
-          docker rm -f -v holon-postgres || true
-          rm -rf /tmp/holon-e2e-* editor/test-results
-          df -h "$GITHUB_WORKSPACE"
-
-  # 5. The VS Code extension (editors/vscode): in a real VS Code (downloaded, on a virtual
+  # 4. The VS Code extension (editors/vscode): in a real VS Code (downloaded, on a virtual
   #    display), a flow's mistake, completion, hover and formatting through `holon lsp`.
   vscode:
     runs-on: ubuntu-latest
