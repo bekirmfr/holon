@@ -320,8 +320,11 @@ pub(crate) type Connect<'a> = dyn Fn() -> Result<Box<dyn Api + 'a>, String> + Sy
 #[derive(Default)]
 pub(crate) struct Ctx<'a> {
     cancelled: Option<&'a AtomicBool>,
-    progress: Option<&'a (dyn Fn(u64, u64, &str) + Sync)>,
+    progress: Option<&'a Progress<'a>>,
 }
+
+/// What a call says of how far it has got: done, of how many, and in a few words.
+type Progress<'p> = dyn Fn(u64, u64, &str) + Sync + 'p;
 
 impl Ctx<'_> {
     fn is_cancelled(&self) -> bool {
@@ -1152,11 +1155,11 @@ fn invalid_arguments(name: &str, args: &Value) -> Option<String> {
             };
             return Some(format!("`{key}` must be {wants}, not {}", kind(value)));
         }
-        if let Some(options) = spec.get("enum").and_then(Value::as_array) {
-            if !options.contains(value) {
-                let listed: Vec<String> = options.iter().map(|o| o.to_string()).collect();
-                return Some(format!("`{key}` must be one of {}, not {value}", listed.join(", ")));
-            }
+        if let Some(options) = spec.get("enum").and_then(Value::as_array)
+            && !options.contains(value)
+        {
+            let listed: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+            return Some(format!("`{key}` must be one of {}, not {value}", listed.join(", ")));
         }
     }
     None
@@ -1238,7 +1241,7 @@ fn answer_call(call: Call, cancelled: &AtomicBool, connect: &Connect, say: &(dyn
             say(&json!({ "jsonrpc": "2.0", "method": "notifications/progress", "params": { "progressToken": token, "progress": done, "total": of, "message": note } }));
         }
     };
-    let ctx = Ctx { cancelled: Some(cancelled), progress: progress_token.is_some().then_some(&progress as &(dyn Fn(u64, u64, &str) + Sync)) };
+    let ctx = Ctx { cancelled: Some(cancelled), progress: progress_token.is_some().then_some(&progress as &Progress<'_>) };
     let (text, failed) = match call_tool(&name, &args, connect, &ctx) {
         Ok(t) => (t, false),
         Err(e) => (e, true),
@@ -1282,10 +1285,10 @@ pub(crate) fn serve<R: BufRead, W: Write + Send>(input: R, output: W, connect: &
                 let answer = match serde_json::from_str::<Value>(&line) {
                     Ok(message) if message.get("method").and_then(Value::as_str) == Some("notifications/cancelled") => {
                         // Who asked has given up on a request: stop it, and say nothing of it.
-                        if let Some(id) = message.pointer("/params/requestId") {
-                            if let Some(flag) = running.lock().unwrap_or_else(|e| e.into_inner()).get(&id.to_string()) {
-                                flag.store(true, Ordering::Relaxed);
-                            }
+                        if let Some(id) = message.pointer("/params/requestId")
+                            && let Some(flag) = running.lock().unwrap_or_else(|e| e.into_inner()).get(&id.to_string())
+                        {
+                            flag.store(true, Ordering::Relaxed);
                         }
                         None
                     }
