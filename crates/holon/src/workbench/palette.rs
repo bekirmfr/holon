@@ -68,6 +68,7 @@ fn all(app: &App) -> Vec<Item> {
             let Some(s) = d["slug"].as_str() else { continue };
             out.push(item(s, "flow", Act::Flow(s.into(), Section::Status)));
             out.push(item(format!("{s} runs"), "flow", Act::Flow(s.into(), Section::Runs)));
+            out.push(item(format!("{s} logs"), "flow", Act::Flow(s.into(), Section::Logs)));
             out.push(item(format!("{s} history"), "flow", Act::Flow(s.into(), Section::History)));
             out.push(item(format!("{s} state"), "flow", Act::Flow(s.into(), Section::State)));
             out.push(item(format!("{s} access"), "flow", Act::Flow(s.into(), Section::Access)));
