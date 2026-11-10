@@ -205,6 +205,7 @@ ops! {
     "channel_send" => ChannelSend,
     "mail_send" => MailSend,
     "queue_send" => QueueSend,
+    "log" => Log,
     "channel_subscribe" => ChannelSubscribe,
     "file_serve" => FileServe,
 }
@@ -1276,6 +1277,15 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         // A queue's message: `{data, group}`, its data any value but an effect, its group text
         // when given. The queue rides in the sink name.
+        // A line for the deployment's log: any value but an effect, at the leaf's level. The host
+        // keeps it apart from the run's record (logs.rs), so it is no part of what verify checks.
+        Op::Log => {
+            let level = crate::kind::ident(params, "level")?;
+            if !matches!(level.as_str(), "log" | "info" | "debug" | "warn" | "error") {
+                return None;
+            }
+            sink_effect(&format!("log:{level}"), inputs)
+        }
         Op::QueueSend => {
             let queue = crate::kind::ident(params, "queue")?;
             let Value::Record(message) = inputs.first()? else { return None };
@@ -1630,7 +1640,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send" | "queue_send")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send" | "queue_send" | "log")
 }
 
 /// The most items one `collection_list` returns.

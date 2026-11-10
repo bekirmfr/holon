@@ -1559,7 +1559,10 @@ impl<'s, 't> Reader<'s, 't> {
         walk(&mut e.clone(), &mut |x| {
             if let ExprKind::Method { receiver, method, .. } = &x.kind {
                 let m = method.text.as_str();
+                // A log line (`console.warn(…)`, read as `@log`) is a call the host answers: written only
+                // when the run reaches it, so under a condition it is tied to it.
                 found |= receiver.text == "http"
+                    || receiver.text == "@log"
                     || self.imports.values().any(|n| match n {
                         Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
                         Noun::Declared(kind, name) if *name == receiver.text => match *kind {
@@ -3723,6 +3726,39 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, people }, span })
     }
 
+    /// `console.log("paid", order.id)`, as the standard library has it: a line for the deployment's
+    /// log, which the host keeps apart from its runs (`docs/L4s/logs-L4.md`). The level is the
+    /// method (`log`, `info`, `debug`, `warn`, `error`). Several arguments are one text, `paid
+    /// ${order.id}`, so a flow's text has one form for a line.
+    fn log_call(&mut self, c: &js::CallExpression, method: &str, method_at: Span, span: Span) -> R<Expr> {
+        let level = match method {
+            "log" | "info" | "debug" | "warn" | "error" => method,
+            other => return fail(method_at, format!("console has no \"{other}\" here: console.log, info, debug, warn or error")),
+        };
+        let args = self.positional(&c.arguments)?;
+        if args.is_empty() {
+            return fail(span, "a log line takes what to write: console.log(\"paid\", order.id)");
+        }
+        let message = if args.len() == 1 {
+            args.into_iter().next().map(|a| a.value).expect("one argument")
+        } else {
+            let mut parts = Vec::new();
+            for (i, a) in args.into_iter().enumerate() {
+                if i > 0 {
+                    parts.push(Part::Text(" ".into()));
+                }
+                parts.push(Part::Expr(a.value));
+            }
+            Expr { kind: ExprKind::Interpolated(parts), span }
+        };
+        let kind = ExprKind::Method {
+            receiver: Name { text: "@log".into(), span },
+            method: Name { text: level.into(), span: method_at },
+            args: vec![Arg { name: None, value: message }],
+        };
+        Ok(Expr { kind, span })
+    }
+
     /// `notes.list({ limit: 50 })`, `api.post("/p", { body })`, `JSON.parse(text)`, `xs.map(f)`.
     fn method_call(&mut self, c: &js::CallExpression, m: &js::StaticMemberExpression) -> R<Expr> {
         let span = self.span(c.span);
@@ -3754,6 +3790,7 @@ impl<'s, 't> Reader<'s, 't> {
                     return ok(ExprKind::Method { receiver: Name { text: "stripe".into(), span: self.span(r.span) }, method: method_name, args });
                 }
                 (Some(Noun::State), _) => return fail(span, format!("the state is read and written by key: {receiver}.k, {receiver}.k = v")),
+                (None, "console") => return self.log_call(c, method, method_name.span, span),
                 (None, "JSON") => return self.json_call(c, method, method_name.span, span),
                 (None, "Object") => return self.object_call(c, method, method_name.span, span),
                 (None, "Date") => return self.date_call(c, method, method_name.span, span),

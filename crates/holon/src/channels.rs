@@ -339,7 +339,7 @@ impl outbound::Forward for Pipe<'_> {
 /// The sends among a run's settled outputs, as performing them would make them: for a run that
 /// settled waiting, which performs nothing yet, the packs that didn't wait.
 pub(crate) fn settled_sends(outputs: &[Option<Value>]) -> Vec<(Capability, Value)> {
-    let mut host = firing::RecordingHost { performed: Vec::new() };
+    let mut host = firing::RecordingHost::new();
     for output in outputs.iter().flatten() {
         holon_host::perform_effects(output, &mut host);
     }

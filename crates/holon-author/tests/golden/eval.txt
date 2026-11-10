@@ -19759,6 +19759,192 @@
   [0, 31] Record({"body": Text("an order has a total"), "status": Number(422.0)})
   [0] Record({"body": Text("an order has a total"), "status": Number(422.0)})
   => Record({"body": Text("an order has a total"), "status": Number(422.0)})
+== traced-payout · POST /payout · input 0
+  [0, 1] Text("payout asked")
+  [0, 2] Text("payout asked")
+  [0, 3] Text(" ")
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/payout"), … #dedf0bc1d7c3e2fe | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 4] ·
+  [0, 5] ·
+  [0, 6] Text(" ")
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 14] Text("over the usual limit")
+  [0, 15] Text("over the usual limit")
+  [0, 16] Text(" ")
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 11] ·
+  [0, 12] Number(1000.0)
+  [0, 13] ·
+  [0, 22] ·
+  [0, 20] ·
+  [0, 23] Text("paying")
+  [0, 24] Text("paying")
+  [0, 25] Text(" ")
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 31] Boolean(false)
+  [0, 32] Boolean(true)
+  [0, 30] Boolean(true)
+  [0, 33] Boolean(true)
+  [0, 29] ·
+  [0, 39] ·
+  [0, 40] Boolean(false)
+  [0, 41] Boolean(true)
+  [0, 42] Record({})
+  [0, 43] ·
+  [0, 44] ·
+  [0, 45] Boolean(true)
+  [0, 46] ·
+  [0, 47] ·
+  [0, 48] ·
+  [0, 50] ·
+  [0, 51] Boolean(false)
+  [0, 52] Boolean(true)
+  [0, 53] Number(200.0)
+  [0, 54] Number(200.0)
+  [0, 55] Number(200.0)
+  [0, 56, 0] Record({})
+  [0, 56, 1] Record({"status": Number(200.0)})
+  [0, 56, 2] ·
+  [0, 56, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 56] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+== traced-payout · POST /payout · input 1
+  [0, 1] Text("payout asked")
+  [0, 2] Text("payout asked")
+  [0, 3] Text(" ")
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #97ad0909b50774b3 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 4] Text("x")
+  [0, 5] Text("x")
+  [0, 6] Text(" ")
+  [0, 7] Number(5.0)
+  [0, 8] Text("5")
+  [0, 9] Text("payout asked x 5")
+  [0, 10] Effect { sink: "log:log", payload: Text("payout asked x 5") }
+  [0, 14] Text("over the usual limit")
+  [0, 15] Text("over the usual limit")
+  [0, 16] Text(" ")
+  [0, 17] Text("x")
+  [0, 18] Text("x")
+  [0, 19] Text("over the usual limit x")
+  [0, 11] Number(5.0)
+  [0, 12] Number(1000.0)
+  [0, 13] Boolean(false)
+  [0, 22] ·
+  [0, 20] ·
+  [0, 23] Text("paying")
+  [0, 24] Text("paying")
+  [0, 25] Text(" ")
+  [0, 26] Text("x")
+  [0, 27] Text("x")
+  [0, 28] Text("paying x")
+  [0, 31] Boolean(false)
+  [0, 32] Boolean(true)
+  [0, 30] Boolean(true)
+  [0, 33] Boolean(true)
+  [0, 29] Effect { sink: "log:debug", payload: Text("paying x") }
+  [0, 39] ·
+  [0, 40] Boolean(false)
+  [0, 41] Boolean(true)
+  [0, 42] Record({})
+  [0, 43] Text("x")
+  [0, 44] Record({"id": Text("x")})
+  [0, 45] Boolean(true)
+  [0, 46] Record({"id": Text("x"), "paid": Boolean(true)})
+  [0, 47] Record({"id": Text("x"), "paid": Boolean(true)})
+  [0, 48] Record({"id": Text("x"), "paid": Boolean(true)})
+  [0, 50] ·
+  [0, 51] Boolean(false)
+  [0, 52] Boolean(true)
+  [0, 53] Number(200.0)
+  [0, 54] Number(200.0)
+  [0, 55] Number(200.0)
+  [0, 56, 0] Record({})
+  [0, 56, 1] Record({"status": Number(200.0)})
+  [0, 56, 2] Record({"body": Record({"id": Text("x"), "paid": Boolean(true)}), "status": Number(200.0)})
+  [0, 56, 3] Record({"body": Record({"id": Text("x"), "paid": Boolean(true)}), "status": Number(200.0)})
+  [0, 56] Record({"body": Record({"id": Text("x"), "paid": Boolean(true)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"id": Text("x"), "paid": Boolean(true)}), "status": Number(200.0)}) | Effect { sink: "log:log", payload: Text("payout asked x 5") } | · | Effect { sink: "log:debug", payload: Text("paying x") }
+  => Record({"body": Record({"id": Text("x"), "paid": Boolean(true)}), "status": Number(200.0)}) | Effect { sink: "log:log", payload: Text("payout asked x 5") } | · | Effect { sink: "log:debug", payload: Text("paying x") }
+== traced-payout · POST /payout · input 2
+  [0, 1] Text("payout asked")
+  [0, 2] Text("payout asked")
+  [0, 3] Text(" ")
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #672e1230838412a3 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 4] ·
+  [0, 5] ·
+  [0, 6] Text(" ")
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 14] Text("over the usual limit")
+  [0, 15] Text("over the usual limit")
+  [0, 16] Text(" ")
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 11] ·
+  [0, 12] Number(1000.0)
+  [0, 13] ·
+  [0, 22] ·
+  [0, 20] ·
+  [0, 23] Text("paying")
+  [0, 24] Text("paying")
+  [0, 25] Text(" ")
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 31] Boolean(false)
+  [0, 32] Boolean(true)
+  [0, 30] Boolean(true)
+  [0, 33] Boolean(true)
+  [0, 29] ·
+  [0, 39] ·
+  [0, 40] Boolean(false)
+  [0, 41] Boolean(true)
+  [0, 42] Record({})
+  [0, 43] ·
+  [0, 44] ·
+  [0, 45] Boolean(true)
+  [0, 46] ·
+  [0, 47] ·
+  [0, 48] ·
+  [0, 50] ·
+  [0, 51] Boolean(false)
+  [0, 52] Boolean(true)
+  [0, 53] Number(200.0)
+  [0, 54] Number(200.0)
+  [0, 55] Number(200.0)
+  [0, 56, 0] Record({})
+  [0, 56, 1] Record({"status": Number(200.0)})
+  [0, 56, 2] ·
+  [0, 56, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 56] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
 == crunch · POST /stats · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})

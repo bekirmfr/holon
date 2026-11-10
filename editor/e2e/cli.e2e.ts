@@ -128,6 +128,42 @@ test("flows are saved and read back, and people and tokens managed, from the com
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
 });
 
+test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, request }) => {
+  // The traced-payout sample, under a slug of its own, on a port no sample takes in this slot's range.
+  const slug = `traced-${Date.now().toString(36)}`;
+  const text = readFileSync(join(SAMPLES, "traced-payout.holon.ts"), "utf8").replace("port: 8147", `port: ${8146 + SAMPLE_SHIFT}`);
+  mkdirSync(RUN_DIR, { recursive: true });
+  const path = join(RUN_DIR, `${slug}.holon.ts`);
+  writeFileSync(path, text);
+  ok(adminToken, ["deploy", path, "--slug", slug, "--approve"]);
+  const ask = (body: string) => holon(adminToken, ["call", slug, "POST", "/payout", "-H", "content-type: application/json", "--body", body]);
+  expect(ask('{"id":"p-1","amount":250}').out).toContain('"paid":true');
+  expect(ask('{"id":"p-2","amount":5000}').out).toContain("over the limit");
+
+  // Each line, with its run and its level; the warning only where a payout was refused.
+  expect(ok(adminToken, ["logs", slug])).toMatch(/LOG {3}run 0 {2}payout asked p-1 250$/m);
+  const all = ok(adminToken, ["logs", slug]);
+  expect(all).toMatch(/DEBUG run 0 {2}paying p-1$/m);
+  expect(all).toMatch(/WARN {2}run 1 {2}over the usual limit p-2$/m);
+  expect(all).not.toMatch(/DEBUG run 1/);
+  expect(ok(adminToken, ["logs", slug, "--level", "warn"]).trim().split("\n")).toHaveLength(1);
+  expect(ok(adminToken, ["logs", slug, "--run", "0"]).trim().split("\n")).toHaveLength(2);
+
+  // Beside the runs: no run performed a line. (What a run computed, the template's text, is in its record
+  // as any value is; the write of a line is not an effect it performed.)
+  const headers = { Authorization: `Bearer ${adminToken}` };
+  const entries = ((await (await request.get(`${SERVER}/deployments/${slug}/log`, { headers })).json()) as { entries: { performed?: unknown[] }[] }).entries;
+  expect(entries.length).toBeGreaterThanOrEqual(2);
+  expect(entries.flatMap((e) => e.performed ?? [])).toEqual([]);
+  // And an agent is refused them: no grant lets it read a deployment's logs.
+  expect((await request.get(`${SERVER}/deployments/${slug}/logs`, { headers: { ...headers, "X-Holon-Role": "agent" } })).status()).toBe(403);
+
+  // Removed with its deployment.
+  ok(adminToken, ["stop", slug]);
+  ok(adminToken, ["remove", slug, "--yes"]);
+  expect(holon(adminToken, ["logs", slug]).status).not.toBe(0);
+});
+
 test("a new version is replayed on a deployment's recent runs from the command line before it is deployed", async ({ adminToken }) => {
   // The price-rules sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `price-replay-${Date.now().toString(36)}`;

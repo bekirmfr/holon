@@ -13,6 +13,16 @@ interface ObjectConstructor {
   groupBy(items: any, key: (item: any, index: number) => any): Record<string, any[]>
 }
 
+/** What a flow writes a line to its log with, as the standard library has it: `console.log("paid", order.id)`. The host keeps the lines beside the runs; a flow can't read them back. */
+interface Console {
+  log(...data: any[]): void
+  info(...data: any[]): void
+  debug(...data: any[]): void
+  warn(...data: any[]): void
+  error(...data: any[]): void
+}
+declare var console: Console
+
 declare module "holon" {
   // Only what is marked export leaves the module.
   export {}

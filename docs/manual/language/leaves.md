@@ -1195,7 +1195,7 @@ Nothing, with message given to the run's log as the reason: JavaScript's throw n
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`random_bytes`](#random_bytes) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`mail_arrival`](#mail_arrival) · [`feed_event`](#feed_event) · [`queue_message`](#queue_message) · [`await`](#await) · [`resume_token`](#resume_token) · [`approval`](#approval) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`file_serve`](#file_serve) · [`mail_send`](#mail_send) · [`queue_send`](#queue_send) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`random_bytes`](#random_bytes) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`mail_arrival`](#mail_arrival) · [`feed_event`](#feed_event) · [`queue_message`](#queue_message) · [`await`](#await) · [`resume_token`](#resume_token) · [`approval`](#approval) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`file_serve`](#file_serve) · [`mail_send`](#mail_send) · [`queue_send`](#queue_send) · [`log`](#log) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -1564,6 +1564,14 @@ queue_send(message: Record, trigger: Any) -> out: Effect  {queue: payouts}
 ```
 
 Sends message to the queue an admin bound to the name set on the node (queue), once the run is over and its writes have landed: {data, group}. data is the body, sent as JSON (text as it is); group, text, is a FIFO queue's message group, whose messages come out in the order sent. Sending to it is a permission.
+
+### `log`
+
+```
+log(message: Any, trigger: Any) -> out: Effect  {level: log}
+```
+
+Writes message as a line of the deployment's log, at the level set on the node (log, info, debug, warn or error, as the console's methods), once the run is over. The line is kept by the host beside the run, and is no effect the run performed: `holon verify` checks the run without it, and a replay writes none. What the run computed to write it, a template's text say, is in its record as any value is. Text is written as it is, any other value as JSON; a line computed from a secret is withheld, as the record withholds an effect's payload computed from one.
 
 ### `egress`
 

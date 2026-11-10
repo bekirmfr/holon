@@ -1091,7 +1091,7 @@ fn rerun(
         marks: marks.clone(),
     };
     let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
-    let mut host = RecordingHost { performed: Vec::new() };
+    let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
     given.nodes = observer.stood_in.len();

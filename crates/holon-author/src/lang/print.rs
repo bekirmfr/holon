@@ -2362,7 +2362,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// waits for: a request, another flow's action, a send, a write by method.
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
-        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
+        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "log" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
             || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes" | "file_serve"))
     }
 
@@ -2467,6 +2467,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "http_request" | "http_upload" | "http_stream" => "response",
             "channel_send" => "sent",
             "mail_send" => "mailed",
+            "log" => "logged",
             "queue_send" => "queued",
             "flow_call" => node.param("action"),
             "flow_start" => "started",
@@ -2748,6 +2749,7 @@ fn auto_names(declared: &[String], leaves: &[String]) -> Vec<String> {
             "store_write" => "write",
             "egress" | "channel_send" => "sent",
             "mail_send" => "mailed",
+            "log" => "logged",
             "queue_send" => "queued",
             _ => "effect",
         };
@@ -3204,6 +3206,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 Some(args) => member(format!("{}.{}({})", node.param("database"), &d.name["db_".len()..], args.join(", "))),
                 None => self.generic(node),
             },
+            "log" => member(format!("console.{}({})", node.param("level"), self.required(node, "message", COND)?)),
             "channel_send" => member(format!("{}.send({})", node.param("channel"), self.required(node, "pack", COND)?)),
             "mail_send" => member(format!("{}.send({})", node.param("mail"), self.required(node, "message", COND)?)),
             "queue_send" => member(format!("{}.send({})", node.param("queue"), self.required(node, "message", COND)?)),
@@ -4244,6 +4247,24 @@ flow(\"f\")
 
 export const t = action((x) => {
   state.x = get(x.xs, x.i)
+})
+");
+    }
+
+    /// A log line prints back as written, in the standard library's form: console.log and the
+    /// rest, each level its own method, and its one text (several values written to it are the
+    /// template that reads as one).
+    #[test]
+    fn a_log_line_prints_as_written() {
+        prints_back("import { flow, route } from \"holon\"
+
+flow(\"f\", { port: 8300 })
+
+route.get(\"/hi/:name\", (req) => {
+  console.log(`hello ${req.params.name}`)
+  console.warn(\"careful\")
+  console.debug(\"quiet\")
+  return `Hello, ${req.params.name}`
 })
 ");
     }

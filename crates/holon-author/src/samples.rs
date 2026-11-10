@@ -1071,6 +1071,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"total":80,"member":true}' http://127.0.0.1:8185/price answers 72; without member, 80; -d '{}' answers 422. Then change 0.9 to 0.85 and deploy: before it goes live, 3 replayed, 2 same, 1 differs (68 where it answered 72)"#,
         text: include_str!("../samples/price-rules.holon.ts"),
     },
+    Sample {
+        name: "traced-payout",
+        title: "Traced payout (log lines, kept apart from the runs)",
+        description: "Asks for a payout and answers it, refusing one over 1000, and says what it is doing with console.log, console.debug and console.warn. The host keeps those lines beside the deployment's runs: none is an effect a run performed, and holon verify checks a run without them. holon logs reads them, and an agent only where the deployment's grant lets it.",
+        shows: &["console.log", "console.warn", "console.debug", "log lines beside the runs", "holon logs", "a line under an if"],
+        port: Some("8147"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"id":"p-1","amount":250}' http://127.0.0.1:8147/payout, then curl -X POST -d '{"id":"p-2","amount":5000}' http://127.0.0.1:8147/payout (refused 409), then holon logs traced-payout shows each line with its run and its level, holon logs traced-payout --level warn only the warning"#,
+        text: include_str!("../samples/traced-payout.holon.ts"),
+    },
 ];
 
 #[cfg(test)]

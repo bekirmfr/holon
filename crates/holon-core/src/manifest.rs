@@ -33,7 +33,9 @@ pub fn manifest_items(
     agents: &BTreeSet<String>,
     unrecorded: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut items: BTreeSet<String> = capabilities.iter().cloned().collect();
+    // A log line reaches nothing outside the host (its own log folder), so it is no permission a
+    // person approves: the capability is named in what a flow may do, not asked for.
+    let mut items: BTreeSet<String> = capabilities.iter().filter(|c| !c.starts_with("Log(")).cloned().collect();
     for (name, n) in limits {
         items.insert(format!("Limit({name}={n})"));
     }

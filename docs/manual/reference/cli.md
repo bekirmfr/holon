@@ -22,6 +22,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
 | [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
+| [`holon logs`](#holon-logs) | the lines a flow wrote with `console.log`, kept apart from its runs |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
@@ -388,6 +389,29 @@ A deployment's live state, a line per value, written as the language writes valu
 collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
 `--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
 it ran, from where, how many runs, and the state it left.
+
+### `holon logs`
+
+```
+holon logs <slug> [--level LEVEL] [--run N | --until N] [--limit N] [--follow] [--json]
+```
+
+The lines a deployment's flow wrote with `console.log`, `info`, `debug`, `warn` and `error`,
+oldest first, each with when, its level and the run that wrote it:
+
+```
+21:15:33.419 LOG   run 3  payout asked p-1 250
+21:15:33.420 WARN  run 3  over the usual limit p-2
+```
+
+The host keeps them beside the deployment's runs: none is an effect a run performed,
+[`holon verify`](#holon-verify) checks a run without them, and a flow can't read them back.
+`--level warn` shows that level and louder (`log` and `info` are the same); `--run N` only the
+lines run N wrote, `--until N` every line up to the end of run N's; `--limit N` the newest N (200
+if left out); `--follow` keeps reading as new lines come; `--json` prints each line as JSON. A
+deployment keeps three files of 2 MB: the oldest lines go first, and a line says when some were
+dropped. A person signed in reads them. An agent, `holon mcp`, is refused: no grant lets one read a
+deployment's logs yet.
 
 ### `holon decide`
 

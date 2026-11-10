@@ -688,6 +688,76 @@ fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
     assert_eq!(seqs, [2, 3, 4]);
 }
 
+/// What a flow writes with `console.log` is kept beside its runs, not in them (logs.rs): each line
+/// holds its run and its level, a run's record holds no line and no log capability, and the deploy
+/// asks for no approval to write one.
+#[test]
+fn a_flow_writes_log_lines_beside_its_runs_and_not_in_them() {
+    let state = test_state();
+    let deploy = |slug: &str, text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": plan.unit })).unwrap())));
+        assert!(!preview["needs_approval"].to_string().contains("Log("), "a log line is no permission to approve: {preview}");
+        assert_eq!(deploy_json(&state, slug, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    };
+    let flow = |name: &str| format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"{name}\")\n\nexport const bump = action(() => {{\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  console.log(\"bumped\", n)\n  console.error(\"careful\")\n}})\n");
+    deploy("noisy", &flow("noisy"));
+    deploy("quiet", &flow("quiet"));
+    for _ in 0..2 {
+        assert_eq!(route(&state, &req("POST", "/trigger/noisy/bump", b"{}".to_vec())).status_code, 200);
+    }
+    assert_eq!(route(&state, &req("POST", "/trigger/quiet/bump", b"{}".to_vec())).status_code, 200);
+
+    let lines = state.folders.logs.read("noisy", &crate::logs::Query::default());
+    assert_eq!(
+        lines.iter().map(|l| (l.run, l.level.as_str(), l.text.as_str())).collect::<Vec<_>>(),
+        [(0, "log", "bumped 1"), (0, "error", "careful"), (1, "log", "bumped 2"), (1, "error", "careful")],
+        "each line with its run and its level, oldest first"
+    );
+    assert_eq!(state.folders.logs.read("quiet", &crate::logs::Query::default()).len(), 2, "a deployment's own");
+
+    // A person reads them through the route, filtered; an agent is refused, since no grant lets it
+    // yet; and a deployment that isn't there is none.
+    let read = body_json(route(&state, &req("GET", "/deployments/noisy/logs?level=error&until=0", vec![])));
+    assert_eq!(read["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["careful"], "an error, up to run 0: {read}");
+    assert_eq!(route(&state, &agent_req("GET", "/deployments/noisy/logs", vec![])).status_code, 403);
+    assert_eq!(route(&state, &req("GET", "/deployments/nope/logs", vec![])).status_code, 404);
+
+    // Not in the run's record: its text holds neither a line nor the capability that wrote one.
+    let runs = body_json(route(&state, &req("GET", "/deployments/noisy/runs", vec![])));
+    let record = runs["runs"].to_string();
+    assert!(!record.contains("bumped") && !record.contains("careful") && !record.contains("Log("), "{record}");
+}
+
+/// A log line never shows a secret (logs.rs): a line computed from one, its value in it as it is or
+/// encoded, is withheld, as a performed effect's payload is; a line at another level stays.
+#[test]
+fn a_log_line_never_shows_a_secret() {
+    let state = test_state();
+    let text = "import { action, base64, flow } from \"holon\"\nimport api_key from \"secret:api_key\"\n\nflow(\"leaky\")\n\nexport const run = action(() => {\n  console.log(\"the key is\", api_key)\n  console.warn(\"encoded\", base64(api_key))\n  console.debug(\"done\")\n})\n";
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "leaky", "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert_eq!(deploy_json(&state, "leaky", parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked })).status_code, 200);
+    let value = "sk_live_kept_out_of_the_lines";
+    let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/leaky/secrets/api_key", set)).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/leaky/run", b"{}".to_vec())).status_code, 200);
+
+    let lines = state.folders.logs.read("leaky", &crate::logs::Query::default());
+    let written: Vec<(&str, &str)> = lines.iter().map(|l| (l.level.as_str(), l.text.as_str())).collect();
+    assert_eq!(lines.len(), 3, "{written:?}");
+    assert!(lines.iter().all(|l| !l.text.contains(value) && !l.text.contains("c2tfbGl2ZV9rZXB0")), "a line shows it: {written:?}");
+    assert_eq!((lines[0].text.as_str(), lines[1].text.as_str()), (crate::taint::WITHHELD, crate::taint::WITHHELD), "withheld: {written:?}");
+    assert_eq!(lines[2].text, "done", "a line from nothing secret is written: {written:?}");
+}
+
 /// The host at a glance (summary.rs): each deployment's runs by hour, the totals and the newest
 /// runs; and a check reads every log's chain again, which the summary then says.
 #[test]
@@ -3880,7 +3950,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
         };
         sourced.push((cap, sv(&pair[1])));
     }
-    let mut host = RecordingHost { performed: Vec::new() };
+    let mut host = RecordingHost::new();
     let replayed = fire_sourced_with(endpoint, &[Some(sv(&second["request"]))], &sourced, &resolver, &mut host);
     let recorded: Vec<Option<Value>> =
         second["outputs"].as_array().unwrap().iter().map(|o| (!o.is_null()).then(|| sv(o))).collect();

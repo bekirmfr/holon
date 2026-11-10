@@ -18,6 +18,16 @@ interface ObjectConstructor {
   groupBy(items: any, key: (item: any, index: number) => any): Record<string, any[]>
 }
 
+/** What a flow writes a line to its log with, as the standard library has it: `console.log("paid", order.id)`. The host keeps the lines beside the runs; a flow can't read them back. */
+interface Console {
+  log(...data: any[]): void
+  info(...data: any[]): void
+  debug(...data: any[]): void
+  warn(...data: any[]): void
+  error(...data: any[]): void
+}
+declare var console: Console
+
 declare module "holon" {
   // Only what is marked export leaves the module.
   export {}
@@ -1805,6 +1815,13 @@ declare module "holon" {
    * Sends message to the queue an admin bound to the name set on the node (queue), once the run is over and its writes have landed: {data, group}. data is the body, sent as JSON (text as it is); group, text, is a FIFO queue's message group, whose messages come out in the order sent. Sending to it is a permission.
    */
   export function queue_send(...args: any[]): any
+
+  /**
+   * `log(message: Any, trigger: Any) -> out: Effect  {level: log}`
+   *
+   * Writes message as a line of the deployment's log, at the level set on the node (log, info, debug, warn or error, as the console's methods), once the run is over. The line is kept by the host beside the run, and is no effect the run performed: `holon verify` checks the run without it, and a replay writes none. What the run computed to write it, a template's text say, is in its record as any value is. Text is written as it is, any other value as JSON; a line computed from a secret is withheld, as the record withholds an effect's payload computed from one.
+   */
+  export function log(...args: any[]): any
 
   /**
    * `egress(payload: Any, trigger: Any) -> out: Effect`

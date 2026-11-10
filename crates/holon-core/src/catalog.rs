@@ -118,6 +118,8 @@ pub const GENESIS: &[&str] = &[
     "mail_send",
     // a queue: a message sent to a queue an admin binds, once the run is over (1)
     "queue_send",
+    // a log line: kept by the host beside the run's record, not in it (1)
+    "log",
     // sink — performed (1)
     "egress",
 ];
@@ -669,6 +671,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // A message sent to the queue an admin bound to `queue`, once the run is over and its
         // writes have landed: `{data, group}`, `group` a FIFO queue's message group.
         "queue_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("queue", "payouts")], Effect),
+        // A line for the deployment's log, which the host keeps apart from its runs: any value
+        // but an effect, at a level (the console's: log, info, debug, warn or error).
+        "log" => prim(vec![port("message", Any)], vec![Param::frozen("level", "log")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -745,6 +750,7 @@ pub const TRIGGERED: &[&str] = &[
     "channel_send",
     "mail_send",
     "queue_send",
+    "log",
     "egress",
     "http_request",
     "http_upload",
@@ -850,7 +856,7 @@ mod tests {
         // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
         // and a queue's (queue_send, queue_message), and a file as a route's answer (file_serve); and
         // approval, a waiting point people decide.
-        assert_eq!(GENESIS.len(), 194);
+        assert_eq!(GENESIS.len(), 195);
     }
 
     #[test]

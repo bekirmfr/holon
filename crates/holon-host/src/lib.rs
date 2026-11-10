@@ -137,6 +137,7 @@ fn parse_sink(sink: &str, payload: &Value) -> (String, Vec<Param>) {
         // the host as it sends.
         Some((name, mail)) if name == "mail_send" => (name.to_string(), vec![Param::frozen("mail", mail)]),
         Some((name, queue)) if name == "queue_send" => (name.to_string(), vec![Param::frozen("queue", queue)]),
+        Some((name, level)) if name == "log" => (name.to_string(), vec![Param::frozen("level", level)]),
         Some((name, key)) => (name.to_string(), vec![Param::frozen("key", key)]),
         None => (sink.to_string(), Vec::new()),
     }

@@ -1,23 +1,23 @@
 # Logs: a flow writes lines, the host keeps a few, apart from its runs (L4)
 
-How a flow says something while it runs, and where that goes. Written 2026-11-10, before the code.
+How a flow says something while it runs, and where that goes. Written 2026-11-10, before the code;
+steps 1 to 3 of §8 are built, and this text says what they do.
 
-The aim, in one example: a payout flow writes `log.info("paying", order.id)` and
-`log.warn("retry", n)`. The lines are not part of any run's record, so a run's evidence is the
-same with or without them. `holon logs payouts --follow` shows them as they come; the console's
-Logs panel shows them beside the runs, and with a run selected, the lines up to it.
+The aim, in one example: a payout flow writes `console.log("paying", order.id)` and
+`console.warn("retry", n)`. The lines are no effect a run performed, so `holon verify` checks the run
+without them. `holon logs payouts --follow` shows them as they come; the console's
+Logs panel (§8, step 4) shows them beside the runs, and with a run selected, the lines up to it.
 
-## 1. Where it stands
+## 1. Where it stood
 
-- A flow cannot write a line. `console` is one of the compiler's banned globals (`ts.rs`
-  `GLOBALS`): `console.log("x")` stops with "console isn't there: a flow has no globals; import
-  what it uses".
+- A flow could not write a line. `console` was one of the compiler's banned globals: `console.log("x")`
+  stopped with "console isn't there: a flow has no globals; import what it uses".
 - What a flow leaves is its **run**: the record each run adds to the deployment's log, chained,
   checked offline by `holon verify`, and the evidence people export. It is the wrong place for
   debug output: it would fill the record, and it would dilute what the chain vouches for.
-- There is no `holon logs` command. A deployment's other files live in folders beside the
-  deployments file (`Place::beside`: state, mail-seen, feed-seen, queue-seen, the runs' log); a
-  server that keeps nothing (`Place::Nowhere`) keeps them in memory.
+- A deployment's other files live in folders beside the deployments file (`Place::beside`: state,
+  mail-seen, feed-seen, queue-seen); a server that keeps nothing (`Place::Nowhere`) keeps them in
+  memory.
 - A handler's `log` option (`strict`, `lazy`, `unrecorded`) is about its run's record, and stays
   about that. This document's logs are a second thing and share only the word.
 
@@ -25,125 +25,148 @@ Logs panel shows them beside the runs, and with a run selected, the lines up to 
 
 Goals:
 
-1. **A flow can write a line**, with a level, in a way that reads like the logging people know.
-2. **Lines are kept apart from runs**: not in a run's record, not in the chain, not in evidence,
-   so replay and `holon verify` give the same answer with or without them.
+1. **A flow can write a line**, with a level, in the standard library's own grammar: `console.log`.
+2. **Lines are kept apart from runs**: no effect a run performs, so not in its performed list, not in
+   the chain, not in evidence, and replay and `holon verify` leave them out.
 3. **Bounded.** A loud flow loses its oldest lines; it never fills the disk or slows its answers.
 4. **Readable afterwards**: after a restart or a crash, which is when they are needed.
 5. **Shown beside the runs**: a command, and a panel in the console and in `holon editor`.
-6. **Never a way to leak**: a secret's value is not written.
+6. **Reading is a person's, and an agent's only by a grant** (§6).
+7. **Never a way to leak**: a secret's value is not written.
 
 Non-goals here: shipping lines to a collector (OpenTelemetry, Seq); searching across
-deployments; structured queries over fields; alerting on a line; keeping logs as evidence.
+deployments; structured queries over fields; alerting on a line; keeping logs as evidence; a flow
+reading its own lines back (that would be an input no run records, and replay would break).
 
-Dev phase: no compatibility. `console` stays banned as a global; the `console.log` spelling (§3)
-is a name the compiler turns into the leaf, not a global that exists.
+Dev phase: no compatibility. `console` is still not a value (`const c = console` is an error);
+`console.log(…)` and its four siblings are calls the compiler turns into the leaf.
 
 ## 3. The leaf
 
-`log` is imported from `holon`, like every leaf a flow uses:
+Everything in a flow's text reads as the standard library, so a line is written the way every
+programmer writes one, with no import:
 
 ```ts
-import { log } from "holon"
-
-log.info("paying", order.id)
-log.warn("retry", n)
-log.error("refused", reason)
+console.log("paying", order.id)
+console.info("queued")
+console.debug("checking", order.id)
+console.warn("retry", n)
+console.error("refused", reason)
 ```
 
-Levels are `debug`, `info`, `warn` and `error`; the arguments are any values, written in their
-JSON form, joined by a space. A line's text is capped (a long value is cut, and the line says so).
+The method is the level: `debug`, `log`, `info`, `warn`, `error` (`log` and `info` rank the same
+when a reader filters by level). Several arguments are one text, written as the template
+`paying ${order.id}`, so a flow's text has one form for a line; a text is written as it is, any
+other value as JSON. A line's text is cut at 4 KiB, and says so. Any other method (`console.table`)
+is an error naming the five.
 
-`console.log(…)`, `console.warn(…)` and `console.error(…)` compile to the same node (`info`,
-`warn`, `error`), so a person who types them gets a line, not the "no globals" error. `console`
-is still not a value: `const c = console` stays an error. (Open question 1.)
+Underneath it is a leaf, `log`, with a `level` param and one input: a driver with no output that
+adds no input to any other node, so it changes nothing a flow answers. Its capability is
+`Log("warn")` and so on: named in what a flow may do ("write warn lines to its log, which is kept
+apart from its runs"), but never an item a person approves at deploy (§6).
 
-The node is a driver with no outputs, as `random` is a driver with one. It adds no input to any
-other node, so it changes nothing a flow answers. When a run is replayed or verified, the node
-does nothing: it writes no line and its output is not part of the comparison.
+When a run performs its effects, the host that records them sets a log line aside instead of
+adding it to `performed`; replay and `holon verify` use the same host, so what they compare leaves the
+lines out, and a replay writes none. What the run computed to write a line (a template's text) is in its
+record as any value is.
 
 ## 4. Where lines go
 
-One **file per deployment**, not per version, in a `logs` folder beside the deployments file:
-`logs/<slug>.jsonl`, one line of JSON each:
+One **file per deployment**, not per version, in a folder beside the deployments file
+(`<deployments>.logs/<slug>.jsonl`), a line of JSON each:
 
 ```json
-{"at": 1794257758123, "level": "warn", "version": "c59829c4", "run": 17, "text": "retry 3"}
+{"at": 1794257758123, "level": "warn", "unit": "c59829c4", "run": 17, "text": "retry 3"}
 ```
 
-- `run` is the run's sequence number, so a line can be put beside its run without being in it.
-- **Rolling, with a hard cap.** When `<slug>.jsonl` reaches the size cap it becomes
-  `<slug>.1.jsonl`, and the oldest of the kept files is deleted. Defaults: 3 files of 2 MB.
-  A cut-back is counted: the next line says how many were lost (`{"level":"info","dropped":412}`).
-- **Written lazily.** Lines are buffered and written about once a second, on a writer of their
-  own: the same bargain as `lazy` runs, a crash can lose the last second. A run never waits for
-  its lines. A line that cannot be written is counted and dropped; the flow goes on.
-- **Capped per deployment.** A line over its size cap is cut; a deployment over its rate cap
-  (default 1,000 lines a second) drops the excess and counts it, so one loop cannot use up the
-  disk's writes.
-- **A server that keeps nothing** keeps the same lines in a memory ring of the same size.
-- **Removed with the deployment**: `holon remove` deletes `logs/<slug>*`, as it deletes the
-  deployment's state.
-- **Stdout.** `holon serve --log-stdout` also writes each line to the server's stdout, for
-  someone who runs it under systemd or a container that collects it. Off by default.
-
-A secret's value is not written. Where a line's arguments are the result of a secret read, or
-computed from one, the compiler refuses the call ("a secret's value may not go in a log").
-(Open question 3.)
+- `run` is the run's seq in the deployment's log, so a line can be put beside its run without being
+  in it. `unit` is the first 8 hex of the version that wrote it. `at` is in ms and rises with each
+  line a deployment writes (a line's time is never earlier than the one before's), so a reader
+  that has the last one it saw reads on from there and misses none.
+- **Rolling, with a hard cap.** At 2 MB `<slug>.jsonl` becomes `<slug>.1.jsonl` and then
+  `<slug>.2.jsonl`; the oldest of the three is deleted.
+- **Written lazily.** Lines are buffered and written about once a second, on a thread of their own:
+  a run never waits for its lines, and a crash can lose the last second. A file that can't be
+  written counts its lines as dropped.
+- **Capped.** A line over 4 KiB is cut; a deployment writing over 1,000 lines a second drops the
+  excess and the next line says how many (`"3 lines were dropped: over 1000 a second"`, with
+  `dropped: 3`).
+- **A server that keeps nothing** keeps the newest 5,000 lines of each deployment in memory.
+- **Removed with the deployment**: removing it deletes its files.
+- **Secrets.** A line computed from a secret, its value in it as it is or encoded, is withheld
+  (`‹withheld: computed from a secret›`), as the record withholds an effect's payload computed from
+  one; the run's own redactor then writes the value of any secret the run holds as a mark, for what
+  taint misses. The taint is per level: if a run's `log` lines derive from a secret, all its `log`
+  lines are withheld. (Open question 3.)
+- A run of an `unrecorded` handler writes no lines.
 
 ## 5. Reading them
 
-- `GET /deployments/<slug>/logs?level=warn&run=17&until=17&after=<at>&limit=500`: lines, oldest
-  first, from the files. `run=17` is that run's lines; `until=17` is every line up to the end of
-  run 17. Needs the viewer's access to the deployment, as its runs do.
-- `holon logs <slug> [--level warn] [--run N | --until N] [--follow] [--limit N]`: the same,
-  and `--follow` keeps reading as the file grows.
-- **The console's Logs panel**, a terminal-style pane beside the runs: every line by default,
-  following; with a run selected, it shows the lines up to that run, and a toggle narrows it to
-  that run's own. Level filter, and a line for "N lines were dropped here".
-- **`holon editor`** has the same panel in its own tabs.
+- `GET /deployments/<slug>/logs?level=warn&run=17&until=17&after=<at>&limit=200`: lines, oldest
+  first. `run=17` is that run's lines; `until=17` is every line up to the end of run 17's.
+- `holon logs <slug> [--level warn] [--run N | --until N] [--limit N] [--follow] [--json]`: the same;
+  `--follow` keeps reading as the file grows.
+- **The console's Logs panel** (step 4), a terminal-style pane beside the runs: every line by
+  default, following; with a run selected, the lines up to that run, and a toggle narrows it to that
+  run's own. A level filter, and a line for "N lines were dropped here". `holon editor` has the
+  same panel in its own tabs.
 
 ## 6. Permission
 
-None. The node writes only to the host's own logs folder; it reaches nothing outside the host,
-so it is no capability a person approves at deploy. The deploy preview does not list it. What
-leaves the host (the stdout flag) is the host owner's choice. (Open question 2.)
+**Writing** needs none. A line reaches only the host's own logs folder, nothing outside it, so it
+is not asked for at deploy, though the deploy preview says the flow writes lines.
+
+**Reading** is a person's: anyone signed in who may read the deployment reads its lines through the
+console and `holon logs`, as they read its runs. **An agent**, `holon mcp` and anything that asks
+as an agent, **reads them only by a grant**: lines hold what a flow chose to say, and an agent
+reading a deployment's runs is not an agent reading its logs. Until the grant exists (§8, step 6)
+the route refuses an agent (403).
+
+The grant is the deployer's to ask for and a person's to approve, as `agents may run <action>` is
+(`AgentRuns`): an item in the manifest, shown in the deploy preview as "agents may read its logs",
+and held per deployment. `holon mcp` gets a `logs` tool that answers only where it holds. (Open
+question 4.)
 
 ## 7. Samples and tests
 
-- **Sample `traced-payout`**: a flow that logs each stage of a payout at its own level, with a
-  route that answers and a page that shows the last lines. Run live once before the commit.
-- Tests: the compiler turns `console.log` into the leaf and refuses `const c = console`; a run
-  with logs and the same run without give the same record and the same evidence hash; replay
-  writes no line; the file rolls at its cap and counts what it dropped; a line over its caps is
-  cut or dropped, not an error to the flow; a secret read into a log call is refused; `holon
-  remove` deletes the files; `holon logs --follow` shows a new line within two seconds.
+- **Sample `traced-payout`**: a payout route that writes `console.log`, `console.debug` and, over a
+  limit, `console.warn`, and refuses the large one. Tried live through the real server in
+  `editor/e2e/cli.e2e.ts`: deployed from its text, two payouts sent, the lines read with `holon logs`
+  (all, `--level warn`, `--run 0`), the deployment's own log shown to hold none, an agent refused,
+  and the lines gone with the deployment.
+- Tests: the compiler turns `console.log` and the others into the leaf and prints it back as
+  written (`print.rs`); a flow's lines are in the sink with their run and level, the run's record
+  holds no line and no `Log(…)`, and the deploy asks for no approval to write one (`tests.rs`); the
+  sink reads back oldest first, filters by level, run and time, cuts a long line, drops over its
+  rate and says how many, rolls at its cap and keeps three files, survives a restart, and refuses a
+  name that is a path (`logs.rs`).
 
 ## 8. Steps
 
-1. **The leaf**: `log.info/warn/error/debug` and the `console` spellings, lowered to a driver
-   that changes nothing; replay does nothing for it; catalog, manual leaves and `holon.d.ts`
-   made again; the sample.
+1. **The leaf**: `console.*` lowered to the `log` leaf, its capability, the printer, `holon.d.ts`,
+   the manual's leaves; done.
 2. **The sink**: the per-deployment file, rolling, lazy writer, caps, the in-memory fallback,
-   removal with the deployment.
-3. **Reading**: the route and `holon logs`.
+   removal with the deployment; done.
+3. **Reading**: the route and `holon logs`, an agent refused; the sample `traced-payout`; done.
 4. **The console panel** and the panel in `holon editor`.
-5. **`--log-stdout`** and the settings for the caps.
-
-Steps 1 and 2 land together so the first lines go somewhere.
+5. **`holon serve --log-stdout`** and the settings for the caps.
+6. **The agent's grant**: the manifest item, the deploy preview line, the `holon mcp` `logs` tool.
 
 ## 9. Open questions
 
-1. **Is `console.log` accepted?** It is what people type, and it costs one rule in the compiler.
-   The cost is that `console` becomes a name that exists. Leaning: accept the three spellings,
-   nothing else on `console`.
-2. **Does `log` show in the deploy preview?** Not as a permission. It might show as a quiet line
-   ("writes logs") so a reader sees it. Leaning: show it, with no approval.
-3. **How is a secret kept out?** A compile-time check that no argument derives from a secret
-   read is the strict answer; a run-time redaction of known secret values is the cheaper one and
-   misses a value that is transformed. Leaning: the compile-time check, as far as the data flow
-   can follow.
-4. **The caps.** 3 files of 2 MB and 1,000 lines a second are guesses. Are they host settings, or
-   a flow's own (`flow("x", { logs: … })`)? Leaning: host settings first.
-5. **Does a line outlive a redeploy?** Leaning: yes; the file is the deployment's, and each line
+1. ~~**Is `console.log` accepted?**~~ Yes, and it is the only spelling: the code editor reads as the
+   standard library.
+2. **Does `log` show in the deploy preview?** It shows in what a flow may do ("write warn lines to
+   its log"); it is never an item to approve. Leaning: keep it so.
+3. **How is a secret kept out?** Built: a line computed from a secret is withheld, by the run's
+   taint (per level, so one such `log` line withholds the run's others at that level), and the
+   redactor writes a secret's value as a mark for what taint misses. Whether to refuse the call at
+   compile time instead, as a secret into a request to a host that isn't granted it is refused, is
+   open.
+4. **The grant's shape**: one item per deployment (`agents may read its logs`), or per level? And
+   whether `holon mcp`'s `logs` tool reads through the same route. To settle with the `holon mcp`
+   side (step 6).
+5. **The caps.** 3 files of 2 MB and 1,000 lines a second are constants; host settings next
+   (step 5), or a flow's own?
+6. **Does a line outlive a redeploy?** Yes, built so: the file is the deployment's, and each line
    names its version.

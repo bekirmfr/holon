@@ -13,10 +13,23 @@ use crate::*;
 /// about this endpoint's wire shape would need to move.
 pub(crate) struct RecordingHost {
     pub(crate) performed: Vec<(Capability, Value)>,
+    /// The lines it wrote to its log: kept out of `performed`, so a run is the same with or
+    /// without them to what replays and `holon verify` compare (logs.rs).
+    pub(crate) logs: Vec<(String, Value)>,
+}
+
+impl RecordingHost {
+    pub(crate) fn new() -> RecordingHost {
+        RecordingHost { performed: Vec::new(), logs: Vec::new() }
+    }
 }
 
 impl Host for RecordingHost {
     fn perform(&mut self, capability: Capability, payload: &Value) {
+        if let Capability::Log(level) = capability {
+            self.logs.push((level, payload.clone()));
+            return;
+        }
         self.performed.push((capability, payload.clone()));
     }
 }
@@ -67,6 +80,8 @@ impl Host for RecordingHost {
 pub(crate) struct FiredRun {
     pub(crate) outputs: Vec<Option<Value>>,
     pub(crate) performed: Vec<(Capability, Value)>,
+    /// The lines it wrote to its log, each its level and its value (logs.rs).
+    pub(crate) lines: Vec<(String, Value)>,
     pub(crate) timeline: Vec<recorder::NodeTiming>,
     /// The outbound requests it made, round by round.
     pub(crate) rounds: Vec<Round>,
@@ -616,7 +631,7 @@ fn run_attempt(
     // And where each may be sent: a request holding one's value goes only there.
     let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
 
-    let mut host = RecordingHost { performed: Vec::new() };
+    let mut host = RecordingHost::new();
     let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
@@ -743,6 +758,7 @@ fn run_attempt(
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
+        lines: host.logs,
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: failed_read
@@ -896,7 +912,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
     let inputs: Vec<Option<Value>> =
         fire_body.inputs.into_iter().map(|o| o.map(SValue::into_core)).collect();
 
-    let mut host = RecordingHost { performed: Vec::new() };
+    let mut host = RecordingHost::new();
     let outputs = fire(root_unit, &inputs, &resolver, &mut host);
 
     Response::json(&FireResponseBody {
@@ -1095,6 +1111,9 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     // sends one whose record is on disk, and drops one whose record a crash lost.
     let mails = std::mem::take(&mut entry.mails);
     let spooled = folders.all.mails.spool_logged(slug, &entry, mails);
+    // The lines it wrote, kept beside its record and not in it (logs.rs).
+    let lines = std::mem::take(&mut entry.lines);
+    let (at_ms, unit) = (entry.at_ms, entry.unit.clone());
     // Its queues' messages likewise (queues.rs).
     let queued = std::mem::take(&mut entry.queued);
     let queued = folders.all.queues.spool_logged(slug, &entry, queued);
@@ -1115,6 +1134,9 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         folders.all.queues.hold_sends(slug, seq, queued);
         seq
     });
+    // Each line redacted of the secrets a run holds, as its record is: a secret's value is not written.
+    let lines: Vec<(String, String)> = lines.iter().map(|(level, v)| (level.clone(), redactor.text(&crate::logs::text_of(v)))).collect();
+    folders.all.logs.write(slug, seq, &unit, at_ms, &lines);
     Some(Some(Pushed { log, seq, level, channels, permit, folders }))
 }
 
@@ -1310,6 +1332,12 @@ fn entry_with(
         secrets: run.secrets.clone(),
         answered: run.answered.clone(),
         mails: mails::of(&run.performed),
+        // A line computed from a secret is withheld, as an effect's payload is in `performed`.
+        lines: run
+            .lines
+            .iter()
+            .map(|(level, v)| (level.clone(), if run.secret_fed.derives_effect(&Capability::Log(level.clone())) { Value::Text(taint::WITHHELD.into()) } else { v.clone() }))
+            .collect(),
         queued: queues::of(&run.performed),
         escaped: false,
         reads: run
@@ -1345,6 +1373,7 @@ impl FiredRun {
         FiredRun {
             outputs: vec![],
             performed: vec![],
+            lines: vec![],
             timeline: vec![],
             rounds: vec![],
             error: None,

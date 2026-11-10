@@ -203,6 +203,7 @@ export type WCapability =
   | { DbRead: string }
   | { DbWrite: string }
   | { ChannelSend: string }
+  | { Log: string }
   | { ChannelRead: string }
   | { MailSend: string }
   | { SecretAnswer: string }

@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 30] = [
+    let named: [(&str, Say); 31] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -47,6 +47,7 @@ pub fn describe_item(item: &str) -> String {
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
         ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
+        ("Log", |a| format!("write {a} lines to its log, which is kept apart from its runs")),
         ("MailSend", |a| match a.split_once('/') {
             Some((mail, "*")) => format!("send mail through \"{mail}\" to an address it computes, within its binding's"),
             Some((mail, to)) => format!("send mail through \"{mail}\" to {to}"),

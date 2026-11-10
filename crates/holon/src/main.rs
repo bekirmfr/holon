@@ -199,6 +199,8 @@ mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
+mod logs;
+mod logscmd;
 mod load;
 mod locks;
 mod local;
@@ -575,6 +577,8 @@ const USAGE: &str = "usage: holon <command>
   state <slug>                       its live state (--collection NAME, --sessions)
   decide <slug> [<run> <name>]       approve, or decline with --reason, an approval a run waits
                                      at (--approve|--decline); the slug alone lists what waits
+  logs <slug>                        what its flow wrote with console.log, apart from its runs
+                                     (--level, --run N, --until N, --limit N, --follow)
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
   secret list|history|set|rollback|remove|env
@@ -709,6 +713,7 @@ fn main() {
         Some("tick") => std::process::exit(opscmd::tick(&rest)),
         Some("state") => std::process::exit(opscmd::state(&rest)),
         Some("decide") => std::process::exit(decidecmd::run(&rest)),
+        Some("logs") => std::process::exit(logscmd::run(&rest)),
         Some("grant") => std::process::exit(grantcmd::grant(&rest)),
         Some("grants") => std::process::exit(grantcmd::grants(&rest)),
         Some("policy") => std::process::exit(grantcmd::policy(&rest)),
@@ -1166,6 +1171,8 @@ fn serve(args: Vec<String>) {
     // And the queues (queues.rs): a queue's URL with its key is read as a feed's is.
     let queue_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
     let folders = folders.with_queues(queues::Queues::open(&queues_arg).unwrap_or_else(|e| refuse_to_start(e)).with_sources(queue_sources));
+    // The lines flows write to their logs, in a folder beside the deployments file (logs.rs).
+    let folders = folders.with_logs(logs::Logs::beside(&deployments_at));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));

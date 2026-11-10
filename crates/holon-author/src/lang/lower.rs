@@ -2455,6 +2455,11 @@ impl<'a> Lowerer<'a> {
                 let iface = templates::interface("stripe_verify", &params).expect("a template");
                 self.unit_call("stripe_verify", &iface.inputs, &params, &[], args, span)
             }
+            // A line for the deployment's log (ts.rs `log_call`): the level is the console method, the text its one argument.
+            "@log" => {
+                let (inputs, params) = leaf("log");
+                self.unit_call("log", &inputs, &params, &[("level".to_string(), method.text.clone())], args, span)
+            }
             "state" => {
                 if method.text != "set" {
                     return err(method.span, format!("state has no \"{}\": state.key to read, state.key = … or state.set(key, …) to write", method.text));
@@ -4594,6 +4599,23 @@ route.post("/a", (req) => {
             let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
             let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
             let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
+            assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
+        }
+    }
+
+    /// A log line under a condition, or after a `return` that may have answered, is tied to the
+    /// condition it runs under, as a call's is: a branch not taken writes no line.
+    #[test]
+    fn a_log_line_under_a_condition_is_tied_to_it() {
+        for handler in [
+            "route.post(\"/a\", (req) => {\n  if (req.json.big) {\n    console.warn(\"big\")\n  }\n  return \"ok\"\n})\n",
+            "route.post(\"/a\", (req) => {\n  if (req.json.big) {\n    return \"no\"\n  }\n  console.log(\"small\")\n  return \"ok\"\n})\n",
+        ] {
+            let src = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
+            let d = compiled(&src).doc;
+            let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
+            let line = d.nodes.iter().find(|n| n.data.name == "log").unwrap();
+            let tie = d.edges.iter().find(|w| w.target == line.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
             assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
         }
     }
