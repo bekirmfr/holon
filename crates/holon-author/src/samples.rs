@@ -939,6 +939,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/ticker.holon.ts"),
     },
     Sample {
+        name: "tidewheel",
+        title: "Tidewheel (a sea nobody hosts)",
+        description: "A world that every browser computes and the flow only keeps in order: each second it chains the touches people planted (kept two ticks ahead, as a lockstep game's input delay) onto a sha256 and sends just those on a channel; a cellular law the page runs steps the sea, the pages vouch for it at each fossil (POST /witness, the first sending the sea itself), a late page joins from the newest fossil and the touches since, and a fossil can be replayed in the browser against its hash. The law reads no clock and no dice, so it comes out the same everywhere, and even the weather is derived from the chain.",
+        shows: &["every", "channels", "sha256 chains", "lockstep inputs", "collections (list with prefix and after)", "request fields kept out of lambdas", "serving a script and a page from consts", "witnessing"],
+        port: Some("8199"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8199/ and press the sea to plant a whirl (a ring marks it until its tick, two seconds on); open it in a second window and the two seas are the same sea. A minute on the first fossil is kept: open it, Replay it (the page runs the law sixty times and compares its hash with the kept one) or Fork it. curl -N http://127.0.0.1:8199/live prints each tick's inputs, curl http://127.0.0.1:8199/sync what a page that opens now is given",
+        text: include_str!("../samples/tidewheel.holon.ts"),
+    },
+    Sample {
         name: "drop-board",
         title: "Drop board (files on a live page)",
         description: "A flow with file handlers beside its routes: each file that settles in a folder on the host (on.file.created(board, (f) => …), f the file's handle) counts in its state and goes out on the channel drops, and so does each file removed from it (on.file.deleted(board, …)). Its page lists each one as it happens.",

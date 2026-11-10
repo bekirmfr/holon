@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A new sample, Tidewheel: a sea nobody hosts, that everyone can check.** The flow never runs
+  the world and never sends a picture. Each second its clock chains the touches people planted
+  (kept two ticks ahead, as a lockstep game keeps its inputs) onto a sha256 and sends only those on
+  a channel; every page runs the same law (a cellular automaton served as a script, its hash in
+  the chain's first link) and steps its own sea, and even the weather is read from the chain's
+  bytes. The pages vouch for the sea at each fossil, one a minute, and a page that opens late joins
+  from the newest fossil and the touches since. A fossil can be replayed in the browser against
+  the hash the flow kept, and forked into a sea of one's own. It shows what the flow is for when
+  the compute doesn't belong in it: the order of things, their record, and who agrees.
+
 ## 0.1.0-rc.34
 
 - **Flows that compute run faster, and a fold that builds a list no longer slows with its square.**
