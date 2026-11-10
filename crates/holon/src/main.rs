@@ -626,6 +626,13 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                            flow's (repeatable): one a proxy in front forwards
   --allow-origin ORIGIN    an editor origin it answers besides localhost's (repeatable)
   --keep-runs N            runs each deployment's log keeps (default 500) [HOLON_KEEP_RUNS]
+  --log-stdout             also print each line a flow writes with console.log, as it is kept
+                           [HOLON_LOG_STDOUT]
+  --log-size SIZE          each file of a deployment's log lines: 64K, 2M, 1G (default 2M)
+                           [HOLON_LOG_SIZE]
+  --log-files N            files kept of them, 1 to 10 (default 3) [HOLON_LOG_FILES]
+  --log-rate N             lines a second a deployment writes, the rest dropped and counted
+                           (default 1000) [HOLON_LOG_RATE]
   --flow-cache SIZE        memory kept for loaded flows, such as 64M or 1G; 0 keeps none
                            (default 256M) [HOLON_FLOW_CACHE]
   --value-cache SIZE       memory kept for values runs read from disk, such as 64M; 0 keeps
@@ -809,6 +816,12 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // What the flows' log lines are kept and said as (`--log-stdout`, `--log-size`, `--log-files`,
+    // `--log-rate`, or HOLON_LOG_*; logs.rs).
+    let mut log_stdout = std::env::var("HOLON_LOG_STDOUT").is_ok_and(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+    let mut log_size: Option<String> = std::env::var("HOLON_LOG_SIZE").ok().filter(|v| !v.trim().is_empty());
+    let mut log_files: Option<String> = std::env::var("HOLON_LOG_FILES").ok().filter(|v| !v.trim().is_empty());
+    let mut log_rate: Option<String> = std::env::var("HOLON_LOG_RATE").ok().filter(|v| !v.trim().is_empty());
     // How much memory loaded flows may keep (`--flow-cache SIZE`, or HOLON_FLOW_CACHE; units.rs).
     let mut flow_cache: Option<String> = std::env::var("HOLON_FLOW_CACHE").ok().filter(|v| !v.trim().is_empty());
     // How much memory values read from disk may keep (`--value-cache SIZE`, or HOLON_VALUE_CACHE;
@@ -837,6 +850,18 @@ fn serve(args: Vec<String>) {
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
                 std::process::exit(2);
+            }
+        } else if a == "--log-stdout" {
+            log_stdout = true;
+        } else if a == "--log-size" || a == "--log-files" || a == "--log-rate" {
+            let Some(v) = args.next() else {
+                eprintln!("{a} needs a value: a size (64K, 2M, 1G), a number of files (1 to 10), or lines a second");
+                std::process::exit(2);
+            };
+            match a.as_str() {
+                "--log-size" => log_size = Some(v),
+                "--log-files" => log_files = Some(v),
+                _ => log_rate = Some(v),
             }
         } else if a == "--flow-cache" {
             flow_cache = args.next();
@@ -1018,6 +1043,35 @@ fn serve(args: Vec<String>) {
         }
     }
 
+    let mut log_caps = logs::Caps { stdout: log_stdout, ..logs::Caps::default() };
+    if let Some(v) = log_size {
+        match verify::budget_of(&v) {
+            Some(bytes) if bytes >= logs::LEAST_FILE_BYTES => log_caps.file_bytes = bytes,
+            _ => {
+                eprintln!("holon: --log-size (or HOLON_LOG_SIZE) needs a size of at least 64K: 65536, 64K, 2M or 1G, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Some(v) = log_files {
+        match v.trim().parse::<usize>() {
+            Ok(n) if (1..=logs::MOST_FILES).contains(&n) => log_caps.files = n,
+            _ => {
+                eprintln!("holon: --log-files (or HOLON_LOG_FILES) needs a number of files, 1 to {}, not {v:?}", logs::MOST_FILES);
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Some(v) = log_rate {
+        match v.trim().parse::<u64>() {
+            Ok(n) if n >= 1 => log_caps.per_second = n,
+            _ => {
+                eprintln!("holon: --log-rate (or HOLON_LOG_RATE) needs a number of lines a second, at least 1, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     // Whatever wasn't named on its own goes in the data folder: `--data`, else HOLON_DATA, else
     // ~/.holon/data (docs/L4s/holon-home-L4.md). The folder it was started from doesn't matter.
     let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))).map(paths::normalize) {
@@ -1172,7 +1226,7 @@ fn serve(args: Vec<String>) {
     let queue_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
     let folders = folders.with_queues(queues::Queues::open(&queues_arg).unwrap_or_else(|e| refuse_to_start(e)).with_sources(queue_sources));
     // The lines flows write to their logs, in a folder beside the deployments file (logs.rs).
-    let folders = folders.with_logs(logs::Logs::beside(&deployments_at));
+    let folders = folders.with_logs(logs::Logs::beside(&deployments_at, log_caps));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));

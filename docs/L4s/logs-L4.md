@@ -84,14 +84,19 @@ One **file per deployment**, not per version, in a folder beside the deployments
   line a deployment writes (a line's time is never earlier than the one before's), so a reader
   that has the last one it saw reads on from there and misses none.
 - **Rolling, with a hard cap.** At 2 MB `<slug>.jsonl` becomes `<slug>.1.jsonl` and then
-  `<slug>.2.jsonl`; the oldest of the three is deleted.
+  `<slug>.2.jsonl`; the oldest of the three is deleted. The size and the number of files are the
+  server's settings (`--log-size`, default 2M and at least 64K; `--log-files`, 1 to 10, default 3).
 - **Written lazily.** Lines are buffered and written about once a second, on a thread of their own:
   a run never waits for its lines, and a crash can lose the last second. A file that can't be
   written counts its lines as dropped.
-- **Capped.** A line over 4 KiB is cut; a deployment writing over 1,000 lines a second drops the
-  excess and the next line says how many (`"3 lines were dropped: over 1000 a second"`, with
+- **Capped.** A line over 4 KiB is cut; a deployment writing over 1,000 lines a second (`--log-rate`)
+  drops the excess and the next line says how many (`"3 lines were dropped: over 1000 a second"`, with
   `dropped: 3`).
 - **A server that keeps nothing** keeps the newest 5,000 lines of each deployment in memory.
+- **Stdout.** `holon serve --log-stdout` (or `HOLON_LOG_STDOUT=1`) also prints each line as it is kept,
+  on one line, from the thread that writes the files, so a run never waits on a full pipe:
+  `11:48:03.678 traced-payout: LOG   run 0  payout asked p-1 250` (UTC, the deployment named, a
+  newline in the text written as `\n`). It works with no folder too. Off by default.
 - **Removed with the deployment**: removing it deletes its files.
 - **Secrets.** A line computed from a secret, its value in it as it is or encoded, is withheld
   (`‹withheld: computed from a secret›`), as the record withholds an effect's payload computed from
@@ -154,7 +159,8 @@ question 4.)
 3. **Reading**: the route and `holon logs`, an agent refused; the sample `traced-payout`; done.
 4. **The console panel** (the Logs tab and a run's Log lines) and the panel in `holon editor` (its Logs
    section); done.
-5. **`holon serve --log-stdout`** and the settings for the caps.
+5. **`holon serve --log-stdout`** and the settings for the caps (`--log-size`, `--log-files`,
+   `--log-rate`, and `HOLON_LOG_*`); done.
 6. **The agent's grant**: the manifest item, the deploy preview line, the `holon mcp` `logs` tool.
 
 ## 9. Open questions
@@ -171,7 +177,7 @@ question 4.)
 4. **The grant's shape**: one item per deployment (`agents may read its logs`), or per level? And
    whether `holon mcp`'s `logs` tool reads through the same route. To settle with the `holon mcp`
    side (step 6).
-5. **The caps.** 3 files of 2 MB and 1,000 lines a second are constants; host settings next
-   (step 5), or a flow's own?
+5. ~~**The caps.**~~ The server's settings, by flags and `HOLON_LOG_*` variables, with the old
+   constants as their defaults; a flow's own caps are not planned.
 6. **Does a line outlive a redeploy?** Yes, built so: the file is the deployment's, and each line
    names its version.

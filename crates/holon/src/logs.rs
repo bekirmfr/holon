@@ -8,7 +8,9 @@
 //! lose the last second. A server that keeps nothing keeps the newest lines in memory.
 //!
 //! Bounded on every side: a line is cut at [`LINE_BYTES`], a deployment writes at most
-//! [`LINES_A_SECOND`], and what is dropped is counted: the next line kept says how many.
+//! [`LINES_A_SECOND`] (these and the files' size and number are [`Caps`], the server's settings), and
+//! what is dropped is counted: the next line kept says how many. A server told `--log-stdout` also
+//! prints each line, from the same thread that writes the files.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -34,6 +36,29 @@ const LINES_A_SECOND: u64 = 1000;
 const MEMORY_LINES: usize = 5000;
 /// How often the buffered lines are written.
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
+/// Each deployment's buffered lines, taken to be written.
+type Written = Vec<(String, Vec<Line>)>;
+
+/// What a server is set to keep, and say: how big each file of a deployment grows before it is rolled,
+/// how many files it keeps, how many lines a second it writes, and whether each line is also printed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Caps {
+    pub(crate) file_bytes: u64,
+    pub(crate) files: usize,
+    pub(crate) per_second: u64,
+    pub(crate) stdout: bool,
+}
+
+impl Default for Caps {
+    fn default() -> Caps {
+        Caps { file_bytes: FILE_BYTES, files: FILES, per_second: LINES_A_SECOND, stdout: false }
+    }
+}
+
+/// The most files a deployment can be set to keep, and so the most that are looked for to forget.
+pub(crate) const MOST_FILES: usize = 10;
+/// The least a file can be set to hold: more than a line.
+pub(crate) const LEAST_FILE_BYTES: u64 = 64 * 1024;
 
 /// One line of a deployment's log.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -97,6 +122,8 @@ struct Pending {
     window: Option<Instant>,
     in_window: u64,
     dropped: u64,
+    /// Lines not yet printed (`--log-stdout`), with the time each was written.
+    printed: Vec<(u64, String)>,
     /// When its last line was written: the next is never earlier, so a reader that has the last
     /// it saw reads on from there (`after`) and misses none.
     last_at: u64,
@@ -107,6 +134,7 @@ struct Pending {
 struct Inner {
     /// Where the files go; none: nowhere, the lines are kept in memory.
     dir: Option<PathBuf>,
+    caps: Caps,
     slugs: Mutex<BTreeMap<String, Pending>>,
     flusher: AtomicBool,
 }
@@ -118,16 +146,17 @@ pub(crate) struct Logs(Arc<Inner>);
 impl Logs {
     /// Kept nowhere: the tests, and a server told to keep nothing.
     pub(crate) fn memory() -> Logs {
-        Logs(Arc::new(Inner { dir: None, slugs: Mutex::new(BTreeMap::new()), flusher: AtomicBool::new(false) }))
+        Logs::new(None, Caps::default())
+    }
+
+    fn new(dir: Option<PathBuf>, caps: Caps) -> Logs {
+        Logs(Arc::new(Inner { dir, caps, slugs: Mutex::new(BTreeMap::new()), flusher: AtomicBool::new(false) }))
     }
 
     /// In a folder beside the deployments file (`<deployments>.logs/`), or in memory when that is
     /// kept nowhere.
-    pub(crate) fn beside(deployments_path: &Place) -> Logs {
-        match deployments_path.beside("logs") {
-            Some(dir) => Logs(Arc::new(Inner { dir: Some(PathBuf::from(dir)), slugs: Mutex::new(BTreeMap::new()), flusher: AtomicBool::new(false) })),
-            None => Logs::memory(),
-        }
+    pub(crate) fn beside(deployments_path: &Place, caps: Caps) -> Logs {
+        Logs::new(deployments_path.beside("logs").map(PathBuf::from), caps)
     }
 
     /// The lines a run wrote, at their levels, for `slug`: cut, counted against its rate, and
@@ -148,16 +177,17 @@ impl Logs {
                     pending.window = Some(now);
                     pending.in_window = 0;
                 }
-                if pending.in_window >= LINES_A_SECOND {
+                if pending.in_window >= self.0.caps.per_second {
                     pending.dropped += 1;
                     continue;
                 }
                 pending.in_window += 1;
                 if pending.dropped > 0 {
                     let n = std::mem::take(&mut pending.dropped);
-                    pending.push(Line { at, level: "warn".into(), unit: unit.clone(), run, text: format!("{n} lines were dropped: over {LINES_A_SECOND} a second"), dropped: n }, self.0.dir.is_none());
+                    let marker = Line { at, level: "warn".into(), unit: unit.clone(), run, text: format!("{n} lines were dropped: over {} a second", self.0.caps.per_second), dropped: n };
+                    self.keep(pending, slug, marker);
                 }
-                pending.push(Line { at, level: level.clone(), unit: unit.clone(), run, text: cut(text), dropped: 0 }, self.0.dir.is_none());
+                self.keep(pending, slug, Line { at, level: level.clone(), unit: unit.clone(), run, text: cut(text), dropped: 0 });
             }
         }
         self.start_flusher();
@@ -173,7 +203,7 @@ impl Logs {
             None => self.0.slugs.lock().unwrap().get(slug).map(|p| p.memory.iter().cloned().collect()).unwrap_or_default(),
             Some(dir) => {
                 let mut lines = Vec::new();
-                for n in (0..FILES).rev() {
+                for n in (0..self.0.caps.files).rev() {
                     let Ok(text) = std::fs::read_to_string(file_of(dir, slug, n)) else { continue };
                     lines.extend(text.lines().filter_map(|l| serde_json::from_str::<Line>(l).ok()));
                 }
@@ -194,7 +224,7 @@ impl Logs {
         }
         self.0.slugs.lock().unwrap().remove(slug);
         if let Some(dir) = &self.0.dir {
-            for n in 0..FILES {
+            for n in 0..MOST_FILES {
                 let _ = std::fs::remove_file(file_of(dir, slug, n));
             }
         }
@@ -204,11 +234,19 @@ impl Logs {
     /// lines to add would take it past its cap. A file that can't be written counts its lines as
     /// dropped: the run that wrote them has long since answered.
     pub(crate) fn flush(&self) {
-        let Some(dir) = &self.0.dir else { return };
-        let taken: Vec<(String, Vec<Line>)> = {
+        let (taken, mut printed): (Written, Vec<(u64, String)>) = {
             let mut slugs = self.0.slugs.lock().unwrap();
-            slugs.iter_mut().filter(|(_, p)| !p.buffer.is_empty()).map(|(s, p)| (s.clone(), std::mem::take(&mut p.buffer))).collect()
+            let taken = slugs.iter_mut().filter(|(_, p)| !p.buffer.is_empty()).map(|(s, p)| (s.clone(), std::mem::take(&mut p.buffer))).collect();
+            (taken, slugs.values_mut().flat_map(|p| std::mem::take(&mut p.printed)).collect())
         };
+        if !printed.is_empty() {
+            printed.sort_by_key(|(at, _)| *at);
+            let mut out = std::io::stdout().lock();
+            for (_, line) in printed {
+                let _ = writeln!(out, "{line}");
+            }
+        }
+        let Some(dir) = &self.0.dir else { return };
         for (slug, lines) in taken {
             let mut text = String::new();
             for line in &lines {
@@ -217,7 +255,7 @@ impl Logs {
                     text.push('\n');
                 }
             }
-            if append(dir, &slug, text.as_bytes()).is_err() {
+            if append(dir, &slug, text.as_bytes(), &self.0.caps).is_err() {
                 self.0.slugs.lock().unwrap().entry(slug).or_default().dropped += lines.len() as u64;
             }
         }
@@ -226,7 +264,7 @@ impl Logs {
     /// A thread that writes the buffered lines every second, begun with the first line, and gone
     /// when the logs are.
     fn start_flusher(&self) {
-        if self.0.dir.is_none() || self.0.flusher.swap(true, Ordering::SeqCst) {
+        if (self.0.dir.is_none() && !self.0.caps.stdout) || self.0.flusher.swap(true, Ordering::SeqCst) {
             return;
         }
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
@@ -238,6 +276,24 @@ impl Logs {
             }
         });
     }
+}
+
+impl Logs {
+    /// A line kept: in memory, or to be written, and to be printed when the server is set to.
+    fn keep(&self, pending: &mut Pending, slug: &str, line: Line) {
+        if self.0.caps.stdout {
+            pending.printed.push((line.at, printed_line(slug, &line)));
+        }
+        pending.push(line, self.0.dir.is_none());
+    }
+}
+
+/// A line as `--log-stdout` prints it, on one line: `11:37:09.195 loud: LOG   run 0  asked ada`, the
+/// time in UTC as `holon logs` tells it, the deployment named, a newline in the text written out.
+pub(crate) fn printed_line(slug: &str, l: &Line) -> String {
+    let secs = l.at / 1000;
+    let clock = format!("{:02}:{:02}:{:02}.{:03}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60, l.at % 1000);
+    format!("{clock} {slug}: {:<5} run {}  {}", l.level.to_uppercase(), l.run, l.text.replace('\n', "\\n"))
 }
 
 impl Pending {
@@ -284,14 +340,14 @@ fn file_of(dir: &Path, slug: &str, n: usize) -> PathBuf {
 }
 
 /// `bytes` added to `slug`'s file, which is rolled first if they would take it past its cap.
-fn append(dir: &Path, slug: &str, bytes: &[u8]) -> std::io::Result<()> {
+fn append(dir: &Path, slug: &str, bytes: &[u8], caps: &Caps) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let current = file_of(dir, slug, 0);
     let size = std::fs::metadata(&current).map_or(0, |m| m.len());
-    if size > 0 && size + bytes.len() as u64 > FILE_BYTES {
+    if size > 0 && size + bytes.len() as u64 > caps.file_bytes {
         // The oldest goes; each of the others moves one on; the current one becomes the first.
-        let _ = std::fs::remove_file(file_of(dir, slug, FILES - 1));
-        for n in (0..FILES - 1).rev() {
+        let _ = std::fs::remove_file(file_of(dir, slug, caps.files - 1));
+        for n in (0..caps.files - 1).rev() {
             let _ = std::fs::rename(file_of(dir, slug, n), file_of(dir, slug, n + 1));
         }
     }
@@ -335,7 +391,14 @@ mod tests {
     }
 
     fn files_logs(dir: &Path) -> Logs {
-        Logs(Arc::new(Inner { dir: Some(dir.to_path_buf()), slugs: Mutex::new(BTreeMap::new()), flusher: AtomicBool::new(true) }))
+        files_logs_with(dir, Caps::default())
+    }
+
+    /// Logs in `dir` set as `caps` say, with no thread of their own: the tests flush when they mean to.
+    fn files_logs_with(dir: &Path, caps: Caps) -> Logs {
+        let logs = Logs::new(Some(dir.to_path_buf()), caps);
+        logs.0.flusher.store(true, Ordering::SeqCst);
+        logs
     }
 
     #[test]
@@ -424,6 +487,45 @@ mod tests {
         let again = files_logs(&dir);
         assert_eq!(again.read("a", &Query::default())[0].text, "kept", "after a restart");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_caps_a_server_is_set_to_are_the_ones_kept() {
+        let dir = temp("caps");
+        let caps = Caps { file_bytes: LEAST_FILE_BYTES, files: 2, per_second: 3, stdout: false };
+        let logs = files_logs_with(&dir, caps);
+        // Over 3 a second: the rest are dropped, and said.
+        logs.write("a", 1, "u", 1, &(0..5).map(|i| ("log".to_string(), i.to_string())).collect::<Vec<_>>());
+        assert_eq!(logs.read("a", &Query::default()).len(), 3);
+        // Two files of 64 KiB: a third rolling drops the oldest.
+        let big = "x".repeat(LINE_BYTES - 100);
+        for run in 0..60u64 {
+            if let Some(p) = logs.0.slugs.lock().unwrap().get_mut("a") {
+                p.window = None;
+            }
+            logs.write("a", 100 + run, "u", 100 + run, &[("log".into(), big.clone())]);
+            logs.flush();
+        }
+        assert!(file_of(&dir, "a", 0).exists() && file_of(&dir, "a", 1).exists() && !file_of(&dir, "a", 2).exists(), "two files");
+        let read = logs.read("a", &Query::default());
+        assert!(read.first().unwrap().run > 100 && read.last().unwrap().run == 159, "the oldest went, the newest is kept");
+        // Forgotten, whatever the number it was once set to keep.
+        std::fs::write(file_of(&dir, "a", 5), "{}").unwrap();
+        logs.forget("a");
+        assert!(!file_of(&dir, "a", 0).exists() && !file_of(&dir, "a", 5).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_set_to_print_has_each_line_ready_to_print_on_one_line() {
+        let logs = Logs::new(None, Caps { stdout: true, ..Caps::default() });
+        logs.write("loud", 3, "u", 1_794_257_758_195, &[("warn".into(), text("two\nlines"))]);
+        let printed: Vec<String> = logs.0.slugs.lock().unwrap().get("loud").unwrap().printed.iter().map(|(_, l)| l.clone()).collect();
+        assert_eq!(printed, ["20:55:58.195 loud: WARN  run 3  two\\nlines"]);
+        // Not set to: nothing is held to print.
+        let quiet = Logs::memory();
+        quiet.write("loud", 3, "u", 1, &[("log".into(), text("x"))]);
+        assert!(quiet.0.slugs.lock().unwrap().get("loud").unwrap().printed.is_empty());
     }
 
     #[test]

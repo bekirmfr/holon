@@ -161,6 +161,8 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--allow-host HOST` | a host name it answers to besides localhost, on its own port and each flow's (one a proxy in front forwards); repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
 | `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
+| `--log-stdout` | also print each line a flow writes with `console.log` as it is kept, one to a line, `11:48:03.678 traced-payout: LOG   run 0  payout asked p-1 250` (or `HOLON_LOG_STDOUT=1`): for a server run under systemd or in a container that collects what it prints |
+| `--log-size SIZE`, `--log-files N`, `--log-rate N` | how each deployment's log lines are kept: the size of each file (`64K` at least; default `2M`), how many files (1 to 10; default 3), and the most lines a second it writes (default 1000), the rest dropped and counted; or `HOLON_LOG_SIZE`, `HOLON_LOG_FILES`, `HOLON_LOG_RATE` ([`holon logs`](#holon-logs)) |
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
@@ -409,8 +411,8 @@ The host keeps them beside the deployment's runs: none is an effect a run perfor
 `--level warn` shows that level and louder (`log` and `info` are the same); `--run N` only the
 lines run N wrote, `--until N` every line up to the end of run N's; `--limit N` the newest N (200
 if left out); `--follow` keeps reading as new lines come; `--json` prints each line as JSON. A
-deployment keeps three files of 2 MB: the oldest lines go first, and a line says when some were
-dropped. A person signed in reads them. An agent, `holon mcp`, is refused: no grant lets one read a
+deployment keeps three files of 2 MB by default (`holon serve --log-size`, `--log-files`): the oldest
+lines go first, and a line says when some were dropped. A person signed in reads them. An agent, `holon mcp`, is refused: no grant lets one read a
 deployment's logs yet.
 
 ### `holon decide`
