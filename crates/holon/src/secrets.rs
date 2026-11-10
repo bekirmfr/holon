@@ -262,6 +262,11 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// `name`, as a secret's name, or why not.
+fn check_name(name: &str) -> Result<(), String> {
+    if is_valid_name(name) { Ok(()) } else { Err("a secret name is letters, digits, '-' and '_' (1 to 64)".into()) }
+}
+
 impl SecretStore {
     /// An empty store that is never written (`":memory:"`), under a key that is never kept.
     pub(crate) fn memory() -> SecretStore {
@@ -485,6 +490,7 @@ impl SecretStore {
 
     /// Set `slug`'s secret `name` to `value`, as a new version; that version's number.
     pub(crate) fn set(&self, slug: &str, name: &str, value: &str, by: Option<&str>) -> Result<u32, String> {
+        check_name(name)?;
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("a secret must be at least {MIN_SECRET_LEN} characters, or it can't be told apart from ordinary text to redact it"));
         }
@@ -497,6 +503,9 @@ impl SecretStore {
     /// Point `slug`'s secret `name` at `source` (`env:…`, `vault:…`), as a new version; that
     /// version's number. Refused unless it can be read now, and long enough to redact.
     pub(crate) fn set_from(&self, slug: &str, name: &str, source: &str, by: Option<&str>) -> Result<u32, String> {
+        // The name first: a source is read only for a secret that can be kept, so what reading it
+        // says (unset, too short) is never told for nothing.
+        check_name(name)?;
         let value = self.sources.fetch(&Reference::parse(source)?)?;
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("{source} is shorter than {MIN_SECRET_LEN} characters, too short to redact"));
@@ -608,9 +617,7 @@ impl SecretStore {
     /// Add a version of `name` from `source` (`value`: a local one's, to seal), keeping the last
     /// [`MAX_VERSIONS`]; re-resolve the vault when `resolve`.
     fn add_version(&self, slug: &str, name: &str, source: &str, value: Option<&str>, resolve: bool) -> Result<u32, String> {
-        if !is_valid_name(name) {
-            return Err("a secret name is letters, digits, '-' and '_' (1 to 64)".into());
-        }
+        check_name(name)?;
         let mut slugs = self.slugs.lock().unwrap();
         let entry = slugs.entry(slug.to_string()).or_default();
         let versions = entry.secrets.entry(name.to_string()).or_default();
@@ -1375,6 +1382,11 @@ mod tests {
         assert!(store.set_from("api", "k", "env:PATH", None).unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING", None).unwrap_err().contains("isn't set"));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY", None).unwrap_err().contains("too short"));
+        // A name that can't be kept is refused before the source is read: an unset variable and a
+        // set one answer alike, so nothing is learned of the environment.
+        for source in ["env:HOLON_SECRET_MISSING", "env:HOLON_SECRET_TINY", "env:HOLON_SECRET_API"] {
+            assert!(store.set_from("api", "", source, None).unwrap_err().contains("a secret name is"), "{source}");
+        }
         assert!(store.names("api").is_empty(), "a refused source adds nothing");
         assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API", None).unwrap(), 1);
         let vault = store.vault("api");

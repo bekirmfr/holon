@@ -219,12 +219,13 @@ impl Access {
     }
 }
 
-/// Whether `request` sets, rolls back or removes a secret.
+/// Whether `request` sets, rolls back or removes a secret: any POST or DELETE under a
+/// deployment's `/secrets/`, with a name after it or not (http.rs routes one without a name to
+/// the secrets too, where it is refused, but only after the gate has let it through).
 pub(crate) fn is_secret_write(request: &Request) -> bool {
     let url = request.url();
     let Some(rest) = url.strip_prefix("/deployments/") else { return false };
-    let Some((_, after)) = rest.split_once("/secrets/") else { return false };
-    !after.is_empty() && matches!(request.method(), "POST" | "DELETE")
+    rest.contains("/secrets/") && matches!(request.method(), "POST" | "DELETE")
 }
 
 #[cfg(test)]
@@ -268,6 +269,10 @@ mod tests {
         assert_eq!(call(&access, "POST", "/auth/password", Some(&cy)), Ok(Some("cy".into())), "their own password");
         assert_eq!(call(&access, "POST", "/flows", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&bob)), Err(403));
+        // Without a name, still a secret's write: refused an editor, not answered past the gate.
+        assert_eq!(call(&access, "POST", "/deployments/a/secrets/", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "DELETE", "/deployments/a/secrets/", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/deployments/a/secrets", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "GET", "/people", Some(&bob)), Err(403));
         assert_eq!(call(&access, "GET", "/admin/oidc", Some(&bob)), Err(403));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&ada)), Ok(Some("ada".into())));

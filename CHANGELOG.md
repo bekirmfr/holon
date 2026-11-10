@@ -15,6 +15,12 @@
   accounts file from before keeps its people, but its API tokens are not read and a person with role
   agent is dropped, which the server says when it starts: add each as an agent or a service, and make
   it a token. No sample changes: this is who signs in, not what a flow does.
+- **Only an admin writes a secret, even with no name in the path.** `POST` or `DELETE
+  /deployments/<slug>/secrets/`, with nothing after the slash, got past the admin's gate and on
+  to the secrets, where `{"from": "env:…"}` read the variable before its empty name was refused: an
+  editor could learn whether a server variable or a vault entry was set, and whether it was short.
+  Every write under a deployment's `/secrets/` is an admin's now, and a secret's name is checked
+  before its source is read.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a
