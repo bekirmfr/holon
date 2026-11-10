@@ -49,12 +49,12 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 The install scripts are on each [release](https://github.com/bekirmfr/holon/releases):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.sh | sh
 ```
 
 ```powershell
 cd $env:TEMP
-irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.ps1 -OutFile holon-installer.ps1
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.ps1 -OutFile holon-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 

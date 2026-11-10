@@ -10,7 +10,7 @@ You need a terminal and a browser. Nothing else: the editor is built into the se
 On macOS or Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.sh | sh
 ```
 
 On Windows, in PowerShell, download the script and then run it (run straight from the
@@ -18,7 +18,7 @@ download, `irm … | iex`, it can fail in Windows PowerShell):
 
 ```powershell
 cd $env:TEMP
-irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.ps1 -OutFile holon-installer.ps1
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.ps1 -OutFile holon-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
