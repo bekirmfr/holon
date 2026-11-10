@@ -5,14 +5,14 @@ named as it is in the code; search for the name.
 
 ## 1. The suites
 
-| Suite | Run with | In CI (`.github/workflows/ci.yml`) | Size |
+| Suite | Run with | In CI (`.github/workflows/ci.yml`, on every pull request; `e2e.yml` for end to end) | Size |
 |---|---|---|---|
 | Rust workspace | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` | job `native`, with Postgres 17, MySQL 8.4 and a MongoDB replica set beside it (`HOLON_TEST_POSTGRES`, `HOLON_TEST_MYSQL`, `HOLON_TEST_MONGODB`) | about 1,180 tests, 5 ignored (measurements) |
 | A sample from the CLI | `cargo run -p holon -- new … --sample slugs`, then `check` | job `native` | 1 |
 | wasm parity | `wasm-pack test --node crates/holon-wasm` | job `wasm-parity` | 23 under wasm, 15 native |
 | Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
 | Embedded editor | `cargo test -p holon --features embed-editor editor` | job `editor` | |
-| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | job `e2e`, two shards | 72 passing, `atlas-notes` skipped without `HOLON_TEST_MONGODB` (7.1 minutes at `9969f8b`) |
+| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | `e2e.yml`, jobs `e2e (1)` and `e2e (2)`: on main, nightly, and a pull request labelled `e2e` or a release's (`release-…`) | 72 passing, `atlas-notes` skipped without `HOLON_TEST_MONGODB` (7.1 minutes at `9969f8b`) |
 | VS Code extension | `xvfb-run -a npm run test:vscode` (in `editors/vscode`: `holon lsp` in a real VS Code) | job `vscode` | |
 | Golden records | inside `cargo test`; `HOLON_GOLDEN=update` rewrites them | yes | `crates/holon-author/tests/golden/eval.txt` (379 cases), `crates/holon/tests/golden/server.txt` (342 runs) |
 

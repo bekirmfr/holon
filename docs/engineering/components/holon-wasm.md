@@ -28,7 +28,7 @@ CI and releases build it with wasm-pack 0.15.0:
 wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
 ```
 
-(`.github/workflows/ci.yml`, jobs `editor` and `e2e`; `.github/build-setup.yml` for releases,
+(`.github/workflows/ci.yml`, job `editor`, and `e2e.yml`; `.github/build-setup.yml` for releases,
 which build the editor into the server).
 `--no-opt` skips `wasm-opt`, which fails to parse the core on the macOS arm64 runner; the wasm
 tested is the wasm shipped. Without wasm-pack, the same package is two steps:
