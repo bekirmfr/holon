@@ -21,6 +21,12 @@
   editor could learn whether a server variable or a vault entry was set, and whether it was short.
   Every write under a deployment's `/secrets/` is an admin's now, and a secret's name is checked
   before its source is read.
+- **Changing a password no longer holds up every request, and guessing the current one is
+  counted.** The current password was checked while the accounts were locked, which every request
+  needs to say who it is: with sign-ins filling the checkers, one change could stall the server for
+  up to thirty seconds. It is checked outside the lock now, and five wrong in a row refuse changing
+  it for a minute, so a session someone else holds can't be used to guess it. In the tests, any
+  password hashed or checked while an accounts lock is held now fails, whatever the path.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

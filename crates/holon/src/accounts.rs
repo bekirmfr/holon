@@ -223,6 +223,10 @@ struct Tries {
     last: Option<Instant>,
 }
 
+/// Where a password change's tries are counted from, in place of a client's address: by name,
+/// apart from signing in.
+const CHANGING: &str = "(changing the password)";
+
 /// How many names' tries are kept before the old ones are forgotten.
 const TRIES_KEPT: usize = 4096;
 
@@ -293,6 +297,41 @@ fn check_password(password: &str) -> Result<(), String> {
 const CHECKS_AT_ONCE: usize = 4;
 const CHECK_WAIT: Duration = Duration::from_secs(30);
 
+thread_local! {
+    /// How many of the accounts' locks this thread holds (`hold`). A password is never hashed or
+    /// checked while it holds one (`checking` says so in every test that runs one): a check takes
+    /// a while, longer when the server is busy, and every request needs these locks to say who it is.
+    static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// One of the accounts' locks, held: counted in `HELD` while it is.
+struct Held<'a, T>(std::sync::MutexGuard<'a, T>);
+
+fn hold<T>(lock: &Mutex<T>) -> Held<'_, T> {
+    let guard = lock.lock().unwrap();
+    HELD.with(|h| h.set(h.get() + 1));
+    Held(guard)
+}
+
+impl<T> Drop for Held<'_, T> {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(h.get() - 1));
+    }
+}
+
+impl<T> std::ops::Deref for Held<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Held<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
 struct Slots {
     taken: Mutex<usize>,
@@ -334,6 +373,7 @@ impl Slots {
 /// Run `f` (a password hashed or checked) once one of `CHECKS_AT_ONCE` slots is free, on one of
 /// as many threads kept for it (`on_a_checker`).
 fn checking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    debug_assert_eq!(HELD.with(std::cell::Cell::get), 0, "a password hashed or checked holding an accounts lock: every request would wait on it");
     static CHECKS: Slots = Slots::new(CHECKS_AT_ONCE, CHECK_WAIT);
     CHECKS.run(|| on_a_checker(f))
 }
@@ -457,7 +497,7 @@ impl Accounts {
 
     /// Change the book, and keep it; expired sessions and invites go at the same time.
     fn change<T>(&self, f: impl FnOnce(&mut Book) -> Result<T, String>) -> Result<T, String> {
-        let mut book = self.book.lock().unwrap();
+        let mut book = hold(&self.book);
         let now = epoch_now();
         book.sessions.retain(|s| s.expires_at > now);
         book.invites.retain(|i| i.expires_at > now);
@@ -468,11 +508,11 @@ impl Accounts {
 
     /// The setup code, while the first admin hasn't been created.
     pub(crate) fn setup_code(&self) -> Option<String> {
-        self.setup_code.lock().unwrap().clone()
+        hold(&self.setup_code).clone()
     }
 
     pub(crate) fn needs_setup(&self) -> bool {
-        self.book.lock().unwrap().users.is_empty()
+        hold(&self.book).users.is_empty()
     }
 
     fn start_session(book: &mut Book, user: &str) -> String {
@@ -485,7 +525,7 @@ impl Accounts {
     pub(crate) fn setup(&self, code: &str, name: &str, password: &str) -> Result<(String, Principal), String> {
         let expected = self.setup_code().ok_or("this server is set up already")?;
         {
-            let mut tries = self.setup_tries.lock().unwrap();
+            let mut tries = hold(&self.setup_tries);
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong setup codes: wait a minute, then try again".into());
             }
@@ -510,7 +550,7 @@ impl Accounts {
             book.users.push(account.clone());
             Ok((Self::start_session(book, name), account))
         })?;
-        *self.setup_code.lock().unwrap() = None;
+        *hold(&self.setup_code) = None;
         Ok(out)
     }
 
@@ -525,50 +565,54 @@ impl Accounts {
     /// only, so someone elsewhere who knows the name can't keep its owner out; behind a proxy every
     /// address is the proxy's, and the lock is the name's, as it was.
     pub(crate) fn sign_in_from(&self, name: &str, password: &str, from: &str) -> Result<(String, Principal), String> {
-        let refused = || "that name and password don't match an account here".to_string();
-        let key = (name.to_string(), from.to_string());
+        let account = hold(&self.book).users.iter().find(|u| u.name == name).cloned();
+        let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
+        // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
+        // password, so how long a refusal takes doesn't say which names are accounts.
+        let right = self.counted((name.to_string(), from.to_string()), || Ok(password_matches(password, hash.unwrap_or(stand_in_hash()))? && hash.is_some()))?;
+        if !right {
+            return Err("that name and password don't match an account here".to_string());
+        }
+        let account = account.unwrap();
+        let token = self.change(|book| Ok(Self::start_session(book, &account.name)))?;
+        Ok((token, account))
+    }
+
+    /// A password checked for `key` (a name, and where it came from), counted: refused while the
+    /// key is locked, or while as many are being checked for it as may still go wrong (so tries
+    /// sent at once can't try more than MAX_FAILURES before the lock). A wrong one counts, and the
+    /// MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. `check` says whether it
+    /// was right, or that it couldn't be checked (the server busy), which counts as neither.
+    fn counted(&self, key: (String, String), check: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
         {
-            let mut failures = self.failures.lock().unwrap();
+            let mut failures = hold(&self.failures);
             forget_old_tries(&mut failures);
             let tries = failures.entry(key.clone()).or_default();
             tries.last = Some(Instant::now());
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong passwords: wait a minute, then try again".into());
             }
-            // The ones still being checked count too, so sign-ins sent at once can't try more
-            // than MAX_FAILURES passwords before the lock.
             if tries.wrong + tries.checking >= MAX_FAILURES {
-                return Err("too many sign-ins at once: wait a moment, then try again".into());
+                return Err("too many tries at once: wait a moment, then try again".into());
             }
             tries.checking += 1;
         }
-        let account = self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned();
-        let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
-        // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
-        // password, so how long a refusal takes doesn't say which names are accounts.
-        let matches = password_matches(password, hash.unwrap_or(stand_in_hash()));
-        let mut failures = self.failures.lock().unwrap();
+        let right = check();
+        let mut failures = hold(&self.failures);
         let tries = failures.entry(key.clone()).or_default();
         tries.checking -= 1;
-        // Not checked (the server was busy): not a wrong password either.
-        let matches = matches?;
-        let ok = hash.is_some() && matches;
-        if !ok {
+        let right = right?;
+        if !right {
             tries.wrong += 1;
             if tries.wrong >= MAX_FAILURES {
                 (tries.wrong, tries.locked) = (0, Some(Instant::now()));
             }
-            return Err(refused());
-        }
-        if tries.checking == 0 {
+        } else if tries.checking == 0 {
             failures.remove(&key);
         } else {
             (tries.wrong, tries.locked) = (0, None);
         }
-        drop(failures);
-        let account = account.unwrap();
-        let token = self.change(|book| Ok(Self::start_session(book, &account.name)))?;
-        Ok((token, account))
+        Ok(right)
     }
 
     pub(crate) fn sign_out(&self, token: &str) {
@@ -583,27 +627,27 @@ impl Accounts {
     /// the server only (local.rs).
     pub(crate) fn new_local(&self, user: &str) -> String {
         let token = new_token("hl_");
-        *self.local.lock().unwrap() = Some((hash_of(&token), format!("local:{user}")));
+        *hold(&self.local) = Some((hash_of(&token), format!("local:{user}")));
         token
     }
 
     /// Who the local token is, if `token` is it: a person, the OS user, an admin.
     pub(crate) fn local(&self, token: &str) -> Option<Who> {
-        let local = self.local.lock().unwrap();
+        let local = hold(&self.local);
         let (hash, name) = local.as_ref().filter(|_| token.starts_with("hl_"))?;
         same(hash, &hash_of(token)).then(|| Who { name: name.clone(), kind: Kind::Person, role: Role::Admin })
     }
 
     /// The OS user the local token is for (`bma`, not `local:bma`), once there is one.
     fn local_user(&self) -> Option<String> {
-        self.local.lock().unwrap().as_ref().and_then(|(_, name)| name.strip_prefix("local:").map(String::from))
+        hold(&self.local).as_ref().and_then(|(_, name)| name.strip_prefix("local:").map(String::from))
     }
 
     /// Who a bearer token is: a session's person, or an API token's agent or service; neither
     /// when disabled.
     pub(crate) fn who(&self, token: &str) -> Option<Who> {
         let hash = hash_of(token);
-        let book = self.book.lock().unwrap();
+        let book = hold(&self.book);
         let now = epoch_now();
         let name = if token.starts_with("hs_") {
             &book.sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now)?.user
@@ -618,24 +662,35 @@ impl Accounts {
 
     /// The person someone the identity provider vouches for is, by their email.
     pub(crate) fn by_email(&self, email: &str) -> Option<Who> {
-        let book = self.book.lock().unwrap();
+        let book = hold(&self.book);
         let p = book.users.iter().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == Some(email))?;
         Some(Who { name: p.name.clone(), kind: p.kind, role: p.role })
     }
 
     pub(crate) fn principal(&self, name: &str) -> Option<Principal> {
-        self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned()
+        hold(&self.book).users.iter().find(|u| u.name == name).cloned()
     }
 
     /// Set a new password, knowing the current one. Every other session of theirs ends (one opened
-    /// with the old password by someone who had it); `kept`, the session asking, stays.
+    /// with the old password by someone who had it); `kept`, the session asking, stays. The current
+    /// one is checked outside the book's lock, as a sign-in's is: a check takes a while, longer
+    /// when the server is busy, and every request needs that lock to say who it is. And counted, by
+    /// name: MAX_FAILURES wrong lock changing it for a while, so a session someone else holds can't
+    /// be used to guess it.
     pub(crate) fn change_password(&self, name: &str, current: &str, new: &str, kept: Option<&str>) -> Result<(), String> {
         check_password(new)?;
+        let old = hold(&self.book).users.iter().find(|u| u.name == name).ok_or("no such account")?.password.clone();
+        let right = self.counted((name.to_string(), CHANGING.to_string()), || old.as_deref().map_or(Ok(false), |h| password_matches(current, h)))?;
+        if !right {
+            return Err("that isn't the current password".to_string());
+        }
         let hash = hash_password(new)?;
         self.change(|book| {
             let account = book.users.iter_mut().find(|u| u.name == name).ok_or("no such account")?;
-            if !account.password.as_deref().map(|h| password_matches(current, h)).transpose()?.unwrap_or(false) {
-                return Err("that isn't the current password".to_string());
+            // Changed while the current one was checked (a reset, another change): what was
+            // checked isn't it any more.
+            if account.password != old {
+                return Err("the password changed meanwhile: try again".to_string());
             }
             account.password = Some(hash);
             let kept = kept.map(hash_of);
@@ -646,7 +701,7 @@ impl Accounts {
 
     /// What the editor keeps for `name` (null until it keeps something).
     pub(crate) fn prefs(&self, name: &str) -> serde_json::Value {
-        self.book.lock().unwrap().users.iter().find(|u| u.name == name).map(|u| u.prefs.clone()).unwrap_or_default()
+        hold(&self.book).users.iter().find(|u| u.name == name).map(|u| u.prefs.clone()).unwrap_or_default()
     }
 
     pub(crate) fn set_prefs(&self, name: &str, prefs: serde_json::Value) -> Result<(), String> {
@@ -662,13 +717,13 @@ impl Accounts {
     // ── what an admin does ─────────────────────────────────────────────────────────────────
 
     pub(crate) fn principals(&self) -> Vec<Principal> {
-        self.book.lock().unwrap().users.clone()
+        hold(&self.book).users.clone()
     }
 
     /// Whether an invite or reset link for `name` is waiting.
     pub(crate) fn invited(&self, name: &str) -> bool {
         let now = epoch_now();
-        self.book.lock().unwrap().invites.iter().any(|i| i.name == name && i.expires_at > now)
+        hold(&self.book).invites.iter().any(|i| i.name == name && i.expires_at > now)
     }
 
     /// Add the person `name` with `role`: a one-time link token for them to set their password.
@@ -728,7 +783,7 @@ impl Accounts {
     pub(crate) fn invite_for(&self, token: &str) -> Option<String> {
         let hash = hash_of(token);
         let now = epoch_now();
-        self.book.lock().unwrap().invites.iter().find(|i| same(&i.hash, &hash) && i.expires_at > now).map(|i| i.name.clone())
+        hold(&self.book).invites.iter().find(|i| same(&i.hash, &hash) && i.expires_at > now).map(|i| i.name.clone())
     }
 
     /// The link's holder sets their password, and is signed in; the link is used up.
@@ -850,7 +905,7 @@ impl Accounts {
 
     /// The tokens of `principal`, without their hashes.
     pub(crate) fn tokens(&self, principal: &str) -> Vec<ApiToken> {
-        self.book.lock().unwrap().credentials.iter().filter(|t| t.principal == principal).map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect()
+        hold(&self.book).credentials.iter().filter(|t| t.principal == principal).map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect()
     }
 
     /// A new API token for the agent or service `principal`: shown once, here.
@@ -886,7 +941,7 @@ impl Accounts {
     }
 
     pub(crate) fn oidc_settings(&self) -> Option<OidcSettings> {
-        self.book.lock().unwrap().oidc.clone()
+        hold(&self.book).oidc.clone()
     }
 
     /// Sign in through `settings`' provider from now on (read first: refused if it can't be), or
@@ -1101,6 +1156,37 @@ mod tests {
         assert_eq!(a.who(&first).map(|w| w.name), Some("ada".into()), "the one asking stays");
         assert!(a.sign_in("ada", PW).is_err());
         assert!(a.sign_in("ada", "a new good password").is_ok());
+    }
+
+    /// `guess` (right or wrong) is counted: MAX_FAILURES wrong are each told so, and then the
+    /// right one is refused too.
+    fn is_counted(what: &str, guess: impl Fn(bool) -> Result<(), String>) {
+        for _ in 0..MAX_FAILURES {
+            let refused = guess(false).unwrap_err();
+            assert!(!refused.contains("too many"), "{what}: refused before {MAX_FAILURES} wrong: {refused}");
+        }
+        assert!(guess(true).unwrap_err().contains("too many"), "{what}: after {MAX_FAILURES} wrong, the right one is refused too");
+    }
+
+    #[test]
+    fn every_way_in_that_takes_a_secret_counts_its_wrong_guesses() {
+        let new = Accounts::memory();
+        let code = new.setup_code().unwrap();
+        is_counted("the setup code", |right| new.setup(if right { &code } else { "WRONG-CODE" }, "ada", PW).map(drop));
+        let (a, first) = set_up();
+        is_counted("signing in", |right| a.sign_in("ada", if right { PW } else { "wrong password!" }).map(drop));
+        is_counted("the current password, to change it", |right| a.change_password("ada", if right { PW } else { "wrong password!" }, "a new good password", Some(&first)));
+    }
+
+    /// The tripwire every test that hashes or checks a password runs: none does it holding one of
+    /// the accounts' locks.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "holding an accounts lock")]
+    fn a_password_checked_holding_an_accounts_lock_trips() {
+        let a = Accounts::memory();
+        let _book = hold(&a.book);
+        let _ = password_matches(PW, stand_in_hash());
     }
 
     #[test]
