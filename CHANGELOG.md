@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
+  `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
+  editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a
+  replay writes none. The host keeps each deployment's lines in a rolling file (three of 2 MB, a line cut
+  at 4 KiB, 1,000 lines a second at most, what is dropped counted), written about once a second, in memory
+  on a server that keeps nothing, and forgotten with the deployment. A line computed from a secret is
+  withheld. `holon logs <slug>` reads them (`--level`, `--run`, `--until`, `--limit`, `--follow`), as the
+  flow page's **Logs** tab does, and a run's page shows the lines up to its end; `holon editor` has a Logs
+  section, and `L` on a run opens its lines. `holon serve --log-stdout` also prints each line, and
+  `--log-size`, `--log-files` and `--log-rate` (or `HOLON_LOG_*`) set the caps. An agent reads them only
+  where a person let it: the deploy settings' **agents may read its logs** asks for `AgentReadsLogs`, and
+  `holon mcp` has a `logs` tool that answers only where it holds. The sample `traced-payout` shows it.
 - **`holon mcp` answers while a call is running, and a call can be cancelled or report progress.**
   Each tool call runs on a thread of its own, so a `ping`, or the cancel of the call itself, is
   answered at once rather than after it (a call that waits on a person used to hold the whole
