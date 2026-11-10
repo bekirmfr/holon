@@ -42,9 +42,9 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 # The control plane's HTTP. (The data plane, public-facing, is hyper on tokio instead:
 # src/dataplane.rs, docs/PLATFORM_LAYOUT.md §7b.)
 # rouille (sync, thread-per-request, built on tiny_http) chosen deliberately over an async
-# framework (axum/warp) — this server's whole workload is six low-volume request/response
-# endpoints a person triggers by clicking a button in the editor, never a stream or a load
-# nothing here needs an async runtime to serve. See the L4's framework-choice note.
+# framework (axum/warp) for the API the editor and the commands use: requests a person or a
+# command makes, a thread each and at most `MAX_IN_FLIGHT` at once (main.rs), never a public
+# load, so nothing here needs an async runtime to serve. See the L4's framework-choice note.
 rouille = "3.6"
 # The SQLite databases an admin binds (databases.rs), built in: no library to install.
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }

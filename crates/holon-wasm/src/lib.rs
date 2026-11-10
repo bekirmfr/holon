@@ -11,7 +11,7 @@
 //! - **P4.2b** bridged **evaluation**: a stateful [`Evaluator`] and the JS `Value` boundary
 //!   ([`WValue`]). `Value` crosses via `serde-wasm-bindgen` (not JSON — eval can yield `NaN`/`Inf`,
 //!   which JSON cannot represent but JS numbers can).
-//! - **P4.2c** (this) bridges **construction**: a serde mirror of `Unit` ([`WUnit`]) plus
+//! - **P4.2c** bridged **construction**: a serde mirror of `Unit` ([`WUnit`]) plus
 //!   [`build_preimage`] / [`load_unit`], so the editor builds units *through the one core encoder*
 //!   rather than reimplementing canonical encoding in TypeScript (which would be a second encoder,
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map

@@ -4,7 +4,7 @@
 
 Holon is shown by what you can build with it. When a feature lands (a primitive, a node template,
 a host capability such as secrets, outbound requests or durable runs), it lands with a **sample
-flow** that uses it: a `.holon` file in `crates/holon-author/samples/`, written in the language
+flow** that uses it: a `.holon.ts` file in `crates/holon-author/samples/`, written in the language
 (`docs/LANGUAGE.md`) in the canonical form `holon fmt` writes, with its entry (name, title,
 description, what it shows, how to try it) in `crates/holon-author/src/samples.rs`; the editor and
 `holon new --sample` read them through the wasm bridge:

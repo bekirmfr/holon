@@ -5,22 +5,44 @@
 //! purity boundary (invariants I2 / I7) is enforced by this crate's dependency
 //! graph, so "the core cannot perform an effect" stays a compile-time fact.
 //!
-//! Modules:
-//! - [`hash`] — content hashing (I5) and transitive pinning (I6).
-//! - [`value`] — the runtime [`Value`] that flows on wires (P1.4.1).
-//! - [`resolve`] — turn a child hash into its [`Unit`] (shared by validation and
-//!   evaluation).
-//! - [`validate`] — graph validation: well-formedness, acyclicity, wire-time type
+//! Modules (docs/engineering/components/holon-core.md goes deeper):
+//!
+//! The model:
+//! - `hash` — units, their canonical encoding and content hash (I5), transitive pinning (I6).
+//! - `value`, `value_hash` — the runtime [`Value`] on wires (P1.4.1), its encoding and hash,
+//!   `state_root` and `run_id`.
+//! - `resolve` — turn a child hash into its [`Unit`] (shared by validation and evaluation).
+//! - `validate` — graph validation: well-formedness, acyclicity, wire-time type
 //!   compatibility (P1.3.1).
-//! - [`primitives`] — the pure first-order primitive vocabulary + native compute
-//!   (P1.4.2).
-//! - [`eval`] — the eager graph evaluator (P1.4.3).
-//! - [`determinism`] — float discipline + the determinism harness (P1.4.4).
-//! - [`encapsulate`] — derive-then-freeze a selection into a hashed `Unit` (P1.5.1).
-//! - [`promote`] — open params into holes and instantiate templates (P1.5.2).
-//! - [`kind`] — effect classification: a leaf's capability manifest (P2.3.1, the
-//!   primary classification) and its Pure/Driver/State/Sink kind projection (P2.1.1),
-//!   derived over a closure (P2.2.1); the trust basis of the effect layer.
+//! - `module` — what a WebAssembly module must be to be a unit; the host runs it.
+//!
+//! Evaluation:
+//! - `eval` — the graph evaluator, lazy at its choices (P1.4.3, docs/L4s/lazy-choices-L4.md).
+//! - `eager` — the evaluator before lazy choices, kept only as the tests' oracle.
+//! - `determinism` — float discipline + the determinism harness (P1.4.4).
+//! - `simulate` — design mode: a service run with its drivers mocked.
+//!
+//! The catalog of primitives:
+//! - `catalog` — the genesis names and each one's interface; `docs` — each one's words.
+//! - `primitives` — native compute for every pure primitive (P1.4.2), by `Op`.
+//! - The families' leaves: `numbers`, `texts`, `lists`, `records`, `dates`, `decimals`,
+//!   `json`, `csv`, `xml`, `compress`, `crypto`, `jwt`, `pgp`; and what a mail, SQL or
+//!   document leaf sends asks for: `mail`, `sql`, `documents`.
+//!
+//! What a flow may do:
+//! - `kind` — effect classification: a leaf's capability manifest (P2.3.1, the primary
+//!   classification) and its Pure/Driver/State/Sink kind projection (P2.1.1), derived over a
+//!   closure (P2.2.1); the trust basis of the effect layer.
+//! - `manifest` — the manifest as consent names it, for the server and the editor alike.
+//! - `taint` — which nodes compute with a secret's value, read off the graph before it runs.
+//! - `declare`, `triggers` — declaration units (servers, endpoints, clocks, handlers) and the
+//!   file triggers that start runs.
+//!
+//! Building and changing units:
+//! - `encapsulate` — derive-then-freeze a selection into a hashed `Unit` (P1.5.1).
+//! - `promote` — open params into holes and instantiate templates (P1.5.2).
+//! - `fork` — re-pin a changed child up the spine (P3.5.1); `inspect` — a unit's dependencies.
+//! - `memo`, `advisory` — the parked marketplace's pure parts: cache keys and advisory facts.
 
 mod determinism;
 mod advisory;

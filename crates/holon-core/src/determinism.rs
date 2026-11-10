@@ -1,7 +1,8 @@
 //! Determinism harness (P1.4.4) — the precondition the shared cache (P3.3) stands on.
 //!
 //! The evaluator already uses only **ordered** structures (`BTreeMap`/`BTreeSet`,
-//! index-keyed scratch) — never `HashMap` iteration — so identical `(unit, inputs)`
+//! index-keyed scratch) — never `HashMap` iteration (its one `HashMap`, `Shapes`, is only looked
+//! up) — so identical `(unit, inputs)`
 //! yield identical output. This module *proves* that (a golden value plus a randomized
 //! cross-check against a direct computation) and pins the **float discipline**: the
 //! value domain admits only finite numbers, so equality and (later, P3.3) canonical

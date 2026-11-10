@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# The bridge depends on the PURE core ONLY — never holon-host. The host's native I/O
+# The bridge depends on the PURE crates ONLY — never holon-host. The host's native I/O
 # (FileStore / std::fs) has no place in a browser; this single edge keeps it out, Cargo-enforced.
 holon-core = { path = "../holon-core" }
 # Authoring (a flow's units, routes and server): pure like core, the same code the command line runs.
@@ -18,7 +18,7 @@ holon-author = { path = "../holon-author" }
 # real, under the real budget (docs/L4s/wasm-module-L4.md §5). Pure like core: no I/O.
 holon-module = { path = "../holon-module" }
 wasm-bindgen = "0.2"
-# The JS <-> WASM Value boundary. serde lives HERE, not in holon-core (which stays blake3-only):
+# The JS <-> WASM Value boundary. serde lives HERE, not in holon-core (which takes on no serde):
 # `WValue` is a bridge-local serde mirror of `core::Value`. serde-wasm-bindgen (not JSON) because
 # eval can yield NaN/Infinity, which JSON cannot represent but JS numbers (IEEE-754 f64) can.
 serde = { version = "1", features = ["derive"] }

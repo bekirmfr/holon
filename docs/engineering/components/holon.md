@@ -79,7 +79,7 @@ under a brief table lock and works on them with the table released.
 hub through which flows call each other (`calls::Hub`, `.1`), the puts a sweep spares
 (`sweep::Puts`, `.2`), the `FlowCache` (`.3`) and the `ValueCache` (`.4`). It implements `Store`
 by locking and delegating, so the `Registry` can own one clone while `/unit` writes through
-another (main.rs's notes: no change to holon-host for it). `get_value` answers from the value
+another (`SharedStore`'s doc: no change to holon-host for it). `get_value` answers from the value
 cache first. The flow cache keeps closures by root hash (`closure`, `--flow-cache`, default
 `FLOW_CACHE_BYTES`, 256 MiB) and refuses a closure past `MAX_CLOSURE_UNITS` units or nested past
 `MAX_CLOSURE_DEPTH`; the value cache (`--value-cache`, `VALUE_CACHE_BYTES`, 64 MiB) keeps values
@@ -162,7 +162,7 @@ sweep.rs are the housekeeping: the content store's sweep, its packing, the host'
 ## 3. Why it is this way
 
 - **Plumbing, not a second decider.** The server adds no trust logic to what content addressing
-  gives: `Store::get` verifies every unit and value against its hash (main.rs's module notes;
+  gives: `Store::get` verifies every unit and value against its hash (main.rs's module doc;
   [P4.5–P4.6 scoping](../../L4s/P4.5-P4.6-transport-scoping-L4.md)). What it adds is who may ask
   (access.rs) and what a run may do (permissions.rs).
 - **Two HTTP stacks.** The control plane stayed on `rouille`; the data plane, which faces
