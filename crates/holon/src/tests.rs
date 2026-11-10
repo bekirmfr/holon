@@ -4790,6 +4790,90 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
 
 /// A server with accounts, through its routes: set up with the printed code, then signed in,
 /// an invite accepted, each role doing what it may, and an admin's API token.
+/// `path` as written, and as a router might also take it: with a trailing slash, its last segment
+/// empty, and each slash doubled in turn.
+fn spellings(path: &str) -> Vec<String> {
+    let mut all = vec![path.to_string(), format!("{path}/")];
+    if let Some((head, _)) = path.rsplit_once('/')
+        && !head.is_empty()
+    {
+        all.push(format!("{head}/"));
+    }
+    all.extend(path.match_indices('/').map(|(i, _)| format!("{}/{}", &path[..i], &path[i..])));
+    all
+}
+
+/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For each
+/// request only an admin, or only an editor, may make, every caller who may not (no one, a
+/// viewer, an editor, an agent, a service), under every spelling a router might take for its
+/// path, is refused before anything answers it: 401 or 403, or the router's bare 404 for a path
+/// it takes for nothing. A handler's answer (a 400 saying why, a 404 naming what is missing)
+/// means the gate and the router read that path apart, as they once did a secret's with no name.
+#[test]
+fn the_gate_and_the_router_read_every_path_alike() {
+    use crate::accounts::{Accounts, Kind};
+    use access::Role;
+    let pw = "correct horse battery";
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(Accounts::memory());
+    let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), pw).unwrap().0;
+    let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
+    let token = |name: &str, kind, role| {
+        accounts.add(name, kind, role, "ada", "ada").unwrap();
+        accounts.create_token(name, "the sweep", "ada").unwrap().0
+    };
+    let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
+    let ci_token = accounts.tokens("ci")[0].id.clone();
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let request = |method: &str, url: &str, body: &serde_json::Value, token: Option<&str>| {
+        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(body).unwrap() };
+        req_with(method, url, bytes, token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))).into_iter().collect())
+    };
+    let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
+    let null = serde_json::Value::Null;
+    let admins = ["ada"];
+    let editors = ["ada", "bob, an editor", "ci, a service"];
+    let tokens_of_ci = format!("/people/ci/tokens/{ci_token}");
+    let kept: [(&str, &str, serde_json::Value, &[&str]); 19] = [
+        // Only an admin's.
+        ("POST", "/deployments/d/secrets/k", serde_json::json!({ "from": "env:HOLON_SWEEP_UNSET" }), &admins),
+        ("POST", "/deployments/d/secrets/k/rollback", serde_json::json!({ "version": 1 }), &admins),
+        ("DELETE", "/deployments/d/secrets/k", null.clone(), &admins),
+        ("GET", "/people", null.clone(), &admins),
+        ("POST", "/people", serde_json::json!({ "name": "eve", "kind": "person", "role": "admin" }), &admins),
+        ("PATCH", "/people/cy", serde_json::json!({ "role": "admin" }), &admins),
+        ("POST", "/people/cy/reset", serde_json::json!({}), &admins),
+        ("DELETE", "/people/cy", null.clone(), &admins),
+        // ci's tokens: ada's, its owner and an admin; nobody else's.
+        ("POST", "/people/ci/tokens", serde_json::json!({ "label": "x" }), &admins),
+        ("GET", "/people/ci/tokens", null.clone(), &admins),
+        ("DELETE", tokens_of_ci.as_str(), null.clone(), &admins),
+        ("GET", "/admin/oidc", null.clone(), &admins),
+        ("POST", "/admin/secrets/k", serde_json::json!({ "value": "a value long enough" }), &admins),
+        ("GET", "/admin/secrets/env", null.clone(), &admins),
+        ("GET", "/admin/grants", null.clone(), &admins),
+        // An editor's, never an agent's or a viewer's.
+        ("POST", "/deployments/d/stop", serde_json::json!({}), &editors),
+        ("POST", "/deployments/d/pause", serde_json::json!({}), &editors),
+        ("DELETE", "/deployments/d", null.clone(), &editors),
+        ("DELETE", "/flows/f", null.clone(), &editors),
+    ];
+    for (method, path, body, may) in &kept {
+        // Not vacuous: whoever may is let through by the gate.
+        assert!(state.access.check(&request(method, path, body, Some(&ada))).is_ok(), "{method} {path}: ada, an admin, is let through");
+        for spelled in spellings(path) {
+            for (who, token) in callers.iter().filter(|(who, _)| !may.contains(who)) {
+                let answer = route(&state, &request(method, &spelled, body, *token));
+                let status = answer.status_code;
+                let said = String::from_utf8_lossy(&body_bytes(answer)).into_owned();
+                let refused = matches!(status, 401 | 403) || (status == 404 && said.is_empty());
+                assert!(refused, "{method} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}");
+            }
+        }
+    }
+}
+
 #[test]
 fn accounts_through_the_routes() {
     let mut state = test_state();

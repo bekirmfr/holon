@@ -269,10 +269,6 @@ mod tests {
         assert_eq!(call(&access, "POST", "/auth/password", Some(&cy)), Ok(Some("cy".into())), "their own password");
         assert_eq!(call(&access, "POST", "/flows", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&bob)), Err(403));
-        // Without a name, still a secret's write: refused an editor, not answered past the gate.
-        assert_eq!(call(&access, "POST", "/deployments/a/secrets/", Some(&bob)), Err(403));
-        assert_eq!(call(&access, "DELETE", "/deployments/a/secrets/", Some(&bob)), Err(403));
-        assert_eq!(call(&access, "GET", "/deployments/a/secrets", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "GET", "/people", Some(&bob)), Err(403));
         assert_eq!(call(&access, "GET", "/admin/oidc", Some(&bob)), Err(403));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&ada)), Ok(Some("ada".into())));

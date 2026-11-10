@@ -1382,10 +1382,14 @@ mod tests {
         assert!(store.set_from("api", "k", "env:PATH", None).unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING", None).unwrap_err().contains("isn't set"));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY", None).unwrap_err().contains("too short"));
-        // A name that can't be kept is refused before the source is read: an unset variable and a
-        // set one answer alike, so nothing is learned of the environment.
-        for source in ["env:HOLON_SECRET_MISSING", "env:HOLON_SECRET_TINY", "env:HOLON_SECRET_API"] {
-            assert!(store.set_from("api", "", source, None).unwrap_err().contains("a secret name is"), "{source}");
+        // A name that can't be kept is refused before any source is read: whatever is wrong with
+        // the name, an unset variable, a short one and a good one answer alike, so asking teaches
+        // nothing of the environment.
+        let long = "x".repeat(65);
+        for name in ["", "has space", "a/b", long.as_str()] {
+            for source in ["env:HOLON_SECRET_MISSING", "env:HOLON_SECRET_TINY", "env:HOLON_SECRET_API", "vault:secret/x#y"] {
+                assert!(store.set_from("api", name, source, None).unwrap_err().contains("a secret name is"), "{name:?} from {source}");
+            }
         }
         assert!(store.names("api").is_empty(), "a refused source adds nothing");
         assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API", None).unwrap(), 1);
