@@ -148,6 +148,7 @@ mod access;
 mod accounts;
 mod accountscmd;
 mod decidecmd;
+mod waitcmd;
 mod deploycmd;
 mod replaycmd;
 mod activity;
@@ -579,6 +580,8 @@ const USAGE: &str = "usage: holon <command>
                                      at (--approve|--decline); the slug alone lists what waits
   logs <slug>                        what its flow wrote with console.log, apart from its runs
                                      (--level, --run N, --until N, --limit N, --follow)
+  wait <slug> [--timeout SECONDS]    hold until a person decides the flow's proposal: how, and why
+                                     (for an agent to run in the background after it proposes)
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
   secret list|history|set|rollback|remove|env
@@ -721,6 +724,7 @@ fn main() {
         Some("state") => std::process::exit(opscmd::state(&rest)),
         Some("decide") => std::process::exit(decidecmd::run(&rest)),
         Some("logs") => std::process::exit(logscmd::run(&rest)),
+        Some("wait") => std::process::exit(waitcmd::run(&rest)),
         Some("grant") => std::process::exit(grantcmd::grant(&rest)),
         Some("grants") => std::process::exit(grantcmd::grants(&rest)),
         Some("policy") => std::process::exit(grantcmd::policy(&rest)),

@@ -13816,6 +13816,1079 @@
   [0, 9] ·
   [0] · | ·
   => · | ·
+== tidewheel · GET / · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Tidewheel<… #431093494a9de0c6
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #71cd24cd0b2dcdb2
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+== tidewheel · GET / · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Tidewheel<… #431093494a9de0c6
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #71cd24cd0b2dcdb2
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+== tidewheel · GET / · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Tidewheel<… #431093494a9de0c6
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #71cd24cd0b2dcdb2
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #37ac093ce41a8656
+== tidewheel · GET /law.js · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/law.js"), "… #211d31e567c88492 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 2] Record({})
+  [0, 3] Text("text/javascript; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/javascript; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #089310ab80c8d5f8
+  [0, 5, 4] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  => Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+== tidewheel · GET /law.js · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #70ad9a93dc604695 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 2] Record({})
+  [0, 3] Text("text/javascript; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/javascript; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #089310ab80c8d5f8
+  [0, 5, 4] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  => Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+== tidewheel · GET /law.js · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #e9d04b8315aea1b8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 2] Record({})
+  [0, 3] Text("text/javascript; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/javascript; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #089310ab80c8d5f8
+  [0, 5, 4] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0, 5] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  [0] Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+  => Record({"body": Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3… #e3cecb312ab72500
+== tidewheel · GET /live · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/live"), "qu… #070204e689e08c9f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+== tidewheel · GET /live · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #bf65d47c13a6ae25 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+== tidewheel · GET /live · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #592df47caef24597 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:live", payload: Record({"channel": Text("live"), "from": Text("new")}) }, "status": Number(200.0)})
+== tidewheel · POST /touch · input 0
+  [0, 14] ·
+  [0, 15] Number(0.0)
+  [0, 16] Number(2.0)
+  [0, 17] Number(2.0)
+  [0, 18] Text("2")
+  [0, 19] Number(8.0)
+  [0, 20] Text("0")
+  [0, 21] Text("00000002")
+  [0, 22] Text("00000002")
+  [0, 23] Text("-")
+  [0, 24] ·
+  [0, 25] Number(1000000000.0)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 29] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/touch"), "… #7ccae873a3c30f26 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 2] ·
+  [0, 5] Number(0.0)
+  [0, 6] ·
+  [0, 7] Number(96.0)
+  [0, 8] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 9] Number(0.0)
+  [0, 10] ·
+  [0, 11] Number(96.0)
+  [0, 12] ·
+  [0, 13] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 37] ·
+  [0, 38] Boolean(false)
+  [0, 39] Boolean(true)
+  [0, 40] Text("")
+  [0, 41] Text("")
+  [0, 42] Text("")
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] Boolean(true)
+  [0, 47] Number(400.0)
+  [0, 48] Number(400.0)
+  [0, 49] Number(400.0)
+  [0, 50, 0] Record({})
+  [0, 50, 1] Record({"status": Number(400.0)})
+  [0, 50, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | ·
+== tidewheel · POST /touch · input 1
+  [0, 14] ·
+  [0, 15] Number(0.0)
+  [0, 16] Number(2.0)
+  [0, 17] Number(2.0)
+  [0, 18] Text("2")
+  [0, 19] Number(8.0)
+  [0, 20] Text("0")
+  [0, 21] Text("00000002")
+  [0, 22] Text("00000002")
+  [0, 23] Text("-")
+  [0, 24] ·
+  [0, 25] Number(1000000000.0)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 29] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #17d32b7c56f3f0b0 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2] ·
+  [0, 5] Number(0.0)
+  [0, 6] ·
+  [0, 7] Number(96.0)
+  [0, 8] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 9] Number(0.0)
+  [0, 10] ·
+  [0, 11] Number(96.0)
+  [0, 12] ·
+  [0, 13] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 37] ·
+  [0, 38] Boolean(false)
+  [0, 39] Boolean(true)
+  [0, 40] Text("")
+  [0, 41] Text("")
+  [0, 42] Text("")
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] Boolean(true)
+  [0, 47] Number(400.0)
+  [0, 48] Number(400.0)
+  [0, 49] Number(400.0)
+  [0, 50, 0] Record({})
+  [0, 50, 1] Record({"status": Number(400.0)})
+  [0, 50, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | ·
+== tidewheel · POST /touch · input 2
+  [0, 14] ·
+  [0, 15] Number(0.0)
+  [0, 16] Number(2.0)
+  [0, 17] Number(2.0)
+  [0, 18] Text("2")
+  [0, 19] Number(8.0)
+  [0, 20] Text("0")
+  [0, 21] Text("00000002")
+  [0, 22] Text("00000002")
+  [0, 23] Text("-")
+  [0, 24] ·
+  [0, 25] Number(1000000000.0)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 29] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #e620218c7d6ff479 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2] ·
+  [0, 5] Number(0.0)
+  [0, 6] ·
+  [0, 7] Number(96.0)
+  [0, 8] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 9] Number(0.0)
+  [0, 10] ·
+  [0, 11] Number(96.0)
+  [0, 12] ·
+  [0, 13] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 37] ·
+  [0, 38] Boolean(false)
+  [0, 39] Boolean(true)
+  [0, 40] Text("")
+  [0, 41] Text("")
+  [0, 42] Text("")
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] Boolean(true)
+  [0, 47] Number(400.0)
+  [0, 48] Number(400.0)
+  [0, 49] Number(400.0)
+  [0, 50, 0] Record({})
+  [0, 50, 1] Record({"status": Number(400.0)})
+  [0, 50, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 50] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | ·
+== tidewheel · GET /sync · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/sync"), "qu… #735de5fa1d398730 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 12] Record({})
+  [0, 1] ·
+  [0, 2] Number(0.0)
+  [0, 13] Record({"n": Number(0.0)})
+  [0, 14] ·
+  [0, 15] Text("")
+  [0, 16] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 17] Number(20261110.0)
+  [0, 18] Record({"h": Text(""), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 19] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 20] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 21] Record({"h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41"), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 22] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 23] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 24] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 25] Text("|")
+  [0, 26] Number(20261110.0)
+  [0, 27] Text("20261110")
+  [0, 28] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41|20261110")
+  [0, 29] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 30] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb1… #ba73e4bc5a30c58e
+  [0, 31] Record({})
+  [0, 3] ·
+  [0, 4] Number(0.0)
+  [0, 5] Text("0")
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] Text("00000000")
+  [0, 9] ·
+  [0, 10] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 11] Number(0.0)
+  [0, 32] Record({"n": Number(0.0)})
+  [0, 33] Text("")
+  [0, 34] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 35] Text("0")
+  [0, 36] Number(8.0)
+  [0, 37] Text("0")
+  [0, 38] Text("00000000")
+  [0, 39] ·
+  [0, 40] Text("")
+  [0, 41] Record({"grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 42] Text("0")
+  [0, 43] Number(8.0)
+  [0, 44] Text("0")
+  [0, 45] Text("00000000")
+  [0, 46] ·
+  [0, 47] Text("")
+  [0, 48] Record({"chain": Text(""), "grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 49] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "fossil": Record({"chain": Text(""), "grid": Text(""), "h": Text("")… #cf707f7c57eb180e
+  [0, 50] Text("0")
+  [0, 51] Number(8.0)
+  [0, 52] Text("0")
+  [0, 53] Text("00000000")
+  [0, 54] Text("00000000")
+  [0, 55] Text("~")
+  [0, 56] Text("00000000~")
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59, 0] Record({})
+  [0, 59, 1] Number(200.0)
+  [0, 59, 2] Record({"status": Number(200.0)})
+  [0, 59, 3] ·
+  [0, 59, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 59] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /sync · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #93a30e0d5a2e10a9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 12] Record({})
+  [0, 1] ·
+  [0, 2] Number(0.0)
+  [0, 13] Record({"n": Number(0.0)})
+  [0, 14] ·
+  [0, 15] Text("")
+  [0, 16] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 17] Number(20261110.0)
+  [0, 18] Record({"h": Text(""), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 19] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 20] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 21] Record({"h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41"), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 22] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 23] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 24] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 25] Text("|")
+  [0, 26] Number(20261110.0)
+  [0, 27] Text("20261110")
+  [0, 28] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41|20261110")
+  [0, 29] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 30] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb1… #ba73e4bc5a30c58e
+  [0, 31] Record({})
+  [0, 3] ·
+  [0, 4] Number(0.0)
+  [0, 5] Text("0")
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] Text("00000000")
+  [0, 9] ·
+  [0, 10] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 11] Number(0.0)
+  [0, 32] Record({"n": Number(0.0)})
+  [0, 33] Text("")
+  [0, 34] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 35] Text("0")
+  [0, 36] Number(8.0)
+  [0, 37] Text("0")
+  [0, 38] Text("00000000")
+  [0, 39] ·
+  [0, 40] Text("")
+  [0, 41] Record({"grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 42] Text("0")
+  [0, 43] Number(8.0)
+  [0, 44] Text("0")
+  [0, 45] Text("00000000")
+  [0, 46] ·
+  [0, 47] Text("")
+  [0, 48] Record({"chain": Text(""), "grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 49] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "fossil": Record({"chain": Text(""), "grid": Text(""), "h": Text("")… #cf707f7c57eb180e
+  [0, 50] Text("0")
+  [0, 51] Number(8.0)
+  [0, 52] Text("0")
+  [0, 53] Text("00000000")
+  [0, 54] Text("00000000")
+  [0, 55] Text("~")
+  [0, 56] Text("00000000~")
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59, 0] Record({})
+  [0, 59, 1] Number(200.0)
+  [0, 59, 2] Record({"status": Number(200.0)})
+  [0, 59, 3] ·
+  [0, 59, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 59] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /sync · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #2b3a6e984d432d3e | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 12] Record({})
+  [0, 1] ·
+  [0, 2] Number(0.0)
+  [0, 13] Record({"n": Number(0.0)})
+  [0, 14] ·
+  [0, 15] Text("")
+  [0, 16] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 17] Number(20261110.0)
+  [0, 18] Record({"h": Text(""), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 19] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 20] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 21] Record({"h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41"), "n": Number(0.0), "seed": Number(20261110.0)})
+  [0, 22] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 23] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 24] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 25] Text("|")
+  [0, 26] Number(20261110.0)
+  [0, 27] Text("20261110")
+  [0, 28] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41|20261110")
+  [0, 29] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 30] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "h": Text(""), "law": Text("5346a7eae0c045d7edca66d7650187bdc1eaacb1… #ba73e4bc5a30c58e
+  [0, 31] Record({})
+  [0, 3] ·
+  [0, 4] Number(0.0)
+  [0, 5] Text("0")
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] Text("00000000")
+  [0, 9] ·
+  [0, 10] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 11] Number(0.0)
+  [0, 32] Record({"n": Number(0.0)})
+  [0, 33] Text("")
+  [0, 34] Record({"h": Text(""), "n": Number(0.0)})
+  [0, 35] Text("0")
+  [0, 36] Number(8.0)
+  [0, 37] Text("0")
+  [0, 38] Text("00000000")
+  [0, 39] ·
+  [0, 40] Text("")
+  [0, 41] Record({"grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 42] Text("0")
+  [0, 43] Number(8.0)
+  [0, 44] Text("0")
+  [0, 45] Text("00000000")
+  [0, 46] ·
+  [0, 47] Text("")
+  [0, 48] Record({"chain": Text(""), "grid": Text(""), "h": Text(""), "n": Number(0.0)})
+  [0, 49] Record({"chain0": Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b"), "fossil": Record({"chain": Text(""), "grid": Text(""), "h": Text("")… #cf707f7c57eb180e
+  [0, 50] Text("0")
+  [0, 51] Number(8.0)
+  [0, 52] Text("0")
+  [0, 53] Text("00000000")
+  [0, 54] Text("00000000")
+  [0, 55] Text("~")
+  [0, 56] Text("00000000~")
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59, 0] Record({})
+  [0, 59, 1] Number(200.0)
+  [0, 59, 2] Record({"status": Number(200.0)})
+  [0, 59, 3] ·
+  [0, 59, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 59] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · POST /witness · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/witness"),… #4cea3f038b8d23b5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 4] ·
+  [0, 5] Number(8.0)
+  [0, 6] Text("0")
+  [0, 7] ·
+  [0, 8] Number(60.0)
+  [0, 9] ·
+  [0, 10] Number(0.0)
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] Number(0.0)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Number(0.0)
+  [0, 17] Number(3000.0)
+  [0, 18] Number(-3000.0)
+  [0, 19] ·
+  [0, 3] ·
+  [0, 20] ·
+  [0, 21] Number(64.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 43] ·
+  [0, 44] ·
+  [0, 48] ·
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Text("-")
+  [0, 2] ·
+  [0, 52] ·
+  [0, 53] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 77] ·
+  [0, 78] Boolean(false)
+  [0, 79] Boolean(true)
+  [0, 80] Text("")
+  [0, 81] Text("")
+  [0, 82] Text("")
+  [0, 84] ·
+  [0, 85] Boolean(false)
+  [0, 86] Boolean(true)
+  [0, 87] Number(400.0)
+  [0, 88] Number(400.0)
+  [0, 89] Number(400.0)
+  [0, 90, 0] Record({})
+  [0, 90, 1] Record({"status": Number(400.0)})
+  [0, 90, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+== tidewheel · POST /witness · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #7492d8667b06dad1 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 4] ·
+  [0, 5] Number(8.0)
+  [0, 6] Text("0")
+  [0, 7] ·
+  [0, 8] Number(60.0)
+  [0, 9] ·
+  [0, 10] Number(0.0)
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] Number(0.0)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Number(0.0)
+  [0, 17] Number(3000.0)
+  [0, 18] Number(-3000.0)
+  [0, 19] ·
+  [0, 3] ·
+  [0, 20] ·
+  [0, 21] Number(64.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 43] ·
+  [0, 44] ·
+  [0, 48] ·
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Text("-")
+  [0, 2] Text("x")
+  [0, 52] Text("x")
+  [0, 53] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 77] ·
+  [0, 78] Boolean(false)
+  [0, 79] Boolean(true)
+  [0, 80] Text("")
+  [0, 81] Text("")
+  [0, 82] Text("")
+  [0, 84] ·
+  [0, 85] Boolean(false)
+  [0, 86] Boolean(true)
+  [0, 87] Number(400.0)
+  [0, 88] Number(400.0)
+  [0, 89] Number(400.0)
+  [0, 90, 0] Record({})
+  [0, 90, 1] Record({"status": Number(400.0)})
+  [0, 90, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+== tidewheel · POST /witness · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #a897399b535b4ada | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 4] ·
+  [0, 5] Number(8.0)
+  [0, 6] Text("0")
+  [0, 7] ·
+  [0, 8] Number(60.0)
+  [0, 9] ·
+  [0, 10] Number(0.0)
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] Number(0.0)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Number(0.0)
+  [0, 17] Number(3000.0)
+  [0, 18] Number(-3000.0)
+  [0, 19] ·
+  [0, 3] ·
+  [0, 20] ·
+  [0, 21] Number(64.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 43] ·
+  [0, 44] ·
+  [0, 48] ·
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Text("-")
+  [0, 2] ·
+  [0, 52] ·
+  [0, 53] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 77] ·
+  [0, 78] Boolean(false)
+  [0, 79] Boolean(true)
+  [0, 80] Text("")
+  [0, 81] Text("")
+  [0, 82] Text("")
+  [0, 84] ·
+  [0, 85] Boolean(false)
+  [0, 86] Boolean(true)
+  [0, 87] Number(400.0)
+  [0, 88] Number(400.0)
+  [0, 89] Number(400.0)
+  [0, 90, 0] Record({})
+  [0, 90, 1] Record({"status": Number(400.0)})
+  [0, 90, 2] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90, 3] Record({"body": Text(""), "status": Number(400.0)})
+  [0, 90] Record({"body": Text(""), "status": Number(400.0)})
+  [0] Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+  => Record({"body": Text(""), "status": Number(400.0)}) | · | · | · | ·
+== tidewheel · GET /fossils · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/fossils"), … #60376fbf763c3f2a | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Number(0.0)
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3000.0)
+  [0, 5] Number(-3000.0)
+  [0, 6] Number(0.0)
+  [0, 7] Text("0")
+  [0, 8] Number(8.0)
+  [0, 9] Text("0")
+  [0, 10] Text("00000000")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /fossils · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #a4bdb39a3916088e | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Number(0.0)
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3000.0)
+  [0, 5] Number(-3000.0)
+  [0, 6] Number(0.0)
+  [0, 7] Text("0")
+  [0, 8] Number(8.0)
+  [0, 9] Text("0")
+  [0, 10] Text("00000000")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /fossils · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #d58b26eddff72aa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Number(0.0)
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3000.0)
+  [0, 5] Number(-3000.0)
+  [0, 6] Number(0.0)
+  [0, 7] Text("0")
+  [0, 8] Number(8.0)
+  [0, 9] Text("0")
+  [0, 10] Text("00000000")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13, 0] Record({})
+  [0, 13, 1] Number(200.0)
+  [0, 13, 2] Record({"status": Number(200.0)})
+  [0, 13, 3] ·
+  [0, 13, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /fossil/:n · input 0
+  [0, 0, 0] Record({"n": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"n": Text("tea")}), "path": Te… #fc286e661b60bf03 | Record({"n": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] Text("00000tea")
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Text("")
+  [0, 15] ·
+  [0, 6] Text("00000tea")
+  [0, 7] Text("-")
+  [0, 8] Text("00000tea-")
+  [0, 9] ·
+  [0, 10] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /fossil/:n · input 1
+  [0, 0, 0] Record({"n": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #483acc9f506f9c85 | Record({"n": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] Text("00000tea")
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Text("")
+  [0, 15] ·
+  [0, 6] Text("00000tea")
+  [0, 7] Text("-")
+  [0, 8] Text("00000tea-")
+  [0, 9] ·
+  [0, 10] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /fossil/:n · input 2
+  [0, 0, 0] Record({"n": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #c5244d285c60bfa2 | Record({"n": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] Text("00000tea")
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Text("")
+  [0, 15] ·
+  [0, 6] Text("00000tea")
+  [0, 7] Text("-")
+  [0, 8] Text("00000tea-")
+  [0, 9] ·
+  [0, 10] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /replay · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/replay"), "… #8977a32950fba207 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 5] ·
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] Text("~")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 1] ·
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /replay · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #a2cfca62a5baf9ca | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 5] ·
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] Text("~")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 1] ·
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · GET /replay · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6e0b246a0bd879c0 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 5] ·
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] Text("~")
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 1] ·
+  [0, 2] Number(8.0)
+  [0, 3] Text("0")
+  [0, 4] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== tidewheel · every 1s · input 0
+  [0, 1] ·
+  [0, 2] Number(0.0)
+  [0, 3] Number(1.0)
+  [0, 4] Number(1.0)
+  [0, 0, 0] ·
+  [0, 0] ·
+  [0, 32] ·
+  [0, 14] ·
+  [0, 15] Text("var Tidewheel = (function () {\n  var W = 96, H = 96, GENS = 3, ERA = 600, FOSSIL = 60;\n  var LAWS = [\n    { name: \"swell\", S: 5, R: 3, T: 4 },\n    {… #138d943f2267d948
+  [0, 16] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 17] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41")
+  [0, 18] Text("|")
+  [0, 19] Number(20261110.0)
+  [0, 20] Text("20261110")
+  [0, 21] Text("5346a7eae0c045d7edca66d7650187bdc1eaacb17a8d4f743940b16e9896bf41|20261110")
+  [0, 22] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 23] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 24] Text("baac24be7745f2e724ba9a9bfe38b3f66152b1320fe3150de5afd42f13f2dc8b")
+  [0, 25] Text("|")
+  [0, 26] Text("1")
+  [0, 27] Text("|")
+  [0, 5] Text("1")
+  [0, 6] Number(8.0)
+  [0, 7] Text("0")
+  [0, 8] Text("00000001")
+  [0, 9] Text("00000001")
+  [0, 10] Text("-")
+  [0, 11] Text("00000001-")
+  [0, 12] ·
+  [0, 13] ·
+  [0, 28] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 33] ·
+  [0, 34] Text("1")
+  [0, 35] Number(8.0)
+  [0, 36] Text("0")
+  [0, 37] Text("00000001")
+  [0, 38] Number(60.0)
+  [0, 39] Number(1.0)
+  [0, 40] Number(0.0)
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43] ·
+  [0, 44] Record({})
+  [0, 45] Record({"n": Number(1.0)})
+  [0, 46] ·
+  [0, 47] ·
+  [0, 48] ·
+  [0] · | · | · | ·
+  => · | · | · | ·
 == drop-board · GET / · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})
