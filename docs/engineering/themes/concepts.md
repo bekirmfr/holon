@@ -162,7 +162,7 @@ capabilities with names of their own.
 carries effects; the host performs them (`Host::perform`, `perform_effects`) once the last round
 settles, under the permit ([sink-as-pure-request-L4](../../L4s/sink-as-pure-request-L4.md)).
 
-**The catalog of primitives.** `GENESIS` (`catalog.rs`) names the 95 primitives. Each name has its
+**The catalog of primitives.** `GENESIS` (`catalog.rs`) names the 195 primitives. Each name has its
 facts in one place each, all in core: its interface (`interface_of`), its capabilities
 (`capabilities_of`), its words (`describe`, `docs.rs`), whether it grows inputs (`VARIADIC`), and
 its computation (`compute`, by an `Op` from the `ops!` list) or the request it builds. The editor

@@ -1,140 +1,20 @@
-//! `holon`: one command for Holon. `holon serve` runs the server (the browser↔host transport,
-//! local-first; below), `new`/`check`/`show`/`fmt`/`types` handle flow files (flowcmd.rs), and `version`,
-//! `update` and `uninstall` look after the installation (selfmanage.rs). `holon-server`, the name
-//! releases before 0.1.0-rc.4 installed, is an alias kept for scripts (src/bin/holon-server.rs).
+//! `holon`: one command for Holon. `holon serve` runs the server (below); `new`/`check`/`show`/
+//! `fmt`/`types` handle flow files (flowcmd.rs); `deploy`, `call`, `grant` and the rest talk to a
+//! running server (the `*cmd.rs` files, cmdline.rs, local.rs); `editor` is the terminal editor
+//! (workbench/), `mcp` the agent's tools (mcp.rs), `lsp` the language server (lsp.rs); and
+//! `version`, `update`, `uninstall` and `migrate` look after the installation (selfmanage.rs,
+//! migrate.rs). `holon-server`, the name releases before 0.1.0-rc.4 installed, is an alias kept
+//! for scripts (src/bin/holon-server.rs).
 //!
-//! The server: the browser↔host transport (P4.5.1 / P4.6.1's blocker), local-first.
-//!
-//! Grounded and scoped in `docs/L4s/P4.5-P4.6-transport-scoping-L4.md`. The load-bearing
-//! finding from that note, worth repeating here since it's *why* this file is this thin: a
-//! network boundary's security is already fully provided by content-addressing
-//! (`decode_verified` inside every `Store::get`, `entry_key`/`ingest`, `verify_entry`). This
-//! server adds no trust logic of its own — every endpoint is a direct call into `holon-host`
-//! code that already exists and is already tested. It is plumbing, not a second decider.
-//!
-//! **Inch 1** (prior commit): the crate scaffold, CORS, `GET`/`POST /unit` wrapping `Store`.
-//! **Inch 2** (prior commit): `POST /registry/publish` + `GET /registry`, wrapping `Registry`.
-//! **Inch 3** (prior commit): `POST /registry/fork`, wrapping `Registry::fork`.
-//! **Inch 4** (prior commit): `GET /cache/<key>` + `POST /cache/ingest`, wrapping `SharedCache`.
-//! **Inch 5** (prior commit): `POST /fire`, wrapping `fire` — settles an already-published unit
-//! **once**, on request, via a `RecordingHost` that reports what it would perform rather than
-//! actually performing it (see the handler doc for why). This closed this crate's initial
-//! buildout: `/unit`, `/registry/*`, `/cache/*`, `/fire`.
-//!
-//! **Inch 6** (prior commit, `ingress-deploy-L4.md`): the first slice of the standing-deploy
-//! pillar — `POST /deploy`, `GET /deployments`, `POST /trigger/<slug>`. Deliberately the small
-//! half: nothing there needed a single new mechanism from `holon-core`/`holon-host`
-//! (`fire_sourced` and `SourcedResolver` already existed, already tested) — the only genuinely
-//! new thing was a `slug → unit hash` table and one new route.
-//!
-//! **Inch 7** (prior commit, `clock-deploy-L4.md`): the other half — `Clock`-bound deployment.
-//! `spawn_clock_scheduler` is the first genuinely new runtime shape anywhere in this project: a
-//! background thread that fires on its own, on a schedule, with nobody asking. Reworked
-//! `/deploy` along the way (worth naming plainly, not burying): rather than the caller
-//! asserting a trigger *type*, `/deploy` now **derives** it from the unit's own
-//! `capabilities()` — the same closure-union already used for capability-consent elsewhere in
-//! this project. A caller only supplies what genuinely can't be read off the graph
-//! (`interval_seconds`, only when the derived capabilities include `Clock`). This correction
-//! came from a real design conversation mid-session, not a solo decision — worth recording
-//! that the first draft (an explicit `trigger` field the caller asserted) was the wrong shape,
-//! caught before it shipped.
-//!
-//! **A design question worth recording, not just the answer:** should `ingress` let a unit
-//! declare the specific format it expects? No — `ingress`'s own genesis interface is
-//! deliberately `Any`-typed, and a per-instance declared format would be a **self-asserted**
-//! claim on a primitive, cutting against this project's own "derived, not asserted" invariant
-//! (kind, capabilities, and interfaces are all computed from structure, never declared by a
-//! unit about itself). The tool for "this might not be the expected shape" already exists one
-//! tier out — `Sum`/`some`/`none` (this project's `Option<T>`) plus `select`, composed *inside*
-//! the flow right after `ingress`, not baked into the primitive every `ingress`-using flow
-//! would then have to accommodate.
-//!
-//! **Inch 8** (prior commit): real integration tests — 17, in-process, via
-//! `rouille::Request::fake_http` calling `route()`/`with_cors()` directly, replacing the manual
-//! `curl` walkthroughs used to verify inches 1-7. Prompted by a direct, fair challenge partway
-//! through this session, not a self-initiated cleanup — worth recording that plainly.
-//! `run_due_clock_ticks` (see inch 7) exists specifically so the scheduler could be tested with
-//! a controlled `SystemTime` rather than real sleeping.
-//!
-//! **Inch 9** (prior commit): `DELETE /deployments/<slug>` — closes a gap named plainly at
-//! inch 7 (`clock-deploy-L4.md`'s Fork 4) and left open on purpose: until now, the only way to
-//! stop a `Clock`-triggered deployment was killing the whole server. Removing the slug from
-//! the table is sufficient — the scheduler only ever acts on what's currently there.
-//!
-//! **Inch 10** (prior commit): three things at once, each real but each contained —
-//! **persistence** (`--deployments <path>`, write-through, mirroring `--store`'s own
-//! `:memory:` convention; only the deployment *definition* persists, not the derived
-//! `triggers` or the diagnostic tick history — re-derived/reset on load, the same discipline
-//! as everywhere else a fact stays computed rather than cached to disk); **capability-consent
-//! before deploy** (`/deploy`'s `acknowledge` field — the caller asserts *review*, never the
-//! capability *set itself*, which stays fully derived via `capabilities()`; covers the whole
-//! manifest, not just the trigger-relevant capabilities); and **concurrent per-tick firing**
-//! (`run_due_clock_ticks` now fans out via `thread::scope`, so two deployments due in the same
-//! moment no longer block each other — deliberately not a bounded worker pool, a real,
-//! consciously-left-open limitation for genuinely large simultaneous fan-out, not solved here).
-//!
-//! **Inch 11** (this one): a deployment carrying `StateRead`/`StateWrite` (see the
-//! keyed-state-capability inch, `holon-core`/`holon-host`) now genuinely remembers across
-//! fires — both `/trigger` and clock ticks. A real correction on the way here, worth keeping
-//! on record: the first plan routed this through `holon-host`'s own `StateHost::round`, and a
-//! widening of its return type was even proposed. Tracing `round()`'s actual body found that
-//! plan wrong, not just incomplete — it only ever keeps `StateWrite` from what gets performed
-//! and silently discards everything else, which would mean a state-bearing deployment that
-//! also sends an egress loses that egress with no error. The real fix needed nothing from
-//! `holon-core`/`holon-host` at all: `fire_with_state` does the same three-step round
-//! (snapshot → fire → apply) directly in this crate, using `RecordingHost` (which already
-//! captures everything) instead of `StateHost` (which deliberately doesn't).
-//!
-//! A second real correctness question surfaced and got solved properly, not deferred: holding
-//! the whole deployments-table lock across an entire fire would reintroduce the "one slow flow
-//! blocks every other deployment" problem inch 10's concurrent tick-firing was built to avoid
-//! — but *not* holding a lock across the whole round reopens the lost-update race between two
-//! near-simultaneous triggers of the *same* deployment, flagged and resolved earlier in this
-//! project's own history. `Deployment.state` is `Arc<Mutex<...>>`, not a bare map: the table
-//! lock is only ever held briefly (to clone the `Arc` out). Runs of one deployment no longer
-//! hold the inner mutex either: each runs on a copy and commits only if what it read is
-//! unchanged, running again otherwise (firing.rs), so they proceed side by side and still lose
-//! no update.
-//!
-//! Also added, unconditionally on every deployment (not gated on state at all):
-//! `trigger_count`/`error_count`/`deployed_at`, all persisted, all visible on
-//! `GET /deployments`. `error_count` counts infrastructure failures (the closure didn't
-//! resolve) — a settle that honestly evaluates to nothing is not an error, the same "this is a
-//! normal, expected outcome" stance this whole project takes everywhere else.
-//!
-//! **Inch 12**: saved flows — `POST/GET /flows`, `GET/DELETE /flows/<name>`. A flow is a named
-//! *workspace document*: the editor's canvas exactly as it was left (node positions, viewport,
-//! UI settings), saved and re-opened by name. Deliberately a separate concept from a published
-//! unit, not a variant of one: a unit's identity is content-addressed and presentation-free by
-//! design (`child_order_is_cosmetic` et al.), while a flow document is *all* presentation —
-//! merging them would put pixels into hashes. The server treats the document as opaque JSON
-//! (name validated by the same `is_valid_slug` rule deployments use; body validated only as
-//! JSON) and persists write-through to `--flows <path>` (default `.holon-flows.json`,
-//! `":memory:"` to opt out) — the identical discipline `deployments` already follows.
-//!
-//! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
-//! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
-//! only hands back owned units, not a `Resolver`. `Registry::fork` faces the identical problem
-//! internally (its own doc: "materialize the root's bounded closure into one [resolver]") — so
-//! this inch reuses that shape rather than inventing a second one: `closure` (units.rs) walks
-//! a unit's closure via `child_refs` (the same primitive `Registry::publish`'s own dangling-
-//! reference check already uses), once per root hash: the flow cache keeps it after that. `SharedCache`
-//! itself is also in-memory only, same as `Registry`'s published set — restarting the server
-//! forgets ingested/cached entries too, worth restating rather than assuming obvious.
-//!
-//! **A real wrinkle this inch, resolved without touching `holon-host`:** `Registry::new` takes
-//! ownership of its `Store` and only exposes it back read-only (`Registry::store() -> &S`), but
-//! `POST /unit` still needs direct write access for staging children bottom-up before a
-//! parent's `publish`. Rather than adding a `store_mut()` to `Registry` (a change to the spine
-//! crate, not this transport crate), both the raw `/unit` handlers and the `Registry` hold
-//! their own cheap clone of one shared handle (`SharedStore`) onto the same physical store —
-//! so staging and publishing act on the same data without `holon-host` changing at all.
-//!
-//! **`Registry`'s own documented scope, worth restating plainly, not silently inherited:** the
-//! published-hash bookkeeping is in-memory only (`Registry`'s own doc: "persisting the record
-//! is a short follow-on," not yet built). Restarting this server forgets which hashes were
-//! published — the units themselves stay on disk in `FileStore`, only the "is it published"
-//! flag is lost. Not a bug in this inch; a pre-existing, named scope boundary of `Registry`.
+//! The server has two planes. The control plane is the API the editor and the commands use, on
+//! `rouille` at `--at` (routed by http.rs); the data plane is one listener per deployed server
+//! flow, on its own port, on `hyper` over `tokio` (dataplane.rs, listeners.rs). Every run goes
+//! through the same path (firing.rs) and is recorded (recorder.rs). It adds no trust of its own
+//! to what content addressing gives: every unit and value read from the store is checked against
+//! its hash (`Store::get`, holon-host; docs/L4s/P4.5-P4.6-transport-scoping-L4.md). What it adds
+//! is who may ask (access.rs) and what a run may do (permissions.rs).
+//! docs/engineering/components/holon.md maps the modules, what `serve` builds and the locks; the
+//! steps that built it are in docs/JOURNAL.md.
 //!
 //! Binds `127.0.0.1` unless told another address (`--at`), and answers only a `Host` and an
 //! `Origin` it knows (localhost, or a name given with `--allow-host` / `--allow-origin`): CORS
@@ -307,9 +187,11 @@ type DynStore = Box<dyn Store + Send>;
 /// A cheap-to-clone handle onto one shared `DynStore`. Implements `Store` itself by locking and
 /// delegating, so it can be handed to `Registry::new` (which wants an owned `S: Store`) while a
 /// second clone stays with the server for direct `/unit` reads/writes — both clones lock the
-/// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
-/// instead of a `holon-host` change.
-/// The third part notes the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
+/// same underlying `Mutex`, so they see the same data. It exists instead of a `holon-host` change:
+/// `Registry::new` owns its store and hands it back read-only, while `POST /unit` writes children
+/// before a parent is published.
+/// The second part is the hub through which flows call each other (calls.rs); the third notes
+/// the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
 /// the closures runs have loaded (units.rs's `FlowCache`); the fifth the values runs have read
 /// from disk (units.rs's `ValueCache`).
 #[derive(Clone)]
