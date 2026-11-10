@@ -5,3 +5,6 @@
 *.holon.ts text eol=lf
 # The golden records are compared byte for byte with what the tests write (LF).
 crates/*/tests/golden/*.txt text eol=lf
+# Everything else too: text is LF on every checkout, so a test or script that reads a file sees
+# the same bytes on Windows as on Linux. Binary files are left alone (text=auto).
+* text=auto eol=lf
