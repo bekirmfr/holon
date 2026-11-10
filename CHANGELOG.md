@@ -27,6 +27,13 @@
   up to thirty seconds. It is checked outside the lock now, and five wrong in a row refuse changing
   it for a minute, so a session someone else holds can't be used to guess it. In the tests, any
   password hashed or checked while an accounts lock is held now fails, whatever the path.
+- **Signing in through an identity provider takes only keys that came over https, and checks
+  whom a token was issued to.** The issuer, and every address its discovery document gives, must be
+  https, or plain http to this machine; an `http://` issuer elsewhere is refused when it is set. A
+  token naming a key the provider doesn't publish asked the provider again on every request when
+  the provider didn't answer; now it is asked once a minute at most, answered or not. A token for
+  several audiences must name this client as the party it was issued to (`azp`), and one that names
+  another is refused.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a
