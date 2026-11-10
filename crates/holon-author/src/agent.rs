@@ -412,12 +412,32 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
     }
     out.push(String::new());
     let width = v.text.len().to_string().len();
+    // A flow's text is mostly what this run didn't touch (another handler's, the page, a law). A
+    // line with a value is shown, with a few around it; a stretch of lines with none, where a
+    // run recorded steps at all, is said in a line, so a run of a 15-line handler is not read
+    // among 470.
+    const AROUND: usize = 3;
+    let shown = |i: usize| {
+        v.no_steps || (i.saturating_sub(AROUND)..=(i + AROUND).min(v.text.len().saturating_sub(1))).any(|j| v.notes.contains_key(&((j + 1) as u32)))
+    };
+    let mut skipped = 0;
     for (i, line) in v.text.iter().enumerate() {
+        if !shown(i) {
+            skipped += 1;
+            continue;
+        }
+        if skipped > 0 {
+            out.push(format!("{:>width$}  … {skipped} line(s) this run didn't reach", ""));
+            skipped = 0;
+        }
         out.push(format!("{:>width$}  {line}", i + 1));
         let indent = line.len() - line.trim_start().len();
         for note in v.notes.get(&((i + 1) as u32)).into_iter().flatten() {
             out.push(format!("{:>width$}  {}  {note}", "", " ".repeat(indent)));
         }
+    }
+    if skipped > 0 {
+        out.push(format!("{:>width$}  … {skipped} line(s) this run didn't reach", ""));
     }
     out.push(String::new());
     out.extend(v.after);
@@ -836,6 +856,17 @@ fn first_sentence(s: &str) -> &str {
     s.find(". ").map(|i| &s[..=i]).unwrap_or(s)
 }
 
+/// A line of a description: its first sentence, cut at `max` characters with a mark where it was
+/// cut, so a list of many stays a size an agent can take in one answer.
+fn brief(s: &str, max: usize) -> String {
+    let first = first_sentence(s);
+    if first.chars().count() <= max {
+        return first.to_string();
+    }
+    let cut: String = first.chars().take(max).collect();
+    format!("{}…", cut.trim_end())
+}
+
 /// The reference: with no topic, the language on one page, every leaf, the templates and the
 /// samples; with a leaf's, a template's or a sample's name, that one in full.
 pub fn reference(topic: Option<&str>) -> Result<String, String> {
@@ -848,10 +879,11 @@ pub fn reference(topic: Option<&str>) -> Result<String, String> {
             out.push("TEMPLATES (written through the nouns above)".into());
             out.extend(templates::TEMPLATES.iter().map(|t| format!("  {t}: {}", first_sentence(templates::describe(t).unwrap_or("")))));
             out.push(String::new());
-            out.push("SAMPLES (reference with a sample's name gives its text)".into());
-            out.extend(samples::samples().iter().map(|s| format!("  {}: {}", s.name, s.description)));
+            out.push("SAMPLES (reference with a sample's name gives its text, with `samples` each one in full)".into());
+            out.extend(samples::samples().iter().map(|s| format!("  {}: {}", s.name, brief(s.description, 160))));
             Ok(out.join("\n"))
         }
+        Some("samples") => Ok(samples::samples().iter().map(|s| format!("{}: {}\n  shows: {}\n  try it: {}", s.name, s.description, s.shows.join(", "), s.try_it)).collect::<Vec<_>>().join("\n\n")),
         Some(t) => {
             if let Some((_, sig, doc)) = all.iter().find(|(n, _, _)| n == t) {
                 return Ok(format!("{sig}\n\n{doc}"));
@@ -1049,6 +1081,19 @@ mod tests {
         assert!(reference(Some("respond")).unwrap().contains("(a template)"));
         assert!(reference(Some("likes")).unwrap().contains("\nimport likes from \"collection:likes\"\n"));
         assert!(reference(Some("nope")).is_err());
+    }
+
+    /// An answer an agent takes whole: the reference with no topic keeps each sample to a line
+    /// (they were a paragraph each, nearly half of 88 KB), and `samples` has them in full.
+    #[test]
+    fn the_reference_keeps_each_sample_to_a_line_and_samples_gives_them_in_full() {
+        let all = reference(None).unwrap();
+        let listed = all.lines().filter(|l| samples::samples().iter().any(|s| l.starts_with(&format!("  {}: ", s.name)))).count();
+        assert_eq!(listed, samples::samples().len());
+        assert!(all.len() < 64_000, "{} bytes", all.len());
+        let full = reference(Some("samples")).unwrap();
+        let tidewheel = samples::sample("tidewheel").unwrap();
+        assert!(full.contains(tidewheel.description) && full.contains("try it: "));
     }
 
     /// The likes example in the guide is a real flow.

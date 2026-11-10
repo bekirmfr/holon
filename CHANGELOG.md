@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **`holon mcp` answers while a call is running, and a call can be cancelled or report progress.**
+  Each tool call runs on a thread of its own, so a `ping`, or the cancel of the call itself, is
+  answered at once rather than after it (a call that waits on a person used to hold the whole
+  connection). A request that carries a progress token is told every second that a waiting call is
+  alive, which hosts take as a reason to keep waiting, so such a `deployments` with `wait` may wait
+  up to 600 seconds, not 45. `notifications/cancelled` stops a call within a fraction of a second
+  and leaves it unanswered, as the protocol asks. When a client closes the input, calls that were
+  already sent get three seconds to finish and the rest are cancelled, so a script that pipes its
+  requests in still gets its answers.
+- **`holon mcp` follows the protocol's lifecycle and says what is wrong with an argument.** Until
+  a client has sent `initialize`, only `ping` is answered (anything else is an error that says to
+  initialize first). An argument of the wrong kind (`text: 5`, `headers: "x"`) comes back as a
+  failed tool that says so, where it used to read "`text` is missing", so the model that sent it
+  can correct itself. `reference` with no topic keeps each sample to a line (the samples were
+  nearly half of its 88 KB) and `reference` with `samples` gives each in full. The server's
+  instructions now say a proposal is decided later, with a reason on a decline.
+- **`holon wait <slug>` holds until a person decides a proposal.** An agent whose deploy is only
+  proposed runs it in the background and is told when it ends: how they decided, with the reason
+  of a decline, and a code (0 approved, 1 declined, 3 replaced, 4 timed out, 2 no proposal).
+  `holon mcp`'s answer to a proposed deploy now carries the exact command.
+- **An agent can wait for a person's decision.** `deployments` with a slug and `wait` (seconds,
+  up to 45) holds its answer while that flow's proposal waits, answers the moment a person
+  approves or declines (with their reason), and says it is still waiting if they haven't. Holon
+  has no way to push a decision into a host's model, so the call is the wait. And `explain` shows
+  the lines a run reached with three around each, and says how many it left out: the run of a
+  15-line handler was read among a whole flow (471 lines for one of the Tidewheel sample's ticks,
+  now 30).
+
+- **A new sample, Tidewheel: a sea nobody hosts, that everyone can check.** The flow never runs
+  the world and never sends a picture. Each second its clock chains the touches people planted
+  (kept two ticks ahead, as a lockstep game keeps its inputs) onto a sha256 and sends only those on
+  a channel; every page runs the same law (a cellular automaton served as a script, its hash in
+  the chain's first link) and steps its own sea, and even the weather is read from the chain's
+  bytes. The pages vouch for the sea at each fossil, one a minute, and a page that opens late joins
+  from the newest fossil and the touches since. A fossil can be replayed in the browser against
+  the hash the flow kept, and forked into a sea of one's own. It shows what the flow is for when
+  the compute doesn't belong in it: the order of things, their record, and who agrees.
+
 ## 0.1.0-rc.34
 
 - **Flows that compute run faster, and a fold that builds a list no longer slows with its square.**
