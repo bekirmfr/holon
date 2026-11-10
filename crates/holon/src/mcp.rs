@@ -5,7 +5,10 @@
 //! person's approval is kept by the server as a proposal for them (proposals.rs), and says so. It asks as an agent (`X-Holon-Role`), so the
 //! server holds it to that whatever sign-in it has (access.rs).
 
+use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use holon_author::agent;
@@ -228,7 +231,7 @@ fn tool_list() -> Value {
             "description": "What is deployed, one line each (state, version, port, runs, who deployed it), what each waits on a person for, and the flows saved but never deployed. With a slug, that one in full: its routes, what it may do, what its grant doesn't cover, the secrets it reads and which are set, what it waits for, and its text as deployed, even when it has never run.",
             "inputSchema": { "type": "object", "properties": {
                 "slug": { "type": "string", "description": "one deployment's name; leave out for all" },
-                "wait": { "type": "integer", "minimum": 1, "maximum": 45, "description": "with a slug whose proposal waits for a person: seconds to hold the answer for their decision (up to 45); it answers as soon as they decide, and says it is still waiting if they haven't" }
+                "wait": { "type": "integer", "minimum": 1, "maximum": 600, "description": "with a slug whose proposal waits for a person: seconds to hold the answer for their decision; it answers as soon as they decide, and says it is still waiting if they haven't. Up to 45, or up to 600 when the request asks for progress (it is told every second, and a cancel stops it)" }
             } },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
@@ -308,15 +311,36 @@ fn tool_list() -> Value {
     ])
 }
 
-/// How the tools get a server, when one is needed.
-pub(crate) type Connect<'a> = dyn Fn() -> Result<Box<dyn Api + 'a>, String> + 'a;
+/// How the tools get a server, when one is needed. `Sync`: a call runs on a thread of its own.
+pub(crate) type Connect<'a> = dyn Fn() -> Result<Box<dyn Api + 'a>, String> + Sync + 'a;
+
+/// What a call that takes a while can be told, and can tell: that whoever asked has given up
+/// (`notifications/cancelled`), and how far it has got (`notifications/progress`, when the
+/// request carried a progress token, which hosts take as a sign the call is alive).
+#[derive(Default)]
+pub(crate) struct Ctx<'a> {
+    cancelled: Option<&'a AtomicBool>,
+    progress: Option<&'a (dyn Fn(u64, u64, &str) + Sync)>,
+}
+
+impl Ctx<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    fn report(&self, done: u64, of: u64, note: &str) {
+        if let Some(progress) = self.progress {
+            progress(done, of, note);
+        }
+    }
+}
 
 fn arg<'a>(args: &'a Value, name: &str) -> Result<&'a str, String> {
     args.get(name).and_then(Value::as_str).ok_or_else(|| format!("`{name}` is missing"))
 }
 
 /// Run the tool `name`: its answer, or why it failed (both sentences).
-pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<String, String> {
+pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect, ctx: &Ctx) -> Result<String, String> {
     match name {
         "reference" => agent::reference(args.get("topic").and_then(Value::as_str)),
         "check" => {
@@ -339,7 +363,11 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
             let api = connect()?;
             let slug = args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
             let waited = match (slug, args.get("wait").and_then(Value::as_u64)) {
-                (Some(slug), Some(seconds)) if seconds > 0 => wait_for_decision(&*api, slug, seconds.min(MAX_WAIT), Duration::from_secs(1)),
+                // Past what a host gives a tool that says nothing, only for one that is told how it goes.
+                (Some(slug), Some(seconds)) if seconds > 0 => {
+                    let most = if ctx.progress.is_some() { MAX_WAIT_REPORTED } else { MAX_WAIT };
+                    wait_for_decision(&*api, slug, seconds.min(most), Duration::from_secs(1), ctx)
+                }
                 _ => None,
             };
             deployments(&*api, slug).map(|said| match waited {
@@ -616,6 +644,10 @@ const PROPOSALS_SAID: usize = 3;
 /// gives up on it. An agent that wants longer asks again.
 const MAX_WAIT: u64 = 45;
 
+/// The longest when the request asked for progress: it is told every second that the call is
+/// alive, and can be cancelled.
+const MAX_WAIT_REPORTED: u64 = 600;
+
 /// Whether a person has a proposal of `slug`'s still to decide.
 fn waits_on_a_person(api: &dyn Api, slug: &str) -> bool {
     json_of(api, "GET", "/proposals", None)
@@ -626,17 +658,28 @@ fn waits_on_a_person(api: &dyn Api, slug: &str) -> bool {
 /// What an agent does with a proposal that waits for a person: `deployments` with `wait` holds
 /// the answer until it is decided, up to `seconds`, looking every `every`. Holon has no way to
 /// push the decision to an agent that a host would carry to its model, so the agent asks and
-/// the call is the wait. None when nothing waits (what to say is the answer itself).
-fn wait_for_decision(api: &dyn Api, slug: &str, seconds: u64, every: Duration) -> Option<String> {
+/// the call is the wait (`holon wait` is the other way, for an agent with a shell). Each look
+/// says how long it has waited, when the request asked, and a cancelled call stops within a
+/// fraction of a second. None when nothing waits (what to say is the answer itself).
+fn wait_for_decision(api: &dyn Api, slug: &str, seconds: u64, every: Duration, ctx: &Ctx) -> Option<String> {
     if !waits_on_a_person(api, slug) {
         return None;
     }
-    let until = std::time::Instant::now() + Duration::from_secs(seconds);
+    let started = std::time::Instant::now();
+    let until = started + Duration::from_secs(seconds);
     while std::time::Instant::now() < until {
-        std::thread::sleep(every);
+        // Asleep in small parts, so a cancel is heard at once.
+        let looked = std::time::Instant::now();
+        while looked.elapsed() < every {
+            if ctx.is_cancelled() {
+                return Some("Stopped: the call was cancelled.".into());
+            }
+            std::thread::sleep(every.min(Duration::from_millis(50)));
+        }
         if !waits_on_a_person(api, slug) {
             return Some("A person decided while you waited:".into());
         }
+        ctx.report(started.elapsed().as_secs(), seconds, "waiting for a person to decide");
     }
     Some(format!("Still waiting for a person after {seconds} seconds: call `deployments` with this slug and `wait` again to keep watching."))
 }
@@ -1119,8 +1162,19 @@ fn invalid_arguments(name: &str, args: &Value) -> Option<String> {
     None
 }
 
-/// The answer to one JSON-RPC message; none for a notification.
-pub(crate) fn handle(message: &Value, connect: &Connect, session: &mut Session) -> Option<Value> {
+/// A tool call the connection has accepted and will answer when it is done, on a thread of its
+/// own: a call can take a while, and the others (a `ping`, a cancel) are not made to wait for it.
+pub(crate) struct Call {
+    id: Value,
+    name: String,
+    args: Value,
+    /// The request's progress token, when it asked to be told how the call goes.
+    progress_token: Option<Value>,
+}
+
+/// The answer to one JSON-RPC message, now: none for a notification, and none for a tool call,
+/// which is handed to `dispatch` to answer itself.
+pub(crate) fn handle(message: &Value, session: &mut Session, dispatch: &mut dyn FnMut(Call)) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message.get("method").and_then(Value::as_str);
     let reply = |result: Result<Value, (i64, String)>| {
@@ -1165,35 +1219,99 @@ pub(crate) fn handle(message: &Value, connect: &Connect, session: &mut Session) 
             if let Some(why) = invalid_arguments(name, &args) {
                 return reply(Ok(json!({ "content": [{ "type": "text", "text": why }], "isError": true })));
             }
-            let (text, failed) = match call_tool(name, &args, connect) {
-                Ok(t) => (t, false),
-                Err(e) => (e, true),
-            };
-            reply(Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": failed })))
+            dispatch(Call { id: id.clone().unwrap_or(Value::Null), name: name.to_string(), args, progress_token: message.pointer("/params/_meta/progressToken").cloned() });
+            None
         }
         other => reply(Err((-32601, format!("no method \"{other}\"")))),
     }
 }
 
-/// Serve the protocol on `input` and `output` until the input ends.
-pub(crate) fn serve(input: impl BufRead, mut output: impl Write, connect: &Connect) -> std::io::Result<()> {
-    let mut session = Session::default();
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+/// How long calls still running are given once the input has ended.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+/// One accepted call, run: its answer, said when it is done, unless whoever asked has cancelled
+/// it (the protocol asks that a cancelled request is not answered).
+fn answer_call(call: Call, cancelled: &AtomicBool, connect: &Connect, say: &(dyn Fn(&Value) + Sync)) {
+    let Call { id, name, args, progress_token } = call;
+    let progress = |done: u64, of: u64, note: &str| {
+        if let Some(token) = &progress_token {
+            say(&json!({ "jsonrpc": "2.0", "method": "notifications/progress", "params": { "progressToken": token, "progress": done, "total": of, "message": note } }));
         }
-        let answer = match serde_json::from_str::<Value>(&line) {
-            Ok(message) if message.is_object() => handle(&message, connect, &mut session),
-            Ok(_) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "one JSON-RPC message per line, not a batch" } })),
-            Err(e) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("not JSON: {e}") } })),
-        };
-        if let Some(a) = answer {
-            writeln!(output, "{a}")?;
-            output.flush()?;
-        }
+    };
+    let ctx = Ctx { cancelled: Some(cancelled), progress: progress_token.is_some().then_some(&progress as &(dyn Fn(u64, u64, &str) + Sync)) };
+    let (text, failed) = match call_tool(&name, &args, connect, &ctx) {
+        Ok(t) => (t, false),
+        Err(e) => (e, true),
+    };
+    if !cancelled.load(Ordering::Relaxed) {
+        say(&json!({ "jsonrpc": "2.0", "id": id, "result": { "content": [{ "type": "text", "text": text }], "isError": failed } }));
     }
-    Ok(())
+}
+
+/// Serve the protocol on `input` and `output` until the input ends. What is read, and what is
+/// quick, is answered as it comes; a tool call runs on a thread of its own and answers when it
+/// is done, so a call that waits on a person doesn't hold up a `ping` or the cancel of itself.
+/// When the input ends, calls still running are cancelled and awaited.
+pub(crate) fn serve<R: BufRead, W: Write + Send>(input: R, output: W, connect: &Connect) -> std::io::Result<()> {
+    let out = Mutex::new(output);
+    // One line at a time, whole, whichever thread says it.
+    let say = |v: &Value| {
+        let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(out, "{v}").and_then(|()| out.flush());
+    };
+    // The calls running, by request id, each with the flag that cancels it.
+    let running: Mutex<HashMap<String, Arc<AtomicBool>>> = Mutex::new(HashMap::new());
+    let mut session = Session::default();
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        let mut dispatch = |call: Call| {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let key = call.id.to_string();
+            running.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), cancelled.clone());
+            let (say, running) = (&say, &running);
+            scope.spawn(move || {
+                answer_call(call, &cancelled, connect, say);
+                running.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            });
+        };
+        let read = || -> std::io::Result<()> {
+            for line in input.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let answer = match serde_json::from_str::<Value>(&line) {
+                    Ok(message) if message.get("method").and_then(Value::as_str) == Some("notifications/cancelled") => {
+                        // Who asked has given up on a request: stop it, and say nothing of it.
+                        if let Some(id) = message.pointer("/params/requestId") {
+                            if let Some(flag) = running.lock().unwrap_or_else(|e| e.into_inner()).get(&id.to_string()) {
+                                flag.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        None
+                    }
+                    Ok(message) if message.is_object() => handle(&message, &mut session, &mut dispatch),
+                    Ok(_) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "one JSON-RPC message per line, not a batch" } })),
+                    Err(e) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("not JSON: {e}") } })),
+                };
+                if let Some(a) = answer {
+                    say(&a);
+                }
+            }
+            Ok(())
+        };
+        let ended = read();
+        // The input has ended, or failed. What a client sent before it closed (a script that pipes
+        // its requests in) is answered if it takes no longer than a moment; what waits longer is
+        // cancelled, as nobody is left to read it.
+        let grace = std::time::Instant::now() + SHUTDOWN_GRACE;
+        while std::time::Instant::now() < grace && !running.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for flag in running.lock().unwrap_or_else(|e| e.into_inner()).values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        ended
+    })
 }
 
 /// `holon mcp`.
@@ -1230,7 +1348,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         Ok(Box::new(Http { server: t.server, token: t.token }))
     };
     eprintln!("holon mcp: ready on stdin and stdout");
-    match serve(std::io::stdin().lock(), std::io::stdout().lock(), &connect) {
+    match serve(std::io::stdin().lock(), std::io::stdout(), &connect) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("holon mcp: {e}");
@@ -1272,7 +1390,7 @@ mod tests {
 
     fn tool(state: &AppState, name: &str, args: Value) -> Result<String, String> {
         let connect = || -> Result<Box<dyn Api + '_>, String> { Ok(Box::new(InProcess(state))) };
-        call_tool(name, &args, &connect)
+        call_tool(name, &args, &connect, &Ctx::default())
     }
 
     const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
@@ -1353,21 +1471,21 @@ mod tests {
         let tick = Duration::from_millis(5);
         // Decided on the third look: the call returns then, and says so.
         let api = Proposals { asked: Cell::new(0), states: &["waiting", "waiting", "declined"] };
-        let said = wait_for_decision(&api, "tide", 10, tick).unwrap();
+        let said = wait_for_decision(&api, "tide", 10, tick, &Ctx::default()).unwrap();
         assert!(said.starts_with("A person decided while you waited"), "{said}");
         assert_eq!(api.asked.get(), 3, "it looked until it was decided, and no more");
         // Never decided: it stops at the time asked, and says how to go on.
         let api = Proposals { asked: Cell::new(0), states: &["waiting"] };
         let started = std::time::Instant::now();
-        let said = wait_for_decision(&api, "tide", 1, tick).unwrap();
+        let said = wait_for_decision(&api, "tide", 1, tick, &Ctx::default()).unwrap();
         assert!(said.starts_with("Still waiting for a person after 1 seconds") && said.contains("`wait`"), "{said}");
         assert!(started.elapsed() < Duration::from_secs(3));
         // Nothing waits: no wait, and nothing to say before the answer.
         let api = Proposals { asked: Cell::new(0), states: &["approved"] };
-        assert_eq!(wait_for_decision(&api, "tide", 10, tick), None);
+        assert_eq!(wait_for_decision(&api, "tide", 10, tick, &Ctx::default()), None);
         assert_eq!(api.asked.get(), 1);
         // Another flow's proposal waiting is not this one's.
-        assert_eq!(wait_for_decision(&Proposals { asked: Cell::new(0), states: &["declined"] }, "other-flow", 10, tick), None);
+        assert_eq!(wait_for_decision(&Proposals { asked: Cell::new(0), states: &["declined"] }, "other-flow", 10, tick, &Ctx::default()), None);
     }
 
     /// A flow's `browsers` line reaches the server as the list its deploy request takes, so a
@@ -1732,9 +1850,9 @@ mod tests {
         assert_eq!(waiting["runs"][0]["waiting"][0]["approved"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
     }
 
-    fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {
+    fn tool_as(api: &(dyn Api + Sync), name: &str, args: Value) -> Result<String, String> {
         let connect = || -> Result<Box<dyn Api + '_>, String> {
-            struct By<'b>(&'b dyn Api);
+            struct By<'b>(&'b (dyn Api + Sync));
             impl Api for By<'_> {
                 fn server(&self) -> String {
                     self.0.server()
@@ -1745,7 +1863,7 @@ mod tests {
             }
             Ok(Box::new(By(api)))
         };
-        call_tool(name, &args, &connect)
+        call_tool(name, &args, &connect, &Ctx::default())
     }
 
     /// Which sites' pages a flow answers (`browsers`) is a person's to widen: a page from a new one
@@ -1962,6 +2080,96 @@ mod tests {
         assert!(waits[0].contains("its grant changed") && waits[1].contains("it is paused") && waits[2].contains("port 8200 is taken"), "{waits:?}");
     }
 
+    /// A call that waits on a person doesn't hold up the connection: a `ping` is answered while it
+    /// waits, a request that asked for progress is told every second the call is alive, and the
+    /// cancel of a request stops it and leaves it unanswered, as the protocol asks.
+    #[test]
+    fn a_waiting_call_is_pinged_around_told_of_and_cancelled() {
+        use std::sync::mpsc;
+
+        /// What a test says to `serve`, a line at a time, as a client would.
+        struct Lines {
+            rx: mpsc::Receiver<String>,
+            pending: Vec<u8>,
+            at: usize,
+        }
+        impl Read for Lines {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.at >= self.pending.len() {
+                    match self.rx.recv() {
+                        Ok(line) => {
+                            self.pending = format!("{line}\n").into_bytes();
+                            self.at = 0;
+                        }
+                        Err(_) => return Ok(0),
+                    }
+                }
+                let n = buf.len().min(self.pending.len() - self.at);
+                buf[..n].copy_from_slice(&self.pending[self.at..self.at + n]);
+                self.at += n;
+                Ok(n)
+            }
+        }
+        /// What `serve` says, kept where the test can read it as it comes.
+        #[derive(Clone, Default)]
+        struct Said(Arc<Mutex<Vec<u8>>>);
+        impl Write for Said {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        /// A server whose proposal for "tide" nobody decides.
+        struct Undecided;
+        impl Api for Undecided {
+            fn server(&self) -> String {
+                "the script".into()
+            }
+            fn send(&self, _: &str, _: &str, _: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+                Ok((200, json!({ "proposals": [{ "id": 1, "slug": "tide", "state": "waiting" }] }).to_string().into_bytes()))
+            }
+        }
+        let connect = || -> Result<Box<dyn Api>, String> { Ok(Box::new(Undecided)) };
+        let (tx, rx) = mpsc::channel::<String>();
+        let said = Said::default();
+        let lines = |said: &Said| -> Vec<Value> { String::from_utf8(said.0.lock().unwrap().clone()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect() };
+        let until = |said: &Said, what: &str, found: &dyn Fn(&Value) -> bool| {
+            let by = std::time::Instant::now() + Duration::from_secs(6);
+            while std::time::Instant::now() < by {
+                if lines(said).iter().any(found) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("never saw {what}: {:?}", lines(said));
+        };
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| serve(std::io::BufReader::new(Lines { rx, pending: Vec::new(), at: 0 }), said.clone(), &connect));
+            let send = |v: Value| tx.send(v.to_string()).unwrap();
+            send(json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "1" } } }));
+            send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+            send(json!({ "jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": { "name": "deployments", "arguments": { "slug": "tide", "wait": 30 }, "_meta": { "progressToken": "p1" } } }));
+            send(json!({ "jsonrpc": "2.0", "id": 11, "method": "ping" }));
+            // The ping is answered while the call waits, which is not answered.
+            until(&said, "the ping's answer", &|v| v["id"] == 11);
+            assert!(!lines(&said).iter().any(|v| v["id"] == 10), "the waiting call answered already");
+            // It says it is alive, with the token it was given, and how far it has got.
+            until(&said, "a progress notification", &|v| v["method"] == "notifications/progress" && v["params"]["progressToken"] == "p1" && v["params"]["total"] == 30);
+            // Cancelled: it stops, and nothing of it is said afterwards.
+            send(json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 10, "reason": "no longer needed" } }));
+            std::thread::sleep(Duration::from_millis(1500));
+            let before = lines(&said).len();
+            std::thread::sleep(Duration::from_millis(1500));
+            assert!(!lines(&said).iter().any(|v| v["id"] == 10), "a cancelled call is not answered: {:?}", lines(&said));
+            assert_eq!(lines(&said).len(), before, "and it has stopped reporting");
+            drop(tx);
+            server.join().unwrap().unwrap();
+        });
+    }
+
     #[test]
     fn the_protocol_initializes_lists_and_calls_tools_one_line_at_a_time() {
         let state = test_state();
@@ -1985,8 +2193,12 @@ mod tests {
         .join("\n");
         let mut out = Vec::new();
         serve(input.as_bytes(), &mut out, &connect).unwrap();
-        let answers: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(answers.len(), 12, "a notification gets no answer");
+        let all: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(all.len(), 12, "a notification gets no answer");
+        // A tool call answers when it is done, on a thread of its own: each answer is found by its
+        // request's id, in the order the requests were sent.
+        let at = |id: Value| all.iter().find(|a| a["id"] == id).cloned().unwrap_or_else(|| panic!("no answer to {id}: {all:?}"));
+        let answers: Vec<Value> = [json!(90), json!(91), json!(1), json!(2), json!(3), json!(4), json!(5), json!(8), json!(9), json!(6), Value::Null, json!(7)].into_iter().map(at).collect();
         assert_eq!(answers[0]["error"]["code"], -32600, "before initialize: {}", answers[0]);
         assert!(answers[0]["error"]["message"].as_str().unwrap().contains("initialize"));
         assert_eq!(answers[1]["result"], json!({}), "a ping is answered at any time");

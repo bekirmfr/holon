@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`holon mcp` answers while a call is running, and a call can be cancelled or report progress.**
+  Each tool call runs on a thread of its own, so a `ping`, or the cancel of the call itself, is
+  answered at once rather than after it (a call that waits on a person used to hold the whole
+  connection). A request that carries a progress token is told every second that a waiting call is
+  alive, which hosts take as a reason to keep waiting, so such a `deployments` with `wait` may wait
+  up to 600 seconds, not 45. `notifications/cancelled` stops a call within a fraction of a second
+  and leaves it unanswered, as the protocol asks. When a client closes the input, calls that were
+  already sent get three seconds to finish and the rest are cancelled, so a script that pipes its
+  requests in still gets its answers.
 - **`holon mcp` follows the protocol's lifecycle and says what is wrong with an argument.** Until
   a client has sent `initialize`, only `ping` is answered (anything else is an error that says to
   initialize first). An argument of the wrong kind (`text: 5`, `headers: "x"`) comes back as a

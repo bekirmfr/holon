@@ -436,7 +436,8 @@ the flow has no proposal, 3 when a newer proposal replaced it (it follows the ne
 waits), and 4 when `--timeout` ran out with nobody having decided. It decides nothing; that is
 [`holon decide`](#holon-decide) for an approval a run waits at, and the Approvals page for a
 proposal. Where there is no shell, `holon mcp`'s `deployments` with a slug and `wait` holds the
-same way, for up to 45 seconds a call.
+same way, for up to 45 seconds a call, or up to 600 when the request asks for progress
+(`holon mcp` answers it with a notification every second, and stops it when the host cancels).
 
 ## Grants and policy
 
