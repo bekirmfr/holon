@@ -105,6 +105,10 @@ impl Client {
         deploycmd::call(self.api.as_ref(), "POST", path, Some(Body::Json(body)))
     }
 
+    pub(crate) fn patch(&self, path: &str, body: Value) -> Result<Value, String> {
+        deploycmd::call(self.api.as_ref(), "PATCH", path, Some(Body::Json(body)))
+    }
+
     pub(crate) fn delete(&self, path: &str) -> Result<Value, String> {
         deploycmd::call(self.api.as_ref(), "DELETE", path, None)
     }

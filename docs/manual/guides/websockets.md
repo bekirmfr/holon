@@ -123,8 +123,8 @@ action.
 Each block's run is a line of the deployment's log, `kind` `websocket`, named for its block:
 `WebSocket /room/:name message`. Its request is the block's record. An `open` that accepts is
 logged 101, one that refuses with its status; a `message` or `close` has a status only when it
-fails. Each is replayed in the editor, and run again from its record by `holon verify`, as a
-route's is.
+fails. Each is replayed in the editor, run again from its record by `holon verify`, and replayed
+on a new version before it goes live, as a route's is.
 
 A block is strict unless it says otherwise: its line is on disk before its answer goes, and before
 its packs do. A chat's messages come often and say little worth keeping a second for:

@@ -1,9 +1,10 @@
 //! Replaying a version on a deployment's recent runs, offline: what a proposal or a draft would
-//! have done with the requests, ticks and actions the deployment took. Each run is run again as
+//! have done with the runs the deployment took, whatever started them. Each run is run again as
 //! `holon verify` runs one (`rerun`), from what its entry records, but through the new version's
-//! handler for the same route, clock, file or action; and what it produces is compared with what
-//! the run produced: the status it answered, its outputs, the effects it performed, where it
-//! waited.
+//! handler of the same kind and label (`handler_of`: a route, a WebSocket's block, a clock, a
+//! file's, a mail's, a feed's or a queue's handler, an action); and what it produces is compared
+//! with what the run produced: the status it answered, its outputs, the effects it performed,
+//! where it waited.
 //!
 //! Nothing is sent. An outbound request is answered by what the run was answered to the very
 //! same request, and a read by what the run read for the same one, wherever in the flow it is
@@ -137,16 +138,10 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     // What it runs: the version's handler for what the run's entry names, as `rerun` finds it in
     // the run's own unit.
     let label = entry.route.clone().unwrap_or_default();
-    let found = match entry.kind.as_str() {
-        "tick" => server.clocks.iter().find(|c| c.label == label).map(|c| (c.handler, false)).ok_or("clock"),
-        "file" => server.files.iter().find(|f| f.label == label).map(|f| (f.handler, false)).ok_or("file handler"),
-        "trigger" | "resume" => server.actions.iter().find(|a| a.label == label).map(|a| (a.handler, true)).ok_or("action"),
-        _ => server.routes.iter().find(|r| format!("{} {}", r.method, r.path) == label).map(|r| (r.endpoint, true)).ok_or("route"),
-    };
-    let (handler, sent) = match found {
+    let (handler, sent) = match handler_of(&server, &entry.kind, &label) {
         Ok(found) => found,
-        // A request no route takes is answered 404 (http.rs); a tick, a file or an action the
-        // version has no handler for doesn't run.
+        // A request no route takes is answered 404 (http.rs); any other run the version has no
+        // handler for doesn't run.
         Err(_) if entry.kind == "request" => {
             let why = vec![format!("the version has no route {label:?}")];
             return if entry.status == Some(404) { Replay::Same(Some(404)) } else { Replay::Differs(why, Some(404)) };
@@ -172,7 +167,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     let caps = capabilities(root, resolver);
     // What a run is lent as it starts: the version may read one the run wasn't.
     for cap in caps.iter() {
-        let lent = matches!(cap, Capability::Clock | Capability::Random | Capability::FileArrival(_));
+        let lent = matches!(cap, Capability::Clock | Capability::Random | Capability::FileArrival(_) | Capability::MailArrival(_) | Capability::FeedEvent(_) | Capability::QueueMessage(_));
         if lent && !extra.iter().any(|(c, _)| *c == cap) {
             return Replay::CantTell(format!("the version reads {}, which the run didn't", lent_name(&cap)));
         }
@@ -231,7 +226,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         return Replay::CantTell(missed);
     }
     if observer.consumed {
-        return Replay::CantTell("it computes with a secret or a token, which the log never holds".into());
+        return Replay::CantTell("it computes with a secret, a token or a tainted value, which the log never holds".into());
     }
     // As `rerun` has it: the server refuses a write of a secret's value.
     let keeps = |c: &Capability| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_) | Capability::DbWrite(_) | Capability::ChannelSend(_) | Capability::FileWrite(_));
@@ -292,6 +287,9 @@ fn lent_name(cap: &Capability) -> String {
         Capability::Clock => "the clock".into(),
         Capability::Random => "a random number".into(),
         Capability::FileArrival(folder) => format!("a new file in {folder}"),
+        Capability::MailArrival(mail) => format!("a mail to {mail}"),
+        Capability::FeedEvent(feed) => format!("an event of {feed}"),
+        Capability::QueueMessage(queue) => format!("a message of {queue}"),
         other => format!("{other:?}"),
     }
 }

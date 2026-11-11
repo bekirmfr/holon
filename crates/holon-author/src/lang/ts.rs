@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use holon_core::{family_values, interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, interface_of, is_taint_key, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_ast_visit::Visit;
@@ -746,7 +746,7 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// `flow("chess", { port, keep, browsers, limits })`: the flow's name and deploy settings.
+    /// `flow("chess", { port, keep, browsers, limits, taint })`: the flow's name and deploy settings.
     fn kind(&mut self, c: &js::CallExpression) -> R<()> {
         let at = self.span(c.span);
         if std::mem::replace(&mut self.kind_seen, true) {
@@ -787,6 +787,21 @@ impl<'s, 't> Reader<'s, 't> {
                     };
                     self.header(HeaderKind::Browsers(origins), span);
                 }
+                "taint" => {
+                    let shape = "taint lists keys in quotes: taint: [\"x-api-key\", \"number\"]";
+                    let js::Expression::ArrayExpression(a) = self.unwrap(value) else {
+                        return fail(self.span(value.span()), shape);
+                    };
+                    let mut keys: Vec<String> = Vec::new();
+                    for item in &a.elements {
+                        match item.as_expression().map(|e| self.unwrap(e)) {
+                            Some(js::Expression::StringLiteral(k)) if is_taint_key(&k.value) => keys.push(k.value.to_string()),
+                            Some(js::Expression::StringLiteral(k)) => return fail(self.span(k.span), format!("\"{}\" isn't a key: a name of up to 128 characters, no spaces", k.value)),
+                            _ => return fail(self.span(item.span()), shape),
+                        }
+                    }
+                    self.header(HeaderKind::Taint(keys), span);
+                }
                 "keep" => {
                     let js::Expression::ObjectExpression(k) = self.unwrap(value) else {
                         return fail(self.span(value.span()), "keep says how many runs and for how many days: keep: { runs: 500, days: 30 }");
@@ -817,7 +832,7 @@ impl<'s, 't> Reader<'s, 't> {
                         self.header(limit, span);
                     }
                 }
-                other => return fail(span, format!("a flow's settings are port, keep, browsers and limits, not \"{other}\"")),
+                other => return fail(span, format!("a flow's settings are port, keep, browsers, limits and taint, not \"{other}\"")),
             }
         }
         Ok(())

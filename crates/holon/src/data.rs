@@ -229,6 +229,182 @@ pub fn request_record(
     ]))
 }
 
+/// The values of the tainted keys wherever a run's entry or its lines hold them, each with its key:
+/// what the host keeps out of everything it records of the run (`Redactor::tainted`), its log
+/// entry, its lines, its packs, its export, `holon verify` and replay, which read each as a
+/// placeholder. The keys are those its flow taints (`declared`) and those every run does
+/// ([`holon_core::ALWAYS_TAINTED`]: credentials), named either case. A key's value is looked for
+/// wherever the entry holds what its run had ([`LogEntry::values_mut`]), whatever started it: a
+/// record's field (a request's header, query or path parameter, a message's, an input's, an
+/// answer's, a row's), a header's `[name, value]` pair, a JSON text at any depth (a body, a call's
+/// answer), and a query or a form's `name=value` (a URL, a form body); all of it when it holds
+/// more than one value. What a credential holds is tainted with it: what follows its scheme
+/// (`Bearer …`), what a Basic one decodes to and its password alone, each cookie's value, a set
+/// cookie's. A value shorter than a secret may be can't be told apart from ordinary text, so it
+/// isn't kept out; nor is one `marked` already marks (a secret, a token), which stays marked as
+/// that.
+pub(crate) fn tainted(declared: &[String], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    let keys: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(declared.iter().map(String::as_str)).collect();
+    let mut found: Vec<(String, String)> = Vec::new();
+    entry.values_mut(&mut |v| svalue_tainted(v, &keys, &mut found));
+    for s in entry.texts_mut() {
+        text_tainted(s, &keys, &mut found);
+    }
+    for (_, line) in lines {
+        svalue_tainted(&crate::wire::SValue::from_core(line), &keys, &mut found);
+    }
+    let mut held = Vec::new();
+    for (key, value) in &found {
+        if let Some((scheme, rest)) = value.trim().split_once(' ')
+            && !scheme.is_empty()
+            && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            held.push((key.clone(), rest.trim().to_string()));
+            if scheme.eq_ignore_ascii_case("basic")
+                && let Some(decoded) = base64_text(rest.trim())
+            {
+                held.extend(decoded.split_once(':').map(|(_, password)| (key.clone(), password.to_string())));
+                held.push((key.clone(), decoded));
+            }
+        }
+        // Each cookie a request sends; the one a response sets, before its attributes.
+        let cookies = match key.as_str() {
+            "cookie" => value.split(';').collect(),
+            "set-cookie" => value.split(';').take(1).collect(),
+            _ => Vec::new(),
+        };
+        held.extend(cookies.into_iter().filter_map(|c| c.split_once('=')).map(|(_, v)| (key.clone(), v.trim().to_string())));
+    }
+    found.extend(held);
+    found.retain(|(_, value)| value.chars().count() >= crate::secrets::MIN_SECRET_LEN && !value.contains('‹') && !marked.holds(value));
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The tainted key `name` is, named either case: as its flow wrote it.
+fn key_of<'k>(keys: &[&'k str], name: &str) -> Option<&'k str> {
+    keys.iter().copied().find(|k| k.eq_ignore_ascii_case(name))
+}
+
+/// The values of tainted keys in `v`, at any depth.
+fn svalue_tainted(v: &crate::wire::SValue, keys: &[&str], found: &mut Vec<(String, String)>) {
+    use crate::wire::SValue;
+    match v {
+        SValue::Record(fields) => {
+            for (name, x) in fields {
+                if let Some(key) = key_of(keys, name) {
+                    leaves(key, x, found);
+                }
+                svalue_tainted(x, keys, found);
+            }
+        }
+        SValue::List(xs) => {
+            // A header as a pair, `[name, value]`.
+            if let [SValue::Text(name), x] = xs.as_slice()
+                && let Some(key) = key_of(keys, name)
+            {
+                leaves(key, x, found);
+            }
+            xs.iter().for_each(|x| svalue_tainted(x, keys, found));
+        }
+        SValue::Text(s) => text_tainted(s, keys, found),
+        SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => svalue_tainted(payload, keys, found),
+        SValue::Number(_) | SValue::Boolean(_) | SValue::Bytes(_) => {}
+    }
+}
+
+/// Every value in `v`, all of it under `key`: a text as it is, a number as it is written.
+fn leaves(key: &str, v: &crate::wire::SValue, found: &mut Vec<(String, String)>) {
+    use crate::wire::SValue;
+    match v {
+        SValue::Text(t) => found.push((key.to_string(), t.clone())),
+        SValue::Number(n) => found.push((key.to_string(), format!("{n}"))),
+        SValue::List(xs) => xs.iter().for_each(|x| leaves(key, x, found)),
+        SValue::Record(fields) => fields.iter().for_each(|(_, x)| leaves(key, x, found)),
+        SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => leaves(key, payload, found),
+        SValue::Boolean(_) | SValue::Bytes(_) => {}
+    }
+}
+
+/// The values of tainted keys in a text that is JSON (a body, a call's answer) or a query or a
+/// form (`a=1&b=2`, after a URL's `?`). A text that names no key is passed by unread.
+fn text_tainted(s: &str, keys: &[&str], found: &mut Vec<(String, String)>) {
+    let t = s.trim_start();
+    let json = t.starts_with('{') || t.starts_with('[');
+    if !(json || s.contains('=')) || !keys.iter().any(|k| contains_either_case(s, k)) {
+        return;
+    }
+    if json && let Ok(json) = serde_json::from_str::<serde_json::Value>(t) {
+        json_tainted(&json, keys, found);
+        return;
+    }
+    let query = s.split_once('?').map_or(s, |(_, q)| q);
+    let query = query.split_once('#').map_or(query, |(q, _)| q);
+    for pair in query.split('&') {
+        if let Some((name, value)) = pair.split_once('=')
+            && let Some(key) = key_of(keys, percent_decode(name.trim()).as_str())
+        {
+            found.push((key.to_string(), value.to_string()));
+            found.push((key.to_string(), percent_decode(value)));
+        }
+    }
+}
+
+/// Whether `s` holds `key`, either case.
+fn contains_either_case(s: &str, key: &str) -> bool {
+    s.as_bytes().windows(key.len()).any(|w| w.eq_ignore_ascii_case(key.as_bytes()))
+}
+
+/// The values under tainted keys anywhere in JSON: a text as it is, a number as it is written,
+/// all of one that holds more.
+fn json_tainted(json: &serde_json::Value, keys: &[&str], found: &mut Vec<(String, String)>) {
+    fn all(key: &str, v: &serde_json::Value, found: &mut Vec<(String, String)>) {
+        match v {
+            serde_json::Value::String(t) => found.push((key.to_string(), t.clone())),
+            serde_json::Value::Number(n) => found.push((key.to_string(), n.to_string())),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| all(key, x, found)),
+            serde_json::Value::Object(fields) => fields.values().for_each(|x| all(key, x, found)),
+            serde_json::Value::Bool(_) | serde_json::Value::Null => {}
+        }
+    }
+    match json {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                if let Some(key) = key_of(keys, name) {
+                    all(key, value, found);
+                }
+                json_tainted(value, keys, found);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| json_tainted(v, keys, found)),
+        _ => {}
+    }
+}
+
+/// A Basic credential's text: standard base64, padded or not, read as UTF-8.
+fn base64_text(s: &str) -> Option<String> {
+    let (mut bits, mut held, mut out) = (0u32, 0, Vec::new());
+    for c in s.trim_end_matches('=').bytes() {
+        let six = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(six);
+        held += 6;
+        if held >= 8 {
+            held -= 8;
+            out.push((bits >> held) as u8);
+            bits &= (1 << held) - 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// Turn an endpoint's output 0 into a response. See the module doc for the rules.
 pub fn respond(output: Option<&Value>) -> DataResponse {
     let Some(output) = output else {

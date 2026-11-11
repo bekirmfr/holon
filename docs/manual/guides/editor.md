@@ -239,14 +239,15 @@ An admin's, in the nav's second group:
   now, as `holon store sweep` and `holon folder sweep` do; and **Who may touch what**, each
   resource with the deployments granted it.
 - **People and access**: people (add someone with a role, and they get a link to set their
-  password, good once, for seven days; change a role, reset a password, disable, or remove); **API
-  tokens** for scripts, CI and agents on other machines, each with a role, shown once; and
-  signing in through an identity provider (OpenID Connect).
+  password, good once, for seven days; change a role, reset a password, disable, or remove);
+  **agents and services**, each with a role and an owner, and their tokens, each shown once
+  (for agents on other machines, scripts and CI); and signing in through an identity provider
+  (OpenID Connect).
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
   grants, whether agents may propose versions, and each limit's default and ceiling.
 
 The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
-too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
+too: `holon people`, `holon oidc`, `holon folder`,
 `holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 

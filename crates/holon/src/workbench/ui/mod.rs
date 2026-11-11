@@ -676,7 +676,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                 use crate::workbench::admin::Part;
                 let mut keys = vec![("↑↓", "pick", Down, NONE)];
                 keys.extend(match app.admin.part {
-                    Part::People => vec![("n", "invite", Char('n'), NONE), ("enter", "role", Enter, NONE), ("e", "email", Char('e'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::People => vec![("n", "invite", Char('n'), NONE), ("a", "agent or service", Char('a'), NONE), ("enter", "role", Enter, NONE), ("e", "email", Char('e'), NONE), ("o", "owner", Char('o'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
                     Part::Keys => vec![("n", "new key", Char('n'), NONE), ("del", "revoke", Delete, NONE)],
                     Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
                     Part::Databases => vec![("n", "bind a database", Char('n'), NONE), ("enter", "tables", Enter, NONE), ("del", "unbind", Delete, NONE)],

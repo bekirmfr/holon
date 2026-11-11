@@ -161,5 +161,6 @@ Everyone signs in to the server. Each account has a **role**:
 | agent | read, propose flows and call them; never approve, start, stop or delete |
 
 An **agent** (through `holon mcp`) writes flows, checks them, saves them and deploys them, but a
-deploy that needs approval stops at a person. Scripts and CI use **API tokens**, each with a role.
+deploy that needs approval stops at a person. Agents and **services** (scripts, CI) sign in with
+tokens of their own, and each has an owner, the person answerable for it.
 See [Working with agents](guides/agents.md).

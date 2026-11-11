@@ -470,7 +470,8 @@ const USAGE: &str = "usage: holon <command>
                                      a deployment's secrets (a value is piped in, never shown)
   flows [list|show|save|remove]      the flows saved on the server
   activity [--last N]                what was done on the server, by whom
-  user | token | oidc                people, API tokens, signing in through a provider (admin)
+  people | oidc                      people, agents and services, and their tokens; signing in
+                                     through a provider (admin)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
@@ -613,8 +614,7 @@ fn main() {
         Some("secret") => std::process::exit(secretcmd::cli(&rest)),
         Some("flows") => std::process::exit(flowscmd::flows(&rest)),
         Some("activity") => std::process::exit(flowscmd::activity(&rest)),
-        Some("user") => std::process::exit(accountscmd::user(&rest)),
-        Some("token") => std::process::exit(accountscmd::token(&rest)),
+        Some("people") => std::process::exit(accountscmd::people(&rest)),
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
@@ -1023,13 +1023,7 @@ fn serve(args: Vec<String>) {
     let server = {
         let cell = Arc::clone(&state_cell);
         rouille::Server::new(&addr, move |request| {
-            let state = cell.get().expect("the server runs once its state is set");
-            // Each request has a thread of its own (rouille's): past MAX_IN_FLIGHT being answered
-            // at once, one more is told to try again rather than given work, signed in or not.
-            let Some(_admitted) = Admitted::take(&IN_FLIGHT, MAX_IN_FLIGHT) else {
-                return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
-            };
-            with_cors(&state.access, request, route(state, request))
+            admitted(cell.get().expect("the server runs once its state is set"), request, &IN_FLIGHT, MAX_IN_FLIGHT)
         })
     }
     .unwrap_or_else(|e| {
@@ -1216,9 +1210,9 @@ fn serve(args: Vec<String>) {
     };
     sync_listeners(&state);
 
-    let gate = match accounts.users().len() {
+    let gate = match accounts.principals().len() {
         0 => "waiting to be set up".to_string(),
-        n => format!("{n} account(s); signing in required"),
+        n => format!("{n} principal(s); signing in required"),
     };
     if let Some(source) = &state.editor {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());
@@ -1262,6 +1256,17 @@ fn open_to_others(dir: &std::path::Path) -> Option<String> {
 /// counted.
 static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const MAX_IN_FLIGHT: usize = 512;
+
+/// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
+/// past `most` being answered at once, one more is told to try again rather than given work,
+/// signed in or not. Its body is read by a deadline (`http::BODY_DEADLINE`), so a slow one gives
+/// its place back.
+pub(crate) fn admitted(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
+    let Some(_admitted) = Admitted::take(in_flight, most) else {
+        return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
+    };
+    with_cors(&state.access, request, route(state, request))
+}
 
 /// One request counted in `IN_FLIGHT` while it is answered.
 pub(crate) struct Admitted<'a>(&'a std::sync::atomic::AtomicUsize);

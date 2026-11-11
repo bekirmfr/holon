@@ -5,24 +5,25 @@ import type { WValue } from "./holon";
 import type { WaitingRun } from "./server";
 
 const point = (people: number, ...by: string[]): WaitingPoint => ({ name: "payout", expires_at: 0, people, approved: by.map((b) => ({ by: b, at: 0 })) });
-const ada = { name: "ada", role: "editor" as const };
+const ada = { name: "ada", kind: "person" as const, role: "editor" as const };
 const t = (value: string): WValue => ({ type: "Text", value });
 const record = (fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
 
 describe("who decides an approval", () => {
   it("is a person, an editor or an admin, the local admin by its name", () => {
     expect(deciderOf(ada)).toBe("ada");
-    expect(deciderOf({ name: "local:ada", role: "admin" })).toBe("ada");
-    expect(deciderOf({ name: "cy", role: "viewer" })).toBeNull();
-    expect(deciderOf({ name: "token:ci", role: "editor" })).toBeNull();
-    expect(deciderOf({ name: "claude", role: "agent" })).toBeNull();
+    expect(deciderOf({ name: "local:ada", kind: "person", role: "admin" })).toBe("ada");
+    expect(deciderOf({ name: "cy", kind: "person", role: "viewer" })).toBeNull();
+    expect(deciderOf({ name: "ci", kind: "service", role: "editor" })).toBeNull();
+    expect(deciderOf({ name: "claude", kind: "agent", role: "agent" })).toBeNull();
+    expect(deciderOf({ name: "claude", kind: "agent", role: "viewer" })).toBeNull();
   });
   it("decides each approval once, and never an event", () => {
     expect(mayDecide(point(2), ada)).toBe("decide");
     expect(mayDecide(point(2, "ada"), ada)).toBe("approved");
-    expect(mayDecide(point(2, "bob"), { name: "local:ada", role: "admin" })).toBe("decide");
+    expect(mayDecide(point(2, "bob"), { name: "local:ada", kind: "person", role: "admin" })).toBe("decide");
     expect(mayDecide({ name: "paid", expires_at: 0 }, ada)).toBe("no");
-    expect(mayDecide(point(1), { name: "cy", role: "viewer" })).toBe("no");
+    expect(mayDecide(point(1), { name: "cy", kind: "person", role: "viewer" })).toBe("no");
   });
   it("counts what is still theirs to decide", () => {
     const run = (...waiting: WaitingPoint[]): { run: WaitingRun } => ({ run: { run_id: "r", kind: "trigger", route: "pay", parked_at: 0, waiting, delivered: [] } });

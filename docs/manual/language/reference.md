@@ -94,6 +94,22 @@ as; its options are the deploy settings:
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days; either alone works. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s", max_requests: 100 }` | Any other limit of the deploy settings, by its name there (see [Permissions](../reference/permissions.md#limits)). A `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. More than the host's default asks for approval. |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`. One origin may be written alone, `browsers: "*"`. |
+| `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs (see **Tainted keys**, below). |
+
+**Tainted keys.** The values of the keys a flow taints are kept out of everything the server keeps
+of its runs, wherever a run has them, whatever started it: a request's header of that name (any
+case), query or path parameter, or a JSON body's field at any depth; a WebSocket's message; an
+action's input; what a call sends and what the far side answers; the run's own answer; a row it
+writes or reads. The run computes with them and the caller is answered as always; the log, the
+run's lines, its export, a replay and `holon verify` show `‹taint:number›` where each was, and a
+value computed from one isn't checked again, as with a secret ([Checking
+runs](../guides/checking-runs.md)). Every flow taints `authorization`, `proxy-authorization`,
+`cookie` and `set-cookie` without saying so: a bearer token, a Basic password, each cookie a caller
+sends and the one a far side sets. A value is found by its key, and then kept out wherever the run
+has it, under any key or inside text. One shorter than six characters is kept as it is (a CVC, a
+PIN: too short to find safely in other text). What the flow writes stays as written in its state,
+a collection, a database or a file: a later run that reads it back under a tainted key is logged
+without it, one that reads it under another key isn't.
 
 ## Names and literals
 

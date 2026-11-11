@@ -55,7 +55,7 @@ export const test = base.extend<object, { adminToken: string }>({
     { scope: "worker" },
   ],
   page: async ({ page, adminToken }, use) => {
-    await page.addInitScript((session) => localStorage.setItem("holon.session", session), JSON.stringify({ token: adminToken, name: ADMIN.name, role: "admin" }));
+    await page.addInitScript((session) => localStorage.setItem("holon.session", session), JSON.stringify({ token: adminToken, name: ADMIN.name, kind: "person", role: "admin" }));
     await use(page);
   },
 });

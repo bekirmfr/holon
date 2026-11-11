@@ -11,12 +11,12 @@ export type WaitingPoint = WaitingRun["waiting"][number];
 /** Whether people decide it: an approval, not an event a route delivers. */
 export const isApproval = (w: WaitingPoint) => (w.people ?? 0) > 0;
 
-/** Who `me` decides as, as the server says (durable.rs `decider`): an editor or an admin by their
- *  account's name, the OS user's local admin by the name it runs as; null for a viewer, an agent
- *  or an API token, who don't decide. */
+/** Who `me` decides as, as the server says (durable.rs `decider`): a person who is an editor or
+ *  an admin, by their name, the OS user's local admin by the name it runs as; null for a viewer,
+ *  an agent or a service, who don't decide. */
 export function deciderOf(me: Me): string | null {
+  if (me.kind !== "person") return null;
   if (me.role !== "editor" && me.role !== "admin") return null;
-  if (me.name.startsWith("token:")) return null;
   return me.name.replace(/^local:/, "");
 }
 

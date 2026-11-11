@@ -73,8 +73,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let a = &app.admin;
     let name = PARTS.iter().find(|(p, _)| *p == a.part).map_or("", |(_, n)| n);
     let title = match a.part {
-        Part::People => format!("{name}: who signs in ({})", a.users.len()),
-        Part::Keys => format!("{name}: for scripts and agents ({})", a.tokens.len()),
+        Part::People => format!("{name}: people, agents and services ({})", a.users.len()),
+        Part::Keys => format!("{name}: the agents' and services' ({})", a.tokens.len()),
         Part::Folders => format!("{name} flows read and write ({})", a.folders.len()),
         Part::Databases => format!("{name} flows query ({})", a.databases.len()),
         Part::Secrets => format!("{name}: names only, never values"),
@@ -90,8 +90,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let n = app.admin_rows();
     if n == 0 {
         let empty = match a.part {
-            Part::People => "Nobody yet: n invites someone.",
-            Part::Keys => "No API keys: n makes one.",
+            Part::People => "Nobody yet: n invites someone, a adds an agent or a service.",
+            Part::Keys => "No API keys: n makes one for an agent or a service.",
             Part::Folders => "No folders bound: n binds one.",
             _ => "No databases bound: n binds one.",
         };
@@ -102,11 +102,16 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         Part::People => {
             let u = &a.users[i];
             let state = if u["disabled"] == true { coloured("disabled", WARN) } else if u["invited"] == true { dim("invited") } else { Span::raw("") };
-            Line::from(vec![bold(pad(s(&u["name"]), 18)), Span::raw(pad(s(&u["role"]), 8)), state, dim(fit(&format!("  {}", u["email"].as_str().unwrap_or("")), w.saturating_sub(36)))])
+            // A person's email; an agent's or a service's owner.
+            let after = match u["owner"].as_str() {
+                Some(owner) => format!("  owned by {owner}"),
+                None => format!("  {}", u["email"].as_str().unwrap_or("")),
+            };
+            Line::from(vec![bold(pad(s(&u["name"]), 18)), Span::raw(pad(s(&u["kind"]), 8)), Span::raw(pad(s(&u["role"]), 8)), state, dim(fit(&after, w.saturating_sub(44)))])
         }
         Part::Keys => {
             let t = &a.tokens[i];
-            Line::from(vec![bold(pad(s(&t["label"]), 24)), Span::raw(pad(s(&t["role"]), 8)), dim(fit(s(&t["id"]), w.saturating_sub(32)))])
+            Line::from(vec![bold(pad(s(&t["label"]), 24)), Span::raw(pad(s(&t["principal"]), 16)), dim(fit(s(&t["id"]), w.saturating_sub(40)))])
         }
         Part::Folders => binding(&a.folders[i], s(&a.folders[i]["access"]), w),
         Part::Databases => binding(&a.databases[i], s(&a.databases[i]["engine"]), w),

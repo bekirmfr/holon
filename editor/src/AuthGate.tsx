@@ -5,12 +5,12 @@
 // an account menu in its header: change password and sign out.
 
 import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Role } from "./server";
+import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
 import { finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
 
-/** Who is signed in, for the editor. */
-export type Me = { name: string; role: Role };
+/** Who is signed in, for the editor: a person, or (signed in with its token) an agent or a service. */
+export type Me = { name: string; kind: Kind; role: Role };
 
 const card: CSSProperties = {
   background: "var(--bg)",
@@ -106,7 +106,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
           setError(messageOf(e));
           return null;
         });
-        if (me) return setStage({ kind: "in", me: { name: me.name, role: me.role } });
+        if (me) return setStage({ kind: "in", me: { name: me.name, kind: me.kind, role: me.role } });
       }
       setStage({ kind: "sign-in", oidc: state.oidc });
     } catch (e) {
@@ -126,12 +126,12 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   const matched = () => {
     if (password !== again) throw new Error("the two passwords differ");
   };
-  const attempt = async (f: () => Promise<{ name: string; role: Role }>) => {
+  const attempt = async (f: () => Promise<{ name: string; kind: Kind; role: Role }>) => {
     try {
       const s = await f();
       setPassword("");
       setAgain("");
-      setStage({ kind: "in", me: { name: s.name, role: s.role } });
+      setStage({ kind: "in", me: { name: s.name, kind: s.kind, role: s.role } });
     } catch (e) {
       setError(messageOf(e));
     }

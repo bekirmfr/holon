@@ -451,8 +451,8 @@ only the editor.
     hashes, sessions last 7 days, and a few wrong passwords lock a name for a minute. The admin
     panel adds people by name and role and gives a one-time link (7 days) for them to set their
     own password; it changes roles, disables (their sessions end), resets (a new link), removes,
-    and refuses any change that would leave no admin. API tokens for scripts and CI are made
-    there with a role, shown once, revoked any time. Only hashes of tokens are kept. The OS user
+    and refuses any change that would leave no admin. Agents and services (scripts, CI) are
+    added there with a role and an owner, and get tokens of their own, shown once, revoked any time. Only hashes of tokens are kept. The OS user
     running the server needs none on that machine (`local.rs`): `holon serve` writes a run file
     readable only by that user (`~/.holon/run/<port>.json`, or `HOLON_RUN_DIR`) with its address
     and a token made for this run, an admin's, named `local:<user>` in the activity log; `holon

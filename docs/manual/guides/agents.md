@@ -37,11 +37,12 @@ it makes asks as the **agent** role, so the server holds it to proposing.
 holon mcp setup claude-code --server https://holon.example.com
 ```
 
-`setup` asks for an API token with role **agent** (an admin makes one on the server's **admin**
-page, under API tokens), checks it, and keeps it in `~/.holon/tokens.json`, readable only by you.
+`setup` asks for an agent's token (on the server's **People and access**, add an agent and
+**make token**; or `holon people add NAME --agent`, then `holon people token NAME`), checks it,
+and keeps it in `~/.holon/tokens.json`, readable only by you.
 The host's settings file never holds the token. `HOLON_TOKEN` gives one without asking.
 
-Give an agent that has a shell a token with role agent, not your own sign-in: a role-agent token
+Give an agent that has a shell a token of its own, not your own sign-in: an agent's token
 can't approve anything, whatever the agent runs.
 
 ## What an agent can do

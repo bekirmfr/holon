@@ -34,8 +34,8 @@ const USAGE: &str = "usage: holon mcp [--server PORT|URL]
   setup                    add it to a host's settings (holon mcp setup --help says more)
   hosts                    the hosts setup knows, and adding your own (holon mcp hosts --help)
 
-  For an agent with a shell of its own, give it an API token with role agent (holon token add
-  … --role agent) rather than yours: setup --server keeps one, HOLON_TOKEN gives one.
+  For an agent with a shell of its own, give it an agent's token (holon people add NAME --agent,
+  then holon people token NAME) rather than yours: setup --server keeps one, HOLON_TOKEN gives one.
 
 examples:
   holon mcp setup claude-code
@@ -1630,7 +1630,7 @@ mod tests {
             ("DELETE", "/flows/agent-slugs"),
             ("POST", "/trigger/agent-slugs"),
             ("POST", "/permissions/reload"),
-            ("GET", "/admin/users"),
+            ("GET", "/people"),
         ] {
             assert_eq!(agent.send(method, path, None).unwrap().0, 403, "{method} {path}");
         }

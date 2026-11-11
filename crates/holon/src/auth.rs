@@ -6,16 +6,23 @@
 //! (set a password with it), `GET /auth/config` (where to sign in through the provider).
 //! Signed in: `GET /auth/me`, `POST /auth/password`, `POST /auth/sign-out`, and
 //! `GET`/`POST /auth/prefs` (what the editor keeps for them: its home tab, the welcome).
-//! Admins: `/admin/users` (list, invite), `/admin/users/<name>` (role, disabled, email; delete),
-//! `/admin/users/<name>/reset`, `/admin/tokens` (list, create), `/admin/tokens/<id>` (revoke),
-//! `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an admin does goes in
-//! the activity log.
+//! People (the design's §10, docs/L4s/access-and-approvals-L4.md), admins only:
+//! - `GET /people`: every principal, with an agent's or a service's tokens;
+//! - `POST /people` (`{name, kind, role, owner?, email?, display?}`): a person, answered with
+//!   their invite link; an agent or a service, owned by `owner` (by default whoever asks);
+//! - `PATCH /people/<name>` (role, disabled, email, display, owner), `DELETE /people/<name>`,
+//!   `POST /people/<name>/reset` (a person's new invite link);
+//! - `GET`/`POST /people/<name>/tokens` (`{label}`), `DELETE /people/<name>/tokens/<id>`: also for
+//!   the agent's or service's owner.
+//!
+//! Admins also: `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an
+//! admin does goes in the activity log.
 
 use rouille::{Request, Response};
 use serde::Deserialize;
 
 use crate::access::{Caller, Role};
-use crate::accounts::{Account, Accounts, OidcSettings};
+use crate::accounts::{Accounts, Kind, OidcSettings, Principal};
 use crate::http::{err, read_body};
 use crate::AppState;
 
@@ -24,23 +31,30 @@ fn body<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, Response> 
     serde_json::from_slice(&bytes).map_err(|e| err(400, format!("invalid body: {e}")))
 }
 
-/// An account as the panel shows it: never its password hash.
-fn shown(a: &Account, accounts: &Accounts) -> serde_json::Value {
-    serde_json::json!({
-        "name": a.name, "role": a.role, "email": a.email, "disabled": a.disabled,
-        "created_at": a.created_at, "created_by": a.created_by,
-        "invited": accounts.invited(&a.name),
-    })
+/// A principal as the People page shows it: never its password hash; an agent's or a service's
+/// tokens with it, never their hashes.
+fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
+    let owner_disabled = p.owner.as_deref().and_then(|o| accounts.principal(o)).is_some_and(|o| o.disabled);
+    let mut v = serde_json::json!({
+        "name": p.name, "kind": p.kind, "role": p.role, "display": p.display, "email": p.email,
+        "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by,
+        "owner": p.owner, "owner_disabled": owner_disabled,
+        "invited": accounts.invited(&p.name),
+    });
+    if p.kind != Kind::Person {
+        v["tokens"] = serde_json::json!(accounts.tokens(&p.name));
+    }
+    v
 }
 
-fn signed_in(token: &str, a: &Account) -> Response {
-    Response::json(&serde_json::json!({ "token": token, "name": a.name, "role": a.role }))
+fn signed_in(token: &str, p: &Principal) -> Response {
+    Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": p.role }))
 }
 
-/// `/auth/…` and `/admin/…`, or None for any other path.
+/// `/auth/…`, `/admin/…` and `/people…`, or None for any other path.
 pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Option<Response> {
     let url = request.url();
-    if !url.starts_with("/auth/") && !url.starts_with("/admin/") {
+    if !url.starts_with("/auth/") && !url.starts_with("/admin/") && url != "/people" && !url.starts_with("/people/") {
         return None;
     }
     // The folders an admin binds (folders.rs): a server without accounts has them too.
@@ -146,10 +160,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(signed_in(&token, &a))
             }));
         }
-        ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.account(n)) {
-            Some(a) => Response::json(&serde_json::json!({ "name": a.name, "role": a.role, "email": a.email })),
-            // An API token, or signed in through a provider as an account by email.
-            None => Response::json(&serde_json::json!({ "name": by, "role": caller.role })),
+        ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
+            Some(p) => Response::json(&serde_json::json!({ "name": p.name, "kind": p.kind, "role": p.role, "email": p.email, "owner": p.owner, "display": p.display })),
+            // The OS user, through the run file (`local:<user>`), or a person acting as an agent.
+            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.role })),
         },
         ("POST", "/auth/password") => {
             #[derive(Deserialize)]
@@ -177,33 +191,41 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             Response::empty_204()
         }
 
-        // ── the admin panel (access.rs lets only admins this far) ──
-        ("GET", "/admin/users") => Response::json(&accounts.users().iter().map(|a| shown(a, accounts)).collect::<Vec<_>>()),
-        ("POST", "/admin/users") => {
-            #[derive(Deserialize)]
-            struct Invite {
-                name: String,
-                role: Role,
-                #[serde(default)]
-                email: Option<String>,
-            }
-            return respond(body::<Invite>(request).and_then(|i| {
-                let link = accounts.invite(&i.name, i.role, i.email, by).map_err(fail)?;
-                state.activity.record("invited", &i.name, Some(by));
-                Ok(Response::json(&serde_json::json!({ "name": i.name, "invite": link })))
-            }));
-        }
-        ("GET", "/admin/tokens") => Response::json(&accounts.tokens()),
-        ("POST", "/admin/tokens") => {
+        // ── people (access.rs lets only admins this far, and owners to their principals' tokens) ──
+        ("GET", "/people") => Response::json(&accounts.principals().iter().map(|p| shown(p, accounts)).collect::<Vec<_>>()),
+        ("POST", "/people") => {
             #[derive(Deserialize)]
             struct New {
-                label: String,
+                name: String,
+                #[serde(default)]
+                kind: Kind,
                 role: Role,
+                #[serde(default)]
+                owner: Option<String>,
+                #[serde(default)]
+                email: Option<String>,
+                #[serde(default)]
+                display: Option<String>,
             }
             return respond(body::<New>(request).and_then(|n| {
-                let (token, entry) = accounts.create_token(&n.label, n.role, by).map_err(fail)?;
-                state.activity.record("made an API token", &n.label, Some(by));
-                Ok(Response::json(&serde_json::json!({ "token": token, "entry": entry })))
+                let invite = if n.kind == Kind::Person {
+                    let link = accounts.invite(&n.name, n.role, n.email, by).map_err(fail)?;
+                    state.activity.record("invited", &n.name, Some(by));
+                    Some(link)
+                } else {
+                    // Owned by whoever adds it, unless they name someone; the OS user by its name.
+                    let owner = n.owner.unwrap_or_else(|| by.strip_prefix("local:").unwrap_or(by).to_string());
+                    accounts.add(&n.name, n.kind, n.role, &owner, by).map_err(fail)?;
+                    state.activity.record(if n.kind == Kind::Agent { "added the agent" } else { "added the service" }, &n.name, Some(by));
+                    None
+                };
+                if n.display.is_some() {
+                    accounts.set_display(&n.name, n.display).map_err(fail)?;
+                }
+                Ok(Response::json(&match invite {
+                    Some(link) => serde_json::json!({ "name": n.name, "invite": link }),
+                    None => shown(&accounts.principal(&n.name).ok_or_else(|| err(404, "no such principal"))?, accounts),
+                }))
             }));
         }
         ("GET", "/admin/oidc") => Response::json(&serde_json::json!({ "settings": accounts.oidc_settings() })),
@@ -222,54 +244,86 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }));
         }
         _ => {
-            if let Some(id) = url.strip_prefix("/admin/tokens/")
-                && method == "DELETE"
+            let Some(rest) = url.strip_prefix("/people/") else { return Some(Response::empty_404()) };
+            if let Some((name, tokens)) = rest.split_once('/')
+                && (tokens == "tokens" || tokens.starts_with("tokens/"))
             {
-                return respond(accounts.revoke_token(id).map_err(|e| err(404, e)).map(|_| {
-                    state.activity.record("revoked an API token", id, Some(by));
+                // An admin's, or the owner's (access.rs lets a person this far for any name).
+                let me = by.strip_prefix("local:").unwrap_or(by);
+                if caller.role != Some(Role::Admin) && accounts.principal(name).and_then(|p| p.owner).as_deref() != Some(me) {
+                    return Some(err(403, format!("{by} may not do that: an agent's or a service's tokens are its owner's or an admin's to make")));
+                }
+                return respond(match (method, tokens.strip_prefix("tokens/")) {
+                    ("GET", None) => Ok(Response::json(&accounts.tokens(name))),
+                    ("POST", None) => {
+                        #[derive(Deserialize)]
+                        struct New {
+                            label: String,
+                        }
+                        body::<New>(request).and_then(|n| {
+                            let (token, entry) = accounts.create_token(name, &n.label, by).map_err(fail)?;
+                            state.activity.record("made a token for", name, Some(by));
+                            Ok(Response::json(&serde_json::json!({ "token": token, "entry": entry })))
+                        })
+                    }
+                    ("DELETE", Some(id)) => accounts.revoke_token(name, id).map_err(|e| err(404, e)).map(|_| {
+                        state.activity.record("revoked a token of", name, Some(by));
+                        Response::empty_204()
+                    }),
+                    _ => Ok(Response::empty_404()),
+                });
+            }
+            if let Some(name) = rest.strip_suffix("/reset")
+                && method == "POST"
+            {
+                return respond(accounts.reset(name).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
+                    state.activity.record("reset the password of", name, Some(by));
+                    Response::json(&serde_json::json!({ "name": name, "invite": link }))
+                }));
+            }
+            let name = rest;
+            if name.contains('/') {
+                return Some(Response::empty_404());
+            }
+            if method == "DELETE" {
+                return respond(accounts.remove(name).map_err(fail).map(|_| {
+                    state.activity.record("removed", name, Some(by));
                     Response::empty_204()
                 }));
             }
-            if let Some(rest) = url.strip_prefix("/admin/users/") {
-                if let Some(name) = rest.strip_suffix("/reset")
-                    && method == "POST"
-                {
-                    return respond(accounts.reset(name).map_err(|e| err(404, e)).map(|link| {
-                        state.activity.record("reset the password of", name, Some(by));
-                        Response::json(&serde_json::json!({ "name": name, "invite": link }))
-                    }));
+            if method == "PATCH" {
+                #[derive(Deserialize)]
+                struct Change {
+                    role: Option<Role>,
+                    disabled: Option<bool>,
+                    /// `""` clears it.
+                    email: Option<String>,
+                    /// `""` clears it.
+                    display: Option<String>,
+                    owner: Option<String>,
                 }
-                let name = rest;
-                if method == "DELETE" {
-                    return respond(accounts.remove(name).map_err(fail).map(|_| {
-                        state.activity.record("removed", name, Some(by));
-                        Response::empty_204()
-                    }));
-                }
-                if method == "POST" {
-                    #[derive(Deserialize)]
-                    struct Change {
-                        role: Option<Role>,
-                        disabled: Option<bool>,
-                        /// `""` clears it.
-                        email: Option<String>,
+                return respond(body::<Change>(request).and_then(|c| {
+                    if let Some(role) = c.role {
+                        accounts.set_role(name, role).map_err(fail)?;
+                        state.activity.record(&format!("made {}", serde_json::to_value(role).unwrap().as_str().unwrap_or("")), name, Some(by));
                     }
-                    return respond(body::<Change>(request).and_then(|c| {
-                        if let Some(role) = c.role {
-                            accounts.set_role(name, role).map_err(fail)?;
-                            state.activity.record(&format!("made {}", serde_json::to_value(role).unwrap().as_str().unwrap_or("")), name, Some(by));
-                        }
-                        if let Some(disabled) = c.disabled {
-                            accounts.set_disabled(name, disabled).map_err(fail)?;
-                            state.activity.record(if disabled { "disabled" } else { "enabled" }, name, Some(by));
-                        }
-                        if let Some(email) = c.email {
-                            accounts.set_email(name, Some(email)).map_err(fail)?;
-                        }
-                        let a = accounts.account(name).ok_or_else(|| err(404, "no such account"))?;
-                        Ok(Response::json(&shown(&a, accounts)))
-                    }));
-                }
+                    if let Some(disabled) = c.disabled {
+                        accounts.set_disabled(name, disabled).map_err(fail)?;
+                        state.activity.record(if disabled { "disabled" } else { "enabled" }, name, Some(by));
+                    }
+                    if let Some(email) = c.email {
+                        accounts.set_email(name, Some(email)).map_err(fail)?;
+                    }
+                    if let Some(display) = c.display {
+                        accounts.set_display(name, Some(display)).map_err(fail)?;
+                    }
+                    if let Some(owner) = c.owner {
+                        accounts.set_owner(name, &owner).map_err(fail)?;
+                        state.activity.record(&format!("made {owner} the owner of"), name, Some(by));
+                    }
+                    let p = accounts.principal(name).ok_or_else(|| err(404, "no such principal"))?;
+                    Ok(Response::json(&shown(&p, accounts)))
+                }));
             }
             Response::empty_404()
         }

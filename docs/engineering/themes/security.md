@@ -38,10 +38,15 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (503). The cap bounds the memory; the wait is long so a busy machine slows sign-ins rather
   than refusing them (2 s turned some away on a loaded two-core CI runner).
 - **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
-  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work.
+  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work. A body is read
+  by `BODY_DEADLINE` (30 s, as the data plane's `body_timeout`): `read_body`, the only reader
+  (a test says so), reads on a thread of its own and answers 408 at the deadline, so a body that
+  trickles or stops gives its place back. Rouille hides the socket, so the reader is left to the
+  connection and stops at its next read. tiny_http reads a body of 1 KiB or less before the
+  request is handed on, holding a thread but no place; slow headers likewise.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
-  and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), API tokens `ht_` (made by an admin with a
-  role, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),
+  and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), an agent's or a service's tokens `ht_`
+  (`credentials`, made by its owner or an admin, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),
   compared in constant time (`same`). A new password ends every other session; disabling or
   removing an account ends its sessions; `keeping_an_admin` refuses a change that leaves no
   enabled admin.
@@ -55,7 +60,7 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token, an admin's, for this run only.
 - **Roles** (`Access::check`): `viewer` reads (GET); `editor` also saves, deploys and approves,
   runs, pauses, stops, deletes and changes grants; `admin` everything, writing secrets and every
-  `/admin/` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
+  `/admin/` and `/people` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
   `/deploy/preview`, `/deploy`, `/flows`, a deployment's `/request`, an action, a restore, which
   is a dry run or saved as an ask: `ask_restore`). `X-Holon-Role: agent` lowers an editor or admin
   to an agent, named `<name> (agent)`; it never raises a viewer. Open without signing in
@@ -85,11 +90,16 @@ address, `localhost` or a name under it, or a name given with `--allow-host` (`h
 the name: a page loaded from a name rebound to this machine can't read a flow's answers as its own
 origin's. A request with no `Host` (HTTP/1.0) is answered; a browser always sends one.
 
-### 2.3 What `/admin/` requires
+### 2.3 What `/admin/` and `/people` require
 
-The `admin` role, for every path under it: `Access::check` refuses any other role there ("that
-needs an admin"), and so for writing a deployment's secret (`is_secret_write`). The paths:
-`/admin/users[/<name>[/reset]]`, `/admin/tokens[/<id>]`, `/admin/oidc` (auth.rs);
+The `admin` role, for every path under them (`is_admins`): `Access::check` refuses any other role
+there ("that needs an admin"), and so for writing a deployment's secret (`is_secret_write`). One
+exception: a person who is a viewer or an editor reaches an agent's or a service's tokens
+(`/people/<name>/tokens[/<id>]`, `is_tokens_of_someone`), and auth.rs lets them through only for
+what they own. Principals (accounts.rs): a `Kind` (person, agent, service) and the roles it may
+hold (`may_hold`: a service is never an admin, an agent only agent or viewer), and an owner, a
+person, for an agent or a service. The paths:
+`/people[/<name>[/reset|/tokens[/<id>]]]` (PATCH changes one), `/admin/oidc` (auth.rs);
 `/admin/secrets[/<name>]` (the server's own) and `/admin/secrets/env` (variable names only);
 `/admin/grants`; `/admin/folders` and below, with `browse` and `pick` (pick.rs: the OS dialog
 only for a request from the machine itself, not one a proxy forwarded); `/admin/databases` and below; `/admin/host`, `/admin/warnings`, `/admin/storage`
@@ -161,6 +171,22 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   request is sealed under the same key on disk (`sealed_for_disk`): the vault carries the sealer
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
   never kept.
+- **What a flow taints is redacted like a secret, not refused**: the flow's `taint` keys (a
+  frozen param on each handler's trigger node, gathered onto the server unit's by
+  `routes::flow_taint`, so the unit's hash covers them: `Server.taint`) and every run's
+  `ALWAYS_TAINTED` (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`).
+  `data::tainted` collects their values from all the run's entry holds (`LogEntry::values_mut`
+  and `texts_mut`, the list `Redactor::entry` walks: the request or input, the outputs, the
+  effects, the events, the reads, the timeline and a call's rounds) and from its lines: a record's
+  field, a header's `[name, value]` pair, a JSON text at any depth, a query's or a form's
+  `name=value` (decoded and as sent), with a credential's parts (after its scheme, a Basic
+  credential decoded and its password, each cookie's value, a set cookie's), at least
+  `MIN_SECRET_LEN` long. `firing::redactor_of` adds `Redactor::tainted` to the run's tokens and
+  secrets, so each value is marked `‹taint:key›` wherever it is in the entry, the lines, the packs
+  and an unrecorded handler's last failure, a number held as a number included (a JSON text stays
+  JSON). `taint:` is a mark kind of its own, so `holon verify` reads it as a placeholder (a node
+  computed from one is taken from the log) without counting a forwarded credential as a token
+  sent out.
 
 ### 2.7 What a flow can reach
 
@@ -277,6 +303,11 @@ What is not defended, or only partly:
 - **Redaction catches a secret's literal value**, as written or JSON-escaped, and what the graph
   shows computed from it; a value transformed where the graph can't see (a far side echoing it
   encoded) isn't recognised (secrets.rs's notes).
+- **Taint is found by key**: one under six characters is kept (a CVC); a value found under a
+  tainted key is kept out wherever its run has it, but a later run that reads it back under
+  another key logs it; a waiting run's sealed request holds it, to resume with; and the flow's
+  state, collections, databases and files hold what it writes. Unlike a secret's, a tainted
+  value's write isn't refused: it is the caller's, and the flow decides what to keep.
 - **A Boolean computed from a secret is clean** (taint.rs: any Boolean output), so a guard on a
   secret's presence doesn't taint all that follows it. A flow can therefore learn a secret a bit
   at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
@@ -299,7 +330,7 @@ What is not defended, or only partly:
   time with wrong codes.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
-  and leave it off; an `agent`-role API token is the guarantee (agent-surface L4, decision 6).
+  and leave it off; an agent's own token is the guarantee (agent-surface L4, decision 6).
 - **A folder's confinement off Linux is checked by names**: on macOS and Windows another process
   writing in the folder can swap a link between the check and the open (on Linux, without
   `/proc`, too). On Linux no link in a folder is followed, even one to inside it.
@@ -341,6 +372,12 @@ What is not defended, or only partly:
   `a_secret_goes_only_where_its_approval_shows_it_going`, `a_waiting_runs_record_is_sealed_on_disk`
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
   `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails).
+- **Tainted values**: `a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`
+  (a request's every part, a call's request and answer and the cookie it sets, a WebSocket's
+  message, an action's input, a row written and read back, every always-tainted key; none in the
+  log, the listing, the lines, the export, verify's report or a replay, and the runs check as
+  themselves), and `an_unrecorded_failure_is_kept_redacted_and_cut_short` (a tally's failure, of
+  secrets, tainted values and resume tokens).
 - **Reach**: `a_name_stays_inside_its_folder`, `a_link_out_of_the_folder_is_never_followed`,
   `a_write_through_a_link_makes_nothing_outside_and_links_arent_followed`,
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the

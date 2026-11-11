@@ -31,7 +31,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
-| [`holon user`, `token`, `oidc`](#people-and-sign-in) | people, API tokens, signing in through a provider |
+| [`holon people`, `oidc`](#people-and-sign-in) | people, agents and services, and their tokens; signing in through a provider |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon history`](#holon-history) | a deployment's timeline: its runs, and what was done to it |
@@ -600,33 +600,41 @@ grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up
 
 ## People and sign-in
 
-Admins only, as the admin page's people and sign-in.
+Admins only, as the editor's People and access; an agent's or a service's owner also makes and
+revokes its tokens.
 
-### `holon user`
-
-```
-holon user list
-holon user invite <name> --role viewer|editor|admin [--email ADDRESS]
-holon user set <name> [--role ROLE] [--disable | --enable] [--email ADDRESS]
-holon user reset <name>
-holon user remove <name> --yes
-```
-
-`invite` makes an account and prints the link its person opens to choose a password, once: send
-it to them. `set` changes a role, stops someone signing in (`--disable`) or lets them again, or
-sets the email they sign in with through a provider (`""` clears it). `reset` clears a password
-and ends their sessions, with a new link. The server refuses a change that would leave no admin.
-
-### `holon token`
+### `holon people`
 
 ```
-holon token list
-holon token add <label> --role viewer|editor|admin|agent
-holon token revoke <id>
+holon people [list]
+holon people add <name> --person --role viewer|editor|admin [--email ADDRESS]
+holon people add <name> --agent [--role agent|viewer] [--owner PERSON]
+holon people add <name> --service --role viewer|editor [--owner PERSON]
+holon people set <name> [--role ROLE] [--disable | --enable] [--email ADDRESS] [--owner PERSON] [--display TEXT]
+holon people reset <name>
+holon people remove <name> --yes
+holon people token <name> [--label TEXT]
+holon people revoke <name> <id>
 ```
 
-API tokens, for scripts and CI (`HOLON_TOKEN`). `add` prints the new token once, on stdout (what
-it is, on stderr), so `holon token add ci --role editor > ci.token` keeps it without showing it.
+Everyone who acts on the server is one of three kinds, each name unique across them. A **person**
+signs in with a password or through a provider: `add --person` prints the link they open to
+choose a password, once, to send them. An **agent** (an AI through `holon mcp`, or one with a
+shell) and a **service** (a script, CI) sign in with tokens of their own, and each has an
+**owner**, the person answerable for it (whoever adds it, unless `--owner` names another). An
+agent's role is `agent` (it reads, proposes and calls, never approves) or `viewer`; a service's is
+`viewer` or `editor`, never `admin`.
+
+`set` changes a role (one the kind may hold), stops someone signing in (`--disable`: an agent's or
+a service's tokens are refused) or lets them again, sets a person's email for a provider (`""`
+clears it), or gives an agent or a service another owner. `reset` clears a person's password and
+ends their sessions, with a new link. `remove` takes an agent's or a service's tokens with it, and
+is refused for a person who still owns one: give it another owner first. The server refuses a
+change that would leave no admin.
+
+`token` makes a token for an agent or a service and prints it once, on stdout (what it is, on
+stderr), so `holon people token ci --label "CI on GitHub" > ci.token` keeps it without showing it;
+`list` shows each token's id, and `revoke` ends one at once. Its owner or an admin may do either.
 
 ### `holon oidc`
 
@@ -878,7 +886,7 @@ own. See [Working with agents](../guides/agents.md).
 |---|---|
 | `HOST…` | the hosts to set up (`holon mcp hosts` lists them) |
 | `--all` | every host found on this machine |
-| `--server PORT\|URL` | a server elsewhere: asks for an API token with role agent, checks it, and keeps it in `~/.holon/tokens.json` |
+| `--server PORT\|URL` | a server elsewhere: asks for an agent's token, checks it, and keeps it in `~/.holon/tokens.json` |
 | `--project DIR` | the hosts' project files in `DIR` |
 | `--name NAME` | the entry's name (default `holon`), for a second server |
 | `--print` | show the entry and where it goes; write nothing |

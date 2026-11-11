@@ -73,7 +73,7 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
 
   // A second person: an editor the admin invites, who joins by the link's token.
   const name = `e2e-second-${Date.now()}`;
-  const invited = await control(adminToken, "/admin/users", { name, role: "editor" });
+  const invited = await control(adminToken, "/people", { name, kind: "person", role: "editor" });
   expect(invited.ok, await invited.clone().text()).toBe(true);
   const { invite } = (await invited.json()) as { invite: string };
   const joined = await fetch(`${SERVER}/auth/invite`, {
