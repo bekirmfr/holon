@@ -100,11 +100,12 @@ pub struct LogEntry {
     pub state_before: BTreeMap<String, SValue>,
     /// The state it left, once it committed: the hash of a snapshot in the content store
     /// (`restore::save_snapshot`), what `holon restore --to-run` puts back. Absent for a
-    /// deployment without state, a run that didn't commit, and entries logged before rc.30.
+    /// deployment without state, a run that didn't commit, and one that changed none whose
+    /// snapshot couldn't be kept (`firing::keep_state`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_after: Option<String>,
     /// Where it stands among the commits to the deployment's state, which its seq may not say:
-    /// absent for a deployment without state, and in entries logged before.
+    /// absent for a deployment without state, and for a run that panicked or was turned away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<Commit>,
     /// The unit's settled outputs (an endpoint's: response first, then effects).

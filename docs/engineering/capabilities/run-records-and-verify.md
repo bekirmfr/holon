@@ -130,9 +130,13 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    answers and collection reads from the entry, through the same core and rounds, compared with
    its run id, outputs, effects and status. A node that computed with a secret or a resume token
    can't be computed again; what the log kept for it stands in (`Asserting`), and the report counts
-   those runs and nodes (`given`). Runs that can't be run again at all (no outputs kept for such a
-   node, failed on a budget, no route took them, a file read whose text neither the export nor
-   `--files DIR` holds) are counted, not failed.
+   those runs and nodes (`given`). A run that failed is run again too, its status aside: what it
+   computed, and what its writes made of its state (none, where its error says the commit refused
+   them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
+   kept for such a node, failed and gets further run again, a file read whose text neither the
+   export nor `--files DIR` holds) are counted, not failed (`Rerun::Skipped`). A request no route
+   took and a run turned away (`firing::TURNED_AWAY`) ran nothing: their entries must say so
+   (`Rerun::NothingRan`), and the state checks pass over them.
 4. **The states** (`check_states`): each run began from the state the run before it left, and left
    what its writes make of the state it began with. The run before it is the one whose commit it
    began after (`began_after`), not the line before: a line is numbered after its commit, so two
@@ -143,7 +147,9 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 5. **Where the secrets went** (`check_sends`): each request carrying a secret's mark went to a host
    its unit sends that secret to; **the events** (`check_events`), their chain and head.
 
-It exits 0 when it all checks (`Report::ok`), 1 when it doesn't, 2 when it can't read the export.
+It exits 0 when it all checks (`Report::ok`) and every run was run again (`Report::complete`), 1
+when it doesn't check, 3 when it checks but some runs weren't run again, 2 when it can't read the
+export.
 
 ### A replay of another version
 

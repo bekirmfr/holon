@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`holon verify` exits 3 when it couldn't run every run again, and runs a failed run again.**
+  It exited 0 for an export some of whose runs it hadn't run again (a file whose text it wasn't
+  given, a run that panicked), as if all of it checked; now it says `INCOMPLETE` and exits 3, and
+  exits 0 only when every run was run again. A run that failed was never run again, so its line
+  could name any state it left, and the run after it begin from that state unchecked: now what a
+  failed run computed is checked, and the state it left, as any run's (not its status, which is
+  its failure's). A request no route took, and a run turned away before it began, ran nothing:
+  their lines must say so. A line that names no unit differs, where it was passed over as one
+  logged before lines named theirs.
 - **A panic holding a lock no longer stops what the lock guards until a restart.** A run that
   panics is a run that failed, but a panic while it held one of the server's locks (the
   deployments table, a log, a state, a vault, the policy, the content store's packs) poisoned

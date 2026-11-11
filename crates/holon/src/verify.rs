@@ -19,10 +19,15 @@
 //! log wrote is a placeholder: a look-alike a caller sent is logged escaped, read back as the text
 //! it was, and computed with (`Marks`).
 //!
-//! Some runs can't be run again at all, and are counted, not failed: one whose such node the log
-//! keeps no outputs for (too large, or too deep), one that failed on a budget (the clock decided),
-//! one no route took (nothing ran), one that read a file whose text neither the export nor
-//! `--files` holds (its folder keeps only hashes).
+//! A run that failed is run again too: what it computed before it failed, and what its writes made
+//! of its state, are checked as any run's; not its status, which is its failure's. Some runs can't
+//! be run again at all: one that panicked (its record says what it did by then isn't in it), one
+//! whose such node the log keeps no outputs for (too large, or too deep), one that failed, and run
+//! again gets further (a limit of the server's stopped it, or dropped what it did), one that read a
+//! file whose text neither the export nor `--files` holds (its folder keeps only hashes). They are
+//! counted, not failed, and an export with any checks only so far: `holon verify` exits 3, not 0.
+//! A request no route took, and a run turned away before it began, ran nothing: there is nothing
+//! to run again, and their entries are checked to say they did nothing.
 
 use std::collections::BTreeSet;
 
@@ -229,8 +234,11 @@ pub(crate) enum Rerun {
     Matched,
     /// It didn't: what differs.
     Differs(String),
-    /// It can't be run again: why.
+    /// It can't be run again: why. The export then checks only so far (`Report::complete`).
     Skipped(String),
+    /// Nothing ran, and its entry says it did nothing: why (no route took the request, or the run
+    /// was turned away before it began).
+    NothingRan(String),
 }
 
 /// What checking an export found.
@@ -352,6 +360,12 @@ impl Report {
             && self.states.as_ref().is_none_or(|s| s.breaks.is_empty())
             && self.secrets_outside.is_empty()
             && self.tokens_outside.is_empty()
+    }
+
+    /// Whether every run was run again: none [`Rerun::Skipped`]. An export that checks but isn't
+    /// complete has nothing found wrong in it, and not everything in it checked.
+    pub(crate) fn complete(&self) -> bool {
+        !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Skipped(_)))
     }
 }
 
@@ -543,9 +557,10 @@ fn check_sends(entries: &[(LogEntry, &str)], resolver: &impl holon_core::Resolve
     }
 }
 
-/// Whether a log entry is of a run: a request no route took ran nothing.
+/// Whether a log entry is of a run: a request no route took ran nothing, and nor did a run turned
+/// away before it began (it read no state, and left none).
 fn ran(e: &LogEntry) -> bool {
-    !e.run_id.is_empty()
+    !e.run_id.is_empty() && !e.error.as_deref().is_some_and(|e| e.ends_with(firing::TURNED_AWAY))
 }
 
 /// When a run ran, to the millisecond, its commit included (`duration_ms` is taken as it returns).
@@ -589,8 +604,8 @@ pub(crate) const CUT_OFF: &str =
 /// numbered the other way round: the run before a run is the one whose commit it began after, as
 /// its entry says (`recorder::Commit`), wherever its line is; and whether another commit landed
 /// while it ran is said by their numbers. One that began after a commit older than every one here
-/// has no run before it here, as the first hasn't. A line without them (logged before) is taken
-/// by its place and its times.
+/// has no run before it here, as the first hasn't. A line without them is taken by its place and
+/// its times.
 ///
 /// A run the server cut off between its commit and its line, crashing, isn't in the log either:
 /// the server, started again from the state it left, says so as an event naming that state
@@ -650,11 +665,14 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             // The run whose commit it began after left the state it began from.
             Some(h) if began_after(entries, b).is_some_and(|p| p.state_after.as_ref() == Some(h)) => states.began.push(b.seq),
             Some(h) => {
-                // The run before it that committed: one that failed didn't.
-                match entries[..i].iter().rposition(|(e, _)| ran(e) && e.error.is_none()) {
+                // The run before it that committed: one that failed did only if it left a state.
+                match entries[..i].iter().rposition(|(e, _)| ran(e) && (e.error.is_none() || e.state_after.is_some())) {
                     None => states.unchecked("where it began: no run before it here", b.seq),
                     Some(pi) => match &entries[pi].0.state_after {
-                        None => states.unchecked("where it began: the run before it kept no state it left (logged before rc.30)", b.seq),
+                        None => states.unchecked(
+                            "where it began: the run before it kept no state it left (its version held none, or the state, unchanged, couldn't be kept)",
+                            b.seq,
+                        ),
                         Some(left) if left == h => states.began.push(b.seq),
                         // A deploy, a restore or a stop between them put a state in place: a
                         // restore of a run's state, the one that run left (deploy.rs).
@@ -1039,13 +1057,15 @@ fn rerun(
     left: &mut Option<Left>,
 ) -> Rerun {
     if entry.run_id.is_empty() {
-        return Rerun::Skipped("nothing ran: no route took the request".into());
+        return nothing_ran(entry, "no route took the request");
     }
-    if let Some(e) = &entry.error {
-        return Rerun::Skipped(format!("it failed: {e}"));
+    match &entry.error {
+        Some(e) if e.ends_with(firing::TURNED_AWAY) => return nothing_ran(entry, "it was turned away before it began (a run lock)"),
+        Some(e) if e.starts_with(firing::PANICKED) => return Rerun::Skipped(format!("it failed: {e}")),
+        _ => {}
     }
     let Some(deployment) = parse_hash(&entry.unit) else {
-        return Rerun::Skipped("its entry doesn't name its unit (logged before runs did)".into());
+        return Rerun::Differs("its entry doesn't name its unit".into());
     };
     let Some(deployed) = resolver.resolve(&deployment) else {
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
@@ -1194,12 +1214,15 @@ fn rerun(
         listeners::served_status(answer.status, file, if_none_match, entry.error.as_deref())
     };
     if entry.kind == "request"
+        && entry.error.is_none()
         && let Some(status) = entry.status
         && answered() != status
     {
         differs.push("the status it answered");
     }
-    if outcome.error.is_some() {
+    // One that failed may have failed here too, or after it finished: at its commit, or past a
+    // limit of the server's.
+    if outcome.error.is_some() && entry.error.is_none() {
         differs.push("whether it finished");
     }
 
@@ -1208,10 +1231,13 @@ fn rerun(
     if differs.is_empty() && !state.iter().any(|(_, v)| marks.carried(v)) && !host.performed.iter().any(|(_, p)| marks.carried(p)) {
         let mut after = state.clone();
         let (mut wrote, mut collections) = (BTreeSet::new(), BTreeSet::new());
+        // As the commit writes them (firing.rs): every one, or none if one can't be, or if its
+        // error says so (a collection's write was refused).
+        let mut landed = !entry.error.as_deref().is_some_and(|e| e.contains(firing::STATE_NOT_WRITTEN));
         for (cap, payload) in &host.performed {
             match cap {
-                // As the commit writes them (firing.rs).
-                Capability::StateWrite(key) if after.insert(key.clone(), payload.clone()).is_ok() => {
+                Capability::StateWrite(key) => {
+                    landed &= after.insert(key.clone(), payload.clone()).is_ok();
                     wrote.insert(key.clone());
                 }
                 Capability::CollectionWrite(name) => {
@@ -1219,6 +1245,9 @@ fn rerun(
                 }
                 _ => {}
             }
+        }
+        if !landed {
+            (after, wrote, collections) = (state.clone(), BTreeSet::new(), BTreeSet::new());
         }
         *left = Some(Left { state: after, wrote, collections });
     }
@@ -1228,10 +1257,26 @@ fn rerun(
         false if !observer.unrecorded.is_empty() => Rerun::Skipped(
             "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
         ),
-        false if entry.retries > 0 => {
-            Rerun::Skipped("it ran again after what it read changed, and its entry holds only its last attempt's requests (logged before entries held them all)".into())
+        // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
+        // server dropped what it did (a file's, a queue's size): run again, it goes further.
+        false if let Some(e) = &entry.error => {
+            Rerun::Skipped(format!("it failed, and run again it gets further than its entry says (a limit of the server's stopped it, or dropped what it did): {e}"))
         }
         false => Rerun::Differs(differs.join(", ")),
+    }
+}
+
+/// What an entry of a run that didn't run comes to: nothing, if it says it did nothing.
+fn nothing_ran(entry: &LogEntry, why: &str) -> Rerun {
+    let did = entry.outputs.iter().any(Option::is_some)
+        || !entry.performed.is_empty()
+        || !entry.progress.is_empty()
+        || !entry.rounds.is_empty()
+        || !entry.reads.is_empty()
+        || entry.state_after.is_some();
+    match did {
+        true => Rerun::Differs(format!("{why}, and yet its entry says it did something")),
+        false => Rerun::NothingRan(why.into()),
     }
 }
 
@@ -1475,7 +1520,8 @@ impl Performer for Offline {
 }
 
 /// `holon verify <export.json> [--head <hex>] [--files DIR]`: check an export, say what was
-/// found, and exit 0 only if it checks.
+/// found, and exit 0 only if it checks, every run in it run again; 3 if nothing in it fails, but
+/// some runs couldn't be run again; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
@@ -1521,14 +1567,20 @@ pub(crate) fn run(args: &[String]) -> i32 {
     };
     let report = check(&export, head.as_deref(), &files);
     print!("{}", describe(&report, head.as_deref()));
-    if report.ok() { 0 } else { 1 }
+    match (report.ok(), report.complete()) {
+        (false, _) => 1,
+        (true, false) => 3,
+        (true, true) => 0,
+    }
 }
 
 const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR]
 
   Checks a deployment's exported runs (holon export), offline: that its run log's hash chain is
   unbroken, that every unit is what its hash says, and that every run, run again from its log
-  entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't.
+  entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
+  3 when nothing fails but some runs couldn't be run again (it says which, and why), 2 when it
+  can't read the export.
 
   --head HEX               a head a witness holds: check it is in the export, so no run up to
                            it was changed or removed
@@ -1629,9 +1681,12 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
 
     let matched = r.reruns.iter().filter(|(_, x)| *x == Rerun::Matched).count();
     let mut not: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+    let mut nothing: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
     for (seq, x) in &r.reruns {
-        if let Rerun::Skipped(why) = x {
-            not.entry(why).or_default().push(*seq);
+        match x {
+            Rerun::Skipped(why) => not.entry(why).or_default().push(*seq),
+            Rerun::NothingRan(why) => nothing.entry(why).or_default().push(*seq),
+            _ => {}
         }
     }
     out += &format!("  re-ran {matched} runs: each produced what its log entry says\n");
@@ -1652,6 +1707,9 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     for (why, seqs) in &not {
         out += &format!("  not re-run ({}): {why}\n", count_of(seqs));
+    }
+    for (why, seqs) in &nothing {
+        out += &format!("  nothing to run again ({}): {why}\n", count_of(seqs));
     }
     for (seq, x) in &r.reruns {
         if let Rerun::Differs(what) = x {
@@ -1699,7 +1757,11 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             out += &format!("  run {seq}'s state DOESN'T FOLLOW: {how}\n");
         }
     }
-    out += if r.ok() { "ok\n" } else { "FAILED\n" };
+    out += match (r.ok(), r.complete()) {
+        (false, _) => "FAILED\n",
+        (true, false) => "INCOMPLETE: nothing here fails, but not every run was run again (said above)\n",
+        (true, true) => "ok\n",
+    };
     out
 }
 

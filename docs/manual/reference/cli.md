@@ -678,8 +678,9 @@ Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
-texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
-it can't read.
+texts the export doesn't hold. Exits 0 when it all checks, every run run again; 1 when something
+doesn't check; 3 when nothing fails but some runs couldn't be run again (it says which, and why);
+2 for a file it can't read.
 
 ## `holon history`
 

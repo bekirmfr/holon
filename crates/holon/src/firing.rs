@@ -146,6 +146,14 @@ fn changed_from(start: &State, live: &State) -> bool {
 /// What a run that panicked says first ([`panicked`]).
 pub(crate) const PANICKED: &str = "it panicked: ";
 
+/// What the error of a run turned away before it began ends with ([`turned_away`]): it did
+/// nothing. It begins `busy: `, as a claim's that waited past claim_wait does, of a run that ran.
+pub(crate) const TURNED_AWAY: &str = "(its run lock) past claim_wait";
+
+/// What a run whose state's writes were refused at its commit says ([`commit`]): none of them
+/// landed, so the state it left is the one it began with.
+pub(crate) const STATE_NOT_WRITTEN: &str = "so none of its state's writes landed";
+
 /// One run, whatever started it: a request, an action, a clock, a file, a message, a mail, or a
 /// waiting run going on. Everything a run is held to arrives here, so it takes them all.
 ///
@@ -437,7 +445,7 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
-    run.error = Some(format!("busy: {resource} is held by another run for its whole length (its run lock) past claim_wait"));
+    run.error = Some(format!("busy: {resource} is held by another run for its whole length {TURNED_AWAY}"));
     eprintln!("holon: run {} turned away: {resource} is run-locked by another run past claim_wait", run.run_id);
     run
 }
@@ -620,7 +628,7 @@ fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, perfor
     if refused.is_empty() {
         *live = next;
     } else {
-        failed.push(format!("{}, so none of its state's writes landed", refused.join("; ")));
+        failed.push(format!("{}, {STATE_NOT_WRITTEN}", refused.join("; ")));
     }
     failed.extend(staged.land());
     for e in &failed {
