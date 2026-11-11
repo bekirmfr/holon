@@ -52,6 +52,49 @@
   the hash the flow kept, and forked into a sea of one's own. It shows what the flow is for when
   the compute doesn't belong in it: the order of things, their record, and who agrees.
 
+- **A handler does what its text says: an action started, and a function that writes or calls
+  out, are held to the `if` and the `return` they are written under.** Until now each ran on
+  every path: `if (amount > 1000) return status(403)` followed by `payout(…)` answered 403 and
+  started the payout. A function that writes, called in a branch (`c ? record(x) : undefined`,
+  `kept ?? record(x)`, a `switch`'s case), now writes only when the branch is taken, and a
+  `switch`'s default makes no call when its subject isn't there, as it already wrote nothing. A
+  flow that has one of these compiles to another unit: **redeploy it** (`holon check` shows the
+  same permissions). The rule a flow has of its own is unchanged, and now said in the reference
+  where it surprises: a condition with no value doesn't hold, so a guard on a missing field lets
+  the request through (`if (req.headers["x-admin"] !== key) return status(401)` with no header),
+  and `a || b` has no value when either side has none. The same handler is now run as a flow and
+  as JavaScript over every way a statement is reached, every kind of thing a handler does and
+  requests with and without each field, and the two must do the same but for that rule.
+- **A review shows the code that deploys.** A document carries its code as a canvas, which
+  deploys, and as a text, which people read; an agent's proposal could carry a text that wasn't
+  its canvas's, and the review, the deploy's diff, `holon flows`, `holon history`, the agent's own
+  tools and the terminal editor showed it as it came. Each now shows a saved text only when it
+  compiles to the unit the canvas deploys as, and the canvas printed otherwise.
+- **SQL: forms that hid a table or a function from a flow's permissions are refused.** A name in
+  SQLite's brackets holding a quote (`select 1 as ["], pan from cards -- "]` read `cards` unseen),
+  a function called by a quoted name or as a schema's (`"query_to_xml"($1, …)`), `table x`, an
+  update or a delete of several tables and `update ignore` (MySQL), `straight_join`'s table, a
+  number run into a word (`1from t`) and Postgres's `U&"…"`. Each says why. What a statement
+  touches is now checked against SQLite's own account of it, over some 17,000 generated
+  statements.
+- **One flow or one staged unit no longer takes the server, or its clocks, down.** A run that
+  panics, whatever started it, is a run that failed, logged as one: a clock's used to end the
+  thread that ticks every deployment's clocks and the deadlines of waiting runs, for good and
+  with nothing in any log. A staged unit with an edge to port four billion is refused like any
+  wiring that doesn't validate (it asked for 51 GiB first, which ended the server). A number
+  that isn't finite, which only a `js` function makes (`1 / 0`), is written `Infinity` or `NaN`
+  beside a text, where it panicked, and `toString(2)` of one gives nothing, where it asked for
+  64 GiB.
+- **A strict run whose record couldn't be written is told so, whichever run synced first.** With
+  a write failing and runs side by side, a run could answer as recorded with no line on record.
+- **A `js` function's fuel is its code's and its arguments' alone.** The first call in a process
+  paid for translating the engine's functions (15.8M instructions against 12.1M after), so a run
+  near its budget could pass on a server long up and fail when checked by `holon verify`. And a
+  module's answer holding an effect is refused: a module computes, and only a leaf performs.
+- **The trading-bot sample doesn't place an order nobody approved.** Its approval running out
+  placed the order as approved by "someone"; it now leaves the order unplaced, and no longer
+  waiting. The reference says what a wait gives when it runs out (`{ expired: true }`).
+
 ## 0.1.0-rc.34
 
 - **Flows that compute run faster, and a fold that builds a list no longer slows with its square.**

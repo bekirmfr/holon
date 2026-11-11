@@ -225,6 +225,15 @@ From lowest to highest precedence; binary operators group left to right. A condi
 `c ? a : b`, `!c`) holds as it would in JavaScript: `false`, `0`, `NaN` and `""` don't, anything
 else does, an empty list or record included. A `c` with no value doesn't hold, and `!c` has none.
 
+That last rule is where a flow differs from JavaScript, and it matters most in a guard that
+refuses. `if (req.headers["x-admin"] !== key) return status(401)` lets a request with no such
+header through: the comparison has no value, so the `if` doesn't hold, and what follows runs
+(JavaScript's `undefined !== key` is true, and it would return). The same goes for
+`if (req.json.amount > 1000) return status(403)` when `amount` is missing or a text. Write what must
+hold, not what must not: `const ok = secure_equals(req.headers["x-admin"], key)` and
+`return ok ? … : status(401)`, as the `guarded-api` sample does; or give a missing value one first,
+`(req.json.amount ?? 0) > 1000`.
+
 | Form | Meaning |
 |---|---|
 | `c ? a : b` | `a` when `c` holds, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |

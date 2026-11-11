@@ -125,8 +125,9 @@ fn told(result: &Result<(Vec<Option<Value>>, Cost), RunError>) -> String {
 fn a_call_is_a_function_of_its_module_and_its_inputs() {
     let echo = wat::parse_str(ECHO).unwrap();
     let limits = ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 };
-    // Each call: a module, and what it is given.
-    let mut calls: Vec<(String, &[u8], Vec<Option<Value>>)> = Vec::new();
+    // Each call: what it is, a module, and what the module is given.
+    type Call<'a> = (String, &'a [u8], Vec<Option<Value>>);
+    let mut calls: Vec<Call> = Vec::new();
     for (i, v) in pool().into_iter().enumerate() {
         calls.push((format!("echo of value {i}"), &echo, vec![Some(v), Some(n(2.0)), None]));
     }

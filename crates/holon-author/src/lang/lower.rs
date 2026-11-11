@@ -646,7 +646,8 @@ impl<'a> Lowerer<'a> {
     /// The functions placed in a branch since `since` are entered only where `cond` holds: each
     /// one's tie is there only then, and only where the branches inside this one were taken too.
     fn taken_when(&mut self, since: usize, cond: &Val, span: Span) -> R<()> {
-        for id in self.cur().branch_fns[since..].to_vec() {
+        let placed: Vec<String> = self.cur().branch_fns[since..].to_vec();
+        for id in placed {
             let inner = self.cur().branch_ties.get(&id).cloned().unwrap_or_else(|| cond.clone());
             let tie = self.node_with("guard", &[], &[("cond", cond.clone()), ("value", inner)], span)?;
             self.frame().branch_ties.insert(id, tie);
