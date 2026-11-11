@@ -2,13 +2,16 @@
 //! delete, appended to `<deployments>.activity.jsonl` beside the deployments file (in memory for
 //! an in-memory server). A deployment or flow that is deleted takes its own records with it;
 //! this log keeps that it was, and who did it. Secrets have their own audit (secrets.rs).
-//! `GET /activity?limit=n` answers the newest first.
+//! `GET /activity?limit=n` answers the newest first: all of it to a caller who views every flow,
+//! and only what was done to the flows they view to one bound at some flows.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rouille::{Request, Response};
 
+use crate::access::Caller;
+use crate::can::{can, everywhere, Action, Resource};
 use crate::paths::Place;
 use serde::{Deserialize, Serialize};
 
@@ -62,18 +65,30 @@ impl Activity {
         }
     }
 
-    /// The newest `limit` entries, newest first.
-    pub(crate) fn newest(&self, limit: usize) -> Vec<ActivityEntry> {
+    /// The newest `limit` entries that `keep` keeps, newest first.
+    pub(crate) fn newest(&self, limit: usize, keep: impl Fn(&ActivityEntry) -> bool) -> Vec<ActivityEntry> {
         let all: Vec<ActivityEntry> = match &self.path {
             None => self.kept.lock().unwrap().clone(),
             Some(path) => std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect(),
         };
-        all.into_iter().rev().take(limit.min(MAX_READ)).collect()
+        all.into_iter().rev().filter(keep).take(limit.min(MAX_READ)).collect()
     }
 }
 
-/// `GET /activity?limit=n` (default 50): what was done, newest first.
-pub(crate) fn handle_get_activity(activity: &Activity, request: &Request) -> Response {
+/// What is done to a flow, by the words its entry is kept in (flows.rs, deploy.rs, proposals.rs,
+/// durable.rs, http.rs). What isn't here is shown only to whoever views every flow.
+const DONE_TO_A_FLOW: &[&str] =
+    &["saved", "deleted flow", "deployed", "restored", "restored state", "asked to restore", "proposed", "declined", "approved", "granted", "run", "paused", "stopped", "deleted"];
+
+/// The flow `e` was done to, if it was: its target, or a decision's run's ("payout run 7 at "ok"").
+fn flow_of(e: &ActivityEntry) -> Option<&str> {
+    DONE_TO_A_FLOW.contains(&e.action.as_str()).then(|| e.target.split(" run ").next().unwrap_or_default())
+}
+
+/// `GET /activity?limit=n` (default 50): what was done, newest first, as far as `who` may see it.
+pub(crate) fn handle_get_activity(activity: &Activity, request: &Request, who: &Caller) -> Response {
     let limit = request.get_param("limit").and_then(|l| l.parse().ok()).unwrap_or(50);
-    Response::json(&serde_json::json!({ "entries": activity.newest(limit) }))
+    let all = everywhere(who, Action::FlowView);
+    let keep = |e: &ActivityEntry| all || flow_of(e).is_some_and(|slug| can(who, Action::FlowView, &Resource::Flow(slug)).is_ok());
+    Response::json(&serde_json::json!({ "entries": activity.newest(limit, keep) }))
 }

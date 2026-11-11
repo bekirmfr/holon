@@ -36,9 +36,12 @@ fn body<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, Response> 
     serde_json::from_slice(&bytes).map_err(|e| err(400, format!("invalid body: {e}")))
 }
 
-/// What is bound to `name`: each binding's id, role and scope, and who bound it when.
+/// What is bound to `name`: each binding's id, role and scope, who bound it when, and until when,
+/// with whether it has expired.
 fn bindings(name: &str, accounts: &Accounts) -> serde_json::Value {
-    accounts.bindings_of(name).iter().map(|b| serde_json::json!({ "id": b.id, "role": b.role, "scope": b.scope, "by": b.by, "at": b.at })).collect()
+    let now = crate::deploy::epoch_now();
+    let each = |b: &crate::bindings::Binding| serde_json::json!({ "id": b.id, "role": b.role, "scope": b.scope, "by": b.by, "at": b.at, "expires_at": b.expires_at, "expired": !b.live(now) });
+    accounts.bindings_of(name).iter().map(each).collect()
 }
 
 /// A principal as the People page shows it: what is bound to it, and its role on the host; never

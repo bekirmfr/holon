@@ -7,9 +7,11 @@
 //! The gate (access.rs) finds a request's route here. A path no route has is answered 404 once its
 //! caller is known, so no one learns which paths there are without signing in; a route whose rule
 //! the caller doesn't meet is refused 403, in the words below. A handler asks `can` again once it
-//! knows more: whose saved flow it is (flows.rs), whether its caller approves what a deploy needs
-//! (deploy.rs), whether a flow lets agents run an action (deploy.rs) or read its log lines
-//! (logs.rs), and who decides an approval (durable.rs).
+//! knows more: whose saved flow it is (flows.rs), which flow a deploy or a proposal is of, and
+//! whether its caller approves what a deploy needs (deploy.rs, proposals.rs), whether a flow lets
+//! agents run an action (deploy.rs) or read its log lines (logs.rs), and which approval point is
+//! decided (durable.rs). A list asks about every flow at once, and keeps the flows its caller may
+//! view (flows.rs, deploy.rs, proposals.rs, summary.rs, activity.rs).
 //!
 //! The built-in roles:
 //!
@@ -41,7 +43,7 @@ use Action::*;
 use Holds::{Do, Own};
 
 /// What may be done, to what (the design's §4). Fixed here: roles are made from it. Nothing asks
-/// `people.assign`, `role.view` or `role.define` yet: they are for bindings and custom roles (§5).
+/// `role.view` or `role.define` yet: they are for custom roles (§5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub(crate) enum Action {
@@ -79,8 +81,8 @@ pub(crate) enum Action {
 }
 
 impl Action {
-    /// The whole catalogue, for the tests that hold it to the design.
-    #[cfg(test)]
+    /// The whole catalogue: what a binding of a role gives (bindings.rs), and what the tests hold
+    /// to the design.
     pub(crate) const ALL: [Action; 31] = [
         FlowView, FlowEdit, FlowPropose, FlowDeploy, FlowApproveDeploy, FlowRestore, FlowRestoreDryRun, FlowLifecycle, FlowDelete,
         RunView, RunCall, RunDecide, RunExport,
@@ -131,8 +133,8 @@ impl Action {
     }
 }
 
-/// What an action is done to. Its slugs and names are what a binding's scope will be checked
-/// against (the design's §5.3); until then only refusals read some of them.
+/// What an action is done to. Its slugs and names are what a binding's scope is checked against
+/// (bindings.rs's `Held::covers`, the design's §5.3).
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum Resource<'a> {
@@ -148,8 +150,9 @@ pub(crate) enum Resource<'a> {
     Action { slug: &'a str, name: &'a str, agents_may: bool },
     /// A deployment's log lines, and whether its grant lets agents read them (`AgentReadsLogs`).
     Logs { slug: &'a str, agents_may: bool },
-    /// A run of `slug` waiting at an approval.
-    Approval { slug: &'a str },
+    /// A run of `slug` waiting at the approval point `name`: none for the decide route's
+    /// question, before its body names the point, which is some approval of the flow.
+    Approval { slug: &'a str, name: Option<&'a str> },
     /// A principal, and the person who owns it.
     Principal { name: &'a str, owner: Option<&'a str> },
 }
@@ -210,7 +213,7 @@ impl RoleDef {
     }
 
     /// Whether it holds `action` on anything.
-    fn holds_any(&self, action: Action) -> bool {
+    pub(crate) fn holds_any(&self, action: Action) -> bool {
         self.holds.iter().any(|h| matches!(*h, Holds::All) || matches!(*h, Do(a) | Own(a) if a == action))
     }
 }
@@ -286,6 +289,12 @@ pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Ref
     fixed(who, action, on)
 }
 
+/// Whether `who` may do `action` to every flow, those no one has named yet included: as a binding
+/// on the host holds it. No binding names the empty slug (bindings.rs), so only the host covers it.
+pub(crate) fn everywhere(who: &Caller, action: Action) -> bool {
+    can(who, action, &Resource::Flow("")).is_ok()
+}
+
 /// The owner's rule: a person manages the tokens of an agent or a service they own (the OS user by
 /// the name it runs as).
 fn owns(who: &Caller, action: Action, on: &Resource) -> bool {
@@ -343,7 +352,8 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         let place = match on {
             Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
             Resource::Flows => "on any flow".to_string(),
-            Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug } => format!("on {slug:?}"),
+            Resource::Approval { slug, name: Some(point) } => format!("for {slug:?}'s approval {point:?}"),
+            Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug, .. } => format!("on {slug:?}"),
         };
         return Refusal(format!("{name} may not do that: no role {name} holds {place} holds {}", action.name()));
     }
@@ -376,6 +386,9 @@ pub(crate) enum On {
     Flows,
     /// The flow of the path's `{slug}`.
     Slug,
+    /// Some approval point of the path's `{slug}`: a binding at one lets its holder reach the
+    /// handler, which asks about the point the body names (durable.rs).
+    Approvals,
     /// The principal of the path's `{name}`, with its owner from the accounts.
     Principal,
 }
@@ -462,6 +475,12 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("POST", "/people/{name}/reset", PeopleManage, On::Host),
     asks("DELETE", "/people/{name}", PeopleManage, On::Host),
     asks("PATCH", "/people/{name}", PeopleManage, On::Host),
+    // What is bound to whom, and its versions (bindings.rs).
+    asks("GET", "/bindings", PeopleView, On::Host),
+    asks("POST", "/bindings", PeopleAssign, On::Host),
+    asks("DELETE", "/bindings/{id}", PeopleAssign, On::Host),
+    asks("GET", "/access/versions", PeopleView, On::Host),
+    asks("GET", "/access", PeopleView, On::Host),
     // The rest (http.rs).
     open("GET", "/health"),
     signed_in("GET", "/version"),
@@ -470,8 +489,10 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("POST", "/deploy", FlowPropose, On::Flows),
     asks("POST", "/flows", FlowEdit, On::Flows),
     asks("GET", "/flows", FlowView, On::Flows),
-    asks("GET", "/flows/{slug}", FlowView, On::Slug),
-    asks("DELETE", "/flows/{slug}", FlowDelete, On::Slug),
+    // A flow its caller saved and no one deployed is theirs wherever they hold the action, so its
+    // handler asks about the flow once it knows whose it is (flows.rs).
+    asks("GET", "/flows/{slug}", FlowView, On::Flows),
+    asks("DELETE", "/flows/{slug}", FlowDelete, On::Flows),
     asks("GET", "/proposals", FlowView, On::Flows),
     asks("POST", "/proposals/{id}/decline", FlowApproveDeploy, On::Flows),
     asks("GET", "/proposals/{id}", FlowView, On::Flows),
@@ -492,7 +513,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/logs", RunView, On::Slug),
     asks("GET", "/deployments/{slug}/feeds", StateView, On::Slug),
     asks("GET", "/deployments/{slug}/queues", StateView, On::Slug),
-    asks("POST", "/deployments/{slug}/runs/{id}/decide", RunDecide, On::Slug),
+    asks("POST", "/deployments/{slug}/runs/{id}/decide", RunDecide, On::Approvals),
     asks("GET", "/deployments/{slug}/changes", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/history", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/state", StateView, On::Slug),
@@ -561,6 +582,7 @@ pub(crate) fn may(who: &Caller, route: &Route, parts: &Parts, accounts: Option<&
         On::Host => Resource::Host,
         On::Flows => Resource::Flows,
         On::Slug => Resource::Flow(parts.slug.unwrap_or_default()),
+        On::Approvals => Resource::Approval { slug: parts.slug.unwrap_or_default(), name: None },
         On::Principal => {
             let name = parts.name.unwrap_or_default();
             owner = accounts.and_then(|a| a.principal(name)).and_then(|p| p.owner);
@@ -609,7 +631,7 @@ mod tests {
             Resource::Saved { name: "f", by: Some("ada") },
             Resource::Action { slug: "d", name: "echo", agents_may: true },
             Resource::Logs { slug: "d", agents_may: true },
-            Resource::Approval { slug: "d" },
+            Resource::Approval { slug: "d", name: Some("ok") },
             Resource::Principal { name: "ci", owner: Some("bob") },
         ]
     }
@@ -703,8 +725,76 @@ mod tests {
                 let said = can(&none, action, r).unwrap_err().0;
                 // A person is told whose tokens they are, as before.
                 if !matches!(r, Resource::Principal { .. }) {
-                    assert!(said.starts_with("eve may not do that: no role eve holds on ") && said.ends_with(action.name()), "{said}");
+                    assert!(said.starts_with("eve may not do that: no role eve holds ") && said.ends_with(action.name()), "{said}");
                 }
+            }
+        }
+    }
+
+    /// `can` is the union of the bindings that cover what is asked (the design's §5.3): for every
+    /// set of at most two bindings, of the built-in roles at each kind of scope, held by each kind
+    /// of principal, and every action on every resource it is done to, it lets through exactly
+    /// when a binding whose scope covers the resource, as the table here says, is of a role that
+    /// holds the action for the caller's kind, or the caller owns it; and the fixed rules let it.
+    /// Refused with no binding covering it, the caller is told so, in words naming where; and it
+    /// may do an action everywhere only by a binding on the host.
+    #[test]
+    fn can_is_the_union_of_the_bindings_that_cover_it() {
+        use crate::bindings::{Scope, Selector};
+        let slug = |s: &str| Selector::Slug(s.into());
+        let scopes = [
+            ('H', Scope::Host),
+            ('D', Scope::Flows(slug("d"))),
+            ('E', Scope::Flows(slug("e"))),
+            ('A', Scope::Approval { flow: slug("d"), name: "ok".into() }),
+        ];
+        // Each resource, the scopes that cover it (by their letters above), and where a refusal
+        // says it is.
+        let covered = [
+            (Resource::Host, "H", "on this host"),
+            (Resource::Flows, "HDE", "on any flow"),
+            (Resource::Flow("d"), "HD", "on \"d\""),
+            (Resource::Flow("e"), "HE", "on \"e\""),
+            (Resource::Saved { name: "d", by: Some("ada") }, "HD", "on \"d\""),
+            (Resource::Saved { name: "e", by: Some("eve") }, "HE", "on \"e\""),
+            (Resource::Action { slug: "d", name: "echo", agents_may: false }, "HD", "on \"d\""),
+            (Resource::Action { slug: "e", name: "echo", agents_may: true }, "HE", "on \"e\""),
+            (Resource::Logs { slug: "d", agents_may: false }, "HD", "on \"d\""),
+            (Resource::Logs { slug: "e", agents_may: true }, "HE", "on \"e\""),
+            (Resource::Approval { slug: "d", name: Some("ok") }, "HDA", "for \"d\"'s approval \"ok\""),
+            (Resource::Approval { slug: "d", name: Some("no") }, "HD", "for \"d\"'s approval \"no\""),
+            (Resource::Approval { slug: "d", name: None }, "HDA", "on \"d\""),
+            (Resource::Approval { slug: "e", name: None }, "HE", "on \"e\""),
+            (Resource::Principal { name: "ci", owner: Some("eve") }, "H", "on this host"),
+            (Resource::Principal { name: "scout", owner: Some("cy") }, "H", "on this host"),
+        ];
+        let bindings: Vec<(char, Held)> = scopes.iter().flat_map(|(at, scope)| BUILTIN.iter().map(|d| (*at, Held { role: d.role, scope: scope.clone() }))).collect();
+        let mut sets: Vec<Vec<(char, Held)>> = vec![vec![]];
+        for (i, one) in bindings.iter().enumerate() {
+            sets.push(vec![one.clone()]);
+            sets.extend(bindings[i + 1..].iter().map(|two| vec![one.clone(), two.clone()]));
+        }
+        assert_eq!(sets.len(), 1 + 16 + 16 * 15 / 2);
+        for kind in [Kind::Person, Kind::Agent, Kind::Service] {
+            for set in &sets {
+                let holds = set.iter().map(|(_, h)| h.clone()).collect();
+                let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(holds) };
+                let case = |what: &str| format!("{what}, {kind:?} holding {:?}", set.iter().map(|(at, h)| format!("{} at {at}", h.role.name())).collect::<Vec<_>>());
+                for (on, letters, place) in &covered {
+                    for action in Action::ALL.into_iter().filter(|a| on.takes(*a)) {
+                        let covering: Vec<&Held> = set.iter().filter(|(at, _)| letters.contains(*at)).map(|(_, h)| h).collect();
+                        let by_role = covering.iter().any(|h| role(h.role).kinds.contains(&kind) && role(h.role).holds(action, on, &who));
+                        let expected = (by_role || owns(&who, action, on)) && fixed(&who, action, on).is_ok();
+                        let got = can(&who, action, on);
+                        assert_eq!(got.is_ok(), expected, "{}", case(&format!("{} on {on:?}", action.name())));
+                        let told_whose = matches!(on, Resource::Principal { .. }) && kind == Kind::Person;
+                        if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
+                            assert_eq!(got.unwrap_err().0, format!("eve may not do that: no role eve holds {place} holds {}", action.name()), "{}", case(""));
+                        }
+                    }
+                }
+                let at_host = set.iter().any(|(at, h)| *at == 'H' && role(h.role).kinds.contains(&kind) && role(h.role).holds_any(FlowView));
+                assert_eq!(everywhere(&who, FlowView), at_host, "{}", case("everywhere"));
             }
         }
     }
@@ -722,11 +812,12 @@ mod tests {
                     On::Host => Resource::Host,
                     On::Flows => Resource::Flows,
                     On::Slug => Resource::Flow("x"),
+                    On::Approvals => Resource::Approval { slug: "x", name: None },
                     On::Principal => Resource::Principal { name: "x", owner: None },
                 };
                 assert!(resource.takes(action), "{} {}: {} isn't done to {resource:?}", route.method, route.path, action.name());
                 let named = match on {
-                    On::Slug => parts.slug,
+                    On::Slug | On::Approvals => parts.slug,
                     On::Principal => parts.name,
                     On::Host | On::Flows => Some("x"),
                 };

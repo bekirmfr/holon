@@ -171,6 +171,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return response;
     }
 
+    // What is bound to whom, and its versions (bindings.rs).
+    if let Some(response) = crate::bindings::route(state, request, &caller) {
+        return response;
+    }
+
     if method == "GET" && url == "/health" {
         return Response::text("ok");
     }
@@ -197,47 +202,47 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if url == "/flows" {
         if method == "POST" {
-            return handle_post_flows(&state.flows, &state.flows_path, request, &caller, &state.activity);
+            return handle_post_flows(state, request, &caller);
         }
         if method == "GET" {
-            return handle_get_flows(&state.flows);
+            return handle_get_flows(state, &caller);
         }
     }
 
     if let Some(name) = url.strip_prefix("/flows/") {
         if method == "GET" {
-            return handle_get_flow(&state.flows, name);
+            return handle_get_flow(state, name, &caller);
         }
         if method == "DELETE" {
-            return recorded(state, handle_delete_flow(&state.flows, &state.flows_path, name), "deleted flow", name, by);
+            return recorded(state, handle_delete_flow(state, name, &caller), "deleted flow", name, by);
         }
     }
 
     // Versions waiting for a person, and what became of the others (proposals.rs).
     if method == "GET" && url == "/proposals" {
-        return crate::proposals::handle_get_proposals(state);
+        return crate::proposals::handle_get_proposals(state, &caller);
     }
     if let Some(rest) = url.strip_prefix("/proposals/") {
         if let Some(id) = rest.strip_suffix("/decline")
             && method == "POST"
         {
-            return crate::proposals::handle_post_decline(state, id, request, by);
+            return crate::proposals::handle_post_decline(state, id, request, &caller);
         }
         if method == "GET" && !rest.contains('/') {
-            return crate::proposals::handle_get_proposal(state, rest);
+            return crate::proposals::handle_get_proposal(state, rest, &caller);
         }
     }
 
     // The host at a glance (the console's Overview), and its run logs checked again.
     if method == "GET" && url.split('?').next() == Some("/summary") {
-        return crate::summary::handle_get_summary(state, request);
+        return crate::summary::handle_get_summary(state, request, &caller);
     }
     if method == "POST" && url == "/summary/check" {
         return crate::summary::handle_post_check(state);
     }
 
     if method == "GET" && url.split('?').next() == Some("/activity") {
-        return crate::activity::handle_get_activity(&state.activity, request);
+        return crate::activity::handle_get_activity(&state.activity, request, &caller);
     }
 
     if method == "POST" && url == "/deploy/preview" {
@@ -253,7 +258,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "GET" && url == "/deployments" {
-        return handle_get_deployments(&state.deployments);
+        return handle_get_deployments(&state.deployments, &caller);
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {

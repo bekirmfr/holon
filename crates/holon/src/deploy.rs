@@ -151,12 +151,22 @@ pub(crate) fn handle_post_deploy(
 fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Caller, restored_from: Option<u32>) -> Response {
     let (store, deployments, deployments_path, secrets, folders, activity) = (&state.store, &state.deployments, &state.deployments_path, &state.secrets, &state.folders, &state.activity);
     let policy = &*state.policy();
-    let approves = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_ok();
-    if !approves && !body.acknowledge.is_empty() {
-        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
-    }
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    // The route asked about every flow at once; this is the flow. A restore was asked about it.
+    if restored_from.is_none()
+        && let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug))
+    {
+        return refusal.response();
+    }
+    let approves = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_ok();
+    if !approves && !body.acknowledge.is_empty() {
+        if who.kind == Some(crate::accounts::Kind::Agent) {
+            return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
+        }
+        let name = who.name.as_deref().unwrap_or_default();
+        return err(403, format!("{name} doesn't approve what {:?} may do: deploy without \"acknowledge\"; what needs approval waits for someone who does, as a proposal", body.slug));
     }
     if !approves && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
         return err(403, format!("a person turned off agents proposing versions of {:?}: they turn it back on in its settings", body.slug));
@@ -505,6 +515,10 @@ pub(crate) fn handle_post_deploy_preview(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    // The route asked about every flow at once; this is the flow.
+    if let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug)) {
+        return refusal.response();
+    }
     let proposes = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_err();
     preview(store, deployments, policy, secrets, folders, &body, proposes)
 }
@@ -799,10 +813,11 @@ pub(crate) fn handle_get_permission_view(
     }))
 }
 
-/// `GET /deployments` — every deployment, its derived triggers, and its interval if clock-bound.
-pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Response {
+/// `GET /deployments` — every deployment `who` may view, its derived triggers, and its interval if
+/// clock-bound.
+pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>, who: &Caller) -> Response {
     let deployments = deployments.lock().unwrap();
-    let list = deployments.iter().map(|(slug, dep)| deployment_entry(slug, dep)).collect();
+    let list = deployments.iter().filter(|(slug, _)| can(who, Action::FlowView, &Resource::Flow(slug)).is_ok()).map(|(slug, dep)| deployment_entry(slug, dep)).collect();
     Response::json(&DeploymentsBody { deployments: list })
 }
 

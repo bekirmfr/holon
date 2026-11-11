@@ -881,11 +881,12 @@ struct DecideBody {
 /// The longest reason a decision may give, in characters.
 const MAX_REASON_CHARS: usize = 1000;
 
-/// Who `caller` decides `slug`'s approvals as: a person signed in, by their name (the OS user's
-/// local admin by the name it runs as); or why they can't decide (can.rs): not an agent, a service
-/// (a script), a viewer, or anyone on a server without accounts.
-pub(crate) fn decider(caller: &access::Caller, slug: &str) -> Result<String, crate::can::Refusal> {
-    crate::can::can(caller, crate::can::Action::RunDecide, &crate::can::Resource::Approval { slug })?;
+/// Who `caller` decides `slug`'s approval point `point` as: a person signed in, by their name (the
+/// OS user's local admin by the name it runs as); or why they can't decide (can.rs): not an agent,
+/// a service (a script), a viewer, one bound at another point, or anyone on a server without
+/// accounts.
+pub(crate) fn decider(caller: &access::Caller, slug: &str, point: &str) -> Result<String, crate::can::Refusal> {
+    crate::can::can(caller, crate::can::Action::RunDecide, &crate::can::Resource::Approval { slug, name: Some(point) })?;
     let name = caller.name.as_deref().unwrap_or_default();
     Ok(name.strip_prefix("local:").unwrap_or(name).to_string())
 }
@@ -895,10 +896,7 @@ pub(crate) fn decider(caller: &access::Caller, slug: &str) -> Result<String, cra
 /// `outcome` `waiting` while it waits for more people, else `approved` or `declined`, the run
 /// having been given the decision (`run_error` when its part then failed).
 pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, caller: &access::Caller, request: &Request) -> Response {
-    let by = match decider(caller, slug) {
-        Ok(by) => by,
-        Err(refusal) => return refusal.response(),
-    };
+    // The body names the point, so it is read first: a malformed one is 400, as on any route.
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -906,6 +904,10 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     let body: DecideBody = match serde_json::from_slice(&bytes) {
         Ok(b) => b,
         Err(e) => return err(400, format!("a decision is {{\"name\": \"payout\", \"approve\": true, \"reason\": \"…\"}}: {e}")),
+    };
+    let by = match decider(caller, slug, &body.name) {
+        Ok(by) => by,
+        Err(refusal) => return refusal.response(),
     };
     let reason = body.reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
     if reason.as_ref().is_some_and(|r| r.chars().count() > MAX_REASON_CHARS) {

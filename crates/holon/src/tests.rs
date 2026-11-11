@@ -12,6 +12,7 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+mod scopes;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -2270,7 +2271,7 @@ fn only_a_person_decides_an_approval() {
         (Some(name), Some(kind), Some(role)) => access::Caller::holding(name, kind, role),
         _ => access::Caller::default(),
     };
-    let decider = |c: access::Caller| durable::decider(&c, "d").map_err(|refusal| refusal.0);
+    let decider = |c: access::Caller| durable::decider(&c, "d", "ok").map_err(|refusal| refusal.0);
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");

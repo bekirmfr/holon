@@ -209,6 +209,30 @@ bob on this host". It holds no password or token, so it can be handed to an audi
 principal removes what is bound to it, so a new one of the same name holds only what it is given.
 `GET /people` and `/auth/me` answer each principal's bindings, and its `role`.
 
+A role may also be bound at one flow, or at one approval point of a flow, and until a time. An
+admin binds it (`POST /bindings`):
+
+```json
+{ "who": { "principal": "bob" }, "role": "editor", "scope": { "flows": { "slug": "payout" } },
+  "expires_at": 1798761600, "why": "on call this week" }
+```
+
+- **At a flow**, it holds there (the flow's runs, state, secrets and approvals) and nowhere else.
+  The lists (flows, deployments, proposals, the overview, the activity) keep the flows its holder
+  may view. A flow they saved that no one has deployed is theirs wherever they hold the action, so
+  they draft one, and deploy it where they may.
+- **At an approval point** (`{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`), it
+  decides that point and nothing else, not even viewing the runs: bind `viewer` on the flow with
+  it for that.
+- **A binding that has expired** holds nothing. It stays listed, `expired: true`, until it is
+  unbound.
+- A binding gives only what its author holds where it is made, and is refused where its role holds
+  nothing (a viewer at an approval point).
+
+`GET /bindings` (`?who=&role=&flow=`) lists what is bound, and `DELETE /bindings/<id>` (`?why=`)
+unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
+answers one whole. Each change is also in the activity log.
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
@@ -216,8 +240,9 @@ principal removes what is bound to it, so a new one of the same name holds only 
 - The server answers up to 512 requests at once; one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
-- The server never lets the last enabled person holding admin be removed, disabled or given
-  another role. The run file's admin (below) doesn't count: it is there only while the server runs.
+- The server never lets the last enabled person holding admin be removed, disabled, given
+  another role or unbound. The run file's admin (below) doesn't count: it is there only while the
+  server runs; nor does an admin binding that expires.
 - **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
   who signs in with a password or a provider and may hold any role but agent; an **agent**, role
   agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and

@@ -167,6 +167,12 @@ fn rows(unit: &str) -> Vec<Row> {
         at("DELETE", "/people/nobody", "", Admins),
         at("POST", "/people/nobody/reset", "", Admins),
         at("POST", "/admin/oidc", "[]", Admins),
+        // What is bound to whom, and its versions.
+        at("GET", "/bindings", "", Admins),
+        at("POST", "/bindings", "[]", Admins),
+        at("DELETE", "/bindings/none", "", Admins),
+        at("GET", "/access/versions", "", Admins),
+        at("GET", "/access", "", Admins),
         // Paths no route has: a bare 404 to anyone signed in (the plan's D5).
         unrouted("GET", "/nope", All),
         unrouted("POST", "/nope", All),
@@ -198,7 +204,7 @@ fn rows(unit: &str) -> Vec<Row> {
 /// `method` `path` sent to `state`, signed in with `token`: its status, and its body as text. Sent
 /// as if through a proxy, so a folder dialog (pick.rs) is never shown on the machine running the
 /// tests.
-fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Vec<u8>) -> (u16, String) {
+pub(super) fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Vec<u8>) -> (u16, String) {
     let mut headers = vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())];
     headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
     let answer = route(state, &req_with(method, path, body, headers));
@@ -206,12 +212,12 @@ fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Ve
 }
 
 /// The `error` an answer says, or nothing.
-fn error_of(said: &str) -> String {
+pub(super) fn error_of(said: &str) -> String {
     serde_json::from_str::<Value>(said).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_default()
 }
 
 /// `slug` deployed as `unit`, with what its preview says needs approving approved.
-fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, requirements: Value) -> (u16, String) {
+pub(super) fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, requirements: Value) -> (u16, String) {
     let asked = json!({ "slug": slug, "unit": unit, "requirements": requirements });
     let (code, preview) = ask(state, token, "POST", "/deploy/preview", serde_json::to_vec(&asked).unwrap());
     assert_eq!(code, 200, "{preview}");

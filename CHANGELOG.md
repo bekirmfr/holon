@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A role can be bound at one flow, or at one approval point, and until a time.** An admin binds
+  it with `POST /bindings` (`{who, role, scope, expires_at, why}`), and unbinds it with
+  `DELETE /bindings/<id>`. Bound at a flow, it holds there and nowhere else, and the lists (flows,
+  deployments, proposals, the overview, the activity) keep the flows its holder may view; a flow
+  they saved that no one has deployed is theirs wherever they hold the action. Bound at an approval
+  point, it decides that point only. A binding that has expired holds nothing, and stays listed
+  until it is unbound. A binding gives only what its author holds where it is made. Each change is
+  a version with who made it, what it changed and why: `GET /access/versions` lists them, and
+  `GET /access?version=N` answers one. Every caller holding a role on the host may do what it did
+  before; a person who proposes a version without approving it is told so in their name, not as an
+  agent. No sample changes: this is who may call the control plane, not what a flow does.
 - **The roles each principal holds are kept apart from the accounts, with every change to them.**
   A role is now bound to a principal on the server, in `access.json` beside `accounts.json`
   (`.holon-access.json` beside `.holon-accounts.json`), and `can` reads what is bound. Each change

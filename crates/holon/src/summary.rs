@@ -123,19 +123,21 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// `GET /summary?hours=24` (1 to a week of hours).
-pub(crate) fn handle_get_summary(state: &AppState, request: &Request) -> Response {
+/// `GET /summary?hours=24` (1 to a week of hours), of the deployments `who` may see the runs of.
+pub(crate) fn handle_get_summary(state: &AppState, request: &Request, who: &crate::access::Caller) -> Response {
     let hours = request.get_param("hours").and_then(|h| h.parse::<usize>().ok()).unwrap_or(24).clamp(1, MAX_HOURS);
-    Response::json(&summary(state, now_ms(), hours))
+    let sees = |slug: &str| crate::can::can(who, crate::can::Action::RunView, &crate::can::Resource::Flow(slug)).is_ok();
+    Response::json(&summary(state, now_ms(), hours, sees))
 }
 
-fn summary(state: &AppState, at_ms: u64, hours: usize) -> Summary {
+fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bool) -> Summary {
     // The table only to find each log, so a summary never holds up a deployment's runs.
     let found: Vec<(String, Status, Unrecorded, Arc<LogCell>)> = state
         .deployments
         .lock()
         .unwrap()
         .iter()
+        .filter(|(slug, _)| sees(slug))
         .map(|(slug, dep)| {
             let unrecorded = dep.tallies.values().fold(Unrecorded::default(), |u, t| Unrecorded { runs: u.runs + t.runs, failed: u.failed + t.failed });
             (slug.clone(), dep.life.status, unrecorded, Arc::clone(&dep.log))

@@ -220,11 +220,12 @@ fn bound(role: Role, name: &str) -> String {
     format!("bound {} to {name} on this host", role.name())
 }
 
-/// Whether an admin is left who can sign in: an enabled person here holding admin on the host.
-/// The run file's admin isn't one: it is there only while its OS user runs the server.
+/// Whether an admin is left who can sign in: an enabled person here holding admin on the host,
+/// for good. The run file's admin isn't one: it is there only while its OS user runs the server;
+/// nor is a binding that expires.
 fn an_admin(book: &Book, access: &Document) -> bool {
     let person = |name: &str| book.users.iter().any(|u| u.name == name && u.kind == Kind::Person && !u.disabled);
-    access.bindings.iter().any(|b| b.role == Role::Admin && b.scope == Scope::Host && matches!(&b.who, Subject::Principal(n) if person(n)))
+    access.bindings.iter().any(|b| b.role == Role::Admin && b.scope == Scope::Host && b.expires_at.is_none() && matches!(&b.who, Subject::Principal(n) if person(n)))
 }
 
 /// A name's sign-ins: wrong passwords since its last lock, when it was locked, and how many are
@@ -528,10 +529,10 @@ impl Accounts {
     }
 
     /// Change the book and the access document together, and keep both, as `change` does; the
-    /// document's new version, when its bindings changed, is by `by` and says `what`. Refused,
+    /// document's new version, when its bindings changed, is by `by` and says `what` and `why`. Refused,
     /// with nothing changed, when a binding would name a principal not here or a role its kind may
     /// not hold, or when no admin would be left once there is one (the plan's D15).
-    fn change_access<T>(&self, by: &str, what: &str, f: impl FnOnce(&mut Book, &mut Document) -> Result<T, String>) -> Result<T, String> {
+    fn change_access<T>(&self, by: &str, what: &str, why: Option<&str>, f: impl FnOnce(&mut Book, &mut Document) -> Result<T, String>) -> Result<T, String> {
         let mut book = hold(&self.book);
         let now = epoch_now();
         book.sessions.retain(|s| s.expires_at > now);
@@ -547,7 +548,7 @@ impl Accounts {
         if an_admin(&book, &before) && !an_admin(&next, &access) {
             return Err("that would leave no admin: make someone else an admin first".into());
         }
-        let mut access = (access.bindings != before.bindings).then(|| access.after(&before, by, what, now));
+        let mut access = (access.bindings != before.bindings).then(|| access.after(&before, by, what, why, now));
         // A principal is made before what is bound to it is kept, and goes after: a server
         // stopped between the two writes leaves a principal holding nothing, never a binding that
         // a new principal of the same name would hold.
@@ -601,7 +602,7 @@ impl Accounts {
         valid_name(name)?;
         check_password(password)?;
         let hash = hash_password(password)?;
-        let out = self.change_access(name, &format!("set up the server: {}", bound(Role::Admin, name)), |book, access| {
+        let out = self.change_access(name, &format!("set up the server: {}", bound(Role::Admin, name)), None, |book, access| {
             if !no_person(book) {
                 return Err("this server is set up already".to_string());
             }
@@ -731,9 +732,10 @@ impl Accounts {
         Some(Who { name: p.name.clone(), kind: p.kind })
     }
 
-    /// What `name` holds (bindings.rs): nothing, if nothing is bound to it.
+    /// What `name` holds now (bindings.rs): nothing, if nothing is bound to it or all of it has
+    /// expired.
     pub(crate) fn holding(&self, name: &str) -> Arc<[bindings::Held]> {
-        self.access.held(name)
+        self.access.held(name, epoch_now())
     }
 
     /// The widest built-in role bound to `name` on the host: what the editor shows it as.
@@ -744,6 +746,41 @@ impl Accounts {
     /// What is bound to `name`.
     pub(crate) fn bindings_of(&self, name: &str) -> Vec<Binding> {
         self.access.document().of(name).cloned().collect()
+    }
+
+    /// The access document's newest version.
+    pub(crate) fn access_document(&self) -> Arc<Document> {
+        self.access.document()
+    }
+
+    /// Each version of the access document, newest first, without its bindings.
+    pub(crate) fn access_versions(&self) -> Result<Vec<bindings::Summary>, String> {
+        self.access.versions()
+    }
+
+    /// Version `n` of the access document, whole.
+    pub(crate) fn access_version(&self, n: u64) -> Result<Option<Document>, String> {
+        self.access.version(n)
+    }
+
+    /// Bind `role` to `name` at `scope`, until `expires_at` if given (seconds), by `by`, saying
+    /// why: the binding. Refused when `name` isn't here or its kind may not hold `role`.
+    pub(crate) fn bind(&self, name: &str, role: Role, scope: Scope, expires_at: Option<u64>, by: &str, why: Option<&str>) -> Result<Binding, String> {
+        let until = expires_at.map(|at| format!(", until {}", crate::cmdline::when(Some(at)))).unwrap_or_default();
+        let what = format!("bound {} to {name} {}{until}", role.name(), scope.said());
+        self.change_access(by, &what, why, |_, access| {
+            let id = access.bind(name, role, scope, expires_at, by, epoch_now());
+            Ok(access.bindings.iter().find(|b| b.id == id).cloned().expect("just bound"))
+        })
+    }
+
+    /// Unbind the binding `id`, by `by`, saying why: what it bound. Refused when it would leave
+    /// no admin (D15).
+    pub(crate) fn unbind(&self, id: u64, by: &str, why: Option<&str>) -> Result<Binding, String> {
+        let Some(b) = self.access.document().bindings.iter().find(|b| b.id == id).cloned() else { return Err(format!("no binding {id}")) };
+        let Subject::Principal(name) = &b.who;
+        let what = format!("unbound {} from {name} {}", b.role.name(), b.scope.said());
+        self.change_access(by, &what, why, |_, access| access.unbind(id).ok_or(format!("no binding {id}")))
     }
 
     pub(crate) fn principal(&self, name: &str) -> Option<Principal> {
@@ -810,7 +847,7 @@ impl Accounts {
     pub(crate) fn invite(&self, name: &str, role: Role, email: Option<String>, by: &str) -> Result<String, String> {
         valid_name(name)?;
         held(Kind::Person, role)?;
-        self.change_access(by, &format!("invited {name}: {}", bound(role, name)), |book, access| {
+        self.change_access(by, &format!("invited {name}: {}", bound(role, name)), None, |book, access| {
             if book.users.iter().any(|u| u.name == name) {
                 return Err(format!("there is a principal {name:?} already"));
             }
@@ -832,7 +869,7 @@ impl Accounts {
         }
         held(kind, role)?;
         let local = self.local_user();
-        self.change_access(by, &format!("added {name}, {}: {}", kind.said(), bound(role, name)), |book, access| {
+        self.change_access(by, &format!("added {name}, {}: {}", kind.said(), bound(role, name)), None, |book, access| {
             if book.users.iter().any(|u| u.name == name) {
                 return Err(format!("there is a principal {name:?} already"));
             }
@@ -888,7 +925,7 @@ impl Accounts {
 
     /// Bind `role` to `name` on the host, in place of what was bound to it there.
     pub(crate) fn set_role(&self, name: &str, role: Role, by: &str) -> Result<(), String> {
-        self.change_access(by, &bound(role, name), |book, access| {
+        self.change_access(by, &bound(role, name), None, |book, access| {
             if !book.users.iter().any(|u| u.name == name) {
                 return Err(format!("no principal {name:?}"));
             }
@@ -926,7 +963,7 @@ impl Accounts {
     /// Disable `name` (their sessions end) or enable them again.
     pub(crate) fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
         // What is bound stays as it is: no new version, so none is made by anyone.
-        self.change_access("", "", |book, _| {
+        self.change_access("", "", None, |book, _| {
             book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?.disabled = disabled;
             if disabled {
                 book.sessions.retain(|s| s.user != name);
@@ -951,7 +988,7 @@ impl Accounts {
     /// Remove `name`, with its sessions, invites and tokens and what is bound to it; not a person
     /// who owns an agent or a service, until it has another owner.
     pub(crate) fn remove(&self, name: &str, by: &str) -> Result<(), String> {
-        self.change_access(by, &format!("removed {name}, and what was bound to {name}"), |book, access| {
+        self.change_access(by, &format!("removed {name}, and what was bound to {name}"), None, |book, access| {
             let owns: Vec<&str> = book.users.iter().filter(|p| p.owner.as_deref() == Some(name)).map(|p| p.name.as_str()).collect();
             if !owns.is_empty() {
                 return Err(format!("{name} owns {}: give {} another owner first", owns.join(", "), if owns.len() == 1 { "it" } else { "them" }));

@@ -469,6 +469,33 @@ What a binding at a flow or an approval point holds, what a group's member holds
 roles an admin defines. Every caller of the access table still holds one built-in role at the
 host, so the table passes unchanged. New tests hold the rest.
 
+Built in two parts. **Part 1** (built): scopes, expiry and `why`, the lists and the handlers that
+know the flow, and the bindings and versions routes (`GET`/`POST /bindings`,
+`DELETE /bindings/{id}`, `GET /access/versions`, `GET /access`). **Part 2**: groups, custom
+roles, `/roles`, `/groups`, `/auth/me/can`, D20's fixed rule and D28. Where part 1 differs from
+the sections below:
+
+- **D19's third rule** ("a role holding a host action is bound only at the host") would refuse
+  `editor` at a flow, since `editor` holds `policy.edit` and `host.check`. As built, a binding is
+  refused only where its role holds nothing its scope covers (400: `viewer` or `agent` at an
+  approval point). The author must hold every action of the role that the scope covers (403):
+  each is asked of `can` on the host for a host action, and else on the flow, the approval point,
+  or (at the host) the empty slug, which only the host covers (`can::everywhere`).
+- **`GET /activity`**: a caller who views every flow (by a binding on the host) sees every
+  entry, as today. Any other sees only what was done to the flows they view (`DONE_TO_A_FLOW` in
+  `activity.rs`), not "the rest as today": that would show a flow's holder who was bound what, and
+  the host's resources and sweeps.
+- **`GET` and `DELETE /flows/{slug}`** ask on `On::Flows`, and the handler asks about the flow
+  once it knows whose it is. D18's draft (saved by its caller, deployed by no one) is theirs
+  wherever they hold the action, which the gate can't know from the path.
+- **`GET /unit/{hash}` and `POST /unit`** stay on `On::Flows`: a unit is content-addressed, and
+  isn't any flow's until a deploy names it.
+- **A proposal's `agent`** is its author's kind: a person bound to propose but not to approve
+  makes one too.
+- **A version's words** for a binding: `bound editor to bob on "payout"`, with
+  `, until <time>` when it expires; `unbound editor from bob on "payout"`. The activity log keeps
+  the same, as `bound editor to` `bob on "payout"`.
+
 ### Scopes in `bindings.rs` and `can.rs`
 
 - `Held::covers(on, tags)` as §2's table says, for `Flows(Slug(_))` and `Approval { .. }`.
