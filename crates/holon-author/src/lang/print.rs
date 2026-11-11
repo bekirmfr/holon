@@ -29,7 +29,7 @@ use oxc_ast::ast as js;
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
-use crate::builder::FlowDocument;
+use crate::builder::{call_outputs, call_port, FlowDocument};
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
@@ -1409,8 +1409,10 @@ impl<'s> Printer<'s> {
         let opened = self.open(hash, hname, &unit)?;
         let group = Group::new(opened.children.iter().collect(), opened.wires.clone(), opened.outs.clone());
         let ins = params_of(&group, &unit, hname)?;
+        let calls = call_outputs(&unit, self.store);
         let mut block = Block::new(self, &group, Kind::Function, None);
         block.inputs = ins.iter().cloned().collect();
+        block.calls = calls;
         for (_, ts) in &ins {
             block.claim(ts);
         }
@@ -1644,6 +1646,8 @@ struct Block<'p, 's, 'g> {
     /// A function's outputs written as statements, by node, in the order of its outputs: the
     /// lowering names them after their leaves.
     auto: Vec<String>,
+    /// A function's outputs that answer a call tied to its trigger (`call_outputs`).
+    calls: Vec<String>,
     /// A function's other outputs: each port and where its value comes from.
     declared: Vec<(String, Src)>,
     /// The nodes rendered into the statement being written, and the stores it reads.
@@ -1684,6 +1688,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             absorbed: HashSet::new(),
             wholes: HashMap::new(),
             auto: Vec::new(),
+            calls: Vec::new(),
             declared: Vec::new(),
             touched: Vec::new(),
             reads: BTreeSet::new(),
@@ -1714,9 +1719,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.kind != Kind::Lambda && self.p.bindings.get(&node.id).is_some_and(|b| !hidden(b)) && !self.ignored.contains(&node.id)
     }
 
-    /// Whether `node` may fold into an expression: no name of its own, and one output.
+    /// Whether `node` may fold into an expression: no name of its own, and one value.
     fn free(&self, node: &Node) -> bool {
-        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || matches!(node.data.name.as_str(), "await" | "approval") || self.bound.contains_key(&node.id) || self.named(node)) && node.data.outputs.len() == 1
+        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || matches!(node.data.name.as_str(), "await" | "approval") || self.bound.contains_key(&node.id) || self.named(node)) && self.one_value(node)
     }
 
     /// Whether `node`'s one output prints inline at its one consumer.
@@ -1788,7 +1793,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         links.reverse();
         let Some(Src::Node { id, .. }) = self.g.incoming.get(&(links[0].id.clone(), "value".to_string())) else { return None };
         let call = self.g.node(id);
-        let values: Vec<&str> = call.data.outputs.iter().filter(|o| o.ty != WType::Effect).map(|o| o.name.as_str()).collect();
+        let calls = self.answers(call);
+        let values: Vec<&str> = call.data.outputs.iter().enumerate().filter(|(k, o)| o.ty != WType::Effect && !calls.contains(k)).map(|(_, o)| o.name.as_str()).collect();
         if !matches!(call.data.body, PlacedBody::Composite { .. }) || values.len() != links.len() || self.g.consumed_total(call) != values.len() {
             return None;
         }
@@ -2192,10 +2198,29 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// A function's outputs: the last ones written as statements where the lowering names them so
     /// after their leaves, the others returned, each bound under its name where it can be.
     fn outputs(&mut self) -> Result<(), String> {
-        let outs = self.g.outs.clone();
+        let mut outs = self.g.outs.clone();
         for (_, _, port) in &outs {
             if outs.iter().filter(|(_, _, p)| p == port).count() > 1 {
                 return Err(format!("the output \"{port}\" is given twice"));
+            }
+        }
+        // The answers of the calls tied to its trigger leave last, named by the lowering, which
+        // names them again (`call_port`): they aren't returned.
+        if self.kind == Kind::Function {
+            let names = |k: usize| {
+                let mut taken: Vec<String> = outs[..k].iter().map(|(_, _, p)| p.clone()).collect();
+                for _ in k..outs.len() {
+                    let p = call_port(|n| taken.iter().any(|t| t == n) || self.inputs.contains_key(n));
+                    taken.push(p);
+                }
+                taken.split_off(k)
+            };
+            let called = |k: usize| {
+                outs[k..].iter().all(|(id, output, port)| self.calls.contains(port) && !outs[..k].iter().any(|(i, o, _)| i == id && o == output))
+                    && names(k) == outs[k..].iter().map(|(_, _, p)| p.clone()).collect::<Vec<_>>()
+            };
+            if let Some(k) = (1..outs.len()).find(|&k| called(k)) {
+                outs.truncate(k);
             }
         }
         let statementable = |b: &Block, id: &str| {
@@ -2280,7 +2305,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             self.begin();
             let total = self.g.consumed_total(node);
-            let single = node.data.outputs.len() == 1;
+            let single = self.one_value(node);
             let effect = single && node.data.outputs[0].ty == WType::Effect;
             let call = single && CALLS.contains(&node.data.name.as_str());
             let statement = total == 0 && (effect || call || (!single && node.data.outputs.iter().any(|o| o.ty == WType::Effect)));
@@ -2797,6 +2822,25 @@ fn reads_first(stmts: &mut Vec<Stmt>) {
 impl<'p, 's, 'g> Block<'p, 's, 'g> {
     // ── expressions ──────────────────────────────────────────────────────────────────────────
 
+    /// Whether node `n` gives one value, its first output: it has one, or it is a function whose
+    /// others answer the calls it makes.
+    fn one_value(&self, n: &Node) -> bool {
+        let outs = n.data.outputs.len();
+        outs == 1 || outs > 1 && {
+            let calls = self.answers(n);
+            outs - calls.len() == 1 && !calls.contains(&0)
+        }
+    }
+
+    /// The outputs of node `n`, a function placed, that answer a call it makes (`call_outputs`),
+    /// by index: neither its value nor an effect.
+    fn answers(&self, n: &Node) -> Vec<usize> {
+        let PlacedBody::Composite { hash } = &n.data.body else { return vec![] };
+        let Ok((_, unit)) = resolve(self.p.store, hash) else { return vec![] };
+        let calls = call_outputs(unit, self.p.store);
+        unit.outputs.iter().enumerate().filter(|(_, p)| calls.contains(&p.name)).map(|(k, _)| k).collect()
+    }
+
     fn touch(&mut self, n: &Node) {
         self.touched.push(n.id.clone());
     }
@@ -2840,7 +2884,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 if let Some(name) = self.bound.get(id).cloned() {
                     let node = self.g.node(id);
-                    return Ok(if node.data.outputs.len() == 1 { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
+                    return Ok(if self.one_value(node) && node.data.outputs[0].name == *output { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
                 }
                 let node = self.g.node(id);
                 if let Some(port) = self.pass_through(node) {
@@ -2867,7 +2911,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     args.push(self.required(node, &p.name, COND)?);
                 }
                 let call = format!("{hname}({})", args.join(", "));
-                return Ok(if d.outputs.len() > 1 && !output.is_empty() { (format!("{call}.{output}"), MEMBER) } else { (call, MEMBER) });
+                let one = self.one_value(node) && d.outputs[0].name == output;
+                return Ok(if !one && !output.is_empty() { (format!("{call}.{output}"), MEMBER) } else { (call, MEMBER) });
             }
             PlacedBody::Module { .. } => return Err(format!("the module node {} has no TypeScript form: write it as js(…)", d.name)),
             PlacedBody::Template => {
@@ -4693,6 +4738,42 @@ export const t = action((input) => {
             hashes.push(hash_of(&compile(src).unwrap().doc));
         }
         assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch needs it");
+    }
+
+    /// A function's call bound on a statement is made when the function is entered, whatever
+    /// reads its answer, so the answer leaves its boundary as `called`, and a function placing it
+    /// gives that on as its own; one made in a branch doesn't. The printer leaves them out of
+    /// what each returns, and the lowering names them again.
+    #[test]
+    fn a_functions_call_leaves_by_a_port_it_doesnt_return() {
+        let head = "import { flow, route } from \"holon\"\nimport api from \"host:api.example\"\n\nflow(\"f\", { port: 8080 })\n\n";
+        let route = "route.post(\"/a\", async (req) => {\n  const got = await ask2(\"a\")\n  return req.json.c ? got : \"no\"\n})\n";
+        let ask2 = "async function ask2(x) {\n  const got = await ask(x)\n  return got ?? 0\n}\n";
+        let reached = format!("{head}async function ask(x) {{\n  const sent = await api.post(\"/in\", {{ body: x }})\n  return x === \"a\" ? sent.status : 0\n}}\n\n{ask2}\n{route}");
+        let in_branch = format!("{head}async function ask(x) {{\n  return x === \"a\" ? (await api.post(\"/in\", {{ body: x }})).status : 0\n}}\n\n{ask2}\n{route}");
+        let outputs = |src: &str, f: &str| {
+            let l = compile(src).unwrap();
+            let mut store = MapResolver::new();
+            restore(&l.doc, &mut store, &Names::new());
+            let hash = l.doc.nodes.iter().find(|n| n.data.name == "ask2").and_then(|n| match &n.data.body {
+                PlacedBody::Composite { hash } => Some(hash.clone()),
+                _ => None,
+            });
+            let (_, ask2) = resolve(&store, &hash.expect("ask2 placed")).unwrap();
+            let unit = if f == "ask2" { ask2.clone() } else { inner(&store, ask2, "ask") };
+            unit.outputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>()
+        };
+        fn inner(store: &MapResolver, outer: &holon_core::Unit, name: &str) -> holon_core::Unit {
+            let UnitBody::Composite { children, .. } = &outer.body else { panic!("a composite") };
+            children.iter().filter_map(|h| store.resolve(h)).find(|u| matches!(u.body, UnitBody::Composite { .. }) && u.inputs.iter().any(|p| p.name == "x")).cloned().unwrap_or_else(|| panic!("{name} placed"))
+        }
+        // A function's request prints in the printer's form (§11): the same unit, not the same text.
+        let text = reprinted(&reached);
+        assert!(text.contains("return x === \"a\" ? response.status : 0\n}") && text.contains("return ask_result ?? 0\n}"), "returned as written, the call aside:\n{text}");
+        assert_eq!(outputs(&reached, "ask"), ["out", "called"], "ask's request leaves");
+        assert_eq!(outputs(&reached, "ask2"), ["out", "called"], "and ask2 gives it on");
+        assert_eq!(outputs(&in_branch, "ask"), ["out"], "made in a branch, when the branch needs it");
+        assert_eq!(outputs(&in_branch, "ask2"), ["out"]);
     }
 
     /// Another flow's action awaited is called, one not awaited started, the flow's own by its

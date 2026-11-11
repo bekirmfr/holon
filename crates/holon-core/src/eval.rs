@@ -13,9 +13,10 @@
 //! A composite is evaluated from its roots (the children wired to its outputs, and the children
 //! nothing consumes) back through what each node needs: every wired input for an ordinary leaf,
 //! and for a choice only what [`choice_next`] says: `guard` its value only when its condition is
-//! `true`, `coalesce` its second input only when its first is absent. A node only a choice that
-//! didn't need it consumes is not run, so a branch not taken asks the host nothing. Every leaf is
-//! pure and total, so the values are the eager evaluator's (`eager.rs`, the tests' oracle).
+//! `true`, `coalesce` its second input only when its first is absent, `and` and `or` each input
+//! only while those before it haven't decided. A node only a choice that didn't need it consumes
+//! is not run, so a branch not taken asks the host nothing. Every leaf is pure and total, so the
+//! values are the eager evaluator's (`eager.rs`, the tests' oracle).
 //!
 //! ## Pending
 //! Within a run's round, a request the host hasn't answered yet, or a waiting point whose event
@@ -36,7 +37,7 @@ use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -260,7 +261,7 @@ struct NodeKind {
     body: Body,
     /// A sink whose last input is its trigger ([`crate::takes_trigger`]).
     takes_trigger: bool,
-    /// `guard` or `coalesce`, decided lazily inside a composite ([`choose`]).
+    /// `guard`, `coalesce`, `and` or `or`, decided lazily inside a composite ([`choose`]).
     choice: Option<Which>,
     /// Held back while a wired input is absent: a leaf with optional ports, or a sink.
     held_when_absent: bool,
@@ -458,6 +459,8 @@ impl NodeKind {
                 let choice = match name {
                     "guard" => Some(Which::Guard),
                     "coalesce" => Some(Which::Coalesce),
+                    "and" => Some(Which::And),
+                    "or" => Some(Which::Or),
                     _ => None,
                 };
                 let held_when_absent = primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name);
@@ -499,6 +502,15 @@ fn eval_as(
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
         (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        // `and` and `or` read their inputs in order and stop at the one that decides, so one past
+        // it may be absent: the choice's rule, over every input at once.
+        (Body::Leaf { .. }, _) if matches!(kind.choice, Some(Which::And | Which::Or)) => {
+            let which = kind.choice.expect("matched");
+            match choose(which, inputs.len(), |p| Some(In::of_value(inputs.get(p).copied().flatten()))) {
+                Chosen::Done(slot, _) => smallvec![slot.owned()],
+                Chosen::Need(_) => unreachable!("every input is given"),
+            }
+        }
         // `fail` gives nothing, and the observer hears why, at this node, as for a module that
         // can't run: the language's `throw new Error(message)`, its message for the run's log.
         (Body::Fail, _) => {
@@ -631,8 +643,12 @@ fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Pa
 /// A module's outputs, one per declared port: through `Resolver::run_module`, under the budgets
 /// its params give. Strict like any leaf: an absent input or a bad budget makes every output
 /// absent, silently (as any leaf's missing input would); the engine's refusal (no engine, a
-/// trap, a budget run out, a body's error) makes them absent with the reason. Shared with the
-/// eager oracle (`eager.rs`).
+/// trap, a budget run out, a body's error) makes them absent with the reason. So does an answer
+/// that holds an effect: a module is interior (I7), and an effect is built only by a leaf that
+/// may build it, which is how a flow's manifest comes to name everything it performs. A module
+/// writes its answer's bytes as it likes, so an effect among them would be a write or a call no
+/// leaf of the flow asked for; the whole answer is refused. Shared with the eager oracle
+/// (`eager.rs`).
 pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> (Vec<Option<Value>>, Option<String>) {
     let n = unit.outputs.len();
     if inputs.len() != unit.inputs.len() || inputs.iter().any(Option::is_none) {
@@ -643,6 +659,9 @@ pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Val
         Err(e) => return (vec![None; n], Some(e.to_string())),
     };
     match resolver.run_module(bytes, &limits, inputs) {
+        Ok(outs) if outs.iter().flatten().any(crate::primitives::contains_effect) => {
+            (vec![None; n], Some("its answer holds an effect: a module computes values, and only a leaf builds an effect".into()))
+        }
         Ok(outs) => ((0..n).map(|i| outs.get(i).cloned().flatten()).collect(), None),
         Err(reason) => (vec![None; n], Some(reason)),
     }
@@ -673,31 +692,36 @@ pub enum Choice {
     Done(Slot),
 }
 
-/// The choice leaves' rule: what `guard` or `coalesce` needs next, or its output, given the
-/// inputs seen so far (`seen[p]`: `None` not yet evaluated, else its slot). `None` for a leaf
-/// that isn't a choice. `guard` evaluates its value only when its condition is `true`;
-/// `coalesce` its second input only when its first is absent; either waits while its deciding
-/// input is pending. Each gives exactly what it gives with every input evaluated. (`select` is
-/// strict by meaning, an absent side making it absent, so it needs both sides and isn't one.)
-/// The editor's replay applies the same rule through wasm.
+/// The choice leaves' rule: what `guard`, `coalesce`, `and` or `or` needs next, or its output,
+/// given the inputs seen so far (`seen[p]`: `None` not yet evaluated, else its slot; one for each
+/// of its inputs). `None` for a leaf that isn't a choice. `guard` evaluates its value only when its
+/// condition is `true`; `coalesce` its second input only when its first is absent; `and` its next
+/// input only while those before it are `true`, and `or` while they are `false`; each waits while
+/// its deciding input is pending. Each gives exactly what it gives with every input evaluated.
+/// (`select` is strict by meaning, an absent side making it absent, so it needs both sides and
+/// isn't one.) The editor's replay applies the same rule through wasm.
 pub fn choice_next(name: &str, seen: &[Option<Slot>]) -> Option<Choice> {
     let which = match name {
         "guard" => Which::Guard,
         "coalesce" => Which::Coalesce,
+        "and" => Which::And,
+        "or" => Which::Or,
         _ => return None,
     };
     let at = |p: usize| seen.get(p).map_or(Some(In::Absent), |s| s.as_ref().map(In::of_slot));
-    Some(match choose(which, at) {
+    Some(match choose(which, seen.len(), at) {
         Chosen::Need(p) => Choice::Need(p),
         Chosen::Done(slot, _) => Choice::Done(slot.owned()),
     })
 }
 
-/// The two choice leaves.
+/// The choice leaves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Which {
     Guard,
     Coalesce,
+    And,
+    Or,
 }
 
 /// A slot as the walk reads it: borrowed from where it is kept.
@@ -740,8 +764,8 @@ enum Chosen<'a> {
     Done(In<'a>, Option<usize>),
 }
 
-/// [`choice_next`]'s rule, over the inputs as `at` gives them (`None`: not yet evaluated).
-fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> {
+/// [`choice_next`]'s rule, over the `n` inputs as `at` gives them (`None`: not yet evaluated).
+fn choose<'a>(which: Which, n: usize, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> {
     match which {
         Which::Guard => match at(0) {
             None => Chosen::Need(0),
@@ -761,6 +785,22 @@ fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> 
             },
             Some(first) => Chosen::Done(first, Some(0)),
         },
+        // Left to right, as JavaScript's `&&` and `||`: an input decides when it is the one that
+        // decides (`false` for `and`, `true` for `or`) or the last, and what follows it isn't
+        // needed. One reached that is absent, or isn't a Boolean, makes it absent, as the leaf is.
+        Which::And | Which::Or => {
+            let decides = which == Which::Or;
+            for p in 0..n {
+                match at(p) {
+                    None => return Chosen::Need(p),
+                    Some(In::Pending) => return Chosen::Done(In::Pending, None),
+                    Some(v @ In::Value(Value::Boolean(b))) if *b == decides || p + 1 == n => return Chosen::Done(v, None),
+                    Some(In::Value(Value::Boolean(_))) => {}
+                    Some(_) => return Chosen::Done(In::Absent, None),
+                }
+            }
+            Chosen::Done(In::Absent, None)
+        }
     }
 }
 
@@ -1850,7 +1890,7 @@ impl<'r> Prepared<'r> {
                 // inputs are gathered in the same pass that looks for one not yet evaluated.
                 let mut gathered: Refs = SmallVec::new();
                 let mut pending = false;
-                match kind.choice.map(|which| choose(which, at)) {
+                match kind.choice.map(|which| choose(which, k, at)) {
                     Some(Chosen::Need(p)) => Walk::Need(p),
                     // A value read at a port, to be copied or given once nothing is borrowed.
                     Some(Chosen::Done(In::Value(_), Some(p))) => Walk::Chosen(p),
@@ -1978,12 +2018,22 @@ enum Walk {
 /// A composite's edges by destination: for each child's input port, and each boundary output, the
 /// (child, port) that feeds it, if one does. Lists indexed by child and port, not a map: looked
 /// up for every port of every node a run evaluates.
+///
+/// A list is as long as its highest port, and a port is a number an edge writes: one edge to
+/// port four billion asks for a list that long, of a unit of sixty bytes that never went through
+/// `validate` (a host makes a shape of a unit before it can validate it against children that
+/// don't resolve). So the lists are made only while they stay within a few times the edges and
+/// children the unit has ([`Incoming::room`]); past that every edge is kept in `far` instead,
+/// by its destination, and found by search. The same edges either way, whatever they say.
 #[derive(Clone, Debug)]
 struct Incoming {
     /// Each child's ports, from `starts[child]` to `starts[child + 1]`, in one list.
     starts: Vec<u32>,
     ports: Vec<Source>,
     outputs: Vec<Option<(u32, u32)>>,
+    /// Destination (to_child, to_port) → source (from_child, from_port), in order: every edge of
+    /// a composite whose lists would outgrow their room, and empty otherwise.
+    far: Vec<((u32, u32), (u32, u32))>,
 }
 
 /// What feeds one child's input port, worked out when the index is made.
@@ -2001,25 +2051,36 @@ enum Source {
 }
 
 impl Incoming {
+    /// How many ports the lists of a composite of `n` children and `edges` edges may hold: room
+    /// for any wiring a flow is made of, which has about a port an edge, and never more than a
+    /// small multiple of what the unit itself takes.
+    fn room(n: usize, edges: usize) -> u64 {
+        (16 * (n as u64 + edges as u64) + 1024).min(u32::MAX as u64)
+    }
+
     fn of(n: usize, edges: &[Edge]) -> Incoming {
         // How many ports each child's list holds: up to the highest one an edge feeds.
-        let mut widths = vec![0u32; n];
-        let mut outputs: Vec<Option<(u32, u32)>> = Vec::new();
+        let mut widths = vec![0u64; n];
+        let mut outputs_len = 0u64;
         for e in edges {
             if e.to_child == BOUNDARY {
-                let p = e.to_port as usize;
-                if outputs.len() <= p {
-                    outputs.resize(p + 1, None);
-                }
+                outputs_len = outputs_len.max(e.to_port as u64 + 1);
             } else if let Some(w) = widths.get_mut(e.to_child as usize) {
-                *w = (*w).max(e.to_port + 1);
+                *w = (*w).max(e.to_port as u64 + 1);
             }
             // A destination that doesn't exist: nothing ever looks it up.
         }
+        if widths.iter().sum::<u64>() + outputs_len > Incoming::room(n, edges.len()) {
+            // The last edge to a destination wins, as in the lists.
+            let far: BTreeMap<(u32, u32), (u32, u32)> =
+                edges.iter().filter(|e| e.to_child == BOUNDARY || (e.to_child as usize) < n).map(|e| ((e.to_child, e.to_port), (e.from_child, e.from_port))).collect();
+            return Incoming { starts: vec![0; n + 1], ports: Vec::new(), outputs: Vec::new(), far: far.into_iter().collect() };
+        }
+        let mut outputs: Vec<Option<(u32, u32)>> = vec![None; outputs_len as usize];
         let mut starts = Vec::with_capacity(n + 1);
         starts.push(0u32);
         for w in &widths {
-            starts.push(starts.last().unwrap() + w);
+            starts.push(starts.last().unwrap() + *w as u32);
         }
         let mut ports = vec![Source::Unwired; *starts.last().unwrap() as usize];
         // The last edge to a destination wins, as the map this replaced kept it.
@@ -2027,26 +2088,46 @@ impl Incoming {
             if e.to_child == BOUNDARY {
                 outputs[e.to_port as usize] = Some((e.from_child, e.from_port));
             } else if (e.to_child as usize) < n {
-                ports[(starts[e.to_child as usize] + e.to_port) as usize] = match e.from_child {
-                    BOUNDARY => Source::Input(e.from_port),
-                    fc if (fc as usize) < n => Source::Child(fc, e.from_port),
-                    fc => Source::Missing(fc, e.from_port),
-                };
+                ports[(starts[e.to_child as usize] + e.to_port) as usize] = Incoming::read(n, e.from_child, e.from_port);
             }
         }
-        Incoming { starts, ports, outputs }
+        Incoming { starts, ports, outputs, far: Vec::new() }
+    }
+
+    /// A source as an edge names it, among `n` children.
+    fn read(n: usize, from_child: u32, from_port: u32) -> Source {
+        match from_child {
+            BOUNDARY => Source::Input(from_port),
+            fc if (fc as usize) < n => Source::Child(fc, from_port),
+            fc => Source::Missing(fc, from_port),
+        }
+    }
+
+    /// The source `far` keeps for a destination.
+    fn far(&self, child: u32, port: usize) -> Option<(u32, u32)> {
+        let port = u32::try_from(port).ok()?;
+        self.far.binary_search_by_key(&(child, port), |(to, _)| *to).ok().map(|at| self.far[at].1)
     }
 
     /// What feeds port `port` of child `child`.
     fn source(&self, child: usize, port: usize) -> Source {
         let (start, end) = (self.starts[child] as usize, self.starts[child + 1] as usize);
-        if port < end - start { self.ports[start + port] } else { Source::Unwired }
+        if port < end - start {
+            return self.ports[start + port];
+        }
+        if self.far.is_empty() {
+            return Source::Unwired;
+        }
+        match self.far(child as u32, port) {
+            Some((fc, fp)) => Incoming::read(self.starts.len() - 1, fc, fp),
+            None => Source::Unwired,
+        }
     }
 
     /// What feeds port `port` of `child` (`BOUNDARY` for an output of the composite).
     fn get(&self, child: u32, port: u32) -> Option<(u32, u32)> {
         if child == BOUNDARY {
-            return self.outputs.get(port as usize).copied().flatten();
+            return self.outputs.get(port as usize).copied().flatten().or_else(|| self.far(BOUNDARY, port as usize));
         }
         if child as usize >= self.starts.len().saturating_sub(1) {
             return None;
@@ -2708,6 +2789,88 @@ mod tests {
         )
     }
 
+    /// **Guards:** a composite's edges, however they are written, are read from the table the
+    /// evaluator looks them up in exactly as from a plain map of them (every lookup: a port that
+    /// is wired, one that isn't, one of a child that isn't there), and the table takes no more
+    /// room than a few times the edges it was made of.
+    ///
+    /// **Why:** the table is lists indexed by child and port, because it is looked up for every
+    /// port of every node of every run; a list is as long as its highest port, and a port is any
+    /// number an edge writes, in a unit that is anyone's who can stage one. So the table has a
+    /// second form, found by search, for edges that would make its lists outgrow their room, and
+    /// two forms of one thing can disagree.
+    ///
+    /// **If it fails:** on a disagreement, a flow reads the wrong wire and answers wrongly in
+    /// every run, with no error anywhere. On the room, one staged unit of sixty bytes with an edge
+    /// to port four billion asks the host for 51 GiB, which ends the server (it did, before the
+    /// second form), every deployment with it.
+    #[test]
+    fn the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, m: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % m
+            }
+        }
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        // A port: small as a flow's are, now and then far out (in a case that may have far ports),
+        // the last port there is among them.
+        let port = |rng: &mut Rng, far: bool| match rng.below(24) {
+            0 if far => u32::MAX,
+            1 if far => u32::MAX - 1,
+            2 if far => 1 << 30,
+            3 if far => 70_000,
+            4 => 900,
+            v => (v % 4) as u32,
+        };
+        let (mut in_lists, mut by_search) = (0, 0);
+        for case in 0..20_000 {
+            let n = rng.below(9) as usize;
+            let far = rng.below(3) == 0;
+            // An end: the boundary, a child, or a child that isn't there.
+            let end = |rng: &mut Rng| match rng.below(n as u64 + 3) {
+                0 => BOUNDARY,
+                v => (v - 1) as u32,
+            };
+            let edges: Vec<Edge> = (0..rng.below(17)).map(|_| edge(end(&mut rng), port(&mut rng, far), end(&mut rng), port(&mut rng, far))).collect();
+            let table = Incoming::of(n, &edges);
+            // The plain map: the last edge to a destination that exists.
+            let plain: BTreeMap<(u32, u32), (u32, u32)> = edges.iter().filter(|e| e.to_child == BOUNDARY || (e.to_child as usize) < n).map(|e| ((e.to_child, e.to_port), (e.from_child, e.from_port))).collect();
+
+            let room = Incoming::room(n, edges.len()) as usize;
+            assert!(table.ports.len() + table.outputs.len() <= room && table.far.len() <= edges.len(), "case {case}: {} ports for {} edges", table.ports.len() + table.outputs.len(), edges.len());
+            match table.far.is_empty() {
+                true => in_lists += 1,
+                false => by_search += 1,
+            }
+            // Every destination an edge names, the ports beside each, some drawn (far ones in a
+            // table made in lists among them), and every small port of every child, of the
+            // boundary and of two children past the last.
+            let mut asked: Vec<(u32, u32)> = edges.iter().flat_map(|e| [(e.to_child, e.to_port), (e.to_child, e.to_port.wrapping_add(1)), (e.to_child, e.to_port.wrapping_sub(1))]).collect();
+            asked.extend((0..8).map(|_| (end(&mut rng), port(&mut rng, true))));
+            asked.extend((0..n as u32 + 2).chain([BOUNDARY]).flat_map(|child| (0..6).map(move |at| (child, at))));
+            for (child, at) in asked {
+                let wire = plain.get(&(child, at)).copied();
+                assert_eq!(table.get(child, at), wire, "case {case}: what feeds port {at} of {child}, among {edges:?}");
+                assert_eq!(table.wired(child, at), wire.is_some(), "case {case}");
+                if child != BOUNDARY && (child as usize) < n {
+                    let source = match wire {
+                        None => Source::Unwired,
+                        Some((BOUNDARY, from)) => Source::Input(from),
+                        Some((from, out)) if (from as usize) < n => Source::Child(from, out),
+                        Some((from, out)) => Source::Missing(from, out),
+                    };
+                    assert_eq!(table.source(child as usize, at as usize), source, "case {case}: the source of port {at} of {child}, among {edges:?}");
+                }
+            }
+        }
+        // Both forms are met, and the lists by far the more: they are what a flow's wiring gets.
+        assert!(by_search > 2_000 && in_lists > by_search, "{in_lists} tables in lists, {by_search} by search");
+    }
+
     /// The cycle check the evaluator uses agrees with `topo_order` (the eager oracle's) on every
     /// graph: random ones, with and without cycles, and edges to the boundary or past the
     /// composite's children.
@@ -2734,38 +2897,6 @@ mod tests {
             if found { cyclic += 1 } else { acyclic += 1 }
         }
         assert!(cyclic > 100 && acyclic > 100, "both kinds tried: {cyclic} cyclic, {acyclic} not");
-    }
-
-    /// The flat index gives, for every child's port and every output, what a map of the edges by
-    /// destination gives (the last edge to one winning), edges naming children that don't exist
-    /// included.
-    #[test]
-    fn the_flat_index_finds_what_a_map_of_the_edges_finds() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = move |m: u64| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed % m
-        };
-        for _ in 0..4000 {
-            let n = next(8) as usize;
-            let end = |r: u64| if r == 0 { BOUNDARY } else { (r - 1) as u32 };
-            let edges: Vec<Edge> = (0..next(16)).map(|_| edge(end(next(n as u64 + 3)), next(4) as u32, end(next(n as u64 + 3)), next(4) as u32)).collect();
-            let mut by_destination = BTreeMap::new();
-            for e in &edges {
-                by_destination.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
-            }
-            let index = Incoming::of(n, &edges);
-            for child in (0..n as u32 + 2).chain([BOUNDARY]) {
-                for port in 0..6 {
-                    // A destination past the children is never looked up by the walk; the map
-                    // would hold it, the index needn't.
-                    let wanted = if child != BOUNDARY && child as usize >= n { None } else { by_destination.get(&(child, port)).copied() };
-                    assert_eq!(index.get(child, port), wanted, "child {child} port {port}, n {n}, edges {edges:?}");
-                }
-            }
-        }
     }
 
     /// Events as an observer hears them, standing in `false` for the outputs of the children at
@@ -3372,23 +3503,6 @@ mod tests {
     }
 
     #[test]
-    fn eval_composite_add() {
-        let mut r = MapResolver::new();
-        let c = add2(&mut r);
-        assert_eq!(eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(), vec![Some(num(7.0))]);
-    }
-
-    #[test]
-    fn promoted_input_routes_straight_to_output() {
-        // A composite whose output *is* its input (an identity passthrough): no
-        // children, a single BOUNDARY→BOUNDARY edge. Valid per validate; eval must
-        // return the input rather than index the scratch by BOUNDARY and panic.
-        let r = MapResolver::new();
-        let c = composite(vec![nport("x")], Type::Number, vec![], vec![edge(BOUNDARY, 0, BOUNDARY, 0)]);
-        assert_eq!(eval(&c, &[Some(num(42.0))], &r).into_vec(), vec![Some(num(42.0))]);
-    }
-
-    #[test]
     fn eval_composite_sum() {
         // The v3 seed (minus Map): list(a,b,c) → sum → 15.
         let mut r = MapResolver::new();
@@ -3410,20 +3524,6 @@ mod tests {
             eval(&c, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
             vec![Some(num(15.0))]
         );
-    }
-
-    #[test]
-    fn eval_nested_composite() {
-        let mut r = MapResolver::new();
-        let inner = add2(&mut r);
-        let hinner = r.insert(inner).unwrap();
-        let outer = composite(
-            vec![nport("x"), nport("y")],
-            Type::Number,
-            vec![hinner],
-            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        assert_eq!(eval(&outer, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(15.0))]);
     }
 
     #[test]
@@ -3488,20 +3588,6 @@ mod tests {
         assert_eq!(out, vec![Some(want)]);
     }
 
-    #[test]
-    fn none_propagates() {
-        // subtract is binary; one operand absent ⇒ compute None ⇒ output None.
-        let mut r = MapResolver::new();
-        let hsub = r.insert(prim("subtract", 2, Type::Number)).unwrap();
-        let c = composite(
-            vec![nport("a"), nport("b")],
-            Type::Number,
-            vec![hsub],
-            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        assert_eq!(eval(&c, &[Some(num(3.0)), None], &r).into_vec(), vec![None]);
-    }
-
     // hex-encode a hash for a `map` fn param (the inverse of hash::parse_hash).
     fn hex(h: &Hash) -> String {
         h.iter().map(|b| format!("{:02x}", b)).collect()
@@ -3511,24 +3597,6 @@ mod tests {
     }
     fn list(xs: Vec<Value>) -> Value {
         Value::List(xs)
-    }
-    // Double(x) = x * 2, as a composite: BOUNDARY.x → mul.0 ; const(2) → mul.1 ; mul → out.
-    fn double(r: &mut MapResolver) -> Hash {
-        let two = Unit {
-            body: UnitBody::Primitive { name: "const".into() },
-            params: vec![Param::frozen("type", "Number"), Param::frozen("value", "2")],
-            inputs: vec![],
-            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
-        };
-        let htwo = r.insert(two).unwrap();
-        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
-        let unit = composite(
-            vec![nport("x")],
-            Type::Number,
-            vec![hmul, htwo], // child0 = mul, child1 = const 2
-            vec![edge(BOUNDARY, 0, 0, 0), edge(1, 0, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        r.insert(unit).unwrap()
     }
     fn map_unit(fn_hash: &Hash) -> Unit {
         Unit {
@@ -3985,29 +4053,6 @@ mod tests {
         assert_eq!(seen.asked.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![vec![0, 0], vec![1, 0]], "item k, the read at child 0");
     }
 
-    #[test]
-    fn map_doubles_list() {
-        // The v3 seed: list(3,7,5) → Map(Double) → [6, 14, 10].
-        let mut r = MapResolver::new();
-        let hdouble = double(&mut r);
-        let m = map_unit(&hdouble);
-        let input = list(vec![num(3.0), num(7.0), num(5.0)]);
-        assert_eq!(
-            eval(&m, &[Some(input)], &r).into_vec(),
-            vec![Some(list(vec![num(6.0), num(14.0), num(10.0)]))]
-        );
-    }
-
-    #[test]
-    fn map_none_propagates() {
-        // Double applied to a Text element fails ⇒ the whole map is None.
-        let mut r = MapResolver::new();
-        let hdouble = double(&mut r);
-        let m = map_unit(&hdouble);
-        let input = list(vec![num(3.0), txt("x")]);
-        assert_eq!(eval(&m, &[Some(input)], &r).into_vec(), vec![None]);
-    }
-
     fn fold_unit(fn_hash: &Hash) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "fold".into() },
@@ -4018,36 +4063,6 @@ mod tests {
             ],
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         }
-    }
-
-    #[test]
-    fn fold_sums_with_add() {
-        // sum expressed as a fold (the universal donor): fold(add, 0, [3,7,5]) = 15.
-        // `add` is the combiner — add(acc, elem) = acc + elem.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        let xs = list(vec![num(3.0), num(7.0), num(5.0)]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![Some(num(15.0))]);
-    }
-
-    #[test]
-    fn fold_on_empty_is_init() {
-        // No element ⇒ the accumulator is the seed, untouched. Total.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        assert_eq!(eval(&f, &[Some(num(42.0)), Some(list(vec![]))], &r).into_vec(), vec![Some(num(42.0))]);
-    }
-
-    #[test]
-    fn fold_none_propagates() {
-        // add(acc, true) fails ⇒ the whole fold is None.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        let xs = list(vec![num(3.0), Value::Boolean(true)]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![None]);
     }
 
     #[test]
@@ -4098,69 +4113,7 @@ mod tests {
         assert_eq!(eval(&host_prim, &inp, &r).into_vec(), vec![Some(num(14.0))]);
     }
 
-    #[test]
-    fn deterministic() {
-        let mut r = MapResolver::new();
-        let c = add2(&mut r);
-        let inp = [Some(num(3.0)), Some(num(4.0))];
-        assert_eq!(eval(&c, &inp, &r), eval(&c, &inp, &r));
-    }
-
     // ── P4.7: native multi-output (composite-only) ──────────────────────────
-
-    #[test]
-    fn eval_composite_multi_output() {
-        // Three independent ops fed the same two inputs, all three exposed — proving a
-        // multi-output composite genuinely carries several distinct values, not one value
-        // dressed up in a longer vec.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
-        let hsub = r.insert(prim("subtract", 2, Type::Number)).unwrap();
-        let c = multi_composite(
-            vec![nport("a"), nport("b")],
-            vec![Type::Number, Type::Number, Type::Number],
-            vec![hadd, hmul, hsub],
-            vec![
-                edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), // a, b → add
-                edge(BOUNDARY, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), // a, b → multiply
-                edge(BOUNDARY, 0, 2, 0), edge(BOUNDARY, 1, 2, 1), // a, b → subtract
-                edge(0, 0, BOUNDARY, 0), // add    → out0
-                edge(1, 0, BOUNDARY, 1), // multiply → out1
-                edge(2, 0, BOUNDARY, 2), // subtract → out2
-            ],
-        );
-        assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(),
-            vec![Some(num(7.0)), Some(num(12.0)), Some(num(-1.0))]
-        );
-    }
-
-    #[test]
-    fn multi_output_partial_success() {
-        // Two exposed outputs from two different children — one succeeds, one fails (divide by
-        // zero) — independently. This is the actual reason eval's return shape is per-slot
-        // (EvalOutputs, one Option per declared output) rather than Option<Vec<Value>>: a
-        // genuinely computed value is never discarded just because a sibling output failed.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let hdiv = r.insert(prim("divide", 2, Type::Number)).unwrap();
-        let c = multi_composite(
-            vec![nport("a"), nport("b")],
-            vec![Type::Number, Type::Number],
-            vec![hadd, hdiv],
-            vec![
-                edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), // a, b → add
-                edge(BOUNDARY, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), // a, b → divide
-                edge(0, 0, BOUNDARY, 0), // add    → out0
-                edge(1, 0, BOUNDARY, 1), // divide → out1
-            ],
-        );
-        assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(0.0))], &r).into_vec(),
-            vec![Some(num(3.0)), None] // add(3,0)=3 succeeds; divide(3,0) fails — independently
-        );
-    }
 
     #[test]
     fn eval_one_requires_exactly_one_output() {
@@ -4400,12 +4353,38 @@ mod tests {
         assert_eq!(choice_next("coalesce", &[Some(Slot::Absent), None]), Some(Choice::Need(1)));
         assert_eq!(choice_next("coalesce", &[Some(Slot::Absent), Some(Slot::Pending)]), Some(Choice::Done(Slot::Pending)));
         assert_eq!(choice_next("coalesce", &[Some(Slot::Pending), None]), Some(Choice::Done(Slot::Pending)));
+        // `and` and `or`: in order, each input only while those before haven't decided.
+        let (b, a, p) = (|x: bool| Some(Slot::Value(Value::Boolean(x))), Some(Slot::Absent), Some(Slot::Pending));
+        assert_eq!(choice_next("and", &[None, None, None]), Some(Choice::Need(0)));
+        assert_eq!(choice_next("and", &[b(true), None, None]), Some(Choice::Need(1)));
+        assert_eq!(choice_next("and", &[b(false), None, None]), Some(Choice::Done(Slot::Value(Value::Boolean(false)))), "false decides");
+        assert_eq!(choice_next("and", &[b(true), b(true), b(true)]), Some(Choice::Done(Slot::Value(Value::Boolean(true)))));
+        assert_eq!(choice_next("and", &[b(true), a.clone(), None]), Some(Choice::Done(Slot::Absent)), "an absent input reached");
+        assert_eq!(choice_next("and", &[a.clone(), None]), Some(Choice::Done(Slot::Absent)));
+        assert_eq!(choice_next("and", &[b(true), v.clone()]), Some(Choice::Done(Slot::Absent)), "an input not a boolean");
+        assert_eq!(choice_next("and", &[p.clone(), None]), Some(Choice::Done(Slot::Pending)));
+        assert_eq!(choice_next("or", &[b(false), None]), Some(Choice::Need(1)));
+        assert_eq!(choice_next("or", &[b(true), None]), Some(Choice::Done(Slot::Value(Value::Boolean(true)))), "true decides");
+        assert_eq!(choice_next("or", &[b(false), b(false)]), Some(Choice::Done(Slot::Value(Value::Boolean(false)))));
+        assert_eq!(choice_next("or", &[b(false), a]), Some(Choice::Done(Slot::Absent)));
+        assert_eq!(choice_next("or", &[b(false), p]), Some(Choice::Done(Slot::Pending)));
         assert_eq!(choice_next("add", &[None, None]), None);
     }
 
     /// The property lazy choices rest on (L4 §2): for pure leaves, the lazy evaluator gives
     /// exactly what evaluating every node gives. Checked on generated graphs: random DAGs of
-    /// choices and ordinary leaves, over inputs some of which are absent, some nested one level.
+    /// choices and ordinary leaves (arithmetic that can fail among them, as dividing by zero),
+    /// of none to nine children and one to three outputs, an output sometimes an input itself,
+    /// over inputs some of which are absent, some nested one level, holons nested in them.
+    ///
+    /// **Guards:** every value a composite computes, its outputs one by one, whatever its shape.
+    ///
+    /// **Why:** the lazy evaluator pulls only what an output needs, in an order of its own, and
+    /// carries each output in its own slot; the eager one, kept as the oracle, evaluates every
+    /// node in one pass. Any shortcut taken in pulling (a choice, an input routed straight out,
+    /// a slot left absent beside a computed one) shows as a difference.
+    ///
+    /// **If it fails:** a flow answers something other than what its graph says.
     #[test]
     fn lazy_and_eager_agree_on_generated_graphs() {
         use crate::eager::eval_eager;
@@ -4422,11 +4401,24 @@ mod tests {
                 (self.next() % n as u64) as usize
             }
         }
-        const LEAVES: &[(&str, usize)] = &[("guard", 2), ("coalesce", 2), ("select", 3), ("add", 2), ("not", 1), ("equals", 2), ("and", 2), ("or", 2), ("is_truthy", 1)];
-        let values = [None, Some(Value::Boolean(true)), Some(Value::Boolean(false)), Some(num(0.0)), Some(num(1.0)), Some(text("x"))];
+        const LEAVES: &[(&str, usize)] = &[
+            ("guard", 2),
+            ("coalesce", 2),
+            ("select", 3),
+            ("add", 2),
+            ("subtract", 2),
+            ("multiply", 2),
+            ("divide", 2),
+            ("not", 1),
+            ("equals", 2),
+            ("and", 2),
+            ("or", 2),
+            ("is_truthy", 1),
+        ];
+        let values = [None, Some(Value::Boolean(true)), Some(Value::Boolean(false)), Some(num(0.0)), Some(num(1.0)), Some(num(3.0)), Some(text("x"))];
 
         fn graph(rng: &mut Rng, pool: &[(Hash, usize)], n_in: usize) -> Unit {
-            let n = 2 + rng.below(8);
+            let n = rng.below(10);
             let mut children = Vec::new();
             let mut edges = Vec::new();
             for c in 0..n {
@@ -4442,9 +4434,14 @@ mod tests {
                     }
                 }
             }
-            let outs = 1 + rng.below(2);
+            // An output from a child, or (always when there is none) an input routed straight out.
+            let outs = 1 + rng.below(3);
             for o in 0..outs {
-                edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, o as u32));
+                match rng.below(5) {
+                    _ if n == 0 => edges.push(edge(BOUNDARY, rng.below(n_in) as u32, BOUNDARY, o as u32)),
+                    0 => edges.push(edge(BOUNDARY, rng.below(n_in) as u32, BOUNDARY, o as u32)),
+                    _ => edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, o as u32)),
+                }
             }
             multi_composite((0..n_in).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(), vec![Type::Any; outs], children, edges)
         }
@@ -4500,6 +4497,16 @@ mod tests {
     /// evaluating every node gives. An observer
     /// that reads what each node produced sees the same steps at the same paths as one that
     /// doesn't, and the same outputs.
+    ///
+    /// **Guards:** what a function applied by a higher-order leaf gives, item by item, empty lists
+    /// and items it fails on included, and what giving a value away leaves for its other readers.
+    ///
+    /// **Why:** a value given is moved, not copied; a reader the evaluator didn't count would
+    /// find it gone, and an application handed its accumulator and item in the wrong order is
+    /// wrong only for a function whose order shows.
+    ///
+    /// **If it fails:** a `map`, `fold` or `filter` in a flow answers something its function
+    /// doesn't.
     #[test]
     fn giving_and_lending_agree_with_eager_on_generated_graphs() {
         use crate::eager::eval_eager;
@@ -4633,8 +4640,10 @@ mod tests {
                 (r.insert(unit).unwrap(), k)
             })
             .collect();
-        // A `fold` and a `map` of a leaf: each application a leaf given its item.
-        for name in ["append", "extend", "cons", "concat", "pair"] {
+        // A `fold` and a `map` of a leaf: each application a leaf given its item. `subtract` is
+        // the one whose order shows (`acc - item` is not `item - acc`) and that fails on an item
+        // that isn't a number, so a whole map or fold gives nothing.
+        for name in ["append", "extend", "cons", "concat", "pair", "subtract"] {
             let leaf = pool[LEAVES.iter().position(|&(n, _)| n == name).unwrap()].0;
             let mut fold = fold_unit(&leaf);
             fold.inputs[0].ty = Type::Any;

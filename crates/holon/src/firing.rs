@@ -141,7 +141,18 @@ fn changed_from(start: &State, live: &State) -> bool {
     start.len() != live.len() || start.iter().zip(live.iter()).any(|((a, _), (b, _))| a != b || start.hash_of(a) != live.hash_of(b))
 }
 
-// Everything a run is held to arrives here, so it takes them all.
+/// What a run that panicked says first ([`panicked`]).
+pub(crate) const PANICKED: &str = "it panicked: ";
+
+/// One run, whatever started it: a request, an action, a clock, a file, a message, a mail, or a
+/// waiting run going on. Everything a run is held to arrives here, so it takes them all.
+///
+/// A panic in it ends the run and nothing else. It is a fault in Holon's own code (a flow has no
+/// way to ask for one), and it is caught here because every run passes here: a route's was
+/// already answered 500 where its request is answered (dataplane.rs), but a clock's ended the
+/// thread that ticks every deployment's clocks and expires every waiting run, and a feed's, a
+/// queue's or a mailbox's ended the thread that reads it, for good and without a word. Now it is
+/// a run that failed like another ([`panicked`]): logged, counted, and the next one runs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_with_state(
     root_unit: &Unit,
@@ -156,12 +167,35 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
+    // A resumed run keeps the nonce it started with: it is the same run.
+    let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
+    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fire_run(root_unit, inputs, resolver, store, state, extra_sourced, permit, clock, secrets, waits, resumed, nonce)));
+    fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fire_run(
+    root_unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    store: &SharedStore,
+    state: Option<&Arc<claims::StateCell>>,
+    extra_sourced: &[(Capability, Value)],
+    permit: &Permit,
+    clock: bool,
+    secrets: &Vault,
+    waits: &mut RunWaits,
+    resumed: Option<Resumed>,
+    nonce: [u8; 16],
+) -> FiredRun {
+    #[cfg(test)]
+    if let Some(slug) = &waits.slug {
+        crate::listeners::panic_for_tests::check(&format!("a run of {slug}"));
+    }
     let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
         run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
-    // A resumed run keeps the nonce it started with: it is the same run.
-    let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
     // The resources an admin set to `run` it holds from before it starts until it returns (it
     // commits, fails or waits); one held by others' runs past its claim_wait turns it away.
     let _run_locked = match RunLocked::take(waits.folders.as_deref(), permit, format!("run:{}", hex_bytes(&nonce)), std::time::Instant::now() + limits.claim_wait) {
@@ -257,9 +291,8 @@ pub(crate) fn fire_with_state(
                         }
                     };
                     if done {
-                        a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                        keep_state(cell, &mut a.run, &live, store);
                         count_commit(cell, &mut a.run);
-                        keep_if_changed(cell, &a.run, &live);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
                             a.run.claims = c.finish();
@@ -329,9 +362,8 @@ pub(crate) fn fire_with_state(
                 databases::Commit::Done(mut failed, db) => {
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
-                    a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                    keep_state(cell, &mut a.run, &live, store);
                     count_commit(cell, &mut a.run);
-                    keep_if_changed(cell, &a.run, &live);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
                 databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
@@ -401,6 +433,20 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
     run.grant = permit.grant.clone();
     run.error = Some(format!("busy: {resource} is held by another run for its whole length (its run lock) past claim_wait"));
     eprintln!("holon: run {} turned away: {resource} is run-locked by another run past claim_wait", run.run_id);
+    run
+}
+
+/// A run that panicked: nothing of what it computed is kept, and its record says that what it
+/// had sent or written by then isn't in it (a panic past its first round, or in its commit, is
+/// past things done). The panic itself is on the server's console, with where.
+fn panicked(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16]) -> FiredRun {
+    let mut run = FiredRun::nothing();
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce));
+    run.unit = to_hex(&permit.deployment);
+    run.nonce = hex_bytes(nonce);
+    run.grant = permit.grant.clone();
+    run.error = Some(format!("{PANICKED}a fault in Holon, named on the server's console. What it had sent or written by then isn't in this record"));
+    eprintln!("holon: run {} panicked (said above): it is logged as failed, and the next run goes on", run.run_id);
     run
 }
 
@@ -519,46 +565,58 @@ fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
     }
 }
 
-/// Write the deployment's state head when `run` changed its state (C3 b): its snapshot is in the
-/// store already, and the cell's lock is held, so heads land in commit order. A run that changed
-/// nothing writes nothing, so a read costs no fsync.
-fn keep_if_changed(cell: &claims::StateCell, run: &FiredRun, live: &State) {
-    if let (Some(start), Some(snapshot)) = (&run.start_state, &run.state_after)
-        && changed_from(start, live)
-    {
-        cell.write_head(snapshot);
+/// Keep the state `run` left, the cell's lock held as it commits: its snapshot (`state_after`)
+/// into the store, then, when it changed the state, the deployment's head (C3 b), so heads land
+/// in commit order and a run that changed nothing writes nothing (a read costs no fsync). A run
+/// whose change wasn't kept fails, as one whose file didn't land does: its state is in place, but
+/// the server starts again from the one before. One that changed nothing loses only a snapshot
+/// to restore to, and says so.
+fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store: &SharedStore) {
+    let changed = run.start_state.as_ref().is_some_and(|start| changed_from(start, live));
+    match crate::restore::save_snapshot(live, run.start_state.as_ref(), store) {
+        Ok(hex) => {
+            if changed && let Err(e) = cell.write_head(&hex) {
+                not_all_written(run, vec![format!("the state it left: {e}")]);
+            }
+            run.state_after = Some(hex);
+        }
+        Err(e) if changed => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
+        Err(e) => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
     }
 }
 
-fn snapshot_after(live: &State, start: Option<&State>, store: &SharedStore, run_id: &str) -> Option<String> {
-    crate::restore::save_snapshot(live, start, store)
-        .map_err(|e| eprintln!("holon: run {run_id}: the state it left wasn't kept: {e}"))
-        .ok()
-}
-
 /// Apply a run's writes to the live state: each state write, then each collection put and delete,
-/// in the order the run made them; then each file written or deleted, in its order (`staged`:
-/// their bytes are beside their names already). What didn't land, and why: a file that couldn't
-/// be written (the others still are).
+/// in the order the run made them, all or none (on a copy, put in place once every one took);
+/// then each file written or deleted, in its order (`staged`: their bytes are beside their names
+/// already). What didn't land, and why: its state's writes, or a file that couldn't be written
+/// (the others still are).
 fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, performed: &[(Capability, Value)]) -> Vec<String> {
+    let mut next = live.clone();
+    let mut refused = Vec::new();
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
-            match live.insert(key.clone(), payload.clone()) {
+            match next.insert(key.clone(), payload.clone()) {
                 Ok(()) => {}
-                Err(InsertError::NotData) => eprintln!("holon: refused to store an effect request in state key {key:?}"),
-                Err(InsertError::Unencodable(e)) => eprintln!("holon: state key {key:?} not written: {e}"),
+                Err(InsertError::NotData) => refused.push(format!("the state key {key:?} would hold an effect request")),
+                Err(InsertError::Unencodable(e)) => refused.push(format!("the state key {key:?}: {e}")),
             }
         }
     }
     let mut store = store.clone();
     for (cap, payload) in performed {
         if let Capability::CollectionWrite(name) = cap
-            && let Err(e) = collections::apply(live, &mut store, name, payload)
+            && let Err(e) = collections::apply(&mut next, &mut store, name, payload)
         {
-            eprintln!("holon: collection {name:?} not written: {e}");
+            refused.push(format!("the collection {name:?}: {e}"));
         }
     }
-    let failed = staged.land();
+    let mut failed = Vec::new();
+    if refused.is_empty() {
+        *live = next;
+    } else {
+        failed.push(format!("{}, so none of its state's writes landed", refused.join("; ")));
+    }
+    failed.extend(staged.land());
     for e in &failed {
         eprintln!("holon: {e}");
     }
@@ -1283,6 +1341,7 @@ fn entry_with(
     LogEntry {
         seq: 0,
         prev: String::new(),
+        lost_since: None,
         session: 0,
         at_ms: started.0,
         duration_ms: started.1.elapsed().as_secs_f64() * 1000.0,
@@ -1566,5 +1625,104 @@ mod commit_checks {
         failing.store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(held(&moved), "the store back: the moved root still holds its item");
         assert!(!held(&changed));
+    }
+
+    /// A store that takes nothing new: a full disk.
+    struct Full(MemStore);
+
+    impl Store for Full {
+        fn put(&mut self, _: &Unit) -> Result<Hash, StoreError> {
+            Err(StoreError::Io(std::io::Error::other("the disk is full")))
+        }
+        fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+            self.0.get(key)
+        }
+        fn put_value(&mut self, _: &Value) -> Result<Hash, StoreError> {
+            Err(StoreError::Io(std::io::Error::other("the disk is full")))
+        }
+        fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+            self.0.get_value(key)
+        }
+    }
+
+    /// A run's writes land, or it fails and says what didn't: its state's writes all together or
+    /// none of them, wherever the one that can't land is among them (a value no state holds, a
+    /// put a collection can't take, a store that takes nothing), and the state it changed kept
+    /// on disk or the run fails (a head that can't be written, a store that takes nothing). A run
+    /// that changed nothing fails for neither.
+    ///
+    /// Guards: `commit` and `keep_state`, the last step of every run with a state.
+    /// Why: each only printed what didn't land: a run was answered as done with half its state
+    /// written, or with a state the server starts again without.
+    /// If it fails: a caller is told a write landed that didn't, or that is gone at the next start,
+    /// and a deployment's state holds part of one run.
+    #[test]
+    fn a_runs_writes_land_or_it_fails_and_its_state_is_all_or_none() {
+        let memory = || SharedStore::new(Box::new(MemStore::new()));
+        let full = || SharedStore::new(Box::new(Full(MemStore::new())));
+        let put = |key: &str, value: Value| Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.into())), ("value".to_string(), value)]));
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(Value::Text("x".into())) };
+        let deep = (0..300).fold(Value::Number(1.0), |v, _| Value::List(vec![v]));
+        let start = state_of(&[("a", 1.0)]);
+        let hash = |s: &State| crate::restore::snapshot_hash(s).unwrap();
+        let goods = vec![
+            (Capability::StateWrite("a".into()), Value::Number(2.0)),
+            (Capability::StateWrite("b".into()), Value::Text("two".into())),
+            (Capability::CollectionWrite("notes".into()), put("k", Value::Text("v".into()))),
+        ];
+        let land = |performed: &[(Capability, Value)], store: &SharedStore| {
+            let mut live = start.clone();
+            let failed = commit(&mut live, store, folders::stage(None, performed), performed);
+            (live, failed)
+        };
+
+        let (live, failed) = land(&goods, &memory());
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!((live.get("a"), live.get("b")), (Some(&Value::Number(2.0)), Some(&Value::Text("two".into()))));
+        assert!(collections::roots(&live).contains_key("notes"));
+
+        let bads = [
+            ("an effect in a state key", (Capability::StateWrite("e".into()), effect.clone())),
+            ("a value nested past what a load reads back", (Capability::StateWrite("e".into()), deep)),
+            ("a put with no value", (Capability::CollectionWrite("notes".into()), Value::Record(BTreeMap::from([("key".to_string(), Value::Text("k2".into()))])))),
+            ("an effect put in a collection", (Capability::CollectionWrite("notes".into()), put("k2", effect))),
+            ("neither a put nor a delete", (Capability::CollectionWrite("notes".into()), Value::Number(1.0))),
+        ];
+        for (what, bad) in bads {
+            for at in 0..=goods.len() {
+                let mut performed = goods.clone();
+                performed.insert(at, bad.clone());
+                let (live, failed) = land(&performed, &memory());
+                assert!(failed.len() == 1 && failed[0].contains("none of its state's writes landed"), "{what}, at {at}: {failed:?}");
+                assert_eq!(hash(&live), hash(&start), "{what}, at {at}: the state as it was");
+            }
+        }
+        let (live, failed) = land(&goods, &full());
+        assert!(failed.len() == 1 && failed[0].contains("none of its state's writes landed"), "a full store: {failed:?}");
+        assert_eq!(hash(&live), hash(&start), "a full store: the state as it was");
+
+        // Keeping the state it left: its head, a file, or a folder in the way of one.
+        let dir = std::env::temp_dir().join(format!("holon-keep-{}-{}", std::process::id(), rand::random::<u32>()));
+        let (writable, blocked) = (dir.join("ok").join("head"), dir.join("blocked"));
+        std::fs::create_dir_all(&blocked).unwrap();
+        let changed = state_of(&[("a", 2.0)]);
+        for (head, store, live, fails) in [
+            (&writable, memory(), &changed, false),
+            (&blocked, memory(), &changed, true),
+            (&writable, full(), &changed, true),
+            (&blocked, memory(), &start, false),
+            (&writable, full(), &start, false),
+        ] {
+            let cell = claims::StateCell::kept_at(live.clone(), Some(head.clone()));
+            let mut run = FiredRun::nothing();
+            run.start_state = Some(start.clone());
+            keep_state(&cell, &mut run, live, &store);
+            let said = run.error.clone().unwrap_or_default();
+            assert_eq!(said.starts_with(folders::WRITE_FAILED) && said.contains("the state it left"), fails, "{head:?}, changed: {}: {said:?}", !std::ptr::eq(live, &start));
+            if !fails && std::ptr::eq(live, &changed) {
+                assert_eq!(std::fs::read_to_string(head).ok(), run.state_after, "its head names the snapshot it left");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

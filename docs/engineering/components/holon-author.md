@@ -247,6 +247,11 @@ holon-author golden` writes it afresh.
   `a_js_bodys_types_are_blanked_in_place`.
 - **Lowering** (`lower.rs`): a test per construct,
   `a_switch_is_the_same_unit_as_its_guards_written_by_hand` among them.
+- **What a handler does** is held where it can be run, in the server's tests:
+  `a_handler_does_what_its_text_says` (`holon/src/tests/semantics.rs`) runs the same handler as a
+  flow and as JavaScript over every way a statement is reached, every kind of thing a handler does
+  and requests with and without each field ([Testing](../themes/testing.md)). Which trigger is
+  tied to what is how the lowering gets there, and is not tested for itself.
 - **Formatting** (`format.rs`): `a_text_as_fmt_writes_it_is_kept`, `comments_stay_where_they_were`,
   `a_js_body_is_never_touched`, `a_flow_written_any_which_way` (`tests/fmt/messy.holon.ts` laid out
   as `messy.laid.holon.ts`).

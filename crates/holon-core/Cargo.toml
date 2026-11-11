@@ -43,6 +43,9 @@ criterion = "0.5"
 # Tests assemble tiny modules from text (docs/L4s/wasm-module-L4.md §7); never a dependency of
 # core itself, whose purity-by-dependency argument keeps it to its thirteen.
 wat = "1"
+# An engine to ask what a SQL statement touches (tests/sql_oracle.rs, against sql.rs's scan):
+# SQLite itself, as holon builds it in. A test's only, like the two above.
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 
 [[bench]]
 name = "native_vs_composite"

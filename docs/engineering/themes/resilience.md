@@ -20,14 +20,23 @@ the guarantee won ([Standards](../README.md#standards-these-docs-record)).
 A `strict` run (the default) is answered once its log entry is synced: `log_run` calls
 `LogCell::sync_through(seq)` (`firing.rs`, `recorder.rs`), and every run waiting at once shares
 one sync. A line that couldn't be written, or a sync that failed, is answered with a 500 ("the
-request ran, but …"), never with a success.
+request ran, but …"), never with a success. Whether its line was written is asked whichever sync
+covered it, its own or another run's: a sync says what was written is on disk, nothing of an
+entry that wasn't (a run whose line was lost was once answered 200 when the run after it had
+synced first; `lost`, read without the log's lock, keeps the usual case as cheap as it was).
 
 - **Limits.** A `lazy` run is on disk within `SYNC_EVERY` (one second): a power loss can lose the
   last second of them. Requests no route took are recorded lazily (Q12). A run nobody waits for
-  (a clock's, a file handler's, one resumed) only says its record may not be on disk yet.
+  (a clock's, a file handler's, one resumed) only says its record may not be on disk yet. The
+  log remembers the last 1,024 entries whose line was lost (`unkept`): one asked for after as many
+  more were lost would be told it is kept, which no load reaches (a run asks as soon as it wrote).
 - **Tests.** `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`,
-  `one_sync_covers_every_entry_written_before_it`,
-  `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty`.
+  `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model: entries
+  written, some writes failing, asked for in drawn orders between the syncer's ticks, some syncs
+  failing, and by runs side by side; the cell syncs what the model says, a failed sync leaving
+  the file to sync again, each run is told what its own write and sync did, and the file holds
+  the lines told kept, and told unsynced, and no other; it replaced a test of a sync failed by
+  hand), `one_sync_covers_every_entry_written_before_it` (the economy of it: one sync a batch).
 
 ### G2. A deployment can't slow another
 
@@ -48,14 +57,26 @@ made before taking it.
 - **Tests.** `a_light_route_answers_on_the_data_planes_worker_as_any_route_does`,
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
 
-### G3. A run that panics is answered 500
+### G3. A panic ends its run and nothing else
 
-On the worker by `catch_unwind`, on the pool by its join error: "the request's handler failed",
-and the server goes on (R1). Before, the connection was dropped with no answer.
+A panic is caught where every run passes, `fire_with_state` (firing.rs), whatever started the
+run: it becomes a run that failed (`panicked`, its error starting `PANICKED`), logged and counted
+like another, and a caller is told 500 ("the request's handler failed"). One in a request's
+handler before its run is caught where the connection is answered: on the worker by
+`catch_unwind`, on the pool by its join error (R1; before, the connection was dropped with no
+answer). Before the first, a panic in a clock's run ended the thread that ticks every
+deployment's clocks and the deadlines of every waiting run, and one in a feed's, a queue's or a
+mailbox's run ended the thread that reads it, for good and with nothing in any log.
 
-- **Limit.** A run that panics leaves no log entry, on either path.
-- **Tests.** `a_run_that_panics_is_answered_500_inline_as_on_the_pool`,
-  `effect_written_to_state_does_not_take_the_server_down`.
+- **Limits.** A panic in a request's handler before its run leaves no log entry. A run that
+  panicked says so, and that what it had sent or written by then isn't in its record: a panic
+  past its first round, or in its commit, is past things done. A lock held where the panic was
+  stays poisoned (`.lock().unwrap()` at 245 places): each later run that takes it fails the same
+  way, logged, until the server restarts.
+- **Tests.** `a_panic_ends_its_run_and_nothing_else` (every way a run starts that a test drives
+  without a far side, a panic in the run and before it, the deployment beside it unharmed),
+  `a_staged_unit_loads_or_is_refused_whatever_its_wiring` (an effect wired into a write, the
+  wiring that once panicked a run under the state lock, is among what it refuses at deploy).
 
 ### G4. The evaluator fails closed, and its fast path answers as its plain one
 

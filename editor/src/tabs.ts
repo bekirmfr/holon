@@ -10,6 +10,7 @@ import type { FlowSettings } from "./DeployBar";
 import { DEFAULT_SETTINGS } from "./DeployBar";
 import { documentKey, structuralKey } from "./flowDoc";
 import { restoreDocument } from "./docUnits";
+import { sourceOf } from "./holonText";
 import { primitiveCatalog, type Evaluator } from "./holon";
 import { withTriggers } from "./canvasOps";
 import type { History } from "./history";
@@ -201,15 +202,17 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
     msg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
   }
   const server = settingsOf(doc.server);
-  // The text it was saved with, as typed: it stands for this canvas.
-  const text: TextState = doc.source ? { open: roomForText(), value: doc.source, key: syncKeyOf(ns, es, server, name), synced: doc.source, typed: true } : noText();
+  // The text it was saved with, as typed, when it stands for this canvas: one that says something
+  // else is left out, and the pane prints the canvas (holonText.ts `sourceOf`).
+  const source = sourceOf(name, doc);
+  const text: TextState = source ? { open: roomForText(), value: source, key: syncKeyOf(ns, es, server, name), synced: source, typed: true } : noText();
   // A loaded flow's node ids carry the counters they were minted with: the next id must
   // start past all of them, or a drop would mint a colliding one.
   let max = -1;
   for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
   return {
     ...blankTab(name),
-    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, doc.source ?? null) : "", notice: msg, text },
+    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, source) : "", notice: msg, text },
     nodes: ns,
     edges: es,
     viewport: doc.viewport,

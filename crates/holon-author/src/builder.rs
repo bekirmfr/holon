@@ -3,9 +3,9 @@
 //! is refused), holons grouped exactly as the editor groups them. What it builds is what opening
 //! the flow on a canvas loads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, PASSES_EXTRA, VARIADIC};
+use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -136,6 +136,46 @@ pub fn closure_of(roots: &[Hash], store: &MapResolver) -> Vec<Hash> {
     order
 }
 
+/// The outputs of `unit` that answer a call made when its trigger arrives: a request or another
+/// flow's action tied to it, or a function placed in it whose own output is one. A call is made
+/// whatever reads its answer, so a handler's group exposes it (core's `default_spec`) and a
+/// function's boundary names it (`call_port`): the function placed is entered for it even where
+/// nothing reads what it returns. The printer leaves them out of what the function returns.
+pub fn call_outputs(unit: &Unit, store: &impl Resolver) -> Vec<String> {
+    let UnitBody::Composite { children, edges } = &unit.body else { return vec![] };
+    let mut placed: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut out = Vec::new();
+    for e in edges.iter().filter(|e| e.to_child == BOUNDARY && e.from_child != BOUNDARY) {
+        let Some(child) = children.get(e.from_child as usize).and_then(|h| store.resolve(h)) else { continue };
+        let answers = match &child.body {
+            UnitBody::Primitive { name } => {
+                CALLS.contains(&name.as_str()) && edges.iter().any(|t| t.to_child == e.from_child && child.inputs.get(t.to_port as usize).is_some_and(|p| p.name == TRIGGER))
+            }
+            UnitBody::Composite { .. } => {
+                let theirs = placed.entry(e.from_child).or_insert_with(|| call_outputs(child, store));
+                child.outputs.get(e.from_port as usize).is_some_and(|p| theirs.contains(&p.name))
+            }
+            UnitBody::Module { .. } => false,
+        };
+        if answers && let Some(p) = unit.outputs.get(e.to_port as usize) {
+            out.push(p.name.clone());
+        }
+    }
+    out
+}
+
+/// The name a function's boundary gives the next call's answer it names (`call_outputs`):
+/// `called`, then `called_2`, …, past the names `taken`.
+pub fn call_port(taken: impl Fn(&str) -> bool) -> String {
+    let mut name = "called".to_string();
+    let mut n = 1;
+    while taken(&name) {
+        n += 1;
+        name = format!("called_{n}");
+    }
+    name
+}
+
 /// A literal's wire type, as the editor sets it when a const's or default's type changes.
 fn literal_type(ty: &str) -> Result<WType, String> {
     if ty == "Json" {
@@ -148,6 +188,30 @@ struct Frame {
     nodes: Vec<Node>,
     wires: Vec<Wire>,
     prefix: String,
+}
+
+/// Whether wire `w` takes in what its source may hold, an effect, as core's `default_spec` reads
+/// it: into an input that isn't a trigger, of a node with an output that can hold it and gives it
+/// on (`gives_on`).
+fn takes_in(f: &Frame, w: &Wire, gives: &mut HashMap<(String, String), bool>) -> bool {
+    let plain = |t: &WType| matches!(t, WType::Number | WType::Boolean | WType::Text | WType::Bytes);
+    let Some(reader) = f.nodes.iter().find(|n| n.id == w.target) else { return false };
+    w.input() != holon_core::TRIGGER && reader.data.outputs.iter().any(|p| !plain(&p.ty) && gives_on(f, &reader.id, &p.name, gives))
+}
+
+/// Whether `node`'s `output`, holding an effect, gives it on to where it is performed: it is an
+/// effect itself, nothing reads it, or a reader takes it in (`takes_in`).
+fn gives_on(f: &Frame, node: &str, output: &str, gives: &mut HashMap<(String, String), bool>) -> bool {
+    let key = (node.to_string(), output.to_string());
+    if let Some(&known) = gives.get(&key) {
+        return known;
+    }
+    gives.insert(key.clone(), false);
+    let effect = f.nodes.iter().find(|n| n.id == node).and_then(|n| n.data.outputs.iter().find(|p| p.name == output)).is_some_and(|p| p.ty == WType::Effect);
+    let readers: Vec<&Wire> = f.wires.iter().filter(|w| w.source == node && w.output() == output).collect();
+    let on = effect || readers.is_empty() || readers.into_iter().any(|w| takes_in(f, w, gives));
+    gives.insert(key, on);
+    on
 }
 
 /// Places nodes and wires them, in a flow and in the holons it groups (`begin_holon`, then
@@ -244,6 +308,11 @@ impl FlowBuilder {
         self.frames.last().and_then(|f| f.nodes.iter().find(|n| n.id == id)).map(|n| &n.data)
     }
 
+    /// The outputs of the function `hash` placed that answer a call (`call_outputs`).
+    pub fn call_outputs_of(&self, hash: &str) -> Vec<String> {
+        parse_hash(hash).and_then(|h| self.store.resolve(&h)).map(|u| call_outputs(u, &self.store)).unwrap_or_default()
+    }
+
     /// A wire from `from`'s output to `to`'s input. A variadic node gains the next input when it
     /// is wired, as its "+" adds one.
     pub fn wire(&mut self, from: &str, output: &str, to: &str, input: &str) -> Result<(), String> {
@@ -275,6 +344,25 @@ impl FlowBuilder {
     /// Whether something is wired to `to`'s `input` (in the flow being built, or the holon begun).
     pub fn is_wired(&self, to: &str, input: &str) -> bool {
         self.frames.last().is_some_and(|f| f.wires.iter().any(|w| w.target == to && w.input() == input))
+    }
+
+    /// The Effect outputs nothing takes in (in the flow being built, or the holon begun), as
+    /// `(node, output)` in the order placed: a handler's group exposes them by the IR's own rule
+    /// (core's `default_spec`), and a holon's boundary must name them or they are never performed.
+    /// As there, a trigger that waits for one doesn't take it in, nor does a test that it arrived,
+    /// nor a node that gives it on only to such tests (`takes_in`).
+    pub fn unread_effects(&self) -> Vec<(String, String)> {
+        let Some(f) = self.frames.last() else { return vec![] };
+        let mut gives = HashMap::new();
+        let mut unread = Vec::new();
+        for n in &f.nodes {
+            for p in n.data.outputs.iter().filter(|p| p.ty == WType::Effect) {
+                if !f.wires.iter().any(|w| w.source == n.id && w.output() == p.name && takes_in(f, w, &mut gives)) {
+                    unread.push((n.id.clone(), p.name.clone()));
+                }
+            }
+        }
+        unread
     }
 
     /// A variadic node given `inputs` inputs, as its "+" adds them.

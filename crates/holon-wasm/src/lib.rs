@@ -1178,6 +1178,17 @@ pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
     to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names, "lines": lines, "spans": spans }))
 }
 
+/// A flow document as text (holon-author's agent.rs `text_of`, the one every reading of a
+/// document's text goes through): the text it was saved with when that compiles to the unit its
+/// canvas deploys as, else its canvas printed. What the editor shows wherever it shows a
+/// document's text (a review, a diff, a tab opened), so that it is what would run. Throws when the
+/// document doesn't read or its canvas can't be printed.
+#[wasm_bindgen]
+pub fn document_text(name: &str, document: JsValue) -> Result<String, JsError> {
+    let document: serde_json::Value = from_js(document, "document")?;
+    holon_author::agent::text_of(name, &document).map_err(|e| JsError::new(&e))
+}
+
 /// Each node's range in `source`, as the editor counts it: `[from, to]` in UTF-16 offsets.
 fn spans_of(source: &str, spans: &std::collections::BTreeMap<String, lang::ast::Span>) -> std::collections::BTreeMap<String, [usize; 2]> {
     let at = Offsets::new(source);

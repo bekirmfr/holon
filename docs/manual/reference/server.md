@@ -385,7 +385,8 @@ reference](../language/reference.md#clocks-files-and-actions)): its runs' entrie
 before the answer and synced within a second, as the deployment's events are, so a power loss can
 lose the last second of them, never more. So are requests no route took (a 404, a 405). A run
 whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
-on record.
+on record. The next entry written says which runs before it weren't, so `holon verify` reads them
+as lost, not as the log changed.
 
 A handler whose line says `unrecorded`, approved as `Unrecorded("GET /health")`, leaves no entry:
 its runs are counted instead, by handler (how many, how many failed, how long they took in all,

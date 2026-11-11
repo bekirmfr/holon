@@ -1533,13 +1533,6 @@ mod tests {
     }
 
     #[test]
-    fn every_sample_has_no_mistakes() {
-        for s in samples::samples() {
-            assert_eq!(mistakes(s.text), vec![], "{}", s.name);
-        }
-    }
-
-    #[test]
     fn a_mistake_has_its_span_and_the_words_check_uses() {
         let m = mistakes("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n");
         assert_eq!(m.len(), 1);

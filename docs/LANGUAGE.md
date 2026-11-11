@@ -1799,7 +1799,7 @@ handler (§10, §12).
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
 | `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4); a number key through `as_text`, as JavaScript's property key |
-| `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
+| `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `a` or `b` as `c` says. On a `c` with no value neither branch runs (§6.4) |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
 | `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
@@ -2153,8 +2153,8 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `c ? a : b` | `coalesce(guard(cond: c, value: a), guard(cond: not(default{false}(c)), value: b))` | `a` if `c` is `true`, else `b`; the side chosen is the answer, absent if it is (§6.4) |
 | `c ? a : undefined` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
-| `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only |
-| `a && b` | `and(a, b)` | variadic; booleans only |
+| `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only; read left to right, the first `true` decides and what follows it isn't run |
+| `a && b` | `and(a, b)` | variadic; booleans only; the first `false` decides, and what follows it isn't run |
 | `a \| b`, `a ^ b`, `a & b` | `bitwise{op: or, xor, and}(a, b)` | on int32s; each its own level, in that order, below `===` |
 | `a === b`, `a !== b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced; `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | two numbers, or two texts in UTF-16 code-unit order; a number and a text give nothing |
@@ -2188,13 +2188,22 @@ literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` wi
 number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
 is JavaScript's fallback and not logic.
 
+`&&` and `||` read their operands as JavaScript's do: left to right, stopping at the first that
+decides (`false` for `&&`, `true` for `||`), and what follows it isn't run (§6.4). So `ok &&
+record(x)` writes only when `ok` is `true`, and `false && x` is `false`, `true || x` `true`, whatever
+`x` is, absent included. An operand they reach that is absent makes them absent, as one that isn't
+a Boolean does: `x || true` with `x` absent has no value, where JavaScript's is `true`. (Until
+2026-11-11 they read every operand, and an absent one on either side made them absent: `ok &&
+record(x)` wrote whatever `ok` was.)
+
 A condition reads a value that isn't a Boolean as JavaScript does. `if (c)`, `c ? a : b` and `!c`
 read `c` through `is_truthy`, JavaScript's `Boolean(c)`: `false`, `0`, `NaN` and `""` don't hold,
 anything else does, an empty list or record included. So `if (!s) throw …` throws for an empty
 text. `&&` and `||` inside a condition read their operands so too, as JavaScript's do there;
 elsewhere they take Booleans and give one. A condition that is a Boolean already (a comparison, a
 `!`, `&&` of them) is read as it is, with no `is_truthy`. An absent `c` is still absent: `!c` has
-no value, and an `if` on it takes its else (JavaScript's `!undefined` is `true`).
+no value (JavaScript's `!undefined` is `true`), `c ? a : b` is `b`, and an `if` on it runs neither
+branch (§6.4).
 
 ### 5.7 Multi-output values: `.name`
 
@@ -2245,7 +2254,12 @@ wire's type, as the canvas does. A return type names one output's type. A functi
 wherever it is placed. A function computes. It may be `async` and await what it sends, `const sent
 = await hooks.post(…)`, as a handler writes a request, and its caller may await it, `await
 toSlack(event)`: the `await` adds nothing yet (§5.4), so an `async` function is the same unit as
-the function without it, and a request in it is made as a leaf's is (§6.4). It never waits: `await
+the function without it, and a request in it is made as a leaf's is (§6.4). A request bound on a
+statement is made when the function is entered: its answer leaves by an output of its own after
+the ones it returns, `called` (then `called_2`, …), as do those of a function it calls, so a
+handler enters it for the request even where what it returns isn't needed. The function's value
+is still what it returns: `ask(x)` reads it, and the printer writes no `called` back, as the
+lowering names it again. It never waits: `await
 event(…)` in a function is refused, as a wait is an action's, and so is another flow's action
 awaited, as a call is a handler's. A method given a function (`map`, `filter`, `sort`, a
 reviver…) takes no `async` one, by name or written in place, as it would be handed a promise for
@@ -2391,10 +2405,18 @@ handler keeps it (§5.4). The language keeps that rule and adds no `perform` key
   it".
 - A binding to an Effect and never used is still performed; naming it changes nothing.
 - A multi-output function's Effect outputs that the caller does not read are performed. The `slugs`
-  route performs `publish`'s `put` and `write` without mentioning them.
+  route performs `publish`'s `put` and `write` without mentioning them. So are they when the caller
+  is a function: an effect nothing in a function reads (one of a function it places, or a write it
+  binds and doesn't use) leaves by the function's own boundary, an output named as it was where it
+  came from (`put`, `write`), and so on up to the handler, at any depth. Returning it by name,
+  `return { put: kept.put, … }`, is the same unit.
+- An effect is read by what can pass it on: a choice (`c ? put : undefined`), a function it is
+  handed to, a boundary. A node that only tells of it (a `try` block's test that a call arrived, a
+  trigger that waits for it) doesn't take it in, and it is still performed (core's `default_spec`).
 
 Effects are values, so a write's value may be guarded or chosen, and only a present value reaches
-the boundary: `if (c) state.k = a; else state.k = b` is one write, of `c ? a : b`, and witness's
+the boundary: `if (c) state.k = a; else state.k = b` is one write, of `a` or `b` as `c` says (and
+none where `c` has no value), and witness's
 `batches[batch] = ok ? { … } : undefined` writes nothing without the key. That guarded value is the
 idiom the samples use for a write that may not happen.
 
@@ -2563,15 +2585,40 @@ is a value (the optional's empty arm) and is unrelated.
 `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: `a` when `c` is `true`, otherwise `b`. So
 `c` absent gives `b`, as JavaScript's `if` takes `undefined` as false, and the side chosen is the
 answer: `c` true with `a` absent is absent, as JavaScript gives `undefined`, and doesn't fall to
-`b`. `c ? a : undefined` is the first `guard` alone, and `if (c) …` chooses between statements the
-same way. A fallback is written as one: `(c ? a : undefined) ?? b` is `b` when the chosen `a` is
-absent too.
+`b`. `c ? a : undefined` is the first `guard` alone. A fallback is written as one: `(c ? a :
+undefined) ?? b` is `b` when the chosen `a` is absent too.
+
+`if (c) A else B` chooses between statements as `?:` does between values, but for one thing: on a
+`c` with no value **neither branch runs**. A name either branch changes keeps the value it had
+before the `if`, and a key either writes keeps what was written before it, or isn't written. If a
+branch can return (or throw), nothing after the `if` runs either, and the answer is absent: a
+route's 404, or the status its `?? status(…)` says. So a guard that refuses fails closed:
+
+```ts
+route.post("/pay", (req) => {
+  if (req.json.amount > 1000) return status(403, "too much")
+  payout({ to: req.json.to, amount: req.json.amount })
+  return status(202)
+})
+```
+
+With `amount` missing, or a text (`"5000"`, which no number is greater than or less than), the
+comparison has no value: the route answers 404 and starts no payout. JavaScript reads `undefined >
+1000` as false, and would pay. Where a missing value should count as false, the text says so:
+`if (got.expired ?? false) return …`, as an event that arrived has no `expired`. Under the hood the
+else is guarded by `!c`, where `?:`'s is guarded by `!(c ?? false)`, and what follows a branch that
+returns by its not having returned, which has no value either. A `switch` that returns from a case
+holds what follows it so too, where its subject is absent (§6.5). (Until 2026-11-11 an `if` took its
+else on a `c` with no value, as `?:` does, and what followed a `return` in it ran: the guard above
+paid.)
 
 Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
 is `true`, and `b` only when it isn't. So a branch not taken asks the host
 nothing: its requests aren't sent, its `await`s don't park the run, its reads aren't made, and a
-function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent. This changes
-no value, only what runs. While `c` (or `x`) waits on an answer from the host, the choice waits
+function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent, and so are
+`x && y`, `y` only when `x` is `true`, and `x || y`, `y` only when `x` is `false` (§5.6). This
+changes no value, only what runs, but for `&&` and `||`, which now decide without the operand they
+don't run (`false && absent` is `false`). While `c` (or `x`) waits on an answer from the host, the choice waits
 too, and decides in the next round. A function's inputs are computed before it is entered, as a
 call's arguments are: `h(go, await api.get(…))` sends the request even if `h` only uses it when
 `go`.
@@ -2587,8 +2634,30 @@ trigger, to what an `if (x !== undefined)` around it names, or to the conditions
 (an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
 needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
-else. The printer keeps each where it was written. (In a function, a call bound on a statement is
-still made when its answer is needed: F13.)
+else. The printer keeps each where it was written. A call in a branch of a value bound in an
+`if`, or after a `return` that may answer (`if (d) { got = v ?? (await api.get(…)).body }`), is
+held to both: the value bound is guarded by the statement's conditions too, so where they don't
+hold it isn't needed, and the call isn't made. (Until 2026-11-11 `holon check` refused it, with
+"`after` ties a write or a call to what it names: this statement makes none"; and one beside a
+call bound on the statement, `if (d) { const got = ping(x) ?? ping(y) }`, made the fallback where
+the `if` didn't hold, the first call not having been made.) In a function it is the same: a call
+bound on a statement is made when the function is entered, whatever reads its answer. The call's
+answer leaves the function by an output of its own, which it doesn't return (§5.8), and the
+handler keeps it as it keeps its own calls, so the function is entered for the call even where
+what it returns isn't needed. (Until 2026-11-11 such a call was made only when the function's
+answer was needed: `const got = await ask(x)`, read only in a branch not taken, sent nothing.)
+
+What is held to its statement's conditions this way is everything a handler does, not requests
+alone: a write, a send, a log line, an action started (`payout(x)`), and a function of the flow's
+called, which is held by its trigger when it writes and entered only when the run reaches it. A
+function that writes, called in a branch (`c ? record(x) : undefined`, `kept ?? record(x)`, `ok
+&& record(x)`, a `switch`'s case), writes only when the branch is taken. Until 2026-11-11 an action started and a
+function called weren't held: each ran on every path, after a `return` that answered included. What
+holds them now is a test, not the care of whoever adds the next kind of statement: the same handler
+is run as a flow and as JavaScript over every way a statement is reached, every kind of thing a
+handler does and requests with and without each field, and the two must do the same but for the
+rule of §5.6 and the `if` above, which the test writes out
+(`crates/holon/src/tests/semantics.rs`, `a_handler_does_what_its_text_says`).
 
 The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
 is `select(c, a, b)`, written as a call. Being strict, it needs, and runs, both arms. It is rarely
@@ -2633,7 +2702,8 @@ too (§6.4); it differs from the switch where the subject is absent. The cases n
 don't matter at all, and don't run (§6.4): `"add"` answers `a + b` whatever `a / b` would be. So a
 case may send a request or `await`; only the chosen case's are asked. With the subject absent, the
 switch is absent, and the `default` with it, where a chain's conditions are absent and each takes
-its else, down to the last. With no case equal and no `default`, it is absent too.
+its else, down to the last. With no case equal and no `default`, it is absent too. And with the
+subject absent, if a case returns, nothing after the `switch` runs, as after an `if` (§6.4).
 
 It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??`, and the
 `default` guarded by none of the cases matching, so a failed case can't fall through to it
@@ -2650,7 +2720,11 @@ a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to 
 `after`), so they are made all together or not at all, and its returns answer only where `ok`
 holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
 name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
-`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are.
+`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are. And
+what follows a statement in the try block runs only where what that statement made arrived, as
+the rest of JavaScript's block is skipped once a statement throws: a call bound after a failure
+isn't made, and a function after it isn't entered. Its write is tied to that too (here,
+`notes[tried_1]` is written only where `note` arrived).
 
 ```ts
 route.post("/n", (req) => {
@@ -2673,7 +2747,7 @@ route.post("/n", (req) => {
   const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = note
+    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
@@ -2697,10 +2771,12 @@ absence:
   absence isn't a failure.
 - **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
   Holon makes none of them, as a run's writes are made at its end (§6.6).
-- **A call the try block binds is made when what it reads arrives,** as anywhere: one written
-  after a failure is made too, unless it reads what failed. Its answer's arriving is part of
-  `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as a
-  write is.
+- **A call the try block binds is made when the statements before it succeeded,** as
+  JavaScript's is: one written after a failure isn't made (until 2026-11-11 it was, unless it read
+  what failed). So the requests a try block makes go one after another, each in a round of its
+  own, where elsewhere those that don't read each other go together. Its answer's arriving is part
+  of `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as
+  a write is.
 - **The catch block sees the names as they were before the try,** not as the try block left them,
   since what the try block made may not have arrived.
 - `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries
@@ -3190,9 +3266,10 @@ is `status(204)`).
   call bound on a statement was made only when something needed its answer, so whether a charge
   went out could be decided by a reader lines away. Decided and built: a call is made where it is
   written, when the run reaches its statement or when the branch it is written in needs it (§6.4);
-  the `idempotent` sample's charge says its own condition. Left open: in a function, a call bound
-  on a statement is still made when its answer is needed, as the function's boundary would need an
-  output the printer can't yet write back.
+  the `idempotent` sample's charge says its own condition. And in a function, a call bound on a
+  statement was still made only when the function's answer was needed. Decided and built
+  (2026-11-11): its answer leaves the function's boundary by an output of its own, `called`, which
+  the handler keeps and the printer doesn't write back (§5.8, §6.4).
 - **F14. Routes answer, actions wait.** A route answered first and waited after, so one handler was
   two in disguise: a request answered with a link, and a run that went on for days. Decided and
   built: a route answers and is done, and what waits is an action it starts by calling it without

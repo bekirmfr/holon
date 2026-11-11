@@ -80,7 +80,11 @@ ok
 
 `verify` checks that:
 
-1. the chain is unbroken, and the head is the newest run's;
+1. the chain is unbroken, the head is the newest run's, and no run is missing. A run whose line
+   the server couldn't write (a full disk) isn't a break: the line after it says so, and the
+   report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
+   after says so`. The server numbers runs one after another, so runs missing that no line says
+   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
 2. every unit in the export is what its hash says;
 3. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, the same effects, the same status. Outbound calls are answered from the log,
@@ -126,6 +130,8 @@ What it doesn't check, it says, by why:
   from the state that run left;
 - a run whose state holds a secret's or a token's placeholder, whose hash would be the
   placeholder's;
+- a run after one whose line the server couldn't write, which may have begun from the state that
+  run left;
 - runs logged before rc.30, which named no state they left.
 
 A collection is compared by its root, not its items: a run that wrote one is checked in the state
@@ -233,5 +239,10 @@ holon verify notes-api-runs.json --head 3f9c2a7be01d…
 
 An event's head is checked the same way: `witnessed head …: event 7, so no event up to it was
 changed or removed`.
+
+A run the server couldn't write is said lost in the next line, whose head the witness holds.
+Someone who removes a run and rewrites the lines after it to say it was lost makes a log that
+checks without a witnessed head, as a full disk's does; with one, it fails, the head no longer
+there.
 
 Give the whole head, as the witness holds it.

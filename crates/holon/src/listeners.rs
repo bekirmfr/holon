@@ -227,6 +227,11 @@ fn serve_flow(
     if let Some(busy) = ran.as_ref().and_then(|r| r.error.as_deref()).filter(|e| e.starts_with("busy:")) {
         answer = data::DataResponse::json_error(503, busy);
     }
+    // One that panicked computed nothing to answer with: a 500, as where a panic is caught past
+    // the run (dataplane.rs), not the "not found" of an answer that isn't there.
+    if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(crate::firing::PANICKED)) {
+        answer = data::DataResponse::json_error(500, "the request's handler failed");
+    }
     // One whose file read failed (a name that leaves its folder, a file too big or not text) did
     // nothing: it says so, not "not found". Why is in the run log, not told to the caller.
     if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
@@ -496,23 +501,26 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
     Response::json(&SentResponseBody { status: answer.status, headers, body })
 }
 
-/// A panic a test asks for, on requests whose path starts with one it names (R1's test).
+/// A panic a test asks for (tests.rs, `a_panic_ends_its_run_and_nothing_else`): in a request's
+/// handler before its run, on requests whose path starts with one it names, and in a run itself
+/// (`firing::fire_run`), named `a run of <slug>`. Each is asked for and stopped by its name, so
+/// tests side by side don't stop each other's.
 #[cfg(test)]
 pub(crate) mod panic_for_tests {
     use std::sync::Mutex;
 
-    static PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    pub(crate) fn on(path: &str) {
-        PATHS.lock().unwrap().push(path.to_string());
+    pub(crate) fn on(what: &str) {
+        ASKED.lock().unwrap().push(what.to_string());
     }
 
-    pub(crate) fn off() {
-        PATHS.lock().unwrap().clear();
+    pub(crate) fn off(what: &str) {
+        ASKED.lock().unwrap().retain(|asked| asked != what);
     }
 
-    pub(super) fn check(url: &str) {
-        let hit = PATHS.lock().unwrap().iter().any(|p| url.starts_with(p.as_str()));
+    pub(crate) fn check(what: &str) {
+        let hit = ASKED.lock().unwrap().iter().any(|asked| what.starts_with(asked.as_str()));
         if hit {
             panic!("a panic a test asked for");
         }

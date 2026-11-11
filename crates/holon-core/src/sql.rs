@@ -19,8 +19,18 @@
 //!   effects and to answer the same each time; the time (`current_timestamp`: pass it in); other
 //!   placeholders (`?`, `:name`); comments some engines read as code (`#`, `--x`, `/*!`); a
 //!   string with a backslash (engines differ on what it escapes).
+//! - **Refused because engines read it differently,** one scan serving three of them: a function
+//!   called by a quoted name or as a schema's (`"f"(…)`, `public.f(…)`: whatever its owner made
+//!   it); `table x` (a whole select in Postgres and MySQL); an update or a delete of several
+//!   tables, and `update ignore` (MySQL's: which table is written isn't the first named); a number
+//!   run into a word (`1from t`); Postgres's `U&"…"`, a name by its code points.
 //! - **Brackets are code,** as Postgres reads them (`array[…]`, `tags[1]`), so a subquery inside
 //!   them is scanned like any other; a name is quoted `"…"` (or `` `…` ``), not SQLite's `[…]`.
+//!   SQLite reads `[…]` as a name all the same, so a quote or a comment inside brackets, which the
+//!   two would read on from differently, is refused.
+//!
+//! What a statement touches is held against SQLite's own account of it, over generated
+//! statements, and against Postgres's and MySQL's readings written down (tests/sql_oracle.rs).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -318,8 +328,29 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, String> {
         } else if c == b':' && s.get(i + 1) != Some(&b':') {
             return Err("write parameters as $1, $2, …, not :name".into());
         } else if c.is_ascii_digit() || (c == b'.' && s.get(i + 1).is_some_and(u8::is_ascii_digit)) {
-            while i < s.len() && (s[i].is_ascii_alphanumeric() || s[i] == b'.') {
-                i += 1;
+            let digits = |mut at: usize, hex: bool| {
+                while s.get(at).is_some_and(|b| if hex { b.is_ascii_hexdigit() } else { b.is_ascii_digit() }) {
+                    at += 1;
+                }
+                at
+            };
+            if c == b'0' && matches!(s.get(i + 1), Some(b'x' | b'X')) && s.get(i + 2).is_some_and(u8::is_ascii_hexdigit) {
+                i = digits(i + 2, true);
+            } else {
+                i = digits(i, false);
+                if s.get(i) == Some(&b'.') {
+                    i = digits(i + 1, false);
+                }
+                if matches!(s.get(i), Some(b'e' | b'E')) {
+                    let sign = usize::from(matches!(s.get(i + 1), Some(b'+' | b'-')));
+                    if s.get(i + 1 + sign).is_some_and(u8::is_ascii_digit) {
+                        i = digits(i + 1 + sign, false);
+                    }
+                }
+            }
+            // `1from t`: one engine reads a number and a `from`, another one name, a third nothing.
+            if s.get(i).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') {
+                return Err("a number runs into the word after it, which engines read differently: put a space between them".into());
             }
             out.push(Token { tok: Tok::Num, lower: String::new() });
         } else if c.is_ascii_alphabetic() || c == b'_' {
@@ -327,7 +358,23 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, String> {
             while i < s.len() && (s[i].is_ascii_alphanumeric() || s[i] == b'_' || s[i] == b'$') {
                 i += 1;
             }
+            // Postgres's `U&"\0063ards"` is the name `cards`, written by its code points.
+            if sql[start..i].eq_ignore_ascii_case("u") && s.get(i) == Some(&b'&') && matches!(s.get(i + 1), Some(b'"' | b'\'')) {
+                return Err("a U& name or string is written by its code points, which Holon doesn't read: write it plainly".into());
+            }
             out.push(word(&sql[start..i]));
+        } else if c == b'[' {
+            // SQLite reads `[…]` as a name, up to its first `]`; Postgres reads brackets as code.
+            // A quote or a comment opened inside is part of the one's name and the start of the
+            // other's string or comment, which runs on past the bracket: from there the two read
+            // different statements.
+            let Some(len) = s[i + 1..].iter().position(|&b| b == b']') else { return Err("a [ isn't closed".into()) };
+            let inside = &sql[i + 1..i + 1 + len];
+            if inside.contains(['\'', '"', '`', '#']) || inside.contains("--") || inside.contains("/*") {
+                return Err("brackets hold a quote or a comment, which SQLite (to which [ … ] is a name) and Postgres (to which it is code) read differently: pass the value as a parameter ($1)".into());
+            }
+            out.push(Token { tok: Tok::Punct("["), lower: String::new() });
+            i += 1;
         } else if let Some(p) = PUNCT.iter().find(|p| s[i..].starts_with(p.as_bytes())) {
             out.push(Token { tok: Tok::Punct(p), lower: String::new() });
             i += p.len();
@@ -379,7 +426,7 @@ const REFUSED: &[(&str, &str)] = &[
 ];
 
 /// Functions known to have no side effects and to answer the same for the same arguments.
-const FUNCTIONS: &[&str] = &[
+pub const FUNCTIONS: &[&str] = &[
     "abs", "avg", "bool_and", "bool_or", "ceil", "ceiling", "char_length", "character_length", "coalesce", "concat", "concat_ws", "count",
     "date", "datetime", "every", "floor", "greatest", "group_concat", "ifnull", "iif", "instr", "json", "json_array", "json_array_length",
     "json_extract", "json_object", "json_type", "julianday", "least", "length", "like", "lower", "ltrim", "max", "min", "mod", "nullif",
@@ -409,7 +456,7 @@ const SIZED_TYPES: &[&str] = &["varchar", "char", "character", "decimal", "numer
 const NOT_ALIAS: &[&str] = &[
     "where", "join", "inner", "left", "right", "full", "outer", "cross", "natural", "on", "using", "group", "order", "limit", "offset",
     "union", "except", "intersect", "set", "values", "select", "returning", "window", "having", "fetch", "lateral", "default", "indexed",
-    "not", "for", "as", "from", "with", "do", "by",
+    "not", "for", "as", "from", "with", "do", "by", "table", "straight_join",
 ];
 
 /// Words that end a from list: a comma after them is no table's.
@@ -514,7 +561,14 @@ impl Scan<'_> {
                 let upsert = self.tokens[i..].windows(2).any(|w| w[0].is_word("on") && (w[1].is_word("conflict") || w[1].is_word("duplicate")));
                 (t, upsert)
             }
-            "update" => (self.table_at(&mut i, &[])?, true),
+            "update" => {
+                // MySQL's `update ignore t`, `update low_priority t`: elsewhere that word is the
+                // table, and the one after it its alias, so which table is written can't be told.
+                if let Some(how @ ("ignore" | "low_priority")) = self.word_at(i) {
+                    return Err(format!("\"update {how}\" isn't taken: MySQL reads {how} as how to update and the next word as the table, others as the table itself"));
+                }
+                (self.table_at(&mut i, &[])?, true)
+            }
             _ => {
                 if self.word_at(i) != Some("from") {
                     return Err("a delete is delete from a table".into());
@@ -533,6 +587,24 @@ impl Scan<'_> {
         }
         if self.word_at(i).is_some_and(|w| !NOT_ALIAS.contains(&w)) || matches!(self.at(i).map(|t| &t.tok), Some(Tok::Quoted(_))) {
             i += 1;
+        }
+        // One table. MySQL's update of several (`update a, b set …`, `update a join b on … set
+        // …`) writes whichever its `set` names, and its `delete from a, b using …` both.
+        match verb.as_str() {
+            "update" => {
+                // SQLite's `indexed by name` and `not indexed` say how the one table is read.
+                let mut set = i;
+                if self.word_at(set) == Some("indexed") && self.word_at(set + 1) == Some("by") {
+                    set += 3;
+                } else if self.word_at(set) == Some("not") && self.word_at(set + 1) == Some("indexed") {
+                    set += 2;
+                }
+                if self.word_at(set) != Some("set") {
+                    return Err("an update is of one table, update t set …: with a list or a join of tables before its set it can write to any of them".into());
+                }
+            }
+            "delete" if self.at(i).is_some_and(|t| t.is(",")) => return Err("a delete is from one table: delete from t where …".into()),
+            _ => {}
         }
         self.body(i, self.tokens.len(), &[])
     }
@@ -635,9 +707,17 @@ impl Scan<'_> {
                 continue;
             }
             let Some(w) = t.word() else {
+                // A quoted name is any name, a function a database's owner made among them: called,
+                // which function it is can't be told from the list of those known to only compute.
+                if matches!(t.tok, Tok::Quoted(_)) && self.at(i + 1).is_some_and(|n| n.is("(")) {
+                    return Err(format!("it calls {}(…) by a quoted name: a function is called by its plain name, so that Holon can tell which it is", said(t)));
+                }
                 i += 1;
                 continue;
             };
+            if w == "table" {
+                return Err("\"table x\" is a whole select in Postgres and MySQL: write select * from x".into());
+            }
             if let Some((_, why)) = REFUSED.iter().find(|(r, _)| *r == w) {
                 return Err(format!("\"{w}\" isn't taken: {why}"));
             }
@@ -650,10 +730,15 @@ impl Scan<'_> {
             if w == "returning" {
                 return Err("returning isn't taken: a write answers nothing; read what it wrote in another run".into());
             }
-            if self.at(i + 1).is_some_and(|n| n.is("(")) && !PAREN_WORDS.contains(&w) && !SPECIAL_CALLS.contains(&w) && !SIZED_TYPES.contains(&w) && !FUNCTIONS.contains(&w) {
+            if self.at(i + 1).is_some_and(|n| n.is("(")) && !PAREN_WORDS.contains(&w) && !SPECIAL_CALLS.contains(&w) && !SIZED_TYPES.contains(&w) {
+                // A function of a schema (`public.lower(…)`) is whatever that schema's owner made
+                // it, whatever its name: only a plain name is the engine's own.
+                if i > 0 && self.tokens[i - 1].is(".") {
+                    return Err(format!("it calls {w}(…) of a schema: a function is called by its plain name, so that Holon can tell which it is"));
+                }
                 let before = i.checked_sub(1).and_then(|p| self.word_at(p));
-                // A table's column list (`into t (a, b)`) and a with's are no calls.
-                if !matches!(before, Some("into" | "table")) {
+                // A table's column list (`into t (a, b)`) is no call.
+                if !FUNCTIONS.contains(&w) && before != Some("into") {
                     return Err(format!("it calls {w}(…), which Holon can't tell has no side effects and answers the same each time"));
                 }
             }
@@ -669,7 +754,8 @@ impl Scan<'_> {
                 self.table_list(&mut i, true, visible)?;
                 continue;
             }
-            if w == "join" {
+            // MySQL's `straight_join` is a join.
+            if w == "join" || w == "straight_join" {
                 i += 1;
                 self.table_list(&mut i, false, visible)?;
                 continue;
@@ -734,83 +820,29 @@ impl Scan<'_> {
 mod tests {
     use super::*;
 
-    fn set(names: &[&str]) -> BTreeSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
-    }
-
     fn read(sql: &str) -> (BTreeSet<String>, usize) {
         let t = tables(sql, false).unwrap_or_else(|e| panic!("{sql}: {e}"));
         assert!(t.writes.is_empty());
         (t.reads, t.params)
     }
 
-    fn write(sql: &str) -> (BTreeSet<String>, BTreeSet<String>) {
-        let t = tables(sql, true).unwrap_or_else(|e| panic!("{sql}: {e}"));
-        (t.reads, t.writes)
-    }
+    // Which tables a statement names is held by tests/sql_oracle.rs, against SQLite's own account
+    // of each statement and, for what only Postgres or MySQL reads, a table of statements with
+    // what they touch. What follows here is what that can't hold: the words of a refusal, a
+    // where's pins, and how parameters are counted and rewritten.
 
     fn refused(sql: &str, write: bool) -> String {
         tables(sql, write).expect_err(sql)
     }
 
-    #[test]
-    fn a_select_reads_every_table_it_names() {
-        assert_eq!(read("select id, total from orders where id = $1"), (set(&["orders"]), 1));
-        assert_eq!(read("SELECT o.id FROM Orders o JOIN customers AS c ON c.id = o.customer WHERE c.name = $2 AND o.x > $1").0, set(&["orders", "customers"]));
-        assert_eq!(read("select * from a, b as bb, public.c where a.x = bb.y").0, set(&["a", "b", "public.c"]));
-        assert_eq!(read("select * from a left outer join b using (id) natural join c").0, set(&["a", "b", "c"]));
-        assert_eq!(read("select (select max(n) from stock where sku = o.sku) from orders o").0, set(&["orders", "stock"]));
-        assert_eq!(read("select * from orders where customer in (select id from customers where vip)").0, set(&["orders", "customers"]));
-        assert_eq!(read("select * from (select id from orders) sub").0, set(&["orders"]));
-        assert_eq!(read("select a from x union select b from y").0, set(&["x", "y"]));
-        assert_eq!(read("select * from (select id from orders) a, customers").0, set(&["orders", "customers"]));
-        assert_eq!(read("select * from a join b on a.x = b.y, c where c.z = $1").0, set(&["a", "b", "c"]));
-        assert_eq!(read("select * from (a join b on a.x = b.y) left join c on true").0, set(&["a", "b", "c"]));
-        assert_eq!(read("select * from t where f in (1, 2), x").0, set(&["t"]), "a comma past where starts no table");
-        assert_eq!(read("select * from (values (1), (2)) as v(n)").0, set(&[]));
-    }
-
-    /// Postgres reads brackets as code: a subquery in an array or a subscript reads its table.
-    #[test]
-    fn a_subquery_in_brackets_reads_its_table() {
-        assert_eq!(read("select array[(select password from users limit 1)] from orders").0, set(&["orders", "users"]));
-        assert_eq!(read("select id from orders where tags[(select count(*) from users)] is not null").0, set(&["orders", "users"]));
-        assert_eq!(read("select tags[1], tags[$1] from orders").0, set(&["orders"]));
-        assert_eq!(write("insert into orders (tags) values (array[(select password from users limit 1)])"), (set(&["users"]), set(&["orders"])));
-        assert!(refused("select * from [orders]", false).contains("expected a table"), "SQLite's [name] isn't a name here");
-    }
-
-    #[test]
-    fn a_with_defines_names_that_are_not_tables_where_they_are_seen() {
-        assert_eq!(read("with big as (select * from orders where total > $1) select * from big join customers c on c.id = big.customer").0, set(&["orders", "customers"]));
-        // A non-recursive with sees only the ones before it: a later name is a table there.
-        assert_eq!(read("with a as (select * from b), b as (select 1 as x) select * from a").0, set(&["b"]));
-        assert_eq!(read("with recursive t(n) as (select 1 union all select n + 1 from t where n < 5) select n from t").0, set(&[]));
-        assert!(refused("select * from (with x as (select 1) select * from x) y", false).contains("inside a subquery"));
-    }
-
-    #[test]
-    fn functions_with_from_inside_name_no_table() {
-        assert_eq!(read("select extract(year from placed) from orders").0, set(&["orders"]));
-        assert_eq!(read("select trim(both 'x' from name), substring(name from 2 for 3) from people").0, set(&["people"]));
-        assert_eq!(read("select cast(total as decimal(10, 2)), total::numeric(10,2) from orders").0, set(&["orders"]));
-        assert_eq!(read("select * from orders where a is distinct from b").0, set(&["orders"]));
-        assert_eq!(read("select count(*) over (partition by c order by d) from t").0, set(&["t"]));
-    }
-
-    #[test]
-    fn a_write_writes_its_table_and_reads_what_it_matches() {
-        assert_eq!(write("insert into refunds (order_id, amount) values ($1, $2)"), (set(&[]), set(&["refunds"])));
-        assert_eq!(write("insert into archive select * from orders where id = $1"), (set(&["orders"]), set(&["archive"])));
-        assert_eq!(write("update stock set n = n - $1 where sku = $2 and n >= $1"), (set(&["stock"]), set(&["stock"])));
-        assert_eq!(write("update orders as o set refunded = true from refunds r where r.order_id = o.id"), (set(&["orders", "refunds"]), set(&["orders"])));
-        assert_eq!(write("delete from sessions where expires < $1"), (set(&["sessions"]), set(&["sessions"])));
-        assert_eq!(write("delete from a using b where a.id = b.id"), (set(&["a", "b"]), set(&["a"])));
-        assert_eq!(write("insert into likes (post, n) values ($1, 1) on conflict (post) do update set n = likes.n + 1"), (set(&["likes"]), set(&["likes"])));
-        assert_eq!(write("INSERT OR REPLACE INTO kv (k, v) VALUES ($1, $2)").1, set(&["kv"]));
-        assert_eq!(write("replace into kv (k, v) values ($1, $2)").1, set(&["kv"]));
-    }
-
+    /// **Guards:** a statement the scan refuses is refused with a reason that names what to
+    /// change, for every kind of thing it refuses.
+    ///
+    /// **Why:** the scan refuses whatever it can't be sure of, so an author (an agent, mostly)
+    /// meets its refusals often, in `holon check`, with nothing else to go on.
+    ///
+    /// **If it fails:** a statement is refused with no reason or a wrong one, and its author can't
+    /// tell a mistake from a limit, or is sent to fix the wrong thing.
     #[test]
     fn what_isnt_a_read_or_a_write_of_rows_is_refused_saying_why() {
         assert!(refused("delete from t", false).contains("a read is a select"));
@@ -835,13 +867,20 @@ mod tests {
         assert!(refused("", false).contains("empty"));
         assert!(refused("pragma table_info(t)", false).contains("a read is a select"));
         assert!(refused("with x as (select 1) delete from t", false).contains("after a with"));
-    }
-
-    #[test]
-    fn comments_and_strings_hide_nothing() {
-        assert_eq!(read("select 'from secret' as s from t -- from other\n").0, set(&["t"]));
-        assert_eq!(read("select /* join secret */ x from t;").0, set(&["t"]));
-        assert_eq!(read("select 'it''s' from t").0, set(&["t"]));
+        assert!(refused("select * from (with x as (select 1) select * from x) y", false).contains("inside a subquery"));
+        // What two engines read differently.
+        assert!(refused("select * from [orders]", false).contains("expected a table"), "SQLite's [name] isn't a name here");
+        assert!(refused("select 1 as [\"], pan from cards -- \"]", false).contains("brackets hold a quote"));
+        assert!(refused("select tags[1 from orders", false).contains("[ isn't closed"));
+        assert!(refused("select \"upper\"(note) from orders", false).contains("by a quoted name"));
+        assert!(refused("select public.lower(note) from orders", false).contains("of a schema"));
+        assert!(refused("select id from orders union all table cards", false).contains("select * from x"));
+        assert!(refused("select 1from cards", false).contains("runs into the word"));
+        assert!(refused("select pan from U&\"\\0063ards\"", false).contains("U&"));
+        assert!(refused("update orders, payments set payments.amount = 0", true).contains("one table"));
+        assert!(refused("update orders join payments on true set payments.amount = 0", true).contains("one table"));
+        assert!(refused("delete from orders, payments using orders join payments on true", true).contains("one table"));
+        assert!(refused("update ignore cards set pan = $1", true).contains("update ignore"));
     }
 
     #[test]

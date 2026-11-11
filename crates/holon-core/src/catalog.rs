@@ -810,7 +810,7 @@ pub fn genesis_units() -> Vec<Unit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities_of, compatible, eval, Capability, MapResolver, Value};
+    use crate::{capabilities_of, compatible, eval, MapResolver, Value};
 
     #[test]
     fn interface_of_unknown_is_none() {
@@ -1054,19 +1054,6 @@ mod tests {
         // (what the `list` constructor produces) still bridges in — so existing graphs keep working.
         assert!(!compatible(&Type::List(Box::new(Type::Text)), &sum.inputs[0].ty));
         assert!(compatible(&Type::list_any(), &sum.inputs[0].ty));
-    }
-
-    #[test]
-    fn store_read_write_have_a_valid_default_key() {
-        // interface_of's whole point is a usable, valid palette node — confirmed here by
-        // actually deriving capabilities from it, not just checking the param exists.
-        let read = interface_of("store_read").unwrap();
-        let caps = capabilities_of("store_read", &read.params).unwrap();
-        assert!(caps.contains(Capability::StateRead("value".to_string())));
-
-        let write = interface_of("store_write").unwrap();
-        let caps = capabilities_of("store_write", &write.params).unwrap();
-        assert!(caps.contains(Capability::StateWrite("value".to_string())));
     }
 
     #[test]

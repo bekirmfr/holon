@@ -34,10 +34,20 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
   call's. `Budget`, a `ResourceLimiter`, refuses `memory.grow` past `limits.memory` and remembers
   that it did. Each failure has its name (`RunError`): `NotAModule`, `Compile`, `Instantiate`,
   `OutOfFuel { fuel }`, `OutOfMemory { memory }`, `Trap`, `BadOutput`. A module that asked past its
-  memory and still answered is `OutOfMemory`: it computed without what it wanted.
+  memory and still answered is `OutOfMemory`: it computed without what it wanted. Translating a
+  function costs no fuel (`Config::fuel_cost`): wasmi translates one the first time a call reaches
+  it and the module stays compiled, so charging for it would make the first call in a process
+  dearer than the rest. A call's fuel is its module's and its inputs' alone, the same on a server
+  long up and in a `holon verify` just started.
 - **The answer is read from inside its memory.** `out_ptr..out_ptr + out_len` is taken from the
   module's memory slice, never allocated to the length the module claims, so a lying length is
   `BadOutput`, not 4 GiB of the host's.
+- **An answer is values, never an effect.** The engine decodes what the module wrote, and the
+  encoding has a form for an effect, so a module can write one. Core refuses it where a module's
+  outputs enter a flow (`run_module_outputs`, `holon-core/src/eval.rs`): an answer holding an
+  effect anywhere makes every output absent, with the reason. An effect is built only by a leaf
+  that may build it, which is how a manifest names everything a flow performs; a module is
+  interior (I7).
 - **A trap can name itself.** A module may export `last_panic() -> i64` (a message it kept); a
   `Trap` then carries the message, up to 4,096 bytes. This is how a module written in Rust, whose
   panic is an `unreachable`, says what went wrong.
@@ -78,7 +88,7 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
   are a hundred times the default fuel and sixteen times the default memory
   (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`, `crates/holon/src/permissions.rs`).
 - **The js default of 200M fuel** is measured (`what_a_call_costs`, JS §2): a fresh realm and a
-  one-line function cost about 15M instructions, an edit-distance search over eight words 41M, a
+  one-line function cost about 12M instructions, an edit-distance search over eight words 41M, a
   loop of a hundred thousand iterations 271M. The module default (10M) can't run a body at all.
 - **A fresh store per call**: equal inputs give equal answers (I2), and no realm state can carry
   from one run to the next. Compilation may be cached, state may not (JS §4).
@@ -110,11 +120,23 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
 
 ## 5. What the tests hold
 
+In `tests/boundary.rs`, the two statements that make a module a unit like another, each over a
+pool of values (numbers at their edges and past them, texts, bytes, nested lists and records,
+optionals, effects) and several modules, an echo and the JavaScript engine among them:
+
+- `a_call_is_a_function_of_its_module_and_its_inputs`: each call's answer and cost (fuel, memory)
+  are the same on an engine in order, on it again backwards, and on another engine backwards from
+  the start. A realm that kept anything, or a cost that depended on what was compiled already,
+  would differ; the second did (15.8M fuel against 12.1M) until translating cost nothing.
+- `what_a_module_answers_is_data_as_it_was_given`: every value comes back as it went in (an
+  optional as the ABI reads one), and as a node of a flow an answer holding an effect anywhere
+  gives nothing, the output beside it included.
+
+They replaced six tests of one case each (an echo of three values, `none` and `some`, one call
+twice on two engines, a counter on `globalThis`, one call's fuel cold and warm, one effect).
+
 In `src/lib.rs`, over tiny modules written as text and assembled with `wat`:
 
-- `echo_answers_its_inputs_as_its_outputs`: the ABI round trip, and a second run served from the
-  compiled cache (one entry).
-- `none_in_the_answer_is_an_absent_output_and_some_is_its_value`.
 - `a_module_with_imports_never_runs`: `NotAModule(Imports)`, from the engine itself.
 - `running_out_of_fuel_is_named` (`OutOfFuel { fuel: 10_000 }`, and its words),
   `growing_past_the_memory_budget_is_named`, `a_trap_is_named`,
@@ -128,8 +150,8 @@ mapping (`records_cross_both_ways_in_key_order_and_undefined_fields_are_left_out
 `absence_crosses_as_undefined_and_back`, `numbers_cross_as_f64_including_the_non_finite_ones`,
 `kinds_that_cannot_cross_are_errors_naming_the_kind`), errors (`an_exception_is_an_error_naming_it`,
 `a_syntax_error_is_an_error_too`), the prelude
-(`the_prelude_leaves_no_clock_randomness_io_or_locale`), determinism (`two_calls_share_nothing`,
-`the_same_call_answers_the_same_bytes`), `a_body_that_never_ends_runs_out_of_fuel`,
+(`the_prelude_leaves_no_clock_randomness_io_or_locale`),
+`a_body_that_never_ends_runs_out_of_fuel`,
 `the_source_alone_is_compiled_and_not_run`. `what_a_call_costs` is ignored: a measurement, run by
 hand (`cargo test -p holon-module --test js_engine -- --ignored --no-capture`); it asserts only that
 the three bodies cost more in order.

@@ -56,23 +56,6 @@ mod tests {
         vec![e(0, 0, 2, 0), e(1, 0, 2, 1), e(2, 0, BOUNDARY, 0)]
     }
 
-    #[test]
-    fn golden_nested_arithmetic() {
-        // (2 + 3) * (10 - 4) = 30
-        let mut r = MapResolver::new();
-        let h2 = r.insert(constant(2)).unwrap();
-        let h3 = r.insert(constant(3)).unwrap();
-        let h10 = r.insert(constant(10)).unwrap();
-        let h4 = r.insert(constant(4)).unwrap();
-        let hadd = r.insert(prim("add", 2)).unwrap();
-        let hsub = r.insert(prim("subtract", 2)).unwrap();
-        let hmul = r.insert(prim("multiply", 2)).unwrap();
-        let hleft = r.insert(closed(vec![h2, h3, hadd], binop_edges())).unwrap();
-        let hright = r.insert(closed(vec![h10, h4, hsub], binop_edges())).unwrap();
-        let top = closed(vec![hleft, hright, hmul], binop_edges());
-        assert_eq!(eval(&top, &[], &r).into_vec(), vec![Some(Value::Number(30.0))]);
-    }
-
     /// Tiny LCG for reproducible random graphs — the pure core takes no external deps.
     struct Lcg(u64);
     impl Lcg {

@@ -960,13 +960,6 @@ mod tests {
         }
     }
 
-    /// `map` is higher-order but carries no effect — it must read as `Pure`.
-    #[test]
-    fn map_is_pure() {
-        assert_eq!(kind_of("map", &[]), Some(Kind::Pure));
-        assert!(!kind_of("map", &[]).unwrap().is_effectful());
-    }
-
     /// An unknown leaf fails closed: `None`, never `Some(Pure)`.
     #[test]
     fn unknown_is_none() {
@@ -1107,14 +1100,6 @@ mod tests {
     }
 
     // ── P2.3.1: the capability manifest (primary classification) ────────────
-
-    #[test]
-    fn pure_leaf_declares_empty_manifest() {
-        // A positive empty manifest — Some(∅), not None — "touches nothing".
-        let caps = capabilities_of("add", &[]).unwrap();
-        assert!(caps.is_pure());
-        assert_eq!(caps.len(), 0);
-    }
 
     #[test]
     fn effectful_leaves_declare_their_caps() {

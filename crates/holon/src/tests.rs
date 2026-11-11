@@ -14,6 +14,8 @@ use holon_host::fire_sourced_with;
 mod access_table;
 mod scopes;
 mod tags;
+/// What a handler's text does, against what the same text does as JavaScript.
+mod semantics;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -166,16 +168,6 @@ fn test_store_write(key: &str) -> Unit {
         body: UnitBody::Primitive { name: "store_write".into() },
         params: vec![Param::frozen("key", key)],
         inputs: vec![Port { name: "value".into(), ty: Type::Any }],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    }
-}
-
-/// `egress` — sends its one input out: settles to an effect, which a run performs.
-fn test_sink() -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "egress".into() },
-        params: vec![],
-        inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
         outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
     }
 }
@@ -3263,27 +3255,7 @@ fn concurrent_runs_lose_no_update() {
 /// from the new state; the call it already made is answered from its record, not sent again.
 #[test]
 fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let host = listener.local_addr().unwrap().to_string();
-    let hits = std::sync::Arc::new(AtomicUsize::new(0));
-    let counted = std::sync::Arc::clone(&hits);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().take(2) {
-            let mut stream = stream.unwrap();
-            let counted = std::sync::Arc::clone(&counted);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                counted.fetch_add(1, Ordering::SeqCst);
-                if String::from_utf8_lossy(&buf[..n]).starts_with("GET /slow") {
-                    std::thread::sleep(Duration::from_millis(400));
-                }
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-            });
-        }
-    });
+    let (host, hits, gate) = gated_counting_server();
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     // Each run counts, and calls the path it was sent; the call's answer is its own.
@@ -3296,17 +3268,21 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
     let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
     assert_eq!(deploy_json(&state, "slow", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
 
+    gate.shut();
     std::thread::scope(|s| {
         let first = s.spawn(|| run_action_named(&state, "slow", "bump", serde_json::json!("/slow")).status_code);
-        std::thread::sleep(Duration::from_millis(100));
-        let started = std::time::Instant::now();
-        assert_eq!(run_action_named(&state, "slow", "bump", serde_json::json!("/fast")).status_code, 200);
-        assert!(started.elapsed() < Duration::from_millis(250), "held up {:?} by the slow run", started.elapsed());
+        let out = gate.out_at_once(1);
+        let second = out.then(|| run_action_named(&state, "slow", "bump", serde_json::json!("/fast")).status_code);
+        let held = gate.out() == 1;
+        gate.open();
+        assert!(out, "the slow call went out");
+        assert_eq!(second, Some(200));
+        assert!(held, "the second run finished while the first's call was still out, not held up by it");
         assert_eq!(first.join().unwrap(), 200);
     });
     let shown = body_json(route(&state, &req("GET", "/deployments/slow/state", vec![])));
     assert_eq!(shown["state"]["count"]["value"], 2.0, "both counted: {shown}");
-    assert_eq!(hits.load(Ordering::SeqCst), 2, "the slow call went out once");
+    assert_eq!((hits_of(&hits, "/slow"), hits_of(&hits, "/fast")), (1, 1), "the slow call went out once");
     let log = body_json(route(&state, &req("GET", "/deployments/slow/log", vec![])));
     let retried: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|x| x["retries"].as_u64().unwrap_or(0)).collect();
     assert_eq!(retried.iter().sum::<u64>(), 1, "the slow run ran once more: {retried:?}");
@@ -3656,31 +3632,201 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A run that panics is answered 500, on the data plane's own worker as on the blocking pool, and
-/// the deployment answers the next request (docs/L4s/resilience-audit-L4.md, R1). Before, the
-/// worker's connection was dropped with no answer.
+/// **Guards:** a panic ends the run it was in and nothing else, whatever started the run and
+/// wherever in it the panic is (docs/engineering/themes/resilience.md, G3).
+///
+/// **Why:** a panic is a fault in Holon's own code, which a flow can't ask for and nobody plans.
+/// What drives runs is shared: one thread ticks every deployment's clocks and the deadlines of
+/// every waiting run, one watches every folder, a connection's worker answers its requests. A
+/// panic that isn't caught where the run is ends whichever of those it was on.
+///
+/// **If it fails:** one faulty run stops every deployment's clocks and deadlines, or its folder's
+/// runs, until the server is restarted, with nothing in any log; or a caller's connection is
+/// dropped with no answer.
+///
+/// The test asks for the panic (`panic_for_tests`): in a run itself, where every run passes
+/// (`fire_with_state`), and in a request's handler before its run (answered where its connection
+/// is, dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
+/// comes back, a caller is told 500, and the deployment beside it runs all the same. Calm again,
+/// it runs: nothing that drives runs was ended. A run that panicked is on record as one that
+/// failed. The rows are every way a run starts that a test drives without a far side: a request
+/// answered on its connection's worker and one on the pool, an action, a clock, a file, and a
+/// waiting run going on at its deadline. A feed's, a queue's, a mailbox's and a socket's runs
+/// pass the same function.
 #[test]
-fn a_run_that_panics_is_answered_500_inline_as_on_the_pool() {
-    let mut state = test_state();
+fn a_panic_ends_its_run_and_nothing_else() {
+    use crate::listeners::panic_for_tests as fault;
+    use std::cell::Cell;
+    let mut state = claims_state("");
     state.listeners = Some(Mutex::new(BTreeMap::new()));
-    let port = free_port();
-    let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"boom\", {{ port: {port} }})\n\nroute.get(\"/light/:name\", (req) => `hi ${{req.params.name}}`, {{ log: \"unrecorded\" }})\n\nroute.get(\"/pooled/:name\", (req) => `hi ${{req.params.name}}`)\n");
-    let slug = deploy_plain_text(&state, &text);
-    sync_listeners(&state);
-    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
-    // Loaded by a first run, so the light route runs inline from here on.
-    assert!(get("/light/a").ends_with("hi a"));
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data("GET", "/light/boom", vec![]), &here), "inline");
-    crate::listeners::panic_for_tests::on("/light/boom");
-    crate::listeners::panic_for_tests::on("/pooled/boom");
-    for path in ["/light/boom", "/pooled/boom"] {
-        let answered = get(path);
-        assert!(answered.starts_with("HTTP/1.1 500") && answered.contains("the request's handler failed"), "{path}: {answered:?}");
+    let dir = std::env::temp_dir().join(format!("holon-panics-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    // Two deployments of one text: the one that faults, and one beside it.
+    let text = |name: &str, port: u16| {
+        format!(
+            r#"import {{ action, event, every, flow, on, route }} from "holon"
+import state from "state"
+import inbox from "folder:inbox"
+
+flow("{name}", {{ port: {port} }})
+
+route.get("/{name}-light/:x", (req) => `light ${{req.params.x}}`, {{ log: "unrecorded" }})
+
+route.get("/{name}-hit", () => `hit ${{++state.hits}}`)
+
+route.get("/{name}-seen", () => `${{state.hits ?? 0}} ${{state.bumps ?? 0}} ${{state.ticks ?? 0}} ${{state.files ?? 0}} ${{state.later ?? 0}}`)
+
+export const bump = action(() => ++state.bumps)
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  state.later = (state.later ?? 0) + (go.expired ? 1 : 1)
+}})
+
+every("1s", () => {{
+  ++state.ticks
+}})
+
+on.file.created(inbox, (f) => {{
+  ++state.files
+}})
+"#
+        )
+    };
+    let ports = [("faulty", free_port()), ("beside", free_port())];
+    for (name, port) in ports {
+        assert_eq!(deploy_plain_text(&state, &text(name, port)), name);
     }
-    assert!(get("/light/b").ends_with("hi b") && get("/pooled/c").ends_with("hi c"), "the next requests are answered");
-    crate::listeners::panic_for_tests::off();
-    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    sync_listeners(&state);
+    let get = |port: u16, path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    let status = |answered: &str| answered.get(9..12).and_then(|s| s.parse::<u16>().ok()).unwrap_or_else(|| panic!("no status: {answered:?}"));
+    // What a deployment has counted: its hits, bumps, ticks, files and waiting runs gone on.
+    let seen = |name: &str| -> Vec<u64> { data_call(&state, name, "GET", &format!("/{name}-seen"), "").1.split(' ').map(|n| n.parse().unwrap()).collect() };
+
+    // The passes that drive runs nobody asks for, each for every deployment at once.
+    let passes = Cell::new(0u64);
+    let tick = || {
+        passes.set(passes.get() + 2);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(passes.get()));
+    };
+    let dropped = Cell::new(0u32);
+    let drop_a_file = || {
+        dropped.set(dropped.get() + 1);
+        std::fs::write(dir.join(format!("f{}.txt", dropped.get())), "dropped").unwrap();
+        // New, settling; then the same, and it runs.
+        for _ in 0..2 {
+            arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        }
+    };
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+
+    // A way a run starts: what it counts in `seen` (a light request counts nothing: its answer
+    // says it ran), what its log entry is called, what to do calm beforehand, and how it starts,
+    // answering what its caller was told when it has one. `all` starts every deployment's at once.
+    struct Row<'a> {
+        what: &'a str,
+        counts: Option<usize>,
+        logged: Option<&'a str>,
+        before: Option<&'a dyn Fn(&str)>,
+        start: &'a dyn Fn(&str, u16) -> Option<u16>,
+        all: bool,
+    }
+    let light = |name: &str, port: u16| Some(status(&get(port, &format!("/{name}-light/x"))));
+    let hit = |name: &str, port: u16| Some(status(&get(port, &format!("/{name}-hit"))));
+    let bump = |name: &str, _: u16| Some(run_action_named(&state, name, "bump", serde_json::json!({})).status_code);
+    let wait = |name: &str| assert_eq!(run_action_named(&state, name, "later", serde_json::json!({})).status_code, 202, "{name} waits");
+    let ticked = |_: &str, _: u16| -> Option<u16> {
+        tick();
+        None
+    };
+    let filed = |_: &str, _: u16| -> Option<u16> {
+        drop_a_file();
+        None
+    };
+    let expired = |_: &str, _: u16| -> Option<u16> {
+        deadline();
+        None
+    };
+    let rows = [
+        Row { what: "a request answered on its connection's worker", counts: None, logged: None, before: None, start: &light, all: false },
+        Row { what: "a request answered on the pool", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
+        Row { what: "an action", counts: Some(1), logged: Some("trigger"), before: None, start: &bump, all: false },
+        Row { what: "a clock", counts: Some(2), logged: Some("tick"), before: None, start: &ticked, all: true },
+        Row { what: "a file", counts: Some(3), logged: Some("file"), before: None, start: &filed, all: true },
+        Row { what: "a waiting run at its deadline", counts: Some(4), logged: Some("resume"), before: Some(&wait), start: &expired, all: true },
+    ];
+    // Where the panic is: in the run, for every row; in the request's handler before its run, for
+    // the requests.
+    type Applies<'a> = &'a dyn Fn(&Row) -> bool;
+    let (every_row, requests): (Applies, Applies) = (&|_| true, &|row| row.what.starts_with("a request"));
+    let faults = [("in its run", vec!["a run of faulty"], every_row), ("in its request's handler", vec!["/faulty-light", "/faulty-hit"], requests)];
+
+    // Loaded by a first run, so the light route is answered on the worker from here on.
+    assert_eq!(light("faulty", ports[0].1), Some(200));
+    let here = Mutex::new(dataplane::Here::default());
+    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "faulty", &fake_data("GET", "/faulty-light/x", vec![]), &here), "answered on the worker");
+
+    let ran = |row: &Row, name: &str, was: &[u64], told: Option<u16>| match row.counts {
+        Some(at) => seen(name)[at] > was[at],
+        None => told == Some(200),
+    };
+    let mut failed_runs = 0;
+    for (wherever, asked, applies) in &faults {
+        for row in rows.iter().filter(|row| applies(row)) {
+            let says = format!("{}, a panic {wherever}", row.what);
+            let start = |faulted: bool| {
+                // What comes before is calm: only the run that goes on from it is faulted.
+                for (name, _) in ports {
+                    if let Some(before) = row.before {
+                        before(name);
+                    }
+                }
+                let was: Vec<Vec<u64>> = ports.iter().map(|(name, _)| seen(name)).collect();
+                if faulted {
+                    asked.iter().for_each(|what| fault::on(what));
+                }
+                let told: Vec<Option<u16>> = match row.all {
+                    true => vec![(row.start)("faulty", ports[0].1); 2],
+                    false => ports.iter().map(|(name, port)| (row.start)(name, *port)).collect(),
+                };
+                asked.iter().for_each(|what| fault::off(what));
+                (was, told)
+            };
+            let (was, told) = start(false);
+            assert!(ran(row, "faulty", &was[0], told[0]), "{says}: calm, it runs");
+            let (was, told) = start(true);
+            assert!(!ran(row, "faulty", &was[0], told[0]), "{says}: faulted, it didn't run");
+            if !row.all {
+                assert_eq!(told[0], Some(500), "{says}: its caller is told");
+            }
+            assert!(ran(row, "beside", &was[1], told[1]), "{says}: the deployment beside it runs all the same");
+            let (was, told) = start(false);
+            assert!(ran(row, "faulty", &was[0], told[0]), "{says}: calm again, it runs");
+            if *wherever == "in its run" && row.logged.is_some() {
+                failed_runs += 1;
+            }
+        }
+    }
+
+    // A run that panicked is on record as one that failed, under what started it; a request whose
+    // handler panicked before its run has none (G3's limit). Nothing of the deployment beside it
+    // failed.
+    let failed = |name: &str| -> Vec<String> {
+        log_entries(&state, name).iter().filter(|e| e["error"].as_str().is_some_and(|e| e.starts_with(crate::firing::PANICKED))).map(|e| e["kind"].as_str().unwrap().to_string()).collect()
+    };
+    let mut expected: Vec<String> = rows.iter().filter_map(|row| row.logged.map(String::from)).collect();
+    expected.sort();
+    let mut logged = failed("faulty");
+    logged.sort();
+    assert_eq!(logged, expected, "each run that panicked is logged as failed");
+    assert_eq!(logged.len(), failed_runs);
+    assert!(log_entries(&state, "beside").iter().all(|e| e["error"].is_null()), "nothing of the deployment beside it failed");
+    for (name, _) in ports {
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{name}/stop"), vec![])).status_code, 200);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A server deployment whose port another program holds says so on its entry, rather than looking
@@ -4057,47 +4203,6 @@ fn a_fire_in_progress_does_not_stall_the_table() {
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded.keys().collect::<Vec<_>>(), vec!["a", "b"]);
     let _ = std::fs::remove_file(&path);
-}
-
-/// Regression: `egress → store_write` stored the `Effect` itself, the next run panicked in
-/// holon-host rebuilding it as a constant while holding the state lock, and the poisoned mutex
-/// then took down every later `/deploy`, `/deployments` and run. A route that writes an effect
-/// (built by hand: the language can't write one) and reads the key back. The sink's own check
-/// refuses the effect at run time (primitives.rs `sink_effect`); before that, `validate` refuses its
-/// wiring, so the server never deploys it.
-#[test]
-fn effect_written_to_state_does_not_take_the_server_down() {
-    let state = test_state();
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let none = leaf("default", vec![Param::frozen("type", "Text"), Param::frozen("value", "none")], vec![("value", Type::Any)], Type::Any);
-    let write = endpoint(
-        &state,
-        "POST",
-        "/cell",
-        vec![leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any), test_sink(), test_store_write("cell"), test_store_read("cell"), none],
-        vec![
-            e(BOUNDARY, 0, 0, 0), // request → field(body)
-            e(0, 0, 1, 0),        // body → egress
-            e(1, 0, 2, 0),        // egress → store_write
-            e(3, 0, 4, 0),        // store_read → default
-            e(4, 0, BOUNDARY, 0), // response: what the cell holds
-            e(2, 0, BOUNDARY, 1), // effect: the write
-        ],
-        1,
-    );
-    let server = Unit {
-        body: UnitBody::Composite { children: vec![write], edges: vec![] },
-        params: vec![Param::frozen("declare", "server"), Param::frozen("port", "18133")],
-        inputs: vec![],
-        outputs: vec![],
-    };
-    let unit = stage(&state, &server);
-    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"]);
-    let refused = deploy_json(&state, "bad-writer", unit, serde_json::json!({ "acknowledge": ack }));
-    assert_eq!(refused.status_code, 400);
-    let why = body_json(refused);
-    assert!(why.to_string().contains("doesn't validate") && why.to_string().contains("incompatible types: Effect"), "{why}");
-    assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200);
 }
 
 /// What a clock's tick writes is kept for the next: each tick writes the time it ticked at.
@@ -5607,8 +5712,8 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
 }
 
 /// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
-/// true), an absent one as `if` reads it, and a status alone answers it with an empty body, a 204
-/// with none.
+/// true), an `if` on an absent one runs neither branch, nor what follows one that returns, and a
+/// status alone answers it with an empty body, a 204 with none.
 #[test]
 fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
     let state = claims_state("");
@@ -5621,16 +5726,18 @@ fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
     for (body, answer) in [(r#"{"s":""}"#, (422, "empty")), (r#"{"s":0}"#, (422, "empty")), (r#"{"s":false}"#, (422, "empty")), (r#"{"s":"a"}"#, (200, "full")), (r#"{"s":[]}"#, (200, "full")), (r#"{"s":{}}"#, (200, "full"))] {
         assert_eq!(call("POST", "/not", body), (answer.0, answer.1.to_string()), "{body}");
     }
-    // Absent is still absent: `!` of it has no value, and the `if` takes its else.
-    assert_eq!(call("POST", "/not", "{}"), (200, "full".to_string()));
+    // Absent is still absent: `!` of it has no value, and the `if` runs neither branch; one of
+    // them returns, so nothing after it runs either, and the route answers 404.
+    assert_eq!(call("POST", "/not", "{}"), (404, r#"{"error":"not found"}"#.to_string()));
     for body in [r#"{"s":"x"}"#, r#"{"s":""}"#, r#"{"s":{}}"#, r#"{"s":0}"#, "{}"] {
         assert_eq!(call("POST", "/if", body), (200, "counted".to_string()), "{body}");
     }
-    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":3,"yes":2}"#.to_string()), "each request counted once, on its side");
+    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":2,"yes":2}"#.to_string()), "each request counted once, on its side, but the one with no s");
     assert_eq!(call("POST", "/bare", ""), (400, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":1}"#), (204, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":2}"#), (409, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":3}"#), (200, r#"{"x":3}"#.to_string()));
+    assert_eq!(call("POST", "/pick", "{}"), (404, r#"{"error":"not found"}"#.to_string()), "no x: neither branch, nor the last return");
 }
 
 /// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as
@@ -5699,23 +5806,96 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
 
 /// A local HTTP server that counts hits per path: `/slow` answers after 400 ms, the rest at once.
 /// Lives as long as the test process.
-fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
+fn counting_server() -> (String, Hits) {
+    let (host, hits, _) = gated_counting_server();
+    (host, hits)
+}
+
+/// A counting server's hits: path → how many requests came for it.
+type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
+
+/// The longest a shut [`Gate`] holds a call: under the 30 s a run waits for an answer, so a run
+/// held up behind a held call is let go by the gate, not by its own timeout, and fails its test
+/// rather than hanging it.
+const GATE_HOLDS: Duration = Duration::from_secs(20);
+
+/// What a test holds `/slow` calls with, to see what happens while one is out without timing it:
+/// on a loaded machine (a sweep on every core beside it) "it took under 780 ms" fails, where "both
+/// calls were out at once" doesn't. Open, as it starts, a call answers after 400 ms; shut, once
+/// the test opens it ([`GATE_HOLDS`] at most).
+#[derive(Default)]
+struct Gate {
+    calls: Mutex<GateCalls>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct GateCalls {
+    shut: bool,
+    /// The `/slow` calls out now.
+    out: usize,
+}
+
+impl Gate {
+    fn shut(&self) {
+        self.calls.lock().unwrap().shut = true;
+    }
+
+    fn open(&self) {
+        self.calls.lock().unwrap().shut = false;
+        self.changed.notify_all();
+    }
+
+    /// The `/slow` calls out now.
+    fn out(&self) -> usize {
+        self.calls.lock().unwrap().out
+    }
+
+    /// Whether `n` calls were out at once, waiting up to 15 s for them (less than a shut gate
+    /// holds one, so none of them was let go meanwhile).
+    fn out_at_once(&self, n: usize) -> bool {
+        let calls = self.calls.lock().unwrap();
+        self.changed.wait_timeout_while(calls, Duration::from_secs(15), |c| c.out < n).unwrap().0.out >= n
+    }
+
+    /// One `/slow` call, answered once this returns.
+    fn pass(&self) {
+        let mut calls = self.calls.lock().unwrap();
+        calls.out += 1;
+        self.changed.notify_all();
+        if calls.shut {
+            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut).unwrap().0;
+        } else {
+            drop(calls);
+            std::thread::sleep(Duration::from_millis(400));
+            calls = self.calls.lock().unwrap();
+        }
+        calls.out -= 1;
+        self.changed.notify_all();
+    }
+}
+
+/// [`counting_server`], and the [`Gate`] its `/slow` calls pass.
+fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
     use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
     let hits = Arc::new(Mutex::new(BTreeMap::new()));
     let counted = Arc::clone(&hits);
+    let gate = Arc::new(Gate::default());
+    let passing = Arc::clone(&gate);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let counted = Arc::clone(&counted);
+            let passing = Arc::clone(&passing);
             std::thread::spawn(move || {
                 let Some((head, _)) = read_request(&mut stream) else { return };
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                 let body = match path.as_str() {
                     "/slow" => {
-                        std::thread::sleep(Duration::from_millis(400));
+                        passing.pass();
                         "slow"
                     }
                     "/name" => "k",
@@ -5727,49 +5907,7 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
             });
         }
     });
-    (host, hits)
-}
-
-/// A call whose answer is read is made only on the path that reaches it: after a `return` that
-/// answered, or in an `if` not taken, nothing is sent, though a later statement reads the answer.
-#[test]
-fn a_call_on_a_path_not_taken_is_not_made() {
-    let (host, hits) = counting_server();
-    let state = claims_state("");
-    let text = format!(
-        r#"import {{ flow, route }} from "holon"
-import api from "host:{host}"
-
-flow("paths", {{ port: 18297 }})
-
-route.post("/early", async (req) => {{
-  if (!req.json.go) {{
-    return "stopped"
-  }}
-  const sent = await api.post("/early", {{ body: "x" }})
-  return `sent ${{sent.status}}`
-}})
-
-route.post("/branch", async (req) => {{
-  let said = "skipped"
-  if (req.json.go) {{
-    const sent = await api.post("/branch", {{ body: "x" }})
-    said = `sent ${{sent.status}}`
-  }}
-  return said
-}})
-"#
-    );
-    let slug = deploy_text(&state, &text, &host);
-    for path in ["/early", "/branch"] {
-        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":false}"#);
-        assert_eq!(status, 200, "{body}");
-        assert!(body == "stopped" || body == "skipped", "{path}: {body}");
-        assert_eq!(hits_of(&hits, path), 0, "{path}: a path not taken sends nothing");
-        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":true}"#);
-        assert_eq!((status, body.as_str()), (200, "sent 200"), "{path}");
-        assert_eq!(hits_of(&hits, path), 1, "{path}: sent once, when taken");
-    }
+    (host, hits, gate)
 }
 
 /// A secret computed into something else is kept out of the log as surely as its value is: a
@@ -6479,6 +6617,90 @@ fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
     assert_eq!(report.states.unwrap().breaks, vec![(3, "it began from a state the run before it (run 2) didn't leave, nor a run beside it".to_string())]);
 }
 
+/// **Guards:** `holon verify` tells a run the server couldn't write (a full disk) from one
+/// removed: the lost one reads as a run not in the file, which the line after it says, the chain
+/// unbroken, the export passing, and the run after it unchecked where it began (it may have begun
+/// from what the lost run left), not a break; a run removed reads as a break, or, the lines after
+/// it chained again, as runs MISSING that no line says were lost; and one removed, the rest chained
+/// again saying it lost, reads as a loss, which only the witness's head, then not found, tells.
+///
+/// **Why:** a line lost and a line removed leave the same hole. What tells them apart is that the
+/// server says each it lost in the next line, which the witness holds, and numbers runs one after
+/// another; each row is a rewrite someone who can write the file could make. The recorder's model
+/// test holds the chain and the runs said lost over every order of failures; what a lost run does
+/// to the state check only a deployment with state shows.
+///
+/// **If it fails:** a full disk reads as the log, or its state, changed outside holon; or a payout's
+/// line removed and the rest chained again passes as a disk that was full, or passes unremarked.
+#[test]
+fn verify_tells_a_run_the_server_lost_from_one_removed() {
+    let (host, _) = counting_server();
+    // Its logs in files, which a write can fail to reach.
+    let state = test_state_at(unique_temp_path("lost-line").into());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let fail = |on: bool| state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_writes = on);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
+    // Run 1 changes the state, and its line can't be written.
+    fail(true);
+    data_call(&state, &slug, "PUT", "/set/k2", "q");
+    fail(false);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k3", "r").0, 200);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k4", "s").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok(), "{text}");
+    assert_eq!((report.runs, &report.breaks, &report.lost), (3, &vec![], &vec![(1, 1)]), "{text}");
+    assert!(text.contains("run 1 isn't in the file: the server couldn't write its line, and the line after says so"), "{text}");
+    let s = report.states.unwrap();
+    let why = "where it began: a run between it and the run before it here, whose line the server couldn't write, may have left it";
+    assert_eq!((&s.breaks, s.unchecked.get(why)), (&vec![], Some(&vec![2])), "{text}");
+
+    // The lines: run 0's, run 2's (saying run 1 was lost), run 3's. Each rewrite keeps run 0's line
+    // as it is; `chained` writes the rest after it, each `prev` the line before.
+    let lines = export.lines.clone();
+    let value = |i: usize| -> serde_json::Value { serde_json::from_str(&lines[i]).unwrap() };
+    let chained = |rest: Vec<serde_json::Value>| {
+        let mut out = vec![lines[0].clone()];
+        for mut v in rest {
+            v["prev"] = recorder::line_hash(out.last().unwrap()).into();
+            out.push(serde_json::to_string(&v).unwrap());
+        }
+        out
+    };
+    let saying = |mut v: serde_json::Value, from: Option<u64>| {
+        match from {
+            Some(from) => v["lost_since"] = from.into(),
+            None => drop(v.as_object_mut().unwrap().remove("lost_since")),
+        }
+        v
+    };
+    // Each: what was done, the lines, then the breaks, the runs missing, the runs said lost, and
+    // whether it passes without the witness's head and with it.
+    type Row = (&'static str, Vec<String>, Vec<u64>, Vec<(u64, u64)>, Vec<(u64, u64)>, bool, bool);
+    let rows: Vec<Row> = vec![
+        ("as the server wrote it", lines.clone(), vec![], vec![], vec![(1, 1)], true, true),
+        ("the line saying run 1 was lost removed", vec![lines[0].clone(), lines[2].clone()], vec![3], vec![(1, 2)], vec![], false, false),
+        ("run 2 removed, the rest chained again", chained(vec![value(2)]), vec![], vec![(1, 2)], vec![], false, false),
+        ("run 2 removed, the rest chained again saying runs 1 and 2 were lost", chained(vec![saying(value(2), Some(1))]), vec![], vec![], vec![(1, 2)], true, false),
+        ("run 1's loss unsaid, the rest chained again", chained(vec![saying(value(1), None), value(2)]), vec![], vec![(1, 1)], vec![], false, false),
+    ];
+    let witness = export.head.clone();
+    for (what, lines, breaks, gaps, lost, passes, witnessed) in rows {
+        let head = recorder::line_hash(lines.last().unwrap());
+        let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let report = verify::check(&copy, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        assert_eq!((&report.breaks, &report.gaps, &report.lost, report.ok()), (&breaks, &gaps, &lost, passes), "{what}:\n{text}");
+        if !gaps.is_empty() {
+            assert!(text.contains("MISSING: not in the file, and no line says the server couldn't write"), "{what}:\n{text}");
+        }
+        let report = verify::check(&copy, Some(&witness), &BTreeMap::new());
+        assert_eq!(report.ok(), witnessed, "{what}, with the witness's head:\n{}", verify::describe(&report, Some(&witness)));
+    }
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]
@@ -6990,6 +7212,68 @@ fn orders_api_runs_on_postgres_and_mysql_as_on_sqlite() {
     }
 }
 
+/// A statement's `$n` is the n-th value after it, whatever order its SQL names them in and however
+/// often, in a read, an insert and an update, on SQLite and on every engine the environment names.
+///
+/// Guards: how each engine binds a flow's values to its SQL: SQLite by each `$n`'s digits,
+/// Postgres as it numbers them itself, MySQL through `sql::positional`.
+/// Why: SQLite numbers named parameters as it meets them, not by their digits, so `$2 … $1` took
+/// the values the other way round, while the claims, read by the digits, named the row the flow
+/// meant.
+/// If it fails: a write lands on another row than the flow names, or on none, and a read answers
+/// with another row's values.
+#[test]
+fn a_statements_dollar_n_is_its_nth_value_on_every_engine() {
+    const ORDERS: [[usize; 3]; 6] = [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]];
+    // For each order: an insert names a, b, c by it; a read by the next, one of them twice; an
+    // update by the one after.
+    let mut text = String::from("import { flow, route, status } from \"holon\"\nimport shop from \"database:shop\"\n\nflow(\"numbered\", { port: 8197 })\n");
+    for (k, [ia, ib, ic]) in ORDERS.into_iter().enumerate() {
+        let [sa, sb, sc] = ORDERS[(k + 1) % 6];
+        let [ua, ub, uc] = ORDERS[(k + 2) % 6];
+        text += &format!(
+            "\nroute.post(\"/put/{k}\", (req) => {{\n  shop.exec(\"insert into t (a, b, c) values (${ia}, ${ib}, ${ic})\", req.json.v[0], req.json.v[1], req.json.v[2])\n  return status(201, {{ put: true }})\n}})\n\
+             route.post(\"/get/{k}\", (req) => shop.one(\"select a, b, c from t where b = ${sb} and c = ${sc} and a = ${sa} and ${sa} = a\", req.json.v[0], req.json.v[1], req.json.v[2]))\n\
+             route.post(\"/set/{k}\", (req) => {{\n  shop.exec(\"update t set b = ${ub} where a = ${ua} and c = ${uc}\", req.json.v[0], req.json.v[1], req.json.v[2], {{ expect: 1 }})\n  return {{ set: true }}\n}})\n"
+        );
+    }
+    // The values in the order a statement names a, b and c by: the value for $n n-th.
+    let values = |[pa, pb, pc]: [usize; 3], [a, b, c]: [&str; 3]| {
+        let mut v = [""; 3];
+        (v[pa - 1], v[pb - 1], v[pc - 1]) = (a, b, c);
+        serde_json::json!({ "v": v }).to_string()
+    };
+    let schema = "create table t (a varchar(16) not null, b varchar(16) not null, c varchar(16) not null)";
+    let check = |engine: &str, state: &AppState| {
+        let slug = deploy_text(state, &text, "");
+        for (k, order) in ORDERS.into_iter().enumerate() {
+            let (a, b, c, b2) = (format!("a{k}"), format!("b{k}"), format!("c{k}"), format!("B{k}"));
+            let row = |b: &str| serde_json::json!({ "a": a, "b": b, "c": c });
+            let call = |path: &str, order: [usize; 3], b: &str| data_call(state, &slug, "POST", &format!("/{path}/{k}"), &values(order, [&a, b, &c]));
+            let (status, said, _) = call("put", order, &b);
+            assert_eq!(status, 201, "{engine}, {order:?}: {said}");
+            let (status, said, _) = call("get", ORDERS[(k + 1) % 6], &b);
+            assert_eq!((status, serde_json::from_str::<serde_json::Value>(&said).ok()), (200, Some(row(&b))), "{engine}: inserted by {order:?}, read by {:?}", ORDERS[(k + 1) % 6]);
+            let (status, said, _) = call("set", ORDERS[(k + 2) % 6], &b2);
+            assert_eq!(status, 200, "{engine}: updated by {:?}: {said}", ORDERS[(k + 2) % 6]);
+            let (_, said, _) = call("get", ORDERS[(k + 1) % 6], &b2);
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&said).ok(), Some(row(&b2)), "{engine}: after the update by {:?}", ORDERS[(k + 2) % 6]);
+        }
+    };
+    let dir = std::env::temp_dir().join(format!("holon-numbered-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = claims_state("");
+    let body = serde_json::json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    check("sqlite", &state);
+    for db in fresh_databases("numbered") {
+        let state = server_with_database(&db.url);
+        assert_eq!(bind_shop(&state, Some(schema)).status_code, 200, "{}", db.engine);
+        check(db.engine, &state);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two servers on one Postgres (or MySQL), each running refund-once, refund one order at the same
 /// moment: their own tables of claims can't see each other's, the database can. The first to call
 /// out holds the order's row there until it commits, so the payment API is called once; the
@@ -6998,7 +7282,7 @@ fn orders_api_runs_on_postgres_and_mysql_as_on_sqlite() {
 fn two_servers_refunding_one_order_call_the_payment_api_once() {
     for db in fresh_databases("refunds") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let servers = [server_with_database(&url), server_with_database(&url)];
         assert_eq!(bind_shop(&servers[0], Some(&format!("{}; insert into orders (id, customer, total) values (1, 'ada', 5), (2, 'bo', 7), (3, 'cy', 9)", shop_schema(engine)))).status_code, 200, "{engine}");
         assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
@@ -7020,18 +7304,21 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
         assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
 
-        // Two orders at once, one on each server: neither waits for the other's row.
-        let t0 = std::time::Instant::now();
+        // Two orders at once, one on each server: neither waits for the other's row, so both
+        // calls are out at once, each holding its order's.
+        gate.shut();
         let statuses: Vec<u16> = std::thread::scope(|s| {
             let calls = [(0, 2), (1, 3)].map(|(i, id)| {
                 let (server, slug) = (&servers[i], &slugs[i]);
                 s.spawn(move || data_call(server, slug, "POST", &format!("/refund/{id}"), "").0)
             });
+            let both = gate.out_at_once(2);
+            gate.open();
+            assert!(both, "{engine}: side by side, not one after the other");
             calls.into_iter().map(|c| c.join().unwrap()).collect()
         });
         assert_eq!(statuses, [200, 200], "{engine}");
         assert_eq!(hits_of(&hits, "/slow"), 3, "{engine}");
-        assert!(t0.elapsed() < Duration::from_millis(780), "{engine}: side by side, not one after the other: {:?}", t0.elapsed());
     }
 }
 
@@ -7194,7 +7481,7 @@ fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
 fn a_database_held_for_whole_runs_holds_across_servers() {
     for db in fresh_databases("runlock") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let servers = [server_with_database(&url), server_with_database(&url)];
         for s in &servers {
             *s.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n[limits]\nclaim_wait_ms = 3000").unwrap());
@@ -7218,15 +7505,17 @@ fn a_database_held_for_whole_runs_holds_across_servers() {
         assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
         let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
-        let t0 = std::time::Instant::now();
+        gate.shut();
         std::thread::scope(|s| {
             let calls = [0, 1].map(|i| {
                 let (server, slug) = (&servers[i], &readers[i]);
                 s.spawn(move || data_call(server, slug, "GET", "/peek", "").0)
             });
+            let both = gate.out_at_once(2);
+            gate.open();
+            assert!(both, "{engine}: readers of two servers share it, their calls out at once");
             assert_eq!(calls.map(|c| c.join().unwrap()), [200, 200], "{engine}");
         });
-        assert!(t0.elapsed() < Duration::from_millis(700), "{engine}: readers of two servers share it: {:?}", t0.elapsed());
         assert_eq!(hits_of(&hits, "/slow"), 4, "{engine}");
 
         // A writer deployed where claim_wait is 100 ms, while the other server's writer runs:
@@ -9375,6 +9664,19 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     let orders = call("GET", "/orders", "");
     assert_eq!(orders["placed"][big["id"].as_str().unwrap()]["approved_by"], "ops", "{orders}");
     assert_eq!(orders["waiting"], serde_json::json!({}), "{orders}");
+
+    // One nobody approves: when its hour runs out it is placed by nobody (it once was, as approved
+    // by "someone": what a wait gives when it runs out has no body to read who from), and it no
+    // longer waits.
+    let unasked = call("PUT", "/levels/SOL-USD", r#"{"price":"3000","size":"1"}"#);
+    price("SOL-USD", "2999", 1);
+    eventually("the second large order waits", || call("GET", "/orders", "")["waiting"][unasked["id"].as_str().unwrap()]["approve"].is_string());
+    let asked_before = exchange.asked.lock().unwrap().len();
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let orders = call("GET", "/orders", "");
+    assert_eq!(orders["waiting"], serde_json::json!({}), "it no longer waits: {orders}");
+    assert!(orders["placed"][unasked["id"].as_str().unwrap()].is_null(), "nobody placed it: {orders}");
+    assert_eq!((exchange.asked.lock().unwrap().len(), exchange.placed.lock().unwrap().len()), (asked_before, 2), "nothing was sent to the exchange");
     // Read back from the exchange.
     let open = body_json(run_action_named(&state, &slug, "reconcile", serde_json::json!({})));
     assert_eq!(open["answer"].as_array().map(Vec::len), Some(2), "{open}");
@@ -10629,38 +10931,109 @@ route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => 
         .unwrap();
 }
 
-/// `POST /unit` only decodes what it stores, so a unit whose wiring `validate` refuses can be
-/// staged; the closure it is in is refused before anything runs it, and a deploy of it is a 400.
-/// Every sample's closure loads (the test above), so every sample validates.
+/// **Guards:** whatever unit is staged, loading its closure answers: the closure, or why not. A
+/// unit core's `validate` refuses is refused exactly, by itself and nested in another, before
+/// anything is made of it; one it takes loads, a child nobody staged left missing.
+///
+/// **Why:** `POST /unit` only decodes what it stores, and an agent may call it: a unit's bytes
+/// are whoever's sent them. The evaluator is written for wiring that validates, and so is what is
+/// laid out for it (a shape, by the ports its edges name), so the loader is the one gate between
+/// any bytes and both.
+///
+/// **If it fails:** a unit that doesn't validate runs (two sources for one port, a cycle, a port
+/// its child doesn't have: what it computes is anyone's guess), or loading one ends the server:
+/// laid out before it was validated, an edge to port four billion asked for a list of 51 GiB.
+///
+/// Units are drawn, a few thousand: children staged or not, edges to and from ports that exist,
+/// don't, or are far out, to one port twice, round in a cycle, an effect into a sink's data. Each
+/// is loaded as a root and nested, and what the loader says is what `validate` says of it; a
+/// deploy of one refused is told so, and the server answers on. The kinds of mistake are counted,
+/// so the drawing is known to make each.
 #[test]
-fn a_closure_with_a_unit_that_doesnt_validate_is_refused() {
+fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
+    struct Rng(u64);
+    impl Rng {
+        fn below(&mut self, m: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % m
+        }
+    }
     let state = test_state();
     let mut store = state.store.clone();
-    let clock = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let out = |ty| vec![Port { name: "out".into(), ty }];
-    // An output port the clock doesn't have, two sources for one port, and a cycle.
-    let no_such_port = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![e(0, 3, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
-    let random = store.put(&Unit { params: vec![], ..holon_core::interface_of("random").unwrap() }).unwrap();
-    let two_sources = Unit { body: UnitBody::Composite { children: vec![clock, random], edges: vec![e(0, 0, BOUNDARY, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
-    let not = store.put(&holon_core::interface_of("not").unwrap()).unwrap();
-    let and = store.put(&holon_core::interface_of("and").unwrap()).unwrap();
-    let cycle = Unit { body: UnitBody::Composite { children: vec![not, and], edges: vec![e(0, 0, 1, 0), e(1, 0, 0, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Boolean) };
-    for (bad, says) in [(no_such_port, "has no such output"), (two_sources, "more than one source"), (cycle, "contains a cycle")] {
-        let bad = store.put(&bad).unwrap();
-        // Refused whether it is the root or nested in one.
-        let wrapper = store.put(&Unit { body: UnitBody::Composite { children: vec![bad], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
-        for root in [bad, wrapper] {
-            let Err(e) = closure(&state.store, root) else { panic!("{says}: a closure with a unit that doesn't validate is refused") };
-            assert!(matches!(&e, crate::units::Closure::Invalid(why) if why.contains(&to_hex(&bad)) && why.contains("doesn't validate") && why.contains(says)), "{e:?}");
-        }
-        let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "unwired", "unit": to_hex(&wrapper) })).unwrap()));
-        assert_eq!(deployed.status_code, 400);
-        assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
+    // What a drawn unit's children are: leaves staged here, beside one nobody staged. The same
+    // units are core's to resolve, to say what it makes of a wiring. Two are sinks, whose output
+    // is an effect and whose input takes anything but one (a write that stored an effect once
+    // panicked the next run under the state lock, and every request after it).
+    let mut known = holon_core::MapResolver::new();
+    let mut leaves: Vec<Hash> = Vec::new();
+    for name in ["clock", "random", "not", "and", "add", "concat", "equals", "store_write", "egress"] {
+        let interface = holon_core::interface_of(name).unwrap();
+        let unit = if name == "store_write" { interface } else { Unit { params: vec![], ..interface } };
+        leaves.push(store.put(&unit).unwrap());
+        known.insert(unit).unwrap();
     }
-    // The clock alone, its closure loaded from the store, and again from memory.
-    closure(&state.store, clock).unwrap();
-    closure(&state.store, clock).unwrap();
+    let nobody: Hash = [0xee; 32];
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let port = |rng: &mut Rng| match rng.below(20) {
+        0 => u32::MAX,
+        1 => u32::MAX - 1,
+        2 => 4_000_000_000,
+        v => (v % 3) as u32,
+    };
+    let types = [Type::Number, Type::Boolean, Type::Text, Type::Any, Type::Effect];
+    let (mut refused, mut loaded, mut kinds) = (0, 0, BTreeMap::<String, usize>::new());
+    for case in 0..3_000 {
+        let n = 1 + rng.below(4) as usize;
+        let children: Vec<Hash> = (0..n).map(|_| if rng.below(12) == 0 { nobody } else { leaves[rng.below(leaves.len() as u64) as usize] }).collect();
+        let end = |rng: &mut Rng| match rng.below(n as u64 + 2) {
+            0 => BOUNDARY,
+            v => (v - 1) as u32,
+        };
+        let edges: Vec<Edge> = (0..rng.below(7)).map(|_| Edge { from_child: end(&mut rng), from_port: port(&mut rng), to_child: end(&mut rng), to_port: port(&mut rng) }).collect();
+        let ports = |rng: &mut Rng, name: &str| (0..rng.below(3)).map(|i| Port { name: format!("{name}{i}"), ty: types[rng.below(types.len() as u64) as usize].clone() }).collect::<Vec<_>>();
+        let unit = Unit { body: UnitBody::Composite { children, edges }, params: vec![], inputs: ports(&mut rng, "in"), outputs: ports(&mut rng, "out") };
+        // What core makes of it: a child that isn't staged is nothing to refuse it for.
+        let found: Vec<String> = holon_core::validate(&unit, &known).err().unwrap_or_default().iter().map(|e| format!("{e:?}")).collect();
+        let mistakes: Vec<String> = found.iter().map(|e| e.split([' ', '(', '{']).next().unwrap().to_string()).filter(|e| e != "UnresolvedChild").collect();
+        for kind in &mistakes {
+            *kinds.entry(kind.clone()).or_default() += 1;
+        }
+        // An effect into a sink: its port takes anything else.
+        *kinds.entry("EffectIntoSink".into()).or_default() += found.iter().filter(|e| e.contains("src: Effect, dst: Any")).count();
+        // A unit with no one encoding (two children alike that no edge tells apart) is no unit: it
+        // has no hash to be staged under.
+        let Ok(staged) = store.put(&unit) else { continue };
+        let nested = store.put(&Unit { body: UnitBody::Composite { children: vec![staged], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
+        for root in [staged, nested] {
+            match (closure(&state.store, root), mistakes.is_empty()) {
+                (Ok(held), true) => assert!(held.resolve(&staged).is_some(), "case {case}: it holds the unit"),
+                (Err(crate::units::Closure::Invalid(why)), false) => assert!(why.contains(&to_hex(&staged)) && why.contains("doesn't validate"), "case {case}: {why}"),
+                (Ok(_), false) => panic!("case {case}: loaded, though it doesn't validate ({mistakes:?}): {unit:?}"),
+                (Err(e), _) => panic!("case {case}: {e:?} for a unit with {mistakes:?}: {unit:?}"),
+            }
+        }
+        if mistakes.is_empty() {
+            loaded += 1;
+            continue;
+        }
+        refused += 1;
+        // A deploy of one is told so, and the server answers on.
+        if refused % 200 == 1 {
+            let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "unwired", "unit": to_hex(&nested) })).unwrap()));
+            assert_eq!(deployed.status_code, 400);
+            assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
+        }
+    }
+    assert!(refused > 1_000 && loaded > 300, "{refused} refused, {loaded} loaded");
+    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch", "EffectIntoSink"] {
+        assert!(kinds.get(kind).is_some_and(|n| *n >= 10), "the drawing makes {kind} too seldom: {kinds:?}");
+    }
+    assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200, "the server answers on");
+    // A leaf alone, its closure loaded from the store, and again from memory.
+    closure(&state.store, leaves[0]).unwrap();
+    closure(&state.store, leaves[0]).unwrap();
 }
 
 /// An action's answer names its own run's entry, however many runs of its deployment log at once
@@ -10706,55 +11079,29 @@ fn one_deployments_log_doesnt_hold_up_another() {
     let other = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon.ts"));
     let held = Arc::clone(&state.deployments.lock().unwrap()[&busy].log);
     let (holding, held_now) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     thread::scope(|s| {
-        s.spawn(|| {
+        // Held until the other's request is answered, GATE_HOLDS at most: whether the test let
+        // it go, not the time (a loaded machine takes as long as it takes, not 400 ms).
+        let holder = s.spawn(move || {
             held.with(|_| {
                 holding.send(()).unwrap();
-                thread::sleep(Duration::from_millis(800));
+                released.recv_timeout(GATE_HOLDS).is_ok()
             })
         });
         held_now.recv().unwrap();
-        let t = std::time::Instant::now();
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &other, &fake_data("GET", "/hello/Ada", vec![]));
+        let _ = release.send(());
         assert_eq!(r.status, 200);
-        assert!(t.elapsed() < Duration::from_millis(400), "{other} waited {:?} for {busy}'s log", t.elapsed());
+        assert!(holder.join().unwrap(), "{other} was answered only once {busy}'s log was let go");
     });
-}
-
-/// The run logs and event logs written since the last sync are synced (recorder.rs's
-/// `sync_logs`); a log whose file can't be synced keeps its flag and says why, and is synced once
-/// it can be.
-#[test]
-fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
-    let mut state = test_state();
-    state.deployments_path = unique_temp_path("sync-logs").into();
-    // Lazy: its runs are left to the syncer (a strict one syncs before it answers).
-    let slug = deploy_plain_text(&state, "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`, { log: \"lazy\" })\n");
-    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
-    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
-    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
-    assert_eq!(log.with(Log::take_dirty), None, "the run log is synced");
-    assert_eq!(state.deployments.lock().unwrap().get_mut(&slug).unwrap().events.take_dirty(), None, "and its events");
-
-    // A file that can't be opened to sync: a folder where the log was.
-    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Bo", vec![])).status, 200);
-    let file = recorder::file_for(&state.deployments_path, &slug).unwrap();
-    std::fs::remove_file(&file).unwrap();
-    std::fs::create_dir(&file).unwrap();
-    let failed = recorder::sync_logs(&state.deployments).unwrap_err();
-    assert!(failed.contains("could not sync the run log"), "{failed}");
-    assert!(recorder::sync_logs(&state.deployments).is_err(), "its flag was put back: tried again");
-    std::fs::remove_dir(&file).unwrap();
-    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
-    assert_eq!(log.with(Log::take_dirty), None);
-    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
-    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A run is recorded strictly unless its handler says otherwise (docs/L4s/request-path-L4.md,
 /// C2 e and C5): a strict request is answered once its entry is on disk, and a lazy one, a lazy
-/// action and a request no route took are left to the syncer, which syncs them within a second.
-/// Strict runs at once share syncs: none takes more than one.
+/// action and a request no route took are left to the syncer, which syncs them within a second,
+/// with the deployment's events. Strict runs at once share syncs: none takes more than one.
+/// (What a run is told when a write or a sync fails is recorder.rs's model's.)
 #[test]
 fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer() {
     let mut state = test_state();
@@ -10766,6 +11113,11 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
     let synced = || log.with(|l| l.take_dirty().inspect(|_| l.still_dirty())).is_none();
+    let events_synced = || {
+        let mut table = state.deployments.lock().unwrap();
+        let events = &mut table.get_mut(&slug).unwrap().events;
+        events.take_dirty().inspect(|_| events.still_dirty()).is_none()
+    };
     let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]).status;
 
     // Strict: a read, and a write.
@@ -10783,8 +11135,10 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert_eq!(call("GET", "/nowhere", ""), 404);
     assert_eq!(call("DELETE", "/health", ""), 405);
     assert_eq!((log.syncs(), synced()), (3, false), "a lazy action, and requests no route took, likewise");
+    assert!(!events_synced(), "its events (its deploy's) are the syncer's too");
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
     assert_eq!((log.syncs(), synced()), (4, true), "one sync for all four");
+    assert!(events_synced(), "and its events with them");
     assert_eq!(log.next_seq(), 7, "every run is in the log");
 
     // Many strict runs at once: each on disk when it answers, never more than one sync each.
