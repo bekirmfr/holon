@@ -5709,7 +5709,9 @@ route.post("/t", (req) => {
     }
 
     /// `c ? a : b` chooses as JavaScript does: the side chosen is the answer, absent if it is, and
-    /// `c` absent takes the else. The `if`, its early-return form and the ternary are one unit.
+    /// `c` absent takes the else. An `if` on an absent `c` takes neither branch, so its answer is
+    /// absent (§6.4); with `c` there it chooses as the ternary does. The `if` and its early-return
+    /// form are one unit.
     #[test]
     fn a_ternary_chooses_and_its_chosen_sides_absence_is_its() {
         use holon_core::Value::{Boolean, Number, Text};
@@ -5718,11 +5720,21 @@ route.post("/t", (req) => {
         assert_eq!(picked(&ternary, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)));
         assert_eq!(picked(&ternary, Some(Boolean(true)), None), None, "the then chosen, absent: absent, not the else");
         assert_eq!(picked(&ternary, Some(Boolean(false)), None), other, "the else chosen");
-        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as an if takes undefined");
-        let hash = hash_of(&compiled(&ternary).doc);
-        for body in ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""] {
-            assert_eq!(hash_of(&compiled(&with_pick(body)).doc), hash, "{body}");
+        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as ?: takes undefined");
+        let ifs = ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""].map(with_pick);
+        for pick in &ifs {
+            assert_eq!(picked(pick, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)), "{pick}");
+            assert_eq!(picked(pick, Some(Boolean(true)), None), None, "{pick}");
+            assert_eq!(picked(pick, Some(Boolean(false)), None), other, "{pick}");
+            assert_eq!(picked(pick, None, Some(Number(1.0))), None, "the condition absent: neither branch, {pick}");
         }
+        assert_eq!(hash_of(&compiled(&ifs[0]).doc), hash_of(&compiled(&ifs[1]).doc));
+        // A name either branch changes keeps the value it had before the `if`, where its
+        // condition is absent: changed in both, in the then alone, in the else alone.
+        let names = with_pick("  let fee = 1\n  let tax = 0\n  if (op) {\n    fee = v\n    tax = 2\n  } else {\n    fee = 3\n  }\n  return fee * 10 + tax");
+        assert_eq!(picked(&names, Some(Boolean(true)), Some(Number(5.0))), Some(Number(52.0)));
+        assert_eq!(picked(&names, Some(Boolean(false)), Some(Number(5.0))), Some(Number(30.0)));
+        assert_eq!(picked(&names, None, Some(Number(5.0))), Some(Number(10.0)), "neither branch: each name as it was");
         // The fallback written as one still falls.
         let fallback = with_pick("  return (op ? v : undefined) ?? \"other\"");
         assert_eq!(picked(&fallback, Some(Boolean(true)), None), other);

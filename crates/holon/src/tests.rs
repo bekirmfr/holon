@@ -5370,8 +5370,8 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
 }
 
 /// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
-/// true), an absent one as `if` reads it, and a status alone answers it with an empty body, a 204
-/// with none.
+/// true), an `if` on an absent one runs neither branch, nor what follows one that returns, and a
+/// status alone answers it with an empty body, a 204 with none.
 #[test]
 fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
     let state = claims_state("");
@@ -5384,16 +5384,18 @@ fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
     for (body, answer) in [(r#"{"s":""}"#, (422, "empty")), (r#"{"s":0}"#, (422, "empty")), (r#"{"s":false}"#, (422, "empty")), (r#"{"s":"a"}"#, (200, "full")), (r#"{"s":[]}"#, (200, "full")), (r#"{"s":{}}"#, (200, "full"))] {
         assert_eq!(call("POST", "/not", body), (answer.0, answer.1.to_string()), "{body}");
     }
-    // Absent is still absent: `!` of it has no value, and the `if` takes its else.
-    assert_eq!(call("POST", "/not", "{}"), (200, "full".to_string()));
+    // Absent is still absent: `!` of it has no value, and the `if` runs neither branch; one of
+    // them returns, so nothing after it runs either, and the route answers 404.
+    assert_eq!(call("POST", "/not", "{}"), (404, r#"{"error":"not found"}"#.to_string()));
     for body in [r#"{"s":"x"}"#, r#"{"s":""}"#, r#"{"s":{}}"#, r#"{"s":0}"#, "{}"] {
         assert_eq!(call("POST", "/if", body), (200, "counted".to_string()), "{body}");
     }
-    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":3,"yes":2}"#.to_string()), "each request counted once, on its side");
+    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":2,"yes":2}"#.to_string()), "each request counted once, on its side, but the one with no s");
     assert_eq!(call("POST", "/bare", ""), (400, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":1}"#), (204, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":2}"#), (409, String::new()));
     assert_eq!(call("POST", "/pick", r#"{"x":3}"#), (200, r#"{"x":3}"#.to_string()));
+    assert_eq!(call("POST", "/pick", "{}"), (404, r#"{"error":"not found"}"#.to_string()), "no x: neither branch, nor the last return");
 }
 
 /// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as

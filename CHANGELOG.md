@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **An `if` on a condition with no value runs neither branch.** It took its else, as `?:` does,
+  and what followed a `return` in it ran: `if (req.json.amount > 1000) return status(403)` followed
+  by `payout(…)` paid when `amount` was missing, or a text (`"5000"`). Now neither branch runs, a
+  name either changes keeps the value it had, and if a branch can return, nothing after the `if`
+  runs: the route answers 404, or what its `?? status(…)` says. What follows a `switch` that
+  returns from a case is held so too, where its subject is absent. `?:` and `??` are unchanged.
+  Where a missing value should count as false, say so with `?? false`: the trading-bot sample's
+  `if (approved.expired)` now reads `approved.expired ?? false`, as an approval that came has no
+  `expired`, and tidewheel's `/touch` and `/witness` do the same to answer 400 for a body without
+  a touch or a hash. Flows with an `if` get a new version: redeploy them, and look at each `if` on
+  a field a request may lack.
 - **In a `try` block, nothing after a statement that failed runs.** A call bound after a failure
   was still made, and a function after it still entered, unless it read what failed: `const order
   = JSON.parse(req.body)` and then `await api.post(…)` sent the request for a body that wasn't

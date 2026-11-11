@@ -16,10 +16,11 @@
 //!
 //! A flow differs from JavaScript by one rule, on purpose: it has no `undefined` to compute with
 //! and nothing to throw, so a value that isn't there makes what is computed from it not there
-//! either, and a condition that isn't there doesn't hold (docs/LANGUAGE.md §5.6). That rule is
-//! written here once, as JavaScript (`AS_A_FLOW_READS`), and every condition has the form it takes
-//! under it. So each handler is run three ways: as the flow, as JavaScript, and as JavaScript with
-//! that rule. The flow does what the third does, always; where the third differs from the second
+//! either (docs/LANGUAGE.md §5.6), and an `if` on a condition that isn't there runs neither branch,
+//! nor what follows it if a branch returns (§6.4). That rule is written here once, as JavaScript
+//! (`AS_A_FLOW_READS`, and `neither` for an `if`), and every condition has the form it takes under
+//! it. So each handler is run three ways: as the flow, as JavaScript, and as JavaScript with that
+//! rule. The flow does what the third does, always; where the third differs from the second
 //! is the whole of what a reader of JavaScript has to know, and is counted.
 //!
 //! To add a case: a new way to reach a statement is a line of `SHAPES`, a new kind of effect a line
@@ -169,11 +170,68 @@ fn cases() -> Vec<Case> {
                 };
                 // A subject that isn't there takes no case, the default no more than another.
                 let read = read.replace("req.json.", "J.").replace("switch (J.k) {", "if (J.k !== undefined) switch (J.k) {");
-                out.push(Case { shape, mark, condition, body: fill(condition), read });
+                out.push(Case { shape, mark, condition, body: fill(condition), read: neither(&read) });
             }
         }
     }
     out
+}
+
+/// `read`'s `if`s as a flow reads them: on a condition that isn't there neither branch runs, and
+/// if one of them returns nothing after the `if` does either (docs/LANGUAGE.md §6.4), where
+/// JavaScript takes the else. Each `if (x)` is written `if ((IFC = x) === undefined) {} else if
+/// (IFC)`, with `return;` in place of `{}` where a branch returns.
+fn neither(read: &str) -> String {
+    let mut heads = Vec::new();
+    let mut at = 0;
+    while let Some(i) = read[at..].find("if (").map(|i| i + at) {
+        if read[..i].chars().last().is_none_or(|c| !c.is_alphanumeric() && c != '_') {
+            let close = matching(read, i + 3);
+            heads.push((i, close, read[close + 1..if_end(read, i)].contains("return")));
+        }
+        at = i + 4;
+    }
+    let mut out = read.to_string();
+    for (i, close, returns) in heads.into_iter().rev() {
+        let stop = if returns { "return;" } else { "{}" };
+        out.replace_range(i..=close, &format!("if ((IFC = {}) === undefined) {stop} else if (IFC)", &read[i + 4..close]));
+    }
+    out
+}
+
+/// Where the bracket opened at `open` closes, texts in double quotes skipped.
+fn matching(s: &str, open: usize) -> usize {
+    let (o, c) = if s.as_bytes()[open] == b'(' { (b'(', b')') } else { (b'{', b'}') };
+    let (mut depth, mut in_text) = (0, false);
+    for (k, &ch) in s.as_bytes().iter().enumerate().skip(open) {
+        if ch == b'"' {
+            in_text = !in_text;
+        } else if !in_text && ch == o {
+            depth += 1;
+        } else if !in_text && ch == c {
+            depth -= 1;
+            if depth == 0 {
+                return k;
+            }
+        }
+    }
+    panic!("unbalanced at {open}: {s}")
+}
+
+/// Where the `if` at `i` ends: its branch, and its else's.
+fn if_end(s: &str, i: usize) -> usize {
+    let end = branch_end(s, matching(s, i + 3) + 1);
+    match s[end..].strip_prefix(" else ") {
+        Some(rest) if rest.starts_with("if (") => if_end(s, s.len() - rest.len()),
+        Some(rest) => branch_end(s, s.len() - rest.len()),
+        None => end,
+    }
+}
+
+/// Where a branch starting at `at` ends: a block, or a statement at the end of its line.
+fn branch_end(s: &str, at: usize) -> usize {
+    let at = at + s[at..].len() - s[at..].trim_start_matches(' ').len();
+    if s.as_bytes().get(at) == Some(&b'{') { matching(s, at) + 1 } else { s[at..].find('\n').map_or(s.len(), |n| at + n) }
 }
 
 /// A flow of `handlers`, each a route `POST /r<i>`: only what they use is imported and defined.
@@ -233,7 +291,7 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
         .iter()
         .map(|c| {
             let (written, read) = (c.body.replace("await ", ""), c.read.replace("await ", ""));
-            format!("[({{ {names} }}) => (req) => {{\n{written}\n}}, ({{ {names} }}) => (req) => {{\nconst J = req.json ?? {{}};\n{read}\n}}]")
+            format!("[({{ {names} }}) => (req) => {{\n{written}\n}}, ({{ {names} }}) => (req) => {{\nconst J = req.json ?? {{}};\nlet IFC;\n{read}\n}}]")
         })
         .collect();
     let source = format!(
@@ -352,7 +410,8 @@ fn debt(case: &Case, _request: &str) -> Option<&'static str> {
 
 /// **Guards:** a handler does what its text says. What it writes, sends, starts and calls is what
 /// JavaScript would with the same text, but for the one rule a flow has of its own, a value that
-/// isn't there (docs/LANGUAGE.md §5.6), which is written out here and held exactly.
+/// isn't there (docs/LANGUAGE.md §5.6, and §6.4 for an `if` on one), which is written out here and
+/// held exactly.
 ///
 /// **Why:** a flow isn't run as the JavaScript it is written in. It compiles to a graph, where a
 /// statement under an `if` or after a `return` is "not reached" only if the compiler tied that

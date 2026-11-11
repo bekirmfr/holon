@@ -131,7 +131,7 @@ and a record or list is written as JSON.
 | `state.key = expr` | Writes the flow's state under `key` when the run finishes. |
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
 | `delete coll[key]` | Deletes an item (or a file) when the run finishes. |
-| `if (c) …; else …` | Chooses: writes in a branch happen only when it is taken, and writes to one key in both branches are one write. |
+| `if (c) …; else …` | Chooses: writes in a branch happen only when it is taken, and writes to one key in both branches are one write. Where `c` has no value, neither branch runs, and if one of them returns, nothing after the `if` does (see [Expressions](#expressions)). |
 | `if (x !== undefined) { … }` | Its writes and calls tied to `x` (see [What a handler holds](#what-a-handler-holds)). |
 | `switch (s) { case …: … }` | Chooses by value (see below). |
 | `try { … } catch { … } finally { … }` | Runs the catch block where something in the try block failed, and the `finally` block either way (see below). |
@@ -223,23 +223,24 @@ this differs from JavaScript:
 
 From lowest to highest precedence; binary operators group left to right. A condition (`if (c)`,
 `c ? a : b`, `!c`) holds as it would in JavaScript: `false`, `0`, `NaN` and `""` don't, anything
-else does, an empty list or record included. A `c` with no value doesn't hold, and `!c` has none.
+else does, an empty list or record included. A `c` with no value is neither: `!c` has none,
+`c ? a : b` is `b`, and `if (c)` runs neither branch.
 
-That last rule is where a flow differs from JavaScript, and it matters most in a guard that
-refuses. `if (req.headers["x-admin"] !== key) return status(401)` lets a request with no such
-header through: the comparison has no value, so the `if` doesn't hold, and what follows runs
-(JavaScript's `undefined !== key` is true, and it would return). The same goes for
-`if (req.json.amount > 1000) return status(403)` when `amount` is missing or a text. Write what must
-hold, not what must not: `const ok = secure_equals(req.headers["x-admin"], key)` and
-`return ok ? … : status(401)`, as the `guarded-api` sample does; or give a missing value one first,
-`(req.json.amount ?? 0) > 1000`.
+That last rule is where a flow differs from JavaScript, and it is made for a guard that refuses.
+`if (req.json.amount > 1000) return status(403)` with `amount` missing, or a text, which no number
+is greater than: the comparison has no value, so neither branch runs, and since one of them
+returns, nothing after the `if` runs either. The route answers 404 (or what its `?? status(…)`
+says) and does nothing; JavaScript's `undefined > 1000` is false, and it would go on. A name an
+`if` changes keeps the value it had before it. Where a missing value should count as false, say
+so: `if (got.expired ?? false)`. (Until 2026-11-11 an `if` on a condition with no value took its
+else, and what followed ran: such a guard let the request through.)
 
 | Form | Meaning |
 |---|---|
 | `c ? a : b` | `a` when `c` holds, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
 | `c ? a : undefined` | `a` when `c` holds; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
-| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`". Where either side has no value, the whole has none, whatever the other side is: `a \|\| b` with `a` true and `b` missing doesn't hold, where JavaScript's does (give the missing one its value first: `a \|\| (b ?? false)`) |
+| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`". They read left to right and stop at the side that decides: `false && x` is `false` and `true \|\| x` is `true`, whatever `x` is, and `x` isn't run. A side they reach that has no value gives the whole none: `a \|\| b` with `a` missing has none, where JavaScript's is `b` (give it its value first: `(a ?? false) \|\| b`) |
 | `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | comparison, of two numbers or of two texts (in UTF-16 code units, as JavaScript compares them) |
@@ -555,7 +556,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `stripe.verify(req, secret, now, { tolerance: 300 })` | a verified Stripe webhook; `.event` is the event |
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
-| `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route); the answer is the request that brought it, or `{ expired: true }` when none came in time. The run goes on either way, so say what running out means before anything is done: `if (got.expired) return …` |
+| `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route); the answer is the request that brought it, or `{ expired: true }` when none came in time. The run goes on either way, so say what running out means before anything is done: `if (got.expired ?? false) return …` (an event that came has no `expired`, and an `if` on no value runs neither branch, nor what follows) |
 | `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by}`, with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route) |
 | `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
 | `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
@@ -953,7 +954,8 @@ misled, the compiler refuses instead.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
   continues with the answer. One bound on a statement of its own (`const page = await
   api.get(…)`) is made when the run reaches the statement, whatever reads `page`, and not when it
-  isn't reached: in an `if` whose condition doesn't hold, or after a `return` that answered. One
+  isn't reached: in an `if` whose condition doesn't hold or has no value, or after a `return` that
+  answered (or an `if` that holds one, on a condition with no value). One
   written in a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is
   made only when the branch needs it, so a branch not taken makes no call. To make a bound call
   only sometimes, put it in an `if`, or tie it to a value: `if (first !== undefined) charged =

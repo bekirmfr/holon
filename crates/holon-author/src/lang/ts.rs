@@ -283,12 +283,12 @@ enum Ret {
 }
 
 impl Ret {
-    /// This statement's, then the next's.
+    /// This statement's, then the next's: absent where this one's is, as the next isn't reached.
     fn or(self, next: Ret) -> Ret {
         match (self, next) {
             (Ret::Always, _) | (_, Ret::Always) => Ret::Always,
             (Ret::Never, r) | (r, Ret::Never) => r,
-            (Ret::When(a), Ret::When(b)) => Ret::When(binary(BinOp::Or, truthy(&a), b)),
+            (Ret::When(a), Ret::When(b)) => Ret::When(binary(BinOp::Or, a, b)),
         }
     }
 }
@@ -1314,8 +1314,10 @@ impl<'s, 't> Reader<'s, 't> {
                     let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
                     self.frame.updates = outer;
                     let r = r?;
+                    // What follows runs where the statement didn't return: not where whether it
+                    // did has no value, as an `if` on an absent condition (§6.4).
                     if let Ret::When(e) = &r {
-                        self.frame.guards.push(Guard::Live(otherwise(e)));
+                        self.frame.guards.push(Guard::Live(no_case(e)));
                     }
                     if let Some(made) = made {
                         self.go_on_if_arrived(&made, stmts);
@@ -2107,7 +2109,7 @@ impl<'s, 't> Reader<'s, 't> {
         let i = self.frame.writes.iter().position(|(k, ..)| *k == key);
         let old = i.map(|i| self.frame.writes[i].1.clone());
         let value = match conj(self.frame.guards[start..].iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) {
-            Some(live) => choose(&Choice::If(live), vec![Some(value)], old, at).expect("a value"),
+            Some(live) => choose(&Choice::If(live), vec![Some(value)], old.clone(), old, at).expect("a value"),
             None => value,
         };
         match i {
@@ -2165,7 +2167,8 @@ impl<'s, 't> Reader<'s, 't> {
         // A `++` in the condition counts before either branch, which reads what it made.
         self.flush_updates(stmts, stmts.len(), start)?;
         let cond = self.hide(cond, "cond", stmts);
-        let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
+        // A condition with no value runs neither branch (§6.4).
+        let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(no_case(&cond)), f.alternate.as_ref().map(statements_of))];
         let mut paths = self.branches(branches, block, stmts)?;
         let b = paths.pop().expect("an else");
         let a = paths.pop().expect("a then");
@@ -2556,7 +2559,7 @@ impl<'s, 't> Reader<'s, 't> {
                         let named = |v: &Option<String>| v.as_ref().map(|n| Expr { kind: ExprKind::Name(n.clone()), span: at });
                         let mut picks: Vec<Option<Expr>> = vs.iter().zip(&goes_on).map(|(v, g)| if *g { named(v) } else { named(&fallback) }).collect();
                         let els = picks.pop().expect("an else");
-                        match choose(choice, picks, els, at) {
+                        match choose(choice, picks, els, named(&v0), at) {
                             Some(value) => {
                                 let name = self.fresh(&ts);
                                 self.unmade(&name);
@@ -2589,7 +2592,7 @@ impl<'s, 't> Reader<'s, 't> {
                 continue;
             }
             let els = picks.pop().expect("an else");
-            if let Some(value) = choose(choice, picks, els, at) {
+            if let Some(value) = choose(choice, picks, els, old, at) {
                 self.update_write(key, value, at, key_span, stmts, start);
             }
         }
@@ -2828,13 +2831,13 @@ impl<'s, 't> Reader<'s, 't> {
                                 })
                                 .collect();
                             let els = picks.pop().expect("an else");
-                            (k.clone(), choose(choice, picks, els, span).expect("a side answers"), span)
+                            (k.clone(), choose(choice, picks, els, None, span).expect("a side answers"), span)
                         })
                         .collect()
                 });
                 let mut values: Vec<Option<Expr>> = parts.into_iter().map(|p| p.map(|(v, _)| v)).collect();
                 let els = values.pop().expect("an else");
-                Ok(Some(Answer::Value { value: choose(choice, values, els, span).expect("a side answers"), name: None, fields }))
+                Ok(Some(Answer::Value { value: choose(choice, values, els, None, span).expect("a side answers"), name: None, fields }))
             }
         }
     }
@@ -2861,7 +2864,7 @@ impl<'s, 't> Reader<'s, 't> {
             // Statuses alone: the one chosen, 404 where the route ends unanswered.
             let mut statuses: Vec<Option<Expr>> = sides.into_iter().map(|r| Some(r.and_then(|r| r.status).unwrap_or_else(|| number("404")))).collect();
             let els = statuses.pop().expect("an else");
-            return Ok(Some(Response { body: None, status: choose(choice, statuses, els, span), missing: None, headers: None, stream: None, span }));
+            return Ok(Some(Response { body: None, status: choose(choice, statuses, els, None, span), missing: None, headers: None, stream: None, span }));
         }
         let mut missing: Option<(String, Span)> = None;
         for r in sides.iter().flatten().filter(|r| r.body.is_some()) {
@@ -2899,18 +2902,18 @@ impl<'s, 't> Reader<'s, 't> {
         } else {
             let mut picks: Vec<Option<Expr>> = statuses.into_iter().map(|s| Some(s.unwrap_or_else(|| first.clone()))).collect();
             let els = picks.pop().expect("an else");
-            choose(choice, picks, els, span)
+            choose(choice, picks, els, None, span)
         };
         let headers = if any_headers {
             let empty = Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span };
             let mut picks: Vec<Option<Expr>> = headers.into_iter().map(|h| Some(h.unwrap_or_else(|| empty.clone()))).collect();
             let els = picks.pop().expect("an else");
-            choose(choice, picks, els, span)
+            choose(choice, picks, els, None, span)
         } else {
             None
         };
         let els = bodies.pop().expect("an else");
-        let body = choose(choice, bodies, els, span);
+        let body = choose(choice, bodies, els, None, span);
         Ok(Some(Response { body, status, missing: (missing != "404").then(|| number(&missing)), headers, stream: None, span }))
     }
 
@@ -5530,6 +5533,11 @@ fn when(value: Expr, c: Expr) -> Expr {
     binary(BinOp::When, value, c)
 }
 
+/// `c ? a : b`.
+fn if_else(c: Expr, a: Expr, b: Expr, at: Span) -> Expr {
+    Expr { kind: ExprKind::If { cond: Box::new(c), then: Box::new(a), els: Some(Box::new(b)) }, span: at }
+}
+
 /// `same_value(x, x) ?? false`: whether `x` arrived, a NaN too (§8).
 fn has_value(x: Expr) -> Expr {
     let at = x.span;
@@ -5578,15 +5586,32 @@ fn truthy(c: &Expr) -> Expr {
     Expr { kind: ExprKind::Paren(Box::new(binary_at(BinOp::Coalesce, c.clone(), no, c.span))), span: c.span }
 }
 
-/// `!(c ?? false)`: what holds where an `if (c)` takes its else.
+/// `!(c ?? false)`: what holds where `c` doesn't, or has no value: where a `try`'s catch runs,
+/// and where a value made under `c` isn't looked for.
 fn otherwise(c: &Expr) -> Expr {
     Expr { kind: ExprKind::Not(Box::new(truthy(c))), span: c.span }
 }
 
-/// `!c`: what holds where a `switch` takes its default. Unlike an `if`'s else, nothing where `c`
-/// is nothing: with its subject not there a switch is not there, its default with it (§6.3).
+/// `!c`: what holds where an `if (c)` takes its else, or a `switch` its default. Nothing where `c`
+/// is nothing: with its condition not there neither branch runs (§6.4), with its subject not there
+/// a switch is not there, its default with it (§6.3). `!!x` is `x`, a condition being a Boolean.
 fn no_case(c: &Expr) -> Expr {
-    Expr { kind: ExprKind::Not(Box::new(c.clone())), span: c.span }
+    match &c.kind {
+        ExprKind::Not(x) => (**x).clone(),
+        _ => Expr { kind: ExprKind::Not(Box::new(c.clone())), span: c.span },
+    }
+}
+
+/// Whether condition `c` always has a value: `x ?? false`, `true` or `false`, and `!`, `&&` and
+/// `||` of those.
+fn sure(c: &Expr) -> bool {
+    match &c.kind {
+        ExprKind::Bool(_) => true,
+        ExprKind::Not(x) | ExprKind::Paren(x) => sure(x),
+        ExprKind::Binary { op: BinOp::Coalesce, rhs, .. } => matches!(rhs.kind, ExprKind::Bool(_)),
+        ExprKind::Binary { op: BinOp::And | BinOp::Or, lhs, rhs } => sure(lhs) && sure(rhs),
+        _ => false,
+    }
 }
 
 /// The conditions, all of them: `a && b && …`.
@@ -5599,36 +5624,71 @@ fn matched(subject: &Expr, patterns: &[Expr], at: Span) -> Expr {
     patterns.iter().map(|p| binary_at(BinOp::Eq, subject.clone(), p.clone(), at)).reduce(|a, b| binary_at(BinOp::Or, a, b, at)).expect("a case has a pattern")
 }
 
-/// Whether `if (c) a else b` returns, from whether each branch does.
+/// Whether `if (c) a else b` returns, from whether each branch does: absent where `c` is, as
+/// neither branch runs then, and nothing after the `if` either if one of them may return (§6.4).
 fn ret_if(c: &Expr, a: &Ret, b: &Ret) -> Ret {
     match (a, b) {
         (Ret::Never, Ret::Never) => Ret::Never,
         (Ret::Always, Ret::Always) => Ret::Always,
         (Ret::Always, Ret::Never) => Ret::When(c.clone()),
-        (Ret::Never, Ret::Always) => Ret::When(otherwise(c)),
+        (Ret::Never, Ret::Always) => Ret::When(no_case(c)),
         (Ret::When(x), Ret::Never) => Ret::When(binary(BinOp::And, c.clone(), x.clone())),
-        (Ret::Never, Ret::When(y)) => Ret::When(binary(BinOp::And, otherwise(c), y.clone())),
-        (Ret::Always, Ret::When(y)) => Ret::When(binary(BinOp::Or, truthy(c), y.clone())),
-        (Ret::When(x), Ret::Always) => Ret::When(binary(BinOp::Or, otherwise(c), x.clone())),
-        (Ret::When(x), Ret::When(y)) => Ret::When(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(x.clone()), els: Some(Box::new(y.clone())) }, span: c.span }),
+        (Ret::Never, Ret::When(y)) => Ret::When(binary(BinOp::And, no_case(c), y.clone())),
+        (Ret::Always, Ret::When(y)) => Ret::When(binary(BinOp::Or, c.clone(), y.clone())),
+        (Ret::When(x), Ret::Always) => Ret::When(binary(BinOp::Or, no_case(c), x.clone())),
+        (Ret::When(x), Ret::When(y)) => Ret::When(choose(&Choice::If(c.clone()), vec![Some(x.clone())], Some(y.clone()), None, c.span).expect("both sides have one")),
     }
 }
 
 /// One value choosing among `arms` by `choice`, else `els`; `None` where no side has one. Where
-/// one side alone has a value, it is that value `when` its side is taken (§5).
-fn choose(choice: &Choice, arms: Vec<Option<Expr>>, els: Option<Expr>, at: Span) -> Option<Expr> {
-    let first = arms.iter().chain(std::iter::once(&els)).flatten().next()?.clone();
-    if arms.iter().chain(std::iter::once(&els)).all(|s| s.as_ref().is_some_and(|s| same(s, &first))) {
-        return Some(first);
-    }
+/// one side alone has a value, it is that value `when` its side is taken (§5). Where an `if`'s
+/// condition has no value neither side is taken: the value is `prior`, what held before it, or
+/// none (§6.4). A switch on an absent subject is absent, `prior` aside (§6.3).
+fn choose(choice: &Choice, arms: Vec<Option<Expr>>, els: Option<Expr>, prior: Option<Expr>, at: Span) -> Option<Expr> {
+    let first = arms.iter().chain(std::iter::once(&els)).flatten().next().cloned();
+    let all_one = first.as_ref().is_some_and(|f| arms.iter().chain(std::iter::once(&els)).all(|s| s.as_ref().is_some_and(|s| same(s, f))));
     match choice {
-        Choice::If(c) => match (arms.into_iter().next().flatten(), els) {
-            (Some(a), Some(b)) => Some(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(a), els: Some(Box::new(b)) }, span: at }),
-            (Some(a), None) => Some(when(a, c.clone())),
-            (None, Some(b)) => Some(when(b, otherwise(c))),
-            (None, None) => None,
-        },
+        // A condition that always has a value (a `try`'s): one side or the other.
+        Choice::If(c) if sure(c) => {
+            if all_one {
+                return first;
+            }
+            match (arms.into_iter().next().flatten(), els) {
+                (Some(a), Some(b)) => Some(if_else(c.clone(), a, b, at)),
+                (Some(a), None) => Some(when(a, c.clone())),
+                (None, Some(b)) => Some(when(b, no_case(c))),
+                (None, None) => None,
+            }
+        }
+        Choice::If(c) => {
+            let a = arms.into_iter().next().flatten();
+            let is_prior = |x: &Option<Expr>| match (x, &prior) {
+                (Some(x), Some(p)) => same(x, p),
+                (x, p) => x.is_none() && p.is_none(),
+            };
+            // Where `c` doesn't hold, `els`; where it has no value, `prior`.
+            let rest = if is_prior(&els) {
+                prior.clone()
+            } else {
+                let b = els.unwrap_or_else(|| absent(at));
+                Some(match &prior {
+                    Some(p) => if_else(no_case(c), b, p.clone(), at),
+                    None => when(b, no_case(c)),
+                })
+            };
+            if is_prior(&a) {
+                return rest;
+            }
+            let a = a.unwrap_or_else(|| absent(at));
+            Some(match rest {
+                Some(r) => if_else(c.clone(), a, r, at),
+                None => when(a, c.clone()),
+            })
+        }
         Choice::Match(subject, patterns) => {
+            if all_one {
+                return first;
+            }
             let mut out = Vec::new();
             for (p, a) in patterns.iter().zip(arms) {
                 match (a, &els) {
@@ -6176,7 +6236,7 @@ route.post("/fee", (req) => {
   return { fee }
 })
 "#,
-                r#"import { flow, route } from "holon"
+                r#"import { flow, is_truthy, route } from "holon"
 
 flow("f", { port: 8000 })
 
@@ -6185,7 +6245,8 @@ route.post("/fee", (req) => {
   const fee_2 = 5
   const fee_3 = 2
   const fee_4 = req.json.amount > 100 ? fee_3 : fee
-  const fee_5 = req.json.express ? fee_2 : fee_4
+  const cond_1 = is_truthy(req.json.express)
+  const fee_5 = cond_1 ? fee_2 : !cond_1 ? fee_4 : fee
   return { fee: fee_5 }
 })
 "#,
@@ -6210,8 +6271,8 @@ flow("p", { port: 8000 })
 route.post("/pay", (req) => {
   const amount = req.json.amount
   const cond_1 = amount > 1000
-  state.paid = !(cond_1 ?? false) ? amount : undefined
-  return status(cond_1 ? 403 : 200, cond_1 ? "too much" : { paid: amount })
+  state.paid = !cond_1 ? amount : undefined
+  return status(cond_1 ? 403 : !cond_1 ? 200 : undefined, cond_1 ? "too much" : !cond_1 ? { paid: amount } : undefined)
 })
 "#,
             ),
@@ -6604,7 +6665,10 @@ route.post("/n", (req) => {
 
 flow("t", { port: 8000 })
 
-route.post("/n", (req) => status(req.json.x === 1 ? 400 : 201, ""))
+route.post("/n", (req) => {
+  const cond_1 = req.json.x === 1
+  return status(cond_1 ? 400 : !cond_1 ? 201 : undefined, "")
+})
 "#,
             ),
         ];
@@ -6663,7 +6727,7 @@ flow("t", { port: 8000 })
 
 route.post("/n", (req) => {
   const cond_1 = req.json.n > 10
-  return cond_1 ? fail("too many") : { n: req.json.n }
+  return cond_1 ? fail("too many") : !cond_1 ? { n: req.json.n } : undefined
 })
 "#,
             ),
@@ -6687,7 +6751,7 @@ flow("t", { port: 8000 })
 function order(o) {
   const cond_1 = o.n > 10
   const thrown_1 = fail("too many")
-  return { id: cond_1 ? thrown_1 : o.id, n: cond_1 ? thrown_1 : o.n }
+  return { id: cond_1 ? thrown_1 : !cond_1 ? o.id : undefined, n: cond_1 ? thrown_1 : !cond_1 ? o.n : undefined }
 }
 
 route.post("/n", (req) => {

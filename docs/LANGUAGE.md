@@ -1797,7 +1797,7 @@ handler (§10, §12).
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
 | `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4); a number key through `as_text`, as JavaScript's property key |
-| `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
+| `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `a` or `b` as `c` says. On a `c` with no value neither branch runs (§6.4) |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
 | `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
@@ -2200,7 +2200,8 @@ anything else does, an empty list or record included. So `if (!s) throw …` thr
 text. `&&` and `||` inside a condition read their operands so too, as JavaScript's do there;
 elsewhere they take Booleans and give one. A condition that is a Boolean already (a comparison, a
 `!`, `&&` of them) is read as it is, with no `is_truthy`. An absent `c` is still absent: `!c` has
-no value, and an `if` on it takes its else (JavaScript's `!undefined` is `true`).
+no value (JavaScript's `!undefined` is `true`), `c ? a : b` is `b`, and an `if` on it runs neither
+branch (§6.4).
 
 ### 5.7 Multi-output values: `.name`
 
@@ -2407,7 +2408,8 @@ handler keeps it (§5.4). The language keeps that rule and adds no `perform` key
   trigger that waits for it) doesn't take it in, and it is still performed (core's `default_spec`).
 
 Effects are values, so a write's value may be guarded or chosen, and only a present value reaches
-the boundary: `if (c) state.k = a; else state.k = b` is one write, of `c ? a : b`, and witness's
+the boundary: `if (c) state.k = a; else state.k = b` is one write, of `a` or `b` as `c` says (and
+none where `c` has no value), and witness's
 `batches[batch] = ok ? { … } : undefined` writes nothing without the key. That guarded value is the
 idiom the samples use for a write that may not happen.
 
@@ -2576,9 +2578,32 @@ is a value (the optional's empty arm) and is unrelated.
 `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: `a` when `c` is `true`, otherwise `b`. So
 `c` absent gives `b`, as JavaScript's `if` takes `undefined` as false, and the side chosen is the
 answer: `c` true with `a` absent is absent, as JavaScript gives `undefined`, and doesn't fall to
-`b`. `c ? a : undefined` is the first `guard` alone, and `if (c) …` chooses between statements the
-same way. A fallback is written as one: `(c ? a : undefined) ?? b` is `b` when the chosen `a` is
-absent too.
+`b`. `c ? a : undefined` is the first `guard` alone. A fallback is written as one: `(c ? a :
+undefined) ?? b` is `b` when the chosen `a` is absent too.
+
+`if (c) A else B` chooses between statements as `?:` does between values, but for one thing: on a
+`c` with no value **neither branch runs**. A name either branch changes keeps the value it had
+before the `if`, and a key either writes keeps what was written before it, or isn't written. If a
+branch can return (or throw), nothing after the `if` runs either, and the answer is absent: a
+route's 404, or the status its `?? status(…)` says. So a guard that refuses fails closed:
+
+```ts
+route.post("/pay", (req) => {
+  if (req.json.amount > 1000) return status(403, "too much")
+  payout({ to: req.json.to, amount: req.json.amount })
+  return status(202)
+})
+```
+
+With `amount` missing, or a text (`"5000"`, which no number is greater than or less than), the
+comparison has no value: the route answers 404 and starts no payout. JavaScript reads `undefined >
+1000` as false, and would pay. Where a missing value should count as false, the text says so:
+`if (got.expired ?? false) return …`, as an event that arrived has no `expired`. Under the hood the
+else is guarded by `!c`, where `?:`'s is guarded by `!(c ?? false)`, and what follows a branch that
+returns by its not having returned, which has no value either. A `switch` that returns from a case
+holds what follows it so too, where its subject is absent (§6.5). (Until 2026-11-11 an `if` took its
+else on a `c` with no value, as `?:` does, and what followed a `return` in it ran: the guard above
+paid.)
 
 Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
 is `true`, and `b` only when it isn't. So a branch not taken asks the host
@@ -2614,7 +2639,7 @@ function called weren't held: each ran on every path, after a `return` that answ
 holds them now is a test, not the care of whoever adds the next kind of statement: the same handler
 is run as a flow and as JavaScript over every way a statement is reached, every kind of thing a
 handler does and requests with and without each field, and the two must do the same but for the
-rule of §5.6, which the test writes out
+rule of §5.6 and the `if` above, which the test writes out
 (`crates/holon/src/tests/semantics.rs`, `a_handler_does_what_its_text_says`).
 
 The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
@@ -2660,7 +2685,8 @@ too (§6.4); it differs from the switch where the subject is absent. The cases n
 don't matter at all, and don't run (§6.4): `"add"` answers `a + b` whatever `a / b` would be. So a
 case may send a request or `await`; only the chosen case's are asked. With the subject absent, the
 switch is absent, and the `default` with it, where a chain's conditions are absent and each takes
-its else, down to the last. With no case equal and no `default`, it is absent too.
+its else, down to the last. With no case equal and no `default`, it is absent too. And with the
+subject absent, if a case returns, nothing after the `switch` runs, as after an `if` (§6.4).
 
 It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??`, and the
 `default` guarded by none of the cases matching, so a failed case can't fall through to it
