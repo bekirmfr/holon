@@ -71,6 +71,9 @@ writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresse
 // The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
 // admin binds them; fixtures.ts names them.
 const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
+// Emptied before any stand-in below starts on them: each takes what is in its folder as sent to
+// it, so what a run stopped abruptly left (its cleanUp can't run then) would be sent again.
+rmSync(folders, { recursive: true, force: true });
 // The approval-mail sample's SMTP server (smtp-sink.mjs), its URL in the dotenv as an admin's
 // would be: each mail it takes lands in the folders' mail/, where the tests read it.
 const smtp = fresh ? null : await smtpSink(join(folders, "mail"));
@@ -158,7 +161,6 @@ if (!fresh) {
   // them: the ones they only read, read-only; the journal's texts kept a week, the folder capped at
   // 64 KiB.
   const { token } = res.ok ? await res.json() : {};
-  rmSync(folders, { recursive: true, force: true });
   const bindings = [
     { name: "inbox", access: "read" },
     { name: "reports", access: "read-write" },
@@ -280,9 +282,7 @@ if (!fresh) {
     body: JSON.stringify({ name: "ops", smtp: "env:HOLON_SECRET_OPS_SMTP", from: "Treasury <treasury@acme.com>", to: "*@acme.com" }),
   });
   if (!ops.ok) console.error(`e2e server: binding the mail ops failed: ${await ops.text()}`);
-  // The remittance-mail sample's mailbox, looked at every 10s, believing mx.acme.com's verdict. Its
-  // INBOX made again: the folders were emptied above, after imapServer made it.
-  if (imap) mkdirSync(join(folders, "mailbox", "INBOX"), { recursive: true });
+  // The remittance-mail sample's mailbox, looked at every 10s, believing mx.acme.com's verdict.
   const remit = await fetch(`${base}/admin/mails`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -290,8 +290,7 @@ if (!fresh) {
   });
   if (!remit.ok) console.error(`e2e server: binding the mail remit failed: ${await remit.text()}`);
   // The support-inbox sample's mail, receiving and sending, logged in to both servers with the
-  // token the endpoint gives (--oauth). Its INBOX made again, as remit's is.
-  if (supportImap) mkdirSync(join(folders, "support-mailbox", "INBOX"), { recursive: true });
+  // token the endpoint gives (--oauth).
   const support = await fetch(`${base}/admin/mails`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -308,8 +307,7 @@ if (!fresh) {
     }),
   });
   if (!support.ok) console.error(`e2e server: binding the mail support failed: ${await support.text()}`);
-  // The price-feed sample's feed. Its folder made again, as remit's INBOX is.
-  if (feed) mkdirSync(join(folders, "feed"), { recursive: true });
+  // The price-feed sample's feed.
   const prices = await fetch(`${base}/admin/feeds`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -318,7 +316,6 @@ if (!fresh) {
   if (!prices.ok) console.error(`e2e server: binding the feed prices failed: ${await prices.text()}`);
   // The trading-bot sample's ticker, bound as its comment says: subscribed to, its ticker messages
   // run, their id the product and sequence, each product's newest kept while runs are slow.
-  if (ticker) mkdirSync(join(folders, "ticker"), { recursive: true });
   const tickerBound = await fetch(`${base}/admin/feeds`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -335,7 +332,6 @@ if (!fresh) {
   if (!tickerBound.ok) console.error(`e2e server: binding the feed ticker failed: ${await tickerBound.text()}`);
   // The bluesky-mentions sample's posts, bound as its comment says: their id, the posts that run,
   // and where the feed takes the position it replays from.
-  if (posts) mkdirSync(join(folders, "posts"), { recursive: true });
   const postsBound = await fetch(`${base}/admin/feeds`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -344,7 +340,6 @@ if (!fresh) {
   if (!postsBound.ok) console.error(`e2e server: binding the feed posts failed: ${await postsBound.text()}`);
   // The trade-tape sample's trades, bound as its comment says: subscribed to, its trades run, each
   // product's numbered by trade_id.
-  if (trades) mkdirSync(join(folders, "trades"), { recursive: true });
   const tradesBound = await fetch(`${base}/admin/feeds`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -359,13 +354,11 @@ if (!fresh) {
     }),
   });
   if (!tradesBound.ok) console.error(`e2e server: binding the feed trades failed: ${await tradesBound.text()}`);
-  // The payout-events sample's queues, bound as its comment says. Their folders made again, as
-  // remit's INBOX is.
-  for (const [name, queue, url] of [
-    ["payout_events", "payout-events", "env:HOLON_SECRET_EVENTS_URL"],
-    ["payout_retries", "payout-retries.fifo", "env:HOLON_SECRET_RETRIES_URL"],
+  // The payout-events sample's queues, bound as its comment says.
+  for (const [name, url] of [
+    ["payout_events", "env:HOLON_SECRET_EVENTS_URL"],
+    ["payout_retries", "env:HOLON_SECRET_RETRIES_URL"],
   ]) {
-    if (sqs) mkdirSync(join(folders, "sqs", queue), { recursive: true });
     const bound = await fetch(`${base}/admin/queues`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
