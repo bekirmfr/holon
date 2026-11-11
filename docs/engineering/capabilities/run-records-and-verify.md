@@ -55,7 +55,11 @@ witness is sent a head, only once a line is in the file. The next line written f
 one that was and says from which run on the lines before it were lost (`lost_since`), so a lost
 run reads as lost, not as a break: `verify` lists it as not in the file, and the run after it
 isn't checked where it began, as the lost run may have left its state. Lines lost just before a
-restart are said by nothing, as a crash's are, and their seqs are given again. Seqs are otherwise
+restart are said by no line, as a crash's are, and their seqs are given again; a crash that cut a
+run off between its commit and its line, leaving the state ahead of the log, is said by an event
+naming the state the server loaded, and the run after it, begun from that state, isn't checked
+where it began ([G11](../themes/resilience.md#g11-a-run-a-crash-cut-off-reads-as-cut-off-not-as-tampering)).
+Seqs are otherwise
 one after another (a cut-back drops only the oldest), so `verify` reports runs missing between two
 lines that no `lost_since` covers as **gaps** (`Report::gaps`), a failure: runs removed and the
 lines after them chained again. A removal chained again with a `lost_since` saying it reads as a
@@ -95,10 +99,13 @@ heads, named by their hash (`batch`) so a retry is harmless. `kind` is `run`, `e
 or `trim`, sent when a cut-back drops runs (its `seq` the oldest kept, its `head` the hash of the
 last dropped): runs before it are gone by the host's choice. Only heads leave the server. Before a
 batch goes, the server syncs its logs (`Exporter::before_send`, `sync_logs`), so a witness never
-holds a head the disk lacks. Until a 2xx, the heads wait in `<deployments>.heads/pending.jsonl`;
-the witness's answer is kept as a line of `receipts.jsonl`; a failing witness is tried again after
-a growing pause, up to `MAX_BACKOFF` (five minutes). `HOLON_EXPORT_HEADS_TOKEN` is sent as a bearer
-token.
+holds a head the disk lacks. Until a 2xx, the heads wait in `<deployments>.heads/pending.jsonl`,
+synced with the logs every second (`heads::sync`); the witness's answer is kept as a line of
+`receipts.jsonl`, synced; a failing witness is tried again after a growing pause, up to
+`MAX_BACKOFF` (five minutes). Past `MAX_PENDING` (10,000) heads waiting, each deployment's newest
+of each kind stands for the ones before it (`Exporter::compact`): a head pins every line before it
+in its chain, so the witness loses steps, not runs. The batch being sent is left as it is, as it
+is taken off the front once taken. `HOLON_EXPORT_HEADS_TOKEN` is sent as a bearer token.
 
 ### Exports
 
@@ -123,9 +130,13 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    answers and collection reads from the entry, through the same core and rounds, compared with
    its run id, outputs, effects and status. A node that computed with a secret or a resume token
    can't be computed again; what the log kept for it stands in (`Asserting`), and the report counts
-   those runs and nodes (`given`). Runs that can't be run again at all (no outputs kept for such a
-   node, failed on a budget, no route took them, a file read whose text neither the export nor
-   `--files DIR` holds) are counted, not failed.
+   those runs and nodes (`given`). A run that failed is run again too, its status aside: what it
+   computed, and what its writes made of its state (none, where its error says the commit refused
+   them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
+   kept for such a node, failed and gets further run again, a file read whose text neither the
+   export nor `--files DIR` holds) are counted, not failed (`Rerun::Skipped`). A request no route
+   took and a run turned away (`firing::TURNED_AWAY`) ran nothing: their entries must say so
+   (`Rerun::NothingRan`), and the state checks pass over them.
 4. **The states** (`check_states`): each run began from the state the run before it left, and left
    what its writes make of the state it began with. The run before it is the one whose commit it
    began after (`began_after`), not the line before: a line is numbered after its commit, so two
@@ -136,7 +147,9 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 5. **Where the secrets went** (`check_sends`): each request carrying a secret's mark went to a host
    its unit sends that secret to; **the events** (`check_events`), their chain and head.
 
-It exits 0 when it all checks (`Report::ok`), 1 when it doesn't, 2 when it can't read the export.
+It exits 0 when it all checks (`Report::ok`) and every run was run again (`Report::complete`), 1
+when it doesn't check, 3 when it checks but some runs weren't run again, 2 when it can't read the
+export.
 
 ### A replay of another version
 
@@ -186,9 +199,9 @@ deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it
   leaves until the syncer cuts it.
 - **A changed log is detected, not repaired.** A break is reported at the entry after the change;
   without a witness, a log rewritten and re-chained whole is not detected by the log itself.
-- **The witness queue's `pending.jsonl` is not synced** (Q7); the export costs 4–13% of
-  throughput ([Performance](../themes/performance.md#limits)). A witness's receipt is whatever
-  JSON it answers: the sample `witness` keeps batches but signs nothing.
+- **The witness export costs 4–13% of throughput** ([Performance](../themes/performance.md#limits)).
+  A witness's receipt is whatever JSON it answers: the sample `witness` keeps batches but signs
+  nothing, and nothing checks a receipt.
 - **A page of old runs is parsed from the file each time**: a page of 200 runs past the 128 as
   written took 492–931 ms before sealing and 528–792 ms after, on the soaks' `notes-api` (storage
   L4 step 9). A log in memory only (`--deployments :memory:`) keeps every run.

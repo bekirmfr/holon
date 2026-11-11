@@ -176,6 +176,10 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
+Ctrl+C (or SIGTERM, or closing its console) stops it: it takes no new runs, finishes those going
+on, syncs its logs and exits. A second ctrl+c stops it at once ([Stopping
+it](server.md#stopping-it)).
+
 ## `holon deploy`
 
 ```
@@ -674,8 +678,9 @@ Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
-texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
-it can't read.
+texts the export doesn't hold. Exits 0 when it all checks, every run run again; 1 when something
+doesn't check; 3 when nothing fails but some runs couldn't be run again (it says which, and why);
+2 for a file it can't read.
 
 ## `holon history`
 

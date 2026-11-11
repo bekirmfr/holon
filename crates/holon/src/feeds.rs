@@ -28,7 +28,7 @@
 //!   `GET /deployments/<slug>/feeds`.
 
 use std::collections::VecDeque;
-use std::sync::RwLock;
+use crate::sync::RwLock;
 use std::time::Duration;
 
 use rouille::{Request, Response};

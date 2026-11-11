@@ -278,7 +278,8 @@ fn said(at: &str, action: &str, code: u16, body: &str) -> Failure {
 #[cfg(test)]
 pub(crate) mod stand_in {
     use std::collections::{BTreeMap, VecDeque};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use crate::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use rouille::{Request, Response};

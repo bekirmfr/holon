@@ -1245,9 +1245,10 @@ test("inbox-report reads a file from a bound folder and writes its report to ano
   const wrote = JSON.stringify(lines.filter((e) => e.route === "POST /report").map((e) => [e.performed, e.outputs]));
   expect(wrote).toContain("FileWrite");
   expect(wrote).not.toContain("| amount |");
+  // The run that failed too: run again, it computes what it did, and writes nothing.
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
-  expect(verified).toContain("it failed: a file read failed:");
+  expect(verified).toContain("re-ran 5 runs: each produced what its log entry says");
+  expect(verified).not.toContain("not re-run");
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 

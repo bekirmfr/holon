@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Condvar;
+use crate::sync::Condvar;
 
 use crate::feeds::{Binding, Event, Feeds, Incoming, OnFull};
 use crate::*;
@@ -575,7 +575,7 @@ fn run(shared: &Shared, store: &SharedStore, deployments: &Mutex<BTreeMap<String
             seen.position = Some(event.last_id.clone()).filter(|id| !id.is_empty()).or(seen.position.take());
             continue;
         }
-        let Some(listening) = listening(deployments, &shared.slug, &shared.feed) else { break };
+        let Some(listening) = listening(store, deployments, &shared.slug, &shared.feed) else { break };
         let held_for = fire_one_feed(store, deployments, deployments_path, &listening, value_of(&event));
         let seen = made.seen(kept);
         if let Some(id) = event.id.as_ref().filter(|id| !id.is_empty()) {
@@ -618,10 +618,10 @@ fn value_of(event: &Event) -> Value {
 /// folders.
 type Listening = (String, holon_core::FeedHandler, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Arc<folders::Scoped>);
 
-/// `slug`'s handler of `feed` as it is now, if `slug` runs and listens to it.
-fn listening(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, feed: &str) -> Option<Listening> {
+/// `slug`'s handler of `feed` as it is now, if `slug` takes runs and listens to it.
+fn listening(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, feed: &str) -> Option<Listening> {
     let deployments = deployments.lock().unwrap();
-    let d = deployments.get(slug).filter(|d| d.life.status == Status::Running)?;
+    let d = deployments.get(slug).filter(|d| d.takes_runs(store))?;
     let handler = d.server.as_ref()?.feeds.iter().find(|f| f.feed == feed)?.clone();
     Some((slug.to_string(), handler, d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)))
 }

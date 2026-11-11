@@ -573,12 +573,35 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut file = options.open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        fs::rename(&tmp, path)
+        fs::rename(&tmp, path)?;
+        sync_dir_of(path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Sync the folder holding `path`, so a file just renamed or linked into it is still there after a
+/// power loss: its name is the folder's, which syncing the file doesn't reach. An error: the file
+/// is in place, but may not be once the machine starts again. Where the system has no folders to
+/// sync, nothing (NTFS journals the rename itself).
+pub fn sync_dir_of(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        // A bare name's folder is the current one.
+        Some(dir) if dir.as_os_str().is_empty() => sync_dir(Path::new(".")),
+        Some(dir) => sync_dir(dir),
+        None => Ok(()),
+    }
+}
+
+/// Sync the folder `dir`: the names in it, as [`sync_dir_of`] does.
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 impl Store for FileStore {
@@ -2024,6 +2047,26 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"third");
         let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, vec![std::ffi::OsString::from("doc.json")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **Guards:** `sync_dir_of`, run after every rename the server commits by: a store value, a
+    /// state head, the witness's queue, a file a run wrote.
+    ///
+    /// **Why:** a file's name is its folder's. A file synced and renamed into a folder that isn't
+    /// can be the old one again after a power loss.
+    ///
+    /// **If it fails:** a write by a bare name fails (its folder is the current one, not ""), or a
+    /// folder that couldn't be synced is taken as synced, and a run said done has its state or its
+    /// file back as it was.
+    #[test]
+    fn a_renamed_files_folder_is_synced_and_a_bare_names_is_the_current_one() {
+        assert!(sync_dir_of(Path::new("bare.json")).is_ok());
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        assert!(sync_dir_of(&dir.join("doc.json")).is_ok());
+        #[cfg(unix)]
+        assert!(sync_dir_of(&dir.join("gone").join("doc.json")).is_err(), "a folder that isn't there isn't synced");
         fs::remove_dir_all(&dir).unwrap();
     }
 

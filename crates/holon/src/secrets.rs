@@ -26,7 +26,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use crate::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;

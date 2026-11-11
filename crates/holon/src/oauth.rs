@@ -16,7 +16,7 @@
 //!   Neither holds the URL's login or query.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -212,7 +212,8 @@ pub(crate) mod stand_in {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use crate::sync::Mutex;
 
     pub(crate) struct Endpoint {
         pub(crate) port: u16,

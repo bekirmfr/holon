@@ -26,11 +26,13 @@
 //! A line that couldn't be written (a full disk) leaves the chain where it was: the next line
 //! written follows the last one that was, and says from which run on the lines before it were lost
 //! (`lost_since`), so a run it lost reads as lost, not removed, and the witness is sent no head
-//! that no line has. Lines lost just before a restart are said by nothing, as a crash's are.
+//! that no line has. Lines lost just before a restart are said by no line, as a crash's are; a
+//! crash that cut a run off after its commit, before its line, leaving the state ahead of the log,
+//! is said by an event as the server starts again (`persist::note_cut_off_runs`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -98,11 +100,12 @@ pub struct LogEntry {
     pub state_before: BTreeMap<String, SValue>,
     /// The state it left, once it committed: the hash of a snapshot in the content store
     /// (`restore::save_snapshot`), what `holon restore --to-run` puts back. Absent for a
-    /// deployment without state, a run that didn't commit, and entries logged before rc.30.
+    /// deployment without state, a run that didn't commit, and one that changed none whose
+    /// snapshot couldn't be kept (`firing::keep_state`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_after: Option<String>,
     /// Where it stands among the commits to the deployment's state, which its seq may not say:
-    /// absent for a deployment without state, and in entries logged before.
+    /// absent for a deployment without state, and for a run that panicked or was turned away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<Commit>,
     /// The unit's settled outputs (an endpoint's: response first, then effects).
@@ -773,14 +776,9 @@ pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
 /// (where the system has directories to sync; a failure is only said: the file itself is synced).
 fn sync_dir_of(path: &Path) {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all())
-    {
-        eprintln!("holon: could not sync {}: {e}", dir.display());
+    if let Err(e) = holon_host::sync_dir_of(path) {
+        eprintln!("holon: could not sync the folder of {}: {e}", path.display());
     }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// Write `bytes` to `file` as `write_all` does, and how many went in, a failed write's too.
@@ -816,7 +814,7 @@ pub fn sync_file(path: &Path) -> std::io::Result<()> {
 /// after covers it. No lock is held while a file syncs. A failure puts that log's flag back.
 /// The packs of the runs a sync covered go out (channels.rs): a lazy run's wait for this.
 #[allow(clippy::type_complexity)]
-pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
+pub(crate) fn sync_logs(deployments: &crate::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
     let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>, std::sync::Arc<crate::folders::Scoped>)>, Vec<(String, PathBuf)>) = {
         let mut table = deployments.lock().unwrap();
         let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit), std::sync::Arc::clone(&d.folders))).collect();

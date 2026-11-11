@@ -93,7 +93,7 @@ pub(crate) enum Body<'a> {
 /// Reads through, hashing what it reads.
 struct Hashing<R> {
     inner: R,
-    hasher: std::sync::Arc<std::sync::Mutex<blake3::Hasher>>,
+    hasher: std::sync::Arc<crate::sync::Mutex<blake3::Hasher>>,
 }
 
 impl<R: Read> Read for Hashing<R> {
@@ -253,7 +253,7 @@ impl Outbound {
                         Ok(r) => r,
                         Err(refused) => return refused,
                     };
-                    let hasher = std::sync::Arc::new(std::sync::Mutex::new(blake3::Hasher::new()));
+                    let hasher = std::sync::Arc::new(crate::sync::Mutex::new(blake3::Hasher::new()));
                     sent_hash = Some(std::sync::Arc::clone(&hasher));
                     call.set("Content-Length", &f.size().to_string()).send(Hashing { inner: reader.take(f.size()), hasher })
                 }

@@ -191,7 +191,7 @@ impl Conn {
         let (block, state, permit, secrets, folders, channels) = {
             let table = deployments.lock().unwrap();
             let dep = table.get(slug)?;
-            if on == "message" && dep.life.status != Status::Running {
+            if on == "message" && !dep.takes_runs(&self.store) {
                 return None;
             }
             let websocket = dep.server.as_ref()?.websockets.iter().find(|w| w.path == self.path)?;
@@ -364,6 +364,9 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
     }
     if status != Status::Running {
         return Some(DataResponse::json_error(503, &format!("{slug:?} is {}", status_word(status))));
+    }
+    if store.1.stopping() {
+        return Some(DataResponse::json_error(503, stopping::REFUSED));
     }
     let id = format!("{:016x}", u64::from_be_bytes(rand::random::<[u8; 8]>()));
     let Some(closing) = sockets.take(&id, &declared, limits.max_websockets) else {

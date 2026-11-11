@@ -37,7 +37,11 @@ server's own files: `server_files`), the host key for resume tokens (`durable::l
 the deployments (`load_deployments`) and flows (`load_flows`), the background threads (§2.4),
 the accounts and their setup code, `access::Access`, the activity log, and `AppState`. It brings
 the listeners in line (`sync_listeners`), writes the run file the user's own commands sign in
-with (`local::publish`), sets the state, starts the housekeeping (`storage::start`) and runs.
+with (`local::publish`), sets the state, starts the housekeeping (`storage::start`) and runs,
+until it is told to stop: then it takes no new runs, waits for those going on, syncs, leaves the
+mark of a clean stop and exits (`stopping.rs`; [Resilience G10](../themes/resilience.md#g10-a-stop-finishes-the-runs-going-on)).
+A start that finds no mark notes each deployment whose state its last run didn't leave
+(`persist::note_cut_off_runs`; [G11](../themes/resilience.md#g11-a-run-a-crash-cut-off-reads-as-cut-off-not-as-tampering)).
 
 A file that exists but doesn't parse (the policy, the secrets, the deployments, the folders, the
 accounts) stops the start (`refuse_to_start`: "refusing to start rather than overwrite it").
@@ -53,7 +57,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 | Triggers | scheduler.rs, arrivals.rs, durable.rs, calls.rs | clocks, files arriving, runs that wait for an event, flows calling flows |
 | Resources | folders.rs, blobs.rs, ranges.rs, databases.rs, engines.rs, mongo.rs, collections.rs, outbound.rs, secret_sources.rs, sealing.rs | what a flow touches outside its run, each bound or granted by the host |
 | The record | recorder.rs, heads.rs, verify.rs, changes.rs, touches.rs | the hash-chained run logs, the witness, export and `holon verify`, what a dry run shows |
-| Housekeeping | storage.rs, sweep.rs, paths.rs | the server's sweeps, the host's view, warnings, what happens when a disk fills; every path it keeps, whole and in its platform's form (`HostPath`, or a `Place` that may be nowhere, `:memory:`) |
+| Housekeeping | storage.rs, sweep.rs, paths.rs, stopping.rs, sync.rs | stopping without cutting a run off; locks no panic poisons (`sync::Mutex`, `RwLock`, `Condvar`); the server's sweeps, the host's view, warnings, what happens when a disk fills; every path it keeps, whole and in its platform's form (`HostPath`, or a `Place` that may be nowhere, `:memory:`) |
 | Commands | flowcmd.rs, deploycmd.rs, opscmd.rs, load.rs, grantcmd.rs, secretcmd.rs, flowscmd.rs, accountscmd.rs, cmdline.rs, workbench/, mcp.rs, mcphosts.rs, lsp.rs, pick.rs, jsonedit.rs, selfmanage.rs, migrate.rs | the CLI, the terminal editor, the agent and editor protocols |
 
 Every module does `use crate::*`, and main.rs brings most modules' items into the crate root

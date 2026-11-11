@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- **`holon verify` exits 3 when it couldn't run every run again, and runs a failed run again.**
+  It exited 0 for an export some of whose runs it hadn't run again (a file whose text it wasn't
+  given, a run that panicked), as if all of it checked; now it says `INCOMPLETE` and exits 3, and
+  exits 0 only when every run was run again. A run that failed was never run again, so its line
+  could name any state it left, and the run after it begin from that state unchecked: now what a
+  failed run computed is checked, and the state it left, as any run's (not its status, which is
+  its failure's). A request no route took, and a run turned away before it began, ran nothing:
+  their lines must say so. A line that names no unit differs, where it was passed over as one
+  logged before lines named theirs.
+- **A panic holding a lock no longer stops what the lock guards until a restart.** A run that
+  panics is a run that failed, but a panic while it held one of the server's locks (the
+  deployments table, a log, a state, a vault, the policy, the content store's packs) poisoned
+  it, and every run and request after it that took that lock failed too, until the server was
+  started again. Now the next one takes the lock as the panic left it.
+- **A run a crash cut off reads as cut off, not as the state changed outside holon.** A run's
+  state lands before its line is written, so a crash between the two left the state ahead of the
+  log, and `holon verify` reported the next run's state as not following from the one before. Now
+  a stop leaves a mark, and a start without one (after a crash or a power loss) notes on each
+  deployment whose state its last run didn't leave that a run may have been cut off, naming the
+  state it loaded; `verify` leaves the next run unchecked where it began, if it began from that
+  state. After a stop, such a state is still a break.
+- **Ctrl+C finishes the runs going on before the server stops.** It ended the server where it
+  stood: a run half done (its calls made, its line never written), and the last second of `lazy`
+  runs and of the witness's queue unsynced. Now ctrl+c, SIGTERM or closing its console stops the
+  server taking runs (its flows' requests and the editor's are answered 503, its clocks, folders,
+  mailboxes, feeds and queues start none), lets the runs going on finish, each to its line,
+  syncs the logs and the witness's queue, and exits. A second ctrl+c stops it at once.
+- **A save that failed once no longer stops the next start.** A run kept the state it left by
+  putting the values that differ from the state it began with, taking the others to be in the
+  store. After a run whose save failed (a disk full for a moment), its state in place, the next
+  run's head could name a value never put, and the server then refused to start: "its state
+  can't be loaded from the store". Now each save puts what differs from the state last kept
+  whole, so a head names only values the store has.
+- **The witness's queue is synced, and has a bound.** The heads waiting for a witness were
+  appended to `pending.jsonl` and never synced, and while the witness was down the queue grew by
+  a head a run, in memory and on disk, without end. Now the queue file is synced with the logs,
+  every second, and each receipt as it is kept; and past 10,000 heads waiting, each deployment's
+  newest head of each kind stands for the ones before it, since it pins every run before it: the
+  witness, back, is given fewer heads and loses no run. The batch being sent as the queue is cut
+  is left as it is.
+- **What the server writes by renaming it into place stays there after a power loss.** A state's
+  head, a value in the store, the deployments file, a file a run wrote into a bound folder: each
+  was synced and renamed in, but the folder holding its name wasn't synced, so a power loss could
+  bring back the old one under a run already said done. Now the folder is synced after each
+  rename (on Linux and macOS; NTFS journals a rename itself). `holon migrate` syncs the copy it
+  makes before it removes the old files, where a power loss just after could have lost both.
 - **A run whose log line couldn't be written reads as lost, not as the log changed.** A line the
   server couldn't write (a full disk) still moved the chain on, and its head went to the witness:
   the next line named one that wasn't in the file, so `holon verify` said the chain was BROKEN

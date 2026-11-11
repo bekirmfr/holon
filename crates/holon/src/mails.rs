@@ -31,7 +31,8 @@
 //!   Workspace. A login a token was refused at drops it, so the next asks anew.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, OnceLock, RwLock};
+use std::sync::OnceLock;
+use crate::sync::{Condvar, RwLock};
 use std::time::{Duration, Instant};
 
 use rouille::{Request, Response};

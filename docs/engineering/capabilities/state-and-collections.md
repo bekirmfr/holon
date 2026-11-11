@@ -70,13 +70,16 @@ from the leaves, never from the imports.
   once more holding the lock. `commit` applies each `StateWrite` (`State::insert` refuses a value
   carrying an effect, `is_storable`, as `State::load` does), then each collection put or delete (`collections::apply`, which stores
   only the changed trie nodes), then the run's files.
-- **What is kept.** `snapshot_after` saves the changed values and a snapshot record (key → value
-  hash) in the content store (`restore::save_snapshot`); its hash is the entry's `state_after`.
-  `keep_if_changed` then writes the **state head**, `deployments.state/<slug>` (`state_head_for`),
-  holding that hash, whole and synced (`StateCell::write_head`, `write_private`), still under the
-  cell's lock so heads land in commit order. A run that changed nothing (`changed_from`: same
-  keys, same hashes) writes no head. Load reads the head (`load_deployments`); no head is an empty
-  state. (`heads.rs` is another thing: the run logs' heads sent to a witness.)
+- **What is kept.** `keep_state` saves a snapshot record (key → value hash) in the content store
+  (`StateCell::save`, `restore::save_snapshot`), with the values that differ from the state last
+  kept whole: not from the state the run began with, which may hold a value a failed save never
+  put. Its hash is the entry's `state_after`. When the run changed the state, it then writes the
+  **state head**, `deployments.state/<slug>` (`state_head_for`), holding that hash, whole and
+  synced (`StateCell::write_head`, `write_private`), still under the cell's lock so heads land in
+  commit order; a run whose state or head wasn't kept fails. A run that changed nothing
+  (`changed_from`: same keys, same hashes) writes no head. Load reads the head
+  (`load_deployments`); no head is an empty state. (`heads.rs` is another thing: the run logs'
+  heads sent to a witness.)
 - **The deployments file** (`persist_deployments`) holds definitions only: a run rewrites it
   only when it parked (`listeners.rs`); a run's counts stay in memory until the next definition
   change writes them.

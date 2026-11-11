@@ -26,7 +26,8 @@
 //!   in `GET /deployments/<slug>/queues`.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, OnceLock, RwLock};
+use std::sync::OnceLock;
+use crate::sync::{Condvar, RwLock};
 use std::time::{Duration, Instant};
 
 use rouille::{Request, Response};
