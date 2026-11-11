@@ -3,14 +3,13 @@
 
 use crate::*;
 
-/// The `Host` this endpoint runs `fire` against. **Deliberately does not perform anything
-/// real** — no network call, no file write, no email. It records each `(capability, payload)`
-/// `fire` hands it and returns them to the caller as a receipt instead. This is a scoped
-/// decision, not an oversight: the project's own plan already names real platform hosts (real
-/// email/socket/file IO behind the `Host` seam) as a still-deferred, separate piece of work,
-/// not something this transport crate was ever asked to build. Swapping in a real `Host` later
-/// is exactly what the `Host` trait already exists to make a clean, isolated change — nothing
-/// about this endpoint's wire shape would need to move.
+/// The `Host` a run evaluates against: it performs nothing itself. It records each
+/// `(capability, payload)` the run hands it, in order, and the server performs them once the run
+/// commits: its state's writes and its files at its commit ([`commit`]), then its mails and queue
+/// messages from their spools, and its packs to their subscribers. So a run that fails, waits or
+/// runs again has performed nothing yet. Its outbound requests aren't effects: they go out in its
+/// rounds, as it runs. `holon verify` runs a run again against one, and compares what it records
+/// with the log.
 pub(crate) struct RecordingHost {
     pub(crate) performed: Vec<(Capability, Value)>,
     /// The lines it wrote to its log: kept out of `performed`, so a run is the same with or
