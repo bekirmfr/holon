@@ -553,9 +553,11 @@ fn span(e: &LogEntry) -> (u64, u64) {
     (e.at_ms, e.at_ms + e.duration_ms.max(0.0).ceil() as u64)
 }
 
-/// Whether an event puts a state in place: a deploy, a restore, a stop and run again.
-fn moves_state(ev: &crate::events::Event) -> bool {
-    matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle")
+/// Whether an event puts a state in place: a deploy, a restore, a stop and run again. Not one
+/// saying which state the server loaded after a crash (`Event::loaded`), which only the run that
+/// began from that very state is taken after (`check_states`).
+pub(crate) fn moves_state(ev: &crate::events::Event) -> bool {
+    matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle") && ev.loaded.is_none()
 }
 
 /// The runs whose lines the server couldn't write before `entry`'s, as it says: the first and the
@@ -569,6 +571,10 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
     let ((a0, a1), (b0, b1)) = (span(a), span(b));
     a0 <= b1 + 1 && b0 <= a1 + 1
 }
+
+/// Why a run that began from the state the server loaded after a crash isn't checked where it began.
+pub(crate) const CUT_OFF: &str =
+    "where it began: from the state the server loaded after a crash, which a run the crash cut off between its commit and its line may have left (its events say so)";
 
 /// Whether each run's state follows from the one before (docs/L4s/history-L4.md §6): it began
 /// from the state the run before it left, and left what its writes make of the state it began
@@ -585,6 +591,12 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// while it ran is said by their numbers. One that began after a commit older than every one here
 /// has no run before it here, as the first hasn't. A line without them (logged before) is taken
 /// by its place and its times.
+///
+/// A run the server cut off between its commit and its line, crashing, isn't in the log either:
+/// the server, started again from the state it left, says so as an event naming that state
+/// (`Event::loaded`, persist.rs), and the run after it here, if it began from that very state, is
+/// said unchecked ([`CUT_OFF`]). One that began from another, or after a stop that left its mark
+/// (stopping.rs), as no event then says, is a break.
 ///
 /// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a power loss lost:
 /// where every cell that doesn't follow is one such a handler may write, it is said unchecked, as
@@ -681,6 +693,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                                 states.unchecked(why, b.seq);
                             } else if lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) {
                                 states.unchecked("where it began: a run between it and the run before it here, whose line the server couldn't write, may have left it", b.seq);
+                            } else if events.iter().any(|ev| ev.loaded.as_ref() == Some(h) && p.seq < ev.run_seq && ev.run_seq <= b.seq) {
+                                states.unchecked(CUT_OFF, b.seq);
                             } else {
                                 states.breaks.push((b.seq, format!("it began from a state the run before it (run {}) didn't leave, nor a run beside it", p.seq)));
                             }

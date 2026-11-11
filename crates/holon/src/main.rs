@@ -1047,7 +1047,13 @@ fn serve(args: Vec<String>) {
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
+    // Whether the server before stopped with every line on disk: after a crash, a run may have
+    // been cut off between its commit and its line, and each deployment it left a state says so.
+    let stopped_cleanly = stopping::stopped_cleanly(&deployments_at);
     let mut initial_deployments = load_deployments(&deployments_at, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
+    if !stopped_cleanly {
+        persist::note_cut_off_runs(&deployments_at, &mut initial_deployments);
+    }
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
         // Its waiting runs' sealed parts open under the secrets key.
@@ -1165,6 +1171,10 @@ fn serve(args: Vec<String>) {
     stopping::drain(&stopping::DOOR, Duration::from_secs(5), |left| println!("holon: stopping: {left} run(s) still going on"));
     match sync_to_disk(&state.deployments, &state.deployments_path) {
         Ok(()) => {
+            // Every line on disk: the next start takes this for a stop, not a crash.
+            if let Err(e) = stopping::mark_stopped(&state.deployments_path) {
+                eprintln!("holon: the mark of this stop wasn't left ({e}): the next start takes it for a crash");
+            }
             println!("holon: stopped");
             std::process::exit(0);
         }

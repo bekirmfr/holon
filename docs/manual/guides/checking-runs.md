@@ -132,6 +132,11 @@ What it doesn't check, it says, by why:
   placeholder's;
 - a run after one whose line the server couldn't write, which may have begun from the state that
   run left;
+- the first run after the server started again from a crash or a power loss, with a state the
+  last run here didn't leave: a run the crash cut off between its commit and its line may have
+  left it. The deployment's events say so, naming the state the server loaded, and only a run
+  that began from that state is taken so. After a stop (ctrl+c, SIGTERM) nothing is cut off,
+  and a state the last run didn't leave is a break: it was changed while the server was stopped;
 - runs logged before rc.30, which named no state they left.
 
 A collection is compared by its root, not its items: a run that wrote one is checked in the state

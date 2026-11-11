@@ -236,6 +236,30 @@ line never written, and a second of `lazy` lines unsynced.
   `the_door_closes_only_on_no_runs_and_a_run_is_counted_or_turned_away` (runs racing the drain),
   `the_drain_waits_for_the_last_run_saying_how_many_are_left`.
 
+### G11. A run a crash cut off reads as cut off, not as tampering
+
+A run lands its state, and the head naming it, before its line is written (C3 b), so a crash or
+a power loss between the two leaves the state ahead of the log. `holon verify` then found the
+next run beginning from a state the run before it didn't leave: a break, as if the state had been
+changed outside holon.
+
+- **How.** A stop, once every line is on disk, leaves a mark beside the deployments file
+  (`stopping::mark_stopped`), which the next start takes away (`stopped_cleanly`). A start that
+  finds none follows a crash: each deployment whose state, as its head names it, isn't the one
+  the last run in its log left notes a `lifecycle` event naming the state it loaded (`loaded`,
+  `persist::note_cut_off_runs`). `verify` takes the run after it, if it began from that very
+  state, as unchecked where it began (`verify::CUT_OFF`), not as a break.
+- **Why the mark.** Said after every start, a state changed while the server was stopped would
+  pass as a run cut off; with it, that still breaks after a stop. Why not a line before each
+  commit, which would name the run cut off: it costs a write and a sync every strict run.
+- **Limits.** A crash can be made on purpose: a state changed after a kill, before the next
+  start, reads as a run cut off, unchecked, not as a break; the event says when and which state.
+  The run cut off isn't named, nor its writes checked: nothing of it reached the log. A state
+  moved after a deploy, a restore or a stop and run again is left to their events, as before.
+- **Tests.** `a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopped_breaks`
+  (a crash with and without a run cut off, a clean stop with one, a state changed once loaded, a
+  second crash before any run), `a_clean_stops_mark_is_taken_by_the_next_start_alone`.
+
 ## 3. Policy, not accident
 
 Some choices weaken a record on purpose, and are listed so they are seen as choices (RA §2.5): a

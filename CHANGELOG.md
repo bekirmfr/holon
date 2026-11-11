@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A run a crash cut off reads as cut off, not as the state changed outside holon.** A run's
+  state lands before its line is written, so a crash between the two left the state ahead of the
+  log, and `holon verify` reported the next run's state as not following from the one before. Now
+  a stop leaves a mark, and a start without one (after a crash or a power loss) notes on each
+  deployment whose state its last run didn't leave that a run may have been cut off, naming the
+  state it loaded; `verify` leaves the next run unchecked where it began, if it began from that
+  state. After a stop, such a state is still a break.
 - **Ctrl+C finishes the runs going on before the server stops.** It ended the server where it
   stood: a run half done (its calls made, its line never written), and the last second of `lazy`
   runs and of the witness's queue unsynced. Now ctrl+c, SIGTERM or closing its console stops the

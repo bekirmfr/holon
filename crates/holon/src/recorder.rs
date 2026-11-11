@@ -26,7 +26,9 @@
 //! A line that couldn't be written (a full disk) leaves the chain where it was: the next line
 //! written follows the last one that was, and says from which run on the lines before it were lost
 //! (`lost_since`), so a run it lost reads as lost, not removed, and the witness is sent no head
-//! that no line has. Lines lost just before a restart are said by nothing, as a crash's are.
+//! that no line has. Lines lost just before a restart are said by no line, as a crash's are; a
+//! crash that cut a run off after its commit, before its line, leaving the state ahead of the log,
+//! is said by an event as the server starts again (`persist::note_cut_off_runs`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

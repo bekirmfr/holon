@@ -61,6 +61,12 @@ the log; then the logs and the witness's queue are synced and it exits. Each run
 than the slowest of them may take. A second ctrl+c stops it at once, as a power loss would: a
 `lazy` run's line in the last second may be lost.
 
+A stop leaves a mark beside the deployments file (`deployments.stopped`), which the next start
+takes away. A start that finds none follows a crash, which may have cut a run off between its
+commit and its line: a deployment whose state isn't the one its last run left says so on its
+timeline, and [`holon verify`](../guides/checking-runs.md#the-state-run-to-run) doesn't check where
+the next run began, rather than report the state as changed outside holon.
+
 Closing its console on Windows gives it a few seconds before Windows ends it.
 
 A path given to the server (an option, the `backup` setting, a folder or a database to bind, a

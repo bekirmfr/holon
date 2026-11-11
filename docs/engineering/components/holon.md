@@ -38,8 +38,10 @@ the deployments (`load_deployments`) and flows (`load_flows`), the background th
 the accounts and their setup code, `access::Access`, the activity log, and `AppState`. It brings
 the listeners in line (`sync_listeners`), writes the run file the user's own commands sign in
 with (`local::publish`), sets the state, starts the housekeeping (`storage::start`) and runs,
-until it is told to stop: then it takes no new runs, waits for those going on, syncs and exits
-(`stopping.rs`; [Resilience G10](../themes/resilience.md#g10-a-stop-finishes-the-runs-going-on)).
+until it is told to stop: then it takes no new runs, waits for those going on, syncs, leaves the
+mark of a clean stop and exits (`stopping.rs`; [Resilience G10](../themes/resilience.md#g10-a-stop-finishes-the-runs-going-on)).
+A start that finds no mark notes each deployment whose state its last run didn't leave
+(`persist::note_cut_off_runs`; [G11](../themes/resilience.md#g11-a-run-a-crash-cut-off-reads-as-cut-off-not-as-tampering)).
 
 A file that exists but doesn't parse (the policy, the secrets, the deployments, the folders, the
 accounts) stops the start (`refuse_to_start`: "refusing to start rather than overwrite it").

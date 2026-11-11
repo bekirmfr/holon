@@ -11,9 +11,17 @@
 //! one step ([`Door::close_if_empty`]): a run a trigger let through before the server was told,
 //! arriving after, waits at the door until the process exits, never started, so nothing of it is
 //! half done. A run inside a held one (a flow's call) finds the door held, and is never shut out.
+//!
+//! Once every line is on disk, it leaves a mark beside the deployments file ([`mark_stopped`]),
+//! which the next start takes away ([`stopped_cleanly`]). A start that finds none follows a stop
+//! that wasn't one (a crash, a power loss), which may have cut a run off between its commit and its
+//! line: each deployment whose state its last run here didn't leave says so then
+//! (`persist::note_cut_off_runs`).
 
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::time::{Duration, Instant};
+
+use crate::paths::Place;
 
 /// What a request to a server stopping is answered, 503.
 pub(crate) const REFUSED: &str = "the server is stopping: try again once it is back";
@@ -115,6 +123,39 @@ pub(crate) fn drain(door: &Door, every: Duration, say: impl Fn(usize)) {
             said = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Where the mark of a clean stop is kept for the deployments file at `at`: beside it. None for one
+/// kept nowhere, whose state no start reads back.
+fn mark_for(at: &Place) -> Option<std::path::PathBuf> {
+    at.beside("stopped").map(Into::into)
+}
+
+/// Leave the mark of a clean stop: every run's line is on disk.
+pub(crate) fn mark_stopped(at: &Place) -> std::io::Result<()> {
+    let Some(mark) = mark_for(at) else { return Ok(()) };
+    crate::sealing::write_private(&mark, b"stopped with every run's line on disk\n")
+}
+
+/// Whether the server before this one stopped cleanly ([`mark_stopped`]), its mark taken away
+/// (and the folder synced) so that this one, ending without leaving one, isn't taken to have. A
+/// first start (no deployments file) has nothing to have cut off. A mark that can't be taken away is
+/// said, and this start taken as clean: the next start after a crash then takes it so too.
+pub(crate) fn stopped_cleanly(at: &Place) -> bool {
+    let (Some(deployments), Some(mark)) = (at.at(), mark_for(at)) else { return true };
+    match std::fs::remove_file(&mark) {
+        Ok(()) => {
+            if let Err(e) = holon_host::sync_dir_of(&mark) {
+                eprintln!("holon: the mark of the last stop, taken away, may be back after a power loss ({e})");
+            }
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => !deployments.exists(),
+        Err(e) => {
+            eprintln!("holon: the mark of the last stop can't be taken away ({}: {e}): a crash before the next stop will read as a stop", mark.display());
+            true
+        }
     }
 }
 
@@ -246,5 +287,30 @@ mod tests {
         let said = said.lock().unwrap();
         assert!(!said.is_empty() && said.iter().all(|n| *n == 1), "{said:?}");
         assert!(DOOR.enter(true).is_none());
+    }
+
+    /// Guards: the mark a clean stop leaves, which the next start alone takes away.
+    /// Why: a start that finds none takes the stop before it for a crash, and each deployment whose
+    /// state its last run here didn't leave says a run may have been cut off (persist.rs); one that
+    /// found an older stop's mark would say nothing after a crash, and `holon verify` would read the
+    /// cut-off run's state as changed outside holon.
+    /// If it fails: a crash read as a stop (a false tamper alarm), or every stop read as a crash
+    /// (a state changed while the server was stopped passing as a run cut off).
+    #[test]
+    fn a_clean_stops_mark_is_taken_by_the_next_start_alone() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("holon-stopped-mark-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("deployments.json");
+        let at = Place::parse(&file.to_string_lossy());
+        assert!(stopped_cleanly(&at), "a first start has nothing to have cut off");
+        std::fs::write(&file, "[]").unwrap();
+        assert!(!stopped_cleanly(&at), "no mark: the stop before was a crash");
+        mark_stopped(&at).unwrap();
+        assert!(stopped_cleanly(&at), "a clean stop");
+        assert!(!stopped_cleanly(&at), "its mark taken: a crash after this start reads as one");
+        mark_stopped(&Place::Nowhere).unwrap();
+        assert!(stopped_cleanly(&Place::Nowhere), "a table kept nowhere is read back by no start");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -6887,6 +6887,78 @@ fn verify_tells_a_run_the_server_lost_from_one_removed() {
     }
 }
 
+/// **Guards:** a run a crash cut off between its commit and its line (its state, and its head, on
+/// disk; its line never), and what `holon verify` makes of the run after it. Started again without
+/// the mark of a clean stop (stopping.rs), the server notes on the deployment's timeline that the
+/// state it loaded isn't the one its last run left, naming it (`persist::note_cut_off_runs`), and
+/// the run after, begun from that state, is unchecked where it began, the export passing. After a
+/// clean stop the same state is a break (a state changed while the server was stopped); so is a
+/// state other than the one the event names; a crash that cut nothing off notes nothing.
+///
+/// **Why:** a run's state lands, with its head, before its line is written (C3 b), so a crash
+/// between the two leaves the state ahead of the log. Unsaid, the next run's state reads as
+/// changed outside holon: a false tamper alarm after every such crash. Said whatever the stop, a
+/// state changed while the server was stopped would pass as a run cut off.
+///
+/// **If it fails:** a crash reads as tampering; or a state changed while the server was stopped,
+/// or after it loaded, passes as a run a crash cut off.
+#[test]
+fn a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopped_breaks() {
+    let (host, _) = counting_server();
+    // Each row: whether the server crashed (no mark of a clean stop), whether a run was cut off,
+    // whether the state was changed once loaded; then whether an event says a run may have been
+    // cut off, the runs unchecked as such, and the runs whose state breaks.
+    type Row = (bool, bool, bool, bool, Vec<u64>, Vec<u64>);
+    let rows: Vec<Row> = vec![
+        (true, true, false, true, vec![1], vec![]),
+        (false, true, false, false, vec![], vec![1]),
+        (true, true, true, true, vec![], vec![1]),
+        (true, false, false, false, vec![], vec![]),
+        (false, false, false, false, vec![], vec![]),
+    ];
+    for (crashed, cut_off, changed, said, unchecked, breaks) in rows {
+        let row = format!("crashed: {crashed}, a run cut off: {cut_off}, changed once loaded: {changed}");
+        let at = Place::parse(&unique_temp_path("cut-off"));
+        let state = test_state_at(at.clone());
+        *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+        let slug = deploy_text(&state, &idem_text(&host), &host);
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200, "{row}");
+        if cut_off {
+            // Its state lands, and its head; its line never does.
+            state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_writes = true);
+            data_call(&state, &slug, "PUT", "/set/k2", "q");
+        }
+        // The server starts again from what is on disk; after a crash, crashes again before any
+        // run, which says nothing more.
+        let loaded = std::fs::read_to_string(persist::state_head_for(&at, &slug).unwrap()).unwrap();
+        let mut reloaded = BTreeMap::new();
+        for _ in 0..if crashed { 2 } else { 1 } {
+            reloaded = load_deployments(&at, &state.store, &state.policy()).unwrap();
+            if crashed {
+                persist::note_cut_off_runs(&at, &mut reloaded);
+            }
+        }
+        if changed {
+            reloaded[&slug].state.as_ref().unwrap().state.lock().unwrap().insert("x".into(), Value::Number(1.0)).unwrap();
+        }
+        *state.deployments.lock().unwrap() = reloaded;
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k3", "r").0, 200, "{row}");
+
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        let s = report.states.as_ref().unwrap();
+        let broke: Vec<u64> = s.breaks.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!((s.unchecked.get(verify::CUT_OFF).cloned().unwrap_or_default(), broke), (unchecked, breaks.clone()), "{row}:\n{text}");
+        assert_eq!(report.ok(), breaks.is_empty(), "{row}:\n{text}");
+        let noted: Vec<events::Event> = export.events.iter().map(|l| serde_json::from_str::<events::Event>(l).unwrap()).filter(|e| e.loaded.is_some()).collect();
+        assert_eq!(noted.len(), usize::from(said), "{row}: {:?}", export.events);
+        if let Some(event) = noted.first() {
+            assert_eq!((event.kind.as_str(), event.loaded.as_deref(), event.run_seq), ("lifecycle", Some(loaded.trim()), 1), "{row}");
+        }
+    }
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]

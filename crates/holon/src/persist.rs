@@ -266,6 +266,34 @@ pub(crate) fn load_deployments(
     Ok(loaded)
 }
 
+/// After a stop that wasn't one (a crash, a power loss: `stopping::stopped_cleanly`), each
+/// deployment whose state, as its head names it, isn't the one the last run in its log left says so
+/// on its timeline: a `lifecycle` event naming the state the server loaded (`Event::loaded`). A run
+/// lands its state, and its head, before its line is written (C3 b), so a run the stop cut off
+/// between the two may have left it, and `holon verify` takes the run after, begun from that state,
+/// as one it can't check where it began, not as a state changed outside holon (verify.rs). Not
+/// where a deploy, a restore or a stop and run again came after that run, which put a state in
+/// place their events say; nor where no run here left a state to compare, or an event says so
+/// already (a second crash before a run).
+pub(crate) fn note_cut_off_runs(path: &Place, deployments: &mut BTreeMap<String, Deployment>) {
+    for (slug, dep) in deployments.iter_mut() {
+        let Some(loaded) = state_head_for(path, slug).and_then(|head| std::fs::read_to_string(head).ok()) else { continue };
+        let loaded = loaded.trim().to_string();
+        // The run verify takes a run after it to have begun from: the last that ran and didn't fail.
+        let last = dep.log.with(|log| log.newest().find(|e| !e.run_id.is_empty() && e.error.is_none()).map(|e| (e.seq, e.state_after.clone())));
+        let Some((seq, Some(left))) = last else { continue };
+        let said = dep.events.entries().iter().any(|ev| ev.run_seq > seq && (crate::verify::moves_state(ev) || ev.loaded.as_ref() == Some(&loaded)));
+        if left == loaded || said {
+            continue;
+        }
+        eprintln!("holon: {slug:?}'s state isn't the one its last run (run {seq}) left: the server stopped without finishing, and may have cut a run off between its commit and its line");
+        let what = format!(
+            "started again after a crash or a power loss, from a state the last run here (run {seq}) didn't leave: a run cut off between its commit and its line may have left it"
+        );
+        dep.note("lifecycle", what, None, crate::events::Detail { loaded: Some(loaded), ..Default::default() });
+    }
+}
+
 /// Persist the flows table — same write-through discipline and opt-out (kept nowhere) as
 /// `persist_deployments`, but simpler: a `FlowRecord` is already its own on-disk shape (no
 /// store cross-references, no re-derivation needed on the way back in).

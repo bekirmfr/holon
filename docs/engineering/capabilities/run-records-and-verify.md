@@ -55,7 +55,11 @@ witness is sent a head, only once a line is in the file. The next line written f
 one that was and says from which run on the lines before it were lost (`lost_since`), so a lost
 run reads as lost, not as a break: `verify` lists it as not in the file, and the run after it
 isn't checked where it began, as the lost run may have left its state. Lines lost just before a
-restart are said by nothing, as a crash's are, and their seqs are given again. Seqs are otherwise
+restart are said by no line, as a crash's are, and their seqs are given again; a crash that cut a
+run off between its commit and its line, leaving the state ahead of the log, is said by an event
+naming the state the server loaded, and the run after it, begun from that state, isn't checked
+where it began ([G11](../themes/resilience.md#g11-a-run-a-crash-cut-off-reads-as-cut-off-not-as-tampering)).
+Seqs are otherwise
 one after another (a cut-back drops only the oldest), so `verify` reports runs missing between two
 lines that no `lost_since` covers as **gaps** (`Report::gaps`), a failure: runs removed and the
 lines after them chained again. A removal chained again with a `lost_since` saying it reads as a
