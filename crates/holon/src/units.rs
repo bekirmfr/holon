@@ -266,13 +266,25 @@ fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closu
     if depth > MAX_CLOSURE_DEPTH {
         return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
-    let loaded = Loaded::of(units);
+    // Validated before its shapes are made (`Loaded::of`): a shape is made of a unit's edges as
+    // they are written, and what is refused here is never laid out.
+    let fetched = Fetched(&units);
     for h in &fresh {
-        if let Some(why) = loaded.resolve(h).and_then(|unit| invalid(unit, &loaded)) {
+        if let Some(why) = fetched.resolve(h).and_then(|unit| invalid(unit, &fetched)) {
             return Err(Closure::Invalid(format!("unit {} {why}", to_hex(h))));
         }
     }
-    Ok((loaded, whole))
+    Ok((Loaded::of(units), whole))
+}
+
+/// The units of a closure being loaded, before their shapes are made: what a fresh unit's
+/// children resolve through while it is validated.
+struct Fetched<'a>(&'a BTreeMap<Hash, Arc<Unit>>);
+
+impl Resolver for Fetched<'_> {
+    fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        self.0.get(hash).map(|u| u.as_ref())
+    }
 }
 
 /// What core's `validate` refuses in `unit`, if anything, but a child `resolver` doesn't hold:

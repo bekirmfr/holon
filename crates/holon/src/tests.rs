@@ -10262,6 +10262,44 @@ fn a_closure_with_a_unit_that_doesnt_validate_is_refused() {
     closure(&state.store, clock).unwrap();
 }
 
+/// A port is a number an edge writes, and anyone who may stage a unit writes it (an agent may):
+/// a unit with an edge to port four billion is refused like any wiring that doesn't validate,
+/// before a shape is made of it. Laid out first, as it was, that one edge asked for a list of
+/// 51 GiB, and a server out of memory ends, every deployment with it. An edge into a child
+/// that isn't staged can't be checked against it; the closure loads, that child missing, and its
+/// shape keeps the edge by search (holon-core's `Incoming`).
+#[test]
+fn a_staged_unit_with_an_edge_to_a_port_far_out_never_gets_its_list() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let clock = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
+    let not = store.put(&holon_core::interface_of("not").unwrap()).unwrap();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let port = |name: &str, ty| vec![Port { name: name.into(), ty }];
+    for far in [u32::MAX - 1, u32::MAX, 4_000_000_000] {
+        let out_of_the_boundary = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![e(0, 0, BOUNDARY, far)] }, params: vec![], inputs: vec![], outputs: port("out", Type::Number) };
+        let into_a_child = Unit {
+            body: UnitBody::Composite { children: vec![not], edges: vec![e(BOUNDARY, 0, 0, far), e(0, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: port("in", Type::Boolean),
+            outputs: port("out", Type::Boolean),
+        };
+        for bad in [out_of_the_boundary, into_a_child] {
+            let bad = store.put(&bad).unwrap();
+            let Err(refused) = closure(&state.store, bad) else { panic!("port {far}: a closure with such an edge is refused") };
+            assert!(matches!(&refused, crate::units::Closure::Invalid(why) if why.contains(&to_hex(&bad)) && why.contains("doesn't validate")), "{refused:?}");
+            let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "far-out", "unit": to_hex(&bad) })).unwrap()));
+            assert_eq!(deployed.status_code, 400);
+            assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
+        }
+        // Into a child nobody staged: nothing to validate the port against.
+        let nobody: Hash = [far as u8; 32];
+        let dangling = store.put(&Unit { body: UnitBody::Composite { children: vec![nobody], edges: vec![e(BOUNDARY, 0, 0, far)] }, params: vec![], inputs: port("in", Type::Any), outputs: vec![] }).unwrap();
+        let loaded = closure(&state.store, dangling).unwrap();
+        assert!(loaded.resolve(&dangling).is_some() && loaded.resolve(&nobody).is_none());
+    }
+}
+
 /// An action's answer names its own run's entry, however many runs of its deployment log at once
 /// (the seq comes from the log as the entry is written, not from a read before it).
 #[test]

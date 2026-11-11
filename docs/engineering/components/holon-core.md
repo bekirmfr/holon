@@ -104,6 +104,10 @@ What a walk needs of its unit alone is made once. `NodeKind::of` decides each ch
 where its composite is prepared. A composite's `Shape` (its edges indexed by destination in
 `Incoming`, its roots, whether it has a cycle) is made by `Shape::of`, or kept by a host and handed
 out through `Resolver::shape`; `Shapes` finds one by the unit's address, so a lookup hashes nothing.
+`Incoming` is lists by child and port, as long as the highest port an edge names, and a port is a
+number an edge writes: its lists are made only within a few times the unit's edges and children
+(`Incoming::room`), and a composite past that (one edge to port four billion once asked for 51 GiB)
+keeps every edge in `far` instead, found by search, the same edges read the same way.
 Inputs are lent (`Refs`), never copied to be read. A `map`'s or `fold`'s function is prepared once
 (`Ready::of`) and, when it has no choice but pass-throughs (a `guard` on a `const` `true`), run
 down a `Plan`: the walk's order worked out ahead, each child's inputs as slots. When the plan

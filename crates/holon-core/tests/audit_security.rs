@@ -286,14 +286,23 @@ fn audit_unvalidated_composites_never_panic_in_eval() {
         let n = 1 + rng.next(7) as usize;
         let children: Vec<Hash> = (0..n).map(|_| hs[rng.next(hs.len() as u64) as usize]).collect();
         // Random edges, deliberately including out-of-range children/ports and self/back edges.
+        // A port is any number an edge writes: one in twenty is far out, the last port there is
+        // among them (a list as long as its highest port would be 51 GiB, and no test's to make).
         let n_edges = rng.next(16) as usize;
         let end = |v: u64| if v == 0 { BOUNDARY } else { (v - 1) as u32 };
+        let port = |v: u64| match v {
+            0 => u32::MAX,
+            1 => u32::MAX - 1,
+            2 => 1 << 30,
+            3 => 70_000,
+            v => (v % 4) as u32,
+        };
         let edges: Vec<Edge> = (0..n_edges)
             .map(|_| Edge {
                 from_child: end(rng.next(n as u64 + 3)),
-                from_port: rng.next(4) as u32,
+                from_port: port(rng.next(80)),
                 to_child: end(rng.next(n as u64 + 3)),
-                to_port: rng.next(4) as u32,
+                to_port: port(rng.next(80)),
             })
             .collect();
         let n_out = 1 + rng.next(2) as usize;

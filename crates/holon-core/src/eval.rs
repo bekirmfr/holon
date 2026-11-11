@@ -36,7 +36,7 @@ use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1985,12 +1985,22 @@ enum Walk {
 /// A composite's edges by destination: for each child's input port, and each boundary output, the
 /// (child, port) that feeds it, if one does. Lists indexed by child and port, not a map: looked
 /// up for every port of every node a run evaluates.
+///
+/// A list is as long as its highest port, and a port is a number an edge writes: one edge to
+/// port four billion asks for a list that long, of a unit of sixty bytes that never went through
+/// `validate` (a host makes a shape of a unit before it can validate it against children that
+/// don't resolve). So the lists are made only while they stay within a few times the edges and
+/// children the unit has ([`Incoming::room`]); past that every edge is kept in `far` instead,
+/// by its destination, and found by search. The same edges either way, whatever they say.
 #[derive(Clone, Debug)]
 struct Incoming {
     /// Each child's ports, from `starts[child]` to `starts[child + 1]`, in one list.
     starts: Vec<u32>,
     ports: Vec<Source>,
     outputs: Vec<Option<(u32, u32)>>,
+    /// Destination (to_child, to_port) → source (from_child, from_port), in order: every edge of
+    /// a composite whose lists would outgrow their room, and empty otherwise.
+    far: Vec<((u32, u32), (u32, u32))>,
 }
 
 /// What feeds one child's input port, worked out when the index is made.
@@ -2008,25 +2018,36 @@ enum Source {
 }
 
 impl Incoming {
+    /// How many ports the lists of a composite of `n` children and `edges` edges may hold: room
+    /// for any wiring a flow is made of, which has about a port an edge, and never more than a
+    /// small multiple of what the unit itself takes.
+    fn room(n: usize, edges: usize) -> u64 {
+        (16 * (n as u64 + edges as u64) + 1024).min(u32::MAX as u64)
+    }
+
     fn of(n: usize, edges: &[Edge]) -> Incoming {
         // How many ports each child's list holds: up to the highest one an edge feeds.
-        let mut widths = vec![0u32; n];
-        let mut outputs: Vec<Option<(u32, u32)>> = Vec::new();
+        let mut widths = vec![0u64; n];
+        let mut outputs_len = 0u64;
         for e in edges {
             if e.to_child == BOUNDARY {
-                let p = e.to_port as usize;
-                if outputs.len() <= p {
-                    outputs.resize(p + 1, None);
-                }
+                outputs_len = outputs_len.max(e.to_port as u64 + 1);
             } else if let Some(w) = widths.get_mut(e.to_child as usize) {
-                *w = (*w).max(e.to_port + 1);
+                *w = (*w).max(e.to_port as u64 + 1);
             }
             // A destination that doesn't exist: nothing ever looks it up.
         }
+        if widths.iter().sum::<u64>() + outputs_len > Incoming::room(n, edges.len()) {
+            // The last edge to a destination wins, as in the lists.
+            let far: BTreeMap<(u32, u32), (u32, u32)> =
+                edges.iter().filter(|e| e.to_child == BOUNDARY || (e.to_child as usize) < n).map(|e| ((e.to_child, e.to_port), (e.from_child, e.from_port))).collect();
+            return Incoming { starts: vec![0; n + 1], ports: Vec::new(), outputs: Vec::new(), far: far.into_iter().collect() };
+        }
+        let mut outputs: Vec<Option<(u32, u32)>> = vec![None; outputs_len as usize];
         let mut starts = Vec::with_capacity(n + 1);
         starts.push(0u32);
         for w in &widths {
-            starts.push(starts.last().unwrap() + w);
+            starts.push(starts.last().unwrap() + *w as u32);
         }
         let mut ports = vec![Source::Unwired; *starts.last().unwrap() as usize];
         // The last edge to a destination wins, as the map this replaced kept it.
@@ -2034,26 +2055,46 @@ impl Incoming {
             if e.to_child == BOUNDARY {
                 outputs[e.to_port as usize] = Some((e.from_child, e.from_port));
             } else if (e.to_child as usize) < n {
-                ports[(starts[e.to_child as usize] + e.to_port) as usize] = match e.from_child {
-                    BOUNDARY => Source::Input(e.from_port),
-                    fc if (fc as usize) < n => Source::Child(fc, e.from_port),
-                    fc => Source::Missing(fc, e.from_port),
-                };
+                ports[(starts[e.to_child as usize] + e.to_port) as usize] = Incoming::read(n, e.from_child, e.from_port);
             }
         }
-        Incoming { starts, ports, outputs }
+        Incoming { starts, ports, outputs, far: Vec::new() }
+    }
+
+    /// A source as an edge names it, among `n` children.
+    fn read(n: usize, from_child: u32, from_port: u32) -> Source {
+        match from_child {
+            BOUNDARY => Source::Input(from_port),
+            fc if (fc as usize) < n => Source::Child(fc, from_port),
+            fc => Source::Missing(fc, from_port),
+        }
+    }
+
+    /// The source `far` keeps for a destination.
+    fn far(&self, child: u32, port: usize) -> Option<(u32, u32)> {
+        let port = u32::try_from(port).ok()?;
+        self.far.binary_search_by_key(&(child, port), |(to, _)| *to).ok().map(|at| self.far[at].1)
     }
 
     /// What feeds port `port` of child `child`.
     fn source(&self, child: usize, port: usize) -> Source {
         let (start, end) = (self.starts[child] as usize, self.starts[child + 1] as usize);
-        if port < end - start { self.ports[start + port] } else { Source::Unwired }
+        if port < end - start {
+            return self.ports[start + port];
+        }
+        if self.far.is_empty() {
+            return Source::Unwired;
+        }
+        match self.far(child as u32, port) {
+            Some((fc, fp)) => Incoming::read(self.starts.len() - 1, fc, fp),
+            None => Source::Unwired,
+        }
     }
 
     /// What feeds port `port` of `child` (`BOUNDARY` for an output of the composite).
     fn get(&self, child: u32, port: u32) -> Option<(u32, u32)> {
         if child == BOUNDARY {
-            return self.outputs.get(port as usize).copied().flatten();
+            return self.outputs.get(port as usize).copied().flatten().or_else(|| self.far(BOUNDARY, port as usize));
         }
         if child as usize >= self.starts.len().saturating_sub(1) {
             return None;
@@ -2713,6 +2754,52 @@ mod tests {
             vec![hadd],
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         )
+    }
+
+    /// A port is a number an edge writes, and a unit's bytes are anyone's who can stage them: an
+    /// edge to port four billion, of a child or of the boundary, asks its composite's shape for
+    /// no more than its edges take (once a list that long, 51 GiB for one edge, which no
+    /// `catch_unwind` answers), and the composite computes what it would without that edge.
+    #[test]
+    fn an_edge_to_a_port_far_out_costs_its_shape_nothing_and_changes_no_answer() {
+        let mut r = MapResolver::new();
+        let sum = add2(&mut r);
+        let UnitBody::Composite { children, edges } = &sum.body else { unreachable!() };
+        let answer = eval(&sum, &[Some(num(2.0)), Some(num(3.0))], &r);
+        assert_eq!(answer.as_slice(), &[Some(num(5.0))]);
+        for far in [u32::MAX, u32::MAX - 1, 4_000_000_000, 1 << 24] {
+            for stray in [edge(BOUNDARY, 0, 0, far), edge(0, 0, BOUNDARY, far), edge(BOUNDARY, 1, 7, far), edge(0, 0, 0, far)] {
+                let mut wired = edges.clone();
+                wired.push(stray);
+                let index = Incoming::of(1, &wired);
+                if stray.to_child == 7 {
+                    // To a child that isn't there: no port of anything, so the lists stay.
+                    assert!(index.far.is_empty() && index.ports.len() == 2 && index.outputs.len() == 1, "{stray:?}");
+                } else {
+                    assert!(index.ports.is_empty() && index.outputs.is_empty() && index.far.len() == wired.len(), "{stray:?}: kept by search, in no list");
+                }
+                // What the lists would say, edge for edge.
+                assert_eq!(index.source(0, 0), Source::Input(0));
+                assert_eq!(index.source(0, 1), Source::Input(1));
+                assert_eq!(index.source(0, 2), Source::Unwired);
+                assert_eq!(index.get(BOUNDARY, 0), Some((0, 0)));
+                assert_eq!(index.get(BOUNDARY, 1), None);
+                assert_eq!(index.wired(stray.to_child, stray.to_port), stray.to_child == BOUNDARY || stray.to_child == 0);
+                let strayed = composite(sum.inputs.clone(), Type::Number, children.clone(), wired);
+                // An edge from the sum back into itself is a cycle, which gives nothing, as it does
+                // at any port.
+                let expected = if stray.from_child == 0 && stray.to_child == 0 { vec![None] } else { answer.to_vec() };
+                assert_eq!(eval(&strayed, &[Some(num(2.0)), Some(num(3.0))], &r).to_vec(), expected, "{stray:?}");
+                assert!(Shape::of_unit(&strayed).is_some());
+            }
+        }
+        // A wiring with ports to spare stays in its lists: the room is for any real flow's.
+        let spare = Incoming::of(1, &[edge(BOUNDARY, 0, 0, 900), edge(0, 0, BOUNDARY, 100)]);
+        assert!(spare.far.is_empty() && spare.ports.len() == 901 && spare.outputs.len() == 101);
+        assert_eq!(spare.source(0, 900), Source::Input(0));
+        // The last edge to a destination wins, kept by search as in the lists.
+        let twice = Incoming::of(1, &[edge(BOUNDARY, 0, 0, u32::MAX), edge(BOUNDARY, 1, 0, u32::MAX)]);
+        assert_eq!(twice.source(0, u32::MAX as usize), Source::Input(1));
     }
 
     /// The cycle check the evaluator uses agrees with `topo_order` (the eager oracle's) on every

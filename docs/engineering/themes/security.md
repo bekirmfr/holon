@@ -189,7 +189,11 @@ them and `POST /unit` only decodes what it stores: a closure nested past 64 unit
 than 20,000 is refused, and so is one with a unit core's `validate` refuses (an edge outside its
 children's ports, two sources for one port, a cycle, types that don't fit, a module that isn't
 one, a family leaf's parameter outside its values), each unit validated as a closure reads it from
-the store, not again while the closure cache keeps it (units.rs `load_closure`). A deploy of one is
+the store, not again while the closure cache keeps it (units.rs `load_closure`), and before a
+shape is made of it: a shape is laid out by the ports its edges name, and one edge to port four
+billion asked for a list of 51 GiB, which ends the server where a panic is answered 500. Core's
+shape no longer makes such a list either (`Incoming::room`), for the unit whose far edge goes into
+a child nobody staged, which can't be validated against it. A deploy of one is
 a 400 saying which unit and why; `holon verify` doesn't run one again (verify.rs `past_bounds`).
 The bound is one a run's thread holds: a route nested to it, composites in composites or maps
 whose function maps again, answers on a thread of 2 MiB, a runtime's, in a debug build.
