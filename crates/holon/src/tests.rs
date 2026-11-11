@@ -9106,6 +9106,19 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     let orders = call("GET", "/orders", "");
     assert_eq!(orders["placed"][big["id"].as_str().unwrap()]["approved_by"], "ops", "{orders}");
     assert_eq!(orders["waiting"], serde_json::json!({}), "{orders}");
+
+    // One nobody approves: when its hour runs out it is placed by nobody (it once was, as approved
+    // by "someone": what a wait gives when it runs out has no body to read who from), and it no
+    // longer waits.
+    let unasked = call("PUT", "/levels/SOL-USD", r#"{"price":"3000","size":"1"}"#);
+    price("SOL-USD", "2999", 1);
+    eventually("the second large order waits", || call("GET", "/orders", "")["waiting"][unasked["id"].as_str().unwrap()]["approve"].is_string());
+    let asked_before = exchange.asked.lock().unwrap().len();
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let orders = call("GET", "/orders", "");
+    assert_eq!(orders["waiting"], serde_json::json!({}), "it no longer waits: {orders}");
+    assert!(orders["placed"][unasked["id"].as_str().unwrap()].is_null(), "nobody placed it: {orders}");
+    assert_eq!((exchange.asked.lock().unwrap().len(), exchange.placed.lock().unwrap().len()), (asked_before, 2), "nothing was sent to the exchange");
     // Read back from the exchange.
     let open = body_json(run_action_named(&state, &slug, "reconcile", serde_json::json!({})));
     assert_eq!(open["answer"].as_array().map(Vec::len), Some(2), "{open}");

@@ -102,9 +102,14 @@ on.feed(
 
 // An order waiting for a person's approval, an hour at most; once approved, placed by a run of its
 // own, which signs it with the time it is sent, and answered with that run's answer. The approval's
-// body says who gave it.
+// body says who gave it. An hour with no approval ends the wait with { expired: true } in the
+// approval's place: the order is placed by nobody, and no longer waits.
 export const approval = action(async (order) => {
   const approved = await event("approved", { expires: "1h" })
+  if (approved.expired) {
+    waiting.delete(order.id)
+    return { expired: order.id }
+  }
   return place({ ...order, approved_by: JSON.parse(approved.body).by ?? "someone" })
 })
 

@@ -12937,55 +12937,85 @@
   => Record({"body": Text("approved"), "status": Number(200.0)})
 == trading-bot · action approval · input 0
   [0, 0] Record({})
+  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
-  [0, 4] ·
-  [0, 5] Text("someone")
-  [0, 6] Record({"approved_by": Text("someone")})
   [0, 7] ·
-  [0, 8, 0] Record({})
-  [0, 8, 1] Number(200.0)
-  [0, 8, 2] Record({"status": Number(200.0)})
-  [0, 8, 3] ·
-  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] Boolean(false)
+  [0, 13] Boolean(true)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] ·
+  [0, 17] Text("someone")
+  [0, 18] Record({"approved_by": Text("someone")})
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
-  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 1
   [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 4] Text("x")
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
-  [0, 4] ·
-  [0, 5] Text("someone")
-  [0, 6] Record({"a": Number(6.0), "amount": Number(5.0), "approved_by": Text("someone"), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0… #0a83b120b9d96798
   [0, 7] ·
-  [0, 8, 0] Record({})
-  [0, 8, 1] Number(200.0)
-  [0, 8, 2] Record({"status": Number(200.0)})
-  [0, 8, 3] ·
-  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] Boolean(false)
+  [0, 13] Boolean(true)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] ·
+  [0, 17] Text("someone")
+  [0, 18] Record({"a": Number(6.0), "amount": Number(5.0), "approved_by": Text("someone"), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0… #0a83b120b9d96798
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
-  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 2
   [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
-  [0, 4] ·
-  [0, 5] Text("someone")
-  [0, 6] Record({"approved_by": Text("someone"), "items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), … #5776d4da159ca169
   [0, 7] ·
-  [0, 8, 0] Record({})
-  [0, 8, 1] Number(200.0)
-  [0, 8, 2] Record({"status": Number(200.0)})
-  [0, 8, 3] ·
-  [0, 8, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 8] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 5] ·
+  [0, 11] ·
+  [0, 12] Boolean(false)
+  [0, 13] Boolean(true)
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] ·
+  [0, 17] Text("someone")
+  [0, 18] Record({"approved_by": Text("someone"), "items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), … #5776d4da159ca169
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
+  [0, 22, 0] Record({})
+  [0, 22, 1] Number(200.0)
+  [0, 22, 2] Record({"status": Number(200.0)})
+  [0, 22, 3] ·
+  [0, 22, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 22] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
-  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action place · input 0
   [0, 15] Text("/orders")
   [0, 16] Text("POST")
