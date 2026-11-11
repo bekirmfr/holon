@@ -132,7 +132,7 @@ test("flows are saved and read back, and people and tokens managed, from the com
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
 });
 
-test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, request }) => {
+test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, agentToken, request }) => {
   // The traced-payout sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `traced-${Date.now().toString(36)}`;
   const text = readFileSync(join(SAMPLES, "traced-payout.holon.ts"), "utf8").replace("port: 8147", `port: ${OWN_PORTS.traced + SAMPLE_SHIFT}`);
@@ -160,7 +160,7 @@ test("a flow's log lines are read from the command line, kept beside its runs an
   expect(entries.length).toBeGreaterThanOrEqual(2);
   expect(entries.flatMap((e) => e.performed ?? [])).toEqual([]);
   // And an agent is refused them: no grant lets it read a deployment's logs.
-  expect((await request.get(`${SERVER}/deployments/${slug}/logs`, { headers: { ...headers, "X-Holon-Role": "agent" } })).status()).toBe(403);
+  expect((await request.get(`${SERVER}/deployments/${slug}/logs`, { headers: { Authorization: `Bearer ${agentToken}` } })).status()).toBe(403);
 
   // Removed with its deployment.
   ok(adminToken, ["stop", slug]);

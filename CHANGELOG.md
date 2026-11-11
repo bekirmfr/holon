@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Docs.** A new guide, [People, agents and services](docs/manual/guides/people.md): the first
+  admin, a teammate, an agent of your own, a token for CI, taking access away, and who did what;
+  the concepts page names the three kinds and their owners.
+- **An owner who isn't an admin has a page of what they own.** People and access is an admin's;
+  anyone else signed in now has **Your agents and services** (7) in its place: the agents and
+  services they own, with their tokens, which they make (each shown once) and revoke there. An
+  admin still adds one and names its owner. The server lists what the caller owns at
+  `GET /auth/owned`.
+- **`holon mcp` signs in as an agent, never as you, and `X-Holon-Role` is gone.** On the holon
+  serve you run, `holon mcp` (or `holon mcp setup`, when the server is running) makes your agent the
+  first time, `<your user>-agent` owned by you, through the run file, and keeps its token in
+  `~/.holon/tokens.json`; `setup --agent NAME` picks another. What it saves, deploys, calls and asks
+  is under that name ("by bma-agent", not "by bma (agent)"). On a server elsewhere it signs in with
+  the agent's token `setup --server` kept, and a person's or a service's token is refused there and
+  when it connects: a setup that kept one says to run `setup` again with an agent's. The header that
+  made an editor or an admin an agent is ignored. A server is set up by its first person, so an
+  agent made before then leaves the setup code as it was, and its token signs in meanwhile. No
+  sample changes: this is who signs in, not what a flow does.
 - **Agents and services are principals of their own, with owners and tokens.** Whoever acts on a
   server is a person, an agent or a service, each name unique across them. A person signs in with a
   password or a provider; an agent (role agent or viewer) and a service, a script or CI (role viewer

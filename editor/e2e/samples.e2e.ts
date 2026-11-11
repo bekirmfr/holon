@@ -1713,7 +1713,7 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
   await expect(page.getByText(login)).toHaveCount(0);
 });
 
-test("traced-payout's log lines show on its Logs tab, filtered by level, and up to a run on the run's page; agents read them once let", async ({ page, request, adminToken }) => {
+test("traced-payout's log lines show on its Logs tab, filtered by level, and up to a run on the run's page; agents read them once let", async ({ page, request, adminToken, agentToken }) => {
   await openSample(page, "Traced payout (log lines, kept apart from the runs)");
   // Its deploy settings let agents read its lines: a grant a person approves on the consent screen.
   const port = await deploy(page, SAMPLE_SHIFT, (settings) => settings.getByLabel("agents may read its logs").check());
@@ -1743,8 +1743,8 @@ test("traced-payout's log lines show on its Logs tab, filtered by level, and up 
   await page.getByLabel(/only run #\d+'s/).check();
   await expect(upTo).toContainText("over the usual limit p-2");
   await expect(upTo).not.toContainText("p-1");
-  // Let in its deploy settings, an agent (as holon mcp asks) reads them too, filtered as it asks.
-  const asAgent = { Authorization: `Bearer ${adminToken}`, "X-Holon-Role": "agent" };
+  // Let in its deploy settings, an agent (as holon mcp signs in) reads them too, filtered as it asks.
+  const asAgent = { Authorization: `Bearer ${agentToken}` };
   const agent = await request.get(`${SERVER}/deployments/traced-payout/logs?level=warn`, { headers: asAgent });
   expect(agent.status()).toBe(200);
   expect(((await agent.json()) as { lines: { text: string }[] }).lines.map((l) => l.text)).toEqual(["over the usual limit p-2"]);

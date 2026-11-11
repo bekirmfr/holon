@@ -4,8 +4,10 @@
 //! provider is offered), `POST /auth/setup` (the first admin, with the setup code),
 //! `POST /auth/sign-in`, `GET /auth/invite?token=` (whose link it is) and `POST /auth/invite`
 //! (set a password with it), `GET /auth/config` (where to sign in through the provider).
-//! Signed in: `GET /auth/me`, `POST /auth/password`, `POST /auth/sign-out`, and
-//! `GET`/`POST /auth/prefs` (what the editor keeps for them: its home tab, the welcome).
+//! Signed in: `GET /auth/me`, `GET /auth/owned` (the agents and services they own, with their
+//! tokens: what an owner who isn't an admin makes and revokes tokens for), `POST /auth/password`,
+//! `POST /auth/sign-out`, and `GET`/`POST /auth/prefs` (what the editor keeps for them: its home
+//! tab, the welcome).
 //! People (the design's §10, docs/L4s/access-and-approvals-L4.md), admins only:
 //! - `GET /people`: every principal, with an agent's or a service's tokens;
 //! - `POST /people` (`{name, kind, role, owner?, email?, display?}`): a person, answered with
@@ -104,6 +106,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
+    // Whose what they add is, and what they own: the OS user by its name.
+    let me = by.strip_prefix("local:").unwrap_or(by);
     let method = request.method();
     let respond = |r: Result<Response, Response>| Some(r.unwrap_or_else(|e| e));
     let fail = |e: String| err(400, e);
@@ -162,9 +166,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         }
         ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
             Some(p) => Response::json(&serde_json::json!({ "name": p.name, "kind": p.kind, "role": p.role, "email": p.email, "owner": p.owner, "display": p.display })),
-            // The OS user, through the run file (`local:<user>`), or a person acting as an agent.
+            // The OS user, through the run file (`local:<user>`).
             None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.role })),
         },
+        ("GET", "/auth/owned") => Response::json(&accounts.principals().iter().filter(|p| p.owner.as_deref() == Some(me)).map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/auth/password") => {
             #[derive(Deserialize)]
             struct Change {
@@ -213,8 +218,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                     state.activity.record("invited", &n.name, Some(by));
                     Some(link)
                 } else {
-                    // Owned by whoever adds it, unless they name someone; the OS user by its name.
-                    let owner = n.owner.unwrap_or_else(|| by.strip_prefix("local:").unwrap_or(by).to_string());
+                    // Owned by whoever adds it, unless they name someone.
+                    let owner = n.owner.unwrap_or_else(|| me.to_string());
                     accounts.add(&n.name, n.kind, n.role, &owner, by).map_err(fail)?;
                     state.activity.record(if n.kind == Kind::Agent { "added the agent" } else { "added the service" }, &n.name, Some(by));
                     None
@@ -249,7 +254,6 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 && (tokens == "tokens" || tokens.starts_with("tokens/"))
             {
                 // An admin's, or the owner's (access.rs lets a person this far for any name).
-                let me = by.strip_prefix("local:").unwrap_or(by);
                 if caller.role != Some(Role::Admin) && accounts.principal(name).and_then(|p| p.owner).as_deref() != Some(me) {
                     return Some(err(403, format!("{by} may not do that: an agent's or a service's tokens are its owner's or an admin's to make")));
                 }

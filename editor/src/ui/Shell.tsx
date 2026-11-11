@@ -37,8 +37,8 @@ function Icon({ name }: { name: keyof typeof ICON }) {
   );
 }
 
-/** The nav's groups, in order: the work, the host's own pages (an admin's), and help. The
- *  numbers are keymap.ts's PAGE_KEYS. */
+/** The nav's groups, in order: the work, the host's own pages (an admin's; another person sees
+ *  only what they own), and help. The numbers are keymap.ts's PAGE_KEYS. */
 const WORK: Entry[] = [
   { label: "Overview", to: { kind: "overview" }, icon: "overview", key: 1 },
   { label: "Approvals", to: { kind: "approvals", tab: "deploys" }, icon: "approvals", key: 2 },
@@ -51,6 +51,10 @@ const HOST: Entry[] = [
   { label: "People and access", to: { kind: "people", tab: null }, icon: "people", key: 7 },
   { label: "Policy", to: { kind: "policy" }, icon: "policy", key: 8 },
 ];
+/** A person who isn't an admin: the agents and services they own, on People and access's page. */
+const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: null }, icon: "people", key: 7 };
+/** The host's pages `me` is shown: an admin's all of them, another person's what they own. */
+const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.kind === "person" ? [OWNED] : []);
 const HELP: Entry[] = [
   { label: "Getting started", to: { kind: "start" }, icon: "start" },
   { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs" },
@@ -106,12 +110,15 @@ export function Shell({
   waiting?: number;
   children: ReactNode;
 }) {
-  const groups: [string, Entry[]][] = [["work", WORK], ...(me.role === "admin" ? ([["host", HOST]] as [string, Entry[]][]) : []), ["help", HELP]];
+  const host = hostEntries(me);
+  const groups: [string, Entry[]][] = [["work", WORK], ...(host.length > 0 ? ([["host", host]] as [string, Entry[]][]) : []), ["help", HELP]];
   const version = useVersion();
   // A flow's page is one of the flows'.
   const at = page === "flow" ? "flows" : page;
-  const current = [...WORK, ...HOST, ...HELP].find((e) => pageOf(e.to) === at);
+  const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
+  // People and access is, for a person who isn't an admin, what they own.
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && me.role !== "admin" ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);
@@ -171,10 +178,10 @@ export function Shell({
               {trail.map((r, i) => (
                 <li key={format(r)}>
                   {i === trail.length - 1 ? (
-                    <span aria-current="location">{labelOf(r)}</span>
+                    <span aria-current="location">{crumb(r)}</span>
                   ) : (
                     <a href={format(r)} onClick={follow(r, navigate)}>
-                      {labelOf(r)}
+                      {crumb(r)}
                     </a>
                   )}
                 </li>

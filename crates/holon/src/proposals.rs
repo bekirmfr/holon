@@ -309,7 +309,7 @@ mod tests {
             unit: unit.into(),
             why: "calls httpbin".into(),
             note: None,
-            by: Some("ada (agent)".into()),
+            by: Some("claude".into()),
             agent: true,
             at_ms: 1,
             needs: vec!["NetworkEgress(\"httpbin.org\")".into()],

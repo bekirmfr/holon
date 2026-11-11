@@ -141,8 +141,8 @@ pub struct LogEntry {
     /// for another run, and whether holding it showed what it read had changed (then it ran again).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<LoggedClaim>,
-    /// Who sent the request over the control plane (`holon mcp`'s `call`, `token:claude`, or
-    /// `local:ada (agent)`; the editor's request tester), when it came that way: a request on the
+    /// Who sent the request over the control plane (`holon mcp`'s `call`, as its agent `claude`;
+    /// the editor's request tester, as `ada`), when it came that way: a request on the
     /// deployment's own port names nobody.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,

@@ -62,8 +62,11 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   runs, pauses, stops, deletes and changes grants; `admin` everything, writing secrets and every
   `/admin/` and `/people` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
   `/deploy/preview`, `/deploy`, `/flows`, a deployment's `/request`, an action, a restore, which
-  is a dry run or saved as an ask: `ask_restore`). `X-Holon-Role: agent` lowers an editor or admin
-  to an agent, named `<name> (agent)`; it never raises a viewer. Open without signing in
+  is a dry run or saved as an ask: `ask_restore`). Only an agent, a principal of kind agent with
+  its own token, holds `agent`; no header changes a caller's role. `holon mcp` signs in as one
+  (`mcp::agent_http`), never with the run file's token: on a server the OS user runs, the run
+  file's admin makes theirs (`mcphosts::local_agent`), before setup too, which only a person's
+  setup ends (`Accounts::needs_setup`). Open without signing in
   (`is_open`): `OPTIONS`, `GET /health`, `/auth/state`, `/auth/config`, `/auth/setup`,
   `/auth/sign-in`, `/auth/invite`.
 
@@ -329,8 +332,9 @@ What is not defended, or only partly:
   and behind a proxy it is the name's for everyone; anyone can hold setting up off a minute at a
   time with wrong codes.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
-- **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
-  and leave it off; an agent's own token is the guarantee (agent-surface L4, decision 6).
+- **The run file is the OS user's admin**: an agent with a shell, running as that user, can read
+  it and act as them, as it can read the data folder and the secrets key. `holon mcp` never signs
+  in with it, but only another OS user, or a server elsewhere, keeps such an agent to its token.
 - **A folder's confinement off Linux is checked by names**: on macOS and Windows another process
   writing in the folder can swap a link between the check and the open (on Linux, without
   `/proc`, too). On Linux no link in a folder is followed, even one to inside it.

@@ -32,7 +32,7 @@ export const ISSUER = `http://127.0.0.1:${PORTS.oidc}`;
 export const FOLDERS = join(tmpdir(), `holon-e2e-folders-${PORTS.server}`);
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
-export const test = base.extend<object, { adminToken: string }>({
+export const test = base.extend<object, { adminToken: string; agentToken: string }>({
   /** A session of the test server's admin, for calls to its control plane: one per worker, since
    *  signing in hashes the password (argon2, slow in the debug build the tests run) and no test
    *  here ends it (the accounts tests sign out on a server of their own). */
@@ -49,6 +49,25 @@ export const test = base.extend<object, { adminToken: string }>({
       const res = await request.post(`${SERVER}/auth/sign-in`, { data: ADMIN });
       expect(res.ok(), await res.text()).toBe(true);
       const { token } = (await res.json()) as { token: string };
+      await request.dispose();
+      await use(token);
+    },
+    { scope: "worker" },
+  ],
+  /** A token of an agent the admin owns, as `holon mcp` signs in: the agent made once per
+   *  worker (kept from an earlier run on a reused server), a new token each time. */
+  agentToken: [
+    async ({ playwright, adminToken }, use, worker) => {
+      const request = await playwright.request.newContext({ extraHTTPHeaders: { Authorization: `Bearer ${adminToken}` } });
+      const name = `e2e-agent-${worker.workerIndex}`;
+      const people = (await (await request.get(`${SERVER}/people`)).json()) as { name: string }[];
+      if (!people.some((p) => p.name === name)) {
+        const added = await request.post(`${SERVER}/people`, { data: { name, kind: "agent", role: "agent" } });
+        expect(added.ok(), await added.text()).toBe(true);
+      }
+      const made = await request.post(`${SERVER}/people/${name}/tokens`, { data: { label: "e2e" } });
+      expect(made.ok(), await made.text()).toBe(true);
+      const { token } = (await made.json()) as { token: string };
       await request.dispose();
       await use(token);
     },

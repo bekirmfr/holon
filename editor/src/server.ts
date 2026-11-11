@@ -139,6 +139,8 @@ export type OidcSettings = { issuer: string; client_id: string };
 const principalAt = (name: string) => `${BASE}/people/${encodeURIComponent(name)}`;
 const patch = (url: string, body: unknown) => api(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 export const listPrincipals = async () => asJson<Principal[]>(await api(`${BASE}/people`));
+/** The agents and services whoever is signed in owns, with their tokens: an admin or not. */
+export const listOwned = async () => asJson<Principal[]>(await api(`${BASE}/auth/owned`));
 /** A new person; the one-time link for them to set their password. */
 export const invitePerson = async (name: string, role: Role, email: string) =>
   asJson<{ name: string; invite: string }>(await post(`${BASE}/people`, { name, kind: "person", role, email: email || null }));

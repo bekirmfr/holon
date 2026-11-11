@@ -37,14 +37,14 @@ describe("cellRows", () => {
       changes: [
         { seq: 9, at_ms: 5, kind: "request", method: "POST", url: "/accounts/a/move", status: 200, unit: "u2", failed: false, before: n(100), after: n(101) },
         { between: [7, 9], at_ms: 4, events: [{ kind: "restore", what: "put back the state run 5 left, in session 2", by: "maria", at_ms: 4 }], before: n(70), after: n(100) },
-        { seq: 5, at_ms: 1, kind: "request", method: "POST", url: "/accounts/a/move", status: 200, unit: "u1", failed: false, by: "ada (agent)", before: null, after: n(100) },
+        { seq: 5, at_ms: 1, kind: "request", method: "POST", url: "/accounts/a/move", status: 200, unit: "u1", failed: false, by: "claude", before: null, after: n(100) },
       ],
     };
     const rows = cellRows(h, [version(2, "u2"), version(1, "u1")]);
     expect(rows.map((r) => [r.seq, r.label, r.what, r.values])).toEqual([
       [9, "run 9", "POST /accounts/a/move · 200 · v2", ["100 → 101"]],
       [undefined, "between runs 7 and 9", "restore: put back the state run 5 left, in session 2 by maria", ["70 → 100"]],
-      [5, "run 5", "POST /accounts/a/move · 200 · v1 · sent by ada (agent)", ["(none) → 100"]],
+      [5, "run 5", "POST /accounts/a/move · 200 · v1 · sent by claude", ["(none) → 100"]],
     ]);
   });
   it("lists a whole collection's change by the items it changed", () => {

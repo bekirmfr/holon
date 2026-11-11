@@ -15,10 +15,9 @@
 //!   someone else saved (flows.rs), and never grants, starts, stops, deletes or writes a secret:
 //!   those are a person's (docs/L4s/agent-surface-L4.md).
 //!
-//! A request that says `X-Holon-Role: agent` from an editor or an admin acts as an agent, under its
-//! sender's name with ` (agent)` after it: how `holon mcp` keeps an agent to proposing when it
-//! signs in as the person who runs it. The header only ever lowers a role: a viewer who sends it
-//! stays a viewer, since an agent may do more than read.
+//! An agent is a principal of kind agent, signing in with its own token, never a person's: what it
+//! may do is its role's, and what it did is under its own name. `holon mcp` signs in as one (on a
+//! server this user runs, one it makes for them: mcphosts.rs).
 //!
 //! Anyone may change their own password and sign out. Open without signing in: a CORS
 //! preflight, the health check, and signing in itself (`/auth/…`: the server's state, setup,
@@ -93,14 +92,9 @@ fn agent_may(method: &str, url: &str) -> bool {
     }
 }
 
-/// Whether `request` asks to act as an agent (`X-Holon-Role: agent`).
-fn asks_as_agent(request: &Request) -> bool {
-    request.header("X-Holon-Role").is_some_and(|r| r.trim().eq_ignore_ascii_case("agent"))
-}
-
 /// What anyone signed in may do to their own account, viewers too.
 fn is_own(method: &str, url: &str) -> bool {
-    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/prefs"))
+    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/owned" | "/auth/prefs"))
 }
 
 /// Whether `url` lists, makes or revokes the tokens of a principal: a person may for an agent or
@@ -131,10 +125,8 @@ impl Access {
     /// Who `request` comes from, or why it may not go on.
     pub(crate) fn check(&self, request: &Request) -> Result<Caller, Response> {
         let (method, url) = (request.method(), request.url());
-        // With no accounts (the tests' servers), whoever asks is let in; one asking as an agent is one.
-        let Some(accounts) = &self.accounts else {
-            return Ok(if asks_as_agent(request) { Caller { name: Some("agent".into()), kind: Some(Kind::Agent), role: Some(Role::Agent) } } else { Caller::default() });
-        };
+        // With no accounts (the tests' servers), whoever asks is let in.
+        let Some(accounts) = &self.accounts else { return Ok(Caller::default()) };
         if is_open(method, &url) {
             return Ok(Caller::default());
         }
@@ -143,11 +135,6 @@ impl Access {
         let who = match accounts.local(presented) {
             Some(who) => who,
             None => self.signed_in(accounts, presented)?,
-        };
-        let who = match who.role {
-            Role::Agent => who,
-            Role::Editor | Role::Admin if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent, ..who },
-            _ => who,
         };
         let allowed = match who.role {
             Role::Admin => true,
@@ -174,7 +161,9 @@ impl Access {
     /// Who a session, API token or provider's sign-in is, or why it isn't let in.
     fn signed_in(&self, accounts: &Accounts, presented: &str) -> Result<Who, Response> {
         if accounts.needs_setup() {
-            return Err(err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
+            // No person yet; only the run file's admin could have made an agent or a service
+            // since (`holon mcp` makes the OS user's agent before anyone sets the server up).
+            return accounts.who(presented).filter(|w| w.kind != Kind::Person).ok_or_else(|| err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
         }
         let refuse = |message: String| Err(err(401, message).with_additional_header("WWW-Authenticate", "Bearer"));
         if presented.is_empty() {
@@ -344,24 +333,39 @@ mod tests {
         ] {
             assert_eq!(call(&access, method, url, Some(&claude)), Err(403), "{method} {url}");
         }
-        // An editor or an admin who says they are an agent is one, the run file's user too; the
-        // header never raises a role, so a viewer who says so stays a viewer.
-        let as_agent = |method: &str, url: &str, bearer: &str| {
-            let headers = vec![("Host".into(), "localhost:7420".into()), ("Authorization".into(), format!("Bearer {bearer}")), ("X-Holon-Role".into(), "agent".into())];
-            access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.role)).map_err(|r| r.status_code)
-        };
-        assert_eq!(as_agent("POST", "/deploy", &ada), Ok((Some("ada (agent)".into()), Some(Role::Agent))));
-        assert_eq!(as_agent("POST", "/deployments/a/grant", &ada), Err(403));
+        // What an agent may not, a person may: the run file's user, an admin.
         let local = accounts.new_local("bma");
         assert_eq!(call(&access, "POST", "/deployments/a/grant", Some(&local)), Ok(Some("local:bma".into())));
-        assert_eq!(as_agent("POST", "/deployments/a/grant", &local), Err(403));
-        assert_eq!(as_agent("POST", "/flows", &local), Ok((Some("local:bma (agent)".into()), Some(Role::Agent))));
-        assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("claude".into()), Some(Role::Agent))), "an agent's name as it is");
-        assert_eq!(as_agent("POST", "/flows", &bob), Ok((Some("bob (agent)".into()), Some(Role::Agent))));
-        for (method, url) in [("POST", "/deploy"), ("POST", "/flows"), ("POST", "/unit"), ("POST", "/deployments/a/request")] {
-            assert_eq!(as_agent(method, url, &cy), Err(403), "a viewer as an agent: {method} {url}");
+        assert_eq!((call(&access, "POST", "/deploy", Some(&ada)), call(&access, "POST", "/deploy", Some(&bob)), call(&access, "POST", "/deploy", Some(&cy))), (Ok(Some("ada".into())), Ok(Some("bob".into())), Err(403)));
+    }
+
+    /// `X-Holon-Role`, which once made an editor or an admin an agent, changes nothing: whoever
+    /// sends it is answered as they are, on every kind of route, and with no accounts too.
+    #[test]
+    fn a_role_header_changes_nothing() {
+        let (access, [ada, bob, cy]) = server();
+        let accounts = access.accounts().unwrap();
+        accounts.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
+        let local = accounts.new_local("bma");
+        let said = |access: &Access, method: &str, url: &str, bearer: &str, header: Option<&str>| {
+            let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {bearer}"))];
+            headers.extend(header.map(|h| ("X-Holon-Role".to_string(), h.to_string())));
+            access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.kind, c.role)).map_err(|r| r.status_code)
+        };
+        let routes = [("GET", "/flows"), ("POST", "/deploy"), ("POST", "/deployments/a/grant"), ("POST", "/deployments/a/runs/r/decide"), ("POST", "/deployments/a/secrets/k"), ("GET", "/people")];
+        for bearer in [&ada, &bob, &cy, &claude, &local] {
+            for (method, url) in routes {
+                for header in ["agent", "Agent", "admin", ""] {
+                    assert_eq!(said(&access, method, url, bearer, Some(header)), said(&access, method, url, bearer, None), "{method} {url}, X-Holon-Role: {header}");
+                }
+            }
         }
-        assert_eq!(as_agent("GET", "/flows", &cy), Ok((Some("cy".into()), Some(Role::Viewer))), "still a viewer");
+        assert_eq!(said(&access, "POST", "/deployments/a/grant", &ada, Some("agent")), Ok((Some("ada".into()), Some(Kind::Person), Some(Role::Admin))), "an admin is answered as the admin");
+        let open = Access::default();
+        for (method, url) in routes {
+            assert_eq!(said(&open, method, url, "", Some("agent")), Ok((None, None, None)), "no accounts: {method} {url}");
+        }
     }
 
     #[test]

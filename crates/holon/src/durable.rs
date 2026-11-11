@@ -894,8 +894,6 @@ pub(crate) fn decider(caller: &access::Caller) -> Result<String, String> {
     match caller.kind {
         Some(accounts::Kind::Agent) => Err(format!("{name} is an agent: deciding an approval is a person's")),
         Some(accounts::Kind::Service) => Err(format!("{name} is a service, a script, not a person: sign in to decide an approval")),
-        // A person sending `X-Holon-Role: agent` (access.rs).
-        _ if caller.role == Some(access::Role::Agent) => Err("an agent may not decide an approval: deciding is a person's".into()),
         _ => Ok(name.strip_prefix("local:").unwrap_or(name).to_string()),
     }
 }

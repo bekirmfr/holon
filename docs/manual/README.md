@@ -32,6 +32,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   may do, secrets, changing a grant, new versions.
 - **[Actions: runs by hand](guides/actions.md):** an `action`, running it from the editor,
   a script or an agent, and who may.
+- **[People, agents and services](guides/people.md):** the first admin, a teammate, an agent of
+  your own, a token for CI, taking access away, and who did what.
 - **[Working with agents](guides/agents.md):** connecting an agent to Holon, what it can and
   can't do, and approving what it proposes.
 - **[Stripe to Slack](guides/stripe-to-slack.md):** a real webhook end to end, against Stripe and
