@@ -105,15 +105,16 @@ fn pool() -> Vec<Value> {
 
 /// Bytes a file, a request or another leaf can hand a leaf: none, odd ones, UTF-8 that isn't, the
 /// starts of a gzip, a zip and an OpenPGP packet with lengths past anything, a gzip that inflates
-/// past what a leaf may make (members of a megabyte of zeros each), a zip and a gzip that are
-/// whole, and noise.
+/// past what a leaf may make (64 MiB and a byte of zeros, in one member: refused inside it, in a
+/// tenth of a second unoptimised; members each within it and together past it are
+/// compress.rs's `inflating_stops_at_its_budget`, as checking each one's checksum first takes a
+/// second here), a zip and a gzip that are whole, and noise.
 fn bytes() -> Vec<Value> {
     let b = |v: Vec<u8>| Value::Bytes(v);
     let made = |leaf: &str, input: Value| match holon_core::primitives::compute(leaf, &[&input], &[]) {
         Some(Value::Bytes(v)) => v,
         other => panic!("{leaf} gave {other:?}"),
     };
-    let member = made("gzip", b(vec![0; 1 << 20]));
     let mut rng = Rng(0x5851_f42d_4c95_7f2d);
     vec![
         b(vec![]),
@@ -121,7 +122,7 @@ fn bytes() -> Vec<Value> {
         b(vec![0xc3, 0x28, 0xf0, 0x9f, 0x98]),
         b("héllo".as_bytes().to_vec()),
         b(vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0x01]),
-        b(member.repeat(65)),
+        b(made("gzip", b(vec![0; (64 << 20) + 1]))),
         b(made("gzip", txt("hello"))),
         b(b"PK\x03\x04\x14\0\0\0\x08\0".to_vec()),
         b([b"PK\x05\x06\0\0\0\0".as_slice(), &[0xff; 12], &[0, 0]].concat()),
