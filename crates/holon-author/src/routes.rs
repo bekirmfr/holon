@@ -171,7 +171,7 @@ impl FileGroup {
 
 /// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, a
 /// message, an action.
-fn trigger_label(n: &Node) -> Option<String> {
+pub(crate) fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
     } else if n.is_template("every") {

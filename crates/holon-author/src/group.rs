@@ -172,13 +172,18 @@ pub fn group_selection(selected: &[Node], wires: &[Wire], store: &mut MapResolve
 /// composite exactly as "group" does, and the node takes the flow's name (and, given `saved_at`,
 /// remembers which flow and when, so an update can be offered later). `store` must hold the
 /// flow's own composites. A flow with routes is a server, answered by the host, not a part of
-/// another flow: it is refused, as is an empty one.
+/// another flow: it is refused, as is an empty one. So is a flow with any other handler (a clock,
+/// a file's, a mail's, a feed's or a queue's run, an action): what starts its runs is the host's to
+/// do for a deployment, and grouped into a node its period, folder or name would be lost unsaid.
 pub fn flow_as_node(name: &str, nodes: &[Node], wires: &[Wire], store: &mut MapResolver, id: &str, position: Position, saved_at: Option<f64>) -> Result<Node, String> {
     if nodes.is_empty() {
         return Err(format!("\"{name}\" is empty: nothing to place"));
     }
     if nodes.iter().any(|n| n.is_template("request") || n.is_template("respond")) {
         return Err(format!("\"{name}\" has routes: it is a server, deployed on its own, not a node of another flow"));
+    }
+    if let Some(label) = nodes.iter().find_map(crate::routes::trigger_label) {
+        return Err(format!("\"{name}\" has a handler of its own ({label}): it is deployed on its own, not a node of another flow"));
     }
     let (mut node, _) = group_selection(nodes, wires, store, 0).map_err(|e| format!("\"{name}\" can't be placed as a node: {}", e.message))?;
     node.id = id.into();
@@ -190,3 +195,52 @@ pub fn flow_as_node(name: &str, nodes: &[Node], wires: &[Wire], store: &mut MapR
     Ok(node)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::FlowBuilder;
+    use crate::templates::TEMPLATES;
+
+    /// **Guards:** a flow that holds a handler of any kind is refused as a node of another flow,
+    /// by a message that says which handler; a flow of none is placed.
+    ///
+    /// **Why:** what starts a handler's runs (a route's path, a clock's period, a folder, a mailbox,
+    /// a feed, a queue, an action's name) is read by the host from a deployment, and grouping a
+    /// canvas into a composite keeps none of it. The refusal named routes alone, so each other
+    /// kind was a case of its own: an action's flow was refused as having routes, and a clock's or
+    /// a file's was placed, as a node that writes on every run of the flow it sits in.
+    ///
+    /// **If it fails:** a person drops a saved flow into another and gets a node that looks whole
+    /// and has lost its schedule or its folder, or a refusal that names something the flow doesn't
+    /// have. A template added without saying which it is fails here too.
+    #[test]
+    fn a_flow_with_a_handler_of_any_kind_is_refused_as_a_node_by_name() {
+        // The templates that start no run, each said so here: a new template is one or the other.
+        const NO_TRIGGER: &[&str] = &["respond", "stripe_verify"];
+        for name in TEMPLATES {
+            let mut b = FlowBuilder::new();
+            let id = b.node(name, &[], None).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let doc = b.finish(Default::default());
+            let node = doc.nodes.iter().find(|n| n.id == id).expect("placed");
+            let label = crate::routes::trigger_label(node);
+            assert_eq!(label.is_none(), NO_TRIGGER.contains(name), "{name}: a template starts runs or it doesn't; say which");
+            let Some(label) = label else { continue };
+            let refused = flow_as_node("saved", &doc.nodes, &doc.edges, &mut MapResolver::new(), "n", Position::default(), None).expect_err(name);
+            assert!(refused.starts_with("\"saved\" has "), "{name}: {refused}");
+            let routed = matches!(*name, "request");
+            assert_eq!(refused.contains("has routes"), routed, "{name}: {refused}");
+            assert!(routed || refused.contains(&label), "{name}: the refusal names its handler, {label}: {refused}");
+        }
+        // A flow of no handler is placed, its free ports the node's.
+        let mut b = FlowBuilder::new();
+        b.node("add", &[], None).unwrap();
+        let mut doc = b.finish(Default::default());
+        let mut store = MapResolver::new();
+        for u in holon_core::genesis_units() {
+            store.insert(u).expect("a genesis unit stores");
+        }
+        crate::text::restore(&doc, &mut store, &Default::default());
+        let placed = flow_as_node("sum", &std::mem::take(&mut doc.nodes), &doc.edges, &mut store, "n", Position::default(), None).expect("placed");
+        assert_eq!((placed.data.name.as_str(), placed.data.inputs.len(), placed.data.outputs.len()), ("sum", 2, 1));
+    }
+}
