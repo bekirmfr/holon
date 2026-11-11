@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A public key is never taken for a shared secret.** `jwt_verify` read a PEM key only when its
+  text began with `-----BEGIN`: the same key after a byte-order mark, a blank line or a line of
+  explanation, given as bytes, as a DER key, or as a JWK's JSON text was taken as an HMAC secret,
+  so a token signed HS256 with the public key itself (which anyone may have) verified. Now a
+  public key in any of those forms is that key or nothing, and a JWK or JWKS may be given as its
+  JSON, as text or bytes.
 - **The editor's HTML preview shows the page and nothing else.** A value shown as HTML (a run's
   output, a request's body: text from outside) ran its scripts in the preview's frame, and loaded
   whatever it named from any address: an image, a style sheet, a font, telling that address the

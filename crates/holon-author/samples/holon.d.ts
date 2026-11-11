@@ -1427,7 +1427,7 @@ declare module "holon" {
   /**
    * `jwt_verify(token: Text, key: Any, now: Number) -> out: Record  {issuer, audience, leeway: 0}`
    *
-   * A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM text or a JWK record, and a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.
+   * A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text or bytes that isn't a public key, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM (a text or bytes), a DER key (bytes) or a JWK (a record or its JSON), whatever whitespace or byte-order mark comes first, and never a secret; a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.
    */
   export function jwt_verify(...args: any[]): any
 

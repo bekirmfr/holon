@@ -481,12 +481,15 @@ unzips deliveries of bank statements and archives each as a zip.
 | `jwt_verify(token, key, now, { issuer, audience, leeway })` | the same, with `iss` equal to `issuer` and `aud` holding `audience`; `exp` and `nbf` widened by `leeway` seconds (`"0"`, `"30"`, `"60"`, `"120"`, `"300"`) |
 | `jwt_decode(token)` | `{header, payload}`, verifying nothing: who a token says signed it, to pick the key that checks it |
 
-The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes,
-at least 32, 48 or 64 bytes) allows HS256, HS384 or HS512; an RSA key of 2,048 to 4,096 bits
-RS256 to RS512 and PS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM
-text (SPKI, or PKCS #1 for RSA) or a JWK record, whose `alg`, `use` and `key_ops` narrow it; a JWKS
-(`{keys: [...]}`) gives the key the token's `kid` names, or its one key when the token names none.
-So a token saying `alg: none`, or one signed with HMAC over a public key, is nothing. `exp` is
+The key decides the algorithm, never the token: a shared secret (a text or bytes that isn't a
+public key, at least 32, 48 or 64 bytes) allows HS256, HS384 or HS512; an RSA key of 2,048 to 4,096
+bits RS256 to RS512 and PS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a
+PEM, as a text or as bytes (SPKI, or PKCS #1 for RSA), the same as DER bytes, or a JWK, a record or
+its JSON, whose `alg`, `use` and `key_ops` narrow it; a JWKS (`{keys: [...]}`) gives the key the
+token's `kid` names, or its one key when the token names none. Whitespace or a byte-order mark
+before it is passed over, and a text holding a PEM, or starting as JSON, is that key or nothing,
+never a secret. So a token saying `alg: none`, or one signed with HMAC over a public key in any
+form, is nothing. `exp` is
 required, and `now` is a number of seconds, as `exp` is: `now` from `"holon:clock"`, so a rerun
 checks the token at the time its run saw. A token with `crit`, padding or a payload that isn't an
 object is nothing too. The key's taint stops at `jwt_verify`, as at `hmac_sha256`. The jwt-api
