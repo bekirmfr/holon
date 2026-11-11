@@ -285,6 +285,11 @@ None of these fail on a slower build; they print numbers. See [Measuring](measur
 
 ## 4. Gaps
 
+Every test was read against §2's rule on 2026-11-11: five in six still hold a case, not a class.
+The classes they are examples of, the generic test conceived for each, the order to take them in
+and the holes in the class-level tests that exist are in
+[the test suite review](../../L4s/test-suite-review-L4.md).
+
 Known, and not yet covered:
 
 1. Nothing shows an **unrecorded** route reading state, a collection or a secret going to the pool:
