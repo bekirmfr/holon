@@ -111,7 +111,10 @@ export async function settingsSayPort(page: Page, port: string) {
 
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
  *  canvas, as dragging it from the palette does: with the palette's own drag data, so it can't
- *  pick up a neighbouring row. */
+ *  pick up a neighbouring row. It lands a quarter of the way in (300 by 200 at most), so the whole
+ *  node is on the canvas however narrow the panes beside it leave it: one dropped past its edge
+ *  can be clicked only by scrolling the canvas, which React Flow scrolls back, and on a slow
+ *  runner the click never lands. */
 export async function dropFromPalette(page: Page, entry: string) {
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   const box = (await flow.boundingBox())!;
@@ -120,7 +123,7 @@ export async function dropFromPalette(page: Page, entry: string) {
     d.setData("application/holon-primitive", name);
     return d;
   }, entry);
-  await flow.dispatchEvent("drop", { dataTransfer, clientX: box.x + 300, clientY: box.y + 200 });
+  await flow.dispatchEvent("drop", { dataTransfer, clientX: box.x + Math.min(300, box.width / 4), clientY: box.y + Math.min(200, box.height / 4) });
 }
 
 /** View mode on the active tab, with the newest run selected (the log follows it live). */
