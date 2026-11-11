@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A save that failed once no longer stops the next start.** A run kept the state it left by
+  putting the values that differ from the state it began with, taking the others to be in the
+  store. After a run whose save failed (a disk full for a moment), its state in place, the next
+  run's head could name a value never put, and the server then refused to start: "its state
+  can't be loaded from the store". Now each save puts what differs from the state last kept
+  whole, so a head names only values the store has.
 - **The witness's queue is synced, and has a bound.** The heads waiting for a witness were
   appended to `pending.jsonl` and never synced, and while the witness was down the queue grew by
   a head a run, in memory and on disk, without end. Now the queue file is synced with the logs,

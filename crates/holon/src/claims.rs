@@ -36,13 +36,28 @@ pub(crate) struct StateCell {
     /// The commits to it so far, its runs' and the states put in place; read and counted with
     /// the state's lock held, so they count in the order they land.
     commits: AtomicU64,
+    /// The state last kept whole ([`StateCell::save`]): every value of it is in the store, so a
+    /// snapshot puts only the values that differ from it. Empty until one is, so the first puts
+    /// every value. Taken with the state's lock held.
+    kept: Mutex<State>,
 }
 
 impl StateCell {
     /// A state kept at `head` too.
     pub(crate) fn kept_at(state: State, head: Option<std::path::PathBuf>) -> StateCell {
         let id = format!("{:016x}", rand::random::<u64>());
-        StateCell { state: Mutex::new(state), claims: Claims::default(), head, id, commits: AtomicU64::new(0) }
+        StateCell { state: Mutex::new(state), claims: Claims::default(), head, id, commits: AtomicU64::new(0), kept: Mutex::new(State::new()) }
+    }
+
+    /// Keep `live` (the state's lock held) as a snapshot in the store: its hash. The values put
+    /// are those that differ from the state last kept whole, not from the state a run began with:
+    /// that one may hold a value a failed save never put (the run that wrote it failed, its state
+    /// in place), and a head naming it would stop the next start.
+    pub(crate) fn save(&self, live: &State, store: &SharedStore) -> Result<String, String> {
+        let mut kept = self.kept.lock().unwrap();
+        let hex = crate::restore::save_snapshot(live, Some(&kept), store)?;
+        *kept = live.clone();
+        Ok(hex)
     }
 
     /// The commits so far: the one a run starting now begins after. The state's lock is held.
@@ -75,7 +90,7 @@ impl StateCell {
         if self.head.is_none() {
             return;
         }
-        if let Err(e) = crate::restore::save_snapshot(live, None, store).and_then(|hex| self.write_head(&hex)) {
+        if let Err(e) = self.save(live, store).and_then(|hex| self.write_head(&hex)) {
             eprintln!("holon: the state put in place wasn't kept: {e}");
         }
     }
