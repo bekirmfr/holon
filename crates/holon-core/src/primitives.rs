@@ -1980,7 +1980,7 @@ pub(crate) fn http_upload(inputs: &[Option<Value>], params: &[Param]) -> Option<
 }
 
 /// Whether an Effect occurs anywhere in `v`.
-fn contains_effect(v: &Value) -> bool {
+pub(crate) fn contains_effect(v: &Value) -> bool {
     match v {
         Value::Effect { .. } => true,
         Value::List(items) => items.iter().any(contains_effect),

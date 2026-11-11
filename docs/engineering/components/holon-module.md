@@ -42,6 +42,12 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
 - **The answer is read from inside its memory.** `out_ptr..out_ptr + out_len` is taken from the
   module's memory slice, never allocated to the length the module claims, so a lying length is
   `BadOutput`, not 4 GiB of the host's.
+- **An answer is values, never an effect.** The engine decodes what the module wrote, and the
+  encoding has a form for an effect, so a module can write one. Core refuses it where a module's
+  outputs enter a flow (`run_module_outputs`, `holon-core/src/eval.rs`): an answer holding an
+  effect anywhere makes every output absent, with the reason. An effect is built only by a leaf
+  that may build it, which is how a manifest names everything a flow performs; a module is
+  interior (I7).
 - **A trap can name itself.** A module may export `last_panic() -> i64` (a message it kept); a
   `Trap` then carries the message, up to 4,096 bytes. This is how a module written in Rust, whose
   panic is an `unreachable`, says what went wrong.
@@ -123,6 +129,8 @@ In `src/lib.rs`, over tiny modules written as text and assembled with `wat`:
 - `running_out_of_fuel_is_named` (`OutOfFuel { fuel: 10_000 }`, and its words),
   `growing_past_the_memory_budget_is_named`, `a_trap_is_named`,
   `an_answer_claimed_past_its_memory_is_bad_output_not_an_allocation`.
+- `in_a_flow_a_module_that_answers_an_effect_gives_nothing`: the echo handed an effect answers
+  it, and as a node gives nothing, the output beside it and a nested one included.
 - `through_the_resolver_a_module_is_a_node_and_a_failure_is_kept`: a module inside a composite,
   absent without the engine (the default hook), and a starved one's `OutOfFuel` kept.
 

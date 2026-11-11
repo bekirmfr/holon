@@ -631,8 +631,12 @@ fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Pa
 /// A module's outputs, one per declared port: through `Resolver::run_module`, under the budgets
 /// its params give. Strict like any leaf: an absent input or a bad budget makes every output
 /// absent, silently (as any leaf's missing input would); the engine's refusal (no engine, a
-/// trap, a budget run out, a body's error) makes them absent with the reason. Shared with the
-/// eager oracle (`eager.rs`).
+/// trap, a budget run out, a body's error) makes them absent with the reason. So does an answer
+/// that holds an effect: a module is interior (I7), and an effect is built only by a leaf that
+/// may build it, which is how a flow's manifest comes to name everything it performs. A module
+/// writes its answer's bytes as it likes, so an effect among them would be a write or a call no
+/// leaf of the flow asked for; the whole answer is refused. Shared with the eager oracle
+/// (`eager.rs`).
 pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> (Vec<Option<Value>>, Option<String>) {
     let n = unit.outputs.len();
     if inputs.len() != unit.inputs.len() || inputs.iter().any(Option::is_none) {
@@ -643,6 +647,9 @@ pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Val
         Err(e) => return (vec![None; n], Some(e.to_string())),
     };
     match resolver.run_module(bytes, &limits, inputs) {
+        Ok(outs) if outs.iter().flatten().any(crate::primitives::contains_effect) => {
+            (vec![None; n], Some("its answer holds an effect: a module computes values, and only a leaf builds an effect".into()))
+        }
         Ok(outs) => ((0..n).map(|i| outs.get(i).cloned().flatten()).collect(), None),
         Err(reason) => (vec![None; n], Some(reason)),
     }

@@ -176,7 +176,9 @@ databases an admin bound, only the tables granted, no DDL (databases.rs); the gr
 (above); its secrets by name; other flows' actions (calls.rs, never handed a secret:
 `a_secret_is_never_sent_to_another_flow`); the clock, random numbers and its request. A module
 runs as WebAssembly with no imports under a fuel and memory budget (holon-module), its budgets
-limits with ceilings (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`). No folder or database
+limits with ceilings (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`), and answers values only:
+an answer holding an effect is refused whole (`run_module_outputs`), so a module performs nothing
+and what a flow performs is what its leaves build. No folder or database
 may be bound to, or over, the server's own files (`server_files`, `Folders::open`): those it was
 given, what it keeps beside the deployments file (`BESIDE_DEPLOYMENTS`: the logs, the state heads,
 the arrivals, the heads, the activity log), the secrets' audit, the `.env`, the key's file, and
