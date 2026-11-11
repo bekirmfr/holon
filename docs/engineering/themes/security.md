@@ -364,14 +364,13 @@ What is not defended, or only partly:
   `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`.
 - **Units**: `a_staged_unit_loads_or_is_refused_whatever_its_wiring` (3,000 units drawn: children
   staged or not, edges to and from ports that exist, don't, or are far out, to one port twice,
-  round in a cycle; each as the root and nested, and what the loader says is what `validate` says,
-  every kind of mistake made at least ten times; it replaced a test of three wirings picked by
-  hand), core's `the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room` (20,000 edge
+  round in a cycle, an effect into a sink; each as the root and nested, and what the loader says
+  is what `validate` says, every kind of mistake made at least ten times; it replaced a test of
+  three wirings picked by hand, and one of an effect wired into a write), core's `the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room` (20,000 edge
   sets: the table the evaluator reads answers every lookup as a plain map would, in the room of
   its edges) and `audit_unvalidated_composites_never_panic_in_eval`, `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`
   (every sample's closure loads, so every sample validates; holon-author's
-  `every_samples_units_pass_validation` says so before the server), `effect_written_to_state_does_not_take_the_server_down`
-  (an effect wired into a write is refused at deploy), and `holon verify`'s
+  `every_samples_units_pass_validation` says so before the server), and `holon verify`'s
   `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`;
   `the_deepest_route_a_server_runs_fits_a_runtimes_thread` (a route nested to the bound answers on
   a 2 MiB thread through the server's own resolver).

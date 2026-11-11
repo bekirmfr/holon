@@ -143,9 +143,10 @@ A slower path that is still right would pass every test above; these fail instea
   and what drives runs goes on. It replaced the test of the two request rows alone.
 - `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
   busy log is written and cut back.
-- `a_fire_in_progress_does_not_stall_the_table`, `effect_written_to_state_does_not_take_the_server_down`:
-  both regressions (a persist held the table's lock waiting on a state lock; a panic under a
-  state lock poisoned it for every later request).
+- `a_fire_in_progress_does_not_stall_the_table`: a regression (a persist held the table's lock
+  waiting on a state lock). The other of its kind, a panic under a state lock that poisoned it for
+  every later request (an effect written to state), is a row of
+  `a_staged_unit_loads_or_is_refused_whatever_its_wiring`.
 - `concurrent_runs_lose_no_update`, `a_slow_run_holds_up_no_other_and_retries_without_resending`.
 - `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`,
   `a_composite_nested_as_deep_as_a_host_runs_fits_half_a_threads_stack`.

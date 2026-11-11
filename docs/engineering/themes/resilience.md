@@ -74,7 +74,8 @@ mailbox's run ended the thread that reads it, for good and with nothing in any l
   way, logged, until the server restarts.
 - **Tests.** `a_panic_ends_its_run_and_nothing_else` (every way a run starts that a test drives
   without a far side, a panic in the run and before it, the deployment beside it unharmed),
-  `effect_written_to_state_does_not_take_the_server_down`.
+  `a_staged_unit_loads_or_is_refused_whatever_its_wiring` (an effect wired into a write, the
+  wiring that once panicked a run under the state lock, is among what it refuses at deploy).
 
 ### G4. The evaluator fails closed, and its fast path answers as its plain one
 

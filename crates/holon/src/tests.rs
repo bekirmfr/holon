@@ -4276,47 +4276,6 @@ fn a_fire_in_progress_does_not_stall_the_table() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// Regression: `egress → store_write` stored the `Effect` itself, the next run panicked in
-/// holon-host rebuilding it as a constant while holding the state lock, and the poisoned mutex
-/// then took down every later `/deploy`, `/deployments` and run. A route that writes an effect
-/// (built by hand: the language can't write one) and reads the key back. The sink's own check
-/// refuses the effect at run time (primitives.rs `sink_effect`); before that, `validate` refuses its
-/// wiring, so the server never deploys it.
-#[test]
-fn effect_written_to_state_does_not_take_the_server_down() {
-    let state = test_state();
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let none = leaf("default", vec![Param::frozen("type", "Text"), Param::frozen("value", "none")], vec![("value", Type::Any)], Type::Any);
-    let write = endpoint(
-        &state,
-        "POST",
-        "/cell",
-        vec![leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any), test_sink(), test_store_write("cell"), test_store_read("cell"), none],
-        vec![
-            e(BOUNDARY, 0, 0, 0), // request → field(body)
-            e(0, 0, 1, 0),        // body → egress
-            e(1, 0, 2, 0),        // egress → store_write
-            e(3, 0, 4, 0),        // store_read → default
-            e(4, 0, BOUNDARY, 0), // response: what the cell holds
-            e(2, 0, BOUNDARY, 1), // effect: the write
-        ],
-        1,
-    );
-    let server = Unit {
-        body: UnitBody::Composite { children: vec![write], edges: vec![] },
-        params: vec![Param::frozen("declare", "server"), Param::frozen("port", "18133")],
-        inputs: vec![],
-        outputs: vec![],
-    };
-    let unit = stage(&state, &server);
-    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"]);
-    let refused = deploy_json(&state, "bad-writer", unit, serde_json::json!({ "acknowledge": ack }));
-    assert_eq!(refused.status_code, 400);
-    let why = body_json(refused);
-    assert!(why.to_string().contains("doesn't validate") && why.to_string().contains("incompatible types: Effect"), "{why}");
-    assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200);
-}
-
 /// What a clock's tick writes is kept for the next: each tick writes the time it ticked at.
 #[test]
 fn clock_tick_with_state_persists_across_ticks() {
@@ -10386,9 +10345,10 @@ route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => 
 /// laid out before it was validated, an edge to port four billion asked for a list of 51 GiB.
 ///
 /// Units are drawn, a few thousand: children staged or not, edges to and from ports that exist,
-/// don't, or are far out, to one port twice, round in a cycle. Each is loaded as a root and
-/// nested, and what the loader says is what `validate` says of it. The kinds of mistake are
-/// counted, so the drawing is known to make each.
+/// don't, or are far out, to one port twice, round in a cycle, an effect into a sink's data. Each
+/// is loaded as a root and nested, and what the loader says is what `validate` says of it; a
+/// deploy of one refused is told so, and the server answers on. The kinds of mistake are counted,
+/// so the drawing is known to make each.
 #[test]
 fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
     struct Rng(u64);
@@ -10403,11 +10363,14 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
     let state = test_state();
     let mut store = state.store.clone();
     // What a drawn unit's children are: leaves staged here, beside one nobody staged. The same
-    // units are core's to resolve, to say what it makes of a wiring.
+    // units are core's to resolve, to say what it makes of a wiring. Two are sinks, whose output
+    // is an effect and whose input takes anything but one (a write that stored an effect once
+    // panicked the next run under the state lock, and every request after it).
     let mut known = holon_core::MapResolver::new();
     let mut leaves: Vec<Hash> = Vec::new();
-    for name in ["clock", "random", "not", "and", "add", "concat", "equals"] {
-        let unit = Unit { params: vec![], ..holon_core::interface_of(name).unwrap() };
+    for name in ["clock", "random", "not", "and", "add", "concat", "equals", "store_write", "egress"] {
+        let interface = holon_core::interface_of(name).unwrap();
+        let unit = if name == "store_write" { interface } else { Unit { params: vec![], ..interface } };
         leaves.push(store.put(&unit).unwrap());
         known.insert(unit).unwrap();
     }
@@ -10419,7 +10382,7 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
         2 => 4_000_000_000,
         v => (v % 3) as u32,
     };
-    let types = [Type::Number, Type::Boolean, Type::Text, Type::Any];
+    let types = [Type::Number, Type::Boolean, Type::Text, Type::Any, Type::Effect];
     let (mut refused, mut loaded, mut kinds) = (0, 0, BTreeMap::<String, usize>::new());
     for case in 0..3_000 {
         let n = 1 + rng.below(4) as usize;
@@ -10429,13 +10392,16 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
             v => (v - 1) as u32,
         };
         let edges: Vec<Edge> = (0..rng.below(7)).map(|_| Edge { from_child: end(&mut rng), from_port: port(&mut rng), to_child: end(&mut rng), to_port: port(&mut rng) }).collect();
-        let ports = |rng: &mut Rng, name: &str| (0..rng.below(3)).map(|i| Port { name: format!("{name}{i}"), ty: types[rng.below(4) as usize].clone() }).collect::<Vec<_>>();
+        let ports = |rng: &mut Rng, name: &str| (0..rng.below(3)).map(|i| Port { name: format!("{name}{i}"), ty: types[rng.below(types.len() as u64) as usize].clone() }).collect::<Vec<_>>();
         let unit = Unit { body: UnitBody::Composite { children, edges }, params: vec![], inputs: ports(&mut rng, "in"), outputs: ports(&mut rng, "out") };
         // What core makes of it: a child that isn't staged is nothing to refuse it for.
-        let mistakes: Vec<String> = holon_core::validate(&unit, &known).err().unwrap_or_default().iter().map(|e| format!("{e:?}")).map(|e| e.split([' ', '(', '{']).next().unwrap().to_string()).filter(|e| e != "UnresolvedChild").collect();
+        let found: Vec<String> = holon_core::validate(&unit, &known).err().unwrap_or_default().iter().map(|e| format!("{e:?}")).collect();
+        let mistakes: Vec<String> = found.iter().map(|e| e.split([' ', '(', '{']).next().unwrap().to_string()).filter(|e| e != "UnresolvedChild").collect();
         for kind in &mistakes {
             *kinds.entry(kind.clone()).or_default() += 1;
         }
+        // An effect into a sink: its port takes anything else.
+        *kinds.entry("EffectIntoSink".into()).or_default() += found.iter().filter(|e| e.contains("src: Effect, dst: Any")).count();
         // A unit with no one encoding (two children alike that no edge tells apart) is no unit: it
         // has no hash to be staged under.
         let Ok(staged) = store.put(&unit) else { continue };
@@ -10461,9 +10427,10 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
         }
     }
     assert!(refused > 1_000 && loaded > 300, "{refused} refused, {loaded} loaded");
-    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch"] {
+    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch", "EffectIntoSink"] {
         assert!(kinds.get(kind).is_some_and(|n| *n >= 10), "the drawing makes {kind} too seldom: {kinds:?}");
     }
+    assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200, "the server answers on");
     // A leaf alone, its closure loaded from the store, and again from memory.
     closure(&state.store, leaves[0]).unwrap();
     closure(&state.store, leaves[0]).unwrap();
