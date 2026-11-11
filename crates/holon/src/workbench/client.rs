@@ -196,14 +196,12 @@ impl Client {
         agent::text_of(slug, &self.get(&path)?)
     }
 
-    /// The text a saved flow was saved with: as written when kept (`source`), else printed.
+    /// The text of a saved flow: as written when that is its canvas's code, else its canvas
+    /// printed (`agent::text_of`, as every reading of a document's text is).
     pub(crate) fn saved_text(&self, name: &str) -> Result<String, String> {
         let saved = self.get(&format!("/flows/{}", seg(name)))?;
         let document = saved.get("document").cloned().unwrap_or(saved);
-        match document.get("source").and_then(Value::as_str) {
-            Some(s) => Ok(s.to_string()),
-            None => agent::text_of(name, &document),
-        }
+        agent::text_of(name, &document)
     }
 
     /// What a run did, laid over the text of the version it ran on.

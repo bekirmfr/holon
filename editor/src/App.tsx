@@ -95,7 +95,7 @@ import { AuthGate, type Me } from "./AuthGate";
 import { Shell } from "./ui/Shell";
 import { PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
 import { OverviewPage } from "./OverviewPage";
-import { compileHolon, printHolon, sourceLineOf } from "./holonText";
+import { compileHolon, documentText, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
 import type { Inspected } from "./holonText";
 import { useTextPane } from "./useTextPane";
@@ -1317,7 +1317,7 @@ function Canvas({
               deployments={deployments}
               navigate={navigate}
               prepare={prepareSaved}
-              textOf={(slug, doc) => doc.source ?? printHolon(slug, doc, ev)}
+              textOf={(slug, doc) => documentText(slug, doc)}
               onKeep={approvals.keep}
               onDeclined={approvals.refresh}
               onDeployed={(slug, version) => {
