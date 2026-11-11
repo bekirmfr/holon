@@ -53,6 +53,11 @@
   redacted of its run's resume tokens and tainted values too. A value shorter than six characters
   is kept as it is. A new sample, `card-vault`, keeps a merchant's card under a token, the number
   never in the log.
+- **A new version is replayed on every kind of run before it goes live.** A replay found the
+  handler of a request, a tick, a file or an action, but not of a WebSocket's message, a mail, a
+  feed's event or a queue's message: those runs were counted as answering differently whatever
+  the version, and so was a request's run that waited and was resumed. `holon verify` and a
+  replay now find a run's handler in one place, so each kind is run again alike.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

@@ -1670,6 +1670,67 @@ export const quote = action((n) => n * 2)
     assert_eq!(route(&state, &req("GET", &format!("/deployments/nope/replay?unit={}", to_hex(&v1)), vec![])).status_code, 404);
 }
 
+/// A run of every kind is run again through the handler its kind and label name
+/// (`verify::handler_of`), by `holon verify` and a replay alike. Each kind the host logs a run as
+/// (every `run_entry` and `run_entry_taking` in its source) is a kind of handler's, and every
+/// handler of every sample is found by its run's kind and label, and by a resumed part's: given
+/// what its run was sent (a request, a WebSocket block's record, an action's input) or finding
+/// its start among what the run sourced (a tick, a file, a mail, a feed's event, a queue's
+/// message). A server's handlers are taken field by field, so a new kind of handler fails to
+/// compile here until it has its row.
+#[test]
+fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
+    let kinds: BTreeSet<&str> = ["request", "websocket", "tick", "file", "mail", "feed", "queue", "trigger", "resume"].into();
+    fn sources(dir: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(std::fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    let mut texts = Vec::new();
+    sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut texts);
+    let logged: BTreeSet<String> = texts
+        .iter()
+        .flat_map(|t| ["run_entry(\"", "run_entry_taking(\""].into_iter().flat_map(move |call| t.split(call).skip(1)))
+        .filter_map(|rest| rest.split_once('"').map(|(kind, _)| kind.to_string()))
+        .collect();
+    assert_eq!(logged.iter().map(String::as_str).collect::<BTreeSet<_>>(), kinds, "the kinds the host logs a run as");
+
+    let state = test_state();
+    let mut found = BTreeSet::new();
+    for sample in holon_author::samples::samples() {
+        let unit = stage_text(&state, sample.text);
+        let resolver = closure(&state.store, unit).unwrap();
+        let Ok(server) = read_server(resolver.resolve(&unit).unwrap(), &resolver) else { continue };
+        let Server { port: _, taint: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
+        let label = |l: &String| l.clone();
+        let handlers: Vec<(&str, String, Hash, bool)> = [
+            routes.iter().map(|r| ("request", format!("{} {}", r.method, r.path), r.endpoint, true)).collect::<Vec<_>>(),
+            websockets.iter().flat_map(|w| w.blocks()).map(|b| ("websocket", label(&b.label), b.handler, true)).collect(),
+            clocks.iter().map(|c| ("tick", label(&c.label), c.handler, false)).collect(),
+            files.iter().map(|f| ("file", label(&f.label), f.handler, false)).collect(),
+            mails.iter().map(|m| ("mail", label(&m.label), m.handler, false)).collect(),
+            feeds.iter().map(|f| ("feed", label(&f.label), f.handler, false)).collect(),
+            queues.iter().map(|q| ("queue", label(&q.label), q.handler, false)).collect(),
+            actions.iter().map(|a| ("trigger", label(&a.label), a.handler, true)).collect(),
+        ]
+        .concat();
+        assert_eq!(handlers.len(), server.handlers().count(), "{}: every handler", sample.name);
+        // A resumed run's later part is its handler's, whichever started it.
+        for (kind, label, handler, sent) in handlers {
+            for kind in [kind, "resume"] {
+                assert_eq!(verify::handler_of(&server, kind, &label), Ok((handler, sent)), "{}: a {kind} run of {label:?}", sample.name);
+                found.insert(kind);
+            }
+        }
+    }
+    assert_eq!(found, kinds, "the samples have a handler of every kind");
+}
+
 /// A replayed version's outbound requests are answered by what the run was answered to the same
 /// request, wherever the version asks it from; one the run never sent can't be told.
 #[test]
@@ -2156,6 +2217,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let first = entries.iter().find(|x| x["kind"] == "request" && x["route"] == "POST /orders").unwrap();
     assert_eq!(resumed["run_id"], first["run_id"], "one run, two parts");
     assert_eq!(first["parked"], serde_json::json!(["paid"]));
+    assert!(replays_as_it_verifies(&state, "shop").contains("resume"), "a request's run resumed is its route's");
 
     // Pinned: a run started on v1 finishes on v1 after v2 is deployed (v2 would write the path).
     let (_, token2) = call("POST", "/orders");
@@ -3592,6 +3654,7 @@ fn a_websocket_runs_its_blocks_through_a_real_socket() {
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("websocket"));
 }
 
 /// A connection its open block accepts but the host can't hold (its channel has all the
@@ -5011,9 +5074,9 @@ export const look = action((input) => notes[input.id])
     }
     assert!(kept[2].1.contains("‹taint:x-api-key›") && kept[2].1.contains("‹taint:number›"), "its lines mark them: {}", kept[2].1);
     assert!(report.ok(), "the runs check as themselves: {}", kept[4].1);
-    // (A replay doesn't run a WebSocket's blocks yet: it looks for them among the routes.)
-    let differ: Vec<&serde_json::Value> = replayed["runs"].as_array().unwrap().iter().filter(|r| r["outcome"] == "differs" && r["kind"] != "websocket").collect();
-    assert!(differ.is_empty(), "the runs replay as themselves, or can't be told: {differ:?}");
+    assert_eq!(replayed["differ"], 0, "the runs replay as themselves, or can't be told: {replayed}");
+    let same = replays_as_it_verifies(&state, "teller");
+    assert!(["request", "websocket", "trigger"].iter().all(|k| same.contains(*k)), "{same:?}");
 }
 
 /// Every body the control plane reads goes through `read_body`, which reads it by the deadline:
@@ -6279,6 +6342,35 @@ fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) 
 fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
 }
+
+/// The oracle a deployment's runs of every kind are held to: replayed on the version it runs now
+/// (`GET /deployments/<slug>/replay`), a run of that version that `holon verify` runs again as it
+/// ran replays as the same, and none replays differently. The kinds of the runs replayed as the
+/// same, for the caller to say which it made.
+fn replays_as_it_verifies(state: &AppState, slug: &str) -> BTreeSet<String> {
+    let export: verify::Export = serde_json::from_value(body_json(route(state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let unit = to_hex(&state.deployments.lock().unwrap()[slug].unit);
+    let replayed = body_json(route(state, &req("GET", &format!("/deployments/{slug}/replay?unit={unit}&runs=200"), vec![])));
+    let of_now: BTreeSet<u64> = export
+        .lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e["unit"] == unit)
+        .filter_map(|e| e["seq"].as_u64())
+        .collect();
+    let mut same = BTreeSet::new();
+    for run in replayed["runs"].as_array().unwrap().iter().filter(|r| r["seq"].as_u64().is_some_and(|s| of_now.contains(&s))) {
+        let seq = run["seq"].as_u64().unwrap();
+        assert_ne!(run["outcome"], "differs", "{slug}'s run {seq} replays differently on its own version: {run}");
+        if report.reruns.iter().any(|(s, r)| *s == seq && *r == verify::Rerun::Matched) {
+            assert_eq!(run["outcome"], "same", "{slug}'s run {seq} verifies, so it replays as the same: {run}");
+            same.insert(run["kind"].as_str().unwrap().to_string());
+        }
+    }
+    same
+}
+
 fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
     hits.lock().unwrap().get(path).copied().unwrap_or(0)
 }
@@ -8607,6 +8699,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         // the resumed part that ran again too.
         let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
         assert_eq!(matched, 4, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+        assert!(replays_as_it_verifies(&state, &slug).contains("resume"), "{engine}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -9085,6 +9178,7 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
 
     let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
     assert!(!logged.contains("s3cret") && !logged.contains("t0ken"), "{logged}");
+    assert!(replays_as_it_verifies(&state, &slug).contains("mail"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9190,6 +9284,7 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     assert_eq!(runs().len(), 4);
     let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
     assert_eq!(live["feeds"][0]["status"], "closed", "{live}");
+    assert!(replays_as_it_verifies(&state, &slug).contains("feed"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9936,6 +10031,7 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     let (matched, skipped) = (report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| failed(r)).count());
     assert!(report.ok() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
     assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    assert!(replays_as_it_verifies(&state, &slug).contains("queue"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -11659,6 +11755,7 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("file"));
 
     // What starts its file handlers can't be optional.
     let unit = state.deployments.lock().unwrap()[&slug].unit;
@@ -11706,6 +11803,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("trigger"));
     // What starts an action can't be optional.
     let unit = state.deployments.lock().unwrap()[&slug].unit;
     let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["Action(\"reset\")"] } }));
@@ -11763,6 +11861,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
+    assert_eq!(replays_as_it_verifies(&state, &slug), ["request".to_string(), "tick".to_string()].into());
 
     // Clocks alone: no port, and the clock its trigger, granted with the rest.
     let alone = deploy_text(&state, "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n", "127.0.0.1:9");
