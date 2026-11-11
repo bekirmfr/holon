@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Docs.** A new guide, [People, agents and services](docs/manual/guides/people.md): the first
+  admin, a teammate, an agent of your own, a token for CI, taking access away, and who did what;
+  the concepts page names the three kinds and their owners.
 - **An owner who isn't an admin has a page of what they own.** People and access is an admin's;
   anyone else signed in now has **Your agents and services** (7) in its place: the agents and
   services they own, with their tokens, which they make (each shown once) and revoke there. An

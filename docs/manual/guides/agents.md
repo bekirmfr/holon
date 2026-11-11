@@ -47,9 +47,11 @@ holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.
 holon mcp setup claude-code --server https://holon.example.com
 ```
 
-`setup` asks for an agent's token (on the server's **People and access**, add an agent and
-**make token**; or `holon people add NAME --agent`, then `holon people token NAME`), checks it,
-and keeps it in `~/.holon/tokens.json`, readable only by you.
+`setup` asks for an agent's token, checks it, and keeps it in `~/.holon/tokens.json`, readable
+only by you. An admin adds the agent, owned by you (**People and access**, or `holon people add
+NAME --agent --owner YOU`), and you make its token in the editor's **Your agents and services**
+(an admin, on **People and access** or with `holon people token NAME`); see
+[People, agents and services](people.md#an-agent-of-your-own).
 The host's settings file never holds the token. `HOLON_TOKEN` gives one without asking.
 
 `holon mcp` takes only an agent's token: a person's or a service's is refused, at setup and when
