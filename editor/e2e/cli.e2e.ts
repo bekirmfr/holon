@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { expect, OWN_PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
 const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -131,7 +131,7 @@ test("flows are saved and read back, and people and tokens managed, from the com
 test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, request }) => {
   // The traced-payout sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `traced-${Date.now().toString(36)}`;
-  const text = readFileSync(join(SAMPLES, "traced-payout.holon.ts"), "utf8").replace("port: 8147", `port: ${8146 + SAMPLE_SHIFT}`);
+  const text = readFileSync(join(SAMPLES, "traced-payout.holon.ts"), "utf8").replace("port: 8147", `port: ${OWN_PORTS.traced + SAMPLE_SHIFT}`);
   mkdirSync(RUN_DIR, { recursive: true });
   const path = join(RUN_DIR, `${slug}.holon.ts`);
   writeFileSync(path, text);
@@ -167,7 +167,7 @@ test("a flow's log lines are read from the command line, kept beside its runs an
 test("a new version is replayed on a deployment's recent runs from the command line before it is deployed", async ({ adminToken }) => {
   // The price-rules sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `price-replay-${Date.now().toString(36)}`;
-  const text = readFileSync(join(SAMPLES, "price-rules.holon.ts"), "utf8").replace("port: 8185", `port: ${8144 + SAMPLE_SHIFT}`);
+  const text = readFileSync(join(SAMPLES, "price-rules.holon.ts"), "utf8").replace("port: 8185", `port: ${OWN_PORTS.priceReplay + SAMPLE_SHIFT}`);
   mkdirSync(RUN_DIR, { recursive: true });
   const file = (name: string, body: string) => {
     const path = join(RUN_DIR, `${slug}-${name}.holon.ts`);

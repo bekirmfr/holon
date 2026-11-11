@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SAMPLES_RS, SERVER, test } from "./fixtures";
+import { expect, HOLON, OWN_PORTS, SAMPLE_SHIFT, SAMPLES, SAMPLES_RS, SERVER, test } from "./fixtures";
 
 /** Each sample's name, its port (none for a flow only a clock or a file starts) and its file, as
  *  samples.rs lists them. */
@@ -38,6 +38,10 @@ test("every sample deploys from its text and answers", async ({ adminToken }) =>
   test.setTimeout(600_000);
   expect(SAMPLE_LIST.length, "samples.rs read").toBeGreaterThan(80);
   for (const s of SAMPLE_LIST) expect(s.name && s.file, JSON.stringify(s)).toBeTruthy();
+  // A port the tests' own flows take is no sample's: one there would be found taken here, by
+  // whichever of those tests ran before it on this server.
+  const taken = Object.entries(OWN_PORTS).flatMap(([own, p]) => SAMPLE_LIST.filter((s) => s.port === String(p)).map((s) => `${s.name} has ${p}, the tests' ${own} flow's (fixtures.ts OWN_PORTS)`));
+  expect(taken, "move the tests' flow to a port no sample has").toEqual([]);
   const control = (path: string, method = "GET") =>
     fetch(`${SERVER}${path}`, { method, headers: { Authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
   const copies = mkdtempSync(join(tmpdir(), "holon-e2e-sweep-"));

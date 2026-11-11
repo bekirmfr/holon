@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { expect, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { expect, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 import { flowRow, gotoPage } from "./helpers";
 
 /** `holon mcp` against the test server, as an agent's host runs it: one JSON-RPC line each way. */
@@ -46,7 +46,7 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     // Its own name each run, so a reused server's earlier runs don't meet it; its port one no
     // sample takes, in this slot's range (ports.mjs), so it meets no other run's.
     const name = `agent-${Date.now().toString(36)}`;
-    const port = 8142 + SAMPLE_SHIFT;
+    const port = OWN_PORTS.greeting + SAMPLE_SHIFT;
     const text = (greeting: string) => `import { flow, route } from "holon"\n\nflow("${name}", { port: ${port} })\n\nroute.get("/hi/:name", (req) => \`${greeting}, \${req.params.name}\`)\n`;
 
     expect((await agent.tool("check", { text: text("Hi") })).text).toContain("GET /hi/:name");
@@ -88,7 +88,7 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
   try {
     await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
     const name = `tally-${Date.now().toString(36)}`;
-    const port = 8143 + SAMPLE_SHIFT;
+    const port = OWN_PORTS.total + SAMPLE_SHIFT;
     const text = `import { flow, route } from "holon"\nimport state from "state"\n\nflow("${name}", { port: ${port} })\n\nroute.post("/add", (req) => {\n  const total = (state.total ?? 0) + req.json.n\n  state.total = total\n  return total\n})\n\nroute.get("/total", () => state.total)\n`;
     expect((await agent.tool("deploy", { text })).text).toContain("Not deployed yet");
     // A person deploys it, approving what it may do.
@@ -145,7 +145,7 @@ test("an agent proposes the proposal sample with a why; a person declines it wit
   try {
     await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
     // Its port one no sample takes, in this slot's range, so the sample deployed by samples.e2e meets it not.
-    const text = readFileSync(new URL("../../crates/holon-author/samples/proposal.holon.ts", import.meta.url), "utf8").replace("port: 8184", `port: ${8145 + SAMPLE_SHIFT}`);
+    const text = readFileSync(new URL("../../crates/holon-author/samples/proposal.holon.ts", import.meta.url), "utf8").replace("port: 8184", `port: ${OWN_PORTS.proposal + SAMPLE_SHIFT}`);
     const why = "ids from httpbin, so they are unique across hosts";
     const proposed = await agent.tool("deploy", { text, slug, why, note: "asked for in #payments; tried against httpbin: 3 ids" });
     expect(proposed.failed).toBe(false);

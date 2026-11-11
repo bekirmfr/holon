@@ -10,7 +10,7 @@
 // `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
-import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
+import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
 import { flowRow, gotoPage, navLink, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
@@ -1665,7 +1665,7 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
 
   // The service that writes the ledger, standing in for one: a flow of the test's own, the ledger
   // bound read-write for it alone (server.mjs).
-  const writerPort = 8199 + SAMPLE_SHIFT;
+  const writerPort = OWN_PORTS.ledgerWriter + SAMPLE_SHIFT;
   const writer = join(mkdtempSync(join(tmpdir(), "holon-ledger-writer-")), "ledger-writer.holon.ts");
   writeFileSync(
     writer,
