@@ -297,7 +297,11 @@ run's request, what it read (clock, randomness, state, files, each outbound resp
 outputs, the effects it performed, its answer (up to 64 KiB of the body), its timings, the unit
 and the grant it ran under, and who started it. Secrets and resume tokens are replaced by
 `‹secret:name v3 #a1b2c3d4›` (the version and a keyed fingerprint of the value; the entry's
-`secrets` lists each it was given) and `‹token:name›` before anything is written. Text a run received that only
+`secrets` lists each it was given) and `‹token:name›` before anything is written, and so are the
+values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
+`taint` keys, and every flow's `authorization`, `proxy-authorization`, `cookie` and `set-cookie`;
+see [Tainted keys](../language/reference.md#imports-and-settings)): no one, an admin included, can
+read them back from the log, the run's lines, its export or an unrecorded handler's tally. Text a run received that only
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 

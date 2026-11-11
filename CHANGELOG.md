@@ -39,6 +39,20 @@
   sending a long body slowly, or not at all, turned every other request away (503), signing in
   included. A body must arrive within 30 seconds now, as on a flow's port; past that the request is
   told 408 and its place goes back. (A body of 1 KiB or less never held a place.)
+- **A flow can keep the values of its own keys out of the log: `flow("x", { taint: ["x-api-key", "number"] })`.**
+  The values under those keys are replaced by `‹taint:key›` in everything the server keeps of the
+  flow's runs, wherever a run has them, whatever started it: a request's header, query or path
+  parameter or JSON field at any depth, a WebSocket's message, an action's input, what a call sends
+  and what the far side answers, the run's own answer, a row it writes or reads. They are kept out
+  of its log entry, its lines, its export, a replay, `holon verify`'s report, a channel's packs,
+  and an unrecorded handler's last failure. The run computes with them and the caller is answered
+  as always; no one, an admin included, can read them back. Every flow now does this for
+  `authorization`, `proxy-authorization`, `cookie` and `set-cookie`: a bearer token, a Basic
+  password, each cookie a caller sent and the one a far side set were logged as they were. An
+  unrecorded handler's last failure was redacted of the deployment's secrets only, and is now
+  redacted of its run's resume tokens and tainted values too. A value shorter than six characters
+  is kept as it is. A new sample, `card-vault`, keeps a merchant's card under a token, the number
+  never in the log.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

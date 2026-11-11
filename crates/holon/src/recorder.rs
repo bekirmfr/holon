@@ -194,6 +194,41 @@ pub struct Commit {
     pub n: Option<u64>,
 }
 
+impl LogEntry {
+    /// Each value the entry holds of what its run had, whatever started it: its request (a
+    /// message, an input), what it read and was given, each node's outputs, what it performed and
+    /// sent, each call it made and its answer. What a redactor goes over (`Redactor::entry`), and
+    /// where a tainted key's value is looked for (`data::tainted`): one list, so the two can't
+    /// part. Its texts apart ([`LogEntry::texts_mut`]).
+    pub(crate) fn values_mut(&mut self, f: &mut impl FnMut(&mut SValue)) {
+        self.request.iter_mut().for_each(&mut *f);
+        self.sourced.iter_mut().for_each(|(_, v)| f(v));
+        self.state_before.values_mut().for_each(&mut *f);
+        self.outputs.iter_mut().flatten().for_each(&mut *f);
+        self.performed.iter_mut().for_each(|p| f(&mut p.payload));
+        self.progress.iter_mut().for_each(|p| f(&mut p.payload));
+        self.events.values_mut().for_each(&mut *f);
+        for read in &mut self.reads {
+            f(&mut read.request);
+            read.answer.iter_mut().for_each(&mut *f);
+        }
+        for t in &mut self.timeline {
+            t.outputs.iter_mut().flatten().flatten().for_each(&mut *f);
+        }
+        for round in &mut self.rounds {
+            for x in &mut round.exchanges {
+                f(&mut x.request);
+                f(&mut x.response);
+            }
+        }
+    }
+
+    /// Its texts of what its run had: its answer's body, its error, its URL.
+    pub(crate) fn texts_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        [&mut self.response_body, &mut self.error, &mut self.url].into_iter().flatten()
+    }
+}
+
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
 /// keeps them out of the log (`secrets::answered_tokens`): never serialized, never printed.
 #[derive(Clone, Default)]

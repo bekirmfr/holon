@@ -140,7 +140,8 @@ and its own (`commit`): the run before a run is the one whose commit it began af
 line is, and a run no other commit landed beside is checked whole, however close its times. A log
 written before entries said so is taken by each line's place and times.
 
-A node that computed with a secret or a resume token (a signature, a token check) can't be
+A node that computed with a secret, a resume token or a tainted value (a signature, a token
+check, a caller's API key: [tainted keys](../language/reference.md#imports-and-settings)) can't be
 computed again: the log never holds their values, only a placeholder. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked

@@ -705,6 +705,7 @@ mod tests {
         assert!(sockets.take("c", "/feed", 2).is_none(), "past max_websockets");
         let server = |paths: &[&str]| Server {
             port: Some(1),
+            taint: vec![],
             routes: vec![],
             clocks: vec![],
             files: vec![],

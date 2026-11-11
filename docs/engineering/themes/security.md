@@ -171,6 +171,22 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   request is sealed under the same key on disk (`sealed_for_disk`): the vault carries the sealer
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
   never kept.
+- **What a flow taints is redacted like a secret, not refused**: the flow's `taint` keys (a
+  frozen param on each handler's trigger node, gathered onto the server unit's by
+  `routes::flow_taint`, so the unit's hash covers them: `Server.taint`) and every run's
+  `ALWAYS_TAINTED` (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`).
+  `data::tainted` collects their values from all the run's entry holds (`LogEntry::values_mut`
+  and `texts_mut`, the list `Redactor::entry` walks: the request or input, the outputs, the
+  effects, the events, the reads, the timeline and a call's rounds) and from its lines: a record's
+  field, a header's `[name, value]` pair, a JSON text at any depth, a query's or a form's
+  `name=value` (decoded and as sent), with a credential's parts (after its scheme, a Basic
+  credential decoded and its password, each cookie's value, a set cookie's), at least
+  `MIN_SECRET_LEN` long. `firing::redactor_of` adds `Redactor::tainted` to the run's tokens and
+  secrets, so each value is marked `‹taint:key›` wherever it is in the entry, the lines, the packs
+  and an unrecorded handler's last failure, a number held as a number included (a JSON text stays
+  JSON). `taint:` is a mark kind of its own, so `holon verify` reads it as a placeholder (a node
+  computed from one is taken from the log) without counting a forwarded credential as a token
+  sent out.
 
 ### 2.7 What a flow can reach
 
@@ -287,6 +303,11 @@ What is not defended, or only partly:
 - **Redaction catches a secret's literal value**, as written or JSON-escaped, and what the graph
   shows computed from it; a value transformed where the graph can't see (a far side echoing it
   encoded) isn't recognised (secrets.rs's notes).
+- **Taint is found by key**: one under six characters is kept (a CVC); a value found under a
+  tainted key is kept out wherever its run has it, but a later run that reads it back under
+  another key logs it; a waiting run's sealed request holds it, to resume with; and the flow's
+  state, collections, databases and files hold what it writes. Unlike a secret's, a tainted
+  value's write isn't refused: it is the caller's, and the flow decides what to keep.
 - **A Boolean computed from a secret is clean** (taint.rs: any Boolean output), so a guard on a
   secret's presence doesn't taint all that follows it. A flow can therefore learn a secret a bit
   at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
@@ -351,6 +372,12 @@ What is not defended, or only partly:
   `a_secret_goes_only_where_its_approval_shows_it_going`, `a_waiting_runs_record_is_sealed_on_disk`
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
   `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails).
+- **Tainted values**: `a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`
+  (a request's every part, a call's request and answer and the cookie it sets, a WebSocket's
+  message, an action's input, a row written and read back, every always-tainted key; none in the
+  log, the listing, the lines, the export, verify's report or a replay, and the runs check as
+  themselves), and `an_unrecorded_failure_is_kept_redacted_and_cut_short` (a tally's failure, of
+  secrets, tainted values and resume tokens).
 - **Reach**: `a_name_stays_inside_its_folder`, `a_link_out_of_the_folder_is_never_followed`,
   `a_write_through_a_link_makes_nothing_outside_and_links_arent_followed`,
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the

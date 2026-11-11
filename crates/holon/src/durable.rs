@@ -746,7 +746,8 @@ pub(crate) fn resume_parked(
     for name in waits.events.keys().chain(run.waiting.iter().map(|w| &w.name)) {
         tokens.entry(name.clone()).or_insert_with(|| token_for(run_id, name));
     }
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
+    let redactor = Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds)));
+    if let Some(l) = log_run(deployments, slug, entry, redactor, declared) {
         l.said(slug);
     }
 

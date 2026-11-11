@@ -58,6 +58,9 @@ pub enum HeaderKind {
     Limit { name: String, value: u64 },
     /// `browsers: ["https://app.example"]`: the origins whose pages may call the flow.
     Browsers(Vec<String>),
+    /// `taint: ["x-api-key", "number"]`: the keys whose values the host never keeps of any of the
+    /// flow's runs, wherever a run has them (a request, a message, a call, an answer).
+    Taint(Vec<String>),
     /// An import the flow can do without, `with { optional: "true" }`.
     Optional(Consent),
     /// `import key from "secret:signing_key"`: a secret the flow reads; someone sets it before the

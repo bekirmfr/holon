@@ -231,7 +231,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         return Replay::CantTell(missed);
     }
     if observer.consumed {
-        return Replay::CantTell("it computes with a secret or a token, which the log never holds".into());
+        return Replay::CantTell("it computes with a secret, a token or a tainted value, which the log never holds".into());
     }
     // As `rerun` has it: the server refuses a write of a secret's value.
     let keeps = |c: &Capability| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_) | Capability::DbWrite(_) | Capability::ChannelSend(_) | Capability::FileWrite(_));

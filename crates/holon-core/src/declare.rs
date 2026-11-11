@@ -113,6 +113,16 @@ pub struct Route {
     pub log: LogLevel,
 }
 
+/// The keys whose values the host never keeps of any run, whatever its flow taints: credentials,
+/// a caller's or a far side's, as headers carry them.
+pub const ALWAYS_TAINTED: &[&str] = &["authorization", "proxy-authorization", "cookie", "set-cookie"];
+
+/// Whether `key` can be a key a flow taints: a name of up to 128 bytes, with no white space
+/// (they are kept joined by spaces) and no `‹` or `›` (the log's mark of its value names it).
+pub fn is_taint_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 128 && !key.chars().any(|c| c.is_whitespace() || c == '‹' || c == '›')
+}
+
 /// One clock handler of a server, as declared: a run every `seconds`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clock {
@@ -262,6 +272,10 @@ pub struct Action {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Server {
     pub port: Option<u16>,
+    /// The keys its flow taints (its `taint` param, joined by spaces): their values never reach
+    /// what the host keeps of any of its runs, wherever a run has them, nor do those of
+    /// [`ALWAYS_TAINTED`].
+    pub taint: Vec<String>,
     pub routes: Vec<Route>,
     pub clocks: Vec<Clock>,
     pub files: Vec<FileHandler>,
@@ -431,6 +445,8 @@ pub enum DeclError {
     NoHandlers,
     /// A handler's `log` param isn't a level.
     BadLogLevel { child: u32, value: String },
+    /// A key its `taint` param names isn't one ([`is_taint_key`]).
+    BadTaintKey(String),
 }
 
 /// The declaration a unit carries (`"server"`, `"endpoint"`), if any.
@@ -575,7 +591,11 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks, files, mails, feeds, queues, websockets, actions })
+    let taint: Vec<String> = frozen(unit, "taint").unwrap_or("").split_whitespace().map(str::to_string).collect();
+    if let Some(bad) = taint.iter().find(|k| !is_taint_key(k)) {
+        return Err(DeclError::BadTaintKey(bad.clone()));
+    }
+    Ok(Server { port, taint, routes, clocks, files, mails, feeds, queues, websockets, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.

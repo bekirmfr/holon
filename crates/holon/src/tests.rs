@@ -4874,6 +4874,148 @@ fn the_gate_and_the_router_read_every_path_alike() {
     }
 }
 
+/// A key a flow taints is tainted wherever a run has it, whatever started the run: in a request (a
+/// header, the query as sent and as read, a path parameter, a JSON body at depth, a number held as
+/// a number), in what a call sends and what the far side answers (and the cookie it sets), in a
+/// WebSocket's message, in an action's input and what it writes, and in what a later run reads
+/// back; and so are the credentials every run taints (a Bearer token, a Basic password, a
+/// cookie). No form of any value is in the runs' log, their listing, their lines, the export,
+/// `holon verify`'s report or a replay's; each is marked `‹taint:key›` there. Each caller is
+/// answered with the values as they are, and the runs check and replay as themselves.
+#[test]
+fn a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them() {
+    use std::io::Write;
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::Message;
+    // The far side: it answers a card under a tainted key, and sets a session.
+    let (far_number, far_session) = ("5500000000000004", "fs-6b2d9e4a1c");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let far = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if read_request(&mut stream).is_none() {
+                continue;
+            }
+            let body = format!(r#"{{"card":{{"number":"{far_number}"}},"holder":"Ada"}}"#);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: far_session={far_session}; Path=/; HttpOnly\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = stream.write_all(format!("{head}{body}").as_bytes());
+        }
+    });
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        r#"import {{ action, flow, route }} from "holon"
+import far from "host:{far}"
+import notes from "collection:notes"
+
+flow("teller", {{ port: {port}, taint: ["x-api-key", "number", "code", "token", "pin"] }})
+
+route.post("/pay/:code", (req) => {{
+  const key = req.headers["x-api-key"]
+  console.log("paying", key, req.query.token, req.json.card.number)
+  return {{ key, code: req.params.code, card: req.json.card.number, token: req.query.token, cookie: req.headers.cookie, auth: req.headers.authorization }}
+}})
+
+route.post("/card", async (req) => {{
+  const got = await far.post("/cards", {{ headers: {{ "x-api-key": req.json.key }}, body: {{ holder: "Ada" }} }})
+  return got.body
+}})
+
+route.websocket("/ws", {{ message: (m) => ({{ echo: m.text }}) }})
+
+export const keep = action((input) => {{
+  notes[input.id] = input
+  return input.id
+}})
+
+export const look = action((input) => notes[input.id])
+"#
+    );
+    deploy_text(&state, &text, &far);
+    sync_listeners(&state);
+
+    // A request, with the credentials every run taints.
+    let (key, bearer, password, cookie, token, code, card) = ("kx-7f3a9c2e1b", "bt-4d8e2f6a0c", "pw-9b1c5e7d3f", "ck-2a6f8e0b4d", "tk/3c+7e=1a5f", "cd-8e4a2c6f0b", "4111111111111111");
+    let basic = "YWRhOnB3LTliMWM1ZTdkM2Y="; // base64 of "ada:" and the password
+    let sent_token = "tk%2F3c%2B7e%3D1a5f";
+    let send = |url: String, body: String| {
+        let request = data::DataRequest {
+            method: "POST".into(),
+            url,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("X-Api-Key".into(), key.into()),
+                ("Authorization".into(), format!("Bearer {bearer}")),
+                ("Proxy-Authorization".into(), format!("Basic {basic}")),
+                ("Cookie".into(), format!("sid={cookie}; theme=dark")),
+            ],
+            body: body.into_bytes(),
+            by: None,
+        };
+        let answered = serve_data(&state.store, &state.deployments, &state.deployments_path, "teller", &request);
+        (answered.status, String::from_utf8(answered.body).unwrap())
+    };
+    let (status, answer) = send(format!("/pay/{code}?token={sent_token}"), format!(r#"{{"card": {{"number": {card}}}, "amount": "12.00"}}"#));
+    assert_eq!(status, 200, "{answer}");
+    for value in [key, bearer, code, card, token] {
+        assert!(answer.contains(value), "the caller is answered with {value:?} as it is: {answer}");
+    }
+    // A call: the key it sends, and what the far side answers.
+    let sent_key = "kx-out-5d1e8b3f";
+    let (status, answer) = send("/card".into(), format!(r#"{{"key": "{sent_key}"}}"#));
+    assert!(status == 200 && answer.contains(far_number), "{status} {answer}");
+    // A WebSocket's message.
+    let ws_number = "6011000000000004";
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap(), stream).unwrap();
+    ws.send(Message::text(format!(r#"{{"number":"{ws_number}"}}"#))).unwrap();
+    let echoed = loop {
+        if let Message::Text(t) = ws.read().unwrap() {
+            break t.to_string();
+        }
+    };
+    assert!(echoed.contains(ws_number), "{echoed}");
+    drop(ws);
+    // An action's input, written; and a later run that reads it back.
+    let (pin, kept_token) = ("pn-0e7c3a9d5b", "at-4c8f2e6a0d");
+    assert_eq!(run_action_named(&state, "teller", "keep", serde_json::json!({ "id": "n1", "pin": pin, "token": kept_token })).status_code, 200);
+    let looked = body_json(run_action_named(&state, "teller", "look", serde_json::json!({ "id": "n1" })));
+    assert!(looked.to_string().contains(pin), "{looked}");
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+
+    let never = [key, bearer, password, cookie, token, sent_token, code, card, basic, "ada:pw-9b1c5e7d3f", sent_key, far_number, far_session, ws_number, pin, kept_token];
+    let get = |path: &str| body_json(route(&state, &req("GET", path, vec![])));
+    let unit = stage_text(&state, &text);
+    let export = get("/deployments/teller/export");
+    let report = verify::check(&serde_json::from_value(export.clone()).unwrap(), None, &BTreeMap::new());
+    let replayed = get(&format!("/deployments/teller/replay?unit={}", to_hex(&unit)));
+    let kept = [
+        ("its log", get("/deployments/teller/log").to_string()),
+        ("its runs", get("/deployments/teller/runs").to_string()),
+        ("its lines", get("/deployments/teller/logs").to_string()),
+        ("its export", export.to_string()),
+        ("holon verify", verify::describe(&report, None)),
+        ("a replay", replayed.to_string()),
+    ];
+    for (place, shown) in &kept {
+        for value in never {
+            assert!(!shown.contains(value), "{place} holds {value:?}: {shown}");
+        }
+    }
+    let log = &kept[0].1;
+    for k in ["x-api-key", "number", "code", "token", "pin", "authorization", "proxy-authorization", "cookie", "set-cookie"] {
+        assert!(log.contains(&format!("‹taint:{k}›")), "the log marks {k}: {log}");
+    }
+    assert!(kept[2].1.contains("‹taint:x-api-key›") && kept[2].1.contains("‹taint:number›"), "its lines mark them: {}", kept[2].1);
+    assert!(report.ok(), "the runs check as themselves: {}", kept[4].1);
+    // (A replay doesn't run a WebSocket's blocks yet: it looks for them among the routes.)
+    let differ: Vec<&serde_json::Value> = replayed["runs"].as_array().unwrap().iter().filter(|r| r["outcome"] == "differs" && r["kind"] != "websocket").collect();
+    assert!(differ.is_empty(), "the runs replay as themselves, or can't be told: {differ:?}");
+}
+
 /// Every body the control plane reads goes through `read_body`, which reads it by the deadline:
 /// a handler reading one itself would hold its place for as long as the client likes. (Its own
 /// tests' servers read as they like.)
@@ -5412,7 +5554,7 @@ route.post(\"/sign\", (req) => {answer})
     };
     // The log holds the key's placeholder: what the signing gives with it isn't the run's.
     let r = replay(&text);
-    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret or a token, which the log never holds")), "{r}");
+    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret, a token or a tainted value, which the log never holds")), "{r}");
     // One that passes the key along computes the same with its placeholder, and is told.
     let r = replay(&signer("({ signed: req.body, key: signing_key }).signed"));
     assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its answer"])), "{r}");
@@ -6137,7 +6279,6 @@ fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) 
 fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
 }
-
 fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
     hits.lock().unwrap().get(path).copied().unwrap_or(0)
 }
@@ -10721,9 +10862,10 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
-/// What an unrecorded run's tally keeps of a failure: its error redacted of the deployment's secrets
-/// and cut short, its status at least 500 when it failed with an error; and a failed unrecorded
-/// action answers that its runs aren't logged (resilience-audit-L4.md, §2.8).
+/// What an unrecorded run's tally keeps of a failure: its error redacted as its entry would be, of
+/// the deployment's secrets and of the run's own values (its request's tainted values, its resume
+/// tokens), and cut short, its status at least 500 when it failed with an error; and a failed
+/// unrecorded action answers that its runs aren't logged (resilience-audit-L4.md, §2.8).
 #[test]
 fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     let mut state = test_state();
@@ -10731,17 +10873,23 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
     let set = serde_json::to_vec(&serde_json::json!({ "value": "sk_live_42" })).unwrap();
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/api_key"), set)).status_code, 200);
-    let long = format!("the key sk_live_42 was refused: {}", "x".repeat(1000));
+    // A file named from the request, say, or a key a run lock held: what it failed on can hold
+    // what it was sent.
+    let long = format!("the key sk_live_42 was refused for docs/4111111111111111.txt by rt-5e9c1a7b3d: {}", "x".repeat(1000));
     let counted = crate::firing::Counted { route: Some("GET /health"), at_ms: 7, duration_ms: 1.0, status: 200, error: Some(&long) };
+    let run = secrets::Redactor::tainted(&[("number".to_string(), "4111111111111111".to_string())])
+        .and(secrets::Redactor::tokens(&BTreeMap::from([("paid".to_string(), "rt-5e9c1a7b3d".to_string())])));
     let kept = {
         let mut table = state.deployments.lock().unwrap();
         let dep = table.get_mut(&slug).unwrap();
-        assert!(crate::firing::count_for_tests(dep, &counted), "counted only");
+        assert!(crate::firing::count_for_tests(dep, &counted, &run), "counted only");
         dep.tallies["GET /health"].last_failure.clone().unwrap()
     };
     let error = kept.error.unwrap();
     assert_eq!(kept.status, 500, "an error is a failure, answered 500");
-    assert!(!error.contains("sk_live_42") && error.contains("‹secret:api_key"), "{error}");
+    for (value, mark) in [("sk_live_42", "‹secret:api_key"), ("4111111111111111", "‹taint:number›"), ("rt-5e9c1a7b3d", "‹token:paid›")] {
+        assert!(!error.contains(value) && error.contains(mark), "{error}");
+    }
     assert!(error.chars().count() <= 301 && error.ends_with('…'), "cut short: {} chars", error.chars().count());
     // An unrecorded action is counted and never logged; one with no answer is answered 404
     // (missing), which isn't a failure.
@@ -12132,7 +12280,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

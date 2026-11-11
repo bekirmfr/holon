@@ -926,6 +926,20 @@ impl Redactor {
         Redactor { pairs }
     }
 
+    /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
+    /// as it reads inside JSON text too (a body, a value written out with `json_stringify`), and a
+    /// number that is one as it is written.
+    pub(crate) fn tainted(values: &[(String, String)]) -> Redactor {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (key, value) in values {
+            let mark = format!("{TAINT_MARK}{key}›");
+            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
+            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs }
+    }
+
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
     /// run's own are: the same name may come from several starts.
     pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
@@ -1004,6 +1018,17 @@ impl Redactor {
         if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
             return None;
         }
+        // JSON holding a tainted number as a number (a body's `"number": 4111…`): its mark, a
+        // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
+        let t = s.trim_start();
+        if (t.starts_with('{') || t.starts_with('['))
+            && self.pairs.iter().any(|(value, mark)| mark.starts_with(TAINT_MARK) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
+            && let Ok(mut json) = serde_json::from_str::<serde_json::Value>(t)
+        {
+            let mut escaped = false;
+            self.logged_json(&mut json, &mut escaped);
+            return Some((json.to_string(), escaped));
+        }
         let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
         let mut pieces = Vec::new();
         let mut at = 0;
@@ -1023,6 +1048,35 @@ impl Redactor {
         Some(write_marked(&pieces))
     }
 
+    /// `json` as the log writes it: each text as [`Redactor::logged`] writes it, its keys too, and
+    /// each number that is a tainted value as its mark.
+    fn logged_json(&self, json: &mut serde_json::Value, escaped: &mut bool) {
+        let text = |s: &str, escaped: &mut bool| match self.logged(s) {
+            Some((out, e)) => {
+                *escaped |= e;
+                out
+            }
+            None => s.to_string(),
+        };
+        match json {
+            serde_json::Value::String(s) => *s = text(s, escaped),
+            serde_json::Value::Number(n) => {
+                let written = n.to_string();
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                    *json = serde_json::Value::String(mark.clone());
+                }
+            }
+            serde_json::Value::Array(xs) => xs.iter_mut().for_each(|x| self.logged_json(x, escaped)),
+            serde_json::Value::Object(map) => {
+                for (k, mut x) in std::mem::take(map) {
+                    self.logged_json(&mut x, escaped);
+                    map.insert(text(&k, escaped), x);
+                }
+            }
+            serde_json::Value::Bool(_) | serde_json::Value::Null => {}
+        }
+    }
+
     fn logged_svalue(&self, v: &mut SValue) -> bool {
         let mut escaped = false;
         texts_mut(v, &mut |s| {
@@ -1031,7 +1085,27 @@ impl Redactor {
                 escaped |= e;
             }
         });
+        if self.pairs.iter().any(|(_, mark)| mark.starts_with(TAINT_MARK)) {
+            self.tainted_numbers(v);
+        }
         escaped
+    }
+
+    /// Each number in `v` that is a tainted value as it is written (a card's number in a JSON
+    /// body), as its mark: a text, where the number was.
+    fn tainted_numbers(&self, v: &mut SValue) {
+        match v {
+            SValue::Number(n) => {
+                let written = format!("{n}");
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                    *v = SValue::Text(mark.clone());
+                }
+            }
+            SValue::List(xs) => xs.iter_mut().for_each(|x| self.tainted_numbers(x)),
+            SValue::Record(fields) => fields.iter_mut().for_each(|(_, x)| self.tainted_numbers(x)),
+            SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => self.tainted_numbers(payload),
+            SValue::Text(_) | SValue::Boolean(_) | SValue::Bytes(_) => {}
+        }
     }
 
     /// Everything a log entry carries that a run could have put a secret into, as the log writes
@@ -1039,17 +1113,8 @@ impl Redactor {
     /// where the entry is logged, with every value the entry is redacted of (`and`).
     pub(crate) fn entry(&self, e: &mut LogEntry) {
         let mut escaped = false;
-        let mut r = |v: &mut SValue| escaped |= self.logged_svalue(v);
-        e.request.iter_mut().for_each(&mut r);
-        e.sourced.iter_mut().for_each(|(_, v)| r(v));
-        e.state_before.values_mut().for_each(&mut r);
-        e.outputs.iter_mut().flatten().for_each(&mut r);
-        e.performed.iter_mut().for_each(|p| r(&mut p.payload));
-        e.progress.iter_mut().for_each(|p| r(&mut p.payload));
-        e.events.values_mut().for_each(&mut r);
+        e.values_mut(&mut |v: &mut SValue| escaped |= self.logged_svalue(v));
         for read in &mut e.reads {
-            r(&mut read.request);
-            read.answer.iter_mut().for_each(&mut r);
             // A part of a file is kept as read, proved by its hashes: one holding a secret isn't
             // kept at all (a mark would no longer prove), so verify asks for the file instead.
             if let Some(range) = read.file.as_mut().and_then(|f| f.range.as_mut())
@@ -1058,16 +1123,7 @@ impl Redactor {
                 range.text = None;
             }
         }
-        for t in &mut e.timeline {
-            t.outputs.iter_mut().flatten().flatten().for_each(&mut r);
-        }
-        for round in &mut e.rounds {
-            for x in &mut round.exchanges {
-                r(&mut x.request);
-                r(&mut x.response);
-            }
-        }
-        for s in [&mut e.response_body, &mut e.error, &mut e.url].into_iter().flatten() {
+        for s in e.texts_mut() {
             if let Some((out, e)) = self.logged(s) {
                 *s = out;
                 escaped |= e;
@@ -1099,11 +1155,17 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
     }
 }
 
-/// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:` or
-/// `token:`.
+/// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
+const MARKED: [&str; 3] = ["secret:", "token:", "taint:"];
+
+/// How a tainted value's mark begins: `‹taint:number›`.
+const TAINT_MARK: &str = "‹taint:";
+
+/// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
+/// `token:` or `taint:`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
-    rest.len() < s.len() && (rest.starts_with("secret:") || rest.starts_with("token:"))
+    rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))
 }
 
 /// Text as the log writes it, from its pieces: the run's own text, and the marks (`true`) put in
@@ -1145,7 +1207,7 @@ pub(crate) fn read_marked(s: &str, escaped: bool) -> Vec<(String, bool)> {
         let after = rest[i..].trim_start_matches('‹');
         let n = (rest.len() - i - after.len()) / '‹'.len_utf8();
         rest = after;
-        if !(after.starts_with("secret:") || after.starts_with("token:")) {
+        if !MARKED.iter().any(|kind| after.starts_with(kind)) {
             text.extend(std::iter::repeat_n('‹', n));
             continue;
         }
