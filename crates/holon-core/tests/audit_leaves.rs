@@ -75,6 +75,11 @@ fn pool() -> Vec<Value> {
         txt("1e400"),
         txt("{\"a\":[1,{\"b\":null}],\"__proto__\":2}"),
         txt(&"ab😀".repeat(3000)),
+        // Texts that hex and base64 decode, in each alphabet, and padding alone.
+        txt("00ff7f80"),
+        txt("aGVsbG8gd29ybGQ="),
+        txt("_-8"),
+        txt("===="),
         Value::Boolean(true),
         Value::Boolean(false),
         Value::List(vec![]),
@@ -92,6 +97,40 @@ fn pool() -> Vec<Value> {
         rec(&[("a", rec(&[("a", rec(&[("a", num(0.0))]))]))]),
         Value::Sum { arm: 0, payload: Box::new(num(1.0)) },
         Value::Effect { sink: "store_write".into(), payload: Box::new(num(1.0)) },
+    ]
+    .into_iter()
+    .chain(bytes())
+    .collect()
+}
+
+/// Bytes a file, a request or another leaf can hand a leaf: none, odd ones, UTF-8 that isn't, the
+/// starts of a gzip, a zip and an OpenPGP packet with lengths past anything, a gzip that inflates
+/// past what a leaf may make (members of a megabyte of zeros each), a zip and a gzip that are
+/// whole, and noise.
+fn bytes() -> Vec<Value> {
+    let b = |v: Vec<u8>| Value::Bytes(v);
+    let made = |leaf: &str, input: Value| match holon_core::primitives::compute(leaf, &[&input], &[]) {
+        Some(Value::Bytes(v)) => v,
+        other => panic!("{leaf} gave {other:?}"),
+    };
+    let member = made("gzip", b(vec![0; 1 << 20]));
+    let mut rng = Rng(0x5851_f42d_4c95_7f2d);
+    vec![
+        b(vec![]),
+        b(vec![0, 1, 0x7f, 0x80, 0xff]),
+        b(vec![0xc3, 0x28, 0xf0, 0x9f, 0x98]),
+        b("héllo".as_bytes().to_vec()),
+        b(vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0x01]),
+        b(member.repeat(65)),
+        b(made("gzip", txt("hello"))),
+        b(b"PK\x03\x04\x14\0\0\0\x08\0".to_vec()),
+        b([b"PK\x05\x06\0\0\0\0".as_slice(), &[0xff; 12], &[0, 0]].concat()),
+        b(made("zip", rec(&[("a.txt", txt("hello")), ("b/c.bin", b(vec![1, 2, 3]))]))),
+        b(vec![0x99, 0xff, 0xff]),
+        b(vec![0xc6, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        b(b"-----BEGIN PGP MESSAGE-----\n\nwcBMA0\n=AAAA\n-----END PGP MESSAGE-----\n".to_vec()),
+        b((0..4096).map(|_| rng.below(256) as u8).collect()),
+        b(vec![0xaa; 64 << 10]),
     ]
 }
 
@@ -153,6 +192,9 @@ fn variants(fns: &[String]) -> Vec<(String, Unit)> {
             "json_stringify" => &[("indent", &["", "  ", "\t", "abcdefghijklmnop"]), ("keys", &["", "[\"a\",\"b\"]", "[1]", "["])],
             "field" | "with_field" | "without_field" => &[("name", &["a", "__proto__", ""])],
             "sha256" | "hmac_sha256" => &[("encoding", &["hex", "base64", "x"])],
+            // Their mode isn't a family, so each way is named here: decoding, too.
+            "hex" => &[("mode", &["encode", "decode", "x"])],
+            "base64" => &[("mode", &["encode", "decode"]), ("alphabet", &["standard", "url", "x"]), ("bytes", &["utf8", "latin1"])],
             _ => &[],
         };
         for (param, values) in odd {
@@ -205,6 +247,17 @@ fn input_sets(n: usize, pool: &[Value], rng: &mut Rng) -> Vec<Vec<Option<Value>>
     }
 }
 
+/// **Guards:** every pure leaf, in every form its parameters give it, over every value of the pool
+/// alone and in pairs (and drawn sets of three or more): it answers, the same twice, every number
+/// in its answer finite, nothing nested past the bound, in bounded time.
+///
+/// **Why:** a leaf's inputs are anyone's: a request's body, a file, a message, another leaf's
+/// answer. A leaf is code the host runs on its own thread, so one that panics, loops, answers a
+/// non-finite number or makes a value past the bounds takes more than its run with it.
+///
+/// **If it fails:** the report names each leaf and the inputs it misbehaved on; a request
+/// shaped like them could take the server down or hold a thread, so the leaf is fixed, not the
+/// pool.
 #[test]
 fn every_pure_leaf_over_hostile_values_answers_finitely_and_the_same_twice() {
     // A host runs a flow on a 2 MiB thread (tokio's); the sweep runs on one too.

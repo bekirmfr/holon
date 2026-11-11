@@ -4329,12 +4329,14 @@ mod tests {
     /// of none to nine children and one to three outputs, an output sometimes an input itself,
     /// over inputs some of which are absent, some nested one level, holons nested in them.
     ///
-    /// Guards: every value a composite computes, its outputs one by one, whatever its shape.
-    /// Why: the lazy evaluator pulls only what an output needs, in an order of its own, and
+    /// **Guards:** every value a composite computes, its outputs one by one, whatever its shape.
+    ///
+    /// **Why:** the lazy evaluator pulls only what an output needs, in an order of its own, and
     /// carries each output in its own slot; the eager one, kept as the oracle, evaluates every
     /// node in one pass. Any shortcut taken in pulling (a choice, an input routed straight out,
     /// a slot left absent beside a computed one) shows as a difference.
-    /// If it fails: a flow answers something other than what its graph says.
+    ///
+    /// **If it fails:** a flow answers something other than what its graph says.
     #[test]
     fn lazy_and_eager_agree_on_generated_graphs() {
         use crate::eager::eval_eager;
@@ -4448,12 +4450,15 @@ mod tests {
     /// that reads what each node produced sees the same steps at the same paths as one that
     /// doesn't, and the same outputs.
     ///
-    /// Guards: what a function applied by a higher-order leaf gives, item by item, empty lists
+    /// **Guards:** what a function applied by a higher-order leaf gives, item by item, empty lists
     /// and items it fails on included, and what giving a value away leaves for its other readers.
-    /// Why: a value given is moved, not copied; a reader the evaluator didn't count would find it
-    /// gone, and an application handed its accumulator and item in the wrong order is wrong only
-    /// for a function whose order shows.
-    /// If it fails: a `map`, `fold` or `filter` in a flow answers something its function doesn't.
+    ///
+    /// **Why:** a value given is moved, not copied; a reader the evaluator didn't count would
+    /// find it gone, and an application handed its accumulator and item in the wrong order is
+    /// wrong only for a function whose order shows.
+    ///
+    /// **If it fails:** a `map`, `fold` or `filter` in a flow answers something its function
+    /// doesn't.
     #[test]
     fn giving_and_lending_agree_with_eager_on_generated_graphs() {
         use crate::eager::eval_eager;
