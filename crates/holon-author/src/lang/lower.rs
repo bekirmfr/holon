@@ -1693,6 +1693,22 @@ impl<'a> Lowerer<'a> {
                 wiring_out.push((id.clone(), output, pname.clone()));
                 outputs.push(HolonPort { name: pname, unit: None });
             }
+            // So do the effects nothing in it reads: a function it places whose writes it doesn't
+            // return, or a write bound and not used. A handler's group exposes them by the IR's
+            // rule (§5.10); a holon's boundary names them, after the port they left their own by.
+            for (id, output) in self.b.unread_effects() {
+                if wiring_out.iter().any(|(node, out, _)| *node == id && *out == output) {
+                    continue;
+                }
+                let mut pname = output.clone();
+                let mut n = 1;
+                while outputs.iter().any(|o| o.name == pname) || def.inputs.iter().any(|i| i.name.text == pname) {
+                    n += 1;
+                    pname = format!("{output}_{n}");
+                }
+                wiring_out.push((id, output, pname.clone()));
+                outputs.push(HolonPort { name: pname, unit: None });
+            }
             let mut inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
             if implicit_trigger {
                 inputs.push(HolonPort { name: TRIGGER.into(), unit: None });

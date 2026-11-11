@@ -30,7 +30,10 @@ use super::*;
 
 /// The kinds of thing a handler does: the mark each leaves, the statement that does it, and the
 /// same as an expression whose value is used. `rec` is a function that writes, `ask` one that
-/// calls out, `ping` an action of the flow's.
+/// calls out, `ping` an action of the flow's. A function places functions, so each is also reached
+/// through others that return none of what it does (`rec2`, `rec3`, `ask2`) or only a part of it
+/// (`part`, which returns `both`'s put and not its write): what a function does, the one placing
+/// it does.
 const EFFECTS: &[(&str, &str, &str)] = &[
     ("w", "++state.w", ""),
     ("p", "marks.put(\"k\", \"v\")", ""),
@@ -39,6 +42,10 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("f", "rec(\"a\")", "rec(\"a\")"),
     ("r", "const sent = await api.post(\"/hit\", { body: \"x\" })", "await api.post(\"/hit\", { body: \"x\" })"),
     ("g", "const asked = await ask(\"a\")", "await ask(\"a\")"),
+    ("f2", "rec2(\"a\")", "rec2(\"a\")"),
+    ("f3", "rec3(\"a\")", "rec3(\"a\")"),
+    ("fp", "part(\"a\")", "part(\"a\").did"),
+    ("g2", "const asked = await ask2(\"a\")", "await ask2(\"a\")"),
 ];
 
 /// The forms a condition takes, over fields a request may lack: as written, and as a flow reads
@@ -147,18 +154,31 @@ fn cases() -> Vec<Case> {
 fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> String {
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
     let mut text = format!("import {{ {}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if uses("ping(") { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
-    if uses("marks.") {
+    if uses("marks.") || uses("part(") {
         text.push_str("import marks from \"collection:marks\"\n");
     }
-    if uses("api.") || uses("ask(") {
+    if uses("api.") || uses("ask(") || uses("ask2(") {
         text.push_str(&format!("import api from \"host:{host}\"\n"));
     }
     text.push_str(&format!("\nflow(\"{name}\", {{ port: {port} }})\n"));
-    if uses("rec(") {
+    if uses("rec(") || uses("rec2(") || uses("rec3(") {
         text.push_str("\nfunction rec(x) {\n  ++state.f\n  return `did ${x}`\n}\n");
     }
-    if uses("ask(") {
+    if uses("rec2(") || uses("rec3(") {
+        text.push_str("\nfunction rec2(x) {\n  const did = rec(x)\n  return `${did} twice`\n}\n");
+    }
+    if uses("rec3(") {
+        text.push_str("\nfunction rec3(x) {\n  const did = rec2(x)\n  return `${did}, thrice`\n}\n");
+    }
+    if uses("part(") {
+        text.push_str("\nfunction both(x) {\n  ++state.f\n  const put = marks.put(\"k\", x)\n  const did = `did ${x}`\n  return { put, did }\n}\n");
+        text.push_str("\nfunction part(x) {\n  const done = both(x)\n  return { put: done.put, did: done.did }\n}\n");
+    }
+    if uses("ask(") || uses("ask2(") {
         text.push_str("\nasync function ask(x) {\n  const sent = await api.post(\"/in\", { body: x })\n  return sent.status\n}\n");
+    }
+    if uses("ask2(") {
+        text.push_str("\nasync function ask2(x) {\n  const got = await ask(x)\n  return got ?? 0\n}\n");
     }
     if uses("ping(") {
         text.push_str("\nexport const ping = action(() => ++state.pinged)\n");
@@ -182,7 +202,7 @@ struct Did {
 /// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
 /// since they answer at once.
 fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, ask, api, status";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -205,7 +225,11 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
       console: {{ log: () => {{ fx.push("l") }} }},
       ping: () => {{ fx.push("s"); return {{ run: "r" }} }},
       rec: (x) => {{ fx.push("f"); return "did " + x }},
+      rec2: (x) => {{ fx.push("f"); return "did " + x + " twice" }},
+      rec3: (x) => {{ fx.push("f"); return "did " + x + " twice, thrice" }},
+      part: (x) => {{ fx.push("f"); fx.push("p"); return {{ did: "did " + x }} }},
       ask: () => {{ fx.push("g"); return 200 }},
+      ask2: () => {{ fx.push("g"); return 200 }},
       api: {{ post: () => {{ fx.push("r"); return {{ status: 200, body: "fast" }} }} }},
       status: (n) => ({{ status: n }}),
     }};
@@ -299,7 +323,7 @@ fn debt(case: &Case, request: &str) -> Option<&'static str> {
     match case.shape {
         "in a try" if request == "not json" => Some("try"),
         "after &&" | "after ||" => Some("and or"),
-        "bound, and read in a branch" if case.mark == "g" => Some("a call in a function"),
+        "bound, and read in a branch" if case.mark.starts_with('g') => Some("a call in a function"),
         _ => None,
     }
 }

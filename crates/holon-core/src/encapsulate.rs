@@ -237,10 +237,15 @@ pub fn default_spec(
     // outputs, one consumed and one free, must still surface the free one.
     // An effect a trigger reads (`after saved`) is still free: a trigger doesn't take the effect
     // in, it only waits for it, so the effect still leaves the boundary and is performed.
+    // So is one read by a child that can't pass it on, every output of which is a number, a
+    // Boolean, a text or bytes (a test that it arrived, `same_value`): it tells of the effect and
+    // doesn't hold it, where a choice (`guard`, `select`) gives it on as its own output.
     let effect_into_trigger = |e: &Edge| {
         let from = resolved.get(e.from_child as usize).and_then(|u| u.outputs.get(e.from_port as usize));
-        let to = resolved.get(e.to_child as usize).and_then(|u| u.inputs.get(e.to_port as usize));
-        from.is_some_and(|p| p.ty == crate::Type::Effect) && to.is_some_and(|p| p.name == crate::TRIGGER)
+        let reader = resolved.get(e.to_child as usize);
+        let to = reader.and_then(|u| u.inputs.get(e.to_port as usize));
+        let plain = |t: &crate::Type| matches!(t, crate::Type::Number | crate::Type::Boolean | crate::Type::Text | crate::Type::Bytes);
+        from.is_some_and(|p| p.ty == crate::Type::Effect) && (to.is_some_and(|p| p.name == crate::TRIGGER) || reader.is_some_and(|u| u.outputs.iter().all(|p| plain(&p.ty))))
     };
     let consumed: BTreeSet<(u32, u32)> =
         inner_edges.iter().filter(|e| !effect_into_trigger(e)).map(|e| (e.from_child, e.from_port)).collect();

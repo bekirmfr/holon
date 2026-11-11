@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A function that calls a function no longer loses what it writes.** A write, a put or a send
+  made by a function was performed only when a handler called it. Called from another function
+  that didn't return it by name, it was dropped without a word: the flow passed `holon check`, its
+  approval listed the write, the run answered 200, and nothing was written. A function now passes
+  on every effect it doesn't read, at any depth. And inside a `try`, a function called only for
+  what it does performs the effect it returns first (`return { put, … }`): the block's test that
+  the call arrived read that effect, and an effect that was read was no longer performed. A node
+  that only tests an effect, and can't pass it on, now leaves it to be performed, in text and on
+  the canvas alike. Flows that did either get a new version: redeploy them.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

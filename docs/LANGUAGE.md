@@ -2389,7 +2389,14 @@ handler keeps it (§5.4). The language keeps that rule and adds no `perform` key
   it".
 - A binding to an Effect and never used is still performed; naming it changes nothing.
 - A multi-output function's Effect outputs that the caller does not read are performed. The `slugs`
-  route performs `publish`'s `put` and `write` without mentioning them.
+  route performs `publish`'s `put` and `write` without mentioning them. So are they when the caller
+  is a function: an effect nothing in a function reads (one of a function it places, or a write it
+  binds and doesn't use) leaves by the function's own boundary, an output named as it was where it
+  came from (`put`, `write`), and so on up to the handler, at any depth. Returning it by name,
+  `return { put: kept.put, … }`, is the same unit.
+- An effect is read by what can pass it on: a choice (`c ? put : undefined`), a function it is
+  handed to, a boundary. A node that only tells of it (a `try` block's test that a call arrived, a
+  trigger that waits for it) doesn't take it in, and it is still performed (core's `default_spec`).
 
 Effects are values, so a write's value may be guarded or chosen, and only a present value reaches
 the boundary: `if (c) state.k = a; else state.k = b` is one write, of `c ? a : b`, and witness's

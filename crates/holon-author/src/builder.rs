@@ -267,6 +267,22 @@ impl FlowBuilder {
         self.frames.last().is_some_and(|f| f.wires.iter().any(|w| w.target == to && w.input() == input))
     }
 
+    /// The Effect outputs nothing takes in (in the flow being built, or the holon begun), as
+    /// `(node, output)` in the order placed: a handler's group exposes them by the IR's own rule
+    /// (core's `default_spec`), and a holon's boundary must name them or they are never performed.
+    /// As there, a trigger that waits for one doesn't take it in, nor does a node that can't pass
+    /// it on (a test that it arrived).
+    pub fn unread_effects(&self) -> Vec<(String, String)> {
+        let Some(f) = self.frames.last() else { return vec![] };
+        let plain = |t: &WType| matches!(t, WType::Number | WType::Boolean | WType::Text | WType::Bytes);
+        let takes = |w: &Wire| w.input() != holon_core::TRIGGER && !f.nodes.iter().any(|n| n.id == w.target && n.data.outputs.iter().all(|p| plain(&p.ty)));
+        let read = |n: &Node, output: &str| f.wires.iter().any(|w| w.source == n.id && w.output() == output && takes(w));
+        f.nodes
+            .iter()
+            .flat_map(|n| n.data.outputs.iter().filter(|p| p.ty == WType::Effect && !read(n, &p.name)).map(|p| (n.id.clone(), p.name.clone())))
+            .collect()
+    }
+
     /// A variadic node given `inputs` inputs, as its "+" adds them.
     pub fn arity(&mut self, node: &str, inputs: usize) -> Result<(), String> {
         let n = self.find(node)?;
