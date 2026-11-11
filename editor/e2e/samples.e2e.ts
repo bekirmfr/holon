@@ -420,21 +420,21 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   // Wired from the clock: it's a number now.
   const clockOut = overlay.locator(".react-flow__node", { hasText: "clock" }).locator(".react-flow__handle.source");
   const stampIn = outputs.locator('.react-flow__handle[data-handleid="stamp"]');
-  // The overlay is about 280 px wide at the test's window, and the new row widens the outputs node
-  // after the overlay fitted its view: even fitted again, the stamp handle stands about 20 px past
-  // the overlay's right edge (742 against 721). A drag toward it makes the view pan (a connection
-  // being drawn near the edge does), so on a slow runner the drop misses, and trying again only
-  // repeats it. A wire is also made by clicking the source handle and then the target's, which
-  // moves no pointer and pans nothing: the view is fitted and the handles left to settle, then each
-  // is clicked, and a click that misses is tried again.
-  await expect(async () => {
-    await overlay.getByRole("button", { name: "Fit View" }).click();
-    await still(clockOut);
-    await still(stampIn);
-    await clockOut.click();
-    await stampIn.click();
-    await expect(stamp).toHaveAttribute("title", /^number/, { timeout: 2_000 });
-  }).toPass({ timeout: 30_000 });
+  // Beside the inspector the overlay is about 280 px wide at the test's window: fitted, the whole
+  // level is in it, the new port too, so a person can reach it without panning. (It once wasn't:
+  // the zoom's floor left the outputs node past the overlay's edge.) A wire is made by clicking the
+  // source handle and then the target's, which moves no pointer and pans nothing.
+  await overlay.getByRole("button", { name: "Fit View" }).click();
+  await still(clockOut);
+  await still(stampIn);
+  const inside = (await overlay.locator(".react-flow").boundingBox())!;
+  for (const handle of [clockOut, stampIn]) {
+    const at = (await handle.boundingBox())!;
+    expect(at.x >= inside.x && at.x + at.width <= inside.x + inside.width && at.y >= inside.y && at.y + at.height <= inside.y + inside.height, "the handle is inside the overlay").toBe(true);
+  }
+  await clockOut.click();
+  await stampIn.click();
+  await expect(stamp).toHaveAttribute("title", /^number/);
   await overlay.getByRole("button", { name: "apply" }).click();
   await expect(overlay).toContainText("applied");
   await overlay.getByRole("button", { name: "close" }).click();
