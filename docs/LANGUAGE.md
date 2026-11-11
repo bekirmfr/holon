@@ -2627,8 +2627,14 @@ trigger, to what an `if (x !== undefined)` around it names, or to the conditions
 (an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
 needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
-else. The printer keeps each where it was written. (In a function, a call bound on a statement is
-still made when its answer is needed: F13.)
+else. The printer keeps each where it was written. A call in a branch of a value bound in an
+`if`, or after a `return` that may answer (`if (d) { got = v ?? (await api.get(…)).body }`), is
+held to both: the value bound is guarded by the statement's conditions too, so where they don't
+hold it isn't needed, and the call isn't made. (Until 2026-11-11 `holon check` refused it, with
+"`after` ties a write or a call to what it names: this statement makes none"; and one beside a
+call bound on the statement, `if (d) { const got = ping(x) ?? ping(y) }`, made the fallback where
+the `if` didn't hold, the first call not having been made.) (In a function, a call bound on a
+statement is still made when its answer is needed: F13.)
 
 What is held to its statement's conditions this way is everything a handler does, not requests
 alone: a write, a send, a log line, an action started (`payout(x)`), and a function of the flow's

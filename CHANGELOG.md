@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A call in a branch of a value bound under a condition is accepted, and held to it.** `if (d) {
+  got = v ?? (await api.get(…)).body }`, the same after an early `return`, and `c ? ping(x) :
+  undefined` in an `if` failed `holon check` with "`after` ties a write or a call to what it names:
+  this statement makes none". Now the value is guarded by the statement's conditions, so the call
+  is made only where they hold and the branch needs it. And with a call bound on the statement
+  beside it, `if (d) { const got = ping(x) ?? ping(y) }`, the fallback was made where the `if`
+  didn't hold, since the first call wasn't: it is held now too. Flows with a statement like that
+  get a new version: redeploy them.
 - **An `if` on a condition with no value runs neither branch.** It took its else, as `?:` does,
   and what followed a `return` in it ran: `if (req.json.amount > 1000) return status(403)` followed
   by `payout(…)` paid when `amount` was missing, or a text (`"5000"`). Now neither branch runs, a

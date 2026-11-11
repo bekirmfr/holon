@@ -875,8 +875,15 @@ impl<'a> Lowerer<'a> {
         let (before, functions) = (self.cur().created.len(), self.placed);
         self.stmt_kind(s)?;
         let placed: Vec<String> = self.cur().created[before..].to_vec();
+        // A call made in a branch of the value bound (`v ?? (await api.get(…)).body`, `c ? ping(x)
+        // : undefined`) is made when the value needs it, so the value is held to `after`: where
+        // `after` doesn't hold it isn't needed, and the call isn't made.
+        let held = match &s.kind {
+            StmtKind::Bind { name, .. } if placed.iter().any(|id| self.cur().in_branches.contains(id)) => Some(name),
+            _ => None,
+        };
         let sinks: Vec<String> = placed.into_iter().filter(|id| self.untied(id)).collect();
-        if sinks.is_empty() {
+        if sinks.is_empty() && held.is_none() {
             // A call of a function is tied whatever the function is (ts.rs `calls_function`): one
             // that only computes has no trigger, and nothing to hold back.
             if self.placed > functions {
@@ -888,6 +895,29 @@ impl<'a> Lowerer<'a> {
         for id in &sinks {
             self.tie(&v, id, after.span)?;
         }
+        if let Some(name) = held {
+            self.hold(name, v, after.span)?;
+        }
+        Ok(())
+    }
+
+    /// The name `name` bound to its value `when` `cond`: a guard, which runs the value only where
+    /// `cond` holds. The guard takes the name.
+    fn hold(&mut self, name: &Name, cond: Val, span: Span) -> R<()> {
+        let value = self.cur().env.get(&name.text).cloned().expect("bound by the statement");
+        let held = self.node_with("guard", &[], &[("cond", cond), ("value", value.clone())], span)?;
+        if let (Val::Out { id: inner, .. }, Val::Out { id, .. }) = (&value, &held)
+            && self.names.get(inner) == Some(&name.text)
+        {
+            self.names.remove(inner);
+            self.names.insert(id.clone(), name.text.clone());
+        }
+        if let FrameKind::Holon { bound, .. } = &mut self.frame().kind
+            && let Some(b) = bound.get_mut(&name.text)
+        {
+            b.0 = held.clone();
+        }
+        self.frame().env.insert(name.text.clone(), held);
         Ok(())
     }
 

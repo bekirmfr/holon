@@ -130,6 +130,9 @@ const SHAPES: &[(&str, &str)] = &[
     ("after || in an if", "if (({C}) || {V}) {\n++state.o\n}\nreturn \"end\""),
     ("after ||", "const got = ({C}) || {V}\nreturn \"end\""),
     ("after ??", "const got = req.json.v ?? {V}\nreturn \"end\""),
+    ("after ?? in an if", "if ({C}) {\nconst got = req.json.v ?? {V}\n}\nreturn \"end\""),
+    ("after ?? after a return", "if ({C}) return \"stopped\"\nconst got = req.json.v ?? {V}\nreturn \"end\""),
+    ("both sides of ?? in an if", "if ({C}) {\nconst got = {V} ?? {V}\n}\nreturn \"end\""),
     ("a branch of ?: in a condition", "if ({C} ? {V} : undefined) {\n++state.o\n}\nreturn \"end\""),
     ("a branch of ?: in an if", "if (req.json.d) {\nconst got = {C} ? {V} : undefined\n}\nreturn \"end\""),
     ("bound, and read in a branch", "const got = {V}\nreturn {C} ? got : \"no\""),
@@ -423,8 +426,11 @@ fn debt(case: &Case, _request: &str) -> Option<&'static str> {
 /// started after `return status(403)`, a write under an `if` that didn't hold. That was so for an
 /// action started and for a function that writes or calls out, on every such path, until this test
 /// (1,393 of 4,360 runs differed). Or, failing the other way, a handler doesn't do what it says.
-/// Or the compiler made a graph with a cycle of a handler it should take, and refuses it: so it
-/// was for a function in a branch of an `if`'s condition (`a ? f() : b`, `a && f()`).
+/// Or the compiler refuses a handler it should take: with a graph with a cycle, as it did for a
+/// function in a branch of an `if`'s condition (`a ? f() : b`, `a && f()`), or with "`after` ties
+/// a write or a call to what it names: this statement makes none", as it did for a call in a
+/// branch of a value bound under a condition (`if (d) { const got = v ?? (await api.get(…)).body
+/// }`, `c ? ping(x) : undefined` there).
 #[test]
 fn a_handler_does_what_its_text_says() {
     let state = claims_state("");
@@ -432,7 +438,8 @@ fn a_handler_does_what_its_text_says() {
     let all = cases();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     // What the language refuses is left out: said at check, it is no surprise at a run. A graph
-    // with a cycle is no refusal of the text but the compiler's own fault, and fails.
+    // with a cycle, or an `after` with nothing to tie, is no refusal of the text but the
+    // compiler's own fault, and fails.
     let indexed: Vec<(usize, &Case)> = all.iter().enumerate().collect();
     let checked = thread::scope(|s| {
         let checking: Vec<_> = indexed
@@ -441,7 +448,7 @@ fn a_handler_does_what_its_text_says() {
             .collect();
         checking.into_iter().flat_map(|c| c.join().unwrap()).collect::<Vec<_>>()
     });
-    let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| e.contains("cycle")).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
+    let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| e.contains("cycle") || e.contains("this statement makes none")).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
     assert!(faults.is_empty(), "{} handlers compile to a graph that can't run:\n{}", faults.len(), faults.join("\n"));
     let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     // A flow of forty handlers at a time, each flow's runs one after another (the log is read by
