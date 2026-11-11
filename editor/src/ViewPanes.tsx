@@ -16,7 +16,7 @@ import { tallyRows } from "./tallies";
 import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
 import { CellHistoryButton } from "./CellHistory";
 import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
-import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
+import { formatValue, detectRenderer, availableRenderers, inertHtml, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
 import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
@@ -1814,7 +1814,7 @@ function MarkdownView({ text }: { text: string }) {
   return <div ref={ref} style={{ color: ink, fontSize: 13 }} />;
 }
 
-function renderValueContent(v: WValue, renderer: RendererKind, portName: string, onDrillIn?: (v: WValue, name: string) => void): ReactNode {
+export function renderValueContent(v: WValue, renderer: RendererKind, portName: string, onDrillIn?: (v: WValue, name: string) => void): ReactNode {
   const pre = (s: string) => (
     <pre style={{ color: "var(--body)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontSize: 12, fontFamily: "var(--mono)", lineHeight: 1.5 }}>{s}</pre>
   );
@@ -1855,12 +1855,14 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
       );
     }
   }
-  if (renderer === "image" && v.type === "Text")
+  // A value's own image or sound only: a URL would load from wherever it names, whatever renderer
+  // was picked for the value before it.
+  if (renderer === "image" && v.type === "Text" && v.value.startsWith("data:image/"))
     return <img src={v.value} alt={portName} style={{ maxWidth: "100%", maxHeight: 400, objectFit: "contain", display: "block", margin: "0 auto" }} />;
-  if (renderer === "audio" && v.type === "Text")
+  if (renderer === "audio" && v.type === "Text" && v.value.startsWith("data:audio/"))
     return <audio controls src={v.value} style={{ width: "100%" }} />;
   if (renderer === "html" && v.type === "Text")
-    return <iframe srcDoc={v.value} sandbox="allow-scripts" title="html preview" style={{ width: "100%", height: 420, border: "1px solid var(--border)", borderRadius: 3 }} />;
+    return <iframe srcDoc={inertHtml(v.value)} sandbox="" title="html preview" style={{ width: "100%", height: 420, border: "1px solid var(--border)", borderRadius: 3 }} />;
   if (renderer === "json" && v.type === "Text") {
     try { return pre(JSON.stringify(JSON.parse(v.value), null, 2)); } catch {}
   }

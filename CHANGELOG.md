@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The editor's HTML preview shows the page and nothing else.** A value shown as HTML (a run's
+  output, a request's body: text from outside) ran its scripts in the preview's frame, and loaded
+  whatever it named from any address: an image, a style sheet, a font, telling that address the
+  value was looked at, and by whom. Now the frame runs no script and sends no form, and a content
+  policy put before the page holds it to what it carries inline (`data:` images, sounds and fonts,
+  inline styles). A value shown as an image or a sound is shown only when it is a `data:` URL of
+  that kind.
 - **A request a function makes is sent when the function is called, whatever reads its answer.**
   `const sent = await api.post(…)` in a function was sent only when the function's answer was
   needed, so `const got = await ask(x)` in a route, read only in a branch not taken, sent nothing,
