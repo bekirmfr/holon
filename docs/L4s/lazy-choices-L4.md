@@ -38,6 +38,8 @@ It is also why `match` (match-L4.md) couldn't allow requests in its arms.
 |---|---|---|
 | `guard(cond, value)` | `cond` | `value` only if `cond` is `true` |
 | `coalesce(a, b)` | `a` | `b` only if `a` is absent |
+| `and(a, b, …)` | `a` | each next input only while those before it are all `true` (added 2026-11-11, §7) |
+| `or(a, b, …)` | `a` | each next input only while those before it are all `false` (added 2026-11-11, §7) |
 
 Every other leaf needs all its wired inputs, as before. That includes `select(c, a, b)`: it is
 the strict choice (LANGUAGE.md §6.4), absent when either side is, whatever `c` says. Skipping the
@@ -169,10 +171,15 @@ it is lazy without changes. It shows nodes not run the same way as replay.
 
 ## 7. What it does not change
 
-- **`and` and `or` stay strict.** `true || absent` is absent today, and short-circuiting would
-  make it `true`. That's a change of value, not of what's asked, so it doesn't belong in this
-  change. A request in the second operand of `||` is still sent. If that matters, it gets its
-  own design.
+- **`and` and `or` stayed strict**, at first. `true || absent` was absent, and short-circuiting
+  made it `true`: a change of value, not of what's asked, so it didn't belong in this change. It
+  mattered: a function that writes on the right of `&&` wrote whatever the left was, and a request
+  on the right of `||` was sent. Since 2026-11-11 they are choices too (§2), read left to right
+  as JavaScript's `&&` and `||` are: the first input that decides is the value and the rest aren't
+  run, and one reached that is absent or not a Boolean makes the value absent. So `false &&
+  absent` is `false` and `true || absent` `true`, where both were absent; nothing else changed
+  value. The lowering ties a function on the right of `&&` or `||` to the left's deciding to go
+  on, as it does one in a branch of `?:` (lower.rs `binary`).
 - **`default`** has no subgraph to skip: its fallback is a literal param.
 - **Hashes, the preimage and `ENCODING_VERSION`:** unchanged. Laziness is the evaluator's, not
   the unit's.

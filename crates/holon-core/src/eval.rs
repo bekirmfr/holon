@@ -13,9 +13,10 @@
 //! A composite is evaluated from its roots (the children wired to its outputs, and the children
 //! nothing consumes) back through what each node needs: every wired input for an ordinary leaf,
 //! and for a choice only what [`choice_next`] says: `guard` its value only when its condition is
-//! `true`, `coalesce` its second input only when its first is absent. A node only a choice that
-//! didn't need it consumes is not run, so a branch not taken asks the host nothing. Every leaf is
-//! pure and total, so the values are the eager evaluator's (`eager.rs`, the tests' oracle).
+//! `true`, `coalesce` its second input only when its first is absent, `and` and `or` each input
+//! only while those before it haven't decided. A node only a choice that didn't need it consumes
+//! is not run, so a branch not taken asks the host nothing. Every leaf is pure and total, so the
+//! values are the eager evaluator's (`eager.rs`, the tests' oracle).
 //!
 //! ## Pending
 //! Within a run's round, a request the host hasn't answered yet, or a waiting point whose event
@@ -260,7 +261,7 @@ struct NodeKind {
     body: Body,
     /// A sink whose last input is its trigger ([`crate::takes_trigger`]).
     takes_trigger: bool,
-    /// `guard` or `coalesce`, decided lazily inside a composite ([`choose`]).
+    /// `guard`, `coalesce`, `and` or `or`, decided lazily inside a composite ([`choose`]).
     choice: Option<Which>,
     /// Held back while a wired input is absent: a leaf with optional ports, or a sink.
     held_when_absent: bool,
@@ -458,6 +459,8 @@ impl NodeKind {
                 let choice = match name {
                     "guard" => Some(Which::Guard),
                     "coalesce" => Some(Which::Coalesce),
+                    "and" => Some(Which::And),
+                    "or" => Some(Which::Or),
                     _ => None,
                 };
                 let held_when_absent = primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name);
@@ -499,6 +502,15 @@ fn eval_as(
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
         (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        // `and` and `or` read their inputs in order and stop at the one that decides, so one past
+        // it may be absent: the choice's rule, over every input at once.
+        (Body::Leaf { .. }, _) if matches!(kind.choice, Some(Which::And | Which::Or)) => {
+            let which = kind.choice.expect("matched");
+            match choose(which, inputs.len(), |p| Some(In::of_value(inputs.get(p).copied().flatten()))) {
+                Chosen::Done(slot, _) => smallvec![slot.owned()],
+                Chosen::Need(_) => unreachable!("every input is given"),
+            }
+        }
         // `fail` gives nothing, and the observer hears why, at this node, as for a module that
         // can't run: the language's `throw new Error(message)`, its message for the run's log.
         (Body::Fail, _) => {
@@ -680,31 +692,36 @@ pub enum Choice {
     Done(Slot),
 }
 
-/// The choice leaves' rule: what `guard` or `coalesce` needs next, or its output, given the
-/// inputs seen so far (`seen[p]`: `None` not yet evaluated, else its slot). `None` for a leaf
-/// that isn't a choice. `guard` evaluates its value only when its condition is `true`;
-/// `coalesce` its second input only when its first is absent; either waits while its deciding
-/// input is pending. Each gives exactly what it gives with every input evaluated. (`select` is
-/// strict by meaning, an absent side making it absent, so it needs both sides and isn't one.)
-/// The editor's replay applies the same rule through wasm.
+/// The choice leaves' rule: what `guard`, `coalesce`, `and` or `or` needs next, or its output,
+/// given the inputs seen so far (`seen[p]`: `None` not yet evaluated, else its slot; one for each
+/// of its inputs). `None` for a leaf that isn't a choice. `guard` evaluates its value only when its
+/// condition is `true`; `coalesce` its second input only when its first is absent; `and` its next
+/// input only while those before it are `true`, and `or` while they are `false`; each waits while
+/// its deciding input is pending. Each gives exactly what it gives with every input evaluated.
+/// (`select` is strict by meaning, an absent side making it absent, so it needs both sides and
+/// isn't one.) The editor's replay applies the same rule through wasm.
 pub fn choice_next(name: &str, seen: &[Option<Slot>]) -> Option<Choice> {
     let which = match name {
         "guard" => Which::Guard,
         "coalesce" => Which::Coalesce,
+        "and" => Which::And,
+        "or" => Which::Or,
         _ => return None,
     };
     let at = |p: usize| seen.get(p).map_or(Some(In::Absent), |s| s.as_ref().map(In::of_slot));
-    Some(match choose(which, at) {
+    Some(match choose(which, seen.len(), at) {
         Chosen::Need(p) => Choice::Need(p),
         Chosen::Done(slot, _) => Choice::Done(slot.owned()),
     })
 }
 
-/// The two choice leaves.
+/// The choice leaves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Which {
     Guard,
     Coalesce,
+    And,
+    Or,
 }
 
 /// A slot as the walk reads it: borrowed from where it is kept.
@@ -747,8 +764,8 @@ enum Chosen<'a> {
     Done(In<'a>, Option<usize>),
 }
 
-/// [`choice_next`]'s rule, over the inputs as `at` gives them (`None`: not yet evaluated).
-fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> {
+/// [`choice_next`]'s rule, over the `n` inputs as `at` gives them (`None`: not yet evaluated).
+fn choose<'a>(which: Which, n: usize, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> {
     match which {
         Which::Guard => match at(0) {
             None => Chosen::Need(0),
@@ -768,6 +785,22 @@ fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> 
             },
             Some(first) => Chosen::Done(first, Some(0)),
         },
+        // Left to right, as JavaScript's `&&` and `||`: an input decides when it is the one that
+        // decides (`false` for `and`, `true` for `or`) or the last, and what follows it isn't
+        // needed. One reached that is absent, or isn't a Boolean, makes it absent, as the leaf is.
+        Which::And | Which::Or => {
+            let decides = which == Which::Or;
+            for p in 0..n {
+                match at(p) {
+                    None => return Chosen::Need(p),
+                    Some(In::Pending) => return Chosen::Done(In::Pending, None),
+                    Some(v @ In::Value(Value::Boolean(b))) if *b == decides || p + 1 == n => return Chosen::Done(v, None),
+                    Some(In::Value(Value::Boolean(_))) => {}
+                    Some(_) => return Chosen::Done(In::Absent, None),
+                }
+            }
+            Chosen::Done(In::Absent, None)
+        }
     }
 }
 
@@ -1857,7 +1890,7 @@ impl<'r> Prepared<'r> {
                 // inputs are gathered in the same pass that looks for one not yet evaluated.
                 let mut gathered: Refs = SmallVec::new();
                 let mut pending = false;
-                match kind.choice.map(|which| choose(which, at)) {
+                match kind.choice.map(|which| choose(which, k, at)) {
                     Some(Chosen::Need(p)) => Walk::Need(p),
                     // A value read at a port, to be copied or given once nothing is borrowed.
                     Some(Chosen::Done(In::Value(_), Some(p))) => Walk::Chosen(p),
@@ -4320,6 +4353,21 @@ mod tests {
         assert_eq!(choice_next("coalesce", &[Some(Slot::Absent), None]), Some(Choice::Need(1)));
         assert_eq!(choice_next("coalesce", &[Some(Slot::Absent), Some(Slot::Pending)]), Some(Choice::Done(Slot::Pending)));
         assert_eq!(choice_next("coalesce", &[Some(Slot::Pending), None]), Some(Choice::Done(Slot::Pending)));
+        // `and` and `or`: in order, each input only while those before haven't decided.
+        let (b, a, p) = (|x: bool| Some(Slot::Value(Value::Boolean(x))), Some(Slot::Absent), Some(Slot::Pending));
+        assert_eq!(choice_next("and", &[None, None, None]), Some(Choice::Need(0)));
+        assert_eq!(choice_next("and", &[b(true), None, None]), Some(Choice::Need(1)));
+        assert_eq!(choice_next("and", &[b(false), None, None]), Some(Choice::Done(Slot::Value(Value::Boolean(false)))), "false decides");
+        assert_eq!(choice_next("and", &[b(true), b(true), b(true)]), Some(Choice::Done(Slot::Value(Value::Boolean(true)))));
+        assert_eq!(choice_next("and", &[b(true), a.clone(), None]), Some(Choice::Done(Slot::Absent)), "an absent input reached");
+        assert_eq!(choice_next("and", &[a.clone(), None]), Some(Choice::Done(Slot::Absent)));
+        assert_eq!(choice_next("and", &[b(true), v.clone()]), Some(Choice::Done(Slot::Absent)), "an input not a boolean");
+        assert_eq!(choice_next("and", &[p.clone(), None]), Some(Choice::Done(Slot::Pending)));
+        assert_eq!(choice_next("or", &[b(false), None]), Some(Choice::Need(1)));
+        assert_eq!(choice_next("or", &[b(true), None]), Some(Choice::Done(Slot::Value(Value::Boolean(true)))), "true decides");
+        assert_eq!(choice_next("or", &[b(false), b(false)]), Some(Choice::Done(Slot::Value(Value::Boolean(false)))));
+        assert_eq!(choice_next("or", &[b(false), a]), Some(Choice::Done(Slot::Absent)));
+        assert_eq!(choice_next("or", &[b(false), p]), Some(Choice::Done(Slot::Pending)));
         assert_eq!(choice_next("add", &[None, None]), None);
     }
 

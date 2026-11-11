@@ -48,24 +48,30 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("g2", "const asked = await ask2(\"a\")", "await ask2(\"a\")"),
 ];
 
-/// The forms a condition takes, over fields a request may lack: as written, and as a flow reads
-/// it (`AS_A_FLOW_READS`).
-const CONDITIONS: &[(&str, &str)] = &[
-    ("req.json.c", "J.c"),
-    ("!req.json.c", "N(J.c)"),
-    ("req.json.n > 10", "GT(J.n, 10)"),
-    ("req.json.n <= 10", "LE(J.n, 10)"),
-    ("req.json.s === \"x\"", "EQ(J.s, \"x\")"),
-    ("req.json.s !== \"x\"", "NE(J.s, \"x\")"),
-    ("req.json.c && req.json.d", "AND(J.c, J.d)"),
-    ("req.json.c || req.json.d", "OR(J.c, J.d)"),
-    ("!(req.json.n > 10)", "N(GT(J.n, 10))"),
+/// The forms a condition takes, over fields a request may lack: as written, as a flow reads it
+/// (`AS_A_FLOW_READS`), and as a flow reads it where it is a value and not a condition (the left
+/// of `&&`), where `&&` and `||` take Booleans and nothing else.
+const CONDITIONS: &[(&str, &str, &str)] = &[
+    ("req.json.c", "J.c", "J.c"),
+    ("!req.json.c", "N(J.c)", "N(J.c)"),
+    ("req.json.n > 10", "GT(J.n, 10)", "GT(J.n, 10)"),
+    ("req.json.n <= 10", "LE(J.n, 10)", "LE(J.n, 10)"),
+    ("req.json.s === \"x\"", "EQ(J.s, \"x\")", "EQ(J.s, \"x\")"),
+    ("req.json.s !== \"x\"", "NE(J.s, \"x\")", "NE(J.s, \"x\")"),
+    ("req.json.c && req.json.d", "AND(J.c, J.d)", "ANDV(J.c, J.d)"),
+    ("req.json.c || req.json.d", "OR(J.c, J.d)", "ORV(J.c, J.d)"),
+    ("!(req.json.n > 10)", "N(GT(J.n, 10))", "N(GT(J.n, 10))"),
 ];
 
 /// How a flow reads what JavaScript computes with `undefined`, as JavaScript: nothing in, nothing
 /// out. `!` of nothing is nothing; a comparison takes two numbers or two texts, and anything else
-/// gives nothing; equality of nothing is nothing; `&&` and `||` of nothing on either side are
-/// nothing, whatever the other side is (`true || nothing` is nothing, where JavaScript's is true).
+/// gives nothing; equality of nothing is nothing. `&&` and `||` read left to right and stop at
+/// the side that decides, as JavaScript's do (`false && nothing` is false, `true || nothing` true),
+/// but a side they reach that is nothing makes them nothing (`nothing || true` is nothing, where
+/// JavaScript's is true). Where they are a value and not a condition (`ANDV`, `ORV`; `ANDL` and
+/// `ORL` with the right side run only when reached), they take Booleans: anything else is nothing.
+/// In a condition, a side is read as JavaScript reads it (`ANDC`, `ORC`, the right side run only
+/// when reached).
 const AS_A_FLOW_READS: &str = r#"
     const N = (x) => x === undefined ? undefined : !x;
     const alike = (a, b) => typeof a === typeof b && (typeof a === "number" || typeof a === "string");
@@ -73,8 +79,16 @@ const AS_A_FLOW_READS: &str = r#"
     const LE = (a, b) => alike(a, b) ? a <= b : undefined;
     const EQ = (a, b) => a === undefined || b === undefined ? undefined : a === b;
     const NE = (a, b) => a === undefined || b === undefined ? undefined : a !== b;
-    const AND = (a, b) => a === undefined || b === undefined ? undefined : !!a && !!b;
-    const OR = (a, b) => a === undefined || b === undefined ? undefined : !!a || !!b;
+    const AND = (a, b) => a === undefined ? undefined : !a ? false : b === undefined ? undefined : !!b;
+    const OR = (a, b) => a === undefined ? undefined : !!a ? true : b === undefined ? undefined : !!b;
+    const B = (x) => typeof x === "boolean" ? x : undefined;
+    const ANDL = (a, f) => B(a) === undefined ? undefined : !a ? false : B(f());
+    const ORL = (a, f) => B(a) === undefined ? undefined : a ? true : B(f());
+    const ANDV = (a, b) => ANDL(a, () => b);
+    const ORV = (a, b) => ORL(a, () => b);
+    const T = (x) => x === undefined ? undefined : !!x;
+    const ANDC = (a, f) => a === undefined ? undefined : !a ? false : T(f());
+    const ORC = (a, f) => a === undefined ? undefined : a ? true : T(f());
 "#;
 
 /// Requests' bodies: fields that hold, that don't, that are missing, of another type, and a body
@@ -110,9 +124,12 @@ const SHAPES: &[(&str, &str)] = &[
     ("switch default", "switch (req.json.k) {\ncase \"a\":\n++state.o\nbreak\ndefault:\n{E}\nbreak\n}\nreturn \"end\""),
     ("a branch of ?:", "const got = {C} ? {V} : undefined\nreturn \"end\""),
     ("the other branch of ?:", "const got = {C} ? \"no\" : {V}\nreturn \"end\""),
-    ("after &&", "const got = {C} && {V}\nreturn \"end\""),
-    ("after ||", "const got = {C} || {V}\nreturn \"end\""),
+    ("after && in an if", "if (({C}) && {V}) {\n++state.o\n}\nreturn \"end\""),
+    ("after &&", "const got = ({C}) && {V}\nreturn \"end\""),
+    ("after || in an if", "if (({C}) || {V}) {\n++state.o\n}\nreturn \"end\""),
+    ("after ||", "const got = ({C}) || {V}\nreturn \"end\""),
     ("after ??", "const got = req.json.v ?? {V}\nreturn \"end\""),
+    ("a branch of ?: in a condition", "if ({C} ? {V} : undefined) {\n++state.o\n}\nreturn \"end\""),
     ("a branch of ?: in an if", "if (req.json.d) {\nconst got = {C} ? {V} : undefined\n}\nreturn \"end\""),
     ("bound, and read in a branch", "const got = {V}\nreturn {C} ? got : \"no\""),
     ("tied to a value there", "let got\nif (req.json.v !== undefined) got = {V}\nreturn \"end\""),
@@ -139,10 +156,18 @@ fn cases() -> Vec<Case> {
             }
             // A shape with no condition is one case, not one a condition.
             let conditions = if template.contains("{C}") { CONDITIONS } else { &CONDITIONS[..1] };
-            for (condition, read) in conditions {
+            for (condition, read, as_value) in conditions {
                 let fill = |c: &str| template.replace("{C}", c).replace("{E}", statement).replace("{V}", value);
+                // The right of `&&` and `||` is run only when the left doesn't decide.
+                let read = match *shape {
+                    "after &&" => format!("const got = ANDL({as_value}, () => {value})\nreturn \"end\""),
+                    "after ||" => format!("const got = ORL({as_value}, () => {value})\nreturn \"end\""),
+                    "after && in an if" => format!("if (ANDC({read}, () => {value})) {{\n++state.o\n}}\nreturn \"end\""),
+                    "after || in an if" => format!("if (ORC({read}, () => {value})) {{\n++state.o\n}}\nreturn \"end\""),
+                    _ => fill(read),
+                };
                 // A subject that isn't there takes no case, the default no more than another.
-                let read = fill(read).replace("req.json.", "J.").replace("switch (J.k) {", "if (J.k !== undefined) switch (J.k) {");
+                let read = read.replace("req.json.", "J.").replace("switch (J.k) {", "if (J.k !== undefined) switch (J.k) {");
                 out.push(Case { shape, mark, condition, body: fill(condition), read });
             }
         }
@@ -315,14 +340,12 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 /// one of these that no longer differs anywhere.
 const DEBTS: &[(&str, &str)] = &[
     ("try", "in a try block, a call bound after a statement that failed is still made, and a function after it still entered (docs/LANGUAGE.md §6.5a)"),
-    ("and or", "`a && f()` and `a || f()` call f whatever a is: the right side isn't a branch"),
     ("a call in a function", "a request a function makes is sent when the function's answer is needed, not when it is called: bound and read only in a branch not taken, it isn't sent (docs/LANGUAGE.md F13)"),
 ];
 
 fn debt(case: &Case, request: &str) -> Option<&'static str> {
     match case.shape {
         "in a try" if request == "not json" => Some("try"),
-        "after &&" | "after ||" => Some("and or"),
         "bound, and read in a branch" if case.mark.starts_with('g') => Some("a call in a function"),
         _ => None,
     }
@@ -342,21 +365,27 @@ fn debt(case: &Case, request: &str) -> Option<&'static str> {
 /// started after `return status(403)`, a write under an `if` that didn't hold. That was so for an
 /// action started and for a function that writes or calls out, on every such path, until this test
 /// (1,393 of 4,360 runs differed). Or, failing the other way, a handler doesn't do what it says.
+/// Or the compiler made a graph with a cycle of a handler it should take, and refuses it: so it
+/// was for a function in a branch of an `if`'s condition (`a ? f() : b`, `a && f()`).
 #[test]
 fn a_handler_does_what_its_text_says() {
     let state = claims_state("");
     let (host, _hits) = counting_server();
     let all = cases();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-    // What the language refuses is left out: said at check, it is no surprise at a run.
+    // What the language refuses is left out: said at check, it is no surprise at a run. A graph
+    // with a cycle is no refusal of the text but the compiler's own fault, and fails.
     let indexed: Vec<(usize, &Case)> = all.iter().enumerate().collect();
-    let taken: Vec<(usize, &Case)> = thread::scope(|s| {
+    let checked = thread::scope(|s| {
         let checking: Vec<_> = indexed
             .chunks(indexed.len().div_ceil(workers))
-            .map(|part| s.spawn(|| part.iter().filter(|(i, c)| holon_author::agent::plan(&flow_text("probe", 19000, &host, &[(*i, c)])).is_ok()).copied().collect::<Vec<_>>()))
+            .map(|part| s.spawn(|| part.iter().map(|&(i, c)| ((i, c), holon_author::agent::plan(&flow_text("probe", 19000, &host, &[(i, c)])).map(|_| ()))).collect::<Vec<_>>()))
             .collect();
-        checking.into_iter().flat_map(|c| c.join().unwrap()).collect()
+        checking.into_iter().flat_map(|c| c.join().unwrap()).collect::<Vec<_>>()
     });
+    let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| e.contains("cycle")).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
+    assert!(faults.is_empty(), "{} handlers compile to a graph that can't run:\n{}", faults.len(), faults.join("\n"));
+    let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     // A flow of forty handlers at a time, each flow's runs one after another (the log is read by
     // what it gained), the flows side by side.
     #[derive(Default)]

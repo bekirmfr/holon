@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`&&` and `||` stop at the operand that decides, as JavaScript's do.** Every operand was run:
+  `ok && record(x)` wrote whatever `ok` was, and a request on the right of `||` was sent after a
+  `true`. Now what follows the operand that decides isn't run, and `false && x` is `false`, `true
+  || x` `true`, whatever `x` is; an operand reached that is absent still makes them absent. And a
+  function called in a branch of an `if`'s condition (`if (c ? f() : undefined)`, `if (a && f())`)
+  no longer fails `holon check` with "the wiring contains a cycle". Flows with a function on the
+  right of `&&` or `||` get a new version: redeploy them.
 - **A function that calls a function no longer loses what it writes.** A write, a put or a send
   made by a function was performed only when a handler called it. Called from another function
   that didn't return it by name, it was dropped without a word: the flow passed `holon check`, its

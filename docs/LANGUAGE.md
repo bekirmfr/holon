@@ -2151,8 +2151,8 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `c ? a : b` | `coalesce(guard(cond: c, value: a), guard(cond: not(default{false}(c)), value: b))` | `a` if `c` is `true`, else `b`; the side chosen is the answer, absent if it is (§6.4) |
 | `c ? a : undefined` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
-| `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only |
-| `a && b` | `and(a, b)` | variadic; booleans only |
+| `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only; read left to right, the first `true` decides and what follows it isn't run |
+| `a && b` | `and(a, b)` | variadic; booleans only; the first `false` decides, and what follows it isn't run |
 | `a \| b`, `a ^ b`, `a & b` | `bitwise{op: or, xor, and}(a, b)` | on int32s; each its own level, in that order, below `===` |
 | `a === b`, `a !== b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced; `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | two numbers, or two texts in UTF-16 code-unit order; a number and a text give nothing |
@@ -2185,6 +2185,14 @@ parentheses. They are the author saying "two". `+` joins texts as JavaScript's d
 literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text,
 number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
 is JavaScript's fallback and not logic.
+
+`&&` and `||` read their operands as JavaScript's do: left to right, stopping at the first that
+decides (`false` for `&&`, `true` for `||`), and what follows it isn't run (§6.4). So `ok &&
+record(x)` writes only when `ok` is `true`, and `false && x` is `false`, `true || x` `true`, whatever
+`x` is, absent included. An operand they reach that is absent makes them absent, as one that isn't
+a Boolean does: `x || true` with `x` absent has no value, where JavaScript's is `true`. (Until
+2026-11-11 they read every operand, and an absent one on either side made them absent: `ok &&
+record(x)` wrote whatever `ok` was.)
 
 A condition reads a value that isn't a Boolean as JavaScript does. `if (c)`, `c ? a : b` and `!c`
 read `c` through `is_truthy`, JavaScript's `Boolean(c)`: `false`, `0`, `NaN` and `""` don't hold,
@@ -2575,8 +2583,10 @@ absent too.
 Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
 is `true`, and `b` only when it isn't. So a branch not taken asks the host
 nothing: its requests aren't sent, its `await`s don't park the run, its reads aren't made, and a
-function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent. This changes
-no value, only what runs. While `c` (or `x`) waits on an answer from the host, the choice waits
+function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent, and so are
+`x && y`, `y` only when `x` is `true`, and `x || y`, `y` only when `x` is `false` (§5.6). This
+changes no value, only what runs, but for `&&` and `||`, which now decide without the operand they
+don't run (`false && absent` is `false`). While `c` (or `x`) waits on an answer from the host, the choice waits
 too, and decides in the next round. A function's inputs are computed before it is entered, as a
 call's arguments are: `h(go, await api.get(…))` sends the request even if `h` only uses it when
 `go`.
@@ -2598,8 +2608,8 @@ still made when its answer is needed: F13.)
 What is held to its statement's conditions this way is everything a handler does, not requests
 alone: a write, a send, a log line, an action started (`payout(x)`), and a function of the flow's
 called, which is held by its trigger when it writes and entered only when the run reaches it. A
-function that writes, called in a branch (`c ? record(x) : undefined`, `kept ?? record(x)`, a
-`switch`'s case), writes only when the branch is taken. Until 2026-11-11 an action started and a
+function that writes, called in a branch (`c ? record(x) : undefined`, `kept ?? record(x)`, `ok
+&& record(x)`, a `switch`'s case), writes only when the branch is taken. Until 2026-11-11 an action started and a
 function called weren't held: each ran on every path, after a `return` that answered included. What
 holds them now is a test, not the care of whoever adds the next kind of statement: the same handler
 is run as a flow and as JavaScript over every way a statement is reached, every kind of thing a

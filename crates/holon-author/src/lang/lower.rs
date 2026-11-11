@@ -646,7 +646,14 @@ impl<'a> Lowerer<'a> {
     /// The functions placed in a branch since `since` are entered only where `cond` holds: each
     /// one's tie is there only then, and only where the branches inside this one were taken too.
     fn taken_when(&mut self, since: usize, cond: &Val, span: Span) -> R<()> {
-        let placed: Vec<String> = self.cur().branch_fns[since..].to_vec();
+        let until = self.cur().branch_fns.len();
+        self.taken_between(since, until, cond, span)
+    }
+
+    /// The same for the functions placed from `since` to `until`: a branch's, where its condition
+    /// is lowered after it and places functions of its own (`when`), which aren't in the branch.
+    fn taken_between(&mut self, since: usize, until: usize, cond: &Val, span: Span) -> R<()> {
+        let placed: Vec<String> = self.cur().branch_fns[since..until].to_vec();
         for id in placed {
             let inner = self.cur().branch_ties.get(&id).cloned().unwrap_or_else(|| cond.clone());
             let tie = self.node_with("guard", &[], &[("cond", cond.clone()), ("value", inner)], span)?;
@@ -2105,8 +2112,9 @@ impl<'a> Lowerer<'a> {
             BinOp::When => {
                 let since = self.cur().branch_fns.len();
                 let v = self.branch(lhs)?;
+                let until = self.cur().branch_fns.len();
                 let c = self.expr(rhs)?;
-                self.taken_when(since, &c, span)?;
+                self.taken_between(since, until, &c, span)?;
                 self.node_with("guard", &[], &[("cond", c), ("value", v)], span)
             }
             BinOp::Coalesce => {
@@ -2161,8 +2169,28 @@ impl<'a> Lowerer<'a> {
                     _ => "or",
                 };
                 let mut vals = Vec::new();
-                for o in &operands {
-                    vals.push(self.expr(o)?);
+                for (i, o) in operands.iter().enumerate() {
+                    if i == 0 || !matches!(op, BinOp::And | BinOp::Or) {
+                        vals.push(self.expr(o)?);
+                        continue;
+                    }
+                    // `&&` and `||` read their operands in order and stop at the one that decides
+                    // (core's `choose`): each after the first is a branch, run only while those
+                    // before it are all true (`&&`) or all false (`||`).
+                    let since = self.cur().branch_fns.len();
+                    let v = self.branch(o)?;
+                    if self.cur().branch_fns.len() > since {
+                        let before = if i == 1 {
+                            vals[0].clone()
+                        } else {
+                            let ports = Self::variadic_ports(&[WPort::new("a", WType::Boolean), WPort::new("b", WType::Boolean)], i);
+                            let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals.iter().cloned()).collect();
+                            self.node_with(leaf, &[], &inputs, o.span)?
+                        };
+                        let reached = if op == BinOp::And { before } else { self.node_with("not", &[], &[("v", before)], o.span)? };
+                        self.taken_when(since, &reached, o.span)?;
+                    }
+                    vals.push(v);
                 }
                 if leaf == "add"
                     && let Some(d) = vals.iter().find_map(|v| self.decimal_leaf(v))

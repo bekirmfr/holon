@@ -531,14 +531,14 @@ declare module "holon" {
   /**
    * `and(a: Boolean, b: Boolean) -> out: Boolean`
    *
-   * True when every input is true. Takes more inputs with +.
+   * True when every input is true. Read in order, as JavaScript's && is: the first false decides, and the inputs after it aren't run. Takes more inputs with +.
    */
   export function and(...args: any[]): any
 
   /**
    * `or(a: Boolean, b: Boolean) -> out: Boolean`
    *
-   * True when any input is true. Takes more inputs with +.
+   * True when any input is true. Read in order, as JavaScript's || is: the first true decides, and the inputs after it aren't run. Takes more inputs with +.
    */
   export function or(...args: any[]): any
 
