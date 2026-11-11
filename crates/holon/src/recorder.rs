@@ -773,14 +773,9 @@ pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
 /// (where the system has directories to sync; a failure is only said: the file itself is synced).
 fn sync_dir_of(path: &Path) {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all())
-    {
-        eprintln!("holon: could not sync {}: {e}", dir.display());
+    if let Err(e) = holon_host::sync_dir_of(path) {
+        eprintln!("holon: could not sync the folder of {}: {e}", path.display());
     }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// Write `bytes` to `file` as `write_all` does, and how many went in, a failed write's too.

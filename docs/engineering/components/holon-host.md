@@ -63,8 +63,9 @@ filed under its content hash. Every read is checked: `decode_verified` and
 path and differ only in where the bytes are.
 
 `FileStore` keeps a unit as `<root>/<hex>` and a value as `<root>/values/<hex>`, each written by
-`write_atomically`: a sibling `<name>.tmp-<pid>-<n>`, synced, renamed over, so a crash leaves the
-old file or the new one. A `put` of a unit writes again each time; `put_value` writes nothing
+`write_atomically`: a sibling `<name>.tmp-<pid>-<n>`, synced, renamed over, its folder synced
+(`sync_dir_of`), so a crash leaves the old file or the new one, and a power loss after it returns
+the new one. A `put` of a unit writes again each time; `put_value` writes nothing
 when the value is there already, as a file or packed. `get_value` reads the value's own file,
 then the packs.
 

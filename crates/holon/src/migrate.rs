@@ -232,6 +232,7 @@ fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
         std::fs::remove_dir(&env.data).map_err(|e| format!("{} isn't empty: {e}", env.data.display()))?;
     }
     std::fs::rename(&partial, &env.data).map_err(|e| format!("could not rename {} to {}: {e}", partial.display(), env.data.display()))?;
+    holon_host::sync_dir_of(&env.data).map_err(|e| format!("moved, but {} couldn't be synced, so the old files are kept: {e}", env.data.display()))?;
     for (old, _) in &plan.moves {
         let gone = if old.is_dir() { std::fs::remove_dir_all(old) } else { std::fs::remove_file(old) };
         gone.map_err(|e| format!("moved, but could not remove {}: {e}", old.display()))?;
@@ -266,6 +267,8 @@ fn check_copy(dir: &Path, key_arg: Option<&str>) -> Result<(), String> {
 }
 
 /// `from`, a file or a folder, copied to `to`; a file kept owner-only stays so.
+/// Copy `from` to `to`, a folder with everything in it, each file and folder synced once made:
+/// the originals are removed once the copy is renamed in, so the copy is on disk before.
 fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
     if from.is_dir() {
         std::fs::create_dir_all(to)?;
@@ -273,9 +276,14 @@ fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
             let entry = entry?;
             copy_all(&entry.path(), &to.join(entry.file_name()))?;
         }
-        Ok(())
+        holon_host::sync_dir(to)
     } else {
-        std::fs::copy(from, to).map(|_| ())
+        // Written through a handle of its own, made to write (Windows syncs no file opened only to
+        // read), with its original's permissions, a read-only one's too.
+        let mut copy = std::fs::File::create(to)?;
+        std::io::copy(&mut std::fs::File::open(from)?, &mut copy)?;
+        copy.set_permissions(std::fs::metadata(from)?.permissions())?;
+        copy.sync_all()
     }
 }
 

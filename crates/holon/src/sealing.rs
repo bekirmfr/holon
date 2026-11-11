@@ -333,7 +333,8 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        holon_host::sync_dir_of(path)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);

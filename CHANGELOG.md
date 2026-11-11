@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **What the server writes by renaming it into place stays there after a power loss.** A state's
+  head, a value in the store, the deployments file, a file a run wrote into a bound folder: each
+  was synced and renamed in, but the folder holding its name wasn't synced, so a power loss could
+  bring back the old one under a run already said done. Now the folder is synced after each
+  rename (on Linux and macOS; NTFS journals a rename itself). `holon migrate` syncs the copy it
+  makes before it removes the old files, where a power loss just after could have lost both.
 - **A run whose log line couldn't be written reads as lost, not as the log changed.** A line the
   server couldn't write (a full disk) still moved the chain on, and its head went to the witness:
   the next line named one that wasn't in the file, so `holon verify` said the chain was BROKEN

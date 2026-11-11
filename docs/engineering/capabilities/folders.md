@@ -123,7 +123,8 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
 - **Text only, read whole.** No bytes value: a binary file is copied or sent by handle, never
   read ([host capabilities L4](../../L4s/host-capabilities-L4.md) §1).
 - **Not atomic across files.** Each file lands by its own rename; one that fails leaves the
-  others landed, and the run says which didn't. The directory isn't synced after the rename.
+  others landed, and the run says which didn't. The folder is synced after each rename (or
+  link), so a file a run is said to have written is still there after a power loss.
 - **A cap walks the folder** (`usage`) at each write that lands in a capped folder: its cost
   grows with the folder.
 - **A listing looks at 100,000 files at most** (`MAX_WALK`).
