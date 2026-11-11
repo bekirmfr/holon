@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A request a function makes is sent when the function is called, whatever reads its answer.**
+  `const sent = await api.post(…)` in a function was sent only when the function's answer was
+  needed, so `const got = await ask(x)` in a route, read only in a branch not taken, sent nothing,
+  where a request bound in the route itself is sent. Now the request's answer leaves the function
+  by an output of its own, `called`, which the route keeps as it keeps its own requests, and the
+  function is entered for it. What the function returns, and what `ask(x)` reads, is unchanged.
+  Flows with such a function get a new version (the `dexpaprika` and `stripe-to-slack` samples
+  among them): redeploy them.
 - **A call in a branch of a value bound under a condition is accepted, and held to it.** `if (d) {
   got = v ?? (await api.get(…)).body }`, the same after an early `return`, and `c ? ping(x) :
   undefined` in an `if` failed `holon check` with "`after` ties a write or a call to what it names:

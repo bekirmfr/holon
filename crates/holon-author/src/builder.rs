@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, PASSES_EXTRA, VARIADIC};
+use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -124,6 +124,46 @@ pub fn closure_of(roots: &[Hash], store: &MapResolver) -> Vec<Hash> {
         visit(r, store, &mut seen, &mut order);
     }
     order
+}
+
+/// The outputs of `unit` that answer a call made when its trigger arrives: a request or another
+/// flow's action tied to it, or a function placed in it whose own output is one. A call is made
+/// whatever reads its answer, so a handler's group exposes it (core's `default_spec`) and a
+/// function's boundary names it (`call_port`): the function placed is entered for it even where
+/// nothing reads what it returns. The printer leaves them out of what the function returns.
+pub fn call_outputs(unit: &Unit, store: &impl Resolver) -> Vec<String> {
+    let UnitBody::Composite { children, edges } = &unit.body else { return vec![] };
+    let mut placed: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut out = Vec::new();
+    for e in edges.iter().filter(|e| e.to_child == BOUNDARY && e.from_child != BOUNDARY) {
+        let Some(child) = children.get(e.from_child as usize).and_then(|h| store.resolve(h)) else { continue };
+        let answers = match &child.body {
+            UnitBody::Primitive { name } => {
+                CALLS.contains(&name.as_str()) && edges.iter().any(|t| t.to_child == e.from_child && child.inputs.get(t.to_port as usize).is_some_and(|p| p.name == TRIGGER))
+            }
+            UnitBody::Composite { .. } => {
+                let theirs = placed.entry(e.from_child).or_insert_with(|| call_outputs(child, store));
+                child.outputs.get(e.from_port as usize).is_some_and(|p| theirs.contains(&p.name))
+            }
+            UnitBody::Module { .. } => false,
+        };
+        if answers && let Some(p) = unit.outputs.get(e.to_port as usize) {
+            out.push(p.name.clone());
+        }
+    }
+    out
+}
+
+/// The name a function's boundary gives the next call's answer it names (`call_outputs`):
+/// `called`, then `called_2`, …, past the names `taken`.
+pub fn call_port(taken: impl Fn(&str) -> bool) -> String {
+    let mut name = "called".to_string();
+    let mut n = 1;
+    while taken(&name) {
+        n += 1;
+        name = format!("called_{n}");
+    }
+    name
 }
 
 /// A literal's wire type, as the editor sets it when a const's or default's type changes.
@@ -256,6 +296,11 @@ impl FlowBuilder {
     /// and params, as the language's lowering reads them back.
     pub fn data(&self, id: &str) -> Option<&NodeData> {
         self.frames.last().and_then(|f| f.nodes.iter().find(|n| n.id == id)).map(|n| &n.data)
+    }
+
+    /// The outputs of the function `hash` placed that answer a call (`call_outputs`).
+    pub fn call_outputs_of(&self, hash: &str) -> Vec<String> {
+        parse_hash(hash).and_then(|h| self.store.resolve(&h)).map(|u| call_outputs(u, &self.store)).unwrap_or_default()
     }
 
     /// A wire from `from`'s output to `to`'s input. A variadic node gains the next input when it

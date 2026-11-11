@@ -2252,7 +2252,12 @@ wire's type, as the canvas does. A return type names one output's type. A functi
 wherever it is placed. A function computes. It may be `async` and await what it sends, `const sent
 = await hooks.post(…)`, as a handler writes a request, and its caller may await it, `await
 toSlack(event)`: the `await` adds nothing yet (§5.4), so an `async` function is the same unit as
-the function without it, and a request in it is made as a leaf's is (§6.4). It never waits: `await
+the function without it, and a request in it is made as a leaf's is (§6.4). A request bound on a
+statement is made when the function is entered: its answer leaves by an output of its own after
+the ones it returns, `called` (then `called_2`, …), as do those of a function it calls, so a
+handler enters it for the request even where what it returns isn't needed. The function's value
+is still what it returns: `ask(x)` reads it, and the printer writes no `called` back, as the
+lowering names it again. It never waits: `await
 event(…)` in a function is refused, as a wait is an action's, and so is another flow's action
 awaited, as a call is a handler's. A method given a function (`map`, `filter`, `sort`, a
 reviver…) takes no `async` one, by name or written in place, as it would be handed a promise for
@@ -2633,8 +2638,12 @@ held to both: the value bound is guarded by the statement's conditions too, so w
 hold it isn't needed, and the call isn't made. (Until 2026-11-11 `holon check` refused it, with
 "`after` ties a write or a call to what it names: this statement makes none"; and one beside a
 call bound on the statement, `if (d) { const got = ping(x) ?? ping(y) }`, made the fallback where
-the `if` didn't hold, the first call not having been made.) (In a function, a call bound on a
-statement is still made when its answer is needed: F13.)
+the `if` didn't hold, the first call not having been made.) In a function it is the same: a call
+bound on a statement is made when the function is entered, whatever reads its answer. The call's
+answer leaves the function by an output of its own, which it doesn't return (§5.8), and the
+handler keeps it as it keeps its own calls, so the function is entered for the call even where
+what it returns isn't needed. (Until 2026-11-11 such a call was made only when the function's
+answer was needed: `const got = await ask(x)`, read only in a branch not taken, sent nothing.)
 
 What is held to its statement's conditions this way is everything a handler does, not requests
 alone: a write, a send, a log line, an action started (`payout(x)`), and a function of the flow's
@@ -3254,9 +3263,10 @@ is `status(204)`).
   call bound on a statement was made only when something needed its answer, so whether a charge
   went out could be decided by a reader lines away. Decided and built: a call is made where it is
   written, when the run reaches its statement or when the branch it is written in needs it (§6.4);
-  the `idempotent` sample's charge says its own condition. Left open: in a function, a call bound
-  on a statement is still made when its answer is needed, as the function's boundary would need an
-  output the printer can't yet write back.
+  the `idempotent` sample's charge says its own condition. And in a function, a call bound on a
+  statement was still made only when the function's answer was needed. Decided and built
+  (2026-11-11): its answer leaves the function's boundary by an output of its own, `called`, which
+  the handler keeps and the printer doesn't write back (§5.8, §6.4).
 - **F14. Routes answer, actions wait.** A route answered first and waited after, so one handler was
   two in disguise: a request answered with a link, and a run that went on for days. Decided and
   built: a route answers and is done, and what waits is an action it starts by calling it without

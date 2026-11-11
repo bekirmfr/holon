@@ -400,15 +400,11 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 /// Where a flow doesn't yet do what it reads as, and why: debts, each to be paid by a change to
 /// the language and then struck from here. A difference outside these fails the test, and so does
 /// one of these that no longer differs anywhere.
-const DEBTS: &[(&str, &str)] = &[
-    ("a call in a function", "a request a function makes is sent when the function's answer is needed, not when it is called: bound and read only in a branch not taken, it isn't sent (docs/LANGUAGE.md F13)"),
-];
+const DEBTS: &[(&str, &str)] = &[];
 
-fn debt(case: &Case, _request: &str) -> Option<&'static str> {
-    match case.shape {
-        "bound, and read in a branch" if case.mark.starts_with('g') => Some("a call in a function"),
-        _ => None,
-    }
+/// The debt a run that differs is owed under, by its case and request: none now.
+fn debt(_case: &Case, _request: &str) -> Option<&'static str> {
+    None
 }
 
 /// **Guards:** a handler does what its text says. What it writes, sends, starts and calls is what

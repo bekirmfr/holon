@@ -15,8 +15,8 @@ use holon_core::{interface_of, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
-use crate::builder::{FlowBuilder, FlowDocument, Holon, HolonPort, Requirements, Settings};
-use crate::canvas::next_port_name;
+use crate::builder::{call_port, FlowBuilder, FlowDocument, Holon, HolonPort, Requirements, Settings};
+use crate::canvas::{next_port_name, PlacedBody};
 use crate::templates;
 use crate::wire::{WParam, WPort, WType};
 
@@ -691,13 +691,14 @@ impl<'a> Lowerer<'a> {
 
     /// `v` read whole. A function placed with several value outputs (one returning `{ a, b }`,
     /// which lowers to one output per key) is the record of them, as JavaScript reads what such a
-    /// function gives; its effects stay outputs of their own. One output, one picked by `.name`,
-    /// or a template's first (a route's request) is itself.
+    /// function gives; its effects and its calls' answers stay outputs of their own. One output,
+    /// one picked by `.name`, or a template's first (a route's request) is itself.
     fn whole(&mut self, v: Val, span: Span) -> R<Val> {
         let Val::Out { id, outputs, explicit: false, .. } = &v else { return Ok(v) };
-        let placed = self.b.data(id).is_some_and(|d| matches!(d.body, crate::canvas::PlacedBody::Composite { .. }));
-        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect).collect();
-        if !placed || values.len() < 2 {
+        let Some(PlacedBody::Composite { hash }) = self.b.data(id).map(|d| &d.body) else { return Ok(v) };
+        let calls = self.b.call_outputs_of(hash);
+        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect && !calls.contains(&outputs[k].name)).collect();
+        if values.len() < 2 {
             return Ok(v);
         }
         let (id, outputs) = (id.clone(), outputs.clone());
@@ -1745,6 +1746,30 @@ impl<'a> Lowerer<'a> {
                 }
                 wiring_out.push((id, output, pname.clone()));
                 outputs.push(HolonPort { name: pname, unit: None });
+            }
+            // And the answers of the calls tied to its trigger, read or not: a call is made when
+            // the run reaches its statement, whatever reads its answer. A handler's group exposes
+            // them by the IR's rule (core's `default_spec`); a holon's boundary names them, so
+            // it is entered for them even where nothing reads what it returns. One made in a
+            // branch is left untied, and made when the branch needs it.
+            for id in &frame.created {
+                let Some(d) = self.b.data(id) else { continue };
+                let answers: Vec<String> = match &d.body {
+                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) => {
+                        let tied = self.b.is_wired(id, TRIGGER) || wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER);
+                        if tied { d.outputs.iter().map(|o| o.name.clone()).collect() } else { vec![] }
+                    }
+                    PlacedBody::Composite { hash } => self.b.call_outputs_of(hash),
+                    _ => vec![],
+                };
+                for output in answers {
+                    if wiring_out.iter().any(|(node, out, _)| node == id && *out == output) {
+                        continue;
+                    }
+                    let pname = call_port(|n| outputs.iter().any(|o| o.name == n) || def.inputs.iter().any(|i| i.name.text == n));
+                    wiring_out.push((id.clone(), output, pname.clone()));
+                    outputs.push(HolonPort { name: pname, unit: None });
+                }
             }
             let mut inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
             if implicit_trigger {
