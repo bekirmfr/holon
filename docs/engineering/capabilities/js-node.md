@@ -160,9 +160,11 @@ In `crates/holon-module/tests/js_engine.rs`, the engine as a module:
 `absence_crosses_as_undefined_and_back`, `numbers_cross_as_f64_including_the_non_finite_ones`,
 `an_exception_is_an_error_naming_it`, `a_syntax_error_is_an_error_too`,
 `kinds_that_cannot_cross_are_errors_naming_the_kind`,
-`the_prelude_leaves_no_clock_randomness_io_or_locale` (each removal), `two_calls_share_nothing`,
-`a_body_that_never_ends_runs_out_of_fuel`, `the_same_call_answers_the_same_bytes`,
-`the_source_alone_is_compiled_and_not_run`; and `what_a_call_costs` (ignored, by hand).
+`the_prelude_leaves_no_clock_randomness_io_or_locale` (each removal),
+`a_body_that_never_ends_runs_out_of_fuel`, `the_source_alone_is_compiled_and_not_run`; in
+`tests/boundary.rs`, `a_call_is_a_function_of_its_module_and_its_inputs` (two calls share nothing,
+and the same call answers and costs the same whenever and wherever it is made) and
+`what_a_module_answers_is_data_as_it_was_given`; and `what_a_call_costs` (ignored, by hand).
 
 In `holon-module`'s `lib.rs`, the runner: `a_module_with_imports_never_runs`,
 `running_out_of_fuel_is_named`, `growing_past_the_memory_budget_is_named`,

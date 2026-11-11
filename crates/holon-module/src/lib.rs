@@ -346,27 +346,6 @@ mod tests {
             (i64.or (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32)) (i64.extend_i32_u (local.get $len)))))"#;
 
     #[test]
-    fn echo_answers_its_inputs_as_its_outputs() {
-        let engine = Engine::new();
-        let bytes = wat::parse_str(ECHO).unwrap();
-        let inputs = [Some(n(2.0)), Some(Value::Text("two".into())), Some(Value::List(vec![n(1.0)]))];
-        let outs = engine.run(&bytes, &ModuleLimits::default(), &inputs).unwrap();
-        assert_eq!(outs, inputs.to_vec());
-        // Compiled once: the second run finds the module in the cache and answers the same.
-        assert_eq!(engine.run(&bytes, &ModuleLimits::default(), &inputs).unwrap(), inputs.to_vec());
-        assert_eq!(engine.compiled.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn none_in_the_answer_is_an_absent_output_and_some_is_its_value() {
-        let engine = Engine::new();
-        let bytes = wat::parse_str(ECHO).unwrap();
-        let some_three = Value::Sum { arm: 0, payload: Box::new(n(3.0)) };
-        let outs = engine.run(&bytes, &ModuleLimits::default(), &[Some(none()), Some(some_three), Some(n(1.0))]).unwrap();
-        assert_eq!(outs, vec![None, Some(n(3.0)), Some(n(1.0))]);
-    }
-
-    #[test]
     fn a_module_with_imports_never_runs() {
         let with_import = r#"(module (import "env" "now" (func (result i64))) (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) i32.const 0)
@@ -426,29 +405,6 @@ mod tests {
             (func (export "run") (param i32 i32) (result i64) unreachable))"#;
         let err = Engine::new().run(&wat::parse_str(trapping).unwrap(), &ModuleLimits::default(), &[]).unwrap_err();
         assert!(matches!(err, RunError::Trap(_)), "{err}");
-    }
-
-    /// A module's answer is bytes it wrote as it liked, an effect's among them. In a flow it
-    /// gives nothing then, whole: performed, the effect would be a write or a call no leaf asked
-    /// for and no manifest shows. The echo answers what it is handed, an effect here.
-    #[test]
-    fn in_a_flow_a_module_that_answers_an_effect_gives_nothing() {
-        let mut store = MapResolver::new();
-        let port = |name: &str| Port { name: name.into(), ty: Type::Any };
-        let echo = Unit { body: UnitBody::Module { bytes: wat::parse_str(ECHO).unwrap() }, params: vec![], inputs: vec![port("a"), port("b")], outputs: vec![port("x"), port("y")] };
-        let engine = Engine::new();
-        let write = Value::Effect { sink: "store_write:balance".into(), payload: Box::new(n(1_000_000.0)) };
-        // The engine itself answers what the module wrote: an effect is a value like another.
-        let UnitBody::Module { bytes } = &echo.body else { unreachable!() };
-        assert_eq!(engine.run(bytes, &ModuleLimits::default(), &[Some(write.clone()), Some(n(2.0))]).unwrap(), vec![Some(write.clone()), Some(n(2.0))]);
-        // Evaluated as a node, the same answer is refused, the output beside the effect with it,
-        // and one nested in a list or a record no less.
-        store.insert(echo.clone()).unwrap();
-        let with = WithEngine::new(&store, &engine);
-        assert_eq!(eval(&echo, &[Some(write.clone()), Some(n(2.0))], &with).as_slice(), &[None, None]);
-        let nested = Value::Record([("rows".to_string(), Value::List(vec![write]))].into());
-        assert_eq!(eval(&echo, &[Some(n(1.0)), Some(nested)], &with).as_slice(), &[None, None]);
-        assert_eq!(eval(&echo, &[Some(n(1.0)), Some(n(2.0))], &with).as_slice(), &[Some(n(1.0)), Some(n(2.0))]);
     }
 
     #[test]
