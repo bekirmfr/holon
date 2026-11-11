@@ -1,12 +1,13 @@
 // Accounts, from installing a server onwards (holon-server's accounts.rs, access.rs, auth.rs; the
 // editor's AuthGate.tsx, HostPages.tsx), on a server left as installed (7521 on slot 0, ports.mjs)
 // and the editor pointed at it (5274): set up with the code it prints, people invited and joining by link,
-// each role doing what it may, a service's and an agent's tokens, and signing in through an identity provider set
+// each role doing what it may, a service's and an agent's tokens (an owner who isn't an admin
+// making them on a page of what they own), and signing in through an identity provider set
 // in People and access (the stand-in on 7530). In order: each step builds on the one before.
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
-import { gotoPage, menuEntry } from "./helpers";
+import { gotoPage, menuEntry, navLink } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -137,6 +138,50 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await expect(cy.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("don't match");
   await cyRow.getByRole("button", { name: "enable" }).click();
   await expect(cyRow).not.toContainText("· disabled");
+});
+
+test("an owner who isn't an admin makes and revokes their agent's tokens, on a page of what they own", async ({ browser, request }) => {
+  // ada adds scout, an agent cy owns.
+  const ada = await someoneElse(browser);
+  await ada.goto(EDITOR);
+  await fill(ada, "name", "ada");
+  await fill(ada, "password", PASSWORD);
+  await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
+  await gotoPage(ada, "people");
+  await ada.getByLabel("new agent's or service's name").fill("scout");
+  await ada.getByLabel("new agent's or service's kind").selectOption("agent");
+  await ada.getByLabel("new agent's or service's owner").selectOption("cy");
+  await ada.getByRole("button", { name: "add agent" }).click();
+  await expect(ada.getByLabel("scout's owner")).toHaveValue("cy");
+
+  // cy, a viewer, has no host's pages but what she owns: scout, and none of ada's.
+  const cy = await someoneElse(browser);
+  await cy.goto(EDITOR);
+  await fill(cy, "name", "cy");
+  await fill(cy, "password", PASSWORD);
+  await cy.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
+  await expect(navLink(cy, "People and access")).toHaveCount(0);
+  await navLink(cy, "Your agents and services").click();
+  const page = cy.locator('[aria-label="Your agents and services"]');
+  await expect(page).toContainText("scout has no token: it can't sign in yet");
+  for (const theirs of ["claude", "ci"]) await expect(page.getByText(theirs, { exact: true })).toHaveCount(0);
+
+  // She makes it a token, shown once, which signs in as scout; revoked, it doesn't.
+  await cy.getByRole("button", { name: "make a token for scout" }).click();
+  await cy.locator('[aria-modal="true"] input').fill("her laptop");
+  await cy.locator('[aria-modal="true"]').getByRole("button", { name: "make token" }).click();
+  const asScout = { Authorization: `Bearer ${await cy.getByLabel("new API token").inputValue()}` };
+  await cy.getByRole("button", { name: "done" }).click();
+  await expect(cy.getByLabel("new API token")).toHaveCount(0);
+  expect(await (await request.get(`${SERVER}/auth/me`, { headers: asScout })).json()).toMatchObject({ name: "scout", kind: "agent", owner: "cy" });
+  await expect(page).toContainText("a token of scout, made by cy");
+  await cy.getByRole("button", { name: "revoke scout's token her laptop" }).click();
+  await cy.locator('[aria-modal="true"]').getByRole("button", { name: "Revoke" }).click();
+  await expect(page).toContainText("scout has no token: it can't sign in yet");
+  expect((await request.get(`${SERVER}/auth/me`, { headers: asScout })).status()).toBe(401);
+  // ada's People and access says who made and revoked it.
+  await ada.reload();
+  await expect(ada.getByText(/revoked a token of scout · by cy/)).toBeVisible();
 });
 
 test("signing in through the identity provider an admin set, matched by email", async ({ browser }) => {

@@ -93,7 +93,7 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, ta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { Shell } from "./ui/Shell";
-import { PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
+import { OwnedPage, PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
 import { OverviewPage } from "./OverviewPage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
@@ -823,7 +823,9 @@ function Canvas({
             ["People and access", { kind: "people", tab: null }],
             ["Policy", { kind: "policy" }],
           ] as [string, Route][])
-        : []),
+        : me.kind === "person"
+          ? ([["Your agents and services", { kind: "people", tab: null }]] as [string, Route][])
+          : []),
       ["Docs", { kind: "docs", page: null, anchor: null }],
       ["Welcome", { kind: "start" }],
     ];
@@ -845,7 +847,7 @@ function Canvas({
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, editing, flowName, deployments, savedFlows, me.role, start.prefs, approvals.queue]);
+  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue]);
   // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
   const askTextOpening = (ask: TextAsk) => {
     if (askText(ask)) return;
@@ -1346,7 +1348,9 @@ function Canvas({
             />
           )}
           {/* The host's pages, an admin's (HostPages.tsx). */}
-          {(shown === "resources" || shown === "people" || shown === "policy") && me.role !== "admin" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
+          {(shown === "resources" || (shown === "people" && me.kind !== "person") || shown === "policy") && me.role !== "admin" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
+          {/* A person who isn't an admin: the agents and services they own. */}
+          {shown === "people" && me.role !== "admin" && me.kind === "person" && <OwnedPage />}
           {shown === "resources" && route.kind === "resources" && me.role === "admin" && (
             <ResourcesPage tab={route.tab} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}

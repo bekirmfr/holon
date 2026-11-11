@@ -601,7 +601,7 @@ grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up
 ## People and sign-in
 
 Admins only, as the editor's People and access; an agent's or a service's owner also makes and
-revokes its tokens.
+revokes its tokens (in the editor, *Your agents and services*).
 
 ### `holon people`
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **An owner who isn't an admin has a page of what they own.** People and access is an admin's;
+  anyone else signed in now has **Your agents and services** (7) in its place: the agents and
+  services they own, with their tokens, which they make (each shown once) and revoke there. An
+  admin still adds one and names its owner. The server lists what the caller owns at
+  `GET /auth/owned`.
 - **`holon mcp` signs in as an agent, never as you, and `X-Holon-Role` is gone.** On the holon
   serve you run, `holon mcp` (or `holon mcp setup`, when the server is running) makes your agent the
   first time, `<your user>-agent` owned by you, through the run file, and keeps its token in

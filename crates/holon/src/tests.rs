@@ -4966,6 +4966,61 @@ fn the_gate_and_the_router_read_every_path_alike() {
     }
 }
 
+/// What `/auth/owned` lists is what its caller makes and revokes tokens for. Each caller (an admin,
+/// an editor, a viewer, the run file's user, an agent, a service) is listed exactly the agents and
+/// services they own, each with its tokens; whoever isn't an admin lists, makes and revokes the
+/// tokens of those and is refused every other's, an admin every one's.
+#[test]
+fn what_one_owns_is_listed_and_its_tokens_are_theirs_to_make() {
+    use crate::accounts::Kind;
+    use access::Role;
+    use std::collections::BTreeSet;
+    let mut state = test_state();
+    let People { ada, claude } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy, local) = (person("bob", Role::Editor), person("cy", Role::Viewer), accounts.new_local("bma"));
+    // claude is ada's (with_people); bob owns two, cy one, the OS user its agent.
+    for (name, kind, role, owner) in [("ci", Kind::Service, Role::Editor, "bob"), ("nightly", Kind::Service, Role::Viewer, "bob"), ("scout", Kind::Agent, Role::Agent, "cy"), ("bma-agent", Kind::Agent, Role::Agent, "bma")] {
+        accounts.add(name, kind, role, owner, "ada").unwrap();
+        accounts.create_token(name, "first", "ada").unwrap();
+    }
+    let ci = accounts.create_token("ci", "a script", "bob").unwrap().0;
+    let all = ["claude", "ci", "nightly", "scout", "bma-agent"];
+    let callers = [("ada", &ada, true), ("bob", &bob, false), ("cy", &cy, false), ("bma", &local, true), ("claude", &claude, false), ("ci", &ci, false)];
+    let ask = |token: &str, method: &str, url: &str, body: serde_json::Value| {
+        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() };
+        let answer = route(&state, &req_as(token, method, url, bytes));
+        let status = answer.status_code;
+        (status, serde_json::from_slice::<serde_json::Value>(&body_bytes(answer)).unwrap_or_default())
+    };
+    let ids = |name: &str| accounts.tokens(name).iter().map(|t| t.id.clone()).collect::<BTreeSet<_>>();
+    for (me, token, admin) in callers {
+        let owns: BTreeSet<&str> = all.iter().copied().filter(|n| accounts.principal(n).and_then(|p| p.owner).as_deref() == Some(me)).collect();
+        let (status, listed) = ask(token, "GET", "/auth/owned", serde_json::Value::Null);
+        assert_eq!(status, 200, "{me}: {listed}");
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.iter().map(|p| p["name"].as_str().unwrap()).collect::<BTreeSet<_>>(), owns, "{me} is listed what they own");
+        for p in listed {
+            let shown = p["tokens"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<BTreeSet<_>>();
+            assert_eq!(shown, ids(p["name"].as_str().unwrap()), "{me}: {p}");
+        }
+        for name in all {
+            let may = admin || owns.contains(name);
+            let before = ids(name);
+            let tokens = format!("/people/{name}/tokens");
+            let (listing, _) = ask(token, "GET", &tokens, serde_json::Value::Null);
+            let (making, made) = ask(token, "POST", &tokens, serde_json::json!({ "label": format!("by {me}") }));
+            assert_eq!((listing, making), if may { (200, 200) } else { (403, 403) }, "{me}, {name}'s tokens: {made}");
+            // What they made they revoke; one they didn't, they may not.
+            let id = made["entry"]["id"].as_str().map(String::from).unwrap_or_else(|| before.first().unwrap().clone());
+            let (revoking, _) = ask(token, "DELETE", &format!("{tokens}/{id}"), serde_json::Value::Null);
+            assert_eq!(revoking, if may { 204 } else { 403 }, "{me} revokes {name}'s token");
+            assert_eq!(ids(name), before, "{me}: {name}'s tokens are as they were");
+        }
+    }
+}
+
 /// A key a flow taints is tainted wherever a run has it, whatever started the run: in a request (a
 /// header, the query as sent and as read, a path parameter, a JSON body at depth, a number held as
 /// a number), in what a call sends and what the far side answers (and the cookie it sets), in a

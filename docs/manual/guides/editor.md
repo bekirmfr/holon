@@ -19,8 +19,8 @@ password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is besi
 
 The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
 **Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
-for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8); and
-**Getting started** and **Docs**. Under them, the host card says which server this is, whether its
+for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8), and
+for anyone else **Your agents and services** (7); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
 run log is intact, how many runs it holds and the newest head, as of the time it shows (read every
 minute; its refresh button reads it now). The version the server runs is beside the name, top left. The top bar
 says where you are (each step back a link), and has the search (**Ctrl K** or **/**: a page, a
@@ -242,7 +242,9 @@ An admin's, in the nav's second group:
   password, good once, for seven days; change a role, reset a password, disable, or remove);
   **agents and services**, each with a role and an owner, and their tokens, each shown once
   (for agents on other machines, scripts and CI); and signing in through an identity provider
-  (OpenID Connect).
+  (OpenID Connect). Someone who isn't an admin has **Your agents and services** instead: the
+  agents and services they own, whose tokens they make (each shown once) and revoke; an admin adds
+  one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
   grants, whether agents may propose versions, and each limit's default and ceiling.
 

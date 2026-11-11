@@ -210,7 +210,8 @@ can't be guessed.
   agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and
   services sign in with tokens of their own (People and access, or `holon people token`), sent as
   `Authorization: Bearer <token>`, and act as themselves, by their name. Each has an **owner**, a
-  person, who makes and revokes its tokens, as an admin may. Tokens are shown once and kept only
+  person, who makes and revokes its tokens, as an admin may (an owner who isn't an admin, in the
+  editor's *Your agents and services*). Tokens are shown once and kept only
   as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
   decides an approval. A person who still owns an agent or a service can't be removed until it has
   another owner. An accounts file from before principals keeps its people; its API tokens, which
