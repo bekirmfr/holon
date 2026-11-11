@@ -10494,40 +10494,11 @@ fn one_deployments_log_doesnt_hold_up_another() {
     });
 }
 
-/// The run logs and event logs written since the last sync are synced (recorder.rs's
-/// `sync_logs`); a log whose file can't be synced keeps its flag and says why, and is synced once
-/// it can be.
-#[test]
-fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
-    let mut state = test_state();
-    state.deployments_path = unique_temp_path("sync-logs").into();
-    // Lazy: its runs are left to the syncer (a strict one syncs before it answers).
-    let slug = deploy_plain_text(&state, "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`, { log: \"lazy\" })\n");
-    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
-    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
-    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
-    assert_eq!(log.with(Log::take_dirty), None, "the run log is synced");
-    assert_eq!(state.deployments.lock().unwrap().get_mut(&slug).unwrap().events.take_dirty(), None, "and its events");
-
-    // A file that can't be opened to sync: a folder where the log was.
-    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Bo", vec![])).status, 200);
-    let file = recorder::file_for(&state.deployments_path, &slug).unwrap();
-    std::fs::remove_file(&file).unwrap();
-    std::fs::create_dir(&file).unwrap();
-    let failed = recorder::sync_logs(&state.deployments).unwrap_err();
-    assert!(failed.contains("could not sync the run log"), "{failed}");
-    assert!(recorder::sync_logs(&state.deployments).is_err(), "its flag was put back: tried again");
-    std::fs::remove_dir(&file).unwrap();
-    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
-    assert_eq!(log.with(Log::take_dirty), None);
-    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
-    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
-}
-
 /// A run is recorded strictly unless its handler says otherwise (docs/L4s/request-path-L4.md,
 /// C2 e and C5): a strict request is answered once its entry is on disk, and a lazy one, a lazy
-/// action and a request no route took are left to the syncer, which syncs them within a second.
-/// Strict runs at once share syncs: none takes more than one.
+/// action and a request no route took are left to the syncer, which syncs them within a second,
+/// with the deployment's events. Strict runs at once share syncs: none takes more than one.
+/// (What a run is told when a write or a sync fails is recorder.rs's model's.)
 #[test]
 fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer() {
     let mut state = test_state();
@@ -10539,6 +10510,11 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
     let synced = || log.with(|l| l.take_dirty().inspect(|_| l.still_dirty())).is_none();
+    let events_synced = || {
+        let mut table = state.deployments.lock().unwrap();
+        let events = &mut table.get_mut(&slug).unwrap().events;
+        events.take_dirty().inspect(|_| events.still_dirty()).is_none()
+    };
     let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, false, &[]).status;
 
     // Strict: a read, and a write.
@@ -10556,8 +10532,10 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert_eq!(call("GET", "/nowhere", ""), 404);
     assert_eq!(call("DELETE", "/health", ""), 405);
     assert_eq!((log.syncs(), synced()), (3, false), "a lazy action, and requests no route took, likewise");
+    assert!(!events_synced(), "its events (its deploy's) are the syncer's too");
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
     assert_eq!((log.syncs(), synced()), (4, true), "one sync for all four");
+    assert!(events_synced(), "and its events with them");
     assert_eq!(log.next_seq(), 7, "every run is in the log");
 
     // Many strict runs at once: each on disk when it answers, never more than one sync each.

@@ -120,8 +120,9 @@ A slower path that is still right would pass every test above; these fail instea
 - `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`: strict reads,
   writes and actions sync before answering; lazy ones and 404s add no sync; 32 strict runs at once
   take at most one sync each.
-- `one_sync_covers_every_entry_written_before_it`, `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty`,
-  `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`.
+- `one_sync_covers_every_entry_written_before_it`, `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`;
+  `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model with failed
+  writes and failed syncs) holds what a run is told.
 - `a_run_writes_only_its_state_head_and_only_when_it_changed_the_state`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`.
 - `corrupt_persistence_file_is_an_error_not_an_empty_table` (a corrupt file once loaded as empty,

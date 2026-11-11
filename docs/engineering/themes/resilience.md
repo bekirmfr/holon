@@ -32,10 +32,11 @@ synced first; `lost`, read without the log's lock, keeps the usual case as cheap
   more were lost would be told it is kept, which no load reaches (a run asks as soon as it wrote).
 - **Tests.** `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`,
   `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model: entries
-  written, some writes failing, asked for in drawn orders and by runs side by side; each is told
-  what its own write did, and the file holds the lines told kept and no other),
-  `one_sync_covers_every_entry_written_before_it` (the economy of it: one sync a batch),
-  `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty`.
+  written, some writes failing, asked for in drawn orders between the syncer's ticks, some syncs
+  failing, and by runs side by side; the cell syncs what the model says, a failed sync leaving
+  the file to sync again, each run is told what its own write and sync did, and the file holds
+  the lines told kept, and told unsynced, and no other; it replaced a test of a sync failed by
+  hand), `one_sync_covers_every_entry_written_before_it` (the economy of it: one sync a batch).
 
 ### G2. A deployment can't slow another
 

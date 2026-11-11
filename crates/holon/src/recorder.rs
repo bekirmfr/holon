@@ -521,6 +521,9 @@ pub struct Log {
     /// A test's: the next lines' writes fail, as a full disk fails them.
     #[cfg(test)]
     fail_writes: bool,
+    /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
+    #[cfg(test)]
+    fail_syncs: bool,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
@@ -1085,7 +1088,10 @@ impl LogCell {
         let (path, upto) = self.with(|log| (log.take_dirty(), log.next_seq));
         if let Some(path) = path {
             self.syncs.fetch_add(1, Ordering::Relaxed);
-            if let Err(e) = sync_file(&path) {
+            let done = sync_file(&path);
+            #[cfg(test)]
+            let done = if self.with(|log| log.fail_syncs) { Err(std::io::Error::other("a sync a test failed")) } else { done };
+            if let Err(e) = done {
                 self.with(Log::still_dirty);
                 return Err(format!("could not sync the run log {}: {e}", path.display()));
             }
@@ -1260,6 +1266,8 @@ impl Log {
             unkept: VecDeque::new(),
             #[cfg(test)]
             fail_writes: false,
+            #[cfg(test)]
+            fail_syncs: false,
             gone: Vec::new(),
             defer_cuts: false,
             cut_wanted: false,
@@ -2911,9 +2919,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **Guards:** a run is told its record is on disk exactly when its line is in the file,
-    /// whichever writes fail and in whatever order the runs that share a sync ask
-    /// (docs/engineering/themes/resilience.md, G1).
+    /// **Guards:** a run is told its record is on disk exactly when its line is in the file and a
+    /// sync since went through, whichever writes and syncs fail and in whatever order the runs
+    /// that share a sync and the syncer ask (docs/engineering/themes/resilience.md, G1); a sync
+    /// that failed leaves the file to be synced again.
     ///
     /// **Why:** runs share syncs. Whether a sync has passed a run's entry and whether that entry's
     /// line was ever written are two facts, and a run needs both; they were once taken for one,
@@ -2922,12 +2931,15 @@ mod tests {
     ///
     /// **If it fails:** a run answers its caller as done with nothing on record, the one thing a
     /// strict run promises not to do (a payout made and no line of it); or it answers 500 for a
-    /// run that is on record, and its caller sends it again.
+    /// run that is on record, and its caller sends it again; or a log whose sync failed is never
+    /// synced, and a power loss takes runs already answered.
     ///
     /// A model, not a case: entries are written, some of their writes failing (`fail_writes`, as
-    /// a full disk fails one), and asked for in an order that is drawn, then by runs side by
-    /// side. Each is told what its own write did, and at the end the file holds the lines of
-    /// those told kept and no other.
+    /// a full disk fails one), and asked for in an order that is drawn, between the syncer's
+    /// ticks, some syncs failing (`fail_syncs`); then by runs side by side. The model says what
+    /// the cell has synced and how many syncs it made; each run is told what its own write and
+    /// sync did, and at the end the file holds the lines of those told kept, and of those told
+    /// their sync failed, and no other.
     #[test]
     fn a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file() {
         struct Rng(u64);
@@ -2951,42 +2963,102 @@ mod tests {
         let on_disk = |file: &Path| -> BTreeSet<u64> {
             std::fs::read_to_string(file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["seq"].as_u64().unwrap()).collect()
         };
+        // A sync, the run's or the syncer's, its file's failing when `fail`.
+        let sync = |cell: &LogCell, fail: bool, ask: &dyn Fn(&LogCell) -> Result<(), String>| {
+            cell.with(|log| log.fail_syncs = fail);
+            let told = ask(cell);
+            cell.with(|log| log.fail_syncs = false);
+            told
+        };
+
+        // What the cell should have done, as the model has it: every entry before `synced` on
+        // disk, whether lines were written since the last sync that went through, the syncs made.
+        #[derive(Default)]
+        struct Model {
+            synced: u64,
+            dirty: bool,
+            syncs: u64,
+            /// A sync failed, and no line was written since: only its flag says the file is to sync.
+            after_failure: bool,
+            failed: usize,
+            again: usize,
+        }
+        impl Model {
+            /// A sync asked for, `next` the seq the next entry gets: whether it went through.
+            fn sync(&mut self, next: u64, fail: bool) -> bool {
+                if self.dirty {
+                    self.syncs += 1;
+                    self.again += usize::from(self.after_failure);
+                    if fail {
+                        (self.after_failure, self.failed) = (true, self.failed + 1);
+                        return false;
+                    }
+                }
+                (self.dirty, self.after_failure, self.synced) = (false, false, next);
+                true
+            }
+        }
 
         // One after another, in every order a schedule draws: written, and asked for later, or at
-        // once, or after others written since have been asked for.
+        // once, or after others written since have been asked for; the syncer's ticks between.
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-        let (mut lost, mut covered_first) = (0, 0);
+        let (mut lost, mut covered_first, mut syncs_failed, mut again) = (0, 0, 0, 0);
         for round in 0..60 {
             let dir = temp_dir(&format!("kept-{round}"));
             let file = dir.join("slug.jsonl");
             let cell = LogCell::new(Log::open_keeping(Some(file.clone()), 100_000));
-            let (mut waiting, mut kept): (Vec<(u64, bool)>, BTreeSet<u64>) = (Vec::new(), BTreeSet::new());
-            let mut ask = |cell: &LogCell, (seq, failed): (u64, bool), kept: &mut BTreeSet<u64>| {
+            let mut model = Model { synced: cell.synced(), ..Model::default() };
+            let (mut waiting, mut kept, mut unsynced): (Vec<(u64, bool)>, BTreeSet<u64>, BTreeSet<u64>) = (Vec::new(), BTreeSet::new(), BTreeSet::new());
+            let mut ask = |cell: &LogCell, model: &mut Model, (seq, failed): (u64, bool), fail: bool| {
                 // The order that was wrong: its line lost, and a sync already past its seq.
                 covered_first += usize::from(failed && cell.synced() > seq);
-                let told = cell.sync_through(seq);
-                assert_eq!(told.is_err(), failed, "round {round}, entry {seq}: told {told:?}");
-                if !failed {
-                    kept.insert(seq);
+                let told = sync(cell, fail, &|cell| cell.sync_through(seq));
+                // A sync of its own unless one since it was written went through; then its line.
+                let synced = model.synced > seq || model.sync(cell.next_seq(), fail);
+                let want = if !synced { Some("could not sync") } else if failed { Some("couldn't be written") } else { None };
+                match (&told, want) {
+                    (Ok(()), None) => {
+                        kept.insert(seq);
+                    }
+                    // Its line in the file, though the sync that would have covered it failed.
+                    (Err(why), Some(reason)) if why.contains(reason) => {
+                        if !failed {
+                            unsynced.insert(seq);
+                        }
+                    }
+                    _ => panic!("round {round}, entry {seq}: told {told:?}, the model says {want:?}"),
                 }
+                assert_eq!((cell.synced(), cell.syncs()), (model.synced, model.syncs), "round {round}, entry {seq}: synced through, and syncs made");
             };
             for _ in 0..120 {
                 if waiting.is_empty() || rng.below(3) > 0 {
                     let fail = rng.below(5) == 0;
                     lost += usize::from(fail);
                     waiting.push((write(&cell, fail), fail));
+                    // A line written leaves its file to be synced; a write that failed wrote none.
+                    if !fail {
+                        (model.dirty, model.after_failure) = (true, false);
+                    }
+                } else if rng.below(4) == 0 {
+                    let fail = rng.below(3) == 0;
+                    let told = sync(&cell, fail, &|cell| cell.sync());
+                    assert_eq!(told.is_ok(), model.sync(cell.next_seq(), fail), "round {round}, the syncer: told {told:?}");
+                    assert_eq!((cell.synced(), cell.syncs()), (model.synced, model.syncs), "round {round}, the syncer: synced through, and syncs made");
                 } else {
                     let next = waiting.swap_remove(rng.below(waiting.len()));
-                    ask(&cell, next, &mut kept);
+                    ask(&cell, &mut model, next, rng.below(6) == 0);
                 }
             }
             for next in std::mem::take(&mut waiting) {
-                ask(&cell, next, &mut kept);
+                ask(&cell, &mut model, next, rng.below(6) == 0);
             }
-            assert_eq!(on_disk(&file), kept, "round {round}: the file holds the lines told kept, and no other");
+            let told: BTreeSet<u64> = kept.union(&unsynced).copied().collect();
+            assert_eq!(on_disk(&file), told, "round {round}: the file holds the lines told kept, and told unsynced, and no other");
+            (syncs_failed, again) = (syncs_failed + model.failed, again + model.again);
             let _ = std::fs::remove_dir_all(&dir);
         }
         assert!(lost > 500 && covered_first > 100, "{lost} writes failed, {covered_first} of them asked for after a sync had passed them");
+        assert!(syncs_failed > 100 && again > 20, "{syncs_failed} syncs failed, {again} times the next sync had only the failure's flag to go on");
 
         // Side by side: each run writes and asks at once, as a strict run does.
         let dir = temp_dir("kept-together");
