@@ -1345,6 +1345,7 @@ fn entry_with(
     LogEntry {
         seq: 0,
         prev: String::new(),
+        lost_since: None,
         session: 0,
         at_ms: started.0,
         duration_ms: started.1.elapsed().as_secs_f64() * 1000.0,

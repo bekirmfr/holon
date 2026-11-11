@@ -6174,6 +6174,90 @@ fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
     assert_eq!(report.states.unwrap().breaks, vec![(3, "it began from a state the run before it (run 2) didn't leave, nor a run beside it".to_string())]);
 }
 
+/// **Guards:** `holon verify` tells a run the server couldn't write (a full disk) from one
+/// removed: the lost one reads as a run not in the file, which the line after it says, the chain
+/// unbroken, the export passing, and the run after it unchecked where it began (it may have begun
+/// from what the lost run left), not a break; a run removed reads as a break, or, the lines after
+/// it chained again, as runs MISSING that no line says were lost; and one removed, the rest chained
+/// again saying it lost, reads as a loss, which only the witness's head, then not found, tells.
+///
+/// **Why:** a line lost and a line removed leave the same hole. What tells them apart is that the
+/// server says each it lost in the next line, which the witness holds, and numbers runs one after
+/// another; each row is a rewrite someone who can write the file could make. The recorder's model
+/// test holds the chain and the runs said lost over every order of failures; what a lost run does
+/// to the state check only a deployment with state shows.
+///
+/// **If it fails:** a full disk reads as the log, or its state, changed outside holon; or a payout's
+/// line removed and the rest chained again passes as a disk that was full, or passes unremarked.
+#[test]
+fn verify_tells_a_run_the_server_lost_from_one_removed() {
+    let (host, _) = counting_server();
+    // Its logs in files, which a write can fail to reach.
+    let state = test_state_at(unique_temp_path("lost-line").into());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let fail = |on: bool| state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_writes = on);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
+    // Run 1 changes the state, and its line can't be written.
+    fail(true);
+    data_call(&state, &slug, "PUT", "/set/k2", "q");
+    fail(false);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k3", "r").0, 200);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k4", "s").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok(), "{text}");
+    assert_eq!((report.runs, &report.breaks, &report.lost), (3, &vec![], &vec![(1, 1)]), "{text}");
+    assert!(text.contains("run 1 isn't in the file: the server couldn't write its line, and the line after says so"), "{text}");
+    let s = report.states.unwrap();
+    let why = "where it began: a run between it and the run before it here, whose line the server couldn't write, may have left it";
+    assert_eq!((&s.breaks, s.unchecked.get(why)), (&vec![], Some(&vec![2])), "{text}");
+
+    // The lines: run 0's, run 2's (saying run 1 was lost), run 3's. Each rewrite keeps run 0's line
+    // as it is; `chained` writes the rest after it, each `prev` the line before.
+    let lines = export.lines.clone();
+    let value = |i: usize| -> serde_json::Value { serde_json::from_str(&lines[i]).unwrap() };
+    let chained = |rest: Vec<serde_json::Value>| {
+        let mut out = vec![lines[0].clone()];
+        for mut v in rest {
+            v["prev"] = recorder::line_hash(out.last().unwrap()).into();
+            out.push(serde_json::to_string(&v).unwrap());
+        }
+        out
+    };
+    let saying = |mut v: serde_json::Value, from: Option<u64>| {
+        match from {
+            Some(from) => v["lost_since"] = from.into(),
+            None => drop(v.as_object_mut().unwrap().remove("lost_since")),
+        }
+        v
+    };
+    // Each: what was done, the lines, then the breaks, the runs missing, the runs said lost, and
+    // whether it passes without the witness's head and with it.
+    type Row = (&'static str, Vec<String>, Vec<u64>, Vec<(u64, u64)>, Vec<(u64, u64)>, bool, bool);
+    let rows: Vec<Row> = vec![
+        ("as the server wrote it", lines.clone(), vec![], vec![], vec![(1, 1)], true, true),
+        ("the line saying run 1 was lost removed", vec![lines[0].clone(), lines[2].clone()], vec![3], vec![(1, 2)], vec![], false, false),
+        ("run 2 removed, the rest chained again", chained(vec![value(2)]), vec![], vec![(1, 2)], vec![], false, false),
+        ("run 2 removed, the rest chained again saying runs 1 and 2 were lost", chained(vec![saying(value(2), Some(1))]), vec![], vec![], vec![(1, 2)], true, false),
+        ("run 1's loss unsaid, the rest chained again", chained(vec![saying(value(1), None), value(2)]), vec![], vec![(1, 1)], vec![], false, false),
+    ];
+    let witness = export.head.clone();
+    for (what, lines, breaks, gaps, lost, passes, witnessed) in rows {
+        let head = recorder::line_hash(lines.last().unwrap());
+        let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let report = verify::check(&copy, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        assert_eq!((&report.breaks, &report.gaps, &report.lost, report.ok()), (&breaks, &gaps, &lost, passes), "{what}:\n{text}");
+        if !gaps.is_empty() {
+            assert!(text.contains("MISSING: not in the file, and no line says the server couldn't write"), "{what}:\n{text}");
+        }
+        let report = verify::check(&copy, Some(&witness), &BTreeMap::new());
+        assert_eq!(report.ok(), witnessed, "{what}, with the witness's head:\n{}", verify::describe(&report, Some(&witness)));
+    }
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]

@@ -503,7 +503,11 @@ entries are open.
 4. **A waiting run goes on while its deployment is paused or stopped.** Meant?
 5. **`a_resumed_run_resumed_again_after_its_commit_applies_once` pins an outbound call going
    twice**, where `approved-payout` says nothing is paid twice.
-6. **A write that fails still advances the chain's head.** Meant?
+6. ~~**A write that fails still advances the chain's head.** Meant?~~ *Decided and done
+   (2026-11-11): the chain stays on the last line written, its head goes to the witness only
+   then, and the next line says from which run on the lines before it were lost (`lost_since`):
+   `verify` reads them as lost, not as a break. Lines lost just before a restart are said by
+   nothing, as a crash's are.*
 7. **An agent's version that drops an `await approval(…)`** appears to deploy at once.
 8. **Tests that need what CI has and a laptop hasn't**: engine tests that pass having checked
    nothing; end-to-end tests that call httpbin.org.

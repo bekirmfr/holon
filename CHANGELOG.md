@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A run whose log line couldn't be written reads as lost, not as the log changed.** A line the
+  server couldn't write (a full disk) still moved the chain on, and its head went to the witness:
+  the next line named one that wasn't in the file, so `holon verify` said the chain was BROKEN
+  there, "changed, removed or inserted outside holon", the witness's head was NOT FOUND, and the
+  run after it failed the state check. Now the chain stays on the last line written, its head goes
+  to the witness only once it is in the file, and the next line says from which run on the lines
+  before it were lost (`lost_since`): `verify` lists those runs as not in the file, the chain
+  whole, and doesn't check where the run after them began. Lines lost just before a restart are
+  said by nothing, as a crash's are. And as the server says each run it lost, `verify` now fails
+  an export with runs missing that no line says were lost (`runs 5 to 7 MISSING`): runs removed
+  and the lines after them chained again, which it passed before.
 - **A log line cut short partway doesn't take the next with it.** A write to a flow's log that
   failed partway (a full disk) left part of its line, and the next line was written on to the end
   of it, unreadable: a run told it was on record had no record. Now the next line starts a line of
