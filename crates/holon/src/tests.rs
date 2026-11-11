@@ -2266,7 +2266,10 @@ export const pay = action(async (order) => {
 #[test]
 fn only_a_person_decides_an_approval() {
     use crate::accounts::Kind;
-    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
+    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| match (name, kind, role) {
+        (Some(name), Some(kind), Some(role)) => access::Caller::holding(name, kind, role),
+        _ => access::Caller::default(),
+    };
     let decider = |c: access::Caller| durable::decider(&c, "d").map_err(|refusal| refusal.0);
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));

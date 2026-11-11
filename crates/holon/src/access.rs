@@ -9,12 +9,13 @@
 //! preflight, the health check, and signing in itself, `/auth/…`: the server's state, setup,
 //! sign-in, invite links, where to sign in through a provider); that its caller is signed in
 //! (their own account: their password, their preferences, signing out); or that `can` lets its
-//! caller do an action, as their role holds it (can.rs says what each role holds). A path no route
+//! caller do an action, as a role bound to them holds it (bindings.rs says what is bound to whom,
+//! can.rs what each role holds). A path no route
 //! has is answered 404, once its caller is known. A server without accounts yet answers nothing
 //! but what is open until its first admin is set up (with the code it prints).
 //!
 //! An agent is a principal of kind agent, signing in with its own token, never a person's: what it
-//! may do is its role's, and what it did is under its own name. `holon mcp` signs in as one (on a
+//! may do is what the roles bound to it hold, and what it did is under its own name. `holon mcp` signs in as one (on a
 //! server this user runs, one it makes for them: mcphosts.rs).
 //!
 //! The OS user running the server signs in through its run file (local.rs): a token made for
@@ -28,11 +29,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::accounts::{Accounts, Kind, Who};
+use crate::bindings::Held;
 use crate::can::{self, Route, Rule};
 use crate::http::err;
 use rouille::{Request, Response};
 
-/// What an account or token may do: the built-in role it holds (can.rs).
+/// A built-in role (can.rs), as a binding holds it (bindings.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Role {
@@ -42,14 +44,41 @@ pub(crate) enum Role {
     Agent,
 }
 
+impl Role {
+    /// As the access document and its versions write it: `editor`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Role::Viewer => "viewer",
+            Role::Editor => "editor",
+            Role::Admin => "admin",
+            Role::Agent => "agent",
+        }
+    }
+}
+
 /// Who a request comes from, once let through: a principal's name (or the OS user's,
-/// `local:<user>`), its kind and its role; no one for what is open (signing in, the health
-/// check), and on a server without accounts (the tests).
+/// `local:<user>`), its kind and what it holds (bindings.rs); no one for what is open (signing
+/// in, the health check), and on a server without accounts (the tests), who holds nothing at all
+/// and is let do everything (`holds` none).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
     pub(crate) kind: Option<Kind>,
-    pub(crate) role: Option<Role>,
+    pub(crate) holds: Option<Arc<[Held]>>,
+}
+
+impl Caller {
+    /// The widest built-in role it holds on the host: what the editor shows it as.
+    pub(crate) fn host_role(&self) -> Option<Role> {
+        crate::bindings::host_role(self.holds.as_deref().unwrap_or_default())
+    }
+
+    /// `name`, of `kind`, holding `role` on the host (the tests).
+    #[cfg(test)]
+    pub(crate) fn holding(name: &str, kind: Kind, role: Role) -> Caller {
+        let held = Held { role, scope: crate::bindings::Scope::Host };
+        Caller { name: Some(name.into()), kind: Some(kind), holds: Some(Arc::from([held])) }
+    }
 }
 
 /// The control plane's access settings.
@@ -85,17 +114,22 @@ impl Access {
         Ok(caller)
     }
 
-    /// Who `request` comes from, or why they aren't let in: with no accounts (the tests' servers),
-    /// no one, whoever asks; the OS user who runs the server, through its run file (local.rs), its
-    /// admin whether it is set up or not; or whoever its session or token is.
+    /// Who `request` comes from, and what they hold, or why they aren't let in: with no accounts
+    /// (the tests' servers), no one, whoever asks; the OS user who runs the server, through its
+    /// run file (local.rs), admin on the host whether it is set up or not; or whoever its session
+    /// or token is, holding what is bound to them.
     fn authenticate(&self, request: &Request) -> Result<Caller, Response> {
         let Some(accounts) = &self.accounts else { return Ok(Caller::default()) };
         let presented = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
-        let who = match accounts.local(presented) {
-            Some(who) => who,
-            None => self.signed_in(accounts, presented)?,
+        let (who, holds) = match accounts.local(presented) {
+            Some(who) => (who, Held::admin()),
+            None => {
+                let who = self.signed_in(accounts, presented)?;
+                let holds = accounts.holding(&who.name);
+                (who, holds)
+            }
         };
-        Ok(Caller { name: Some(who.name), kind: Some(who.kind), role: Some(who.role) })
+        Ok(Caller { name: Some(who.name), kind: Some(who.kind), holds: Some(holds) })
     }
 
     /// Who a session, API token or provider's sign-in is, or why it isn't let in.
@@ -192,7 +226,7 @@ mod tests {
         accounts.set_disabled("ci", true).unwrap();
         assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
         accounts.set_disabled("ci", false).unwrap();
-        accounts.remove("ci").unwrap();
+        accounts.remove("ci", "ada").unwrap();
         assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
     }
 
@@ -208,7 +242,10 @@ mod tests {
         let said = |access: &Access, method: &str, url: &str, bearer: &str, header: Option<&str>| {
             let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {bearer}"))];
             headers.extend(header.map(|h| ("X-Holon-Role".to_string(), h.to_string())));
-            access.admit(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.kind, c.role)).map_err(|r| r.status_code)
+            access.admit(&Request::fake_http(method, url, headers, vec![])).map(|c| {
+                let role = c.host_role();
+                (c.name, c.kind, role)
+            }).map_err(|r| r.status_code)
         };
         let routes = [("GET", "/flows"), ("POST", "/deploy"), ("POST", "/deployments/a/grant"), ("POST", "/deployments/a/runs/r/decide"), ("POST", "/deployments/a/secrets/k"), ("GET", "/people")];
         for bearer in [&ada, &bob, &cy, &claude, &local] {

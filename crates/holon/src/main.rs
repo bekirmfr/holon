@@ -34,6 +34,7 @@ mod replaycmd;
 mod activity;
 mod arrivals;
 mod auth;
+mod bindings;
 mod blobs;
 mod calls;
 mod can;
@@ -1021,7 +1022,12 @@ fn serve(args: Vec<String>) {
         &secrets_key,
     );
     own.extend(local::holon_home());
-    let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
+    // The access document beside the accounts (bindings.rs), and its versions.
+    if accounts_arg != ":memory:" {
+        let access = bindings::beside(Path::new(&accounts_arg));
+        own.extend([bindings::history(&access), access]);
+    }
+    let folders =folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
     // The databases an admin bound (databases.rs), beside them: a Postgres or MySQL one's
     // connection is fetched from the environment and dotenv file a secret's source is.
     let db_sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));

@@ -122,6 +122,9 @@ What was done stays under the name that did it, after any of these.
   changed its grant or its secrets, among its runs.
 - **Approvals**: who proposed a version and why, and who approved or declined it; for a run waiting
   at an approval, who has approved it so far.
+- **Who held which role**: each change to the roles bound to people, agents and services is a
+  version kept in `access.versions.jsonl` in the data folder, with who made it, when and what it
+  changed ([the server reference](../reference/server.md#accounts-and-roles)).
 
 ## Signing in through your identity provider
 

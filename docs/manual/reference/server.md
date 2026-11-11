@@ -28,6 +28,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
+| `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
 | `folders.json` | the named folders bound | `--folders` |
 | `databases.json` | the named databases bound | `--databases` |
@@ -200,6 +201,14 @@ can't be guessed.
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).
 
+A role is bound to a principal on the server when it is invited or added with one, and in place
+of it when it is changed. What is bound is kept apart from the accounts, in `access.json` beside
+them (`.holon-access.json` beside `.holon-accounts.json`), and each change is a new version, kept
+for good in `access.versions.jsonl` with who made it, when and what it changed: "bound editor to
+bob on this host". It holds no password or token, so it can be handed to an auditor. Removing a
+principal removes what is bound to it, so a new one of the same name holds only what it is given.
+`GET /people` and `/auth/me` answer each principal's bindings, and its `role`.
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
@@ -207,7 +216,8 @@ is answered 404, once its caller has signed in (401 before).
 - The server answers up to 512 requests at once; one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
-- The server never lets the last enabled admin be removed, disabled or demoted.
+- The server never lets the last enabled person holding admin be removed, disabled or given
+  another role. The run file's admin (below) doesn't count: it is there only while the server runs.
 - **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
   who signs in with a password or a provider and may hold any role but agent; an **agent**, role
   agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and
@@ -217,9 +227,10 @@ is answered 404, once its caller has signed in (401 before).
   editor's *Your agents and services*). Tokens are shown once and kept only
   as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
   decides an approval. A person who still owns an agent or a service can't be removed until it has
-  another owner. An accounts file from before principals keeps its people; its API tokens, which
-  had no owner, are not read, and a person with role agent is dropped (the server says so when it
-  starts): add each as an agent or a service, and make it a token.
+  another owner. An accounts file from before `access.json` keeps its principals but not their
+  roles: each holds none until the run file's admin gives it one (`holon people set NAME --role
+  ROLE`), and the server names them when it starts. Its API tokens from before principals, which
+  had no owner, are not read: add each as an agent or a service, and make it a token.
 - Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
   `~/.holon/run/`, as `local:<your user>`, while that server runs.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes

@@ -221,12 +221,12 @@ fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, require
 }
 
 /// What a let-through request must leave as it was: the deployments (each one's status and
-/// grant), the saved flows (each one's saver), and the principals (each one's role, whether it
-/// is disabled, its owner, and how many tokens it has).
+/// grant), the saved flows (each one's saver), and the principals (what is bound to each, whether
+/// it is disabled, its owner, and how many tokens it has).
 fn kept(state: &AppState) -> String {
     let deployments: Vec<String> = state.deployments.lock().unwrap().iter().map(|(s, d)| format!("{s} {:?} {:?}", d.life.status, d.grant.items)).collect();
     let flows: Vec<String> = state.flows.lock().unwrap().values().map(|f| format!("{} {:?}", f.name, f.saved_by)).collect();
-    let people: Vec<String> = state.access.accounts().map(|a| a.principals().iter().map(|p| format!("{} {:?} {} {:?} {}", p.name, p.role, p.disabled, p.owner, a.tokens(&p.name).len())).collect()).unwrap_or_default();
+    let people: Vec<String> = state.access.accounts().map(|a| a.principals().iter().map(|p| format!("{} {:?} {} {:?} {}", p.name, a.bindings_of(&p.name), p.disabled, p.owner, a.tokens(&p.name).len())).collect()).unwrap_or_default();
     format!("{deployments:?}\n{flows:?}\n{people:?}")
 }
 

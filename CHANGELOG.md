@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The roles each principal holds are kept apart from the accounts, with every change to them.**
+  A role is now bound to a principal on the server, in `access.json` beside `accounts.json`
+  (`.holon-access.json` beside `.holon-accounts.json`), and `can` reads what is bound. Each change
+  (setting up, inviting or adding with a role, changing one, removing a principal) is a new
+  version, kept for good in `access.versions.jsonl` with who made it, when and what it changed; it
+  holds no password or token. No one may do more or less than before. `GET /people` and
+  `/auth/me` answer each principal's bindings beside its `role`. An accounts file from before
+  keeps its principals but not their roles: each holds none, the server names them when it
+  starts, and the OS user gives them roles again (`holon people set NAME --role ROLE`). No sample
+  changes: this is who may call the control plane, not what a flow does.
 - **An agent reads a flow's log lines only where the flow lets agents, whatever role it holds.**
   One holding the viewer role read them without `AgentReadsLogs`, as a person does; it is now
   refused until a person approves it, as one holding the agent role is. What the flow lets agents

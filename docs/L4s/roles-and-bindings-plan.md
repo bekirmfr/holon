@@ -325,62 +325,74 @@ into `access.json`, as a binding of that built-in role at the host, and `can` re
 
 ### `bindings.rs` (new)
 
-As §2 sketches it, with only the `Host` scope used yet (the others parse, and 3b gives them
-meaning). Its functions:
+Only what 3a uses: `Scope::Host`, `Subject::Principal`, and a `Binding` of a built-in `Role`. 3b
+adds the other scopes, groups, custom roles, expiry and `why` (with `Holding`'s version and time).
 
 ```rust
+pub(crate) struct Document { version, at, by, what, bindings: Vec<Binding>, next_id }
+pub(crate) struct Binding { id, who: Subject, role: Role, scope: Scope, by, at }
+pub(crate) struct Held { role: Role, scope: Scope }   // what `can` reads
+
+impl Document {
+    pub(crate) fn of(&self, name: &str) -> impl Iterator<Item = &Binding>;
+    /// In place of the roles bound to `name` at the host; nothing changes if it is that one.
+    pub(crate) fn set_host_role(&mut self, name: &str, role: Role, by: &str, at: u64);
+    /// Unbind everything bound to `name`.
+    pub(crate) fn forget(&mut self, name: &str);
+    pub(crate) fn after(self, before: &Document, by: &str, what: &str, at: u64) -> Document;
+}
+
 impl Bindings {
-    /// The access document at `path`: its newest version. A server that has none starts at
-    /// version 0, holding nothing.
-    pub(crate) fn open(path: &Path) -> Result<Bindings, String>;
-    pub(crate) fn memory() -> Bindings;
-
-    /// What `name` holds, from the index.
-    pub(crate) fn holding(&self, name: &str) -> Holding;
-
-    /// Make a new version from the newest: `f` changes it, then it is checked (every role
-    /// named exists and allows the subject's kind, an admin is left, D15), appended to the
-    /// versions file, written, and indexed. Refused, nothing changes.
-    pub(crate) fn change(&self, by: &str, what: String, why: Option<String>,
-        enabled: impl Fn(&str) -> Option<Kind>,
-        f: impl FnOnce(&mut Document) -> Result<(), String>) -> Result<u64, String>;
-
+    /// The newest version at `path`: the history's last whole line when it is newer than
+    /// `access.json` (the server stopped between the two writes); version 0, holding nothing,
+    /// if neither is there.
+    pub(crate) fn open(path: PathBuf) -> Result<Bindings, String>;
     pub(crate) fn document(&self) -> Arc<Document>;
-    /// Each version's number, when, by whom, what and why, newest first.
-    pub(crate) fn versions(&self) -> Vec<Summary>;
-    pub(crate) fn version(&self, n: u64) -> Option<Document>;
+    /// What `name` holds, from the index made once per version.
+    pub(crate) fn held(&self, name: &str) -> Arc<[Held]>;
+    /// Appended to the history, then written as `access.json`, then indexed.
+    pub(crate) fn keep(&self, document: Document) -> Result<(), String>;
 }
 ```
 
-`enabled(name)` answers the principal's kind when it exists and is enabled, from the accounts
-book: `change` checks the subject of each new binding and the admin left (D15) against it.
+The checks are the accounts book's (below), since a binding names a principal there: `Bindings`
+keeps versions and answers what each principal holds.
 
 Kept:
 - `access.json`: the newest version, whole, written with `sealing::write_private` (as
   `accounts.json` is).
-- `access.versions.jsonl`: every version, whole, one per line, appended before `access.json` is
-  replaced.
+- `access.versions.jsonl`: every version, whole, one per line, appended (`sealing::append_private`)
+  before `access.json` is replaced.
 
-So `access.json` is never ahead of its history. If the server stopped between the two writes,
-`open` takes the versions file's last line when it is newer. A version is a few KB (tens of
-bindings): a thousand changes are a few MB. A diff per version is for later, if one is needed
-(D14).
+So `access.json` is never ahead of its history. A version is a few KB (tens of bindings): a
+thousand changes are a few MB. A diff per version is for later, if one is needed (D14).
 
-The path is beside the accounts: `access.json` in the data directory, `.holon-access.json` beside
-`.holon-accounts.json` without one (`main.rs:919`'s `inside`), `:memory:` with them. No flag of
-its own (D14).
+The path is beside the accounts (`bindings::beside`): `access.json` beside `accounts.json`,
+`.holon-access.json` beside `.holon-accounts.json`, `{name}.access.json` beside any other name. No
+flag of its own (D14). `main.rs` counts both files among the server's own, which no folder binds.
 
-### Changes that make bindings
+### The accounts book keeps the document
 
-Each is a version, recorded in the activity log too:
+`Accounts` holds the `Bindings`, and changes it only under the book's lock, so a principal and
+what is bound to it change together. `change_access(by, what, f)` is `change` for both: `f`
+changes a copy of the book and a copy of the document; then every binding must name a principal
+in the book whose kind may hold its role (`held`, in step 1's words: "a person is a viewer, an
+editor or an admin"), and an admin must be left if there was one (D15: an enabled person bound
+admin at the host; the run file's admin doesn't count). Refused, nothing changes. When the
+bindings changed, the document's next version is by `by` and says `what`.
 
-| Change | Where | The version's `what`, and the activity's words |
+| Change | `Accounts::` | The version's `what` |
 |---|---|---|
-| The first admin | `/auth/setup` (`auth.rs:123-134`), after `accounts.setup` | "set up the server": admin at the host to the person set up |
-| A person invited | `POST /people` (`auth.rs:217`), after `accounts.invite` | "made {role}": the body's role at the host |
-| An agent or a service added | `POST /people` (`auth.rs:223`), after `accounts.add` | "made {role}" |
-| A principal's role changed | `PATCH /people/<name>` `{role}` (`auth.rs:306-309`) | "made {role}": its own bindings at the host are replaced by one of `role`. Its bindings at flows, and its groups', stay. |
-| A principal removed | `DELETE /people/<name>` (`auth.rs:288-292`), before `accounts.remove` | "removed {name}": its bindings and group memberships go |
+| The first admin | `setup` | "set up the server: bound admin to ada on this host" |
+| A person invited | `invite(name, role, email, by)` | "invited bob: bound editor to bob on this host" |
+| An agent or a service added | `add(name, kind, role, owner, by)` | "added claude, an agent: bound agent to claude on this host" |
+| A principal's role changed | `set_role(name, role, by)` | "bound viewer to bob on this host" |
+| A principal removed | `remove(name, by)` | "removed bob, and what was bound to bob" |
+| Disabled or enabled | `set_disabled` | none: nothing is bound anew, but D15 is checked |
+
+`invite`, `add` and `setup` keep their signatures, so `auth.rs`, `mcphosts.rs` and the tests that
+make principals don't change. The activity log's words in `auth.rs` stay as they were ("invited",
+"made editor", "removed").
 
 - **Ordering across the two files.** Accounts first, then access, so a principal is made with no
   role and then given one. A server stopped between the two leaves a principal holding nothing:
@@ -388,80 +400,62 @@ Each is a version, recorded in the activity log too:
   - Removing goes the other way: access first, then accounts. So a principal is never removed
     while its bindings stay, which a new principal of the same name would hold. Its bindings go
     in the document, kept in its history.
-- **The kind.** `held(kind, role)` (`accounts.rs`) moves into `change`'s check: a binding to a
-  principal of a role whose kinds don't include its kind is refused, in step 1's words ("a
-  person is a viewer, an editor or an admin"). A binding to a group isn't (§5.2).
 
 ### `accounts.rs`
 
-- `Principal.role` (:110) goes, and with it `Who.role` (:213), `set_role` (:830-839), `held`,
-  and the role parameter of `invite` (:736) and `add` (:753).
-- `local` (:641-645) answers a `Who` without a role; the gate gives the run file's admin
-  `Holding::admin()`.
-- `keeping_an_admin` (:815-828) moves to `bindings.rs` (D15). `set_disabled` and `remove` ask it
-  through the gate's `Bindings` before changing the book. `auth.rs` holds `bindings.changing`
-  across both, so two admins can't each disable the other at once.
-- `Accounts::open` (:466-471): a file from before reads its principals and ignores their `role`
-  (D13). `main.rs`, once it has opened both files, prints which principals hold nothing:
-  "holon: alice, bob hold no role: access.json is new. The OS user gives them one: holon people
-  set NAME --role ROLE". Step 1's message for a person with role agent goes, with the field.
-- `Kind::may_hold` goes; its callers ask the role's `kinds` in `bindings.rs`.
+- `Principal.role` and `Who.role` go; `keeping_an_admin` becomes `an_admin(book, document)`,
+  checked by `change_access`.
+- `holding(name)`, `host_role(name)` (the widest built-in role bound at the host) and
+  `bindings_of(name)` answer from the document.
+- `Accounts::open` opens the document beside the accounts. A file from before reads its
+  principals and ignores their `role` (D13); while the document is at version 0 the server says
+  so at start: "holon: alice, bob hold no role: access.json is new. The OS user gives each one:
+  holon people set NAME --role ROLE". Step 1's message for a person with role agent goes, with the
+  field.
 
 ### `can.rs`
 
-- `RoleDef` (:181-214) as §2 says: `name`, `holds`, `kinds`, `builtin`. `BUILTIN` (:219-239)
-  becomes a `LazyLock<[Arc<RoleDef>; 4]>`, the same data. `role(Role)` (:242-249) answers
-  `Arc<RoleDef>`.
-- `can` (:270-284) as §2 says. `Held::covers` answers `true` for `Host`. `Held::live(at)` is
-  `expires_at.is_none_or(|e| at < e)`.
-- `refused` (:319-340): step 2's words, chosen from the roles that cover the resource rather than
-  `who.role`. With only `Host` scopes, those are the caller's roles, so every refusal reads as
-  before (D16 for the rest).
-- The module's doc (:1-30) says roles are bound, not held by an account.
+- `can` asks each role bound to the caller where the resource is (`Held::covers`: `true` for
+  `Host`), for the caller's kind. A caller with `holds: None` is on a server without accounts and
+  may do everything.
+- `refused`: step 2's words, chosen from the roles that cover the resource rather than one role.
+  With only `Host` scopes those are the caller's roles, so every refusal reads as before. One
+  holding none there is told D16's words: `eve may not do that: no role eve holds on this host
+  holds people.view`.
+- `RoleDef` and `BUILTIN` stay as they are; 3b makes roles data.
 
 ### `access.rs`
 
-- `Caller` (:46-52) as §2 says, with a test-only constructor that binds one built-in role at the
-  host: `Caller::holding(name, kind, Role)`, for `tests.rs:2269` and `can.rs`'s tests.
-- `Access` (:56-64) holds `bindings: Option<Arc<Bindings>>` beside `accounts`. `Access::new`
-  (:67) takes it. `main.rs:1110` opens it after the accounts, refusing to start on an unreadable
-  file as the accounts do.
-- `authenticate` (:89-99) resolves the holding (§2).
-- The module's doc (:8-14) says what a caller holds comes from the access document.
+- `Caller { name, kind, holds: Option<Arc<[Held]>> }`, with `host_role()` and a test-only
+  `Caller::holding(name, kind, Role)` for `tests.rs:2269` and `can.rs`'s tests.
+- `authenticate`: the run file's token holds `Held::admin()`; any other caller what is bound to it.
+- `Role::name()`: "editor", as the versions write it.
 
 ### `auth.rs`
 
-- `shown` (:38-50) answers `bindings` (each `{id, role, scope, expires_at, through}`, where
-  `through` names the group) and a derived `role`: the role bound to the principal itself at the
-  host, the widest built-in one when it holds several, or none. The editor and the workbench
-  gate what they show on `role` (3c lists where). It stays, as the host role, until step 7 moves
-  the editor to `/auth/me/can` (§12, "buttons follow `can`").
-- `signed_in` (:52-54) and `/auth/me` (:167-171) answer the same.
-- `POST /people` keeps `role` in its body, and binds it as the table above says. From 3b it and
-  `PATCH` take any role's name, a custom one included.
+- `shown` answers `bindings` (each `{id, role, scope, by, at}`) and `role`, the widest built-in
+  role bound at the host (`host_role`), or none. The editor and the workbench gate what they show
+  on `role` (3c lists where). It stays until step 7 moves the editor to `/auth/me/can` (§12,
+  "buttons follow `can`").
+- Signing in and `/auth/me` answer the same; the run file's admin `role` admin, with no
+  bindings.
 
 ### Tests in 3a
 
-- `tests/access_table.rs` `server()` (:235-276): `person(name, role)` invites, accepts, and binds
-  the role at the host; `made(name, kind, role, owner)` adds, binds, and makes a token. The
-  `Caller` rows keep their `role`: it is what was bound. The rows and `expected` don't change,
-  and the table passes.
-- `accounts.rs`'s tests (:990-1310) lose their roles. The role checks among them (:1221-1224,
-  :1266-1274, :1306) move to `bindings.rs`'s tests, in the same words.
-- `access.rs`'s tests (:160-221), `mcp.rs:1904` and `mcphosts.rs:1129`, :1145 bind instead of
-  passing a role.
-- `bindings.rs`, new:
-  - `a_version_is_kept_with_who_when_and_why_and_read_back`: changes make versions 1, 2 and 3;
-    reopened, the newest is read, and each version reads as it was, from the versions file;
-  - `a_version_written_to_history_but_not_to_the_document_is_read_from_history` (the stop
-    between the two writes);
-  - `no_change_leaves_no_admin` (D15): unbinding, changing the role of, disabling and removing
-    the last person holding admin are each refused, in step 1's words ("that would leave no
-    admin: make someone else an admin first"); an admin binding that expires doesn't count, and
-    neither does the run file's;
-  - `a_removed_principals_bindings_go_first`: a principal removed and made again holds nothing.
-- `can.rs` `the_admin_holds_everything_and_an_agent_its_own` (:653) and the built-in roles test
-  (:615) read `BUILTIN`'s new shape, same data.
+- `tests/access_table.rs`: `server()` is as it was, since `invite` and `add` bind the role.
+  `kept()` reads each principal's bindings in place of its role. The rows and `expected` don't
+  change, and the table passes.
+- `accounts.rs`: `no_change_leaves_no_admin` (D15: binding the last admin another role, disabling
+  and removing them are refused in step 1's words, the run file's admin doesn't count);
+  `each_change_to_what_is_bound_is_a_version_and_a_removed_principal_holds_nothing` (each
+  change's version, by and what; no version when nothing is bound anew; a principal removed and
+  made again holds only what it is given); `kept_as_hashes_and_read_back` reads the bindings back;
+  `a_file_from_before_the_access_document_keeps_its_principals_holding_nothing` (D13).
+- `bindings.rs`: `a_version_is_kept_with_who_when_and_what_and_read_back`;
+  `the_history_is_never_behind_the_document` (the stop between the two writes, and a last line
+  cut short); `the_document_is_kept_beside_the_accounts`.
+- `can.rs`: `a_caller_may_do_what_any_role_it_holds_holds` (one holding two roles may do what
+  either holds; one holding none is refused everything a role holds, in D16's words).
 
 ### Checks
 

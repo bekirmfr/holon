@@ -1,7 +1,8 @@
 //! Who may do what (docs/L4s/access-and-approvals-L4.md §4, §5.1 and §7): the catalogue of what
 //! may be done, the built-in roles made from it, `can`, which answers whether a caller may do an
-//! action to a resource, and the table of every route the control plane answers, each with what it
-//! asks of `can` (docs/L4s/can-and-catalogue-plan.md).
+//! action to a resource, as the roles bound to it there hold it (bindings.rs), and the table of
+//! every route the control plane answers, each with what it asks of `can`
+//! (docs/L4s/can-and-catalogue-plan.md).
 //!
 //! The gate (access.rs) finds a request's route here. A path no route has is answered 404 once its
 //! caller is known, so no one learns which paths there are without signing in; a route whose rule
@@ -34,6 +35,7 @@ use rouille::Response;
 
 use crate::access::{Caller, Role};
 use crate::accounts::{Accounts, Kind};
+use crate::bindings::Held;
 use crate::http::err;
 use Action::*;
 use Holds::{Do, Own};
@@ -264,18 +266,19 @@ const VIEWERS: &str = "a viewer only reads";
 
 /// Whether `who` may do `action` to `on`, or why not (the design's §7). Authentication has already
 /// refused a principal that is disabled or unknown, and no token narrows what it may yet (§5.4). So:
-/// the role the caller holds holds the action there, for the caller's kind, or the caller owns it
-/// (a person, the tokens of what they own); and the host's fixed rules don't forbid it. A caller
-/// with no role is on a server without accounts, and holds everything.
+/// some role bound to the caller where `on` is holds the action, for the caller's kind, or the
+/// caller owns it (a person, the tokens of what they own); and the host's fixed rules don't forbid
+/// it. A caller holding nothing at all (`holds` none) is on a server without accounts, and may do
+/// everything; one holding no role may do nothing a role holds.
 pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
     debug_assert!(on.takes(action), "{} isn't done to {on:?}", action.name());
-    debug_assert!(who.role.is_some() || who.name.is_none(), "only a server without accounts has a caller with no role");
-    let held = match who.role {
+    debug_assert!(who.holds.is_some() || who.name.is_none(), "only a server without accounts has a caller who holds nothing at all");
+    let held = match &who.holds {
         None => true,
-        Some(r) => {
+        Some(held) => covering(held, on).any(|r| {
             let def = role(r);
             who.kind.is_some_and(|k| def.kinds.contains(&k)) && def.holds(action, on, who)
-        }
+        }),
     };
     if !held && !owns(who, action, on) {
         return Err(refused(who, action, on));
@@ -315,12 +318,19 @@ fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
     }
 }
 
-/// What a refusal by the role says: the flow isn't the agent's own; the tokens aren't the person's;
-/// or what the action needs, "that needs an admin" when only the admin role holds it.
+/// The roles of `held` bound where `on` is.
+fn covering<'a>(held: &'a [Held], on: &'a Resource) -> impl Iterator<Item = Role> + 'a {
+    held.iter().filter(|h| h.covers(on)).map(|h| h.role)
+}
+
+/// What a refusal by the roles says: the flow isn't the agent's own; the tokens aren't the
+/// person's; that no role the caller holds there holds it; or what the action needs, "that needs
+/// an admin" when only the admin role holds it.
 fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
     let name = who.name.as_deref().unwrap_or_default();
+    let roles: Vec<Role> = covering(who.holds.as_deref().unwrap_or_default(), on).collect();
     match on {
-        Resource::Saved { name: flow, by } if who.role.is_some_and(|r| role(r).holds_own(action)) => {
+        Resource::Saved { name: flow, by } if roles.iter().any(|r| role(*r).holds_own(action)) => {
             let whose = by.unwrap_or("someone");
             return Refusal(format!("a flow named \"{flow}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name"));
         }
@@ -329,10 +339,18 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         }
         _ => {}
     }
+    if roles.is_empty() {
+        let place = match on {
+            Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
+            Resource::Flows => "on any flow".to_string(),
+            Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug } => format!("on {slug:?}"),
+        };
+        return Refusal(format!("{name} may not do that: no role {name} holds {place} holds {}", action.name()));
+    }
     let only_admins = BUILTIN.iter().filter(|d| d.role != Role::Admin).all(|d| !d.holds_any(action));
     let what = if only_admins {
         ADMINS
-    } else if who.role == Some(Role::Agent) {
+    } else if roles.contains(&Role::Agent) {
         AGENTS
     } else {
         VIEWERS
@@ -579,7 +597,7 @@ mod tests {
     }
 
     fn caller(name: &str, kind: Kind, role: Role) -> Caller {
-        Caller { name: Some(name.into()), kind: Some(kind), role: Some(role) }
+        Caller::holding(name, kind, role)
     }
 
     /// Every resource of each kind, for an action to be asked of.
@@ -666,6 +684,28 @@ mod tests {
         for by in [Some("ada"), None] {
             let said = can(&claude, FlowEdit, &Resource::Saved { name: "f", by }).unwrap_err().0;
             assert!(said.contains("an agent doesn't replace someone else's flow"), "{said}");
+        }
+    }
+
+    /// `can` reads what the caller holds: it may do what any role it holds there holds, and,
+    /// holding no role, nothing a role holds, told so in words that name the action.
+    #[test]
+    fn a_caller_may_do_what_any_role_it_holds_holds() {
+        let holding = |roles: &[Role]| {
+            let holds = roles.iter().map(|&role| Held { role, scope: crate::bindings::Scope::Host }).collect();
+            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds) }
+        };
+        let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
+        for action in Action::ALL {
+            for r in resources().iter().filter(|r| r.takes(action)) {
+                let may = |c: &Caller| can(c, action, r).is_ok();
+                assert_eq!(may(&both), may(&viewer) || may(&editor), "{} on {r:?}", action.name());
+                let said = can(&none, action, r).unwrap_err().0;
+                // A person is told whose tokens they are, as before.
+                if !matches!(r, Resource::Principal { .. }) {
+                    assert!(said.starts_with("eve may not do that: no role eve holds on ") && said.ends_with(action.name()), "{said}");
+                }
+            }
         }
     }
 

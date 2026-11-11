@@ -9,10 +9,13 @@
 //! `POST /auth/sign-out`, and `GET`/`POST /auth/prefs` (what the editor keeps for them: its home
 //! tab, the welcome).
 //! People (the design's §10, docs/L4s/access-and-approvals-L4.md), admins only:
-//! - `GET /people`: every principal, with an agent's or a service's tokens;
+//! - `GET /people`: every principal, with what is bound to it (bindings.rs) and its `role`, the
+//!   widest built-in role bound to it on the host, and with an agent's or a service's tokens;
 //! - `POST /people` (`{name, kind, role, owner?, email?, display?}`): a person, answered with
-//!   their invite link; an agent or a service, owned by `owner` (by default whoever asks);
-//! - `PATCH /people/<name>` (role, disabled, email, display, owner), `DELETE /people/<name>`,
+//!   their invite link; an agent or a service, owned by `owner` (by default whoever asks); `role`
+//!   is bound to it on the host;
+//! - `PATCH /people/<name>` (role, disabled, email, display, owner; a role is bound on the host in
+//!   place of what was there), `DELETE /people/<name>` (with what is bound to it),
 //!   `POST /people/<name>/reset` (a person's new invite link);
 //! - `GET`/`POST /people/<name>/tokens` (`{label}`), `DELETE /people/<name>/tokens/<id>`: also for
 //!   the agent's or service's owner (can.rs's owner rule).
@@ -33,12 +36,18 @@ fn body<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, Response> 
     serde_json::from_slice(&bytes).map_err(|e| err(400, format!("invalid body: {e}")))
 }
 
-/// A principal as the People page shows it: never its password hash; an agent's or a service's
-/// tokens with it, never their hashes.
+/// What is bound to `name`: each binding's id, role and scope, and who bound it when.
+fn bindings(name: &str, accounts: &Accounts) -> serde_json::Value {
+    accounts.bindings_of(name).iter().map(|b| serde_json::json!({ "id": b.id, "role": b.role, "scope": b.scope, "by": b.by, "at": b.at })).collect()
+}
+
+/// A principal as the People page shows it: what is bound to it, and its role on the host; never
+/// its password hash; an agent's or a service's tokens with it, never their hashes.
 fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     let owner_disabled = p.owner.as_deref().and_then(|o| accounts.principal(o)).is_some_and(|o| o.disabled);
     let mut v = serde_json::json!({
-        "name": p.name, "kind": p.kind, "role": p.role, "display": p.display, "email": p.email,
+        "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name), "bindings": bindings(&p.name, accounts),
+        "display": p.display, "email": p.email,
         "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by,
         "owner": p.owner, "owner_disabled": owner_disabled,
         "invited": accounts.invited(&p.name),
@@ -49,8 +58,8 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     v
 }
 
-fn signed_in(token: &str, p: &Principal) -> Response {
-    Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": p.role }))
+fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
+    Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name) }))
 }
 
 /// `/auth/…`, `/admin/…` and `/people…`, or None for any other path.
@@ -130,7 +139,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             return respond(body::<Setup>(request).and_then(|s| {
                 let (token, a) = accounts.setup(&s.code, &s.name, &s.password).map_err(fail)?;
                 state.activity.record("set up the server", &a.name, Some(&a.name));
-                Ok(signed_in(&token, &a))
+                Ok(signed_in(&token, &a, accounts))
             }));
         }
         ("POST", "/auth/sign-in") => {
@@ -142,7 +151,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             return respond(body::<SignIn>(request).and_then(|s| {
                 let from = request.remote_addr().ip().to_string();
                 let (token, a) = accounts.sign_in_from(&s.name, &s.password, &from).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
-                Ok(signed_in(&token, &a))
+                Ok(signed_in(&token, &a, accounts))
             }));
         }
         ("GET", "/auth/invite") => {
@@ -161,13 +170,16 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             return respond(body::<Accept>(request).and_then(|s| {
                 let (token, a) = accounts.accept(&s.token, &s.password).map_err(fail)?;
                 state.activity.record("joined", &a.name, Some(&a.name));
-                Ok(signed_in(&token, &a))
+                Ok(signed_in(&token, &a, accounts))
             }));
         }
         ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
-            Some(p) => Response::json(&serde_json::json!({ "name": p.name, "kind": p.kind, "role": p.role, "email": p.email, "owner": p.owner, "display": p.display })),
-            // The OS user, through the run file (`local:<user>`).
-            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.role })),
+            Some(p) => Response::json(&serde_json::json!({
+                "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
+                "email": p.email, "owner": p.owner, "display": p.display,
+            })),
+            // The OS user, through the run file (`local:<user>`): admin on the host, bound nowhere.
+            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role() })),
         },
         ("GET", "/auth/owned") => Response::json(&accounts.principals().iter().filter(|p| p.owner.as_deref() == Some(me)).map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/auth/password") => {
@@ -286,7 +298,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 return Some(Response::empty_404());
             }
             if method == "DELETE" {
-                return respond(accounts.remove(name).map_err(fail).map(|_| {
+                return respond(accounts.remove(name, by).map_err(fail).map(|_| {
                     state.activity.record("removed", name, Some(by));
                     Response::empty_204()
                 }));
@@ -304,8 +316,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 }
                 return respond(body::<Change>(request).and_then(|c| {
                     if let Some(role) = c.role {
-                        accounts.set_role(name, role).map_err(fail)?;
-                        state.activity.record(&format!("made {}", serde_json::to_value(role).unwrap().as_str().unwrap_or("")), name, Some(by));
+                        accounts.set_role(name, role, by).map_err(fail)?;
+                        state.activity.record(&format!("made {}", role.name()), name, Some(by));
                     }
                     if let Some(disabled) = c.disabled {
                         accounts.set_disabled(name, disabled).map_err(fail)?;
