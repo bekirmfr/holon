@@ -556,17 +556,15 @@ fn on_the_host(action: Action) -> Resource<'static> {
     if Resource::Host.takes(action) { Resource::Host } else { Resource::Flow("") }
 }
 
-/// Why `who` may not bind `role` at `scope`, if they may not (the plan's D19): a binding holds
-/// something there (400 if not), and gives only what its author holds there (403 if not).
-fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Result<(), Response> {
-    // What the binding would hold, and on what: each action of the role that the scope covers.
+/// What `role` bound at `scope` would hold, and on what: each action it allows that the scope
+/// covers.
+fn gives<'a>(role: &Arc<RoleDef>, scope: &'a Scope) -> Vec<(Action, Resource<'a>)> {
     let slug = match scope {
         Scope::Host => "",
         Scope::Flows(Selector::Slug(slug)) | Scope::Approval { flow: Selector::Slug(slug), .. } => slug.as_str(),
     };
     let held = Held { role: Arc::clone(role), scope: scope.clone() };
-    let gives: Vec<(Action, Resource)> = role
-        .allows()
+    role.allows()
         .into_iter()
         .filter_map(|a| {
             let on = match scope {
@@ -577,7 +575,13 @@ fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Result<(), Resp
             };
             (on.takes(a) && held.covers(&on)).then_some((a, on))
         })
-        .collect();
+        .collect()
+}
+
+/// Why `who` may not bind `role` at `scope`, if they may not (the plan's D19): a binding holds
+/// something there (400 if not), and gives only what its author holds there (403 if not).
+pub(crate) fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Result<(), Response> {
+    let gives = gives(role, scope);
     let name = &role.name;
     if gives.is_empty() {
         return Err(err(400, format!("{name} holds nothing {}: bind a role that holds something there", scope.said())));
@@ -586,6 +590,17 @@ fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Result<(), Resp
         Some((a, _)) => Err(err(403, format!("{name} holds {} {}, which you don't: a binding gives only what its author holds where it is made", a.name(), scope.said()))),
         None => Ok(()),
     }
+}
+
+/// The first of `bindings` that gives a principal of `kind` something `who` doesn't hold where it
+/// is made, and what (D19): what `who` may not give them, by adding them to a group, or let
+/// themselves have, by making their sign-in or tokens. One that has expired, or of a role `kind`
+/// may not hold, gives nothing.
+pub(crate) fn beyond<'a>(who: &Caller, document: &Document, kind: Kind, bindings: impl IntoIterator<Item = &'a Binding>, now: u64) -> Option<(&'a Binding, Action)> {
+    bindings.into_iter().filter(|b| b.live(now)).find_map(|b| {
+        let role = document.role(&b.role).filter(|r| r.kinds.contains(&kind))?;
+        gives(&role, &b.scope).into_iter().find(|(a, on)| can(who, *a, on).is_err()).map(|(a, _)| (b, a))
+    })
 }
 
 /// `GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout&approval=ok`: for each action,
@@ -806,7 +821,8 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
     }
 }
 
-/// `PUT /groups/<name>`: a group, made or changed, with all its members.
+/// `PUT /groups/<name>`: a group, made or changed, with all its members. A member added holds what
+/// the group is bound, so its author holds it too where it is bound (D19: 403 if not).
 fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accounts: &crate::accounts::Accounts, name: &str) -> Response {
     #[derive(Deserialize)]
     struct Def {
@@ -825,6 +841,16 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
     members.dedup();
     let about = def.about.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
     let group = Group { name: name.into(), about, members };
+    let document = accounts.access_document();
+    let before = document.group(name).map(|g| g.members.as_slice()).unwrap_or_default();
+    let bound: Vec<&Binding> = document.bindings.iter().filter(|b| b.who == Subject::Group(name.into())).collect();
+    for m in group.members.iter().filter(|m| !before.contains(m)) {
+        let Some(kind) = accounts.principal(m).map(|p| p.kind) else { continue };
+        if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now()) {
+            let gives = format!("{} {}, which holds {} there", b.role, b.scope.said(), a.name());
+            return err(403, format!("adding {m} to {name} gives them {gives}, which you don't: a binding gives only what its author holds where it is made"));
+        }
+    }
     let by = caller.name.as_deref().unwrap_or("");
     match accounts.set_group(group.clone(), by, def.why.as_deref()) {
         Ok(changed) => {

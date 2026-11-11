@@ -521,6 +521,13 @@ Where part 2 differs:
   hold: an agent in a group bound `editor` isn't shown as one.
 - **The last admin (D15)** may be held through a group: an admin binding on the host, for good, to
   a group with an enabled person in it counts.
+- **D19 for every way access is given**, not only `POST /bindings` and `PUT /roles`: a custom role
+  holding `people.manage` or `people.assign` would otherwise make an admin. Inviting, adding or
+  setting someone with a role (`POST`, `PATCH /people`) is binding it on the host; a member added
+  to a group gets each of its bindings; resetting a password or making a token lets its maker act
+  as that principal, so they hold all it holds (`bindings::beyond`), save its owner making its
+  tokens (§3). Removing, disabling and unbinding give nothing, and aren't asked. The test is
+  `no_one_gives_more_than_they_hold`.
 - **The versions' words**: `defined the role watcher: run.view, held by a person`,
   `changed the role …`, `removed the role watcher`; `made the group ops: bob`,
   `changed the group ops: bob, cy`, `removed the group ops`; `bound watcher to the group ops on

@@ -63,6 +63,26 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     v
 }
 
+/// Why `caller` may not give `role` on the host, as inviting, adding or setting someone with it
+/// binds it there (D19), if they may not.
+fn may_give(caller: &Caller, role: Role) -> Result<(), Response> {
+    crate::bindings::may_bind(caller, crate::can::role(role), &crate::bindings::Scope::Host)
+}
+
+/// Why `caller` may not make `name`'s sign-in or tokens, if they may not: they would act as
+/// `name`, so they hold everything `name` holds, as they would to have given it (D19).
+fn may_act_as(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
+    let Some(p) = accounts.principal(name) else { return Ok(()) };
+    let document = accounts.access_document();
+    match crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now()) {
+        Some((b, a)) => Err(err(
+            403,
+            format!("{name} holds {} {}, which holds {} there, which you don't: you make the sign-in or the tokens only of someone who holds no more than you", b.role, b.scope.said(), a.name()),
+        )),
+        None => Ok(()),
+    }
+}
+
 fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
     Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name) }))
 }
@@ -230,6 +250,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 display: Option<String>,
             }
             return respond(body::<New>(request).and_then(|n| {
+                may_give(caller, n.role)?;
                 let invite = if n.kind == Kind::Person {
                     let link = accounts.invite(&n.name, n.role, n.email, by).map_err(fail)?;
                     state.activity.record("invited", &n.name, Some(by));
@@ -277,7 +298,13 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         struct New {
                             label: String,
                         }
+                        // Its owner makes its tokens, as the design has it; anyone else acts as
+                        // it only holding what it holds.
+                        let owner = accounts.principal(name).and_then(|p| p.owner);
                         body::<New>(request).and_then(|n| {
+                            if owner.as_deref() != Some(me) {
+                                may_act_as(caller, accounts, name)?;
+                            }
                             let (token, entry) = accounts.create_token(name, &n.label, by).map_err(fail)?;
                             state.activity.record("made a token for", name, Some(by));
                             Ok(Response::json(&serde_json::json!({ "token": token, "entry": entry })))
@@ -293,6 +320,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some(name) = rest.strip_suffix("/reset")
                 && method == "POST"
             {
+                if let Err(r) = may_act_as(caller, accounts, name) {
+                    return Some(r);
+                }
                 return respond(accounts.reset(name).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
                     state.activity.record("reset the password of", name, Some(by));
                     Response::json(&serde_json::json!({ "name": name, "invite": link }))
@@ -321,6 +351,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 }
                 return respond(body::<Change>(request).and_then(|c| {
                     if let Some(role) = c.role {
+                        may_give(caller, role)?;
                         accounts.set_role(name, role, by).map_err(fail)?;
                         state.activity.record(&format!("made {}", role.name()), name, Some(by));
                     }

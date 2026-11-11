@@ -247,6 +247,11 @@ An admin also defines roles of their own, and groups:
   it out of its groups.
 - A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
   them first.
+- **No one gives more than they hold**, whichever way they give it: binding a role, inviting,
+  adding or setting someone with one, adding a member to a group that is bound, or resetting
+  someone's password or making their tokens (they would act as them). So a role that manages
+  people without holding everything an admin does can't make an admin. An agent's or a
+  service's owner still makes its tokens.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
   or manages people, roles, resources or the host.

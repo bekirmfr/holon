@@ -7,7 +7,10 @@
   the host everything it allows. A group (`PUT /groups/<name>`) is a set of principals, bound as
   one is (`{"who": {"group": "payments"}, …}`); its binding holds for each member whose kind the
   role allows. `GET /roles` and `GET /groups` list them, with how many bindings hold each, and
-  neither is removed while bound (409). Whatever role it holds, an agent never does what is a
+  neither is removed while bound (409). No one gives more than they hold, whichever way: binding,
+  inviting or setting someone with a role, adding a member to a bound group, or resetting
+  someone's password or making their tokens (an owner still makes its agent's or service's), so a
+  role that manages people can't make an admin. Whatever role it holds, an agent never does what is a
   person's: approving a deploy, starting, stopping, deleting or restoring a flow, writing a
   secret, managing people, roles, resources or the host. `GET /auth/me/can?actions=…&flow=…`
   answers, for each action, `true` or the words its refusal would say, as the routes ask it; the

@@ -341,3 +341,38 @@ fn me_can_answers_what_each_route_asks() {
     let (code, said) = send(&state, &t.cy, "GET", "/auth/me/can?actions=flow.fly", Value::Null);
     assert_eq!((code, error_of(&said)), (400, "\"flow.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…".into()));
 }
+
+/// No one gives more than they hold (D19), whichever route gives it: cy, holding a role that
+/// manages and assigns people on the host and a viewer's besides, doesn't make an admin or an
+/// editor by inviting, setting a role or adding to a group bound admin, and doesn't reset or make
+/// the tokens of someone holding more, so as to act as them. What holds no more than cy holds, cy
+/// gives; an owner makes its service's tokens, as the design has it.
+#[test]
+fn no_one_gives_more_than_they_hold() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let cy = |method: &str, path: &str, body: Value| send(&state, &t.cy, method, path, body);
+    assert_eq!(ada("PUT", "/roles/people-admin", json!({ "allows": ["people.view", "people.manage", "people.assign"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "people-admin", "scope": "host" })).0, 200);
+    let beyond = |role: &str| (403, format!("{role} holds flow.edit on this host, which you don't: a binding gives only what its author holds where it is made"));
+
+    assert_eq!(refusal(cy("PATCH", "/people/cy", json!({ "role": "admin" }))), beyond("admin"));
+    assert_eq!(refusal(cy("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" }))), beyond("editor"));
+    assert_eq!(cy("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })).0, 200);
+    assert_eq!(cy("PATCH", "/people/bob", json!({ "role": "viewer" })).0, 200);
+
+    assert_eq!(ada("PUT", "/groups/admins", json!({ "members": ["ada"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "admins" }, "role": "admin", "scope": "host" })).0, 200);
+    let joined = (403, "adding cy to admins gives them admin on this host, which holds flow.edit there, which you don't: a binding gives only what its author holds where it is made".to_string());
+    assert_eq!(refusal(cy("PUT", "/groups/admins", json!({ "members": ["ada", "cy"] }))), joined);
+    assert_eq!(cy("PUT", "/groups/readers", json!({ "members": ["bob", "cy"] })).0, 200);
+
+    let acts_as = |name: &str, role: &str| (403, format!("{name} holds {role} on this host, which holds flow.edit there, which you don't: you make the sign-in or the tokens only of someone who holds no more than you"));
+    assert_eq!(refusal(cy("POST", "/people/ada/reset", Value::Null)), acts_as("ada", "admin"));
+    assert_eq!(cy("POST", "/people/dee/reset", Value::Null).0, 200);
+    assert_eq!(ada("POST", "/people", json!({ "name": "ci", "kind": "service", "role": "editor" })).0, 200);
+    assert_eq!(refusal(cy("POST", "/people/ci/tokens", json!({ "label": "mine now" }))), acts_as("ci", "editor"));
+    assert_eq!(ada("POST", "/people/ci/tokens", json!({ "label": "CI" })).0, 200);
+    assert_eq!(ada("POST", "/people", json!({ "name": "bot", "kind": "service", "role": "editor", "owner": "bob" })).0, 200);
+    assert_eq!(send(&state, &t.bob, "POST", "/people/bot/tokens", json!({ "label": "bob's bot" })).0, 200, "its owner, holding less");
+}
