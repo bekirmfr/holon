@@ -521,6 +521,9 @@ pub struct Log {
     /// A test's: the next lines' writes fail, as a full disk fails them.
     #[cfg(test)]
     fail_writes: bool,
+    /// A test's: the next lines' writes fail halfway, half of each line in the file.
+    #[cfg(test)]
+    fail_partway: bool,
     /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
     #[cfg(test)]
     fail_syncs: bool,
@@ -729,6 +732,21 @@ fn sync_dir_of(path: &Path) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+/// Write `bytes` to `file` as `write_all` does, and how many went in, a failed write's too.
+fn write_counted(file: &mut std::fs::File, bytes: &[u8]) -> (usize, std::io::Result<()>) {
+    use std::io::Write;
+    let mut put = 0;
+    while put < bytes.len() {
+        match file.write(&bytes[put..]) {
+            Ok(0) => return (put, Err(std::io::ErrorKind::WriteZero.into())),
+            Ok(n) => put += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return (put, Err(e)),
+        }
+    }
+    (put, Ok(()))
 }
 
 /// Sync `path`'s written data to disk. A file that isn't there any more (its deployment was
@@ -1267,6 +1285,8 @@ impl Log {
             #[cfg(test)]
             fail_writes: false,
             #[cfg(test)]
+            fail_partway: false,
+            #[cfg(test)]
             fail_syncs: false,
             gone: Vec::new(),
             defer_cuts: false,
@@ -1603,7 +1623,6 @@ impl Log {
         if self.written == 0 {
             self.file_oldest_ms = at.at_ms;
         }
-        use std::io::Write;
         let after_cut = std::mem::take(&mut self.cut);
         let text = if after_cut { format!("\n{line}\n") } else { format!("{line}\n") };
         if self.handle.is_none() {
@@ -1621,9 +1640,19 @@ impl Log {
             }
             self.handle = Some(file);
         }
-        if let Err(e) = self.handle.as_mut().expect("opened above").write_all(text.as_bytes()) {
-            // Opened again for the next line, in case the file went away under it; a file of
-            // another length is read afresh by the next cut-back.
+        let bytes = text.as_bytes();
+        #[cfg(test)]
+        let bytes = if self.fail_partway { &bytes[..bytes.len() / 2] } else { bytes };
+        let (put, wrote) = write_counted(self.handle.as_mut().expect("opened above"), bytes);
+        #[cfg(test)]
+        let wrote = if self.fail_partway { wrote.and(Err(std::io::Error::other("a write a test cut short"))) } else { wrote };
+        if let Err(e) = wrote {
+            // Part of the line may be in the file: counted in its length, and the next line starts
+            // on a line of its own, as after a crash, so it isn't lost joined to the part. Opened
+            // again for the next line, in case the file went away under it; a file of another
+            // length is read afresh by the next cut-back.
+            self.file_len += put as u64;
+            self.cut = after_cut || put > 0;
             self.handle = None;
             return Err(e);
         }
@@ -2922,7 +2951,8 @@ mod tests {
     /// **Guards:** a run is told its record is on disk exactly when its line is in the file and a
     /// sync since went through, whichever writes and syncs fail and in whatever order the runs
     /// that share a sync and the syncer ask (docs/engineering/themes/resilience.md, G1); a sync
-    /// that failed leaves the file to be synced again.
+    /// that failed leaves the file to be synced again; a write cut short partway leaves the next
+    /// line whole, on a line of its own, and the log's count of the file's length true.
     ///
     /// **Why:** runs share syncs. Whether a sync has passed a run's entry and whether that entry's
     /// line was ever written are two facts, and a run needs both; they were once taken for one,
@@ -2932,10 +2962,13 @@ mod tests {
     /// **If it fails:** a run answers its caller as done with nothing on record, the one thing a
     /// strict run promises not to do (a payout made and no line of it); or it answers 500 for a
     /// run that is on record, and its caller sends it again; or a log whose sync failed is never
-    /// synced, and a power loss takes runs already answered.
+    /// synced, and a power loss takes runs already answered; or the line after a write cut short
+    /// is joined to its part, unreadable, and a run told kept has no line (and a cut-back,
+    /// counting from a wrong length, copies the wrong bytes).
     ///
     /// A model, not a case: entries are written, some of their writes failing (`fail_writes`, as
-    /// a full disk fails one), and asked for in an order that is drawn, between the syncer's
+    /// a full disk fails one, or `fail_partway`, part of the line in), and asked for in an order
+    /// that is drawn, between the syncer's
     /// ticks, some syncs failing (`fail_syncs`); then by runs side by side. The model says what
     /// the cell has synced and how many syncs it made; each run is told what its own write and
     /// sync did, and at the end the file holds the lines of those told kept, and of those told
@@ -2951,18 +2984,23 @@ mod tests {
                 (self.0 % m as u64) as usize
             }
         }
-        // An entry written, its write failing when `fail`: its seq.
-        let write = |cell: &LogCell, fail: bool| {
+        // An entry written, its write failing when `fail`, with part of its line in when
+        // `partway`: its seq.
+        let write = |cell: &LogCell, fail: bool, partway: bool| {
             cell.with(|log| {
-                log.fail_writes = fail;
+                (log.fail_writes, log.fail_partway) = (fail && !partway, fail && partway);
                 let seq = log.push(entry());
-                log.fail_writes = false;
+                (log.fail_writes, log.fail_partway) = (false, false);
                 seq
             })
         };
+        // The entries whose lines are whole in the file; the parts of lines cut short are skipped,
+        // as the log skips them when it reads the file.
         let on_disk = |file: &Path| -> BTreeSet<u64> {
-            std::fs::read_to_string(file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["seq"].as_u64().unwrap()).collect()
+            std::fs::read_to_string(file).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| v["seq"].as_u64().unwrap()).collect()
         };
+        // The file's length as the log counts it, and as it is.
+        let lengths = |cell: &LogCell, file: &Path| (cell.with(|log| log.file_len), std::fs::metadata(file).map_or(0, |m| m.len()));
         // A sync, the run's or the syncer's, its file's failing when `fail`.
         let sync = |cell: &LogCell, fail: bool, ask: &dyn Fn(&LogCell) -> Result<(), String>| {
             cell.with(|log| log.fail_syncs = fail);
@@ -3002,7 +3040,7 @@ mod tests {
         // One after another, in every order a schedule draws: written, and asked for later, or at
         // once, or after others written since have been asked for; the syncer's ticks between.
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-        let (mut lost, mut covered_first, mut syncs_failed, mut again) = (0, 0, 0, 0);
+        let (mut lost, mut cut_short, mut covered_first, mut syncs_failed, mut again) = (0, 0, 0, 0, 0);
         for round in 0..60 {
             let dir = temp_dir(&format!("kept-{round}"));
             let file = dir.join("slug.jsonl");
@@ -3033,8 +3071,9 @@ mod tests {
             for _ in 0..120 {
                 if waiting.is_empty() || rng.below(3) > 0 {
                     let fail = rng.below(5) == 0;
-                    lost += usize::from(fail);
-                    waiting.push((write(&cell, fail), fail));
+                    let partway = fail && rng.below(2) == 0;
+                    (lost, cut_short) = (lost + usize::from(fail), cut_short + usize::from(partway));
+                    waiting.push((write(&cell, fail, partway), fail));
                     // A line written leaves its file to be synced; a write that failed wrote none.
                     if !fail {
                         (model.dirty, model.after_failure) = (true, false);
@@ -3054,10 +3093,12 @@ mod tests {
             }
             let told: BTreeSet<u64> = kept.union(&unsynced).copied().collect();
             assert_eq!(on_disk(&file), told, "round {round}: the file holds the lines told kept, and told unsynced, and no other");
+            let (counted, is) = lengths(&cell, &file);
+            assert_eq!(counted, is, "round {round}: the file's length, as the log counts it");
             (syncs_failed, again) = (syncs_failed + model.failed, again + model.again);
             let _ = std::fs::remove_dir_all(&dir);
         }
-        assert!(lost > 500 && covered_first > 100, "{lost} writes failed, {covered_first} of them asked for after a sync had passed them");
+        assert!(lost > 500 && cut_short > 200 && covered_first > 100, "{lost} writes failed, {cut_short} of them partway, {covered_first} asked for after a sync had passed them");
         assert!(syncs_failed > 100 && again > 20, "{syncs_failed} syncs failed, {again} times the next sync had only the failure's flag to go on");
 
         // Side by side: each run writes and asks at once, as a strict run does.
@@ -3073,7 +3114,7 @@ mod tests {
                         let mut kept = Vec::new();
                         for _ in 0..150 {
                             let fail = rng.below(4) == 0;
-                            let seq = write(cell, fail);
+                            let seq = write(cell, fail, fail && rng.below(2) == 0);
                             let told = cell.sync_through(seq);
                             assert_eq!(told.is_err(), fail, "entry {seq}: told {told:?}");
                             if !fail {
@@ -3087,6 +3128,8 @@ mod tests {
             runs.into_iter().flat_map(|r| r.join().unwrap()).collect()
         });
         assert_eq!(on_disk(&file), kept, "side by side: the file holds the lines told kept, and no other");
+        let (counted, is) = lengths(&cell, &file);
+        assert_eq!(counted, is, "side by side: the file's length, as the log counts it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A log line cut short partway doesn't take the next with it.** A write to a flow's log that
+  failed partway (a full disk) left part of its line, and the next line was written on to the end
+  of it, unreadable: a run told it was on record had no record. Now the next line starts a line of
+  its own, as after a crash, and the part is skipped when the log is read.
 - **A run's writes land all or none, and a run whose state wasn't kept is told so.** A run whose
   writes were refused partway (a value a state can't hold) kept those before it, and a state the
   store couldn't keep (a full disk) was said only in the server's log, the run answered as done.
