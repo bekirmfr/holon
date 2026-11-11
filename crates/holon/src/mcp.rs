@@ -12,7 +12,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use crate::sync::Mutex;
 use std::time::Duration;
 
 use holon_author::agent;

@@ -27,7 +27,8 @@
 //!   tables. Times are UTC.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use crate::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;

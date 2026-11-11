@@ -202,7 +202,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         .chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped))))
         .map(|(read, escaped)| {
             let answer = texts.answer(read, marks, escaped).map_err(|not| match not {
-                Rerun::Differs(why) | Rerun::Skipped(why) => why,
+                Rerun::Differs(why) | Rerun::Skipped(why) | Rerun::NothingRan(why) => why,
                 Rerun::Matched => String::new(),
             });
             (marks.read(&read.request, escaped), answer)

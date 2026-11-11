@@ -412,7 +412,7 @@ rounds, requests a second, with the server's CPU a request; no errors:
 - **The timeline is 63% of a line** and stays: the log holds what each step gave (Q16, below).
 - **The throughput check leaves out hyper and the hop**; at 64 connections hyper and the client
   bound `/health`.
-- **The witness export** costs 4–13%; its `pending.jsonl` is not synced (Q7).
+- **The witness export** costs 4–13%; its `pending.jsonl` is synced with the logs, once a second.
 
 ### Tried and left
 

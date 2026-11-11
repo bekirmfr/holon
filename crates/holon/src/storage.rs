@@ -11,7 +11,7 @@
 //! older than any write takes.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;

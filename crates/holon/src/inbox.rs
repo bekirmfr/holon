@@ -110,7 +110,7 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, d)| d.life.status == Status::Running)
+        .filter(|(_, d)| d.takes_runs(store))
         .flat_map(|(slug, d)| {
             let handlers = d.server.as_ref().map(|s| s.mails.clone()).unwrap_or_default();
             handlers.into_iter().map(|h| (slug.clone(), h, d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)))

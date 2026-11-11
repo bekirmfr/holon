@@ -44,6 +44,32 @@ without it.
 To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
 a file (see [The secrets key](#the-secrets-key)).
 
+### Stopping it
+
+Ctrl+C, SIGTERM (what a service manager or a container sends) or closing its console stops the
+server, and it says what it waits for:
+
+```
+holon: stopping: no new runs, 2 going on (ctrl+c again stops at once)
+holon: stopped
+```
+
+From then on it starts no run: its flows' requests and the editor's are answered 503, and its
+clocks, folders, mailboxes, feeds and queues start none (a waiting run's deadline passes it by,
+and the run times out once the server is back). The runs going on finish, each to its line in
+the log; then the logs and the witness's queue are synced and it exits. Each run is held to its
+[limits](#limits-a-run-has) (its time budget, each call's timeout), so a stop waits no longer
+than the slowest of them may take. A second ctrl+c stops it at once, as a power loss would: a
+`lazy` run's line in the last second may be lost.
+
+A stop leaves a mark beside the deployments file (`deployments.stopped`), which the next start
+takes away. A start that finds none follows a crash, which may have cut a run off between its
+commit and its line: a deployment whose state isn't the one its last run left says so on its
+timeline, and [`holon verify`](../guides/checking-runs.md#the-state-run-to-run) doesn't check where
+the next run began, rather than report the state as changed outside holon.
+
+Closing its console on Windows gives it a few seconds before Windows ends it.
+
 A path given to the server (an option, the `backup` setting, a folder or a database to bind, a
 folder to browse) is read as its machine reads one, and kept and shown in that machine's form. On
 Windows `/` and `\` both separate (`D:/archive` is `D:\archive`), and a whole path starts at a
@@ -348,6 +374,7 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 | a body over 10 MiB | 413 |
 | a body not sent within 30 seconds | 408 |
 | paused or stopped | 503 |
+| the server stopping | 503 |
 | more runs waiting at `await` than allowed | 503 |
 | a resume token that isn't valid | 404 |
 | the route's answer has no value | 404, or the status its `?? status(…)` says |
@@ -383,7 +410,7 @@ or not. Runs at once share the sync, so a busy deployment syncs its log far less
 a run. A handler may say `lazy` on its line ([Language
 reference](../language/reference.md#clocks-files-and-actions)): its runs' entries are written
 before the answer and synced within a second, as the deployment's events are, so a power loss can
-lose the last second of them, never more. So are requests no route took (a 404, a 405). A run
+lose the last second of them, never more (a stop syncs them first: [Stopping it](#stopping-it)). So are requests no route took (a 404, a 405). A run
 whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
 on record. The next entry written says which runs before it weren't, so `holon verify` reads them
 as lost, not as the log changed.

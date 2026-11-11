@@ -6,7 +6,7 @@
 //! and only what was done to the flows they view to one bound at some flows.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use rouille::{Request, Response};
 

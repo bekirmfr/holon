@@ -15,7 +15,7 @@
 //! and each chunk a file under `chunks/`, named by its hash. Every read is checked: each chunk
 //! against its name, the text against its own.
 
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use crate::*;
 

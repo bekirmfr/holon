@@ -29,7 +29,8 @@
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
+use crate::sync::Mutex;
 use std::time::Duration;
 
 use holon_core::documents::{check, Part, Tpl};

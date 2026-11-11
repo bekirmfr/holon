@@ -88,7 +88,8 @@ ok
 2. every unit in the export is what its hash says;
 3. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, the same effects, the same status. Outbound calls are answered from the log,
-   so nothing is sent;
+   so nothing is sent. A run that failed is run again too: what it computed is checked, and what
+   its writes made of its state, not its status, which is its failure's;
 4. each run's state follows from the one before: it began from the state the run before it left,
    and left what its writes make of the state it began with (see
    [The state, run to run](#the-state-run-to-run));
@@ -100,7 +101,8 @@ ok
    what is answered to that secret going to ("…; what is answered to it goes to
    https://api.example.com").
 
-It exits 0 when everything checks, and 1 otherwise, with what failed:
+It exits 0 when everything checks and every run was run again, and 1 when anything doesn't
+check, with what failed:
 
 ```
   chain: BROKEN at run 17: changed, removed or inserted outside holon
@@ -109,6 +111,14 @@ It exits 0 when everything checks, and 1 otherwise, with what failed:
   run 27 SENT a token (answer access_token) to hooks.example.com, where its approval doesn't show what is answered to its secret going
   run 30's state DOESN'T FOLLOW: it began from a state the run before it (run 29) didn't leave, nor a run beside it
 FAILED
+```
+
+When nothing fails but some runs couldn't be run again (see below), it exits 3: nothing in the
+export was found changed, and not all of it was checked. The report says which runs, and why:
+
+```
+  not re-run (1 run: 12): it read inbox/sales.csv, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files
+INCOMPLETE: nothing here fails, but not every run was run again (said above)
 ```
 
 ### The state, run to run
@@ -132,7 +142,13 @@ What it doesn't check, it says, by why:
   placeholder's;
 - a run after one whose line the server couldn't write, which may have begun from the state that
   run left;
-- runs logged before rc.30, which named no state they left.
+- the first run after the server started again from a crash or a power loss, with a state the
+  last run here didn't leave: a run the crash cut off between its commit and its line may have
+  left it. The deployment's events say so, naming the state the server loaded, and only a run
+  that began from that state is taken so. After a stop (ctrl+c, SIGTERM) nothing is cut off,
+  and a state the last run didn't leave is a break: it was changed while the server was stopped;
+- a run after one that named no state it left: its version held none, or its state, unchanged,
+  couldn't be kept.
 
 A collection is compared by its root, not its items: a run that wrote one is checked in the state
 a later run began from, its other cells as it left them. Runs of one deployment run side by side,
@@ -188,11 +204,15 @@ write of it to state, a collection, a database, a channel or a file is refused, 
 cache one; a run that tried is counted as one that wrote a secret's value. The same answer to a
 request that held no secret is an ordinary value. Only those field names are recognised.
 
-Some runs can't be run again at all, and are counted, not failed: a run whose such node the log
-keeps no outputs for (computed from a secret, larger than 16 KiB, or deeper than the log's
-timeline records), a run that
-failed (a budget ran out), a request no route took, a run logged before entries kept every
-attempt's requests that ran again after what it read changed, a run that read a file whose text the export doesn't hold, and a run that wrote a secret's value (which the server refused).
+Some runs can't be run again at all, and are counted, not failed; an export with any exits 3: a
+run whose such node the log keeps no outputs for (computed from a secret, larger than 16 KiB, or
+deeper than the log's timeline records), a run that panicked (its record says what it did by then
+isn't in it), a run that failed and, run again, gets further than its entry says (a budget ran
+out, a claim waited too long, or the server dropped what it did past a limit of its own), a run
+that read a file whose text the export doesn't hold, and a run that wrote a secret's value (which
+the server refused). A request no route took, and a run turned away before it began (a resource
+an admin set to `run` was held), ran nothing: their entries are checked to say they did nothing,
+and neither counts.
 
 ### Files
 
@@ -221,7 +241,9 @@ HOLON_EXPORT_HEADS_TOKEN=… holon serve --export-heads https://witness.example.
 
 Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`,
 `kind` `run`, or `event` for the events' chain) with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
-answered. If the witness can't be reached, the heads wait in a queue and are sent later.
+answered. If the witness can't be reached, the heads wait in a queue and are sent later. Past
+10,000 waiting, each deployment's newest head stands for the ones before it: it pins every run
+before it, so the witness is given fewer heads, and loses no run.
 
 A witness can be any service that keeps what it is sent. The **witness** sample is one, written as
 a flow: deploy it on another machine, set its `witness_key` secret to the same token, and point

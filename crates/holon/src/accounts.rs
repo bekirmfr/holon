@@ -27,7 +27,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
+use crate::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -367,14 +368,14 @@ impl<T> std::ops::DerefMut for Held<'_, T> {
 /// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
 struct Slots {
     taken: Mutex<usize>,
-    freed: std::sync::Condvar,
+    freed: crate::sync::Condvar,
     most: usize,
     wait: Duration,
 }
 
 impl Slots {
     const fn new(most: usize, wait: Duration) -> Slots {
-        Slots { taken: Mutex::new(0), freed: std::sync::Condvar::new(), most, wait }
+        Slots { taken: Mutex::new(0), freed: crate::sync::Condvar::new(), most, wait }
     }
 
     /// Run `f` once a slot is free, or say the server is busy past `wait`.

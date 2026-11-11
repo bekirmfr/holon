@@ -43,7 +43,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -2570,7 +2570,7 @@ fn deployments_persist_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
-            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+            policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
@@ -2603,7 +2603,7 @@ fn deployments_persist_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -3829,6 +3829,197 @@ on.file.created(inbox, (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the run going
+/// on when it was told goes on to its end and its log line (stopping.rs).
+///
+/// **Why:** the server exits once no run goes on. A run a trigger started after it was told would
+/// keep the stop waiting, or be cut off at the exit half done: its calls made, its line never
+/// written.
+///
+/// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
+/// the exit with what it did on no record; or the run going on refused its own end.
+///
+/// Each way a run starts that a test drives without a far side is a row: a request answered on
+/// its connection's worker and one on the pool, a WebSocket opened, an action over the control
+/// plane (`admitted`), a clock, a file and a waiting run at its deadline. Before the stop each
+/// runs; after it none does, and a caller is told 503. A feed's, a queue's, a mailbox's and a
+/// socket message's runs ask `takes_runs` as the clock's and the file's do: the sweep at the end
+/// holds every file that starts runs to asking.
+#[test]
+fn a_server_told_to_stop_starts_no_run_and_finishes_the_one_going_on() {
+    use std::cell::Cell;
+    use tungstenite::client::IntoClientRequest;
+    let (host, hits, gate) = gated_counting_server();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let dir = std::env::temp_dir().join(format!("holon-stopping-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = format!(
+        r#"import {{ action, event, every, flow, on, route }} from "holon"
+import state from "state"
+import inbox from "folder:inbox"
+import api from "host:{host}"
+
+flow("stopping", {{ port: {port} }})
+
+route.get("/light/:x", (req) => `light ${{req.params.x}}`, {{ log: "unrecorded" }})
+
+route.get("/hit", () => `hit ${{++state.hits}}`)
+
+route.websocket("/hello", {{ open: () => "hello" }})
+
+export const bump = action(() => ++state.bumps)
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  state.later = (state.later ?? 0) + (go.expired ? 1 : 1)
+}})
+
+export const slow = action(async () => {{
+  const r = await api.get("/slow")
+  state.slow = r.body
+  return r.body
+}})
+
+every("1s", () => {{
+  ++state.ticks
+}})
+
+on.file.created(inbox, (f) => {{
+  ++state.files
+}})
+"#
+    );
+    assert_eq!(deploy_text_to(&state, &text, &[&host]), "stopping");
+    sync_listeners(&state);
+    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    let status = |answered: &str| answered.get(9..12).and_then(|s| s.parse::<u16>().ok()).unwrap_or_else(|| panic!("no status: {answered:?}"));
+    let shown = |key: &str| body_json(route(&state, &req("GET", "/deployments/stopping/state", vec![])))["state"][key]["value"].clone();
+    let waiting = || state.deployments.lock().unwrap()["stopping"].parked.len();
+
+    // A way a run starts: the state key its run counts (none: its answer says it ran), and how it
+    // starts, answering what its caller was told when it has one.
+    struct Row<'a> {
+        what: &'a str,
+        counts: Option<&'a str>,
+        start: &'a dyn Fn() -> Option<u16>,
+    }
+    let light = || Some(status(&get("/light/x")));
+    let hit = || Some(status(&get("/hit")));
+    let socket = || {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        match tungstenite::client(format!("ws://127.0.0.1:{port}/hello").into_client_request().unwrap(), stream) {
+            Ok(_) => Some(101),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Some(r.status().as_u16()),
+            Err(e) => panic!("{e}"),
+        }
+    };
+    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &std::sync::atomic::AtomicUsize::new(0), 1).status_code);
+    let passes = Cell::new(0u64);
+    let tick = || {
+        passes.set(passes.get() + 2);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(passes.get()));
+        None
+    };
+    let dropped = Cell::new(0u32);
+    let file = || {
+        dropped.set(dropped.get() + 1);
+        std::fs::write(dir.join(format!("f{}.txt", dropped.get())), "dropped").unwrap();
+        // New, settling; then the same, and it runs.
+        for _ in 0..2 {
+            arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        }
+        None
+    };
+    let deadline = || {
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        None
+    };
+    let rows = [
+        Row { what: "a request answered on its connection's worker", counts: None, start: &light },
+        Row { what: "a request answered on the pool", counts: Some("hits"), start: &hit },
+        Row { what: "a WebSocket opened", counts: None, start: &socket },
+        Row { what: "an action over the control plane", counts: Some("bumps"), start: &bump },
+        Row { what: "a clock", counts: Some("ticks"), start: &tick },
+        Row { what: "a file", counts: Some("files"), start: &file },
+        Row { what: "a waiting run at its deadline", counts: Some("later"), start: &deadline },
+    ];
+    let count = |row: &Row| row.counts.map_or(0.0, |key| shown(key).as_f64().unwrap_or(0.0));
+    let ran = |row: &Row, was: f64, told: Option<u16>| match row.counts {
+        Some(_) => count(row) > was,
+        None => told.is_some_and(|s| s < 300),
+    };
+
+    assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "a run waits");
+    for row in &rows {
+        let was = count(row);
+        let told = (row.start)();
+        assert!(ran(row, was, told), "{}: it runs ({told:?})", row.what);
+    }
+    let here = Mutex::new(dataplane::Here::default());
+    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "stopping", &fake_data("GET", "/light/x", vec![]), &here), "answered on the worker");
+    assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
+
+    // A run going on, its call out, as the server is told to stop.
+    gate.shut();
+    std::thread::scope(|s| {
+        let going_on = s.spawn(|| run_action_named(&state, "stopping", "slow", serde_json::json!({})));
+        let out = gate.out_at_once(1);
+        let logged = log_entries(&state, "stopping").len();
+        state.store.1.stop();
+        let refused: Vec<(&str, bool, Option<u16>)> = rows
+            .iter()
+            .map(|row| {
+                let was = count(row);
+                let told = (row.start)();
+                (row.what, ran(row, was, told), told)
+            })
+            .collect();
+        let (left_waiting, logged_after) = (waiting(), log_entries(&state, "stopping").len());
+        gate.open();
+        let answered = going_on.join().unwrap().status_code;
+        assert!(out, "its call went out");
+        for (what, ran, told) in refused {
+            assert!(!ran, "{what}: told to stop, it doesn't run");
+            assert!(told.is_none_or(|s| s == 503), "{what}: its caller is told to try again: {told:?}");
+        }
+        assert_eq!(left_waiting, 1, "the waiting run waits on");
+        assert_eq!(logged_after, logged, "no run started");
+        assert_eq!(answered, 200, "the run going on goes on to its end");
+    });
+    assert_eq!(shown("slow"), "slow");
+    assert_eq!(hits_of(&hits, "/slow"), 1);
+    let entries = log_entries(&state, "stopping");
+    assert!(entries.iter().any(|e| e["kind"] == "trigger" && e["error"].is_null() && e.to_string().contains("/slow")), "its line is written");
+
+    // Every file that starts runs asks first, but those whose runs start only where another asked.
+    let asked_elsewhere = [
+        // Where a run is fired.
+        "firing.rs",
+        // An action: over the control plane (`admitted`), or by a flow's call inside a counted run.
+        "deploy.rs",
+        // A waiting run going on: at a route (`serve_flow`), a decision (`admitted`) or its
+        // deadline (`scheduler::expire_waiting`).
+        "durable.rs",
+    ];
+    for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name == "tests.rs" || asked_elsewhere.contains(&name.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).unwrap();
+        if text.contains("fire_with_state(") {
+            assert!(text.contains(".takes_runs(") || text.contains(".stopping()"), "{name} starts runs: it asks `Deployment::takes_runs` before each, as the others do");
+        }
+    }
+    assert_eq!(route(&state, &req("POST", "/deployments/stopping/stop", vec![])).status_code, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A server deployment whose port another program holds says so on its entry, rather than looking
 /// like it answers; once the port is free, deploying again listens there and clears it.
 #[test]
@@ -4305,7 +4496,7 @@ fn state_persists_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
-            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+            policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
@@ -4338,7 +4529,7 @@ fn state_persists_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -5826,7 +6017,7 @@ const GATE_HOLDS: Duration = Duration::from_secs(20);
 #[derive(Default)]
 struct Gate {
     calls: Mutex<GateCalls>,
-    changed: std::sync::Condvar,
+    changed: crate::sync::Condvar,
 }
 
 #[derive(Default)]
@@ -6701,6 +6892,272 @@ fn verify_tells_a_run_the_server_lost_from_one_removed() {
     }
 }
 
+/// **Guards:** a run a crash cut off between its commit and its line (its state, and its head, on
+/// disk; its line never), and what `holon verify` makes of the run after it. Started again without
+/// the mark of a clean stop (stopping.rs), the server notes on the deployment's timeline that the
+/// state it loaded isn't the one its last run left, naming it (`persist::note_cut_off_runs`), and
+/// the run after, begun from that state, is unchecked where it began, the export passing. After a
+/// clean stop the same state is a break (a state changed while the server was stopped); so is a
+/// state other than the one the event names; a crash that cut nothing off notes nothing.
+///
+/// **Why:** a run's state lands, with its head, before its line is written (C3 b), so a crash
+/// between the two leaves the state ahead of the log. Unsaid, the next run's state reads as
+/// changed outside holon: a false tamper alarm after every such crash. Said whatever the stop, a
+/// state changed while the server was stopped would pass as a run cut off.
+///
+/// **If it fails:** a crash reads as tampering; or a state changed while the server was stopped,
+/// or after it loaded, passes as a run a crash cut off.
+#[test]
+fn a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopped_breaks() {
+    let (host, _) = counting_server();
+    // Each row: whether the server crashed (no mark of a clean stop), whether a run was cut off,
+    // whether the state was changed once loaded; then whether an event says a run may have been
+    // cut off, the runs unchecked as such, and the runs whose state breaks.
+    type Row = (bool, bool, bool, bool, Vec<u64>, Vec<u64>);
+    let rows: Vec<Row> = vec![
+        (true, true, false, true, vec![1], vec![]),
+        (false, true, false, false, vec![], vec![1]),
+        (true, true, true, true, vec![], vec![1]),
+        (true, false, false, false, vec![], vec![]),
+        (false, false, false, false, vec![], vec![]),
+    ];
+    for (crashed, cut_off, changed, said, unchecked, breaks) in rows {
+        let row = format!("crashed: {crashed}, a run cut off: {cut_off}, changed once loaded: {changed}");
+        let at = Place::parse(&unique_temp_path("cut-off"));
+        let state = test_state_at(at.clone());
+        *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+        let slug = deploy_text(&state, &idem_text(&host), &host);
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200, "{row}");
+        if cut_off {
+            // Its state lands, and its head; its line never does.
+            state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_writes = true);
+            data_call(&state, &slug, "PUT", "/set/k2", "q");
+        }
+        // The server starts again from what is on disk; after a crash, crashes again before any
+        // run, which says nothing more.
+        let loaded = std::fs::read_to_string(persist::state_head_for(&at, &slug).unwrap()).unwrap();
+        let mut reloaded = BTreeMap::new();
+        for _ in 0..if crashed { 2 } else { 1 } {
+            reloaded = load_deployments(&at, &state.store, &state.policy()).unwrap();
+            if crashed {
+                persist::note_cut_off_runs(&at, &mut reloaded);
+            }
+        }
+        if changed {
+            reloaded[&slug].state.as_ref().unwrap().state.lock().unwrap().insert("x".into(), Value::Number(1.0)).unwrap();
+        }
+        *state.deployments.lock().unwrap() = reloaded;
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k3", "r").0, 200, "{row}");
+
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        let s = report.states.as_ref().unwrap();
+        let broke: Vec<u64> = s.breaks.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!((s.unchecked.get(verify::CUT_OFF).cloned().unwrap_or_default(), broke), (unchecked, breaks.clone()), "{row}:\n{text}");
+        assert_eq!(report.ok(), breaks.is_empty(), "{row}:\n{text}");
+        let noted: Vec<events::Event> = export.events.iter().map(|l| serde_json::from_str::<events::Event>(l).unwrap()).filter(|e| e.loaded.is_some()).collect();
+        assert_eq!(noted.len(), usize::from(said), "{row}: {:?}", export.events);
+        if let Some(event) = noted.first() {
+            assert_eq!((event.kind.as_str(), event.loaded.as_deref(), event.run_seq), ("lifecycle", Some(loaded.trim()), 1), "{row}");
+        }
+    }
+}
+
+/// **Guards:** what a run and a request take that every other one takes too (the deployments
+/// table, a deployment's log, its state, its secrets, the policy): after a thread panics holding
+/// each, the next run runs and is logged, and the control plane answers (sync.rs).
+///
+/// **Why:** a panic is caught as its run's failure (G3), but one holding a std lock poisoned it,
+/// and every `lock().unwrap()` after it panicked too: one panic in a run holding the deployments
+/// table failed every run and request until the server was started again.
+///
+/// **If it fails:** one panic takes a deployment, or the whole server, down until a restart.
+#[test]
+fn a_panic_holding_what_every_run_takes_stops_no_run_after_it() {
+    let state = test_state();
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    let bump = || run_action_named(&state, "c", "bump", serde_json::json!({})).status_code;
+    assert_eq!(bump(), 200);
+    type Held<'a> = Box<dyn Fn() + Sync + 'a>;
+    let dep = |f: &dyn Fn(&Deployment)| f(&state.deployments.lock().unwrap()["c"]);
+    let rows: Vec<(&str, Held)> = vec![
+        ("the deployments table", Box::new(|| {
+            let _held = state.deployments.lock().unwrap();
+            panic!("a run panics holding it")
+        })),
+        ("its log", Box::new(|| dep(&|d| d.log.with(|_| panic!("a run panics holding it"))))),
+        ("its state", Box::new(|| {
+            dep(&|d| {
+                let _held = d.state.as_ref().unwrap().state.lock().unwrap();
+                panic!("a run panics holding it")
+            })
+        })),
+        ("its secrets", Box::new(|| {
+            dep(&|d| {
+                let _held = d.secrets.lock().unwrap();
+                panic!("a run panics holding it")
+            })
+        })),
+        ("the policy", Box::new(|| {
+            let _held = state.policy.write().unwrap();
+            panic!("a run panics holding it")
+        })),
+    ];
+    let held = rows.len();
+    for (what, hold) in rows {
+        assert!(std::thread::scope(|s| s.spawn(&hold).join()).is_err(), "{what}");
+        assert_eq!(bump(), 200, "a run after a panic holding {what}");
+        assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200, "the control plane after a panic holding {what}");
+    }
+    assert_eq!(state.deployments.lock().unwrap()["c"].log.next_seq(), 1 + held as u64, "each run logged");
+}
+
+/// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
+/// that follows. A run that failed is run again: what it computed is checked, and what its writes
+/// made of its state (none, if its error says they were refused), not its status. One that
+/// panicked isn't run again, and the export checks only so far: exit 3. A request no route took,
+/// and a run turned away before it began, ran nothing: their entries must say they did nothing,
+/// and a run said turned away is no run the state follows from. An entry naming no unit differs.
+/// Each row rewrites one line of an honest export of three runs, one after another, and chains the
+/// lines again.
+///
+/// **Why:** verify passed (exit 0) an export whose runs it hadn't all run again, and never ran a
+/// failed run again: a failed run's line could say it left any state, and the next run begin from
+/// it, unchecked. Entries "logged before" a field was kept were taken as not checkable, which a
+/// forged line could claim.
+///
+/// **If it fails:** an export some of whose runs weren't checked passes as checked; a state a failed
+/// run's line names passes unchecked; or an honest failed run reads as tampered with.
+#[test]
+fn every_run_an_entry_can_say_it_was_comes_to_a_verdict_and_the_exit_says_the_worst() {
+    let state = test_state();
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    for _ in 0..3 {
+        assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200);
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/c/export", vec![])))).unwrap();
+    // Ten seconds apart, so none ran beside another (`verify::beside`), which a run that began
+    // from the state another began with may have: what it began from is the run before it's.
+    let values: Vec<serde_json::Value> = export
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["at_ms"] = (v["at_ms"].as_u64().unwrap() + 10_000 * i as u64).into();
+            v
+        })
+        .collect();
+    assert_eq!(values.len(), 3);
+    // `export`'s lines, changed, chained again.
+    let rewritten = |change: &dyn Fn(&mut [serde_json::Value])| -> verify::Export {
+        let mut changed = values.clone();
+        change(&mut changed);
+        let mut lines: Vec<String> = Vec::new();
+        for mut v in changed {
+            if let Some(before) = lines.last() {
+                v["prev"] = recorder::line_hash(before).into();
+            }
+            lines.push(serde_json::to_string(&v).unwrap());
+        }
+        let head = recorder::line_hash(lines.last().unwrap());
+        verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() }
+    };
+    let failed = |v: &mut serde_json::Value, why: String| v["error"] = why.into();
+    let written = format!("{}the file \"r.md\": no room", folders::WRITE_FAILED);
+    let refused = format!("{}the collection \"seen\": not a record, {}", folders::WRITE_FAILED, firing::STATE_NOT_WRITTEN);
+    // As the server writes an entry of a run that ran nothing (`FiredRun::nothing`).
+    let emptied = |v: &mut serde_json::Value| {
+        for (key, none) in [("outputs", serde_json::json!([])), ("performed", serde_json::json!([])), ("rounds", serde_json::json!([])), ("reads", serde_json::json!([])), ("state_before", serde_json::json!({}))] {
+            v[key] = none;
+        }
+        let object = v.as_object_mut().unwrap();
+        object.remove("state_after");
+        object.remove("commit");
+    };
+    let state_left = |i: usize| values[i]["state_after"].clone();
+
+    type Change<'a> = Box<dyn Fn(&mut [serde_json::Value]) + 'a>;
+    // Run `i`'s line changed.
+    fn on<'a>(i: usize, change: Box<dyn Fn(&mut serde_json::Value) + 'a>) -> Change<'a> {
+        Box::new(move |lines| change(&mut lines[i]))
+    }
+    // Each: what was done, what each run comes to, and the exit.
+    let (m, d, s, n) = ("matched", "differs", "skipped", "nothing ran");
+    let rows: Vec<(&str, Change, [&str; 3], i32)> = vec![
+        ("as the server wrote it", on(0, Box::new(|_| {})), [m, m, m], 0),
+        ("the last failed after it finished: a file it wrote didn't land", on(2, Box::new(|v| failed(v, written.clone()))), [m, m, m], 0),
+        ("the same, its line naming another state it left", on(2, Box::new(|v| {
+            failed(v, written.clone());
+            v["state_after"] = state_left(0);
+        })), [m, m, m], 1),
+        ("the last's state's writes refused, its line naming the state it began with", on(2, Box::new(|v| {
+            failed(v, refused.clone());
+            v["state_after"] = state_left(1);
+        })), [m, m, m], 0),
+        ("the same, its line naming the state its writes make", on(2, Box::new(|v| failed(v, refused.clone()))), [m, m, m], 1),
+        ("the last panicked", on(2, Box::new(|v| failed(v, format!("{}a fault in Holon", firing::PANICKED)))), [m, m, s], 3),
+        // As the server writes a run that failed: its outputs absent, nothing performed, its state
+        // as it began.
+        ("the last failed on a claim it waited for past claim_wait: it ran, and isn't run again", on(2, Box::new(|v| {
+            failed(v, "busy: count is held by another run".into());
+            let outputs = v["outputs"].as_array().unwrap().iter().map(|_| serde_json::Value::Null).collect();
+            v["outputs"] = serde_json::Value::Array(outputs);
+            v["performed"] = serde_json::json!([]);
+            v["state_after"] = state_left(1);
+        })), [m, m, s], 3),
+        ("the last turned away, its line saying what it did", on(2, Box::new(|v| failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY)))), [m, m, d], 1),
+        ("the last turned away, its line saying it did nothing", on(2, Box::new(|v| {
+            failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
+            emptied(v);
+        })), [m, m, n], 0),
+        // A line naming no commit it began after is taken to have begun after the line before it.
+        ("the middle one failed after it finished, and the last's line names no commit", Box::new(|lines: &mut [serde_json::Value]| {
+            failed(&mut lines[1], written.clone());
+            lines[2].as_object_mut().unwrap().remove("commit");
+        }), [m, m, m], 0),
+        ("the middle one turned away, its line saying it did nothing", on(1, Box::new(|v| {
+            failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
+            emptied(v);
+        })), [m, n, m], 1),
+        ("the last a request no route took, its line saying it did nothing", on(2, Box::new(|v| {
+            v["run_id"] = "".into();
+            emptied(v);
+        })), [m, m, n], 0),
+        ("the same, its line saying what it did", on(2, Box::new(|v| v["run_id"] = "".into())), [m, m, d], 1),
+        ("the last's line naming no unit", on(2, Box::new(|v| v["unit"] = "".into())), [m, m, d], 1),
+    ];
+    let dir = std::env::temp_dir().join(format!("holon-verdicts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (what, change, verdicts, exit) in rows {
+        let copy = rewritten(&*change);
+        let report = verify::check(&copy, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        let came: Vec<&str> = report
+            .reruns
+            .iter()
+            .map(|(_, r)| match r {
+                verify::Rerun::Matched => m,
+                verify::Rerun::Differs(_) => d,
+                verify::Rerun::Skipped(_) => s,
+                verify::Rerun::NothingRan(_) => n,
+            })
+            .collect();
+        assert_eq!(came, verdicts, "{what}:\n{text}");
+        let file = dir.join("c.json");
+        std::fs::write(&file, serde_json::to_vec(&copy).unwrap()).unwrap();
+        assert_eq!(verify::run(&[file.display().to_string()]), exit, "{what}:\n{text}");
+        let verdict = text.lines().last().unwrap_or_default();
+        assert_eq!((verdict == "ok", verdict == "FAILED", verdict.starts_with("INCOMPLETE")), (exit == 0, exit == 1, exit == 3), "{what}:\n{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]
@@ -6905,9 +7362,11 @@ fn a_flow_reads_and_writes_a_bound_database() {
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
-    // The two refunds that changed no row failed, and say so; every other run matches.
-    let skipped = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("changed 0 rows"))).count();
-    assert_eq!((report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), skipped), (entries.len() - 2, 2), "{:?}", report.reruns);
+    // The two refunds that changed no row failed, and say so; they are run again as every other
+    // run, and match: what they computed is what the log says, their writes refused.
+    let refused = entries.iter().filter(|e| e["error"].as_str().is_some_and(|e| e.contains("changed 0 rows"))).count();
+    assert_eq!(refused, 2, "{entries:?}");
+    assert!(report.complete() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", report.reruns);
     drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -7727,7 +8186,8 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     assert!(first.blobs.values().any(|t| t == &big), "the export holds the big file's text");
     let report = verify::check(&first, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
-    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 5, "{:?}", report.reruns);
+    // The one whose read failed too: it performed nothing, as the server dropped what it did.
+    assert!(report.complete() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", report.reruns);
     assert_eq!(first.files_left_out, None);
 
     // Asked for less: the big file's text stays out, the export says so, and the run that read it
@@ -9514,7 +9974,7 @@ struct Exchange {
     host: String,
     asked: Arc<Mutex<Vec<serde_json::Value>>>,
     placed: Arc<Mutex<Vec<serde_json::Value>>>,
-    held: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    held: Arc<(Mutex<bool>, crate::sync::Condvar)>,
 }
 
 impl Exchange {
@@ -9526,7 +9986,7 @@ impl Exchange {
     fn start() -> Exchange {
         let asked: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
         let placed: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
-        let held = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let held = Arc::new((Mutex::new(false), crate::sync::Condvar::new()));
         let (a, p, h) = (Arc::clone(&asked), Arc::clone(&placed), Arc::clone(&held));
         let server = rouille::Server::new("127.0.0.1:0", move |request| {
             use std::io::Read;
@@ -10255,12 +10715,14 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     assert!(runs()[6]["error"].as_str().is_some_and(|e| e.starts_with(queues::SEND_FAILED)));
     drop(held);
 
-    // Its runs check offline, those that failed not run again, and the URL's key is in no log.
+    // Its runs check offline, and the URL's key is in no log. Those that failed past what the queue
+    // takes aren't checked: what the server dropped, run again, is sent (verify isn't given its
+    // bindings), so the export checks only so far.
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     let failed = |r: &verify::Rerun| matches!(r, verify::Rerun::Skipped(why) if why.contains("message not sent"));
     let (matched, skipped) = (report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| failed(r)).count());
-    assert!(report.ok() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
+    assert!(report.ok() && !report.complete() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
     assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
     assert!(replays_as_it_verifies(&state, &slug).contains("queue"));
     let _ = std::fs::remove_dir_all(&dir);

@@ -3,14 +3,13 @@
 
 use crate::*;
 
-/// The `Host` this endpoint runs `fire` against. **Deliberately does not perform anything
-/// real** — no network call, no file write, no email. It records each `(capability, payload)`
-/// `fire` hands it and returns them to the caller as a receipt instead. This is a scoped
-/// decision, not an oversight: the project's own plan already names real platform hosts (real
-/// email/socket/file IO behind the `Host` seam) as a still-deferred, separate piece of work,
-/// not something this transport crate was ever asked to build. Swapping in a real `Host` later
-/// is exactly what the `Host` trait already exists to make a clean, isolated change — nothing
-/// about this endpoint's wire shape would need to move.
+/// The `Host` a run evaluates against: it performs nothing itself. It records each
+/// `(capability, payload)` the run hands it, in order, and the server performs them once the run
+/// commits: its state's writes and its files at its commit ([`commit`]), then its mails and queue
+/// messages from their spools, and its packs to their subscribers. So a run that fails, waits or
+/// runs again has performed nothing yet. Its outbound requests aren't effects: they go out in its
+/// rounds, as it runs. `holon verify` runs a run again against one, and compares what it records
+/// with the log.
 pub(crate) struct RecordingHost {
     pub(crate) performed: Vec<(Capability, Value)>,
     /// The lines it wrote to its log: kept out of `performed`, so a run is the same with or
@@ -118,6 +117,8 @@ pub(crate) struct FiredRun {
     pub(crate) state_after: Option<String>,
     /// The commit to its state it began after, and its own once it lands (`recorder::Commit`).
     pub(crate) commit: Option<recorder::Commit>,
+    /// It holds a stopping server's door open until it drops, after its log line (stopping.rs).
+    pub(crate) running: Option<stopping::Held>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -144,6 +145,14 @@ fn changed_from(start: &State, live: &State) -> bool {
 /// What a run that panicked says first ([`panicked`]).
 pub(crate) const PANICKED: &str = "it panicked: ";
 
+/// What the error of a run turned away before it began ends with ([`turned_away`]): it did
+/// nothing. It begins `busy: `, as a claim's that waited past claim_wait does, of a run that ran.
+pub(crate) const TURNED_AWAY: &str = "(its run lock) past claim_wait";
+
+/// What a run whose state's writes were refused at its commit says ([`commit`]): none of them
+/// landed, so the state it left is the one it began with.
+pub(crate) const STATE_NOT_WRITTEN: &str = "so none of its state's writes landed";
+
 /// One run, whatever started it: a request, an action, a clock, a file, a message, a mail, or a
 /// waiting run going on. Everything a run is held to arrives here, so it takes them all.
 ///
@@ -167,10 +176,14 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
+    // Counted before it does anything: a server stopping waits for it, or it never starts.
+    let running = stopping::run();
     // A resumed run keeps the nonce it started with: it is the same run.
     let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
     let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fire_run(root_unit, inputs, resolver, store, state, extra_sourced, permit, clock, secrets, waits, resumed, nonce)));
-    fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce))
+    let mut run = fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce));
+    run.running = Some(running);
+    run
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -431,7 +444,7 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
-    run.error = Some(format!("busy: {resource} is held by another run for its whole length (its run lock) past claim_wait"));
+    run.error = Some(format!("busy: {resource} is held by another run for its whole length {TURNED_AWAY}"));
     eprintln!("holon: run {} turned away: {resource} is run-locked by another run past claim_wait", run.run_id);
     run
 }
@@ -573,7 +586,7 @@ fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
 /// to restore to, and says so.
 fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store: &SharedStore) {
     let changed = run.start_state.as_ref().is_some_and(|start| changed_from(start, live));
-    match crate::restore::save_snapshot(live, run.start_state.as_ref(), store) {
+    match cell.save(live, store) {
         Ok(hex) => {
             if changed && let Err(e) = cell.write_head(&hex) {
                 not_all_written(run, vec![format!("the state it left: {e}")]);
@@ -614,7 +627,7 @@ fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, perfor
     if refused.is_empty() {
         *live = next;
     } else {
-        failed.push(format!("{}, so none of its state's writes landed", refused.join("; ")));
+        failed.push(format!("{}, {STATE_NOT_WRITTEN}", refused.join("; ")));
     }
     failed.extend(staged.land());
     for e in &failed {
@@ -840,6 +853,7 @@ fn run_attempt(
         answered: recorder::AnswerTokens(answered),
         state_after: None,
         commit: None,
+        running: None,
     };
     Attempt { run, start, overtaken }
 }
@@ -952,6 +966,8 @@ pub(crate) fn run_id_of(
 /// Its packs go out once its record is on disk (channels.rs): a strict run's, with those of every
 /// run before it, once its sync is done; a lazy one's with the next sync (`sync_logs`).
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
+    // Held while it writes, so a server stopping never cuts its line (stopping.rs).
+    let _writing = stopping::hold();
     let Some(Pushed { log, seq, level, channels, permit, folders }) = push_run(deployments, slug, entry, tokens, declared)? else {
         return Some(Logged { seq: None, kept: Ok(()) });
     };
@@ -998,6 +1014,8 @@ pub(crate) fn log_or_count(
     declared: holon_core::LogLevel,
     sends: bool,
 ) -> Option<Logged> {
+    // Held from before its run's `FiredRun` is let go (in `entry`) until its line is written.
+    let _writing = stopping::hold();
     // A run that failed with an error keeps it in its tally if it is only counted, redacted as its
     // entry would be: its entry is made first, to know what of (once: it is logged if it is).
     let mut entry = Some(entry);
@@ -1447,6 +1465,7 @@ impl FiredRun {
             answered: recorder::AnswerTokens::default(),
             state_after: None,
             commit: None,
+            running: None,
         }
     }
 }
@@ -1721,6 +1740,66 @@ mod commit_checks {
             assert_eq!(said.starts_with(folders::WRITE_FAILED) && said.contains("the state it left"), fails, "{head:?}, changed: {}: {said:?}", !std::ptr::eq(live, &start));
             if !fails && std::ptr::eq(live, &changed) {
                 assert_eq!(std::fs::read_to_string(head).ok(), run.state_after, "its head names the snapshot it left");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store whose puts fail while `.1` is set: a disk full for a while.
+    struct FullAWhile(MemStore, Arc<std::sync::atomic::AtomicBool>);
+
+    impl Store for FullAWhile {
+        fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
+            self.0.put(unit)
+        }
+        fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+            self.0.get(key)
+        }
+        fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+            if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(StoreError::Io(std::io::Error::other("the disk is full")));
+            }
+            self.0.put_value(value)
+        }
+        fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+            self.0.get_value(key)
+        }
+    }
+
+    /// **Guards:** `StateCell::save`, which every run's commit keeps its state by: the values it
+    /// puts, and the head after.
+    ///
+    /// **Why:** a snapshot put only the values that differ from the state its run began with,
+    /// taking the rest to be in the store. A run whose save failed leaves its state in place with
+    /// a value never put; the next run, begun from that state, changes another key, and its head
+    /// names the value the store doesn't have.
+    ///
+    /// **If it fails:** the server refuses to start (a deployment's state head names a value the
+    /// store doesn't have), after nothing worse than a disk full for a moment.
+    #[test]
+    fn the_state_a_head_names_loads_whatever_saves_failed_before_it() {
+        // A key written, another, the first again, and back to a value it had.
+        let steps = [("a", 1.0), ("b", 2.0), ("a", 3.0), ("b", 4.0), ("a", 1.0)];
+        let dir = std::env::temp_dir().join(format!("holon-saves-{}-{}", std::process::id(), rand::random::<u32>()));
+        for failing in 0..1u32 << steps.len() {
+            let full = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let store = SharedStore::new(Box::new(FullAWhile(MemStore::new(), Arc::clone(&full))));
+            let head = dir.join(format!("{failing}")).join("head");
+            let cell = claims::StateCell::kept_at(State::new(), Some(head.clone()));
+            let mut live = State::new();
+            for (i, (key, value)) in steps.into_iter().enumerate() {
+                let start = live.clone();
+                live.insert(key.into(), Value::Number(value)).unwrap();
+                full.store(failing >> i & 1 == 1, std::sync::atomic::Ordering::SeqCst);
+                let mut run = FiredRun::nothing();
+                run.start_state = Some(start);
+                keep_state(&cell, &mut run, &live, &store);
+                full.store(false, std::sync::atomic::Ordering::SeqCst);
+                let Ok(hex) = std::fs::read_to_string(&head) else { continue };
+                let loaded = crate::restore::load_snapshot(&hex, &store).unwrap_or_else(|e| panic!("failing {failing:05b}, after step {i}: the head doesn't load: {e}"));
+                if run.error.is_none() {
+                    assert_eq!(crate::restore::snapshot_hash(&loaded), crate::restore::snapshot_hash(&live), "failing {failing:05b}, step {i}: the head names the state it left");
+                }
             }
         }
         let _ = std::fs::remove_dir_all(&dir);

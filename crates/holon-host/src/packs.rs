@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 use holon_core::Hash;
 
@@ -82,7 +82,9 @@ struct NewPack {
     entries: Vec<(Hash, At)>,
 }
 
-/// A store's packs: its index, and the blocks read lately, the least recently read first.
+/// A store's packs: its index, and the blocks read lately, the least recently read first. Its locks
+/// are taken back from a panic that held one, as the server's are (holon's sync.rs): a panic in one
+/// run would otherwise fail every read of a packed value after it.
 pub struct Packs {
     dir: PathBuf,
     kept: RwLock<Kept>,
@@ -100,7 +102,7 @@ impl Packs {
     /// The packs under `values` (`values/packs/`), opened once a process: each pack's index read.
     /// A pack that can't be read is an error: the values in it would be missing.
     pub fn shared(values: &Path) -> io::Result<Arc<Packs>> {
-        let mut open = OPEN.lock().unwrap();
+        let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
         open.retain(|(_, w)| w.strong_count() > 0);
         if let Some(p) = open.iter().find(|(dir, _)| dir == values).and_then(|(_, w)| w.upgrade()) {
             return Ok(p);
@@ -148,7 +150,7 @@ impl Packs {
 
     /// Whether `key` is packed.
     pub fn contains(&self, key: &Hash) -> bool {
-        self.kept.read().unwrap().index.contains_key(key)
+        self.kept.read().unwrap_or_else(PoisonError::into_inner).index.contains_key(key)
     }
 
     /// The packed value's bytes, as they were put, if it is packed.
@@ -156,7 +158,7 @@ impl Packs {
         // A pack rewritten between the lookup and the read: looked up again.
         for _ in 0..3 {
             let Some((at, path)) = ({
-                let kept = self.kept.read().unwrap();
+                let kept = self.kept.read().unwrap_or_else(PoisonError::into_inner);
                 kept.index.get(key).and_then(|at| kept.packs.get(&at.pack).map(|p| (*at, p.path.clone())))
             }) else {
                 return Ok(None);
@@ -176,7 +178,7 @@ impl Packs {
     fn block(&self, path: &Path, at: At) -> io::Result<Arc<Vec<u8>>> {
         let key = (at.pack, at.block);
         {
-            let mut blocks = self.blocks.lock().unwrap();
+            let mut blocks = self.blocks.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(i) = blocks.iter().position(|(k, _)| *k == key) {
                 let hit = blocks.remove(i).expect("just found");
                 let b = Arc::clone(&hit.1);
@@ -191,7 +193,7 @@ impl Packs {
         let mut block = Vec::new();
         flate2::read::DeflateDecoder::new(&deflated[..]).read_to_end(&mut block)?;
         let block = Arc::new(block);
-        let mut blocks = self.blocks.lock().unwrap();
+        let mut blocks = self.blocks.lock().unwrap_or_else(PoisonError::into_inner);
         blocks.push_back((key, Arc::clone(&block)));
         let mut held: usize = blocks.iter().map(|(_, b)| b.len()).sum();
         while held > KEPT_BYTES && blocks.len() > 1 {
@@ -207,7 +209,7 @@ impl Packs {
         let fresh: Vec<&(Hash, Vec<u8>)> = values.iter().filter(|(h, _)| !self.contains(h)).collect();
         let Some(written) = self.write(&fresh)? else { return Ok(0) };
         let count = written.entries.len();
-        let mut kept = self.kept.write().unwrap();
+        let mut kept = self.kept.write().unwrap_or_else(PoisonError::into_inner);
         for (hash, at) in &written.entries {
             kept.index.insert(*hash, *at);
         }
@@ -224,7 +226,7 @@ impl Packs {
         let (bytes, mut entries) = write_pack(values)?;
         fs::create_dir_all(&self.dir)?;
         let n = {
-            let mut kept = self.kept.write().unwrap();
+            let mut kept = self.kept.write().unwrap_or_else(PoisonError::into_inner);
             kept.next += 1;
             kept.next - 1
         };
@@ -238,7 +240,7 @@ impl Packs {
 
     /// Every packed value's hash and length (as put).
     pub fn hashes(&self) -> Vec<(Hash, u64)> {
-        self.kept.read().unwrap().index.iter().map(|(h, at)| (*h, at.len as u64)).collect()
+        self.kept.read().unwrap_or_else(PoisonError::into_inner).index.iter().map(|(h, at)| (*h, at.len as u64)).collect()
     }
 
     /// Remove `gone` from the packs: each pack holding any of them rewritten with the rest (a
@@ -252,7 +254,7 @@ impl Packs {
     /// new packs at once, so a read finds every value kept throughout.
     pub fn rewrite<G>(&self, gone: &std::collections::HashSet<Hash>, mut settle: impl FnMut() -> (G, std::collections::HashSet<Hash>)) -> io::Result<(usize, u64)> {
         let touched: Vec<(u64, PathBuf)> = {
-            let kept = self.kept.read().unwrap();
+            let kept = self.kept.read().unwrap_or_else(PoisonError::into_inner);
             let mut packs: Vec<u64> = gone.iter().filter_map(|h| kept.index.get(h).map(|at| at.pack)).collect();
             packs.sort_unstable();
             packs.dedup();
@@ -260,7 +262,7 @@ impl Packs {
         };
         let (mut removed, mut bytes) = (0, 0u64);
         for (n, path) in touched {
-            let ats: Vec<(Hash, At)> = self.kept.read().unwrap().index.iter().filter(|(_, at)| at.pack == n).map(|(h, at)| (*h, *at)).collect();
+            let ats: Vec<(Hash, At)> = self.kept.read().unwrap_or_else(PoisonError::into_inner).index.iter().filter(|(_, at)| at.pack == n).map(|(h, at)| (*h, *at)).collect();
             let value = |at: &At| -> io::Result<Vec<u8>> {
                 let block = self.block(&path, *at)?;
                 block.get(at.offset as usize..(at.offset + at.len) as usize).map(<[u8]>::to_vec).ok_or_else(|| io::Error::other("a packed value past its block's end"))
@@ -280,7 +282,7 @@ impl Packs {
             }
             let back_refs: Vec<&(Hash, Vec<u8>)> = back.iter().collect();
             let kept_back = self.write(&back_refs)?;
-            let mut kept = self.kept.write().unwrap();
+            let mut kept = self.kept.write().unwrap_or_else(PoisonError::into_inner);
             for new in [fresh, kept_back].into_iter().flatten() {
                 // Only the values still in the old pack move (another rewrite may have moved some).
                 let mut moved = 0;
@@ -305,7 +307,7 @@ impl Packs {
             }
             kept.packs.remove(&n);
             drop(kept);
-            self.blocks.lock().unwrap().retain(|((p, _), _)| *p != n);
+            self.blocks.lock().unwrap_or_else(PoisonError::into_inner).retain(|((p, _), _)| *p != n);
             let _ = fs::remove_file(&path);
         }
         Ok((removed, bytes))
@@ -313,7 +315,7 @@ impl Packs {
 
     /// What the packs hold.
     pub fn held(&self) -> Held {
-        let kept = self.kept.read().unwrap();
+        let kept = self.kept.read().unwrap_or_else(PoisonError::into_inner);
         Held { packs: kept.packs.len(), values: kept.index.len(), bytes: kept.index.values().map(|a| a.len as u64).sum(), on_disk: kept.packs.values().map(|p| p.size).sum() }
     }
 }
@@ -409,6 +411,31 @@ mod tests {
 
     fn values(n: usize) -> Vec<(Hash, Vec<u8>)> {
         (0..n).map(|i| (*blake3::hash(&i.to_le_bytes()).as_bytes(), format!("{{\"note\":{i},\"title\":\"a note about the {i}th thing\",\"body\":\"some text\"}}").into_bytes())).collect()
+    }
+
+    /// Guards: a panic holding the index or the blocks read lately stops no read after it.
+    /// Why: every run that reads a packed value takes them; a lock a panic poisoned would fail
+    /// each of those runs until the server restarted.
+    /// If it fails: one panic makes every packed value unreadable.
+    #[test]
+    fn a_panic_holding_the_packs_locks_stops_no_read_after_it() {
+        let dir = temp("poisoned");
+        let packs = Packs::open(&dir).unwrap();
+        let vs = values(50);
+        packs.pack(&vs).unwrap();
+        assert_eq!(packs.get(&vs[0].0).unwrap().as_deref(), Some(&vs[0].1[..]));
+        std::thread::scope(|s| {
+            assert!(s.spawn(|| {
+                let _index = packs.kept.write().unwrap();
+                let _blocks = packs.blocks.lock().unwrap();
+                panic!("a run panics holding both")
+            }).join().is_err());
+        });
+        for (h, v) in &vs {
+            assert_eq!(packs.get(h).unwrap().as_deref(), Some(&v[..]));
+        }
+        assert!(packs.contains(&vs[1].0));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Packed values read back as put, from one opened again too; packed again, nothing is

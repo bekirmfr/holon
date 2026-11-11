@@ -296,7 +296,7 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, d)| d.arrivals.watches() && d.life.status == Status::Running)
+        .filter(|(_, d)| d.arrivals.watches() && d.takes_runs(store))
         .map(|(slug, d)| {
             let handlers = d.server.as_ref().map(|s| s.files.clone());
             (slug.clone(), d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders), Arc::clone(&d.arrivals), handlers)

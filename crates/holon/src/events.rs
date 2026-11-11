@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +30,8 @@ pub(crate) struct Event {
     /// The run log's next seq when it happened: it came after the runs before that one.
     pub(crate) run_seq: u64,
     /// `"deploy"`, `"restore"`, `"ask"` (an agent's restore, saved for a person to approve),
-    /// `"grant"`, `"secret"`, `"binding"` or `"lifecycle"`.
+    /// `"grant"`, `"secret"`, `"binding"` or `"lifecycle"` (pausing, stopping and running it, and
+    /// the server starting again after a crash with a state its last run didn't leave: `loaded`).
     pub(crate) kind: String,
     /// What happened, in a few words: `revoked StateWrite("a")`, `paused`.
     pub(crate) what: String,
@@ -54,6 +55,11 @@ pub(crate) struct Event {
     /// What an ask would restore of its point (`from`): `"code"`, `"state"`, or both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) restores: Vec<String>,
+    /// The state the server loaded as it started again after a stop that wasn't one (a crash, a
+    /// power loss), the last run here not having left it: its snapshot's hash. A run the stop cut
+    /// off between its commit and its line may have (persist.rs, `note_cut_off_runs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) loaded: Option<String>,
 }
 
 /// What an event says beyond its kind and words.
@@ -64,6 +70,7 @@ pub(crate) struct Detail {
     pub(crate) name: Option<String>,
     pub(crate) from: Option<String>,
     pub(crate) restores: Vec<String>,
+    pub(crate) loaded: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -133,6 +140,7 @@ impl Events {
             name: detail.name,
             from: detail.from,
             restores: detail.restores,
+            loaded: detail.loaded,
         };
         let line = match serde_json::to_string(&event) {
             Ok(line) => line,

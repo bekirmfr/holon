@@ -25,7 +25,7 @@
 //!   A folder may cap its size: a write that would take it past its cap doesn't land.
 
 use std::io::{Read as _, Seek as _, Write as _};
-use std::sync::RwLock;
+use crate::sync::RwLock;
 
 use holon_host::{Limits, Performer};
 use rouille::{Request, Response};
@@ -936,15 +936,18 @@ fn fill_beside(path: &Path, create: bool, fill: impl FnOnce(&mut std::fs::File) 
 
 /// Put the file written `beside` at `path`: renamed over it; with `create`, linked to `path`
 /// instead, which fails if a file has that name by then (whoever put it there), so nothing is
-/// replaced.
+/// replaced. Its folder synced after, so the run that wrote it isn't said done with the file
+/// back as it was after a power loss.
 fn put(beside: Beside, path: &Path, create: bool) -> Result<(), String> {
     if !create {
-        return std::fs::rename(&beside.0, path).map_err(|e| e.to_string());
+        std::fs::rename(&beside.0, path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::hard_link(&beside.0, path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => EXISTS.to_string(),
+            _ => format!("{e} (a create-only write links the file into place)"),
+        })?;
     }
-    std::fs::hard_link(&beside.0, path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => EXISTS.to_string(),
-        _ => format!("{e} (a create-only write links the file into place)"),
-    })
+    holon_host::sync_dir_of(path).map_err(|e| format!("its folder couldn't be synced, so a power loss may take it back: {e}"))
 }
 
 /// A write or a copy made ready before its run commits: its bytes are beside the file, so what

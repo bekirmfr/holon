@@ -25,7 +25,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Condvar;
+use crate::sync::Condvar;
 
 use crate::queues::{Binding, Queues};
 use crate::sqs::Received;
@@ -257,7 +257,8 @@ fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTr
     let visibility = binding.visibility as u32;
     let mut recent = kept.read().recent;
     let (mut wait, mut failing, mut listened) = (FIRST_WAIT, false, false);
-    while !shared.stopped() {
+    // A server stopping (stopping.rs) receives no more: its runs are what it already took.
+    while !shared.stopped() && !store.1.stopping() {
         let received = client(shared, binding).and_then(|c| c.receive(BATCH, WAIT, visibility).map(|batch| (c, batch)).map_err(|f| f.why().to_string()));
         let (client, batch) = match received {
             Ok(r) => r,
@@ -296,7 +297,7 @@ fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTr
             (l.error, l.waiting) = (None, batch.len());
         });
         for (i, m) in batch.iter().enumerate() {
-            if shared.stopped() {
+            if shared.stopped() || store.1.stopping() {
                 // What hasn't run is handed out again at once, to what listens next.
                 for rest in &batch[i..] {
                     let _ = client.extend(&rest.receipt, 0);
@@ -311,7 +312,7 @@ fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTr
                 delete(shared, deployments, &client, m);
                 continue;
             }
-            let Some(listening) = listening(deployments, &shared.slug, queue) else {
+            let Some(listening) = listening(store, deployments, &shared.slug, queue) else {
                 let _ = client.extend(&m.receipt, 0);
                 shared.let_go(&m.receipt);
                 continue;
@@ -389,10 +390,10 @@ fn value_of(m: &Received) -> Value {
 /// folders.
 type Listening = (String, holon_core::QueueHandler, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Arc<folders::Scoped>);
 
-/// `slug`'s handler of `queue` as it is now, if `slug` runs and listens to it.
-fn listening(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, queue: &str) -> Option<Listening> {
+/// `slug`'s handler of `queue` as it is now, if `slug` takes runs and listens to it.
+fn listening(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, queue: &str) -> Option<Listening> {
     let deployments = deployments.lock().unwrap();
-    let d = deployments.get(slug).filter(|d| d.life.status == Status::Running)?;
+    let d = deployments.get(slug).filter(|d| d.takes_runs(store))?;
     let handler = d.server.as_ref()?.queues.iter().find(|q| q.queue == queue)?.clone();
     Some((slug.to_string(), handler, d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)))
 }

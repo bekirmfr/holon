@@ -23,10 +23,17 @@
 //! and when gives a receipt anyone can check). Until then the heads wait in
 //! `<deployments>.heads/pending.jsonl`, so a restart or an outage loses none; a failing witness is
 //! tried again after a growing pause, up to five minutes, and said so once until it recovers.
+//!
+//! The queue file is synced with the logs, every second (`sync`): a power loss loses what it
+//! loses of them. A receipt is synced as it is kept. While the witness is down the queue doesn't
+//! grow without end: past [`MAX_PENDING`] heads, each deployment's newest of each kind stands for
+//! the ones before it (`compact`). A head stands for every line before it in its chain, so what the
+//! witness then takes pins every run it would have, in fewer steps.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use crate::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +51,8 @@ pub struct Head {
 
 /// The most heads sent in one batch.
 const MAX_BATCH: usize = 1000;
+/// The most heads that wait before the queue is cut to each deployment's newest of each kind.
+pub const MAX_PENDING: usize = 10_000;
 /// The longest pause before trying a failing witness again.
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
@@ -54,6 +63,8 @@ pub struct Exporter {
     dir: Option<PathBuf>,
     /// The heads not yet taken by the witness, oldest first, kept in step with `pending.jsonl`.
     pending: Mutex<Queue>,
+    /// How many may wait before the queue is cut ([`MAX_PENDING`]; fewer in a test).
+    most: usize,
     agent: ureq::Agent,
     /// What makes the lines a batch's heads name durable, run before the batch is sent: the server
     /// syncs its logs (recorder.rs's `sync_logs`), so a witness never holds a head the disk lacks.
@@ -97,6 +108,11 @@ struct Queue {
     heads: VecDeque<Head>,
     /// Closed when the file is rewritten after a batch is taken, so the next head opens the new one.
     file: Option<std::fs::File>,
+    /// How many of the first heads are being sent: left as they are by a cut, since the batch's
+    /// heads are taken off the front once the witness takes it.
+    sending: usize,
+    /// Whether the file has heads appended since it was last synced.
+    unsynced: bool,
 }
 
 static EXPORTER: OnceLock<Arc<Exporter>> = OnceLock::new();
@@ -129,6 +145,12 @@ pub fn note(head: Head) {
     }
 }
 
+/// Sync the heads queued since the last sync to disk, if heads are being exported: with the logs,
+/// every `SYNC_EVERY` (recorder.rs), and before the server stops.
+pub fn sync() -> Result<(), String> {
+    EXPORTER.get().map_or(Ok(()), |exporter| exporter.sync())
+}
+
 impl Exporter {
     /// An exporter to `url` (https, or http to this machine), with the heads `dir` still holds.
     pub fn new(url: &str, token: Option<String>, dir: Option<PathBuf>) -> Result<Exporter, String> {
@@ -143,15 +165,24 @@ impl Exporter {
             // A line a crash cut short is dropped; the heads after it carry the chain anyway.
             pending.extend(text.lines().filter_map(|l| serde_json::from_str::<Head>(l).ok()));
         }
-        Ok(Exporter {
+        let exporter = Exporter {
             url: url.to_string(),
             token: token.filter(|t| !t.is_empty()),
             dir,
-            pending: Mutex::new(Queue { heads: pending, file: None }),
+            pending: Mutex::new(Queue { heads: pending, ..Queue::default() }),
+            most: MAX_PENDING,
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
             before_send: OnceLock::new(),
             taken_ms: std::sync::atomic::AtomicU64::new(0),
-        })
+        };
+        {
+            // A queue a server before this one let grow past the bound.
+            let mut queue = exporter.pending.lock().unwrap();
+            if queue.heads.len() > exporter.most {
+                exporter.compact(&mut queue);
+            }
+        }
+        Ok(exporter)
     }
 
     /// Run `hook` before each batch is sent from now on (once: a second is ignored).
@@ -159,13 +190,62 @@ impl Exporter {
         let _ = self.before_send.set(hook);
     }
 
-    /// Queue `head`, on disk too.
+    /// Queue `head`, on disk too; past `most` waiting, the queue cut ([`Exporter::compact`]).
     pub fn note(&self, head: Head) {
         let mut queue = self.pending.lock().unwrap();
         if let Err(e) = self.append(&mut queue, &head) {
             eprintln!("holon: could not queue a run's head for the witness: {e}");
         }
         queue.heads.push_back(head);
+        if queue.heads.len() > self.most {
+            self.compact(&mut queue);
+        }
+    }
+
+    /// Keep of the waiting heads each deployment's newest of each kind, in the order they came,
+    /// and the queue file rewritten to them: a run's head stands for every run before it in its
+    /// log, an event's for every event before it, a cut-back's for every cut-back before it. The
+    /// heads of a batch being sent are left as they are, to be taken off once it is taken.
+    fn compact(&self, queue: &mut Queue) {
+        let was = queue.heads.len();
+        let mut seen = BTreeSet::new();
+        let newest: Vec<Head> = queue.heads.iter().skip(queue.sending).rev().filter(|h| seen.insert((h.deployment.clone(), h.kind.clone()))).cloned().collect();
+        queue.heads.truncate(queue.sending);
+        queue.heads.extend(newest.into_iter().rev());
+        eprintln!("holon: {was} heads waited for the witness at {}: each deployment's newest stands for the ones before it, {} wait now", address_of(&self.url), queue.heads.len());
+        if let Err(e) = self.rewrite(queue) {
+            eprintln!("holon: the witness's queue couldn't be rewritten to the heads that wait: {e}");
+        }
+    }
+
+    /// The queue file rewritten to the heads that wait now, synced.
+    fn rewrite(&self, queue: &mut Queue) -> std::io::Result<()> {
+        // Closed first: a handle would go on appending to the old file (and Windows won't replace
+        // an open file).
+        queue.file = None;
+        let Some(dir) = &self.dir else { return Ok(()) };
+        std::fs::create_dir_all(dir)?;
+        let mut rest = String::new();
+        for head in &queue.heads {
+            rest.push_str(&serde_json::to_string(head).map_err(std::io::Error::other)?);
+            rest.push('\n');
+        }
+        crate::sealing::write_private(&dir.join("pending.jsonl"), rest.as_bytes())?;
+        queue.unsynced = false;
+        Ok(())
+    }
+
+    /// Sync the queue file if heads were appended to it since it was last synced; no lock held
+    /// while it syncs. A failure leaves it to be synced the next time.
+    pub fn sync(&self) -> Result<(), String> {
+        let Some(dir) = &self.dir else { return Ok(()) };
+        if !std::mem::take(&mut self.pending.lock().unwrap().unsynced) {
+            return Ok(());
+        }
+        crate::recorder::sync_file(&dir.join("pending.jsonl")).map_err(|e| {
+            self.pending.lock().unwrap().unsynced = true;
+            format!("the witness's queue couldn't be synced: {e}")
+        })
     }
 
     fn append(&self, queue: &mut Queue, head: &Head) -> std::io::Result<()> {
@@ -181,6 +261,7 @@ impl Exporter {
             // Opened again for the next head, in case the file went away under it.
             queue.file = None;
         }
+        queue.unsynced = true;
         written
     }
 
@@ -196,59 +277,65 @@ impl Exporter {
         let mut left = self.waiting();
         let mut sent = 0;
         loop {
-            let batch: Vec<Head> = self.pending.lock().unwrap().heads.iter().take(MAX_BATCH.min(left)).cloned().collect();
+            let batch: Vec<Head> = {
+                let mut queue = self.pending.lock().unwrap();
+                let batch: Vec<Head> = queue.heads.iter().take(MAX_BATCH.min(left)).cloned().collect();
+                queue.sending = batch.len();
+                batch
+            };
             if batch.is_empty() {
                 return Ok(sent);
             }
-            // The lines these heads name made durable first: once taken, a head stays taken.
-            if let Some(hook) = self.before_send.get() {
-                hook()?;
-            }
-            let heads = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
-            let id = blake3::hash(heads.as_bytes()).to_hex().to_string();
-            let body = format!("{{\"batch\":\"{id}\",\"heads\":{heads}}}");
-            let mut request = self.agent.post(&self.url).set("Content-Type", "application/json");
-            if let Some(token) = &self.token {
-                request = request.set("Authorization", &format!("Bearer {token}"));
-            }
-            let receipt = match request.send_string(&body) {
-                Ok(response) => response.into_string().unwrap_or_default(),
-                Err(ureq::Error::Status(code, response)) => {
-                    let why = response.into_string().unwrap_or_default();
-                    return Err(format!("the witness answered {code}: {}", why.trim()));
-                }
-                Err(e) => return Err(e.to_string()),
-            };
+            let receipt = self.send(&batch);
             let mut queue = self.pending.lock().unwrap();
+            queue.sending = 0;
+            let (id, receipt) = receipt?;
             queue.heads.drain(..batch.len());
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             self.taken_ms.store(now, std::sync::atomic::Ordering::Relaxed);
-            // Closed before `keep` replaces the file: a handle would go on appending to the old one
-            // (and Windows won't replace an open file).
-            queue.file = None;
-            if let Err(e) = self.keep(&queue.heads, &id, &receipt) {
-                eprintln!("holon: the witness took a batch of heads, but keeping its receipt failed: {e}");
+            if let Err(e) = self.rewrite(&mut queue).and_then(|()| self.keep(&id, &receipt)) {
+                eprintln!("holon: the witness took a batch of heads, but keeping what still waits, or its receipt, failed: {e}");
             }
             sent += batch.len();
             left -= batch.len();
         }
     }
 
-    /// After a batch was taken: the queue file rewritten to what still waits, the receipt kept.
-    fn keep(&self, pending: &VecDeque<Head>, batch: &str, receipt: &str) -> std::io::Result<()> {
-        let Some(dir) = &self.dir else { return Ok(()) };
-        std::fs::create_dir_all(dir)?;
-        let mut rest = String::new();
-        for head in pending {
-            rest.push_str(&serde_json::to_string(head).map_err(std::io::Error::other)?);
-            rest.push('\n');
+    /// Send `batch` to the witness, the lines its heads name made durable first: the batch's name,
+    /// and what the witness answered, or why it didn't take it.
+    fn send(&self, batch: &[Head]) -> Result<(String, String), String> {
+        // Once taken, a head stays taken.
+        if let Some(hook) = self.before_send.get() {
+            hook()?;
         }
-        crate::sealing::write_private(&dir.join("pending.jsonl"), rest.as_bytes())?;
+        let heads = serde_json::to_string(batch).map_err(|e| e.to_string())?;
+        let id = blake3::hash(heads.as_bytes()).to_hex().to_string();
+        let body = format!("{{\"batch\":\"{id}\",\"heads\":{heads}}}");
+        let mut request = self.agent.post(&self.url).set("Content-Type", "application/json");
+        if let Some(token) = &self.token {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        match request.send_string(&body) {
+            Ok(response) => Ok((id, response.into_string().unwrap_or_default())),
+            Err(ureq::Error::Status(code, response)) => {
+                let why = response.into_string().unwrap_or_default();
+                Err(format!("the witness answered {code}: {}", why.trim()))
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// After a batch was taken: its receipt kept, synced.
+    fn keep(&self, batch: &str, receipt: &str) -> std::io::Result<()> {
+        let Some(dir) = &self.dir else { return Ok(()) };
         // A receipt that isn't JSON is kept as text, under the batch it answered.
         let receipt: serde_json::Value = serde_json::from_str(receipt).unwrap_or_else(|_| serde_json::Value::String(receipt.to_string()));
         let line = serde_json::json!({ "batch": batch, "receipt": receipt }).to_string() + "\n";
         use std::io::Write;
-        std::fs::OpenOptions::new().append(true).create(true).open(dir.join("receipts.jsonl"))?.write_all(line.as_bytes())
+        let mut receipts = std::fs::OpenOptions::new().append(true).create(true).open(dir.join("receipts.jsonl"))?;
+        receipts.write_all(line.as_bytes())?;
+        // An append-only handle; the sync opens the file to write, as Windows asks.
+        crate::recorder::sync_file(&dir.join("receipts.jsonl"))
     }
 
     /// Send every `every`, pausing longer while the witness fails.
@@ -407,6 +494,105 @@ mod tests {
         assert_eq!(again.flush(), Ok(2));
         let sent: Vec<Head> = got.lock().unwrap().iter().flat_map(|(_, b)| serde_json::from_value::<Vec<Head>>(b["heads"].clone()).unwrap()).collect();
         assert_eq!(sent, [head(0), head(1), head(2), head(3)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn head_of(deployment: &str, kind: &str, seq: u64) -> Head {
+        Head { deployment: deployment.into(), kind: kind.into(), seq, head: format!("{deployment}-{kind}-{seq}"), at_ms: seq }
+    }
+
+    fn taken(got: &Taken) -> Vec<Head> {
+        got.lock().unwrap().iter().flat_map(|(_, b)| serde_json::from_value::<Vec<Head>>(b["heads"].clone()).unwrap()).collect()
+    }
+
+    /// **Guards:** the witness's queue while the witness is down: `note`'s bound and `compact`.
+    ///
+    /// **Why:** the queue grew by a head a run, in memory and on disk, for as long as the witness
+    /// was down. Cut, it must still give the witness every deployment's newest head of each kind,
+    /// since that head is what pins every line before it, in the order they came.
+    ///
+    /// **If it fails:** a server whose witness is down fills its memory and disk; or, cut, the
+    /// witness is never given a deployment's newest head, and the runs after the last one it
+    /// holds can be changed with nothing to show it.
+    #[test]
+    fn a_witness_down_long_is_given_each_deployments_newest_head_of_each_kind_in_order() {
+        let dir = std::env::temp_dir().join(format!("holon-heads-bound-{}-{}", std::process::id(), rand::random::<u32>()));
+        let status = Arc::new(Mutex::new(503));
+        let (url, got) = witness(Arc::clone(&status));
+        let mut exporter = Exporter::new(&url, None, Some(dir.clone())).unwrap();
+        exporter.most = 100;
+        let mut noted = Vec::new();
+        for seq in 0..1000u64 {
+            let head = head_of(["a", "b", "c"][(seq % 3) as usize], ["run", "run", "event", "trim"][(seq / 3 % 4) as usize], seq);
+            exporter.note(head.clone());
+            noted.push(head);
+            assert!(exporter.waiting() <= 100, "bounded: {} wait after {seq}", exporter.waiting());
+        }
+        assert!(exporter.flush().is_err());
+        let on_disk = std::fs::read_to_string(dir.join("pending.jsonl")).unwrap();
+        assert_eq!(on_disk.lines().count(), exporter.waiting(), "the file holds what waits");
+        assert_eq!(Exporter::new(&url, None, Some(dir.clone())).unwrap().waiting(), exporter.waiting(), "and a restart reads it back");
+
+        *status.lock().unwrap() = 200;
+        assert!(exporter.flush().is_ok());
+        let sent = taken(&got);
+        let at = |h: &Head| noted.iter().position(|n| n == h).unwrap_or_else(|| panic!("never noted: {h:?}"));
+        assert!(sent.windows(2).all(|w| at(&w[0]) < at(&w[1])), "in the order they were noted");
+        for (deployment, kind) in [("a", "run"), ("b", "event"), ("c", "trim"), ("a", "trim"), ("c", "run")] {
+            let newest = noted.iter().rev().find(|h| h.deployment == deployment && h.kind == kind).unwrap();
+            assert!(sent.contains(newest), "{deployment}'s newest {kind} head is given: {newest:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Guards:** a cut while a batch is out leaves that batch's heads as they are.
+    ///
+    /// **Why:** a batch is taken off the front of the queue once the witness takes it. Cut
+    /// meanwhile (runs go on while it is sent), the front would be other heads, and taking the
+    /// batch's off would drop heads never sent, the newest among them.
+    ///
+    /// **If it fails:** a deployment's newest head is dropped unsent, and the runs since the last
+    /// head the witness holds can be changed with nothing to show it.
+    #[test]
+    fn a_cut_while_a_batch_is_sent_drops_none_of_the_heads_after_it() {
+        let (url, got) = witness(Arc::new(Mutex::new(200)));
+        let mut exporter = Exporter::new(&url, None, None).unwrap();
+        exporter.most = 100;
+        let exporter = Arc::new(exporter);
+        let inside = Arc::downgrade(&exporter);
+        exporter.before_send(Box::new(move || {
+            if let Some(ex) = inside.upgrade() {
+                for seq in 1000..1300 {
+                    ex.note(head(seq));
+                }
+            }
+            Ok(())
+        }));
+        for seq in 0..50 {
+            exporter.note(head(seq));
+        }
+        assert_eq!(exporter.flush(), Ok(50), "the batch that was out");
+        assert_eq!(taken(&got), (0..50).map(head).collect::<Vec<_>>());
+        let rest: Vec<Head> = exporter.pending.lock().unwrap().heads.iter().cloned().collect();
+        assert!(rest.iter().all(|h| h.seq >= 1000) && rest.len() <= 100, "none of the batch, and bounded: {rest:?}");
+        assert_eq!(rest.last(), Some(&head(1299)), "the newest of what came meanwhile waits");
+    }
+
+    /// A queue file appended to is synced by the next `sync`; one that can't be is tried again.
+    #[test]
+    fn the_queue_is_synced_once_appended_to_and_again_after_a_failure() {
+        let dir = std::env::temp_dir().join(format!("holon-heads-sync-{}-{}", std::process::id(), rand::random::<u32>()));
+        let exporter = Exporter::new("http://127.0.0.1:9/heads", None, Some(dir.clone())).unwrap();
+        exporter.note(head(0));
+        assert!(exporter.pending.lock().unwrap().unsynced);
+        assert_eq!(exporter.sync(), Ok(()));
+        assert!(!exporter.pending.lock().unwrap().unsynced, "synced");
+        exporter.note(head(1));
+        exporter.pending.lock().unwrap().file = None;
+        std::fs::remove_file(dir.join("pending.jsonl")).unwrap();
+        std::fs::create_dir(dir.join("pending.jsonl")).unwrap();
+        assert!(exporter.sync().is_err(), "a file that can't be synced");
+        assert!(exporter.pending.lock().unwrap().unsynced, "is synced the next time");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

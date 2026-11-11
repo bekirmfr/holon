@@ -25,7 +25,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+use crate::sync::{Mutex, RwLock};
 
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};

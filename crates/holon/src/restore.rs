@@ -17,9 +17,10 @@ use crate::local::admin_call;
 use crate::{to_hex, SharedStore};
 
 /// Keep `state` as a snapshot in the content store and return its hash (hex): a record of each
-/// key's value hash. Only the values not in `before` (the state it grew from, whose values the
-/// store already holds) are put; with no `before`, all of them. A run keeps the state it left
-/// this way, a deploy the state it carried; `load_snapshot` brings one back.
+/// key's value hash. Only the values not in `before` are put, so `before` must be a state every
+/// value of which the store holds (a deployment's: the state last kept whole, `StateCell::save`);
+/// with no `before`, all of them. A run keeps the state it left this way, a deploy the state it
+/// carried; `load_snapshot` brings one back.
 pub(crate) fn save_snapshot(state: &State, before: Option<&State>, store: &SharedStore) -> Result<String, String> {
     let mut store = store.clone();
     for (key, value) in state.iter() {
