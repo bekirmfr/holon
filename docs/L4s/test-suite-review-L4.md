@@ -133,7 +133,8 @@ class's test would show or clear.
 ### Order
 
 1. **Step 0** (§5, §6): drop the 18 redundant tests; close the cheap holes in the class-level
-   tests that exist, each of which makes more tests redundant.
+   tests that exist, each of which makes more tests redundant. *§5 done; five of §6's twelve
+   holes closed (2026-11-11).*
 2. **Class 9, first half**: an hour's work that checks offline the golden record's cases (about
    550), none of which is checked so today.
 3. Then the groups in order, A to E. Inside a group, the cheaper first.
@@ -167,6 +168,12 @@ says, but where a person's approval shows it.**
   field of a log entry: M), then the whole server on disk (L).
 - From: T1§1, T2§1, T3§1, MZ§1, MZ§2, MZ§7, AL§5, CB§1, AU§2, BM§5, E2E§1 (63). Seams 2, 3.
 - Settles: `server-modules-m-z 1`, `3`; `core-engine-b 3`.
+- Done in part (1c094ab3, 2026-11-11): a flow's tainted keys and the credentials every run taints,
+  sent through every place a run has them and looked for in every form in the log, its lines,
+  the listing, the export, `verify`'s report and a replay
+  (`a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`). Left: every
+  file under the data folder and every answer of the control plane; the run made twice with two
+  values; what shows against what the taint walk says may show.
 
 **3. A secret leaves the server only to a host its approval shows, over the scheme shown, and
 through any chain of redirects stays with the first host.**
@@ -231,6 +238,10 @@ access redesign.*
 - Test: a sweep, `verify` as oracle. (a) inside the server's golden loop: S, about 550 recorded
   cases; (b) a row per sample that needs a binding: L.
 - From: T1§13, T2§15, T3§14, E2E§3 (31, and the same six lines ending 26 more).
+- Done in part (dc88fe26, 2026-11-11), for the kinds of run: `verify` finds the handler of a run
+  of every kind by its kind and label, a resumed part's included
+  (`a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label`), and each kind's own
+  test ends with `replays_as_it_verifies`. Left: (a) and (b).
 
 **10. An export the server wrote always checks; one changed in any way no longer does, but for
 what is listed as taken on trust.**
@@ -255,6 +266,9 @@ as it was recorded.**
   over the golden record's runs.
 - From: T1§12, T2§16, ED§11, AU§13 (46). Effort M to L; seam 6.
 - Settles: `author 1`.
+- Done in part (dc88fe26, 2026-11-11), for the kinds of run: a replay finds every kind's handler
+  through `verify::handler_of`, and `replays_as_it_verifies` is the oracle each kind's test ends
+  with. Left: the handler grid as generator, and the editor's replay over the golden record.
 
 ### C. Done once, nothing lost
 
@@ -330,6 +344,8 @@ unit and inputs; a fork is the same graph with one reference swapped.** *After t
 code only tests call.*
 - From: CA§4, CA§12, HM§5, HM§6, HM§18, T1§16, T3§17, CB§18 (65). Effort M. Seam 6.
 - Settles: `core-engine-a 3`.
+- T1§16 (the registry and the cache over HTTP) goes with `/registry*` and `/cache*` once they are
+  removed (§8, 2).
 
 **22. A unit's hash moves when what it computes or promises does, and at no other time; its
 bytes read back as written.**
@@ -393,11 +409,15 @@ classes 9 and 12 are in. From E2E§5 to §7, §9, §11 to §14 (about 60). Effor
 **32. Bindings are made or refused by one written rule; every limit holds at its edge; log lines
 stay within their caps; what the host says it holds is what is there.** From AL§15, AL§24, AL§25,
 AL§27, MZ§21, MZ§31, MZ§32, T1§17, T1§19, T1§21, T2§20, T2§25, T3§20, T3§21 (39). Effort M.
+Done in part (ee5a768c, 2026-11-11), for the control plane's bodies: every one is read by the
+deadline (`every_body_the_control_plane_reads_is_read_by_the_deadline`), and one that stops or
+trickles gives its place back
+(`a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline`).
 
 ## 5. Redundant now
 
 Dropped in step 0. Where the last column names a literal outside what the covering test draws, it
-becomes a fixed row of that test first.
+becomes a fixed row of that test first. *Done (41910d98, 6f7065ad): all 18 dropped.*
 
 | Test | Covered by | Outside it |
 |---|---|---|
@@ -427,24 +447,28 @@ Each is small, and each closed makes tests beside it redundant. Step 0.
 - **Plan against walk** draws numbers only: no giving, no requests, no nested functions.
   `giving_and_lending…` draws no `const`, so never a pass-through guard.
 - **The edge-table test**, drawing 8 children and 16 edges, covers
-  `the_flat_index_finds_what_a_map_of_the_edges_finds`.
+  `the_flat_index_finds_what_a_map_of_the_edges_finds`. *Closed (7909066d), and that test went.*
 - **`audit_leaves.rs`**: its pool has no bytes, so the leaves that take them are never swept on
-  hostile ones.
+  hostile ones. *Closed (e21ceebf).*
 - **`audit_security.rs`** builds units in memory: it reaches neither the decoder nor nested
   composites, higher-order leaves, modules, sinks or requests.
 - **`a_staged_unit_loads_or_is_refused_whatever_its_wiring`** draws no leaf with an effect port;
-  four leaves make `effect_written_to_state_does_not_take_the_server_down` a row.
+  four leaves make `effect_written_to_state_does_not_take_the_server_down` a row. *Closed
+  (597c6bf8), and that test went.*
 - **The panic table** has no row for a feed event, a WebSocket block, a queue message or a mail,
   and both its faults come before the run holds anything: none under a state lock, a claim, or
   mid-commit.
 - **The log's model** draws no failed sync; with it,
-  `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty` is covered.
+  `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty` is covered. *Closed
+  (cd8a89a5), and that test went.*
 - **`a_handler_does_what_its_text_says`** compares what a handler did, not what it answered, for
   routes only (class 18).
 - **The server's golden record** drives 40 of 84 samples, routes and actions only; 235 of its 552
   cases are refusals.
 - **The end-to-end sweep** deploys every sample and never sends one a request; sending one makes
   eight per-sample tests redundant. `e2eSweep.test.ts` should ask for a deploy, not a click.
+  *Closed (de6a3962, b991fa30): the sweep deploys every sample from its text through the command
+  line and sends each a request; the per-sample tests the server holds went.*
 - **The language crate's hand tables** (17) should each fail when a form the reader takes has no
   row.
 
@@ -473,7 +497,8 @@ entries are open.
    design replaces outright: drop the tests with the code?
 2. **Code only tests call.** `Memo`, `StateHost`, `Mode`/`run`, `adoption` and `Recorded` in
    holon-host (11 to 13 tests), and the routes `/registry*`, `/cache*` and `/fire` that no client
-   calls (8 tests). Keep, or delete before class 21?
+   calls (8 tests). Keep, or delete before class 21? *The routes decided (2026-11-11): removed,
+   in the principals work, and their tests with them. The holon-host code is still open.*
 3. **`-0`.** The value encoding folds it into `0`; `same_value` and `atan2` tell them apart.
 4. **A waiting run goes on while its deployment is paused or stopped.** Meant?
 5. **`a_resumed_run_resumed_again_after_its_commit_applies_once` pins an outbound call going
@@ -483,8 +508,9 @@ entries are open.
 8. **Tests that need what CI has and a laptop hasn't**: engine tests that pass having checked
    nothing; end-to-end tests that call httpbin.org.
 9. **How much stays in a browser** (class 31).
-10. Still open from the first batch of fixes: a guard that rejects on a condition lets the
-    request through when the value is missing.
+10. ~~Still open from the first batch of fixes: a guard that rejects on a condition lets the
+    request through when the value is missing.~~ *Decided and done (948ee310): an if on a
+    condition with no value runs neither branch, and nothing after an if that may return runs.*
 
 ## 9. How a step goes
 
