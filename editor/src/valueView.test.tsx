@@ -96,7 +96,9 @@ function show(v: WValue, renderer: RendererKind): HTMLElement {
 }
 
 describe("a run's value shown in the editor", () => {
-  it("runs no script and loads nothing, under every renderer, for every value a drill-in reaches", () => {
+  // Every renderer over every value, each rendered and parsed: a second alone, more beside a
+  // whole run's other files, past vitest's five.
+  it("runs no script and loads nothing, under every renderer, for every value a drill-in reaches", { timeout: 30_000 }, () => {
     const values = POOL.flatMap(within);
     const pages = new Set(PAGES);
     let frames = 0;

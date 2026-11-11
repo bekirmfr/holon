@@ -52,11 +52,15 @@ function says(text: string): string | null {
   }
 }
 
+// Each sample compiled several times over: up to seconds alone (chess), more beside a whole run's
+// other files, past vitest's five.
+const COMPILES = 30_000;
+
 describe("the text a document shows is the code it deploys", () => {
   const all = samples();
   let forged = 0;
   for (const [i, sample] of all.entries()) {
-    it(sample.name, () => {
+    it(sample.name, { timeout: COMPILES }, () => {
       const doc = compileHolon(sample.text, new Evaluator()).doc;
       const unit = deploysAs(doc);
       expect(says(sample.text)).toBe(unit);
