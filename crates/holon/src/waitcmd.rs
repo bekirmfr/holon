@@ -143,7 +143,7 @@ mod tests {
     use serde_json::json;
 
     fn proposal(id: u64, slug: &str, state: &str) -> Value {
-        json!({ "id": id, "slug": slug, "state": state, "version": 1, "by": "ada (agent)", "at_ms": 1_000_000, "decided_by": "bma", "decided_at_ms": 2_000_000, "reason": "tidy the graph" })
+        json!({ "id": id, "slug": slug, "state": state, "version": 1, "by": "claude", "at_ms": 1_000_000, "decided_by": "bma", "decided_at_ms": 2_000_000, "reason": "tidy the graph" })
     }
 
     /// A server that answers its proposals as a script says, the last one on for ever.

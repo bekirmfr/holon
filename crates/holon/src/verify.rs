@@ -978,6 +978,40 @@ fn what(read: &recorder::LoggedRead) -> String {
     format!("{folder}/{file}")
 }
 
+/// The handler a run of `kind` labelled `label` ran in `server`, and whether it is given what the
+/// run was sent (a request, an action's input, a WebSocket block's record) or finds its start
+/// among what it sourced (a clock's tick, a new file, a mail, a feed's event, a queue's message);
+/// or, when `server` has none, what it would be, as a person names it. A resumed run's later part
+/// is its first part's handler's, of whichever kind its label names. The one place a run's kind is
+/// read for its handler, so `holon verify` and a replay run each kind again alike.
+pub(crate) fn handler_of(server: &Server, kind: &str, label: &str) -> Result<(Hash, bool), &'static str> {
+    if kind == "resume" {
+        let started = ["request", "websocket", "tick", "file", "mail", "feed", "queue", "trigger"];
+        return started.into_iter().find_map(|kind| handler_of(server, kind, label).ok()).ok_or("handler");
+    }
+    let found = match kind {
+        "tick" => server.clocks.iter().find(|c| c.label == label).map(|c| c.handler),
+        "file" => server.files.iter().find(|f| f.label == label).map(|f| f.handler),
+        "mail" => server.mails.iter().find(|m| m.label == label).map(|m| m.handler),
+        "feed" => server.feeds.iter().find(|f| f.label == label).map(|f| f.handler),
+        "queue" => server.queues.iter().find(|q| q.label == label).map(|q| q.handler),
+        "websocket" => server.websockets.iter().flat_map(|w| w.blocks()).find(|b| b.label == label).map(|b| b.handler),
+        "trigger" => server.actions.iter().find(|a| a.label == label).map(|a| a.handler),
+        _ => server.routes.iter().find(|r| format!("{} {}", r.method, r.path) == label).map(|r| r.endpoint),
+    };
+    let (what, sent) = match kind {
+        "tick" => ("clock", false),
+        "file" => ("file handler", false),
+        "mail" => ("mail handler", false),
+        "feed" => ("feed handler", false),
+        "queue" => ("queue handler", false),
+        "websocket" => ("WebSocket block", true),
+        "trigger" => ("action", true),
+        _ => ("route", true),
+    };
+    found.map(|handler| (handler, sent)).ok_or(what)
+}
+
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
 /// record: a resumed run's outbound answers and reads), and compare. `given` is set to what the
 /// log's record stood in for: nodes (`Asserting`), and the run id.
@@ -1003,55 +1037,23 @@ fn rerun(
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; a clock's tick, a file's, a mail's or a
-    // feed's run, that handler alone (the file's handle, the message, or the event, among the
-    // sourced values); an action's, its first part or a resumed one, and a WebSocket block's, its
-    // handler with what was sent (the block's record); anything else, the whole unit.
-    let clock = match &entry.route {
-        Some(label) if entry.kind == "tick" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| (c.handler, false))
-        }
-        Some(label) if entry.kind == "file" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
-        }
-        Some(label) if entry.kind == "mail" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.mails.into_iter().find(|m| m.label == *label)).map(|m| (m.handler, false))
-        }
-        Some(label) if entry.kind == "feed" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.feeds.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
-        }
-        Some(label) if entry.kind == "queue" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.queues.into_iter().find(|q| q.label == *label)).map(|q| (q.handler, false))
-        }
-        Some(label) if entry.kind == "websocket" => read_server(deployed, resolver)
-            .ok()
-            .and_then(|s| s.websockets.iter().flat_map(|w| w.blocks()).find(|b| b.label == *label).map(|b| (b.handler, true))),
-        Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
-        }
-        _ => None,
-    };
-    let (root, inputs) = match (&entry.route, clock) {
-        (Some(label), Some((handler, sent))) => {
+    // What it ran: the handler its kind and label name (`handler_of`), with what was sent, or
+    // finding its start among the sourced values; with no label, the whole unit.
+    let (root, inputs) = match &entry.route {
+        Some(label) => {
+            let Ok(server) = read_server(deployed, resolver) else {
+                return Rerun::Differs("it names a handler, but its unit isn't a server".into());
+            };
+            let (handler, sent) = match handler_of(&server, &entry.kind, label) {
+                Ok(found) => found,
+                Err(what) => return Rerun::Differs(format!("its unit has no {what} {label:?}")),
+            };
             let Some(root) = resolver.resolve(&handler) else {
                 return Rerun::Differs(format!("the handler of {label:?} isn't in the export"));
             };
             (root, if sent { vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))] } else { Vec::new() })
         }
-        (Some(route), None) => {
-            let Ok(server) = read_server(deployed, resolver) else {
-                return Rerun::Differs("it names a route, but its unit isn't a server".into());
-            };
-            let Some(endpoint) = server.routes.iter().find(|r| format!("{} {}", r.method, r.path) == *route).map(|r| r.endpoint)
-            else {
-                return Rerun::Differs(format!("its unit has no route {route:?}"));
-            };
-            let Some(root) = resolver.resolve(&endpoint) else {
-                return Rerun::Differs(format!("the endpoint of {route:?} isn't in the export"));
-            };
-            (root, vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))])
-        }
-        (None, _) => (deployed, Vec::new()),
+        None => (deployed, Vec::new()),
     };
 
     let mut extra = Vec::new();

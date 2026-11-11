@@ -5,17 +5,20 @@
 //! does (`holon mcp hosts add`). Only the entry changes: the rest of the file stays as it was,
 //! comments and all (jsonedit.rs, and toml_edit for TOML).
 //!
-//! No host's file holds a token. For a server elsewhere, the entry names the server
-//! (`holon mcp --server URL`) and holon keeps the token (local.rs's `tokens.json`), so a host
-//! that has no way to keep a secret is as safe as one that has, and a new token is one command.
+//! No host's file holds a token. `holon mcp` signs in as an agent, never as a person. On a
+//! server this user runs, setup (or `holon mcp`, the first time it reaches one) makes them an
+//! agent, `<user>-agent`, as the run file's admin ([`local_agent`]). For a server elsewhere, the
+//! entry names the server (`holon mcp --server URL`) and holon keeps the agent's token it is
+//! given (local.rs's `tokens.json`), so a host that has no way to keep a secret is as safe as one
+//! that has, and a new token is one command.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp::Api;
 use crate::{jsonedit, local};
 
 /// How a host's file holds a server.
@@ -423,15 +426,7 @@ fn apply(host: &Host, file: &Path, name: &str, entry: Option<&Value>) -> Result<
     })
 }
 
-// ── the token, for a server elsewhere ───────────────────────────────────────────────────────
-
-/// Whether `url` (as `local::server_url` writes it) is on this machine.
-fn on_this_machine(url: &str) -> bool {
-    let host = url.split("://").nth(1).unwrap_or(url);
-    let host = host.split('/').next().unwrap_or("");
-    let host = if let Some(rest) = host.strip_prefix('[') { rest.split(']').next().unwrap_or("") } else { host.rsplit_once(':').map_or(host, |(h, _)| h) };
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
-}
+// ── how holon mcp signs in: as an agent ─────────────────────────────────────────────────────
 
 /// A line from the terminal, not shown as it is typed.
 fn read_hidden(prompt: &str) -> Result<String, String> {
@@ -479,21 +474,147 @@ fn hide_input() -> Option<Box<dyn FnOnce()>> {
     })
 }
 
-/// Who `token` signs in as on `server`, and with what role; `None` if it can't be asked.
-fn who(server: &str, token: &str) -> Result<Option<(String, String)>, String> {
-    match ureq::get(&format!("{server}/auth/me")).timeout(Duration::from_secs(10)).set("Authorization", &format!("Bearer {token}")).call() {
-        Ok(r) => {
-            let me: Value = r.into_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or(Value::Null);
+/// Who a token signs in as, asked of the server.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Me {
+    /// Its name, kind and role (`/auth/me`).
+    Is { name: String, kind: String, role: String },
+    /// The server doesn't take it (401): a new accounts file, or it was revoked.
+    NotTaken,
+    /// The server has no accounts (the tests' servers): anyone is let in, as no one.
+    NoAccounts,
+}
+
+/// Who the token `api` signs in with is; `None` if the server can't be asked.
+pub(crate) fn who(api: &dyn Api) -> Result<Option<Me>, String> {
+    let (status, bytes) = match api.send("GET", "/auth/me", None) {
+        Ok(answer) => answer,
+        Err(_) => return Ok(None),
+    };
+    match status {
+        200 => {
+            let me: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
             let field = |k: &str| me.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
-            Ok(Some((field("name"), field("role"))))
+            Ok(Some(Me::Is { name: field("name"), kind: field("kind"), role: field("role") }))
         }
-        Err(ureq::Error::Status(401, _)) => Err(format!("{server} doesn't take this token (401): make one with role agent on its admin page")),
-        Err(ureq::Error::Status(code, _)) => Err(format!("{server} answered {code} to the token")),
-        Err(_) => Ok(None),
+        401 => Ok(Some(Me::NotTaken)),
+        404 => Ok(Some(Me::NoAccounts)),
+        code => Err(format!("{} answered {code} to the token", api.server())),
     }
 }
 
-/// The token for a server elsewhere: `HOLON_TOKEN`, or asked for; checked with it, and kept.
+/// Whether `holon mcp` may sign in as `me`: as an agent only, never as a person or a service.
+pub(crate) fn an_agent(me: &Me, server: &str) -> Result<(), String> {
+    match me {
+        Me::NoAccounts => Ok(()),
+        Me::Is { kind, .. } if kind == "agent" => Ok(()),
+        Me::Is { name, kind, .. } => Err(format!(
+            "this token signs in to {server} as {name}, a {kind}: holon mcp signs in as an agent. An admin adds one for you (holon people add NAME --agent, owned by you); you make its token on the People page (or holon people token NAME), and give it to holon mcp setup --server {server}."
+        )),
+        Me::NotTaken => Err(format!("{server} doesn't take this token (401): make an agent's token there (holon people token NAME, or its People page), and give it to holon mcp setup --server {server}")),
+    }
+}
+
+/// This machine's name, as a token's label says where it is used.
+fn machine() -> String {
+    let var = if cfg!(windows) { "COMPUTERNAME" } else { "HOSTNAME" };
+    std::env::var(var).ok().map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| "this machine".into())
+}
+
+/// The agent's name for OS user `user` (§D7): `<user>-agent`, the characters a name may not have
+/// (accounts.rs `valid_name`) as `-`.
+fn agent_name_for(user: &str) -> String {
+    let user: String = user.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@') { c } else { '-' }).collect();
+    let user: String = user.chars().take(64 - "-agent".len()).collect();
+    format!("{user}-agent")
+}
+
+/// This user's agent on a server they run, made by `admin` (signed in with the run file's token)
+/// if it isn't there yet, with a new token for this machine, kept in `file` under `agent:<URL>`:
+/// the agent's name and owner, and its token. `name` picks another than `<user>-agent`.
+pub(crate) fn local_agent(admin: &dyn Api, name: Option<&str>, file: &Path) -> Result<(String, String, String), String> {
+    let server = admin.server();
+    let me = crate::mcp::json_of(admin, "GET", "/auth/me", None)?;
+    let Some(user) = me.get("name").and_then(Value::as_str).and_then(|n| n.strip_prefix("local:")) else {
+        return Err(format!("{server} didn't take this machine's run file as its admin"));
+    };
+    let name = name.map_or_else(|| agent_name_for(user), str::to_string);
+    // Its owner, if it is there already and may be signed in as.
+    let found = || -> Result<Option<String>, String> {
+        let people = crate::mcp::json_of(admin, "GET", "/people", None)?;
+        match people.as_array().into_iter().flatten().find(|p| p["name"] == name.as_str()) {
+            Some(p) if p["kind"] != "agent" => Err(format!("{name} on {server} is a {}, not an agent: holon mcp setup --agent NAME picks another name", p["kind"].as_str().unwrap_or("principal"))),
+            Some(p) if p["disabled"] == true => Err(format!("{name} on {server} is disabled: an admin enables it on the People page, or holon mcp setup --agent NAME picks another")),
+            Some(p) => Ok(Some(p["owner"].as_str().unwrap_or(user).to_string())),
+            None => Ok(None),
+        }
+    };
+    let owner = match found()? {
+        Some(owner) => owner,
+        None => match crate::mcp::json_of(admin, "POST", "/people", Some(crate::mcp::Body::Json(json!({ "name": name, "kind": "agent", "role": "agent" })))) {
+            Ok(made) => made["owner"].as_str().unwrap_or(user).to_string(),
+            // Another holon mcp made it meanwhile (a second host starting at once).
+            Err(e) => found()?.ok_or(e)?,
+        },
+    };
+    let label: String = format!("holon mcp on {}", machine()).chars().take(64).collect();
+    let path = format!("/people/{}/tokens", crate::mcp::seg(&name));
+    let made = crate::mcp::json_of(admin, "POST", &path, Some(crate::mcp::Body::Json(json!({ "label": label }))))?;
+    let token = made["token"].as_str().ok_or_else(|| format!("{server} made no token for {name}"))?.to_string();
+    local::keep_token(file, &local::agent_key(&server), Some(&token))?;
+    Ok((name, owner, token))
+}
+
+/// How `holon mcp` will sign in to `server` (the one this user runs here, when none is given): on
+/// a server this user runs, as their agent, made now if it isn't there (`agent`, else
+/// `<user>-agent`); on one they don't, with an agent's token they give. With `remove`, the token
+/// kept for it is forgotten.
+fn sign_in(server: Option<&str>, agent: Option<&str>, remove: bool) -> Result<(), String> {
+    let file = local::tokens_file().ok_or("no home folder to keep the token in")?;
+    let server = match server {
+        Some(s) => s.to_string(),
+        None => match local::agent_target(None) {
+            Ok(t) => t.server,
+            // None running yet: holon mcp makes the agent on the first it reaches.
+            Err(_) if agent.is_none() => return Ok(()),
+            Err(e) => return Err(format!("--agent: {e}")),
+        },
+    };
+    let Some(run_token) = local::run_token(&server) else {
+        if agent.is_some() {
+            return Err(format!("--agent makes an agent on a holon serve you run here, and {server} isn't one: give holon mcp an agent's token for it instead"));
+        }
+        if remove {
+            if local::keep_token(&file, &server, None)? {
+                println!("Forgot the token for {server}.");
+            }
+            return Ok(());
+        }
+        return keep_token_for(&server);
+    };
+    let key = local::agent_key(&server);
+    if remove {
+        if local::keep_token(&file, &key, None)? {
+            println!("Forgot the agent's token for {server}.");
+        }
+        return Ok(());
+    }
+    // The agent it signs in as already, if that is the one asked for.
+    if let Some(kept) = local::saved_token(&file, &key)
+        && let Ok(Some(Me::Is { name, kind, .. })) = who(&crate::mcp::Http::new(&server, Some(&kept)))
+        && kind == "agent"
+        && agent.is_none_or(|a| a == name)
+    {
+        println!("holon mcp signs in to {server} as {name}, an agent, as before.");
+        return Ok(());
+    }
+    let (name, owner, _) = local_agent(&crate::mcp::Http::new(&server, Some(&run_token)), agent, &file)?;
+    println!("holon mcp signs in to {server} as {name}, an agent owned by {owner}. Its token is kept in {}, readable only by you.", file.display());
+    Ok(())
+}
+
+/// The token for a server this user doesn't run: `HOLON_TOKEN`, or asked for; checked to be an
+/// agent's, and kept.
 fn keep_token_for(server: &str) -> Result<(), String> {
     let file = local::tokens_file().ok_or("no home folder to keep the token in")?;
     let kept = local::saved_token(&file, server);
@@ -502,9 +623,9 @@ fn keep_token_for(server: &str) -> Result<(), String> {
         Some(t) => t,
         None => {
             let ask = if kept.is_some() {
-                format!("An API token for {server} (Enter keeps the one holon has): ")
+                format!("An agent's token for {server} (Enter keeps the one holon has): ")
             } else {
-                format!("An API token for {server}, with role agent (its admin page makes one): ")
+                format!("An agent's token for {server} (holon people token NAME there, or its People page, makes one): ")
             };
             read_hidden(&ask)?
         }
@@ -512,13 +633,15 @@ fn keep_token_for(server: &str) -> Result<(), String> {
     let token = match (token.is_empty(), kept) {
         (false, _) => token,
         (true, Some(k)) => k,
-        (true, None) => return Err("no token: one with role agent, from the server's admin page, is how holon mcp signs in there".into()),
+        (true, None) => return Err("no token: an agent's token, from the server's People page or holon people token NAME, is how holon mcp signs in there".into()),
     };
-    match who(server, &token)? {
-        Some((name, role)) if role == "agent" => println!("The token signs in to {server} as {name}, an agent."),
-        Some((name, role)) => println!(
-            "The token signs in to {server} as {name}, with role {role}. holon mcp still asks as an agent, but only a token with role agent keeps an agent with a shell from approving: make one on the admin page."
-        ),
+    match who(&crate::mcp::Http::new(server, Some(&token)))? {
+        Some(me) => {
+            an_agent(&me, server)?;
+            if let Me::Is { name, role, .. } = me {
+                println!("The token signs in to {server} as {name}, an agent with role {role}.");
+            }
+        }
         None => println!("{server} didn't answer, so the token isn't checked yet."),
     }
     local::keep_token(&file, server, Some(&token))?;
@@ -533,15 +656,20 @@ pub(crate) const SETUP_USAGE: &str = "usage: holon mcp setup [HOST…|--all] [op
   Adds holon mcp to an agent host's settings: its entry in the host's own file, the rest of the
   file left as it was. With no host, lists the hosts holon knows and which are on this machine.
 
+  holon mcp signs in as an agent. On the holon serve you run, it is yours, made for you
+  (<you>-agent, owned by you); on a server elsewhere, give it an agent's token.
+
   HOST…                    the hosts to set it up in (holon mcp hosts lists them)
   --all                    every host found on this machine
-  --server PORT|URL        reach that server; for a server elsewhere, holon asks for an API
-                           token with role agent, checks it and keeps it (HOLON_TOKEN gives it)
+  --server PORT|URL        reach that server; for one you don't run, holon asks for an agent's
+                           token, checks it and keeps it (HOLON_TOKEN gives it)
+  --agent NAME             on the server you run, sign in as the agent NAME (made if it isn't
+                           there) rather than <you>-agent: one per host, say
   --project DIR            write the hosts' project files in DIR instead of yours (the entry
                            runs holon found on PATH, since the file is shared)
   --name NAME              the entry's name (default holon), e.g. for a second server
   --print                  show the entry and where it goes, writing nothing
-  --remove                 take the entry out (with --server, and forget its token)
+  --remove                 take the entry out, and forget the token holon mcp signs in with
   --config PATH --like HOST [--key KEY]
                            a file holon doesn't know, written as HOST's is (holon mcp hosts
                            add keeps one for next time)
@@ -576,6 +704,7 @@ struct Options {
     hosts: Vec<String>,
     all: bool,
     server: Option<String>,
+    agent: Option<String>,
     project: Option<PathBuf>,
     name: String,
     print: bool,
@@ -586,7 +715,7 @@ struct Options {
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
-    let mut o = Options { hosts: vec![], all: false, server: None, project: None, name: "holon".into(), print: false, remove: false, config: None, like: None, key: None };
+    let mut o = Options { hosts: vec![], all: false, server: None, agent: None, project: None, name: "holon".into(), print: false, remove: false, config: None, like: None, key: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |what: &str| it.next().cloned().ok_or_else(|| format!("{a} needs {what}"));
@@ -595,6 +724,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--print" => o.print = true,
             "--remove" => o.remove = true,
             "--server" => o.server = Some(value("a port or URL")?),
+            "--agent" => o.agent = Some(value("an agent's name")?),
             "--project" => o.project = Some(PathBuf::from(value("a folder")?)),
             "--name" => o.name = value("a name")?,
             "--config" => o.config = Some(PathBuf::from(value("a file")?)),
@@ -694,17 +824,7 @@ fn setup_with(o: Options) -> Result<i32, String> {
         return Ok(0);
     }
 
-    if let Some(s) = server.as_deref().filter(|s| !on_this_machine(s)) {
-        if o.remove {
-            if let Some(file) = local::tokens_file()
-                && local::keep_token(&file, s, None)?
-            {
-                println!("Forgot the token for {s}.");
-            }
-        } else {
-            keep_token_for(s)?;
-        }
-    }
+    sign_in(server.as_deref(), o.agent.as_deref(), o.remove)?;
 
     let mut failed = false;
     for host in &chosen {
@@ -979,13 +1099,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// On a server this user runs, the run file's admin makes their agent once, owned by them,
+    /// before anyone has set the server up; each time after, only a token. Each token signs in as
+    /// the agent, the latest kept under `agent:<URL>`. A name someone else has is refused.
     #[test]
-    fn a_server_here_or_elsewhere() {
-        assert!(on_this_machine("http://127.0.0.1:7420"));
-        assert!(on_this_machine("http://localhost:7420"));
-        assert!(on_this_machine("http://[::1]:7420"));
-        assert!(!on_this_machine("https://holon.example.com"));
-        assert!(!on_this_machine("http://10.0.0.5:7420"));
+    fn the_run_files_admin_makes_this_users_agent_once_and_a_token_each_time() {
+        use crate::tests::Signed;
+        let mut state = crate::tests::test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let run = accounts.new_local("bma");
+        let dir = std::env::temp_dir().join(format!("holon-local-agent-{}", std::process::id()));
+        let file = dir.join("tokens.json");
+        let admin = Signed { state: &state, token: &run };
+        let kept = || local::saved_token(&file, &local::agent_key(&admin.server()));
+
+        let (name, owner, first) = local_agent(&admin, None, &file).unwrap();
+        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "bma"));
+        assert_eq!(kept().as_deref(), Some(first.as_str()));
+        assert_eq!(who(&Signed { state: &state, token: &first }).unwrap(), Some(Me::Is { name: "bma-agent".into(), kind: "agent".into(), role: "agent".into() }), "signs in before setup");
+        assert!(accounts.needs_setup(), "left for a person to set up");
+        let (_, _, second) = local_agent(&admin, None, &file).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(kept().as_deref(), Some(second.as_str()));
+        assert_eq!((accounts.principals().len(), accounts.tokens("bma-agent").len()), (1, 2), "made once; a token each time");
+
+        let (cursor, _, _) = local_agent(&admin, Some("bma-cursor"), &file).unwrap();
+        assert_eq!(cursor, "bma-cursor");
+        accounts.add("ci", crate::accounts::Kind::Service, crate::access::Role::Viewer, "bma", "local:bma").unwrap();
+        assert!(local_agent(&admin, Some("ci"), &file).unwrap_err().contains("ci on the test server is a service, not an agent"));
+        accounts.set_disabled("bma-cursor", true).unwrap();
+        assert!(local_agent(&admin, Some("bma-cursor"), &file).unwrap_err().contains("is disabled"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// holon mcp signs in as an agent only: never as a person (the run file's admin among them) or
+    /// a service; a token the server no longer takes says how to get one.
+    #[test]
+    fn holon_mcp_takes_only_an_agents_token() {
+        use crate::tests::{with_people, Signed};
+        let mut state = crate::tests::test_state();
+        let p = with_people(&mut state);
+        let accounts = state.access.accounts().unwrap();
+        let local = accounts.new_local("bma");
+        accounts.add("ci", crate::accounts::Kind::Service, crate::access::Role::Editor, "ada", "ada").unwrap();
+        let (ci, _) = accounts.create_token("ci", "CI", "ada").unwrap();
+        let checked = |token: &str| an_agent(&who(&Signed { state: &state, token }).unwrap().unwrap(), "the server");
+        assert_eq!(checked(&p.claude), Ok(()));
+        for (token, signs_in_as) in [(&p.ada, "ada, a person"), (&local, "local:bma, a person"), (&ci, "ci, a service")] {
+            let refused = checked(token).unwrap_err();
+            assert!(refused.contains(&format!("signs in to the server as {signs_in_as}: holon mcp signs in as an agent")), "{refused}");
+        }
+        assert!(checked("ht_revoked").unwrap_err().contains("doesn't take this token (401)"));
+        assert_eq!(an_agent(&Me::NoAccounts, "the server"), Ok(()), "a server without accounts: no one to be");
+    }
+
+    #[test]
+    fn an_agents_name_is_the_users_with_what_a_name_may_not_have_as_dashes() {
+        assert_eq!(agent_name_for("bma"), "bma-agent");
+        assert_eq!(agent_name_for("Ada Lovelace"), "Ada-Lovelace-agent");
+        assert_eq!(agent_name_for(&"x".repeat(80)).len(), 64);
     }
 
     #[test]

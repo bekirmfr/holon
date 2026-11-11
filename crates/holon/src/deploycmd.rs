@@ -288,7 +288,7 @@ pub(crate) fn call(api: &dyn Api, method: &str, path: &str, body: Option<Body>) 
     }
     let why = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
     Err(match status {
-        401 => format!("{server} wants a sign-in: set HOLON_TOKEN to an API token (the editor's admin page → API tokens): {why}"),
+        401 => format!("{server} wants a sign-in: set HOLON_TOKEN to a service's or an agent's token (holon people token NAME, or the editor's People and access): {why}"),
         403 => format!("{server} refused: {why}"),
         _ => format!("{server} answered {status}: {why}"),
     })

@@ -69,15 +69,56 @@ pub(crate) fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
     req_with(method, url, body, vec![])
 }
 
-/// As `holon mcp` asks: as an agent (`X-Holon-Role`, access.rs).
-pub(crate) fn agent_req(method: &str, url: &str, body: Vec<u8>) -> Request {
-    req_with(method, url, body, vec![("X-Holon-Role".to_string(), "agent".to_string())])
+/// `req`, signed in with `token`.
+pub(crate) fn req_as(token: &str, method: &str, url: &str, body: Vec<u8>) -> Request {
+    req_with(method, url, body, vec![("Authorization".to_string(), format!("Bearer {token}"))])
+}
+
+/// Who signs in on a server with accounts: ada, an admin, signed in; claude, an agent ada owns,
+/// with its token, as `holon mcp` signs in.
+pub(crate) struct People {
+    pub(crate) ada: String,
+    pub(crate) claude: String,
+}
+
+/// The router in-process, as the server `holon mcp` reaches (mcp.rs `Api`), signed in with
+/// `token`: an agent's, as `holon mcp` signs in, or a person's, as the editor does.
+pub(crate) struct Signed<'a> {
+    pub(crate) state: &'a AppState,
+    pub(crate) token: &'a str,
+}
+
+impl crate::mcp::Api for Signed<'_> {
+    fn server(&self) -> String {
+        "the test server".into()
+    }
+    fn send(&self, method: &str, path: &str, body: Option<crate::mcp::Body>) -> Result<(u16, Vec<u8>), String> {
+        let bytes = match body {
+            None => vec![],
+            Some(crate::mcp::Body::Json(v)) => serde_json::to_vec(&v).unwrap(),
+            // `req` sends bytes not starting with `{` as octet-stream.
+            Some(crate::mcp::Body::Bytes(b)) => b,
+        };
+        let response = route(self.state, &req_as(self.token, method, path, bytes));
+        Ok((response.status_code, body_bytes(response)))
+    }
+}
+
+/// Give `state` accounts: ada and claude (above).
+pub(crate) fn with_people(state: &mut AppState) -> People {
+    use crate::accounts::{Accounts, Kind};
+    let accounts = Arc::new(Accounts::memory());
+    let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    accounts.add("claude", Kind::Agent, access::Role::Agent, "ada", "ada").unwrap();
+    let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
+    state.access = access::Access::new(accounts, vec![], vec![]);
+    People { ada, claude }
 }
 
 fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
     headers.extend(more);
-    if method == "POST" {
+    if matches!(method, "POST" | "PATCH") {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
         headers.push(("Content-Type".to_string(), ty.to_string()));
@@ -696,7 +737,7 @@ fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
 /// asks for no approval to write one.
 #[test]
 fn a_flow_writes_log_lines_beside_its_runs_and_not_in_them() {
-    let state = test_state();
+    let mut state = test_state();
     let deploy = |slug: &str, text: &str| {
         let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
         for u in &plan.units {
@@ -724,13 +765,14 @@ fn a_flow_writes_log_lines_beside_its_runs_and_not_in_them() {
 
     // A person reads them through the route, filtered; an agent is refused, since no grant lets it
     // yet; and a deployment that isn't there is none.
-    let read = body_json(route(&state, &req("GET", "/deployments/noisy/logs?level=error&until=0", vec![])));
+    let p = with_people(&mut state);
+    let read = body_json(route(&state, &req_as(&p.ada, "GET", "/deployments/noisy/logs?level=error&until=0", vec![])));
     assert_eq!(read["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["careful"], "an error, up to run 0: {read}");
-    assert_eq!(route(&state, &agent_req("GET", "/deployments/noisy/logs", vec![])).status_code, 403);
-    assert_eq!(route(&state, &req("GET", "/deployments/nope/logs", vec![])).status_code, 404);
+    assert_eq!(route(&state, &req_as(&p.claude, "GET", "/deployments/noisy/logs", vec![])).status_code, 403);
+    assert_eq!(route(&state, &req_as(&p.ada, "GET", "/deployments/nope/logs", vec![])).status_code, 404);
 
     // Not in the run's record: its text holds neither a line nor the capability that wrote one.
-    let runs = body_json(route(&state, &req("GET", "/deployments/noisy/runs", vec![])));
+    let runs = body_json(route(&state, &req_as(&p.ada, "GET", "/deployments/noisy/runs", vec![])));
     let record = runs["runs"].to_string();
     assert!(!record.contains("bumped") && !record.contains("careful") && !record.contains("Log("), "{record}");
 }
@@ -1673,6 +1715,67 @@ export const quote = action((n) => n * 2)
     assert_eq!(route(&state, &req("GET", &format!("/deployments/nope/replay?unit={}", to_hex(&v1)), vec![])).status_code, 404);
 }
 
+/// A run of every kind is run again through the handler its kind and label name
+/// (`verify::handler_of`), by `holon verify` and a replay alike. Each kind the host logs a run as
+/// (every `run_entry` and `run_entry_taking` in its source) is a kind of handler's, and every
+/// handler of every sample is found by its run's kind and label, and by a resumed part's: given
+/// what its run was sent (a request, a WebSocket block's record, an action's input) or finding
+/// its start among what the run sourced (a tick, a file, a mail, a feed's event, a queue's
+/// message). A server's handlers are taken field by field, so a new kind of handler fails to
+/// compile here until it has its row.
+#[test]
+fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
+    let kinds: BTreeSet<&str> = ["request", "websocket", "tick", "file", "mail", "feed", "queue", "trigger", "resume"].into();
+    fn sources(dir: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(std::fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    let mut texts = Vec::new();
+    sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut texts);
+    let logged: BTreeSet<String> = texts
+        .iter()
+        .flat_map(|t| ["run_entry(\"", "run_entry_taking(\""].into_iter().flat_map(move |call| t.split(call).skip(1)))
+        .filter_map(|rest| rest.split_once('"').map(|(kind, _)| kind.to_string()))
+        .collect();
+    assert_eq!(logged.iter().map(String::as_str).collect::<BTreeSet<_>>(), kinds, "the kinds the host logs a run as");
+
+    let state = test_state();
+    let mut found = BTreeSet::new();
+    for sample in holon_author::samples::samples() {
+        let unit = stage_text(&state, sample.text);
+        let resolver = closure(&state.store, unit).unwrap();
+        let Ok(server) = read_server(resolver.resolve(&unit).unwrap(), &resolver) else { continue };
+        let Server { port: _, taint: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
+        let label = |l: &String| l.clone();
+        let handlers: Vec<(&str, String, Hash, bool)> = [
+            routes.iter().map(|r| ("request", format!("{} {}", r.method, r.path), r.endpoint, true)).collect::<Vec<_>>(),
+            websockets.iter().flat_map(|w| w.blocks()).map(|b| ("websocket", label(&b.label), b.handler, true)).collect(),
+            clocks.iter().map(|c| ("tick", label(&c.label), c.handler, false)).collect(),
+            files.iter().map(|f| ("file", label(&f.label), f.handler, false)).collect(),
+            mails.iter().map(|m| ("mail", label(&m.label), m.handler, false)).collect(),
+            feeds.iter().map(|f| ("feed", label(&f.label), f.handler, false)).collect(),
+            queues.iter().map(|q| ("queue", label(&q.label), q.handler, false)).collect(),
+            actions.iter().map(|a| ("trigger", label(&a.label), a.handler, true)).collect(),
+        ]
+        .concat();
+        assert_eq!(handlers.len(), server.handlers().count(), "{}: every handler", sample.name);
+        // A resumed run's later part is its handler's, whichever started it.
+        for (kind, label, handler, sent) in handlers {
+            for kind in [kind, "resume"] {
+                assert_eq!(verify::handler_of(&server, kind, &label), Ok((handler, sent)), "{}: a {kind} run of {label:?}", sample.name);
+                found.insert(kind);
+            }
+        }
+    }
+    assert_eq!(found, kinds, "the samples have a handler of every kind");
+}
+
 /// A replayed version's outbound requests are answered by what the run was answered to the same
 /// request, wherever the version asks it from; one the run never sent can't be told.
 #[test]
@@ -2159,6 +2262,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let first = entries.iter().find(|x| x["kind"] == "request" && x["route"] == "POST /orders").unwrap();
     assert_eq!(resumed["run_id"], first["run_id"], "one run, two parts");
     assert_eq!(first["parked"], serde_json::json!(["paid"]));
+    assert!(replays_as_it_verifies(&state, "shop").contains("resume"), "a request's run resumed is its route's");
 
     // Pinned: a run started on v1 finishes on v1 after v2 is deployed (v2 would write the path).
     let (_, token2) = call("POST", "/orders");
@@ -2242,21 +2346,14 @@ export const pay = action(async (order) => {
     assert!(entries.iter().all(|e| e["status"].is_null() && e["parked"] == serde_json::json!(["payout"])), "{entries:?}");
 
     // From here on, people sign in.
-    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
-    let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
+    let People { ada, claude } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
     let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let ci = accounts.create_token("ci", access::Role::Editor, "ada").unwrap().0;
-    state.access = access::Access::new(accounts, vec![], vec![]);
-    let decide = |token: &str, agent: bool, run: &str, body: serde_json::Value| {
-        let url = format!("/deployments/payouts/runs/{run}/decide");
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut headers = req("POST", &url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
-        headers.push(("Authorization".into(), format!("Bearer {token}")));
-        if agent {
-            headers.push(("X-Holon-Role".into(), "agent".into()));
-        }
-        let r = route(&state, &Request::fake_http("POST", &url, headers, bytes));
+    accounts.add("ci", crate::accounts::Kind::Service, access::Role::Editor, "ada", "ada").unwrap();
+    let ci = accounts.create_token("ci", "CI on GitHub", "ada").unwrap().0;
+    let decide = |token: &str, run: &str, body: serde_json::Value| {
+        let r = route(&state, &req_as(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), serde_json::to_vec(&body).unwrap()));
         (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
     };
     let approve = serde_json::json!({ "name": "payout", "approve": true });
@@ -2265,50 +2362,46 @@ export const pay = action(async (order) => {
         crate::wire::read_json::<serde_json::Value>(holon_core::stringify_json(&v).unwrap().as_bytes()).unwrap()
     };
 
-    assert_eq!(decide(&cy, false, &ids[0], approve.clone()).0, 403, "a viewer only reads");
-    let (code, said) = decide(&ci, false, &ids[0], approve.clone());
+    assert_eq!(decide(&cy, &ids[0], approve.clone()).0, 403, "a viewer only reads");
+    let (code, said) = decide(&ci, &ids[0], approve.clone());
     assert_eq!(code, 403);
-    assert!(said.contains("token:ci is an API token, a script, not a person"), "{said}");
-    assert_eq!(decide(&ada, true, &ids[0], approve.clone()).0, 403, "an agent never decides");
-    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    assert!(said.contains("ci is a service, a script, not a person"), "{said}");
+    assert_eq!(decide(&claude, &ids[0], approve.clone()).0, 403, "an agent never decides");
+    let (code, said) = decide(&ada, &ids[0], approve.clone());
     assert_eq!(code, 200, "{said}");
     assert!(said.contains(r#""outcome":"waiting""#) && said.contains(r#""approved_by":["ada"]"#), "{said}");
-    let (code, said) = decide(&ada, false, &ids[0], approve.clone());
+    let (code, said) = decide(&ada, &ids[0], approve.clone());
     assert_eq!(code, 409);
     assert!(said.contains("ada already approved \\\"payout\\\": it needs 2 different people"), "{said}");
     let listed = runs(&state, Some(&ada)).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
     assert_eq!(listed["waiting"][0]["approved"][0]["by"], "ada", "{listed}");
-    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": false })).0, 400, "a decline says why");
-    assert_eq!(decide(&bob, false, &ids[0], serde_json::json!({ "name": "paid", "approve": true })).0, 404);
-    let (code, said) = decide(&bob, false, &ids[0], serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" }));
+    assert_eq!(decide(&bob, &ids[0], serde_json::json!({ "name": "payout", "approve": false })).0, 400, "a decline says why");
+    assert_eq!(decide(&bob, &ids[0], serde_json::json!({ "name": "paid", "approve": true })).0, 404);
+    let (code, said) = decide(&bob, &ids[0], serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" }));
     assert_eq!(code, 200, "{said}");
     assert!(said.contains(r#""outcome":"approved""#), "{said}");
     let d = decided();
     assert_eq!((&d["approved"], &d["by"]), (&serde_json::json!(true), &serde_json::json!(["ada", "bob"])), "{d}");
     assert_eq!(d["approvals"][1]["reason"], "the invoice matches");
     assert!(!runs(&state, Some(&ada)).iter().any(|r| r["run_id"] == ids[0].as_str()), "decided, it finished");
-    assert_eq!(decide(&bob, false, &ids[0], approve.clone()).0, 404, "decided once");
+    assert_eq!(decide(&bob, &ids[0], approve.clone()).0, 404, "decided once");
 
     // One decline is enough.
-    let (code, said) = decide(&bob, false, &ids[1], serde_json::json!({ "name": "payout", "approve": false, "reason": "  not this vendor  " }));
+    let (code, said) = decide(&bob, &ids[1], serde_json::json!({ "name": "payout", "approve": false, "reason": "  not this vendor  " }));
     assert_eq!(code, 200, "{said}");
     assert!(said.contains(r#""outcome":"declined""#), "{said}");
     let d = decided();
     assert_eq!((&d["approved"], &d["declined_by"], &d["reason"], &d["by"]), (&serde_json::json!(false), &serde_json::json!("bob"), &serde_json::json!("not this vendor"), &serde_json::json!([])), "{d}");
 
     // Nobody else decides in time: it goes on as expired, with who approved.
-    assert_eq!(decide(&ada, false, &ids[2], approve.clone()).0, 200);
+    assert_eq!(decide(&ada, &ids[2], approve.clone()).0, 200);
     durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
     let d = decided();
     assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
     assert!(runs(&state, Some(&ada)).is_empty());
 
     // Each resumed part's log entry holds the decision it was given; the activity log, who decided.
-    let as_ada = |url: &str| {
-        let mut headers = req("GET", url, vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
-        headers.push(("Authorization".into(), format!("Bearer {ada}")));
-        body_json(route(&state, &Request::fake_http("GET", url, headers, vec![])))
-    };
+    let as_ada = |url: &str| body_json(route(&state, &req_as(&ada, "GET", url, vec![])));
     let entries = as_ada("/deployments/payouts/log")["entries"].as_array().unwrap().clone();
     let resumed: Vec<_> = entries.iter().filter(|e| e["kind"] == "resume").collect();
     assert_eq!(resumed.len(), 3);
@@ -2318,15 +2411,24 @@ export const pay = action(async (order) => {
     assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
 }
 
-/// Who may decide an approval: a person by their account's name, the OS user's local admin by the
-/// name it runs as; not an agent, a viewer, an API token, or anyone on a server without accounts.
+/// Who may decide an approval: a person by their name, the OS user's local admin by the name it
+/// runs as; not an agent, a service, a viewer, or anyone on a server without accounts.
 #[test]
 fn only_a_person_decides_an_approval() {
-    let caller = |name: Option<&str>, role: Option<access::Role>| access::Caller { name: name.map(String::from), role };
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(access::Role::Editor))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
-    for (name, role) in [(Some("ada (agent)"), Some(access::Role::Agent)), (Some("cy"), Some(access::Role::Viewer)), (Some("token:ci"), Some(access::Role::Editor)), (None, None)] {
-        assert!(durable::decider(&caller(name, role)).is_err(), "{name:?}");
+    use crate::accounts::Kind;
+    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
+    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    let refused = [
+        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude is an agent"),
+        (Some("ci"), Some(Kind::Service), Some(access::Role::Editor), "ci is a service"),
+        (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "a viewer only reads"),
+        (None, None, None, "no accounts"),
+    ];
+    for (name, kind, role, why) in refused {
+        let said = durable::decider(&caller(name, kind, role)).unwrap_err();
+        assert!(said.contains(why), "{name:?}: {said}");
     }
 }
 
@@ -3584,6 +3686,7 @@ fn a_websocket_runs_its_blocks_through_a_real_socket() {
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("websocket"));
 }
 
 /// A connection its open block accepts but the host can't hold (its channel has all the
@@ -4911,6 +5014,399 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
 
 /// A server with accounts, through its routes: set up with the printed code, then signed in,
 /// an invite accepted, each role doing what it may, and an admin's API token.
+/// `path` as written, and as a router might also take it: with a trailing slash, its last segment
+/// empty, and each slash doubled in turn.
+fn spellings(path: &str) -> Vec<String> {
+    let mut all = vec![path.to_string(), format!("{path}/")];
+    if let Some((head, _)) = path.rsplit_once('/')
+        && !head.is_empty()
+    {
+        all.push(format!("{head}/"));
+    }
+    all.extend(path.match_indices('/').map(|(i, _)| format!("{}/{}", &path[..i], &path[i..])));
+    all
+}
+
+/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For each
+/// request only an admin, or only an editor, may make, every caller who may not (no one, a
+/// viewer, an editor, an agent, a service), under every spelling a router might take for its
+/// path, is refused before anything answers it: 401 or 403, or the router's bare 404 for a path
+/// it takes for nothing. A handler's answer (a 400 saying why, a 404 naming what is missing)
+/// means the gate and the router read that path apart, as they once did a secret's with no name.
+#[test]
+fn the_gate_and_the_router_read_every_path_alike() {
+    use crate::accounts::{Accounts, Kind};
+    use access::Role;
+    let pw = "correct horse battery";
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(Accounts::memory());
+    let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), pw).unwrap().0;
+    let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
+    let token = |name: &str, kind, role| {
+        accounts.add(name, kind, role, "ada", "ada").unwrap();
+        accounts.create_token(name, "the sweep", "ada").unwrap().0
+    };
+    let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
+    let ci_token = accounts.tokens("ci")[0].id.clone();
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let request = |method: &str, url: &str, body: &serde_json::Value, token: Option<&str>| {
+        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(body).unwrap() };
+        req_with(method, url, bytes, token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))).into_iter().collect())
+    };
+    let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
+    let null = serde_json::Value::Null;
+    let admins = ["ada"];
+    let editors = ["ada", "bob, an editor", "ci, a service"];
+    let tokens_of_ci = format!("/people/ci/tokens/{ci_token}");
+    let kept: [(&str, &str, serde_json::Value, &[&str]); 19] = [
+        // Only an admin's.
+        ("POST", "/deployments/d/secrets/k", serde_json::json!({ "from": "env:HOLON_SWEEP_UNSET" }), &admins),
+        ("POST", "/deployments/d/secrets/k/rollback", serde_json::json!({ "version": 1 }), &admins),
+        ("DELETE", "/deployments/d/secrets/k", null.clone(), &admins),
+        ("GET", "/people", null.clone(), &admins),
+        ("POST", "/people", serde_json::json!({ "name": "eve", "kind": "person", "role": "admin" }), &admins),
+        ("PATCH", "/people/cy", serde_json::json!({ "role": "admin" }), &admins),
+        ("POST", "/people/cy/reset", serde_json::json!({}), &admins),
+        ("DELETE", "/people/cy", null.clone(), &admins),
+        // ci's tokens: ada's, its owner and an admin; nobody else's.
+        ("POST", "/people/ci/tokens", serde_json::json!({ "label": "x" }), &admins),
+        ("GET", "/people/ci/tokens", null.clone(), &admins),
+        ("DELETE", tokens_of_ci.as_str(), null.clone(), &admins),
+        ("GET", "/admin/oidc", null.clone(), &admins),
+        ("POST", "/admin/secrets/k", serde_json::json!({ "value": "a value long enough" }), &admins),
+        ("GET", "/admin/secrets/env", null.clone(), &admins),
+        ("GET", "/admin/grants", null.clone(), &admins),
+        // An editor's, never an agent's or a viewer's.
+        ("POST", "/deployments/d/stop", serde_json::json!({}), &editors),
+        ("POST", "/deployments/d/pause", serde_json::json!({}), &editors),
+        ("DELETE", "/deployments/d", null.clone(), &editors),
+        ("DELETE", "/flows/f", null.clone(), &editors),
+    ];
+    for (method, path, body, may) in &kept {
+        // Not vacuous: whoever may is let through by the gate.
+        assert!(state.access.check(&request(method, path, body, Some(&ada))).is_ok(), "{method} {path}: ada, an admin, is let through");
+        for spelled in spellings(path) {
+            for (who, token) in callers.iter().filter(|(who, _)| !may.contains(who)) {
+                let answer = route(&state, &request(method, &spelled, body, *token));
+                let status = answer.status_code;
+                let said = String::from_utf8_lossy(&body_bytes(answer)).into_owned();
+                let refused = matches!(status, 401 | 403) || (status == 404 && said.is_empty());
+                assert!(refused, "{method} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}");
+            }
+        }
+    }
+}
+
+/// What `/auth/owned` lists is what its caller makes and revokes tokens for. Each caller (an admin,
+/// an editor, a viewer, the run file's user, an agent, a service) is listed exactly the agents and
+/// services they own, each with its tokens; whoever isn't an admin lists, makes and revokes the
+/// tokens of those and is refused every other's, an admin every one's.
+#[test]
+fn what_one_owns_is_listed_and_its_tokens_are_theirs_to_make() {
+    use crate::accounts::Kind;
+    use access::Role;
+    use std::collections::BTreeSet;
+    let mut state = test_state();
+    let People { ada, claude } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy, local) = (person("bob", Role::Editor), person("cy", Role::Viewer), accounts.new_local("bma"));
+    // claude is ada's (with_people); bob owns two, cy one, the OS user its agent.
+    for (name, kind, role, owner) in [("ci", Kind::Service, Role::Editor, "bob"), ("nightly", Kind::Service, Role::Viewer, "bob"), ("scout", Kind::Agent, Role::Agent, "cy"), ("bma-agent", Kind::Agent, Role::Agent, "bma")] {
+        accounts.add(name, kind, role, owner, "ada").unwrap();
+        accounts.create_token(name, "first", "ada").unwrap();
+    }
+    let ci = accounts.create_token("ci", "a script", "bob").unwrap().0;
+    let all = ["claude", "ci", "nightly", "scout", "bma-agent"];
+    let callers = [("ada", &ada, true), ("bob", &bob, false), ("cy", &cy, false), ("bma", &local, true), ("claude", &claude, false), ("ci", &ci, false)];
+    let ask = |token: &str, method: &str, url: &str, body: serde_json::Value| {
+        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() };
+        let answer = route(&state, &req_as(token, method, url, bytes));
+        let status = answer.status_code;
+        (status, serde_json::from_slice::<serde_json::Value>(&body_bytes(answer)).unwrap_or_default())
+    };
+    let ids = |name: &str| accounts.tokens(name).iter().map(|t| t.id.clone()).collect::<BTreeSet<_>>();
+    for (me, token, admin) in callers {
+        let owns: BTreeSet<&str> = all.iter().copied().filter(|n| accounts.principal(n).and_then(|p| p.owner).as_deref() == Some(me)).collect();
+        let (status, listed) = ask(token, "GET", "/auth/owned", serde_json::Value::Null);
+        assert_eq!(status, 200, "{me}: {listed}");
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.iter().map(|p| p["name"].as_str().unwrap()).collect::<BTreeSet<_>>(), owns, "{me} is listed what they own");
+        for p in listed {
+            let shown = p["tokens"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<BTreeSet<_>>();
+            assert_eq!(shown, ids(p["name"].as_str().unwrap()), "{me}: {p}");
+        }
+        for name in all {
+            let may = admin || owns.contains(name);
+            let before = ids(name);
+            let tokens = format!("/people/{name}/tokens");
+            let (listing, _) = ask(token, "GET", &tokens, serde_json::Value::Null);
+            let (making, made) = ask(token, "POST", &tokens, serde_json::json!({ "label": format!("by {me}") }));
+            assert_eq!((listing, making), if may { (200, 200) } else { (403, 403) }, "{me}, {name}'s tokens: {made}");
+            // What they made they revoke; one they didn't, they may not.
+            let id = made["entry"]["id"].as_str().map(String::from).unwrap_or_else(|| before.first().unwrap().clone());
+            let (revoking, _) = ask(token, "DELETE", &format!("{tokens}/{id}"), serde_json::Value::Null);
+            assert_eq!(revoking, if may { 204 } else { 403 }, "{me} revokes {name}'s token");
+            assert_eq!(ids(name), before, "{me}: {name}'s tokens are as they were");
+        }
+    }
+}
+
+/// A key a flow taints is tainted wherever a run has it, whatever started the run: in a request (a
+/// header, the query as sent and as read, a path parameter, a JSON body at depth, a number held as
+/// a number), in what a call sends and what the far side answers (and the cookie it sets), in a
+/// WebSocket's message, in an action's input and what it writes, and in what a later run reads
+/// back; and so are the credentials every run taints (a Bearer token, a Basic password, a
+/// cookie). No form of any value is in the runs' log, their listing, their lines, the export,
+/// `holon verify`'s report or a replay's; each is marked `‹taint:key›` there. Each caller is
+/// answered with the values as they are, and the runs check and replay as themselves.
+#[test]
+fn a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them() {
+    use std::io::Write;
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::Message;
+    // The far side: it answers a card under a tainted key, and sets a session.
+    let (far_number, far_session) = ("5500000000000004", "fs-6b2d9e4a1c");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let far = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if read_request(&mut stream).is_none() {
+                continue;
+            }
+            let body = format!(r#"{{"card":{{"number":"{far_number}"}},"holder":"Ada"}}"#);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: far_session={far_session}; Path=/; HttpOnly\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = stream.write_all(format!("{head}{body}").as_bytes());
+        }
+    });
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        r#"import {{ action, flow, route }} from "holon"
+import far from "host:{far}"
+import notes from "collection:notes"
+
+flow("teller", {{ port: {port}, taint: ["x-api-key", "number", "code", "token", "pin"] }})
+
+route.post("/pay/:code", (req) => {{
+  const key = req.headers["x-api-key"]
+  console.log("paying", key, req.query.token, req.json.card.number)
+  return {{ key, code: req.params.code, card: req.json.card.number, token: req.query.token, cookie: req.headers.cookie, auth: req.headers.authorization }}
+}})
+
+route.post("/card", async (req) => {{
+  const got = await far.post("/cards", {{ headers: {{ "x-api-key": req.json.key }}, body: {{ holder: "Ada" }} }})
+  return got.body
+}})
+
+route.websocket("/ws", {{ message: (m) => ({{ echo: m.text }}) }})
+
+export const keep = action((input) => {{
+  notes[input.id] = input
+  return input.id
+}})
+
+export const look = action((input) => notes[input.id])
+"#
+    );
+    deploy_text(&state, &text, &far);
+    sync_listeners(&state);
+
+    // A request, with the credentials every run taints.
+    let (key, bearer, password, cookie, token, code, card) = ("kx-7f3a9c2e1b", "bt-4d8e2f6a0c", "pw-9b1c5e7d3f", "ck-2a6f8e0b4d", "tk/3c+7e=1a5f", "cd-8e4a2c6f0b", "4111111111111111");
+    let basic = "YWRhOnB3LTliMWM1ZTdkM2Y="; // base64 of "ada:" and the password
+    let sent_token = "tk%2F3c%2B7e%3D1a5f";
+    let send = |url: String, body: String| {
+        let request = data::DataRequest {
+            method: "POST".into(),
+            url,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("X-Api-Key".into(), key.into()),
+                ("Authorization".into(), format!("Bearer {bearer}")),
+                ("Proxy-Authorization".into(), format!("Basic {basic}")),
+                ("Cookie".into(), format!("sid={cookie}; theme=dark")),
+            ],
+            body: body.into_bytes(),
+            by: None,
+        };
+        let answered = serve_data(&state.store, &state.deployments, &state.deployments_path, "teller", &request);
+        (answered.status, String::from_utf8(answered.body).unwrap())
+    };
+    let (status, answer) = send(format!("/pay/{code}?token={sent_token}"), format!(r#"{{"card": {{"number": {card}}}, "amount": "12.00"}}"#));
+    assert_eq!(status, 200, "{answer}");
+    for value in [key, bearer, code, card, token] {
+        assert!(answer.contains(value), "the caller is answered with {value:?} as it is: {answer}");
+    }
+    // A call: the key it sends, and what the far side answers.
+    let sent_key = "kx-out-5d1e8b3f";
+    let (status, answer) = send("/card".into(), format!(r#"{{"key": "{sent_key}"}}"#));
+    assert!(status == 200 && answer.contains(far_number), "{status} {answer}");
+    // A WebSocket's message.
+    let ws_number = "6011000000000004";
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap(), stream).unwrap();
+    ws.send(Message::text(format!(r#"{{"number":"{ws_number}"}}"#))).unwrap();
+    let echoed = loop {
+        if let Message::Text(t) = ws.read().unwrap() {
+            break t.to_string();
+        }
+    };
+    assert!(echoed.contains(ws_number), "{echoed}");
+    drop(ws);
+    // An action's input, written; and a later run that reads it back.
+    let (pin, kept_token) = ("pn-0e7c3a9d5b", "at-4c8f2e6a0d");
+    assert_eq!(run_action_named(&state, "teller", "keep", serde_json::json!({ "id": "n1", "pin": pin, "token": kept_token })).status_code, 200);
+    let looked = body_json(run_action_named(&state, "teller", "look", serde_json::json!({ "id": "n1" })));
+    assert!(looked.to_string().contains(pin), "{looked}");
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+
+    let never = [key, bearer, password, cookie, token, sent_token, code, card, basic, "ada:pw-9b1c5e7d3f", sent_key, far_number, far_session, ws_number, pin, kept_token];
+    let get = |path: &str| body_json(route(&state, &req("GET", path, vec![])));
+    let unit = stage_text(&state, &text);
+    let export = get("/deployments/teller/export");
+    let report = verify::check(&serde_json::from_value(export.clone()).unwrap(), None, &BTreeMap::new());
+    let replayed = get(&format!("/deployments/teller/replay?unit={}", to_hex(&unit)));
+    let kept = [
+        ("its log", get("/deployments/teller/log").to_string()),
+        ("its runs", get("/deployments/teller/runs").to_string()),
+        ("its lines", get("/deployments/teller/logs").to_string()),
+        ("its export", export.to_string()),
+        ("holon verify", verify::describe(&report, None)),
+        ("a replay", replayed.to_string()),
+    ];
+    for (place, shown) in &kept {
+        for value in never {
+            assert!(!shown.contains(value), "{place} holds {value:?}: {shown}");
+        }
+    }
+    let log = &kept[0].1;
+    for k in ["x-api-key", "number", "code", "token", "pin", "authorization", "proxy-authorization", "cookie", "set-cookie"] {
+        assert!(log.contains(&format!("‹taint:{k}›")), "the log marks {k}: {log}");
+    }
+    assert!(kept[2].1.contains("‹taint:x-api-key›") && kept[2].1.contains("‹taint:number›"), "its lines mark them: {}", kept[2].1);
+    assert!(report.ok(), "the runs check as themselves: {}", kept[4].1);
+    assert_eq!(replayed["differ"], 0, "the runs replay as themselves, or can't be told: {replayed}");
+    let same = replays_as_it_verifies(&state, "teller");
+    assert!(["request", "websocket", "trigger"].iter().all(|k| same.contains(*k)), "{same:?}");
+}
+
+/// Every body the control plane reads goes through `read_body`, which reads it by the deadline:
+/// a handler reading one itself would hold its place for as long as the client likes. (Its own
+/// tests' servers read as they like.)
+#[test]
+fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
+    let mut read_elsewhere = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+    while let Some(dir) = dirs.pop() {
+        for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // Each test-only module left out: from its `#[cfg(test)]` to the `}` that closes it,
+            // the first at the start of a line.
+            let (mut lines, mut in_tests) = (text.lines().enumerate().peekable(), false);
+            let mut code = Vec::new();
+            while let Some((n, line)) = lines.next() {
+                let opens = line == "#[cfg(test)]" && lines.peek().is_some_and(|(_, l)| l.starts_with("mod ") || l.starts_with("pub(crate) mod "));
+                in_tests = (in_tests || opens) && line != "}";
+                if !in_tests && line != "}" {
+                    code.push((n, line));
+                }
+            }
+            for (n, line) in code.into_iter().filter(|(_, l)| l.contains(".data()")) {
+                let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
+                if !in_read_body {
+                    read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(read_elsewhere.is_empty(), "a body read but through read_body: {read_elsewhere:#?}");
+}
+
+/// A body that stops, or trickles in, holds its request's place no longer than the deadline, on
+/// every route here that reads one: past it the place is given back, and one that trickles is
+/// told 408. A whole body goes through as before.
+#[test]
+fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
+    use std::time::Instant;
+    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    let paths = ["/unit", "/registry/publish", "/admin/storage"];
+    let most = paths.len();
+    let state: &'static AppState = Box::leak(Box::new(test_state()));
+    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
+    let at = server.server_addr();
+    let (_, stop) = server.stoppable();
+    let send = |path: &str, body: &[u8], length: usize| {
+        let mut s = TcpStream::connect(at).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n").unwrap();
+        s.write_all(body).unwrap();
+        s
+    };
+    let status = |s: &mut TcpStream| {
+        let mut head = [0u8; 12];
+        s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head[9..]).into_owned()).unwrap_or_else(|e| format!("no answer: {e}"))
+    };
+    let until = |what: &str, by: Duration, done: &dyn Fn() -> bool| {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < by, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    // Bodies that stop part way: each holds its place while it waits, every place is held...
+    // (A body of 1 KiB or less tiny_http reads itself before handing the request on, holding no
+    // place: these say they are longer.)
+    let long = 100_000;
+    let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
+    until("every route reads its body", Duration::from_secs(5), &|| IN_FLIGHT.load(Acquire) == most);
+    assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
+    // ...and each gives it back by the deadline.
+    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+
+    // A body that trickles in, a byte every 100ms, is told 408 at the deadline.
+    for path in paths {
+        let mut s = send(path, b"", long);
+        let mut trickle = s.try_clone().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..99 {
+                std::thread::sleep(Duration::from_millis(100));
+                if trickle.write_all(b" ").is_err() {
+                    return;
+                }
+            }
+        });
+        let started = Instant::now();
+        assert_eq!(status(&mut s), "408", "{path}: a body that trickles is cut off");
+        let took = started.elapsed();
+        assert!(took >= BODY_DEADLINE && took < BODY_DEADLINE + Duration::from_secs(2), "{path}: told after {took:?}");
+    }
+    until("a trickled body held its place", Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+
+    // A whole body is read as before: the route answers it.
+    for path in paths {
+        let answered = status(&mut send(path, b"{}", 2));
+        assert!(!["408", "503"].contains(&answered.as_str()) && !answered.starts_with("no answer"), "{path}: a whole body answered {answered}");
+    }
+    drop(stopped);
+    let _ = stop.send(());
+}
+
 #[test]
 fn accounts_through_the_routes() {
     let mut state = test_state();
@@ -4935,26 +5431,51 @@ fn accounts_through_the_routes() {
     assert_eq!(call("GET", "/flows", null.clone(), Some(&ada)).status_code, 200);
 
     // An invite: the link's holder sets their password and is signed in, as a viewer.
-    let invite = body_json(call("POST", "/admin/users", serde_json::json!({ "name": "cy", "role": "viewer" }), Some(&ada)))["invite"].as_str().unwrap().to_string();
+    let invite = body_json(call("POST", "/people", serde_json::json!({ "name": "cy", "kind": "person", "role": "viewer" }), Some(&ada)))["invite"].as_str().unwrap().to_string();
     assert_eq!(body_json(call("GET", &format!("/auth/invite?token={invite}"), null.clone(), None))["name"], "cy");
     let cy = body_json(call("POST", "/auth/invite", serde_json::json!({ "token": invite, "password": pw }), None))["token"].as_str().unwrap().to_string();
-    assert_eq!(body_json(call("GET", "/auth/me", null.clone(), Some(&cy)))["role"], "viewer");
+    let me = body_json(call("GET", "/auth/me", null.clone(), Some(&cy)));
+    assert_eq!((&me["kind"], &me["role"]), (&serde_json::json!("person"), &serde_json::json!("viewer")));
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 403);
-    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&cy)).status_code, 403);
+    assert_eq!(call("GET", "/people", null.clone(), Some(&cy)).status_code, 403);
     // Signing in again, with the password cy set; then out.
     let again = body_json(call("POST", "/auth/sign-in", serde_json::json!({ "name": "cy", "password": pw }), None))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&again)).status_code, 204);
     assert_eq!(call("GET", "/flows", null.clone(), Some(&again)).status_code, 401);
 
-    // An admin makes cy an editor; an API token for CI writes, never the admin panel.
-    assert_eq!(body_json(call("POST", "/admin/users/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
+    // An admin makes cy an editor; a service for CI writes with its token, never managing people.
+    assert_eq!(body_json(call("PATCH", "/people/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 200);
-    let ci = body_json(call("POST", "/admin/tokens", serde_json::json!({ "label": "ci", "role": "editor" }), Some(&ada)))["token"].as_str().unwrap().to_string();
+    let added = body_json(call("POST", "/people", serde_json::json!({ "name": "ci", "kind": "service", "role": "editor" }), Some(&ada)));
+    assert_eq!((&added["kind"], &added["owner"], &added["tokens"]), (&serde_json::json!("service"), &serde_json::json!("ada"), &serde_json::json!([])), "owned by whoever added it: {added}");
+    assert_eq!(call("POST", "/people", serde_json::json!({ "name": "ops", "kind": "service", "role": "admin" }), Some(&ada)).status_code, 400, "a service is never an admin");
+    let ci = body_json(call("POST", "/people/ci/tokens", serde_json::json!({ "label": "CI on GitHub" }), Some(&ada)))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "y", "document": {} }), Some(&ci)).status_code, 200);
-    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&ci)).status_code, 403);
+    assert_eq!(call("GET", "/people", null.clone(), Some(&ci)).status_code, 403);
+    let me = body_json(call("GET", "/auth/me", null.clone(), Some(&ci)));
+    assert_eq!((&me["name"], &me["kind"], &me["owner"]), (&serde_json::json!("ci"), &serde_json::json!("service"), &serde_json::json!("ada")));
     let activity = body_json(call("GET", "/activity", null.clone(), Some(&ada)));
-    let saved_by_ci = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "token:ci");
+    let saved_by_ci = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "ci");
     assert!(saved_by_ci, "{activity}");
+
+    // An agent cy owns: cy makes and revokes its tokens, not the service's ada owns.
+    call("POST", "/people", serde_json::json!({ "name": "claude", "kind": "agent", "role": "agent", "owner": "cy" }), Some(&ada));
+    let made = body_json(call("POST", "/people/claude/tokens", serde_json::json!({ "label": "Claude Code" }), Some(&cy)));
+    let (claude, id) = (made["token"].as_str().unwrap().to_string(), made["entry"]["id"].as_str().unwrap().to_string());
+    assert_eq!(body_json(call("GET", "/auth/me", null.clone(), Some(&claude)))["name"], "claude");
+    assert_eq!(body_json(call("GET", "/people/claude/tokens", null.clone(), Some(&cy))).as_array().unwrap().len(), 1);
+    assert_eq!(call("POST", "/people/ci/tokens", serde_json::json!({ "label": "mine now" }), Some(&cy)).status_code, 403);
+    assert_eq!(call("POST", "/people/nobody/tokens", serde_json::json!({ "label": "x" }), Some(&cy)).status_code, 403);
+    assert_eq!(call("POST", "/people/claude/tokens", serde_json::json!({ "label": "x" }), Some(&claude)).status_code, 403, "an agent makes no tokens");
+    assert_eq!(call("DELETE", &format!("/people/claude/tokens/{id}"), null.clone(), Some(&cy)).status_code, 204);
+    assert_eq!(call("GET", "/flows", null.clone(), Some(&claude)).status_code, 401);
+    // cy owns claude, so stays until claude has another owner.
+    assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 400);
+    assert_eq!(body_json(call("PATCH", "/people/claude", serde_json::json!({ "owner": "ada" }), Some(&ada)))["owner"], "ada");
+    assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 204);
+    let listed = body_json(call("GET", "/people", null.clone(), Some(&ada)));
+    let kinds: Vec<_> = listed.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["kind"].as_str().unwrap())).collect();
+    assert_eq!(kinds, [("ada", "person"), ("ci", "service"), ("claude", "agent")]);
 }
 
 /// The local token (local.rs) is the OS user's admin, before setup and after, named in the
@@ -4976,7 +5497,10 @@ fn the_local_token_is_its_users_admin_for_this_run() {
     accounts.setup(&accounts.setup_code().unwrap(), "bob", "correct horse battery").unwrap();
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 401);
     assert_eq!(call("GET", "/flows", vec![], "hl_nope").status_code, 401);
-    assert_eq!(call("GET", "/admin/users", vec![], &local).status_code, 200, "an admin");
+    assert_eq!(call("GET", "/people", vec![], &local).status_code, 200, "an admin");
+    // An agent it adds is owned by the OS user, by its name, with no account of that name here.
+    let added = body_json(call("POST", "/people", br#"{"name":"ada-agent","kind":"agent","role":"agent"}"#.to_vec(), &local));
+    assert_eq!((&added["owner"], &added["created_by"]), (&serde_json::json!("ada"), &serde_json::json!("local:ada")), "{added}");
     assert!(call("POST", "/flows", br#"{"name":"mine","document":{}}"#.to_vec(), &local).is_success());
     let activity = body_json(call("GET", "/activity", vec![], &local));
     let by_local = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "local:ada");
@@ -5309,7 +5833,7 @@ route.post(\"/sign\", (req) => {answer})
     };
     // The log holds the key's placeholder: what the signing gives with it isn't the run's.
     let r = replay(&text);
-    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret or a token, which the log never holds")), "{r}");
+    assert_eq!((&r["cant_tell"], &r["runs"][0]["why"][0]), (&serde_json::json!(1), &serde_json::json!("it computes with a secret, a token or a tainted value, which the log never holds")), "{r}");
     // One that passes the key along computes the same with its placeholder, and is told.
     let r = replay(&signer("({ signed: req.body, key: signing_key }).signed"));
     assert_eq!((&r["differ"], &r["runs"][0]["why"]), (&serde_json::json!(1), &serde_json::json!(["its answer"])), "{r}");
@@ -5993,6 +6517,34 @@ fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) 
 
 fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
+}
+
+/// The oracle a deployment's runs of every kind are held to: replayed on the version it runs now
+/// (`GET /deployments/<slug>/replay`), a run of that version that `holon verify` runs again as it
+/// ran replays as the same, and none replays differently. The kinds of the runs replayed as the
+/// same, for the caller to say which it made.
+fn replays_as_it_verifies(state: &AppState, slug: &str) -> BTreeSet<String> {
+    let export: verify::Export = serde_json::from_value(body_json(route(state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let unit = to_hex(&state.deployments.lock().unwrap()[slug].unit);
+    let replayed = body_json(route(state, &req("GET", &format!("/deployments/{slug}/replay?unit={unit}&runs=200"), vec![])));
+    let of_now: BTreeSet<u64> = export
+        .lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e["unit"] == unit)
+        .filter_map(|e| e["seq"].as_u64())
+        .collect();
+    let mut same = BTreeSet::new();
+    for run in replayed["runs"].as_array().unwrap().iter().filter(|r| r["seq"].as_u64().is_some_and(|s| of_now.contains(&s))) {
+        let seq = run["seq"].as_u64().unwrap();
+        assert_ne!(run["outcome"], "differs", "{slug}'s run {seq} replays differently on its own version: {run}");
+        if report.reruns.iter().any(|(s, r)| *s == seq && *r == verify::Rerun::Matched) {
+            assert_eq!(run["outcome"], "same", "{slug}'s run {seq} verifies, so it replays as the same: {run}");
+            same.insert(run["kind"].as_str().unwrap().to_string());
+        }
+    }
+    same
 }
 
 fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
@@ -8469,6 +9021,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         // the resumed part that ran again too.
         let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
         assert_eq!(matched, 4, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+        assert!(replays_as_it_verifies(&state, &slug).contains("resume"), "{engine}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -8947,6 +9500,7 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
 
     let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
     assert!(!logged.contains("s3cret") && !logged.contains("t0ken"), "{logged}");
+    assert!(replays_as_it_verifies(&state, &slug).contains("mail"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9052,6 +9606,7 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     assert_eq!(runs().len(), 4);
     let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
     assert_eq!(live["feeds"][0]["status"], "closed", "{live}");
+    assert!(replays_as_it_verifies(&state, &slug).contains("feed"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9811,6 +10366,7 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     let (matched, skipped) = (report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| failed(r)).count());
     assert!(report.ok() && (matched, skipped) == (5, 3), "{}", verify::describe(&report, None));
     assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    assert!(replays_as_it_verifies(&state, &slug).contains("queue"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -10786,9 +11342,10 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
-/// What an unrecorded run's tally keeps of a failure: its error redacted of the deployment's secrets
-/// and cut short, its status at least 500 when it failed with an error; and a failed unrecorded
-/// action answers that its runs aren't logged (resilience-audit-L4.md, §2.8).
+/// What an unrecorded run's tally keeps of a failure: its error redacted as its entry would be, of
+/// the deployment's secrets and of the run's own values (its request's tainted values, its resume
+/// tokens), and cut short, its status at least 500 when it failed with an error; and a failed
+/// unrecorded action answers that its runs aren't logged (resilience-audit-L4.md, §2.8).
 #[test]
 fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     let mut state = test_state();
@@ -10796,17 +11353,23 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
     let set = serde_json::to_vec(&serde_json::json!({ "value": "sk_live_42" })).unwrap();
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/api_key"), set)).status_code, 200);
-    let long = format!("the key sk_live_42 was refused: {}", "x".repeat(1000));
+    // A file named from the request, say, or a key a run lock held: what it failed on can hold
+    // what it was sent.
+    let long = format!("the key sk_live_42 was refused for docs/4111111111111111.txt by rt-5e9c1a7b3d: {}", "x".repeat(1000));
     let counted = crate::firing::Counted { route: Some("GET /health"), at_ms: 7, duration_ms: 1.0, status: 200, error: Some(&long) };
+    let run = secrets::Redactor::tainted(&[("number".to_string(), "4111111111111111".to_string())])
+        .and(secrets::Redactor::tokens(&BTreeMap::from([("paid".to_string(), "rt-5e9c1a7b3d".to_string())])));
     let kept = {
         let mut table = state.deployments.lock().unwrap();
         let dep = table.get_mut(&slug).unwrap();
-        assert!(crate::firing::count_for_tests(dep, &counted), "counted only");
+        assert!(crate::firing::count_for_tests(dep, &counted, &run), "counted only");
         dep.tallies["GET /health"].last_failure.clone().unwrap()
     };
     let error = kept.error.unwrap();
     assert_eq!(kept.status, 500, "an error is a failure, answered 500");
-    assert!(!error.contains("sk_live_42") && error.contains("‹secret:api_key"), "{error}");
+    for (value, mark) in [("sk_live_42", "‹secret:api_key"), ("4111111111111111", "‹taint:number›"), ("rt-5e9c1a7b3d", "‹token:paid›")] {
+        assert!(!error.contains(value) && error.contains(mark), "{error}");
+    }
     assert!(error.chars().count() <= 301 && error.ends_with('…'), "cut short: {} chars", error.chars().count());
     // An unrecorded action is counted and never logged; one with no answer is answered 404
     // (missing), which isn't a failure.
@@ -11576,6 +12139,7 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("file"));
 
     // What starts its file handlers can't be optional.
     let unit = state.deployments.lock().unwrap()[&slug].unit;
@@ -11623,6 +12187,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    assert!(replays_as_it_verifies(&state, &slug).contains("trigger"));
     // What starts an action can't be optional.
     let unit = state.deployments.lock().unwrap()[&slug].unit;
     let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["Action(\"reset\")"] } }));
@@ -11680,6 +12245,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
+    assert_eq!(replays_as_it_verifies(&state, &slug), ["request".to_string(), "tick".to_string()].into());
 
     // Clocks alone: no port, and the clock its trigger, granted with the rest.
     let alone = deploy_text(&state, "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n", "127.0.0.1:9");
@@ -12197,7 +12763,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

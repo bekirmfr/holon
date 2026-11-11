@@ -51,6 +51,10 @@ declare module "holon" {
     limits?: Limits
     /** The web origins allowed to call the flow from a browser (CORS), or `"*"`. */
     browsers?: string | string[]
+    /** Keys whose values the host never keeps of any run, wherever the run has them: a request,
+     *  a message, an input, a call's request or answer, its own answer, what it read or wrote.
+     *  `authorization`, `proxy-authorization`, `cookie` and `set-cookie` always are. */
+    taint?: string[]
   }
   /** What the flow is: its name, which it deploys as, and its settings. Once, after the imports. */
   export function flow(name: string, settings?: Settings): void

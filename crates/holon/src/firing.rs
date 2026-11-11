@@ -1042,41 +1042,81 @@ pub(crate) fn log_or_count(
     slug: &str,
     counted: Counted,
     entry: impl FnOnce() -> LogEntry,
-    tokens: impl FnOnce() -> Redactor,
+    tokens: impl Fn() -> Redactor,
     declared: holon_core::LogLevel,
     sends: bool,
 ) -> Option<Logged> {
+    // A run that failed with an error keeps it in its tally if it is only counted, redacted as its
+    // entry would be: its entry is made first, to know what of (once: it is logged if it is).
+    let mut entry = Some(entry);
+    let mut made = None;
+    let failure = match counted.error {
+        Some(_) => {
+            let (secrets, taint) = redaction_of(deployments, slug)?;
+            let mut e = (entry.take().expect("not made yet"))();
+            let lines = e.lines.clone();
+            let redactor = redactor_of(&mut e, &lines, tokens(), &secrets, &taint);
+            made = Some(e);
+            Some(redactor)
+        }
+        None => None,
+    };
+    let entry = move || made.unwrap_or_else(|| (entry.expect("made once"))());
     let sending = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        if !count_if_unrecorded(dep, &counted, declared).1 {
+        let redact = |e: &str| failure.as_ref().map_or_else(|| e.to_string(), |r| r.text(e));
+        if !count_if_unrecorded(dep, &counted, declared, redact).1 {
             None
         } else if sends {
-            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders)))
+            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), tainted_keys(dep)))
         } else {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
     };
-    if let Some((channels, secrets, folders)) = sending {
-        send_unlogged(&channels, &secrets, &folders, entry(), tokens());
+    if let Some((channels, secrets, folders, taint)) = sending {
+        send_unlogged(&channels, &folders, entry(), |e| redactor_of(e, &[], tokens(), &secrets, &taint));
         return Some(Logged { seq: None, kept: Ok(()) });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
 }
 
+/// The keys `dep`'s flow taints (`holon_core::Server::taint`).
+fn tainted_keys(dep: &Deployment) -> Vec<String> {
+    dep.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default()
+}
+
+/// What redacting `slug`'s runs takes: its secrets and the keys its flow taints. None: no such
+/// deployment.
+fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<(Arc<Mutex<secrets::Resolved>>, Vec<String>)> {
+    let table = deployments.lock().unwrap();
+    let dep = table.get(slug)?;
+    Some((Arc::clone(&dep.secrets), tainted_keys(dep)))
+}
+
+/// What `entry` is logged redacted of: the run's own values (`tokens`), the deployment's secrets,
+/// the credentials its calls answered, and the values of the keys its flow taints (`taint`, and
+/// those every run does) wherever it or its `lines` hold them (`data::tainted`), each as its
+/// mark. One taken for a secret or a token stays marked as that.
+fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
+    let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets));
+    let found = data::tainted(taint, entry, lines, &marked);
+    marked.and(Redactor::tainted(&found))
+}
+
 /// An unrecorded run's packs (channels.rs): what it sent, or for a part that settled waiting what
-/// it settled, redacted as a logged run's are, but sent live, with no id, and never kept. A pack's
-/// id is its run's log seq and the kept packs are rebuilt from the log, which doesn't hold the
-/// run: a subscriber there now gets them, and one that reconnects, or comes after a restart,
-/// doesn't. Its mails and its queues' messages are spooled and sent (mails.rs, queues.rs).
-fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, folders: &folders::Scoped, mut entry: LogEntry, tokens: Redactor) {
+/// it settled, redacted as a logged run's are (by what `redactor` makes of it), but sent live,
+/// with no id, and never kept. A pack's id is its run's log seq and the kept packs are rebuilt
+/// from the log, which doesn't hold the run: a subscriber there now gets them, and one that
+/// reconnects, or comes after a restart, doesn't. Its mails and its queues' messages are spooled
+/// and sent (mails.rs, queues.rs).
+fn send_unlogged(channels: &channels::Channels, folders: &folders::Scoped, mut entry: LogEntry, redactor: impl FnOnce(&mut LogEntry) -> Redactor) {
     let mails = std::mem::take(&mut entry.mails);
     folders.all.mails.send_unlogged(&folders.deployment, &entry, mails);
     let queued = std::mem::take(&mut entry.queued);
     folders.all.queues.send_unlogged(&folders.deployment, &entry, queued);
     if entry.performed.iter().chain(&entry.progress).any(|p| p.capability.starts_with("ChannelSend(")) {
-        let answered = std::mem::take(&mut entry.answered);
-        tokens.and(Redactor::of(secrets)).and(Redactor::answers(&answered.0, secrets)).entry(&mut entry);
+        redactor(&mut entry).entry(&mut entry);
     }
     // Through `packs_of` all the same: a parked run's earlier parts' sends aren't sent again, and
     // a finished run lets go of them.
@@ -1085,19 +1125,20 @@ fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Res
     }
 }
 
-/// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
+/// [`count_if_unrecorded`] for a test, the handler declared unrecorded, `run` what its run's entry
+/// would be redacted of: whether it was counted only.
 #[cfg(test)]
-pub(crate) fn count_for_tests(dep: &mut Deployment, counted: &Counted) -> bool {
-    count_if_unrecorded(dep, counted, holon_core::LogLevel::Unrecorded).1
+pub(crate) fn count_for_tests(dep: &mut Deployment, counted: &Counted, run: &Redactor) -> bool {
+    count_if_unrecorded(dep, counted, holon_core::LogLevel::Unrecorded, |e| run.text(e)).1
 }
 
 /// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
-/// route's tally, a failure with its status and its error (redacted of the deployment's secrets, cut
-/// short); with whether that is all there is to do, which for an unrecorded run it always is: its
-/// handler was declared so, and its runs are never logged, failed or not (resilience-audit-L4.md,
-/// §2.8). The one rule `push_run` and `log_or_count` both keep (D2). Called with the table's lock
-/// held.
-fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel) -> (holon_core::LogLevel, bool) {
+/// route's tally, a failure with its status and its error (redacted as its entry would be: of the
+/// run's own values by `run`, then of the deployment's secrets; cut short); with whether that is
+/// all there is to do, which for an unrecorded run it always is: its handler was declared so, and
+/// its runs are never logged, failed or not (resilience-audit-L4.md, §2.8). The one rule
+/// `push_run` and `log_or_count` both keep (D2). Called with the table's lock held.
+fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel, run: impl FnOnce(&str) -> String) -> (holon_core::LogLevel, bool) {
     let level = dep.permit.log_level(counted.route, declared);
     if level != holon_core::LogLevel::Unrecorded {
         return (level, false);
@@ -1107,7 +1148,7 @@ fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_
         status: counted.status.max(if counted.error.is_some() { 500 } else { 0 }),
         error: counted.error.map(|e| {
             const MOST: usize = 300;
-            let e = Redactor::of(&dep.secrets).text(e);
+            let e = Redactor::of(&dep.secrets).text(&run(e));
             match e.char_indices().nth(MOST) {
                 Some((cut, _)) => format!("{}…", &e[..cut]),
                 None => e,
@@ -1153,30 +1194,33 @@ struct Pushed {
 /// (counted, its packs sent live, and nothing written: `Some(None)`), the entry pushed under the
 /// deployment's log lock, its packs held. None: no such deployment.
 fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Option<Pushed>> {
-    let (log, secrets, channels, permit, folders, session, level, only_counted) = {
+    // The lines it wrote, kept beside its record and not in it (logs.rs).
+    let lines = std::mem::take(&mut entry.lines);
+    // What it is redacted of, made before the table's lock is taken: finding its tainted values
+    // walks it.
+    let (secrets, taint) = redaction_of(deployments, slug)?;
+    let redactor = redactor_of(&mut entry, &lines, tokens, &secrets, &taint);
+    let (log, channels, permit, folders, session, level, only_counted) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
         let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
-        let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
+        let (level, only_counted) = count_if_unrecorded(dep, &counted, declared, |e| redactor.text(e));
         let session = dep.life.sessions.last().map_or(0, |s| s.number);
-        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), Arc::clone(&dep.folders), session, level, only_counted)
+        (Arc::clone(&dep.log), Arc::clone(&dep.channels), Arc::clone(&dep.permit), Arc::clone(&dep.folders), session, level, only_counted)
     };
     if only_counted {
-        send_unlogged(&channels, &secrets, &folders, entry, tokens);
+        send_unlogged(&channels, &folders, entry, |_| redactor);
         return Some(None);
     }
     // Its mails spooled before its record is written, and held with it (mails.rs): a restart
     // sends one whose record is on disk, and drops one whose record a crash lost.
     let mails = std::mem::take(&mut entry.mails);
     let spooled = folders.all.mails.spool_logged(slug, &entry, mails);
-    // The lines it wrote, kept beside its record and not in it (logs.rs).
-    let lines = std::mem::take(&mut entry.lines);
     let (at_ms, unit) = (entry.at_ms, entry.unit.clone());
     // Its queues' messages likewise (queues.rs).
     let queued = std::mem::take(&mut entry.queued);
     let queued = folders.all.queues.spool_logged(slug, &entry, queued);
-    let answered = std::mem::take(&mut entry.answered);
-    let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
+    entry.answered = Default::default();
     entry.session = session;
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
@@ -1192,7 +1236,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         folders.all.queues.hold_sends(slug, seq, queued);
         seq
     });
-    // Each line redacted of the secrets a run holds, as its record is: a secret's value is not written.
+    // Each line redacted as its record is: a secret's value, or a tainted one, is not written.
     let lines: Vec<(String, String)> = lines.iter().map(|(level, v)| (level.clone(), redactor.text(&crate::logs::text_of(v)))).collect();
     folders.all.logs.write(slug, seq, &unit, at_ms, &lines);
     Some(Some(Pushed { log, seq, level, channels, permit, folders }))

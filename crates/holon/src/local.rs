@@ -13,6 +13,10 @@
 //! the user's own commands answer. A server elsewhere, or a script in CI, uses an API token
 //! (`HOLON_TOKEN`), as before, or the token `holon mcp setup --server` kept for that server in
 //! `~/.holon/tokens.json`, readable only by the user.
+//!
+//! `holon mcp` never signs in with the run file's token: it signs in as an agent ([`agent_target`]).
+//! On a server this user runs, the run file's admin makes them one (mcphosts.rs), whose token is
+//! kept as `agent:<URL>`, a key no other command reads, so `holon deploy` stays the person.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -53,7 +57,8 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 /// Where the tokens for servers elsewhere are kept: `~/.holon/tokens.json`, each server's URL to
-/// its token, readable only by this user.
+/// its token (and `agent:<URL>` to the agent's `holon mcp` made on a server this user runs),
+/// readable only by this user.
 pub(crate) fn tokens_file() -> Option<PathBuf> {
     holon_home().map(|h| h.join("tokens.json"))
 }
@@ -169,11 +174,48 @@ pub(crate) struct Target {
 /// this user runs on this machine; `HOLON_TOKEN` if set, else the token kept for that server
 /// (`holon mcp setup --server`, chosen for it), else its run file's.
 pub(crate) fn target(given: Option<&str>) -> Result<Target, String> {
-    let env_token = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    let given = given.map(str::to_string).or_else(|| std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty()));
-    let files = dir().map(|d| run_files(&d)).unwrap_or_default();
+    let (given, env_token, files) = asked(given);
     let kept = |server: &str| tokens_file().and_then(|f| saved_token(&f, server));
     target_from(given.as_deref(), env_token, files, answers, kept)
+}
+
+/// What [`target`] and [`agent_target`] read: the server given, `HOLON_TOKEN`, the run files.
+fn asked(given: Option<&str>) -> (Option<String>, Option<String>, Vec<(PathBuf, RunFile)>) {
+    let env_token = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let given = given.map(str::to_string).or_else(|| std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty()));
+    (given, env_token, dir().map(|d| run_files(&d)).unwrap_or_default())
+}
+
+/// The server `holon mcp` talks to, and how it signs in there: as an agent, never with the run
+/// file's token.
+#[derive(Debug, PartialEq)]
+pub(crate) struct AgentTarget {
+    pub(crate) server: String,
+    /// `HOLON_TOKEN`, else the agent token kept for the server.
+    pub(crate) token: Option<String>,
+    /// The run file's token, on a server this user runs and with no `HOLON_TOKEN`: only to make
+    /// this user's agent there (mcphosts::local_agent), never to sign in.
+    pub(crate) run_token: Option<String>,
+}
+
+/// The run file's token for `server` (a URL), when this user runs it here.
+pub(crate) fn run_token(server: &str) -> Option<String> {
+    let files = dir().map(|d| run_files(&d)).unwrap_or_default();
+    files.into_iter().find(|(_, f)| f.server == server).map(|(_, f)| f.token)
+}
+
+/// The key a local server's agent token is kept under in `tokens.json`.
+pub(crate) fn agent_key(server: &str) -> String {
+    format!("agent:{server}")
+}
+
+/// Which server, as [`target`] finds it, and the agent token `holon mcp` signs in with:
+/// `HOLON_TOKEN`, else the one kept for that server (`agent:<URL>`; for a server this user
+/// doesn't run, `<URL>` too, where `holon mcp setup --server` keeps it).
+pub(crate) fn agent_target(given: Option<&str>) -> Result<AgentTarget, String> {
+    let (given, env_token, files) = asked(given);
+    let kept = |key: &str| tokens_file().and_then(|f| saved_token(&f, key));
+    agent_target_from(given.as_deref(), env_token, files, answers, kept)
 }
 
 /// Ask the server this user runs here (or `server`) as its admin, for a command named `who`:
@@ -238,11 +280,36 @@ fn target_from(
     answers: impl Fn(&str) -> Option<bool>,
     kept: impl Fn(&str) -> Option<String>,
 ) -> Result<Target, String> {
+    let (server, from_run) = server_from(given, files, answers)?;
+    // A token kept for a server is for one given by name; the one server running is signed in to
+    // with its run file's.
+    let kept = given.and_then(|_| kept(&server));
+    Ok(Target { token: env_token.or(kept).or(from_run), server })
+}
+
+/// [`agent_target`], given what it reads.
+fn agent_target_from(
+    given: Option<&str>,
+    env_token: Option<String>,
+    files: Vec<(PathBuf, RunFile)>,
+    answers: impl Fn(&str) -> Option<bool>,
+    kept: impl Fn(&str) -> Option<String>,
+) -> Result<AgentTarget, String> {
+    let (server, from_run) = server_from(given, files, answers)?;
+    if env_token.is_some() {
+        return Ok(AgentTarget { server, token: env_token, run_token: None });
+    }
+    let token = kept(&agent_key(&server)).or_else(|| from_run.is_none().then(|| kept(&server)).flatten());
+    Ok(AgentTarget { server, token, run_token: from_run })
+}
+
+/// Which server: `given`, else the one this user runs here; and its run file's token, when this
+/// user runs it.
+fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: impl Fn(&str) -> Option<bool>) -> Result<(String, Option<String>), String> {
     if let Some(given) = given {
         let server = server_url(given);
         let from_run = files.into_iter().find(|(_, f)| f.server == server).map(|(_, f)| f.token);
-        let token = env_token.or_else(|| kept(&server)).or(from_run);
-        return Ok(Target { server, token });
+        return Ok((server, from_run));
     }
     let mut running = Vec::new();
     for (path, file) in files {
@@ -258,7 +325,7 @@ fn target_from(
     match running.len() {
         1 => {
             let file = running.remove(0);
-            Ok(Target { server: file.server, token: env_token.or(Some(file.token)) })
+            Ok((file.server, Some(file.token)))
         }
         0 => Err("no holon serve is running for you on this machine: start one, or give --server <port or URL> \
                   (and HOLON_TOKEN, for a server elsewhere)"
@@ -319,6 +386,43 @@ mod tests {
         assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
         assert_eq!(target_from(Some("https://holon.example.com/"), None, vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
         assert_eq!(target_from(Some("https://holon.example.com"), Some("ht_env".into()), vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_env"));
+    }
+
+    /// `holon mcp` signs in as an agent, never with a run file's token: `HOLON_TOKEN`, else the
+    /// agent's token kept for the server; a server this user runs lends its run file's token only
+    /// to make one. Every other command signs in as before, the person, whatever agent's is kept.
+    #[test]
+    fn holon_mcp_signs_in_as_an_agent_and_other_commands_as_before() {
+        let (here, there) = ("http://127.0.0.1:7420", "https://holon.example.com");
+        let agent = |server: &str, token: Option<&str>, run_token: Option<&str>| AgentTarget { server: server.into(), token: token.map(String::from), run_token: run_token.map(String::from) };
+        /// `--server`, `HOLON_TOKEN`, what `tokens.json` keeps, and what `holon mcp` signs in with.
+        type Case<'a> = (Option<&'a str>, Option<&'a str>, &'a [(&'a str, &'a str)], AgentTarget);
+        #[rustfmt::skip]
+        let cases: &[Case] = &[
+            // A server this user runs: its agent's token, or none yet (and the run file's, to make one).
+            (Some("7420"), None, &[("agent:http://127.0.0.1:7420", "ht_agent")], agent(here, Some("ht_agent"), Some("hl_7420"))),
+            (Some("7420"), None, &[], agent(here, None, Some("hl_7420"))),
+            // Not the token kept for `holon deploy --server 7420`: that may be anyone's.
+            (Some("7420"), None, &[("http://127.0.0.1:7420", "ht_kept")], agent(here, None, Some("hl_7420"))),
+            (None, None, &[("agent:http://127.0.0.1:7401", "ht_agent")], agent("http://127.0.0.1:7401", Some("ht_agent"), Some("hl_7401"))),
+            // A server elsewhere: the token setup kept for it, an agent's kept under its own key first.
+            (Some(there), None, &[("https://holon.example.com", "ht_kept")], agent(there, Some("ht_kept"), None)),
+            (Some(there), None, &[("https://holon.example.com", "ht_kept"), ("agent:https://holon.example.com", "ht_agent")], agent(there, Some("ht_agent"), None)),
+            (Some(there), None, &[], agent(there, None, None)),
+            // HOLON_TOKEN, wherever: nothing is made with the run file's.
+            (Some("7420"), Some("ht_env"), &[("agent:http://127.0.0.1:7420", "ht_agent")], agent(here, Some("ht_env"), None)),
+            (Some(there), Some("ht_env"), &[("https://holon.example.com", "ht_kept")], agent(there, Some("ht_env"), None)),
+        ];
+        let running = |s: &str| Some(s.ends_with("7401"));
+        for (given, env, kept, want) in cases {
+            let lookup = |key: &str| kept.iter().find(|(k, _)| *k == key).map(|(_, t)| t.to_string());
+            let got = agent_target_from(*given, env.map(String::from), vec![file(7400), file(7401), file(7420)], running, lookup).unwrap();
+            assert_eq!(&got, want, "--server {given:?}, HOLON_TOKEN {env:?}, kept {kept:?}");
+            assert!(got.token.as_deref().is_none_or(|t| !t.starts_with("hl_")), "never a run file's token: {got:?}");
+        }
+        // `holon deploy --server 7420` is the person, with an agent's token kept for it.
+        let kept = |key: &str| (key == "agent:http://127.0.0.1:7420").then(|| "ht_agent".to_string());
+        assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, kept).unwrap().token.as_deref(), Some("hl_7420"));
     }
 
     #[test]

@@ -262,6 +262,11 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// `name`, as a secret's name, or why not.
+fn check_name(name: &str) -> Result<(), String> {
+    if is_valid_name(name) { Ok(()) } else { Err("a secret name is letters, digits, '-' and '_' (1 to 64)".into()) }
+}
+
 impl SecretStore {
     /// An empty store that is never written (`":memory:"`), under a key that is never kept.
     pub(crate) fn memory() -> SecretStore {
@@ -485,6 +490,7 @@ impl SecretStore {
 
     /// Set `slug`'s secret `name` to `value`, as a new version; that version's number.
     pub(crate) fn set(&self, slug: &str, name: &str, value: &str, by: Option<&str>) -> Result<u32, String> {
+        check_name(name)?;
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("a secret must be at least {MIN_SECRET_LEN} characters, or it can't be told apart from ordinary text to redact it"));
         }
@@ -497,6 +503,9 @@ impl SecretStore {
     /// Point `slug`'s secret `name` at `source` (`env:…`, `vault:…`), as a new version; that
     /// version's number. Refused unless it can be read now, and long enough to redact.
     pub(crate) fn set_from(&self, slug: &str, name: &str, source: &str, by: Option<&str>) -> Result<u32, String> {
+        // The name first: a source is read only for a secret that can be kept, so what reading it
+        // says (unset, too short) is never told for nothing.
+        check_name(name)?;
         let value = self.sources.fetch(&Reference::parse(source)?)?;
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("{source} is shorter than {MIN_SECRET_LEN} characters, too short to redact"));
@@ -608,9 +617,7 @@ impl SecretStore {
     /// Add a version of `name` from `source` (`value`: a local one's, to seal), keeping the last
     /// [`MAX_VERSIONS`]; re-resolve the vault when `resolve`.
     fn add_version(&self, slug: &str, name: &str, source: &str, value: Option<&str>, resolve: bool) -> Result<u32, String> {
-        if !is_valid_name(name) {
-            return Err("a secret name is letters, digits, '-' and '_' (1 to 64)".into());
-        }
+        check_name(name)?;
         let mut slugs = self.slugs.lock().unwrap();
         let entry = slugs.entry(slug.to_string()).or_default();
         let versions = entry.secrets.entry(name.to_string()).or_default();
@@ -919,6 +926,20 @@ impl Redactor {
         Redactor { pairs }
     }
 
+    /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
+    /// as it reads inside JSON text too (a body, a value written out with `json_stringify`), and a
+    /// number that is one as it is written.
+    pub(crate) fn tainted(values: &[(String, String)]) -> Redactor {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (key, value) in values {
+            let mark = format!("{TAINT_MARK}{key}›");
+            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
+            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs }
+    }
+
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
     /// run's own are: the same name may come from several starts.
     pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
@@ -997,6 +1018,17 @@ impl Redactor {
         if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
             return None;
         }
+        // JSON holding a tainted number as a number (a body's `"number": 4111…`): its mark, a
+        // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
+        let t = s.trim_start();
+        if (t.starts_with('{') || t.starts_with('['))
+            && self.pairs.iter().any(|(value, mark)| mark.starts_with(TAINT_MARK) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
+            && let Ok(mut json) = serde_json::from_str::<serde_json::Value>(t)
+        {
+            let mut escaped = false;
+            self.logged_json(&mut json, &mut escaped);
+            return Some((json.to_string(), escaped));
+        }
         let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
         let mut pieces = Vec::new();
         let mut at = 0;
@@ -1016,6 +1048,35 @@ impl Redactor {
         Some(write_marked(&pieces))
     }
 
+    /// `json` as the log writes it: each text as [`Redactor::logged`] writes it, its keys too, and
+    /// each number that is a tainted value as its mark.
+    fn logged_json(&self, json: &mut serde_json::Value, escaped: &mut bool) {
+        let text = |s: &str, escaped: &mut bool| match self.logged(s) {
+            Some((out, e)) => {
+                *escaped |= e;
+                out
+            }
+            None => s.to_string(),
+        };
+        match json {
+            serde_json::Value::String(s) => *s = text(s, escaped),
+            serde_json::Value::Number(n) => {
+                let written = n.to_string();
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                    *json = serde_json::Value::String(mark.clone());
+                }
+            }
+            serde_json::Value::Array(xs) => xs.iter_mut().for_each(|x| self.logged_json(x, escaped)),
+            serde_json::Value::Object(map) => {
+                for (k, mut x) in std::mem::take(map) {
+                    self.logged_json(&mut x, escaped);
+                    map.insert(text(&k, escaped), x);
+                }
+            }
+            serde_json::Value::Bool(_) | serde_json::Value::Null => {}
+        }
+    }
+
     fn logged_svalue(&self, v: &mut SValue) -> bool {
         let mut escaped = false;
         texts_mut(v, &mut |s| {
@@ -1024,7 +1085,27 @@ impl Redactor {
                 escaped |= e;
             }
         });
+        if self.pairs.iter().any(|(_, mark)| mark.starts_with(TAINT_MARK)) {
+            self.tainted_numbers(v);
+        }
         escaped
+    }
+
+    /// Each number in `v` that is a tainted value as it is written (a card's number in a JSON
+    /// body), as its mark: a text, where the number was.
+    fn tainted_numbers(&self, v: &mut SValue) {
+        match v {
+            SValue::Number(n) => {
+                let written = format!("{n}");
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                    *v = SValue::Text(mark.clone());
+                }
+            }
+            SValue::List(xs) => xs.iter_mut().for_each(|x| self.tainted_numbers(x)),
+            SValue::Record(fields) => fields.iter_mut().for_each(|(_, x)| self.tainted_numbers(x)),
+            SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => self.tainted_numbers(payload),
+            SValue::Text(_) | SValue::Boolean(_) | SValue::Bytes(_) => {}
+        }
     }
 
     /// Everything a log entry carries that a run could have put a secret into, as the log writes
@@ -1032,17 +1113,8 @@ impl Redactor {
     /// where the entry is logged, with every value the entry is redacted of (`and`).
     pub(crate) fn entry(&self, e: &mut LogEntry) {
         let mut escaped = false;
-        let mut r = |v: &mut SValue| escaped |= self.logged_svalue(v);
-        e.request.iter_mut().for_each(&mut r);
-        e.sourced.iter_mut().for_each(|(_, v)| r(v));
-        e.state_before.values_mut().for_each(&mut r);
-        e.outputs.iter_mut().flatten().for_each(&mut r);
-        e.performed.iter_mut().for_each(|p| r(&mut p.payload));
-        e.progress.iter_mut().for_each(|p| r(&mut p.payload));
-        e.events.values_mut().for_each(&mut r);
+        e.values_mut(&mut |v: &mut SValue| escaped |= self.logged_svalue(v));
         for read in &mut e.reads {
-            r(&mut read.request);
-            read.answer.iter_mut().for_each(&mut r);
             // A part of a file is kept as read, proved by its hashes: one holding a secret isn't
             // kept at all (a mark would no longer prove), so verify asks for the file instead.
             if let Some(range) = read.file.as_mut().and_then(|f| f.range.as_mut())
@@ -1051,16 +1123,7 @@ impl Redactor {
                 range.text = None;
             }
         }
-        for t in &mut e.timeline {
-            t.outputs.iter_mut().flatten().flatten().for_each(&mut r);
-        }
-        for round in &mut e.rounds {
-            for x in &mut round.exchanges {
-                r(&mut x.request);
-                r(&mut x.response);
-            }
-        }
-        for s in [&mut e.response_body, &mut e.error, &mut e.url].into_iter().flatten() {
+        for s in e.texts_mut() {
             if let Some((out, e)) = self.logged(s) {
                 *s = out;
                 escaped |= e;
@@ -1092,11 +1155,17 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
     }
 }
 
-/// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:` or
-/// `token:`.
+/// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
+const MARKED: [&str; 3] = ["secret:", "token:", "taint:"];
+
+/// How a tainted value's mark begins: `‹taint:number›`.
+const TAINT_MARK: &str = "‹taint:";
+
+/// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
+/// `token:` or `taint:`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
-    rest.len() < s.len() && (rest.starts_with("secret:") || rest.starts_with("token:"))
+    rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))
 }
 
 /// Text as the log writes it, from its pieces: the run's own text, and the marks (`true`) put in
@@ -1138,7 +1207,7 @@ pub(crate) fn read_marked(s: &str, escaped: bool) -> Vec<(String, bool)> {
         let after = rest[i..].trim_start_matches('‹');
         let n = (rest.len() - i - after.len()) / '‹'.len_utf8();
         rest = after;
-        if !(after.starts_with("secret:") || after.starts_with("token:")) {
+        if !MARKED.iter().any(|kind| after.starts_with(kind)) {
             text.extend(std::iter::repeat_n('‹', n));
             continue;
         }
@@ -1375,6 +1444,15 @@ mod tests {
         assert!(store.set_from("api", "k", "env:PATH", None).unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING", None).unwrap_err().contains("isn't set"));
         assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY", None).unwrap_err().contains("too short"));
+        // A name that can't be kept is refused before any source is read: whatever is wrong with
+        // the name, an unset variable, a short one and a good one answer alike, so asking teaches
+        // nothing of the environment.
+        let long = "x".repeat(65);
+        for name in ["", "has space", "a/b", long.as_str()] {
+            for source in ["env:HOLON_SECRET_MISSING", "env:HOLON_SECRET_TINY", "env:HOLON_SECRET_API", "vault:secret/x#y"] {
+                assert!(store.set_from("api", name, source, None).unwrap_err().contains("a secret name is"), "{name:?} from {source}");
+            }
+        }
         assert!(store.names("api").is_empty(), "a refused source adds nothing");
         assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API", None).unwrap(), 1);
         let vault = store.vault("api");

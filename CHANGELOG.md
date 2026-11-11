@@ -94,6 +94,80 @@
   the call arrived read that effect, and an effect that was read was no longer performed. A node
   that only tests an effect, and can't pass it on, now leaves it to be performed, in text and on
   the canvas alike. Flows that did either get a new version: redeploy them.
+- **Docs.** A new guide, [People, agents and services](docs/manual/guides/people.md): the first
+  admin, a teammate, an agent of your own, a token for CI, taking access away, and who did what;
+  the concepts page names the three kinds and their owners.
+- **An owner who isn't an admin has a page of what they own.** People and access is an admin's;
+  anyone else signed in now has **Your agents and services** (7) in its place: the agents and
+  services they own, with their tokens, which they make (each shown once) and revoke there. An
+  admin still adds one and names its owner. The server lists what the caller owns at
+  `GET /auth/owned`.
+- **`holon mcp` signs in as an agent, never as you, and `X-Holon-Role` is gone.** On the holon
+  serve you run, `holon mcp` (or `holon mcp setup`, when the server is running) makes your agent the
+  first time, `<your user>-agent` owned by you, through the run file, and keeps its token in
+  `~/.holon/tokens.json`; `setup --agent NAME` picks another. What it saves, deploys, calls and asks
+  is under that name ("by bma-agent", not "by bma (agent)"). On a server elsewhere it signs in with
+  the agent's token `setup --server` kept, and a person's or a service's token is refused there and
+  when it connects: a setup that kept one says to run `setup` again with an agent's. The header that
+  made an editor or an admin an agent is ignored. A server is set up by its first person, so an
+  agent made before then leaves the setup code as it was, and its token signs in meanwhile. No
+  sample changes: this is who signs in, not what a flow does.
+- **Agents and services are principals of their own, with owners and tokens.** Whoever acts on a
+  server is a person, an agent or a service, each name unique across them. A person signs in with a
+  password or a provider; an agent (role agent or viewer) and a service, a script or CI (role viewer
+  or editor, never admin), sign in with tokens of their own and act by their own name. Each agent and
+  service has an owner, a person, who makes and revokes its tokens as an admin may; a person who
+  still owns one can't be removed until it has another owner, and only a person decides an
+  approval. `holon people` replaces `holon user` and `holon token` (`add --person|--agent|--service`,
+  `set --owner`, `token NAME`, `revoke NAME ID`), and the `/people` routes replace `/admin/users` and
+  `/admin/tokens`. The editor's People and access lists people, then agents and services with their
+  owners and tokens; `holon editor`'s admin page does too (`a` adds one, `o` sets its owner). An
+  accounts file from before keeps its people, but its API tokens are not read and a person with role
+  agent is dropped, which the server says when it starts: add each as an agent or a service, and make
+  it a token. No sample changes: this is who signs in, not what a flow does.
+- **Only an admin writes a secret, even with no name in the path.** `POST` or `DELETE
+  /deployments/<slug>/secrets/`, with nothing after the slash, got past the admin's gate and on
+  to the secrets, where `{"from": "env:…"}` read the variable before its empty name was refused: an
+  editor could learn whether a server variable or a vault entry was set, and whether it was short.
+  Every write under a deployment's `/secrets/` is an admin's now, and a secret's name is checked
+  before its source is read.
+- **Changing a password no longer holds up every request, and guessing the current one is
+  counted.** The current password was checked while the accounts were locked, which every request
+  needs to say who it is: with sign-ins filling the checkers, one change could stall the server for
+  up to thirty seconds. It is checked outside the lock now, and five wrong in a row refuse changing
+  it for a minute, so a session someone else holds can't be used to guess it. In the tests, any
+  password hashed or checked while an accounts lock is held now fails, whatever the path.
+- **Signing in through an identity provider takes only keys that came over https, and checks
+  whom a token was issued to.** The issuer, and every address its discovery document gives, must be
+  https, or plain http to this machine; an `http://` issuer elsewhere is refused when it is set. A
+  token naming a key the provider doesn't publish asked the provider again on every request when
+  the provider didn't answer; now it is asked once a minute at most, answered or not. A token for
+  several audiences must name this client as the party it was issued to (`azp`), and one that names
+  another is refused.
+- **A request body that stalls no longer holds the control plane.** A body was read for as long as
+  the client took, holding one of the 512 places the server answers at once: 512 connections
+  sending a long body slowly, or not at all, turned every other request away (503), signing in
+  included. A body must arrive within 30 seconds now, as on a flow's port; past that the request is
+  told 408 and its place goes back. (A body of 1 KiB or less never held a place.)
+- **A flow can keep the values of its own keys out of the log: `flow("x", { taint: ["x-api-key", "number"] })`.**
+  The values under those keys are replaced by `‹taint:key›` in everything the server keeps of the
+  flow's runs, wherever a run has them, whatever started it: a request's header, query or path
+  parameter or JSON field at any depth, a WebSocket's message, an action's input, what a call sends
+  and what the far side answers, the run's own answer, a row it writes or reads. They are kept out
+  of its log entry, its lines, its export, a replay, `holon verify`'s report, a channel's packs,
+  and an unrecorded handler's last failure. The run computes with them and the caller is answered
+  as always; no one, an admin included, can read them back. Every flow now does this for
+  `authorization`, `proxy-authorization`, `cookie` and `set-cookie`: a bearer token, a Basic
+  password, each cookie a caller sent and the one a far side set were logged as they were. An
+  unrecorded handler's last failure was redacted of the deployment's secrets only, and is now
+  redacted of its run's resume tokens and tainted values too. A value shorter than six characters
+  is kept as it is. A new sample, `card-vault`, keeps a merchant's card under a token, the number
+  never in the log.
+- **A new version is replayed on every kind of run before it goes live.** A replay found the
+  handler of a request, a tick, a file or an action, but not of a WebSocket's message, a mail, a
+  feed's event or a queue's message: those runs were counted as answering differently whatever
+  the version, and so was a request's run that waited and was resumed. `holon verify` and a
+  replay now find a run's handler in one place, so each kind is run again alike.
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

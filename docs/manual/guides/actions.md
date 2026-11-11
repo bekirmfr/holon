@@ -53,7 +53,7 @@ changes not deployed, the panel says the run runs the deployed version.
 rows.
 
 **From a script**, `POST /trigger/<slug>/<name>` on the holon server, with an
-[API token](../reference/server.md) and what to send as the body. Each row in the editor shows the
+[service's token](../reference/server.md) and what to send as the body. Each row in the editor shows the
 command, with what is in its box:
 
 ```sh

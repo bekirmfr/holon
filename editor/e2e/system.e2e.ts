@@ -46,14 +46,14 @@ test("refund-once, beside orders-api on one database, calls the payment API once
   expect(((await (await fetch(`${orders}/order/${order.id}`)).json()) as { refunded: number }).refunded).toBe(1);
 });
 
-test("approved-payout waits for two people's approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ adminToken }) => {
+test("approved-payout waits for two people's approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ adminToken, agentToken }) => {
   const base = `http://127.0.0.1:${await cliDeploy(adminToken, "approved-payout.holon.ts", "approved-payout")}`;
   const post = (path: string, data: unknown) =>
     fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
-  const control = (token: string, path: string, data?: unknown, headers: Record<string, string> = {}) =>
+  const control = (token: string, path: string, data?: unknown) =>
     fetch(`${SERVER}${path}`, {
       method: data === undefined ? "GET" : "POST",
-      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json", ...headers },
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: data === undefined ? undefined : JSON.stringify(data),
     });
   const balance = async () => ((await (await fetch(`${base}/accounts/1`)).json()) as { balance: number }).balance;
@@ -68,12 +68,12 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
     await expect.poll(async () => (id = (await waiting()).find((r) => !before.includes(r)))).toBeTruthy();
     return id as string;
   };
-  const decide = (token: string, run: string, choice: { approve: boolean; reason?: string }, headers?: Record<string, string>) =>
-    control(token, `/deployments/approved-payout/runs/${run}/decide`, { name: "payout", ...choice }, headers);
+  const decide = (token: string, run: string, choice: { approve: boolean; reason?: string }) =>
+    control(token, `/deployments/approved-payout/runs/${run}/decide`, { name: "payout", ...choice });
 
   // A second person: an editor the admin invites, who joins by the link's token.
   const name = `e2e-second-${Date.now()}`;
-  const invited = await control(adminToken, "/admin/users", { name, role: "editor" });
+  const invited = await control(adminToken, "/people", { name, kind: "person", role: "editor" });
   expect(invited.ok, await invited.clone().text()).toBe(true);
   const { invite } = (await invited.json()) as { invite: string };
   const joined = await fetch(`${SERVER}/auth/invite`, {
@@ -89,8 +89,8 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   const asked = await post("/payout/1", { amount: 30 });
   expect(asked.status).toBe(202);
   const run = await parked(earlier);
-  // An agent never decides an approval, even under an admin's name.
-  expect((await decide(adminToken, run, { approve: true }, { "X-Holon-Role": "agent" })).status).toBe(403);
+  // An agent never decides an approval: deciding is a person's.
+  expect((await decide(agentToken, run, { approve: true })).status).toBe(403);
   // One person's approval isn't enough, and the same person twice counts once.
   const first = await decide(adminToken, run, { approve: true });
   expect(((await first.json()) as { outcome: string }).outcome).toBe("waiting");

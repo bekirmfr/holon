@@ -15,7 +15,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | `data/` | the server's state: **the one folder to back up** |
 | `keys/` | the secrets key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
-| `tokens.json` | API tokens `holon mcp setup` keeps for servers elsewhere, readable only by you |
+| `tokens.json` | the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
 
 In the data folder (`--data`, `HOLON_DATA`):
@@ -27,7 +27,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.logs/` | each deployment's run log: its newest 128 runs as written, `<slug>.jsonl`, and the older ones it keeps sealed, gzipped, in `<slug>.sealed/` (`zcat` reads them) | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
-| `accounts.json` | accounts, sessions, invites and API tokens (as hashes) | `--accounts` |
+| `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
 | `folders.json` | the named folders bound | `--folders` |
 | `databases.json` | the named databases bound | `--databases` |
@@ -186,40 +186,54 @@ to the current ceilings whenever the server loads.
 
 Everyone signs in; there is no trust for requests from this machine. A new server prints a
 setup code (`XXXX-XXXX`, or `HOLON_SETUP_CODE`); whoever enters it in the editor is the first
-admin. Until then the server answers everything but setting up with 403; five wrong codes in a
-row refuse setting up for a minute, so the code can't be guessed.
+admin. Until then the server answers everything but setting up with 403, but for an agent or a
+service made already (below); five wrong codes in a row refuse setting up for a minute, so the code
+can't be guessed.
 
 | Role | May |
 |---|---|
 | viewer | read: flows, deployments, logs |
 | editor | everything a viewer may, and save, deploy and approve, run, pause, stop, delete, change grants |
-| admin | everything, and set secrets, bind folders and databases, manage accounts, tokens and sign-in |
+| admin | everything, and set secrets, bind folders and databases, manage people, agents, services and sign-in |
 | agent | read, check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
   a sign-in waits its turn, and past thirty seconds is told the server is busy (503).
-- The server answers up to 512 requests at once; one more is told to try again (503).
+- The server answers up to 512 requests at once; one more is told to try again (503). A request's
+  body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled admin be removed, disabled or demoted.
-- **API tokens** (admin page) act with the role they were made with, as `token:<label>`, sent as
-  `Authorization: Bearer <token>`. They are shown once and kept only as hashes; revoking one stops
-  it at once.
-- Commands on this machine (`holon export`, `holon folder`, `holon mcp`) sign in through the run
-  file in `~/.holon/run/`, as `local:<your user>`, while that server runs.
-- A request with `X-Holon-Role: agent` from an editor or an admin is treated as the agent role:
-  `holon mcp` sends it, so an agent acting through your sign-in still can't approve. It never
-  raises a role: a viewer who sends it stays a viewer, since an agent may do more than read.
+- **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
+  who signs in with a password or a provider and may hold any role but agent; an **agent**, role
+  agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and
+  services sign in with tokens of their own (People and access, or `holon people token`), sent as
+  `Authorization: Bearer <token>`, and act as themselves, by their name. Each has an **owner**, a
+  person, who makes and revokes its tokens, as an admin may (an owner who isn't an admin, in the
+  editor's *Your agents and services*). Tokens are shown once and kept only
+  as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
+  decides an approval. A person who still owns an agent or a service can't be removed until it has
+  another owner. An accounts file from before principals keeps its people; its API tokens, which
+  had no owner, are not read, and a person with role agent is dropped (the server says so when it
+  starts): add each as an agent or a service, and make it a token.
+- Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
+  `~/.holon/run/`, as `local:<your user>`, while that server runs.
+- `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
+  yours the first time, `<your user>-agent`, owned by you, even before anyone has set the server up
+  (it is set up by the first person, as ever); its token is kept in `tokens.json`.
 
 ### Signing in through an identity provider
 
-An admin can turn on OpenID Connect on the admin page, with the provider's issuer URL and a
-client id (a public client; the editor signs in with the authorization code flow and PKCE). A
-person signs in through the provider when an account here has their email, and the provider
-says it verified that email (`email_verified` true in its ID token): one that doesn't say so
-signs no one in, since some providers let a person type any email. Accounts are still
-made here, with a role; the provider only proves who is signing in.
+An admin can turn on OpenID Connect on People and access, with the provider's issuer URL and a
+client id (a public client; the editor signs in with the authorization code flow and PKCE). The
+issuer, and every address its discovery document gives, must be https (plain http only to this
+machine), since the keys that check its tokens come from there. A person signs in through the
+provider when a person here has their email, and the provider says it verified that email
+(`email_verified` true in its ID token): one that doesn't say so signs no one in, since some
+providers let a person type any email. A token for several audiences must say it was issued to
+this client (`azp`). People are still added here, with a role; the provider only proves who is
+signing in.
 
 ## Secrets
 
@@ -285,7 +299,11 @@ run's request, what it read (clock, randomness, state, files, each outbound resp
 outputs, the effects it performed, its answer (up to 64 KiB of the body), its timings, the unit
 and the grant it ran under, and who started it. Secrets and resume tokens are replaced by
 `‹secret:name v3 #a1b2c3d4›` (the version and a keyed fingerprint of the value; the entry's
-`secrets` lists each it was given) and `‹token:name›` before anything is written. Text a run received that only
+`secrets` lists each it was given) and `‹token:name›` before anything is written, and so are the
+values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
+`taint` keys, and every flow's `authorization`, `proxy-authorization`, `cookie` and `set-cookie`;
+see [Tainted keys](../language/reference.md#imports-and-settings)): no one, an admin included, can
+read them back from the log, the run's lines, its export or an unrecorded handler's tally. Text a run received that only
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 

@@ -105,9 +105,9 @@ it (deploy.rs, `waiting_at`); and a route `{ resumes }` or a `resume_token` nami
 when the flow compiles (flow.rs).
 
 `POST /deployments/<slug>/runs/<run_id>/decide` takes `{name, approve, reason?}`. `decider` says
-who decides: a person signed in, an editor or an admin, by their account's name (the OS user's
-local admin by the name it runs as, so the same person counts once); never an agent, a viewer, an
-API token (a script, not a person) or anyone on a server without accounts. `decide` runs under the
+who decides: a person signed in, an editor or an admin, by their name (the OS user's local
+admin by the name it runs as, so the same person counts once); never an agent, a service (a
+script, not a person), a viewer, or anyone on a server without accounts. `decide` runs under the
 deployments lock. An approval is kept on the waiting point (`approved`: who, when, why), once per
 person (the same person again is a 409). Once as many as it asks have approved, or anyone declines
 (a decline needs a reason), the run is claimed, as a token claims it, and `resume_parked` gives it
@@ -222,7 +222,7 @@ In `crates/holon/src/tests.rs`:
   `each_run_after_a_stop_is_a_new_session_from_the_chosen_state`.
 - In `durable.rs`, `a_runs_tokens_are_derived_stable_and_its_own`.
 - `an_approval_is_decided_by_different_people_never_by_a_token`: no token is handed out for an
-  approval or resumes it; a viewer, an API token, an agent and the same person twice are refused;
+  approval or resumes it; a viewer, a service, an agent and the same person twice are refused;
   two people approve and the run goes on with who they were; one decline with a reason ends it; one
   that runs out goes on expired, with who approved; each decision is in the log and the activity
   log. `only_a_person_decides_an_approval`.

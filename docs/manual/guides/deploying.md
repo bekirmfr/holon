@@ -271,8 +271,10 @@ lists them. Every run keeps the state it left, too: its line in the log names it
 ### Replayed on recent runs
 
 Before a new version goes live, the approval dialog and the version's review (**Approvals** →
-**Review**) replay it on the deployment's last 20 runs: each run's request, tick or action again,
-with the state, clock and random that run had, through the new version's handler for it. The card
+**Review**) replay it on the deployment's last 20 runs: each run again, whatever started it (a
+request, a WebSocket's message, a tick, a file, a mail, a feed's event, a queue's message, an
+action, a waiting run's later part), with the state, clock and random that run had, through the
+new version's handler for it. The card
 **On recent runs** says how it went, `20 replayed · 17 same · 3 differ`, and for each run that
 differs, how: the status it answers where it answered another (`it answers 422 where it answered
 200`), its answer, the effects it performs (`StateWrite("count") 2 where 1`), where it waits.

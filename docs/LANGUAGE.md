@@ -3078,9 +3078,10 @@ the syntax to TypeScript's, keeping the lowering.
    nothing`), read from the run's recorded timeline through the document's `trace`. The tools
    never approve: a deploy that needs approval is saved as a flow for a person to deploy from the
    editor, and once they have, a version that needs nothing more deploys from the agent at once.
-   The server holds it to that too: `holon mcp` asks as an `agent`, a role that proposes and
-   calls and never approves, grants, starts, stops or deletes, shown as `<sign-in> (agent)`; an
-   API token with that role is the guarantee for an agent with a shell. Tests: the tools against the in-process router (text to an explained failing run), the
+   The server holds it to that too: `holon mcp` signs in as an agent, a principal of its own
+   whose `agent` role proposes and calls and never approves, grants, starts, stops or deletes,
+   shown by its own name (`bma-agent`, made for the OS user on a server they run); its own token
+   is the guarantee for an agent with a shell. Tests: the tools against the in-process router (text to an explained failing run), the
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
    `holon mcp setup` (`docs/L4s/mcp-setup-L4.md`) adds it to a host's own settings file, for

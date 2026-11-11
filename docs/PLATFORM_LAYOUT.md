@@ -444,15 +444,13 @@ only the editor.
     runs, deletes), `admin` (also writes secrets and the admin panel), `agent` (reads, proposes
     and calls: stores units, saves its own flows, deploys what needs no approval it hasn't had,
     and sends a deployed flow requests; never approves, grants, starts, stops, deletes or writes
-    a secret). A request with `X-Holon-Role: agent` from an editor or an admin acts as one under
-    its sender's name with ` (agent)` after it: how `holon mcp` keeps to proposing while it signs
-    in as the person who runs it. The header only lowers a role: a viewer who sends it stays a
-    viewer. Passwords are argon2id
+    a secret), held by an agent, a principal of its own with its own token: `holon mcp` signs in
+    as one (on a server the OS user runs, theirs, made through the run file). Passwords are argon2id
     hashes, sessions last 7 days, and a few wrong passwords lock a name for a minute. The admin
     panel adds people by name and role and gives a one-time link (7 days) for them to set their
     own password; it changes roles, disables (their sessions end), resets (a new link), removes,
-    and refuses any change that would leave no admin. API tokens for scripts and CI are made
-    there with a role, shown once, revoked any time. Only hashes of tokens are kept. The OS user
+    and refuses any change that would leave no admin. Agents and services (scripts, CI) are
+    added there with a role and an owner, and get tokens of their own, shown once, revoked any time. Only hashes of tokens are kept. The OS user
     running the server needs none on that machine (`local.rs`): `holon serve` writes a run file
     readable only by that user (`~/.holon/run/<port>.json`, or `HOLON_RUN_DIR`) with its address
     and a token made for this run, an admin's, named `local:<user>` in the activity log; `holon

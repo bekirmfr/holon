@@ -350,6 +350,8 @@ struct Lowerer<'a> {
     ticks: Vec<Block>,
     /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
     socket: bool,
+    /// The flow's `taint` keys, joined by spaces: each handler's trigger node carries them.
+    taint: String,
 }
 
 impl<'a> Lowerer<'a> {
@@ -383,6 +385,7 @@ impl<'a> Lowerer<'a> {
             })
             .chain(file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o.on.folder.clone()) } else { None }))
             .collect();
+        let taint = file.headers.iter().find_map(|h| if let HeaderKind::Taint(k) = &h.kind { Some(k.join(" ")) } else { None }).unwrap_or_default();
         Lowerer {
             b: FlowBuilder::new(),
             defs,
@@ -413,6 +416,7 @@ impl<'a> Lowerer<'a> {
             routes: vec![],
             ticks: vec![],
             socket: false,
+            taint,
         }
     }
 
@@ -577,6 +581,8 @@ impl<'a> Lowerer<'a> {
                 }
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
+                // On each handler's trigger, and so in the server unit's hash (`node`).
+                HeaderKind::Taint(_) => {}
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
                 HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) | HeaderKind::Queue(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
@@ -624,6 +630,14 @@ impl<'a> Lowerer<'a> {
 
     /// A node from the catalog or the templates, with params, at `span`.
     fn node(&mut self, leaf: &str, params: &[(String, String)], span: Span) -> R<Val> {
+        // A handler's trigger carries the flow's taint, which the server unit gathers.
+        let tainted;
+        let params = if templates::HANDLERS.contains(&leaf) && !self.taint.is_empty() {
+            tainted = params.iter().cloned().chain([("taint".to_string(), self.taint.clone())]).collect::<Vec<_>>();
+            &tainted
+        } else {
+            params
+        };
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());

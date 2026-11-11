@@ -111,24 +111,28 @@ test("flows are saved and read back, and people and tokens managed, from the com
 
   // A person invited: a link to the editor, once; then removed.
   const person = `cli${Date.now()}`;
-  const invited = ok(adminToken, ["user", "invite", person, "--role", "viewer"]);
+  const invited = ok(adminToken, ["people", "add", person, "--person", "--role", "viewer"]);
   expect(invited).toContain(`${SERVER}/?invite=hi_`);
-  expect(ok(adminToken, ["user", "list"])).toMatch(new RegExp(`^${person}\\s+viewer\\s+.*invited, not joined yet$`, "m"));
-  ok(adminToken, ["user", "remove", person, "--yes"]);
+  expect(ok(adminToken, ["people", "list"])).toMatch(new RegExp(`^${person}\\s+person\\s+viewer\\s+.*invited, not joined yet$`, "m"));
+  ok(adminToken, ["people", "remove", person, "--yes"]);
 
-  // A token: printed once, on stdout alone; it signs a script in; revoked, it no longer does.
-  const label = `cli-${Date.now()}`;
-  const token = ok(adminToken, ["token", "add", label, "--role", "viewer"]).trim();
+  // A service's token: printed once, on stdout alone; it signs a script in; revoked, it no longer
+  // does; the service removed with its tokens.
+  const service = `cli-${Date.now()}`;
+  ok(adminToken, ["people", "add", service, "--service", "--role", "viewer"]);
+  const token = ok(adminToken, ["people", "token", service, "--label", "a script"]).trim();
   expect(token).toMatch(/^ht_\S+$/);
   expect(holon(token, ["deployments"]).status).toBe(0);
-  const id = (JSON.parse(ok(adminToken, ["token", "list", "--json"])) as { id: string; label: string }[]).find((t) => t.label === label)?.id ?? "";
-  expect(ok(adminToken, ["token", "list"])).toContain(id);
-  ok(adminToken, ["token", "revoke", id]);
+  const listed = JSON.parse(ok(adminToken, ["people", "list", "--json"])) as { name: string; tokens?: { id: string }[] }[];
+  const id = listed.find((p) => p.name === service)?.tokens?.[0]?.id ?? "";
+  expect(ok(adminToken, ["people", "list"])).toMatch(new RegExp(`^${id}\\s+${service}\\s+a script`, "m"));
+  ok(adminToken, ["people", "revoke", service, id]);
   expect(holon(token, ["deployments"]).status).toBe(1);
+  ok(adminToken, ["people", "remove", service, "--yes"]);
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
 });
 
-test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, request }) => {
+test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, agentToken, request }) => {
   // The traced-payout sample, under a slug of its own, on a port no sample takes in this slot's range.
   const slug = `traced-${Date.now().toString(36)}`;
   const text = readFileSync(join(SAMPLES, "traced-payout.holon.ts"), "utf8").replace("port: 8147", `port: ${OWN_PORTS.traced + SAMPLE_SHIFT}`);
@@ -156,7 +160,7 @@ test("a flow's log lines are read from the command line, kept beside its runs an
   expect(entries.length).toBeGreaterThanOrEqual(2);
   expect(entries.flatMap((e) => e.performed ?? [])).toEqual([]);
   // And an agent is refused them: no grant lets it read a deployment's logs.
-  expect((await request.get(`${SERVER}/deployments/${slug}/logs`, { headers: { ...headers, "X-Holon-Role": "agent" } })).status()).toBe(403);
+  expect((await request.get(`${SERVER}/deployments/${slug}/logs`, { headers: { Authorization: `Bearer ${agentToken}` } })).status()).toBe(403);
 
   // Removed with its deployment.
   ok(adminToken, ["stop", slug]);

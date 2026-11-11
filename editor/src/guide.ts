@@ -101,7 +101,7 @@ export const TOPICS: Topic[] = [
   {
     title: "Accounts and roles",
     paragraphs: [
-      "Viewers read; editors also save, deploy and run; admins also write secrets and manage the server from People and access: people (invited with a one-time link), API tokens for scripts, and signing in through an identity provider.",
+      "Viewers read; editors also save, deploy and run; admins also write secrets and manage the server from People and access: people (invited with a one-time link), the agents and services they own with their tokens, and signing in through an identity provider.",
     ],
   },
 ];

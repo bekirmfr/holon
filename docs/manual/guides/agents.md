@@ -28,8 +28,18 @@ was. Restart the agent to pick it up.
   `HOST`'s is written, and `holon mcp hosts add NAME --config PATH --like HOST` keeps it for next
   time.
 
-On the same machine, `holon mcp` finds the server you run and signs in as you, but every request
-it makes asks as the **agent** role, so the server holds it to proposing.
+`holon mcp` signs in as an **agent**, a principal of its own, never as you, so the server holds it
+to proposing, and what it does is under the agent's name. On the same machine it finds the server
+you run, and the first time, makes your agent there: *you*-agent (`bma-agent`), owned by you, with
+the **agent** role. Its token is kept in `~/.holon/tokens.json`, readable only by you; the
+server's **People and access** lists it with its tokens. `setup` makes it at once when the server
+is running, and says so:
+
+```
+holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.
+```
+
+`--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say.
 
 ### A server on another machine
 
@@ -37,12 +47,16 @@ it makes asks as the **agent** role, so the server holds it to proposing.
 holon mcp setup claude-code --server https://holon.example.com
 ```
 
-`setup` asks for an API token with role **agent** (an admin makes one on the server's **admin**
-page, under API tokens), checks it, and keeps it in `~/.holon/tokens.json`, readable only by you.
+`setup` asks for an agent's token, checks it, and keeps it in `~/.holon/tokens.json`, readable
+only by you. An admin adds the agent, owned by you (**People and access**, or `holon people add
+NAME --agent --owner YOU`), and you make its token in the editor's **Your agents and services**
+(an admin, on **People and access** or with `holon people token NAME`); see
+[People, agents and services](people.md#an-agent-of-your-own).
 The host's settings file never holds the token. `HOLON_TOKEN` gives one without asking.
 
-Give an agent that has a shell a token with role agent, not your own sign-in: a role-agent token
-can't approve anything, whatever the agent runs.
+`holon mcp` takes only an agent's token: a person's or a service's is refused, at setup and when
+it connects, so an agent with a shell can't approve anything, whatever it runs. A setup from before
+agents were principals, which kept a person's token, says to run `setup` again with an agent's.
 
 ## What an agent can do
 
@@ -71,14 +85,14 @@ The agent role **never** approves a grant, starts, pauses, stops or deletes a de
 secret, restores one, decides an [approval](../language/leaves.md#approval) a run waits at, or
 replaces a flow someone else saved. The server enforces this, not the tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
 (`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
-41 left", by *you* (agent); in the editor's history, pick that row and restore what it asks, after
+41 left", by *bma-agent*; in the editor's history, pick that row and restore what it asks, after
 the same dry run as any restore. Nothing changes until you do.
 
 An agent runs a flow's [action](actions.md) only once you let it: in the deploy settings (**⚙**),
 **agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,
 which you approve at the next deploy. Until then, `run` answers that agents may not run it, and
 revoking it on the deployed page refuses them again. The agent's runs are logged as anyone's,
-"by *you* (agent)".
+"by *bma-agent*".
 
 An agent reads a flow's log lines, what its flow wrote with `console.log`, only once you let it too: **agents may read
 its logs** in the deploy settings asks for `AgentReadsLogs`, which you approve at the next deploy. Then the `logs` tool

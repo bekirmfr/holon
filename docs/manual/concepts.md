@@ -151,7 +151,11 @@ secret can be shown, but not run again offline.
 
 ## People, roles and agents
 
-Everyone signs in to the server. Each account has a **role**:
+Everyone signs in to the server, as one of three kinds of **principal**: a **person**, with a
+password or through your identity provider; an **agent**, an AI connected through `holon mcp`; or
+a **service**, a script or CI. Agents and services sign in with tokens of their own, and each has
+an **owner**, the person answerable for it, who makes and revokes its tokens. What any of them
+does is kept under its own name: "deployed by ana", "saved by bma-agent". Each has a **role**:
 
 | Role | May |
 |---|---|
@@ -160,6 +164,7 @@ Everyone signs in to the server. Each account has a **role**:
 | admin | also write secrets, bind folders and manage accounts |
 | agent | read, propose flows and call them; never approve, start, stop or delete |
 
-An **agent** (through `holon mcp`) writes flows, checks them, saves them and deploys them, but a
-deploy that needs approval stops at a person. Scripts and CI use **API tokens**, each with a role.
-See [Working with agents](guides/agents.md).
+A person may hold any role but agent; an agent, agent or viewer; a service, viewer or editor. An
+agent writes flows, checks them, saves them and deploys them, but a deploy that needs approval
+stops at a person, and only a person decides an approval a run waits at. See
+[People, agents and services](guides/people.md) and [Working with agents](guides/agents.md).

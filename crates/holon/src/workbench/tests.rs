@@ -1102,11 +1102,20 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     press(&mut app, KeyCode::Enter);
     answer(&mut app, "viewer");
     assert!(app.admin.users.iter().any(|u| u["name"] == "ana" && u["role"] == "viewer"), "{:?}", app.note.as_ref().map(|n| &n.text));
+    // A service for a script, owned by ana; a person's email isn't asked of it.
+    press(&mut app, KeyCode::Char('a'));
+    answer(&mut app, "nightly service viewer ana");
+    let nightly = app.admin.users.iter().find(|u| u["name"] == "nightly").unwrap_or_else(|| panic!("{:?}", app.note.as_ref().map(|n| &n.text)));
+    assert_eq!((&nightly["kind"], &nightly["owner"]), (&serde_json::json!("service"), &serde_json::json!("ana")));
+    let at = app.admin.users.iter().position(|u| u["name"] == "nightly").unwrap();
+    app.admin_pick(List::Admin, at, false);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("a service") && shown.contains("Owner"), "{shown}");
 
-    // API keys: made, shown once, then revoked.
+    // API keys: made for the service, shown once, then revoked.
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Char('n'));
-    answer(&mut app, "nightly viewer");
+    answer(&mut app, "nightly the nightly report");
     assert!(matches!(&app.modal, Some(Modal::Lines { title, .. }) if title == "nightly: an API key"), "{:?}", app.note.as_ref().map(|n| &n.text));
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.admin.tokens.len(), 1);

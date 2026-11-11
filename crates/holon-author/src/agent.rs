@@ -643,7 +643,8 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
                                                 (and random_bytes, the run's 32, for pgp_encrypt)
   import { charge } from "flow:billing"         another deployed flow's action, by its slug
   flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
-                                                port, keep: { runs, days }, browsers, limits
+                                                port, keep: { runs, days }, browsers, limits,
+                                                taint: ["x-api-key"] (keys the log never holds)
   The imports name everything that outlives a run or comes from outside it; the body uses only
   names they gave. An import names, it grants nothing: what the flow may do is worked out from
   what it does with them.

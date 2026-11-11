@@ -152,8 +152,8 @@ pub struct LogEntry {
     /// for another run, and whether holding it showed what it read had changed (then it ran again).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<LoggedClaim>,
-    /// Who sent the request over the control plane (`holon mcp`'s `call`, `token:claude`, or
-    /// `local:ada (agent)`; the editor's request tester), when it came that way: a request on the
+    /// Who sent the request over the control plane (`holon mcp`'s `call`, as its agent `claude`;
+    /// the editor's request tester, as `ada`), when it came that way: a request on the
     /// deployment's own port names nobody.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
@@ -203,6 +203,41 @@ pub struct Commit {
     /// Its own, once it committed; a restore or a stop's run again counts one too.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u64>,
+}
+
+impl LogEntry {
+    /// Each value the entry holds of what its run had, whatever started it: its request (a
+    /// message, an input), what it read and was given, each node's outputs, what it performed and
+    /// sent, each call it made and its answer. What a redactor goes over (`Redactor::entry`), and
+    /// where a tainted key's value is looked for (`data::tainted`): one list, so the two can't
+    /// part. Its texts apart ([`LogEntry::texts_mut`]).
+    pub(crate) fn values_mut(&mut self, f: &mut impl FnMut(&mut SValue)) {
+        self.request.iter_mut().for_each(&mut *f);
+        self.sourced.iter_mut().for_each(|(_, v)| f(v));
+        self.state_before.values_mut().for_each(&mut *f);
+        self.outputs.iter_mut().flatten().for_each(&mut *f);
+        self.performed.iter_mut().for_each(|p| f(&mut p.payload));
+        self.progress.iter_mut().for_each(|p| f(&mut p.payload));
+        self.events.values_mut().for_each(&mut *f);
+        for read in &mut self.reads {
+            f(&mut read.request);
+            read.answer.iter_mut().for_each(&mut *f);
+        }
+        for t in &mut self.timeline {
+            t.outputs.iter_mut().flatten().flatten().for_each(&mut *f);
+        }
+        for round in &mut self.rounds {
+            for x in &mut round.exchanges {
+                f(&mut x.request);
+                f(&mut x.response);
+            }
+        }
+    }
+
+    /// Its texts of what its run had: its answer's body, its error, its URL.
+    pub(crate) fn texts_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        [&mut self.response_body, &mut self.error, &mut self.url].into_iter().flatten()
+    }
 }
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that

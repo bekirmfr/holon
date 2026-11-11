@@ -746,7 +746,8 @@ pub(crate) fn resume_parked(
     for name in waits.events.keys().chain(run.waiting.iter().map(|w| &w.name)) {
         tokens.entry(name.clone()).or_insert_with(|| token_for(run_id, name));
     }
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
+    let redactor = Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds)));
+    if let Some(l) = log_run(deployments, slug, entry, redactor, declared) {
         l.said(slug);
     }
 
@@ -880,22 +881,21 @@ struct DecideBody {
 /// The longest reason a decision may give, in characters.
 const MAX_REASON_CHARS: usize = 1000;
 
-/// Who `caller` decides as: a person signed in, by their account's name (the OS user's local admin
-/// by the name it runs as); or why they can't decide. Not an agent, a viewer, an API token (a
-/// script, not a person), or anyone on a server without accounts.
+/// Who `caller` decides as: a person signed in, by their name (the OS user's local admin by the
+/// name it runs as); or why they can't decide. Not an agent, a service (a script), a viewer, or
+/// anyone on a server without accounts.
 pub(crate) fn decider(caller: &access::Caller) -> Result<String, String> {
-    match caller.role {
-        Some(access::Role::Agent) => return Err("an agent may not decide an approval: deciding is a person's".into()),
-        Some(access::Role::Viewer) => return Err("a viewer only reads: an editor or an admin decides an approval".into()),
-        _ => {}
+    if caller.role == Some(access::Role::Viewer) {
+        return Err("a viewer only reads: an editor or an admin decides an approval".into());
     }
     let Some(name) = caller.name.as_deref() else {
         return Err("deciding an approval needs a person signed in to Holon, and this server has no accounts".into());
     };
-    if name.starts_with("token:") {
-        return Err(format!("{name} is an API token, a script, not a person: sign in to decide an approval"));
+    match caller.kind {
+        Some(accounts::Kind::Agent) => Err(format!("{name} is an agent: deciding an approval is a person's")),
+        Some(accounts::Kind::Service) => Err(format!("{name} is a service, a script, not a person: sign in to decide an approval")),
+        _ => Ok(name.strip_prefix("local:").unwrap_or(name).to_string()),
     }
-    Ok(name.strip_prefix("local:").unwrap_or(name).to_string())
 }
 
 /// `POST /deployments/<slug>/runs/<run_id>/decide` — a person approves, or declines with a reason,

@@ -143,6 +143,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/guarded-api.holon.ts"),
     },
     Sample {
+        name: "card-vault",
+        title: "Card vault",
+        description: "Keep a merchant's card under a token, its number never in the log: the flow taints the merchant's key and the card's number wherever its runs have them, which their log, lines, export and replays show as ‹taint:number›, as every flow's show a bearer token or a cookie.",
+        shows: &["taint", "secrets", "secure_equals", "hmac_sha256", "collections", "guard"],
+        port: Some("8200"),
+        secrets: &[SampleSecret { name: "merchant_key", what: "the key merchants send in x-merchant-key, six characters or more", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}' http://127.0.0.1:8200/cards answers a token; open the run, and its request shows ‹taint:x-merchant-key› and ‹taint:number› where they were"#,
+        text: include_str!("../samples/card-vault.holon.ts"),
+    },
+    Sample {
         name: "slugs",
         title: "A flow inside a flow (holon)",
         description: "Two holons, each a whole flow placed as one node: slugify (lowercase, split, join with -) only computes, placed twice; publish reads and writes outside (the clock, a collection, state, an optional secret) and its manifest, permissions, replay and flow state count all of it. A saved flow without routes is placed the same way, from the palette's flows.",
@@ -691,7 +703,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for two people); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); two people approve it: you, with holon decide approved-payout <run> payout --approve (holon decide approved-payout lists the run), and someone you invited (holon user invite), in the editor's Approvals, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
+        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for two people); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); two people approve it: you, with holon decide approved-payout <run> payout --approve (holon decide approved-payout lists the run), and someone you invited (holon people add NAME --person), in the editor's Approvals, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
         text: include_str!("../samples/approved-payout.holon.ts"),
     },
     Sample {

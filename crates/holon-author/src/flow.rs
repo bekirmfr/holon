@@ -10,7 +10,7 @@ use holon_core::{
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
-use crate::routes::{with_log, 
+use crate::routes::{with_log,
     action_spec, action_unit, clock_spec, clock_unit, endpoint_unit, feed_spec, feed_unit, file_spec, file_unit, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes, find_websockets, is_optional_input, mail_spec, mail_unit, queue_spec, queue_unit, route_spec, socket_spec, socket_unit,
     server_unit,
 };
@@ -404,6 +404,11 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             Err(e) => errors.push(format!("{}: {e}", a.label)),
         }
     }
+    // The keys the flow taints, as its handlers' triggers carry them: one taints it for every run.
+    let taint = crate::routes::flow_taint(nodes);
+    if let Some(bad) = taint.iter().find(|k| !holon_core::is_taint_key(k)) {
+        errors.push(format!("\"{bad}\" isn't a key to taint: a name of up to 128 characters, no spaces"));
+    }
     // A port only with a route or a websocket: a flow of clocks, files, mails, feeds, queues and
     // actions listens on none.
     let port = if endpoints.is_empty() && websockets.is_empty() { Some(None) } else { port_of(port).map(Some) };
@@ -421,7 +426,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
                 .chain(actions.iter().map(|a| &a.hash))
                 .map(|h| parse_hash(h).expect("hashes made here"))
                 .collect();
-            put(store, server_unit(hashes, port)).ok().map(|h| to_hex(&h))
+            put(store, server_unit(hashes, port, &taint)).ok().map(|h| to_hex(&h))
         }
         _ => None,
     };

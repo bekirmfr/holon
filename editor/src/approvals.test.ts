@@ -24,7 +24,7 @@ const proposal = (id: number, slug: string, more: Partial<Proposal> = {}): Propo
   slug,
   unit: `p-${slug}`,
   why: "calls httpbin",
-  by: "ada (agent)",
+  by: "claude",
   agent: true,
   at_ms: 300_000,
   needs: ['NetworkEgress("httpbin.org")'],
@@ -36,11 +36,11 @@ const event = (seq: number, kind: string, more: Partial<DeploymentEvent> = {}): 
 
 describe("approvals", () => {
   it("are a version saved since it was deployed, and a saved flow never deployed: deployments first", () => {
-    const got = approvalsOf([deployment("refunds", 100), deployment("quiet", 100)], [saved("drafty", 50, "ada"), saved("refunds", 200, "local:codex (agent)"), saved("quiet", 90)], {
+    const got = approvalsOf([deployment("refunds", 100), deployment("quiet", 100)], [saved("drafty", 50, "ada"), saved("refunds", 200, "codex"), saved("quiet", 90)], {
       versions: new Map([["refunds", 3]]),
     });
     expect(got).toEqual([
-      { kind: "update", slug: "refunds", by: "local:codex (agent)", at: 200, version: 4 },
+      { kind: "update", slug: "refunds", by: "codex", at: 200, version: 4 },
       { kind: "first", slug: "drafty", by: "ada", at: 50, version: 1 },
     ]);
     expect(reviewQueue(got).map((a) => a.slug)).toEqual(["refunds", "drafty"]);
@@ -76,12 +76,12 @@ describe("approvals", () => {
   it("carry an agent's proposal, with the number its record gives, and its why in words", () => {
     const p = proposal(7, "refunds", { version: 4 });
     const q = proposal(8, "ids", { version: 1 });
-    const got = approvalsOf([deployment("refunds", 100)], [saved("refunds", 300, "ada (agent)"), saved("ids", 300, "ada (agent)")], { proposals: [p, q] });
+    const got = approvalsOf([deployment("refunds", 100)], [saved("refunds", 300, "claude"), saved("ids", 300, "claude")], { proposals: [p, q] });
     expect(got).toEqual([
-      { kind: "update", slug: "refunds", by: "ada (agent)", at: 300, version: 4, proposal: p },
-      { kind: "first", slug: "ids", by: "ada (agent)", at: 300, version: 1, proposal: q },
+      { kind: "update", slug: "refunds", by: "claude", at: 300, version: 4, proposal: p },
+      { kind: "first", slug: "ids", by: "claude", at: 300, version: 1, proposal: q },
     ]);
-    expect(said(got[0], () => "9:41")).toBe("a new version, proposed by ada (agent) at 9:41: calls httpbin");
+    expect(said(got[0], () => "9:41")).toBe("a new version, proposed by claude at 9:41: calls httpbin");
   });
 
   it("leave out a version a person declined, until it is saved again", () => {

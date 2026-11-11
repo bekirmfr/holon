@@ -1,17 +1,22 @@
-//! The people who use this server, and how they get in: accounts, kept in `--accounts`
-//! (default `.holon-accounts.json` beside the other state, owner-only).
+//! Who uses this server, and how they get in: its principals, kept in `--accounts` (default
+//! `.holon-accounts.json` beside the other state, owner-only).
 //!
 //! - **First run.** A server without accounts answers nothing but its setup: it prints a one-time
 //!   setup code at startup (or takes `HOLON_SETUP_CODE`), and whoever enters it in the editor
 //!   creates the first admin. Nobody else on the network can claim it first.
-//! - **Accounts** have a name, a role (`viewer`: reads; `editor`: also saves, deploys, runs;
-//!   `admin`: also writes secrets and manages the server) and a password, kept as an argon2id
-//!   hash. Signing in gives a session token (`hs_…`, for 7 days); a few wrong passwords in a row
-//!   lock that name for a minute.
-//! - **Invites.** An admin adds someone by name and role and gets a one-time link (`hi_…`, for
+//! - **Principals** have a name, unique across kinds, a kind and a role (`viewer`: reads;
+//!   `editor`: also saves, deploys, runs; `admin`: also writes secrets and manages the server;
+//!   `agent`: reads, proposes and calls, access.rs). The kind says who it is and which roles it
+//!   may hold (docs/L4s/access-and-approvals-L4.md §3, §5.1):
+//!   - a **person** (viewer, editor or admin) signs in with a password, kept as an argon2id hash,
+//!     through an identity provider, or through the run file. Signing in gives a session token
+//!     (`hs_…`, for 7 days); a few wrong passwords in a row lock that name for a minute;
+//!   - an **agent** (agent or viewer) and a **service** (viewer or editor) sign in with their own
+//!     API tokens (`ht_…`), and have an owner, the person answerable for them.
+//! - **Invites.** An admin adds a person by name and role and gets a one-time link (`hi_…`, for
 //!   7 days): its holder sets their own password and is signed in. A reset is a new link.
-//! - **API tokens** (`ht_…`), for scripts and CI: made by an admin with a role, shown once,
-//!   revoked any time.
+//! - **API tokens** belong to an agent or a service: made by an admin or its owner, shown once,
+//!   revoked any time. Disabling the principal stops its tokens.
 //! - **Signing in through an identity provider** (oidc.rs), optional: an admin sets the issuer
 //!   and client id; someone signing in is matched to the account with their email.
 //!
@@ -37,14 +42,83 @@ pub(crate) const MIN_PASSWORD: usize = 10;
 const MAX_FAILURES: u32 = 5;
 const LOCKED_FOR: Duration = Duration::from_secs(60);
 
+/// What a principal is (docs/L4s/access-and-approvals-L4.md §3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Kind {
+    #[default]
+    Person,
+    Agent,
+    Service,
+}
+
+impl Kind {
+    /// Whether it may hold `role` (the design's §5.1): a person any but agent, a service viewer
+    /// or editor, an agent viewer or agent.
+    pub(crate) fn may_hold(self, role: Role) -> bool {
+        match self {
+            Kind::Person => role != Role::Agent,
+            Kind::Service => matches!(role, Role::Viewer | Role::Editor),
+            Kind::Agent => matches!(role, Role::Viewer | Role::Agent),
+        }
+    }
+
+    /// As a sentence says it: "an agent".
+    pub(crate) fn said(self) -> &'static str {
+        match self {
+            Kind::Person => "a person",
+            Kind::Agent => "an agent",
+            Kind::Service => "a service",
+        }
+    }
+}
+
+/// Why `kind` may not hold `role`, if it may not.
+fn held(kind: Kind, role: Role) -> Result<(), String> {
+    if kind.may_hold(role) {
+        return Ok(());
+    }
+    Err(match kind {
+        Kind::Person => "a person is a viewer, an editor or an admin: an agent is a principal of its own",
+        Kind::Service => "a service is a viewer or an editor",
+        Kind::Agent => "an agent is an agent or a viewer",
+    }
+    .into())
+}
+
+/// Why `owner` may not own an agent or a service, if it may not: it must be a person here who can
+/// sign in, or the OS user who runs the server (`local`, local.rs).
+fn may_own(book: &Book, owner: &str, local: Option<&str>) -> Result<(), String> {
+    if local == Some(owner) {
+        return Ok(());
+    }
+    match book.users.iter().find(|u| u.name == owner) {
+        Some(p) if p.kind != Kind::Person => Err(format!("{owner} is {}: an owner is a person", p.kind.said())),
+        Some(p) if p.disabled => Err(format!("{owner} is disabled: an owner is a person who can sign in")),
+        Some(_) => Ok(()),
+        None => Err(format!("there is no person {owner:?} here to own it")),
+    }
+}
+
+/// Whether `book` has no person: a server not set up yet.
+fn no_person(book: &Book) -> bool {
+    !book.users.iter().any(|u| u.kind == Kind::Person)
+}
+
+/// A person, an agent or a service.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Account {
+pub(crate) struct Principal {
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) kind: Kind,
     pub(crate) role: Role,
-    /// Its argon2id hash; absent until an invite is accepted.
+    /// How it is shown, when not by its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) display: Option<String>,
+    /// A person's argon2id hash; absent until an invite is accepted, and for an agent or a service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     password: Option<String>,
-    /// Who it is at the identity provider, when signing in through one.
+    /// Who a person is at the identity provider, when signing in through one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) email: Option<String>,
     #[serde(default)]
@@ -52,10 +126,32 @@ pub(crate) struct Account {
     pub(crate) created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) created_by: Option<String>,
+    /// An agent's or a service's: the person answerable for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<String>,
     /// What the editor keeps for them (its home tab's panes, whether the welcome shows on
     /// start): opaque here, so it follows them to any browser.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     prefs: serde_json::Value,
+}
+
+impl Principal {
+    /// A new principal, made now by `by` (none: the first admin), with no password, email or owner.
+    fn new(name: &str, kind: Kind, role: Role, by: Option<&str>) -> Principal {
+        Principal {
+            name: name.into(),
+            kind,
+            role,
+            display: None,
+            password: None,
+            email: None,
+            disabled: false,
+            created_at: epoch_now(),
+            created_by: by.map(String::from),
+            owner: None,
+            prefs: serde_json::Value::Null,
+        }
+    }
 }
 
 /// The most a person's preferences may take, as JSON.
@@ -75,11 +171,14 @@ struct Session {
     expires_at: u64,
 }
 
+/// An agent's or a service's token, kept as its hash.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct ApiToken {
     pub(crate) id: String,
+    /// The agent or service it signs in as.
+    pub(crate) principal: String,
+    /// What it is for ("CI on GitHub").
     pub(crate) label: String,
-    pub(crate) role: Role,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     hash: String,
     pub(crate) created_at: u64,
@@ -95,22 +194,26 @@ pub(crate) struct OidcSettings {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Book {
+    /// Every principal, of every kind.
     #[serde(default)]
-    users: Vec<Account>,
+    users: Vec<Principal>,
     #[serde(default)]
     invites: Vec<Invite>,
     #[serde(default)]
     sessions: Vec<Session>,
+    /// The agents' and services' API tokens. A file's `tokens`, from when a token had a role of
+    /// its own, are not read.
     #[serde(default)]
-    tokens: Vec<ApiToken>,
+    credentials: Vec<ApiToken>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     oidc: Option<OidcSettings>,
 }
 
-/// Who a token is: a name (an account, or `token:<label>`) and a role.
+/// Who a token is: a principal's name (or the OS user's, `local:<user>`), its kind and its role.
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) struct Who {
     pub(crate) name: String,
+    pub(crate) kind: Kind,
     pub(crate) role: Role,
 }
 
@@ -124,6 +227,10 @@ struct Tries {
     /// When it was last tried.
     last: Option<Instant>,
 }
+
+/// Where a password change's tries are counted from, in place of a client's address: by name,
+/// apart from signing in.
+const CHANGING: &str = "(changing the password)";
 
 /// How many names' tries are kept before the old ones are forgotten.
 const TRIES_KEPT: usize = 4096;
@@ -172,7 +279,7 @@ fn same(a: &str, b: &str) -> bool {
 
 fn valid_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b));
-    if !ok || name.starts_with("token:") || name == "admin-token" {
+    if !ok || name == "admin-token" {
         return Err("a name is letters, digits and . _ - @, at most 64".into());
     }
     Ok(())
@@ -194,6 +301,41 @@ fn check_password(password: &str) -> Result<(), String> {
 /// What waits is bounded by the requests admitted at once (main.rs, `MAX_IN_FLIGHT`).
 const CHECKS_AT_ONCE: usize = 4;
 const CHECK_WAIT: Duration = Duration::from_secs(30);
+
+thread_local! {
+    /// How many of the accounts' locks this thread holds (`hold`). A password is never hashed or
+    /// checked while it holds one (`checking` says so in every test that runs one): a check takes
+    /// a while, longer when the server is busy, and every request needs these locks to say who it is.
+    static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// One of the accounts' locks, held: counted in `HELD` while it is.
+struct Held<'a, T>(std::sync::MutexGuard<'a, T>);
+
+fn hold<T>(lock: &Mutex<T>) -> Held<'_, T> {
+    let guard = lock.lock().unwrap();
+    HELD.with(|h| h.set(h.get() + 1));
+    Held(guard)
+}
+
+impl<T> Drop for Held<'_, T> {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(h.get() - 1));
+    }
+}
+
+impl<T> std::ops::Deref for Held<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Held<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
 
 /// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
 struct Slots {
@@ -236,6 +378,7 @@ impl Slots {
 /// Run `f` (a password hashed or checked) once one of `CHECKS_AT_ONCE` slots is free, on one of
 /// as many threads kept for it (`on_a_checker`).
 fn checking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    debug_assert_eq!(HELD.with(std::cell::Cell::get), 0, "a password hashed or checked holding an accounts lock: every request would wait on it");
     static CHECKS: Slots = Slots::new(CHECKS_AT_ONCE, CHECK_WAIT);
     CHECKS.run(|| on_a_checker(f))
 }
@@ -319,11 +462,17 @@ fn new_setup_code() -> String {
 impl Accounts {
     /// The accounts at `path` (none yet if it doesn't exist).
     pub(crate) fn open(path: &str) -> Result<Accounts, String> {
-        let book: Book = match std::fs::read_to_string(path) {
+        let mut book: Book = match std::fs::read_to_string(path) {
             Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the accounts file {path:?}: {e}"))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Book::default(),
             Err(e) => return Err(format!("the accounts file {path:?}: {e}")),
         };
+        // An account with role agent, from before an agent was a principal of its own, is not read.
+        let unread: Vec<String> = book.users.iter().filter(|p| !p.kind.may_hold(p.role)).map(|p| p.name.clone()).collect();
+        if !unread.is_empty() {
+            eprintln!("holon: the accounts file's {} had role agent as a person, and is not read: an agent is a principal of its own now (holon people add NAME --agent)", unread.join(", "));
+            book.users.retain(|p| p.kind.may_hold(p.role));
+        }
         let accounts = Accounts::with(Some(PathBuf::from(path)), book);
         if let Some(settings) = accounts.oidc_settings() {
             match crate::oidc::Oidc::discover(&settings.issuer, &settings.client_id) {
@@ -341,7 +490,7 @@ impl Accounts {
     }
 
     fn with(path: Option<PathBuf>, book: Book) -> Accounts {
-        let code = book.users.is_empty().then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
+        let code = no_person(&book).then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
         Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
@@ -353,7 +502,7 @@ impl Accounts {
 
     /// Change the book, and keep it; expired sessions and invites go at the same time.
     fn change<T>(&self, f: impl FnOnce(&mut Book) -> Result<T, String>) -> Result<T, String> {
-        let mut book = self.book.lock().unwrap();
+        let mut book = hold(&self.book);
         let now = epoch_now();
         book.sessions.retain(|s| s.expires_at > now);
         book.invites.retain(|i| i.expires_at > now);
@@ -364,11 +513,13 @@ impl Accounts {
 
     /// The setup code, while the first admin hasn't been created.
     pub(crate) fn setup_code(&self) -> Option<String> {
-        self.setup_code.lock().unwrap().clone()
+        hold(&self.setup_code).clone()
     }
 
+    /// Whether the first admin is still to be set up: there is no person yet, whatever agents or
+    /// services the run file's admin has made.
     pub(crate) fn needs_setup(&self) -> bool {
-        self.book.lock().unwrap().users.is_empty()
+        no_person(&hold(&self.book))
     }
 
     fn start_session(book: &mut Book, user: &str) -> String {
@@ -378,10 +529,10 @@ impl Accounts {
     }
 
     /// The first admin, with the setup code; signed in.
-    pub(crate) fn setup(&self, code: &str, name: &str, password: &str) -> Result<(String, Account), String> {
+    pub(crate) fn setup(&self, code: &str, name: &str, password: &str) -> Result<(String, Principal), String> {
         let expected = self.setup_code().ok_or("this server is set up already")?;
         {
-            let mut tries = self.setup_tries.lock().unwrap();
+            let mut tries = hold(&self.setup_tries);
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong setup codes: wait a minute, then try again".into());
             }
@@ -399,20 +550,23 @@ impl Accounts {
         check_password(password)?;
         let hash = hash_password(password)?;
         let out = self.change(|book| {
-            if !book.users.is_empty() {
+            if !no_person(book) {
                 return Err("this server is set up already".to_string());
             }
-            let account = Account { name: name.into(), role: Role::Admin, password: Some(hash), email: None, disabled: false, created_at: epoch_now(), created_by: None, prefs: serde_json::Value::Null };
+            if book.users.iter().any(|u| u.name == name) {
+                return Err(format!("there is a principal {name:?} already: pick another name"));
+            }
+            let account = Principal { password: Some(hash), ..Principal::new(name, Kind::Person, Role::Admin, None) };
             book.users.push(account.clone());
             Ok((Self::start_session(book, name), account))
         })?;
-        *self.setup_code.lock().unwrap() = None;
+        *hold(&self.setup_code) = None;
         Ok(out)
     }
 
     /// Sign `name` in with `password`, from nowhere in particular: a test's.
     #[cfg(test)]
-    pub(crate) fn sign_in(&self, name: &str, password: &str) -> Result<(String, Account), String> {
+    pub(crate) fn sign_in(&self, name: &str, password: &str) -> Result<(String, Principal), String> {
         self.sign_in_from(name, password, "")
     }
 
@@ -420,51 +574,55 @@ impl Accounts {
     /// or why not (never saying which was wrong). Wrong passwords lock the name for that address
     /// only, so someone elsewhere who knows the name can't keep its owner out; behind a proxy every
     /// address is the proxy's, and the lock is the name's, as it was.
-    pub(crate) fn sign_in_from(&self, name: &str, password: &str, from: &str) -> Result<(String, Account), String> {
-        let refused = || "that name and password don't match an account here".to_string();
-        let key = (name.to_string(), from.to_string());
+    pub(crate) fn sign_in_from(&self, name: &str, password: &str, from: &str) -> Result<(String, Principal), String> {
+        let account = hold(&self.book).users.iter().find(|u| u.name == name).cloned();
+        let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
+        // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
+        // password, so how long a refusal takes doesn't say which names are accounts.
+        let right = self.counted((name.to_string(), from.to_string()), || Ok(password_matches(password, hash.unwrap_or(stand_in_hash()))? && hash.is_some()))?;
+        if !right {
+            return Err("that name and password don't match an account here".to_string());
+        }
+        let account = account.unwrap();
+        let token = self.change(|book| Ok(Self::start_session(book, &account.name)))?;
+        Ok((token, account))
+    }
+
+    /// A password checked for `key` (a name, and where it came from), counted: refused while the
+    /// key is locked, or while as many are being checked for it as may still go wrong (so tries
+    /// sent at once can't try more than MAX_FAILURES before the lock). A wrong one counts, and the
+    /// MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. `check` says whether it
+    /// was right, or that it couldn't be checked (the server busy), which counts as neither.
+    fn counted(&self, key: (String, String), check: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
         {
-            let mut failures = self.failures.lock().unwrap();
+            let mut failures = hold(&self.failures);
             forget_old_tries(&mut failures);
             let tries = failures.entry(key.clone()).or_default();
             tries.last = Some(Instant::now());
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong passwords: wait a minute, then try again".into());
             }
-            // The ones still being checked count too, so sign-ins sent at once can't try more
-            // than MAX_FAILURES passwords before the lock.
             if tries.wrong + tries.checking >= MAX_FAILURES {
-                return Err("too many sign-ins at once: wait a moment, then try again".into());
+                return Err("too many tries at once: wait a moment, then try again".into());
             }
             tries.checking += 1;
         }
-        let account = self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned();
-        let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
-        // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
-        // password, so how long a refusal takes doesn't say which names are accounts.
-        let matches = password_matches(password, hash.unwrap_or(stand_in_hash()));
-        let mut failures = self.failures.lock().unwrap();
+        let right = check();
+        let mut failures = hold(&self.failures);
         let tries = failures.entry(key.clone()).or_default();
         tries.checking -= 1;
-        // Not checked (the server was busy): not a wrong password either.
-        let matches = matches?;
-        let ok = hash.is_some() && matches;
-        if !ok {
+        let right = right?;
+        if !right {
             tries.wrong += 1;
             if tries.wrong >= MAX_FAILURES {
                 (tries.wrong, tries.locked) = (0, Some(Instant::now()));
             }
-            return Err(refused());
-        }
-        if tries.checking == 0 {
+        } else if tries.checking == 0 {
             failures.remove(&key);
         } else {
             (tries.wrong, tries.locked) = (0, None);
         }
-        drop(failures);
-        let account = account.unwrap();
-        let token = self.change(|book| Ok(Self::start_session(book, &account.name)))?;
-        Ok((token, account))
+        Ok(right)
     }
 
     pub(crate) fn sign_out(&self, token: &str) {
@@ -479,54 +637,70 @@ impl Accounts {
     /// the server only (local.rs).
     pub(crate) fn new_local(&self, user: &str) -> String {
         let token = new_token("hl_");
-        *self.local.lock().unwrap() = Some((hash_of(&token), format!("local:{user}")));
+        *hold(&self.local) = Some((hash_of(&token), format!("local:{user}")));
         token
     }
 
-    /// Who the local token is, if `token` is it.
+    /// Who the local token is, if `token` is it: a person, the OS user, an admin.
     pub(crate) fn local(&self, token: &str) -> Option<Who> {
-        let local = self.local.lock().unwrap();
+        let local = hold(&self.local);
         let (hash, name) = local.as_ref().filter(|_| token.starts_with("hl_"))?;
-        same(hash, &hash_of(token)).then(|| Who { name: name.clone(), role: Role::Admin })
+        same(hash, &hash_of(token)).then(|| Who { name: name.clone(), kind: Kind::Person, role: Role::Admin })
     }
 
-    /// Who a bearer token is: a session's account (not disabled), or an API token.
+    /// The OS user the local token is for (`bma`, not `local:bma`), once there is one.
+    fn local_user(&self) -> Option<String> {
+        hold(&self.local).as_ref().and_then(|(_, name)| name.strip_prefix("local:").map(String::from))
+    }
+
+    /// Who a bearer token is: a session's person, or an API token's agent or service; neither
+    /// when disabled.
     pub(crate) fn who(&self, token: &str) -> Option<Who> {
         let hash = hash_of(token);
-        let book = self.book.lock().unwrap();
+        let book = hold(&self.book);
         let now = epoch_now();
-        if token.starts_with("hs_") {
-            let session = book.sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now)?;
-            let account = book.users.iter().find(|u| u.name == session.user && !u.disabled)?;
-            return Some(Who { name: account.name.clone(), role: account.role });
-        }
-        if token.starts_with("ht_") {
-            let t = book.tokens.iter().find(|t| same(&t.hash, &hash))?;
-            return Some(Who { name: format!("token:{}", t.label), role: t.role });
-        }
-        None
+        let name = if token.starts_with("hs_") {
+            &book.sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now)?.user
+        } else if token.starts_with("ht_") {
+            &book.credentials.iter().find(|t| same(&t.hash, &hash))?.principal
+        } else {
+            return None;
+        };
+        let p = book.users.iter().find(|p| p.name == *name && !p.disabled)?;
+        Some(Who { name: p.name.clone(), kind: p.kind, role: p.role })
     }
 
-    /// The account someone the identity provider vouches for is, by their email.
+    /// The person someone the identity provider vouches for is, by their email.
     pub(crate) fn by_email(&self, email: &str) -> Option<Who> {
-        let book = self.book.lock().unwrap();
-        let account = book.users.iter().find(|u| !u.disabled && u.email.as_deref() == Some(email))?;
-        Some(Who { name: account.name.clone(), role: account.role })
+        let book = hold(&self.book);
+        let p = book.users.iter().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == Some(email))?;
+        Some(Who { name: p.name.clone(), kind: p.kind, role: p.role })
     }
 
-    pub(crate) fn account(&self, name: &str) -> Option<Account> {
-        self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned()
+    pub(crate) fn principal(&self, name: &str) -> Option<Principal> {
+        hold(&self.book).users.iter().find(|u| u.name == name).cloned()
     }
 
     /// Set a new password, knowing the current one. Every other session of theirs ends (one opened
-    /// with the old password by someone who had it); `kept`, the session asking, stays.
+    /// with the old password by someone who had it); `kept`, the session asking, stays. The current
+    /// one is checked outside the book's lock, as a sign-in's is: a check takes a while, longer
+    /// when the server is busy, and every request needs that lock to say who it is. And counted, by
+    /// name: MAX_FAILURES wrong lock changing it for a while, so a session someone else holds can't
+    /// be used to guess it.
     pub(crate) fn change_password(&self, name: &str, current: &str, new: &str, kept: Option<&str>) -> Result<(), String> {
         check_password(new)?;
+        let old = hold(&self.book).users.iter().find(|u| u.name == name).ok_or("no such account")?.password.clone();
+        let right = self.counted((name.to_string(), CHANGING.to_string()), || old.as_deref().map_or(Ok(false), |h| password_matches(current, h)))?;
+        if !right {
+            return Err("that isn't the current password".to_string());
+        }
         let hash = hash_password(new)?;
         self.change(|book| {
             let account = book.users.iter_mut().find(|u| u.name == name).ok_or("no such account")?;
-            if !account.password.as_deref().map(|h| password_matches(current, h)).transpose()?.unwrap_or(false) {
-                return Err("that isn't the current password".to_string());
+            // Changed while the current one was checked (a reset, another change): what was
+            // checked isn't it any more.
+            if account.password != old {
+                return Err("the password changed meanwhile: try again".to_string());
             }
             account.password = Some(hash);
             let kept = kept.map(hash_of);
@@ -537,7 +711,7 @@ impl Accounts {
 
     /// What the editor keeps for `name` (null until it keeps something).
     pub(crate) fn prefs(&self, name: &str) -> serde_json::Value {
-        self.book.lock().unwrap().users.iter().find(|u| u.name == name).map(|u| u.prefs.clone()).unwrap_or_default()
+        hold(&self.book).users.iter().find(|u| u.name == name).map(|u| u.prefs.clone()).unwrap_or_default()
     }
 
     pub(crate) fn set_prefs(&self, name: &str, prefs: serde_json::Value) -> Result<(), String> {
@@ -552,36 +726,61 @@ impl Accounts {
 
     // ── what an admin does ─────────────────────────────────────────────────────────────────
 
-    pub(crate) fn users(&self) -> Vec<Account> {
-        self.book.lock().unwrap().users.clone()
+    pub(crate) fn principals(&self) -> Vec<Principal> {
+        hold(&self.book).users.clone()
     }
 
     /// Whether an invite or reset link for `name` is waiting.
     pub(crate) fn invited(&self, name: &str) -> bool {
         let now = epoch_now();
-        self.book.lock().unwrap().invites.iter().any(|i| i.name == name && i.expires_at > now)
+        hold(&self.book).invites.iter().any(|i| i.name == name && i.expires_at > now)
     }
 
-    /// Add `name` with `role`: a one-time link token for them to set their password.
+    /// Add the person `name` with `role`: a one-time link token for them to set their password.
     pub(crate) fn invite(&self, name: &str, role: Role, email: Option<String>, by: &str) -> Result<String, String> {
         valid_name(name)?;
+        held(Kind::Person, role)?;
         self.change(|book| {
             if book.users.iter().any(|u| u.name == name) {
-                return Err(format!("there is an account {name:?} already"));
+                return Err(format!("there is a principal {name:?} already"));
             }
             let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
-            book.users.push(Account { name: name.into(), role, password: None, email, disabled: false, created_at: epoch_now(), created_by: Some(by.into()), prefs: serde_json::Value::Null });
+            book.users.push(Principal { email, ..Principal::new(name, Kind::Person, role, Some(by)) });
             let token = new_token("hi_");
             book.invites.push(Invite { hash: hash_of(&token), name: name.into(), expires_at: epoch_now() + INVITE_SECONDS });
             Ok(token)
         })
     }
 
-    /// A new link for `name` to set a new password; their sessions end, and their old password no
-    /// longer signs in (a reset is often because someone else has it).
+    /// Add the agent or service `name` with `role`, owned by `owner`, a person (a person is
+    /// invited instead). Its tokens are made after.
+    pub(crate) fn add(&self, name: &str, kind: Kind, role: Role, owner: &str, by: &str) -> Result<Principal, String> {
+        valid_name(name)?;
+        if kind == Kind::Person {
+            return Err("a person is invited, to set their own password".into());
+        }
+        held(kind, role)?;
+        let local = self.local_user();
+        self.change(|book| {
+            if book.users.iter().any(|u| u.name == name) {
+                return Err(format!("there is a principal {name:?} already"));
+            }
+            may_own(book, owner, local.as_deref())?;
+            let p = Principal { owner: Some(owner.into()), ..Principal::new(name, kind, role, Some(by)) };
+            book.users.push(p.clone());
+            Ok(p)
+        })
+    }
+
+    /// A new link for the person `name` to set a new password; their sessions end, and their old
+    /// password no longer signs in (a reset is often because someone else has it).
     pub(crate) fn reset(&self, name: &str) -> Result<String, String> {
         self.change(|book| {
-            book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no account {name:?}"))?.password = None;
+            let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
+            if p.kind != Kind::Person {
+                return Err(format!("{name} is {}: it signs in with its tokens, not a password", p.kind.said()));
+            }
+            p.password = None;
             book.invites.retain(|i| i.name != name);
             book.sessions.retain(|s| s.user != name);
             let token = new_token("hi_");
@@ -594,11 +793,11 @@ impl Accounts {
     pub(crate) fn invite_for(&self, token: &str) -> Option<String> {
         let hash = hash_of(token);
         let now = epoch_now();
-        self.book.lock().unwrap().invites.iter().find(|i| same(&i.hash, &hash) && i.expires_at > now).map(|i| i.name.clone())
+        hold(&self.book).invites.iter().find(|i| same(&i.hash, &hash) && i.expires_at > now).map(|i| i.name.clone())
     }
 
     /// The link's holder sets their password, and is signed in; the link is used up.
-    pub(crate) fn accept(&self, token: &str, password: &str) -> Result<(String, Account), String> {
+    pub(crate) fn accept(&self, token: &str, password: &str) -> Result<(String, Principal), String> {
         check_password(password)?;
         let hash = hash_password(password)?;
         let invite = hash_of(token);
@@ -615,12 +814,17 @@ impl Accounts {
         })
     }
 
-    /// Whether, after `f`, an admin who can sign in is left; else the change is refused.
+    /// Whether, after `f`, an admin who can sign in is left, if there was one; else the change is
+    /// refused.
     fn keeping_an_admin(book: &mut Book, f: impl FnOnce(&mut Book) -> Result<(), String>) -> Result<(), String> {
         let before = std::mem::take(&mut book.users);
         book.users = before.clone();
+        let an_admin = |users: &[Principal]| users.iter().any(|u| u.role == Role::Admin && !u.disabled);
+        // Before the first person is set up there is none to keep (the run file's admin may
+        // change the agents it made).
+        let had = an_admin(&before);
         f(book)?;
-        if !book.users.iter().any(|u| u.role == Role::Admin && !u.disabled) {
+        if had && !an_admin(&book.users) {
             book.users = before;
             return Err("that would leave no admin: make someone else an admin first".into());
         }
@@ -630,9 +834,37 @@ impl Accounts {
     pub(crate) fn set_role(&self, name: &str, role: Role) -> Result<(), String> {
         self.change(|book| {
             Self::keeping_an_admin(book, |book| {
-                book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no account {name:?}"))?.role = role;
+                let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
+                held(p.kind, role)?;
+                p.role = role;
                 Ok(())
             })
+        })
+    }
+
+    /// Give the agent or service `name` another owner, a person.
+    pub(crate) fn set_owner(&self, name: &str, owner: &str) -> Result<(), String> {
+        let local = self.local_user();
+        self.change(|book| {
+            may_own(book, owner, local.as_deref())?;
+            let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
+            if p.kind == Kind::Person {
+                return Err(format!("{name} is a person: only an agent or a service has an owner"));
+            }
+            p.owner = Some(owner.into());
+            Ok(())
+        })
+    }
+
+    /// How `name` is shown; `None` (or blank) shows it by its name.
+    pub(crate) fn set_display(&self, name: &str, display: Option<String>) -> Result<(), String> {
+        let display = display.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+        if display.as_ref().is_some_and(|d| d.chars().count() > 64) {
+            return Err("a display name is at most 64 characters".into());
+        }
+        self.change(|book| {
+            book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?.display = display;
+            Ok(())
         })
     }
 
@@ -640,7 +872,7 @@ impl Accounts {
     pub(crate) fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
         self.change(|book| {
             Self::keeping_an_admin(book, |book| {
-                book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no account {name:?}"))?.disabled = disabled;
+                book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?.disabled = disabled;
                 Ok(())
             })?;
             if disabled {
@@ -650,54 +882,73 @@ impl Accounts {
         })
     }
 
+    /// A person's email, matched when they sign in through a provider.
     pub(crate) fn set_email(&self, name: &str, email: Option<String>) -> Result<(), String> {
+        let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
         self.change(|book| {
-            book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no account {name:?}"))?.email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+            let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
+            if p.kind != Kind::Person && email.is_some() {
+                return Err(format!("{name} is {}: only a person signs in with an email", p.kind.said()));
+            }
+            p.email = email;
             Ok(())
         })
     }
 
+    /// Remove `name`, with its sessions, invites and tokens; not a person who owns an agent or a
+    /// service, until it has another owner.
     pub(crate) fn remove(&self, name: &str) -> Result<(), String> {
         self.change(|book| {
+            let owns: Vec<&str> = book.users.iter().filter(|p| p.owner.as_deref() == Some(name)).map(|p| p.name.as_str()).collect();
+            if !owns.is_empty() {
+                return Err(format!("{name} owns {}: give {} another owner first", owns.join(", "), if owns.len() == 1 { "it" } else { "them" }));
+            }
             Self::keeping_an_admin(book, |book| {
                 let before = book.users.len();
                 book.users.retain(|u| u.name != name);
                 if book.users.len() == before {
-                    return Err(format!("no account {name:?}"));
+                    return Err(format!("no principal {name:?}"));
                 }
                 Ok(())
             })?;
             book.sessions.retain(|s| s.user != name);
             book.invites.retain(|i| i.name != name);
+            book.credentials.retain(|t| t.principal != name);
             Ok(())
         })
     }
 
-    pub(crate) fn tokens(&self) -> Vec<ApiToken> {
-        self.book.lock().unwrap().tokens.iter().map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect()
+    /// The tokens of `principal`, without their hashes.
+    pub(crate) fn tokens(&self, principal: &str) -> Vec<ApiToken> {
+        hold(&self.book).credentials.iter().filter(|t| t.principal == principal).map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect()
     }
 
-    /// A new API token for scripts and CI: shown once, here.
-    pub(crate) fn create_token(&self, label: &str, role: Role, by: &str) -> Result<(String, ApiToken), String> {
+    /// A new API token for the agent or service `principal`: shown once, here.
+    pub(crate) fn create_token(&self, principal: &str, label: &str, by: &str) -> Result<(String, ApiToken), String> {
         let label = label.trim();
         if label.is_empty() || label.len() > 64 {
             return Err("a token needs a label (what it is for), at most 64 characters".into());
         }
         self.change(|book| {
+            let p = book.users.iter().find(|u| u.name == principal).ok_or(format!("no principal {principal:?}"))?;
+            if p.kind == Kind::Person {
+                return Err(format!("{principal} is a person, who signs in with a password or a provider: a token is an agent's or a service's"));
+            }
             let token = new_token("ht_");
             let mut id = [0u8; 6];
             getrandom::fill(&mut id).map_err(|e| e.to_string())?;
-            let entry = ApiToken { id: crate::sealing::to_hex(&id), label: label.into(), role, hash: hash_of(&token), created_at: epoch_now(), created_by: by.into() };
-            book.tokens.push(entry.clone());
+            let entry = ApiToken { id: crate::sealing::to_hex(&id), principal: principal.into(), label: label.into(), hash: hash_of(&token), created_at: epoch_now(), created_by: by.into() };
+            book.credentials.push(entry.clone());
             Ok((token, ApiToken { hash: String::new(), ..entry }))
         })
     }
 
-    pub(crate) fn revoke_token(&self, id: &str) -> Result<(), String> {
+    /// Revoke `principal`'s token `id`.
+    pub(crate) fn revoke_token(&self, principal: &str, id: &str) -> Result<(), String> {
         self.change(|book| {
-            let before = book.tokens.len();
-            book.tokens.retain(|t| t.id != id);
-            if book.tokens.len() == before {
+            let before = book.credentials.len();
+            book.credentials.retain(|t| !(t.id == id && t.principal == principal));
+            if book.credentials.len() == before {
                 return Err(format!("no token {id:?}"));
             }
             Ok(())
@@ -705,7 +956,7 @@ impl Accounts {
     }
 
     pub(crate) fn oidc_settings(&self) -> Option<OidcSettings> {
-        self.book.lock().unwrap().oidc.clone()
+        hold(&self.book).oidc.clone()
     }
 
     /// Sign in through `settings`' provider from now on (read first: refused if it can't be), or
@@ -757,10 +1008,25 @@ mod tests {
         assert!(a.setup(&code, "ada", "short").unwrap_err().contains("at least"));
         let (token, account) = a.setup(&code.to_lowercase(), "ada", PW).unwrap();
         assert_eq!(account.role, Role::Admin);
-        assert_eq!(a.who(&token), Some(Who { name: "ada".into(), role: Role::Admin }));
+        assert_eq!(a.who(&token), Some(Who { name: "ada".into(), kind: Kind::Person, role: Role::Admin }));
         assert!(!a.needs_setup());
         assert_eq!(a.setup_code(), None);
         assert!(a.setup(&code, "eve", PW).is_err(), "only once");
+    }
+
+    /// An agent the run file's admin makes before anyone sets the server up (`holon mcp` makes
+    /// the OS user's) leaves it to be set up: by a person, under a name of their own.
+    #[test]
+    fn an_agent_made_first_leaves_the_server_to_be_set_up() {
+        let a = Accounts::memory();
+        a.new_local("bma");
+        a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").unwrap();
+        assert!(a.needs_setup());
+        let code = a.setup_code().unwrap();
+        assert!(a.setup(&code, "bma-agent", PW).unwrap_err().contains("there is a principal"));
+        a.setup(&code, "bma", PW).unwrap();
+        assert!(!a.needs_setup());
+        assert_eq!(a.principal("bma-agent").and_then(|p| p.owner).as_deref(), Some("bma"), "owned by the person the OS user set up as");
     }
 
     /// Wrong passwords from one address lock the name for that address only: its owner signs in
@@ -922,6 +1188,37 @@ mod tests {
         assert!(a.sign_in("ada", "a new good password").is_ok());
     }
 
+    /// `guess` (right or wrong) is counted: MAX_FAILURES wrong are each told so, and then the
+    /// right one is refused too.
+    fn is_counted(what: &str, guess: impl Fn(bool) -> Result<(), String>) {
+        for _ in 0..MAX_FAILURES {
+            let refused = guess(false).unwrap_err();
+            assert!(!refused.contains("too many"), "{what}: refused before {MAX_FAILURES} wrong: {refused}");
+        }
+        assert!(guess(true).unwrap_err().contains("too many"), "{what}: after {MAX_FAILURES} wrong, the right one is refused too");
+    }
+
+    #[test]
+    fn every_way_in_that_takes_a_secret_counts_its_wrong_guesses() {
+        let new = Accounts::memory();
+        let code = new.setup_code().unwrap();
+        is_counted("the setup code", |right| new.setup(if right { &code } else { "WRONG-CODE" }, "ada", PW).map(drop));
+        let (a, first) = set_up();
+        is_counted("signing in", |right| a.sign_in("ada", if right { PW } else { "wrong password!" }).map(drop));
+        is_counted("the current password, to change it", |right| a.change_password("ada", if right { PW } else { "wrong password!" }, "a new good password", Some(&first)));
+    }
+
+    /// The tripwire every test that hashes or checks a password runs: none does it holding one of
+    /// the accounts' locks.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "holding an accounts lock")]
+    fn a_password_checked_holding_an_accounts_lock_trips() {
+        let a = Accounts::memory();
+        let _book = hold(&a.book);
+        let _ = password_matches(PW, stand_in_hash());
+    }
+
     #[test]
     fn an_admin_is_always_left() {
         let (a, _) = set_up();
@@ -934,7 +1231,7 @@ mod tests {
         assert!(a.remove("ada").is_err());
         a.set_disabled("bob", false).unwrap();
         a.remove("ada").unwrap();
-        assert_eq!(a.users().iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["bob"]);
+        assert_eq!(a.principals().iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["bob"]);
     }
 
     #[test]
@@ -946,12 +1243,75 @@ mod tests {
         assert_eq!(a.who(&token), None);
         assert!(a.sign_in("cy", PW).is_err());
 
-        let (secret, listed) = a.create_token("ci", Role::Editor, "ada").unwrap();
+        a.add("ci", Kind::Service, Role::Editor, "ada", "ada").unwrap();
+        let (secret, listed) = a.create_token("ci", "CI on GitHub", "ada").unwrap();
         assert!(secret.starts_with("ht_"));
-        assert_eq!(a.who(&secret), Some(Who { name: "token:ci".into(), role: Role::Editor }));
-        assert!(a.tokens().iter().all(|t| t.hash.is_empty()), "never listed with its hash");
-        a.revoke_token(&listed.id).unwrap();
+        assert_eq!(a.who(&secret), Some(Who { name: "ci".into(), kind: Kind::Service, role: Role::Editor }), "the service, by its name");
+        assert!(a.tokens("ci").iter().all(|t| t.hash.is_empty()), "never listed with its hash");
+        assert!(a.revoke_token("ada", &listed.id).is_err(), "only by the token's principal");
+        a.revoke_token("ci", &listed.id).unwrap();
         assert_eq!(a.who(&secret), None);
+        // Disabling a service stops its tokens; enabling it lets them in again.
+        let (secret, _) = a.create_token("ci", "CI on GitHub", "ada").unwrap();
+        a.set_disabled("ci", true).unwrap();
+        assert_eq!(a.who(&secret), None);
+        a.set_disabled("ci", false).unwrap();
+        assert_eq!(a.who(&secret).map(|w| w.name), Some("ci".into()));
+        // Removing it removes them.
+        a.remove("ci").unwrap();
+        assert_eq!((a.who(&secret), a.tokens("ci").len()), (None, 0));
+    }
+
+    /// Each kind holds only its roles; a name is one principal's, whatever its kind; only a person
+    /// has a password, an email and a session.
+    #[test]
+    fn each_kind_holds_only_its_roles() {
+        let (a, _) = set_up();
+        assert!(a.invite("bot", Role::Agent, None, "ada").unwrap_err().contains("a person is a viewer"));
+        assert!(a.add("ci", Kind::Service, Role::Admin, "ada", "ada").unwrap_err().contains("a service is a viewer or an editor"));
+        assert!(a.add("claude", Kind::Agent, Role::Editor, "ada", "ada").unwrap_err().contains("an agent is an agent or a viewer"));
+        assert!(a.add("bob", Kind::Person, Role::Editor, "ada", "ada").unwrap_err().contains("invited"));
+        let claude = a.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        assert_eq!((claude.kind, claude.role, claude.owner.as_deref(), claude.created_by.as_deref()), (Kind::Agent, Role::Agent, Some("ada"), Some("ada")));
+        a.set_role("claude", Role::Viewer).unwrap();
+        assert!(a.set_role("claude", Role::Admin).unwrap_err().contains("an agent is"));
+        assert!(a.set_role("ada", Role::Agent).unwrap_err().contains("a person is"));
+        assert!(a.invite("claude", Role::Viewer, None, "ada").unwrap_err().contains("already"), "names are unique across kinds");
+        assert!(a.add("ada", Kind::Service, Role::Viewer, "ada", "ada").unwrap_err().contains("already"));
+        assert!(a.reset("claude").unwrap_err().contains("not a password"));
+        assert!(a.set_email("claude", Some("c@example.com".into())).unwrap_err().contains("only a person"));
+        assert!(a.sign_in("claude", PW).is_err());
+        assert!(a.create_token("ada", "mine", "ada").unwrap_err().contains("a token is an agent's or a service's"));
+        assert_eq!(a.local(&a.new_local("bma")).map(|w| (w.kind, w.role)), Some((Kind::Person, Role::Admin)), "the OS user is a person");
+    }
+
+    /// An agent's or a service's owner is a person here who can sign in, or the OS user running the
+    /// server; a person who owns one stays until it has another owner.
+    #[test]
+    fn an_owner_is_a_person() {
+        let (a, _) = set_up();
+        a.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        assert!(a.add("ci", Kind::Service, Role::Editor, "claude", "ada").unwrap_err().contains("an owner is a person"));
+        assert!(a.add("ci", Kind::Service, Role::Editor, "nobody", "ada").unwrap_err().contains("no person"));
+        a.invite("bob", Role::Editor, None, "ada").unwrap();
+        a.set_disabled("bob", true).unwrap();
+        assert!(a.add("ci", Kind::Service, Role::Editor, "bob", "ada").unwrap_err().contains("disabled"));
+        a.set_disabled("bob", false).unwrap();
+        a.add("ci", Kind::Service, Role::Editor, "bob", "ada").unwrap();
+        assert!(a.set_owner("bob", "ada").unwrap_err().contains("only an agent or a service"));
+        // The OS user owns one before it has an account here (`bma`, not `local:bma`).
+        assert!(a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").is_err(), "not before the server runs as bma");
+        a.new_local("bma");
+        a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").unwrap();
+        assert!(a.remove("bob").unwrap_err().contains("bob owns ci: give it another owner first"));
+        a.set_owner("ci", "ada").unwrap();
+        a.remove("bob").unwrap();
+        // Disabling an owner leaves what they own as it was.
+        a.invite("eve", Role::Admin, None, "ada").unwrap();
+        a.set_owner("claude", "eve").unwrap();
+        a.set_disabled("eve", true).unwrap();
+        let (token, _) = a.create_token("claude", "the agent", "ada").unwrap();
+        assert_eq!(a.who(&token).map(|w| w.name), Some("claude".into()));
     }
 
     #[test]
@@ -977,6 +1337,26 @@ mod tests {
         let again = Accounts::open(&path).unwrap();
         assert!(!again.needs_setup());
         assert_eq!(again.who(&token).map(|w| w.name), Some("ada".into()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file from before principals keeps its people; its API tokens, which had a role of their
+    /// own, and its accounts with role agent are not read.
+    #[test]
+    fn a_file_from_before_principals_keeps_its_people() {
+        let path = std::env::temp_dir().join(format!("holon-accounts-before-{}.json", std::process::id()));
+        let path = path.to_str().unwrap().to_string();
+        let old = serde_json::json!({
+            "users": [
+                { "name": "ada", "role": "admin", "created_at": 1 },
+                { "name": "bot", "role": "agent", "created_at": 1 }
+            ],
+            "tokens": [{ "id": "a1b2c3", "label": "ci", "role": "editor", "hash": "00", "created_at": 1, "created_by": "ada" }]
+        });
+        std::fs::write(&path, old.to_string()).unwrap();
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.principals().iter().map(|p| (p.name.as_str(), p.kind)).collect::<Vec<_>>(), [("ada", Kind::Person)]);
+        assert!(!a.needs_setup());
         let _ = std::fs::remove_file(&path);
     }
 }

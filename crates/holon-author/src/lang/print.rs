@@ -1098,7 +1098,8 @@ impl<'s> Printer<'s> {
         out
     }
 
-    /// `flow("name", { port, keep, limits, browsers })`, from the document's settings.
+    /// `flow("name", { port, keep, limits, browsers, taint })`, from the document's settings and
+    /// its handlers' triggers.
     fn settings(&self, doc: &FlowDocument) -> Result<String, String> {
         let name = self.own.clone().unwrap_or_default();
         let mut fields = Vec::new();
@@ -1129,6 +1130,11 @@ impl<'s> Printer<'s> {
                 let origins: Vec<String> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).map(quote).collect();
                 fields.push(format!("browsers: {}", if origins.len() == 1 { origins[0].clone() } else { format!("[{}]", origins.join(", ")) }));
             }
+        }
+        // The keys it taints, from its handlers' triggers: one taints a key for every run.
+        let taint = crate::routes::flow_taint(&doc.nodes);
+        if !taint.is_empty() {
+            fields.push(format!("taint: [{}]", taint.into_iter().map(quote).collect::<Vec<_>>().join(", ")));
         }
         Ok(if fields.is_empty() { format!("flow({})", quote(&name)) } else { format!("flow({}, {{ {} }})", quote(&name), fields.join(", ")) })
     }

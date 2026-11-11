@@ -1,15 +1,17 @@
 // The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
 // address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
 // .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may),
-// People and access (#people: accounts, API tokens, agents, signing in through an identity
-// provider) and Policy (#policy: what holon.toml allows, its limits and ceilings, and the
-// deployments it holds off). A section of People and access has its place in the address too
-// (#people.tokens). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
+// People and access (#people: people, the agents and services they own with their tokens,
+// signing in through an identity provider; for a person who isn't an admin, the agents and
+// services they own, with their tokens: OwnedPage) and Policy (#policy: what holon.toml allows, its limits
+// and ceilings, and the deployments it holds off). A section of People and access has its place in
+// the address too (#people.agents). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
 // new one. The server refuses any change that would leave no admin. A grant changes only on its
 // deployment's page: who may touch what links there.
 import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
-  changeAccount,
+  addPrincipal,
+  changePrincipal,
   bindDatabase,
   bindMail,
   bindFolder,
@@ -34,12 +36,12 @@ import {
   listGrants,
   listServerSecrets,
   listTables,
-  inviteAccount,
-  listAccounts,
-  listTokens,
+  invitePerson,
+  listOwned,
+  listPrincipals,
   reloadPermissions,
-  removeAccount,
-  resetAccount,
+  removePrincipal,
+  resetPerson,
   revokeToken,
   setOidcSettings,
   sweepFolders,
@@ -52,7 +54,6 @@ import {
   unbindMail,
   unbindFolder,
   unbindServerSecret,
-  type AccountEntry,
   type DatabaseBinding,
   type DatabaseEntry,
   type MailBinding,
@@ -61,10 +62,11 @@ import {
   type FolderEntry,
   type HeldGrant,
   type HostPolicy,
+  type Kind,
   type OidcSettings,
+  type Principal,
   type Role,
   type SecretInfo,
-  type TokenEntry,
   getSecretHistory,
   previewSecretRollback,
   rollbackSecret,
@@ -82,7 +84,9 @@ import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./r
 import { useDryRun } from "./DryRun";
 import { secretRollbackReport, sourceLabel } from "./DeployBar";
 
-const ROLES: Role[] = ["viewer", "editor", "admin", "agent"];
+/** The roles each kind holds (accounts.rs `Kind::may_hold`): an agent proposes or reads, a service
+ *  never administers. */
+const ROLES_OF: Record<Kind, Role[]> = { person: ["viewer", "editor", "admin"], agent: ["agent", "viewer"], service: ["viewer", "editor"] };
 const ROLE_TITLE: Record<Role, string> = {
   viewer: "reads flows, deployments and logs",
   editor: "also saves, deploys, runs and deletes",
@@ -122,14 +126,14 @@ type SecretKind = "value" | "env" | "vault";
  *  read (Resources). */
 function useHost(shown = false) {
   const dialog = useDialog();
-  const [people, setPeople] = useState<AccountEntry[]>([]);
-  const [tokens, setTokens] = useState<TokenEntry[]>([]);
+  const [principals, setPrincipals] = useState<Principal[]>([]);
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
   const [msg, setMsg] = useState("");
   const [link, setLink] = useState<{ name: string; url: string } | null>(null);
   const [secret, setSecret] = useState<{ label: string; token: string } | null>(null);
   const [draft, setDraft] = useState({ name: "", role: "editor" as Role, email: "" });
-  const [tokenDraft, setTokenDraft] = useState({ label: "", role: "editor" as Role });
+  // An agent or a service being added: its owner empty for whoever adds it.
+  const [addDraft, setAddDraft] = useState({ name: "", kind: "agent" as Exclude<Kind, "person">, role: "agent" as Role, owner: "" });
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -192,8 +196,7 @@ function useHost(shown = false) {
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
-    listAccounts().then(setPeople).catch((e: unknown) => setMsg(messageOf(e)));
-    listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
+    listPrincipals().then(setPrincipals).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
     listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
@@ -271,8 +274,8 @@ function useHost(shown = false) {
     holders.length === 0 ? "No deployment uses it." : `${named(holders)} ${holders.length === 1 ? "uses" : "use"} it: they keep running, and their calls to it fail until it is bound again.`;
 
   return {
-    people, setPeople, tokens, setTokens, oidc, setOidc, msg, setMsg, link, setLink, secret,
-    setSecret, draft, setDraft, tokenDraft, setTokenDraft, issuer, setIssuer, clientId, setClientId,
+    principals, setPrincipals, oidc, setOidc, msg, setMsg, link, setLink, secret,
+    setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId,
     folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
     databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
     setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
@@ -309,11 +312,161 @@ function HostPage({ title, about: what, tab, host, children }: { title: string; 
   );
 }
 
+/** A token just made: whose and what for, and its value, shown once. */
+type MadeToken = { label: string; token: string };
+
+/** An agent's or a service's tokens: its owner or an admin makes them, each shown once (`show`). */
+async function makeToken(p: Principal, dialog: ReturnType<typeof useDialog>, act: (f: () => Promise<unknown>) => Promise<void>, show: (made: MadeToken) => void) {
+  const label = await dialog.prompt(`What is ${p.name}'s new token for? (GitHub CI, a laptop…)`, "", "make token");
+  if (!label?.trim()) return;
+  act(async () => {
+    const r = await createToken(p.name, label.trim());
+    show({ label: `${p.name}'s "${r.entry.label}"`, token: r.token });
+  });
+}
+
+/** A token just made, to copy now: it isn't shown again. */
+function MadeTokenBox({ made, onDone }: { made: MadeToken; onDone: () => void }) {
+  return (
+    <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
+      <span>
+        The token {made.label}. Copy it now: it isn&apos;t shown again.
+      </span>
+      <span style={{ display: "flex", gap: 6 }}>
+        <input aria-label="new API token" readOnly value={made.token} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
+        <button style={small} onClick={() => navigator.clipboard?.writeText(made.token)}>
+          copy
+        </button>
+        <button style={small} onClick={onDone}>
+          done
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** `p`'s tokens, each revoked from its row; or that it has none, so it can't sign in yet. */
+function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void> }) {
+  const tokens = p.tokens ?? [];
+  if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
+  return (
+    <>
+      {tokens.map((t) => (
+        <div key={t.id} style={{ ...row, marginLeft: 24, padding: "6px 14px" }}>
+          <span style={{ minWidth: 90 }}>{t.label}</span>
+          <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+            a token of {p.name}, made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
+          </span>
+          <button
+            style={small}
+            aria-label={`revoke ${p.name}'s token ${t.label}`}
+            onClick={async () => {
+              if (await dialog.confirm(`Revoke ${p.name}'s token "${t.label}"? Whatever signs in with it stops working.`, "Revoke")) act(() => revokeToken(p.name, t.id));
+            }}
+          >
+            revoke
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** How an agent connects to this server: `holon mcp`, as an agent, never as you. */
+function ConnectingAnAgent() {
+  const line = `holon mcp setup claude-code --server ${location.origin}`;
+  return (
+    <>
+      <div style={{ ...quiet, margin: "4px 0 6px" }}>
+        Connecting an agent: <code>holon mcp</code> signs in as an agent, never as you. On this server&apos;s machine, it is yours, made for you the first time
+        (<i>you</i>-agent, owned by you); from another, give it a token of an agent added here.
+      </div>
+      <div style={{ ...row, background: "transparent" }}>
+        <input aria-label="the holon mcp line" readOnly value={line} style={{ ...input, flex: 1, fontFamily: "ui-monospace, Menlo, Consolas, monospace" }} onFocus={(e) => e.target.select()} />
+        <button style={small} onClick={() => navigator.clipboard?.writeText(line)}>
+          copy
+        </button>
+      </div>
+      <a href={format({ kind: "docs", page: "guides/agents.md", anchor: null })} style={{ color: "var(--accent)", fontSize: 11, textDecoration: "none" }}>
+        working with agents, in the manual ›
+      </a>
+    </>
+  );
+}
+
+/** What a person who isn't an admin owns (auth.rs `GET /auth/owned`): their agents and services,
+ *  each with its tokens, which they make (each shown once) and revoke. An admin adds an agent or a
+ *  service and names its owner; People and access shows an admin everyone's. */
+export function OwnedPage() {
+  const dialog = useDialog();
+  const [owned, setOwned] = useState<Principal[] | null>(null);
+  const [msg, setMsg] = useState("");
+  const [made, setMade] = useState<MadeToken | null>(null);
+  const refresh = useCallback(() => {
+    listOwned()
+      .then(setOwned)
+      .catch((e: unknown) => setMsg(messageOf(e)));
+  }, []);
+  useEffect(refresh, [refresh]);
+  /** Do `f`, say what failed, and read what they own again. */
+  const act = async (f: () => Promise<unknown>) => {
+    setMsg("");
+    try {
+      await f();
+    } catch (e) {
+      setMsg(messageOf(e));
+    }
+    refresh();
+  };
+  return (
+    <div className="hl-flow hl-host-page" aria-label="Your agents and services">
+      <header className="hl-flow__head">
+        <h1 className="hl-flow__name">Your agents and services</h1>
+        <span className="hl-flow__status">the agents and services you own, and their tokens</span>
+      </header>
+      {msg && (
+        <div role="alert" style={{ color: "var(--bad)", fontSize: 12 }}>
+          {msg}
+        </div>
+      )}
+      <div style={about}>
+        An agent (an AI, connected through <code>holon mcp</code>) or a service (a script, CI) signs in with tokens of its own, and acts under its own name. You
+        own these, so you make and revoke their tokens; an admin adds one for you, and changes its role.
+      </div>
+      {made && <MadeTokenBox made={made} onDone={() => setMade(null)} />}
+      {owned?.length === 0 && <div style={{ ...quiet, marginBottom: 6 }}>You own no agent or service: an admin adds one for you, owned by you, in People and access.</div>}
+      {owned?.map((p) => (
+        <Fragment key={p.name}>
+          <div style={row}>
+            <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
+            <span style={quiet} title={ROLE_TITLE[p.role]}>
+              {p.kind}
+              {p.role !== p.kind && `, ${p.role}`}
+            </span>
+            <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+              {p.disabled && <span style={{ color: "var(--bad)" }}>disabled: its tokens are refused</span>}
+            </span>
+            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setMade)}>
+              make token
+            </button>
+          </div>
+          <TokenRows p={p} dialog={dialog} act={act} />
+        </Fragment>
+      ))}
+      <ConnectingAnAgent />
+    </div>
+  );
+}
+
 export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
   const h = useHost();
-  const { people, tokens, oidc, link, setLink, secret, setSecret, draft, setDraft, tokenDraft, setTokenDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
+  const { principals, oidc, link, setLink, secret, setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
+  const people = principals.filter((p) => p.kind === "person");
+  const others = principals.filter((p) => p.kind !== "person");
+  /** Who may own an agent or a service: the people, and whoever owns it now (the OS user, say). */
+  const owners = (now: string | null) => [...new Set([...people.map((p) => p.name), ...(now ? [now] : [])])];
   return (
-    <HostPage title="People and access" about="who uses this server, the tokens scripts and agents use, and how people sign in" tab={tab} host={h}>
+    <HostPage title="People and access" about="who uses this server: people, the agents and services they own, and how people sign in" tab={tab} host={h}>
       <div className="hl-host-page__head" data-section="accounts">people</div>
       {link && (
         <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
@@ -331,73 +484,77 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           </span>
         </div>
       )}
-      {people.map((p) => (
-        <div key={p.name} style={row}>
-          <span style={{ color: "var(--accent)", minWidth: 90 }}>
-            {p.name}
-            {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
-          </span>
-          <select
-            aria-label={`${p.name}'s role`}
-            value={p.role}
-            style={input}
-            title={ROLE_TITLE[p.role]}
-            onChange={(e) => act(() => changeAccount(p.name, { role: e.target.value as Role }))}
-          >
-            {ROLES.map((r) => (
-              <option key={r} value={r} title={ROLE_TITLE[r]}>
-                {r}
-              </option>
-            ))}
-          </select>
-          <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
-            {p.email ?? ""}
-            {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
-            {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
-          </span>
-          <button
-            style={small}
-            title="the email they sign in with through the identity provider"
-            onClick={async () => {
-              const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
-              if (email !== null) act(() => changeAccount(p.name, { email }));
-            }}
-          >
-            email
-          </button>
-          <button
-            style={small}
-            title="a new link to set a new password; their sign-ins end"
-            onClick={async () => {
-              if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
-              act(async () => {
-                const r = await resetAccount(p.name);
-                setLink({ name: p.name, url: linkFor(r.invite) });
-              });
-            }}
-          >
-            reset
-          </button>
-          <button style={small} onClick={() => act(() => changeAccount(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
-            {p.disabled ? "enable" : "disable"}
-          </button>
-          <button
-            style={small}
-            title="remove the account"
-            onClick={async () => {
-              if (await dialog.confirm(`Remove ${p.name}'s account? This can't be undone.`, "Remove")) act(() => removeAccount(p.name));
-            }}
-          >
-            ×
-          </button>
-        </div>
-      ))}
+      {people.map((p) => {
+        const owns = others.filter((o) => o.owner === p.name).map((o) => o.name);
+        return (
+          <div key={p.name} style={row}>
+            <span style={{ color: "var(--accent)", minWidth: 90 }}>
+              {p.name}
+              {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
+            </span>
+            <select
+              aria-label={`${p.name}'s role`}
+              value={p.role}
+              style={input}
+              title={ROLE_TITLE[p.role]}
+              onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value as Role }))}
+            >
+              {ROLES_OF.person.map((r) => (
+                <option key={r} value={r} title={ROLE_TITLE[r]}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+              {p.email ?? ""}
+              {owns.length > 0 && <span> · owns {owns.join(", ")}</span>}
+              {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
+              {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
+            </span>
+            <button
+              style={small}
+              title="the email they sign in with through the identity provider"
+              onClick={async () => {
+                const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
+                if (email !== null) act(() => changePrincipal(p.name, { email }));
+              }}
+            >
+              email
+            </button>
+            <button
+              style={small}
+              title="a new link to set a new password; their sign-ins end"
+              onClick={async () => {
+                if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
+                act(async () => {
+                  const r = await resetPerson(p.name);
+                  setLink({ name: p.name, url: linkFor(r.invite) });
+                });
+              }}
+            >
+              reset
+            </button>
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+              {p.disabled ? "enable" : "disable"}
+            </button>
+            <button
+              style={small}
+              title={owns.length > 0 ? "give what they own another owner first" : "remove them"}
+              onClick={async () => {
+                if (await dialog.confirm(`Remove ${p.name}? What they deployed stays, and says who did it. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
+              }}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
           e.preventDefault();
           act(async () => {
-            const r = await inviteAccount(draft.name.trim(), draft.role, draft.email.trim());
+            const r = await invitePerson(draft.name.trim(), draft.role, draft.email.trim());
             setLink({ name: r.name, url: linkFor(r.invite) });
             setDraft({ name: "", role: draft.role, email: "" });
           });
@@ -405,7 +562,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
       >
         <input aria-label="new person's name" placeholder="name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={input} />
         <select aria-label="new person's role" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })} style={input}>
-          {ROLES.map((r) => (
+          {ROLES_OF.person.map((r) => (
             <option key={r} value={r}>
               {r}
             </option>
@@ -417,70 +574,113 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         </button>
       </form>
 
-      <div className="hl-host-page__head" data-section="tokens">API tokens</div>
-      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
-      {secret && (
-        <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
-          <span>
-            The token for <span style={{ color: "var(--ink)" }}>{secret.label}</span>. Copy it now: it isn't shown again.
-          </span>
-          <span style={{ display: "flex", gap: 6 }}>
-            <input aria-label="new API token" readOnly value={secret.token} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
-            <button style={small} onClick={() => navigator.clipboard?.writeText(secret.token)}>
-              copy
+      <div className="hl-host-page__head" data-section="agents">agents and services</div>
+      <div style={about}>
+        An agent (an AI, connected through <code>holon mcp</code>) writes flows, checks them, saves and deploys them, and runs their actions, but never approves what a
+        flow may do: that stays with a person. A service is a script or CI, a viewer or an editor, never an admin. Each signs in with tokens of its own (sent as
+        Authorization: Bearer &lt;token&gt;) and has an owner, the person answerable for it, who makes and revokes its tokens. Which actions agents may run is each
+        deployment&apos;s own setting.
+      </div>
+      {secret && <MadeTokenBox made={secret} onDone={() => setSecret(null)} />}
+      {others.length === 0 && <div style={{ ...quiet, marginBottom: 6 }}>no agent or service yet</div>}
+      {others.map((p) => (
+        <Fragment key={p.name}>
+          <div style={row}>
+            <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
+            <span style={quiet}>{p.kind}</span>
+            <select
+              aria-label={`${p.name}'s role`}
+              value={p.role}
+              style={input}
+              title={ROLE_TITLE[p.role]}
+              onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value as Role }))}
+            >
+              {ROLES_OF[p.kind].map((r) => (
+                <option key={r} value={r} title={ROLE_TITLE[r]}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} title="the person answerable for it" onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
+              {owners(p.owner).map((o) => (
+                <option key={o} value={o}>
+                  owned by {o}
+                </option>
+              ))}
+            </select>
+            <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+              {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
+              {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
+            </span>
+            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setSecret)}>
+              make token
             </button>
-            <button style={small} onClick={() => setSecret(null)}>
-              done
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
+              {p.disabled ? "enable" : "disable"}
             </button>
-          </span>
-        </div>
-      )}
-      {tokens.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
-      {tokens.map((t) => (
-        <div key={t.id} style={row}>
-          <span style={{ color: "var(--accent)", minWidth: 90 }}>{t.label}</span>
-          <span>{t.role}</span>
-          <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
-            made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
-          </span>
-          <button
-            style={small}
-            onClick={async () => {
-              if (await dialog.confirm(`Revoke the token "${t.label}"? Whatever uses it stops working.`, "Revoke")) act(() => revokeToken(t.id));
-            }}
-          >
-            revoke
-          </button>
-        </div>
+            <button
+              style={small}
+              title={`remove the ${p.kind}`}
+              onClick={async () => {
+                if (await dialog.confirm(`Remove ${p.name}? Its tokens stop working. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
+              }}
+            >
+              ×
+            </button>
+          </div>
+          <TokenRows p={p} dialog={dialog} act={act} />
+        </Fragment>
       ))}
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
           e.preventDefault();
           act(async () => {
-            const r = await createToken(tokenDraft.label.trim(), tokenDraft.role);
-            setSecret({ label: r.entry.label, token: r.token });
-            setTokenDraft({ label: "", role: tokenDraft.role });
+            await addPrincipal(addDraft.name.trim(), addDraft.kind, addDraft.role, addDraft.owner);
+            setAddDraft({ ...addDraft, name: "" });
           });
         }}
       >
-        <input aria-label="new token's label" placeholder="what it's for (e.g. ci)" value={tokenDraft.label} onChange={(e) => setTokenDraft({ ...tokenDraft, label: e.target.value })} style={{ ...input, flex: 1 }} />
-        <select aria-label="new token's role" value={tokenDraft.role} onChange={(e) => setTokenDraft({ ...tokenDraft, role: e.target.value as Role })} style={input}>
-          {ROLES.map((r) => (
+        <input aria-label="new agent's or service's name" placeholder="name" value={addDraft.name} onChange={(e) => setAddDraft({ ...addDraft, name: e.target.value })} style={input} />
+        <select
+          aria-label="new agent's or service's kind"
+          value={addDraft.kind}
+          onChange={(e) => {
+            const kind = e.target.value as Exclude<Kind, "person">;
+            setAddDraft({ ...addDraft, kind, role: ROLES_OF[kind][0] });
+          }}
+          style={input}
+        >
+          <option value="agent">agent</option>
+          <option value="service">service</option>
+        </select>
+        <select aria-label="new agent's or service's role" value={addDraft.role} onChange={(e) => setAddDraft({ ...addDraft, role: e.target.value as Role })} style={input}>
+          {ROLES_OF[addDraft.kind].map((r) => (
             <option key={r} value={r}>
               {r}
             </option>
           ))}
         </select>
-        <button type="submit" style={primary} disabled={!tokenDraft.label.trim()}>
-          make token
+        <select aria-label="new agent's or service's owner" value={addDraft.owner} onChange={(e) => setAddDraft({ ...addDraft, owner: e.target.value })} style={{ ...input, flex: 1 }}>
+          <option value="">owned by you</option>
+          {people
+            .filter((p) => p.name !== me)
+            .map((p) => (
+              <option key={p.name} value={p.name}>
+                owned by {p.name}
+              </option>
+            ))}
+        </select>
+        <button type="submit" style={primary} disabled={!addDraft.name.trim()}>
+          add {addDraft.kind}
         </button>
       </form>
+      <ConnectingAnAgent />
 
       <div className="hl-host-page__head" data-section="sign-in">signing in through an identity provider</div>
       <div style={about}>
         Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
-        with PKCE and this page's address as its redirect. Someone signing in is matched to the account with their email (set under people).
+        with PKCE and this page&apos;s address as its redirect. Someone signing in is matched to the person with their email (set under people).
       </div>
       <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
         <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
@@ -495,32 +695,6 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         )}
       </div>
       <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
-
-      <div className="hl-host-page__head" data-section="agents">agents</div>
-      <div style={about}>
-        An agent writes flows, checks them, saves and deploys them, and runs their actions, but never approves what a flow may do: that stays with a person. It
-        connects through <code>holon mcp</code>. On this server&apos;s machine it signs in as you and asks as the agent role; from another, it uses an API token with
-        role agent (make one above). Which actions agents may run is each deployment&apos;s own setting.
-      </div>
-      <div style={{ ...row, background: "transparent" }}>
-        <input aria-label="the holon mcp line" readOnly value={`holon mcp setup claude-code --server ${location.origin}`} style={{ ...input, flex: 1, fontFamily: "ui-monospace, Menlo, Consolas, monospace" }} onFocus={(e) => e.target.select()} />
-        <button style={small} onClick={() => navigator.clipboard?.writeText(`holon mcp setup claude-code --server ${location.origin}`)}>
-          copy
-        </button>
-      </div>
-      {[
-        ...people.filter((p) => p.role === "agent").map((p) => ({ key: `account:${p.name}`, name: p.name, said: "an account" })),
-        ...tokens.filter((t) => t.role === "agent").map((t) => ({ key: `token:${t.id}`, name: t.label, said: `a token, made by ${t.created_by}` })),
-      ].map((a) => (
-        <div key={a.key} style={row}>
-          <span style={{ color: "var(--accent)", minWidth: 90 }}>{a.name}</span>
-          <span style={quiet}>{a.said}</span>
-        </div>
-      ))}
-      {!people.some((p) => p.role === "agent") && !tokens.some((t) => t.role === "agent") && <div style={{ ...quiet, marginBottom: 6 }}>no agent account or token yet</div>}
-      <a href={format({ kind: "docs", page: "guides/agents.md", anchor: null })} style={{ color: "var(--accent)", fontSize: 11, textDecoration: "none" }}>
-        working with agents, in the manual ›
-      </a>
     </HostPage>
   );
 }

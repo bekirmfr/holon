@@ -1,23 +1,23 @@
 //! Who may use the control plane: the gate every request passes before routing (http.rs).
 //!
-//! Everyone is someone: an account (accounts.rs), signed in with a password, through an invite
-//! link, or through the identity provider an admin set (oidc.rs); or an API token an admin made
-//! for a script. A request carries its session or token as `Authorization: Bearer …`, and its
-//! role decides what it may do:
+//! Everyone is someone: a principal (accounts.rs). A person signs in with a password, through an
+//! invite link, or through the identity provider an admin set (oidc.rs); an agent or a service
+//! with an API token its owner or an admin made. A request carries its session or token as
+//! `Authorization: Bearer …`, and its role decides what it may do:
 //!
 //! - `viewer`: reads only (GET): flows, deployments, logs, a secret's names and history;
 //! - `editor`: everything a viewer does, and saving, deploying, running, pausing, deleting;
-//! - `admin`: everything, writing secrets and the admin panel (`/admin/…`) included;
+//! - `admin`: everything, writing secrets, the admin panel (`/admin/…`) and managing people
+//!   (`/people…`) included; a person also manages the tokens of an agent or a service they own;
 //! - `agent`: what a viewer does, and proposing: storing units, previewing and deploying a flow
 //!   that needs no approval it hasn't had, saving a flow, calling a deployed one (a run like any
 //!   other), and a restore's dry run (deploy.rs answers it nothing more). It never approves (deploy.rs refuses its `acknowledge`), never replaces a flow
 //!   someone else saved (flows.rs), and never grants, starts, stops, deletes or writes a secret:
 //!   those are a person's (docs/L4s/agent-surface-L4.md).
 //!
-//! A request that says `X-Holon-Role: agent` from an editor or an admin acts as an agent, under its
-//! sender's name with ` (agent)` after it: how `holon mcp` keeps an agent to proposing when it
-//! signs in as the person who runs it. The header only ever lowers a role: a viewer who sends it
-//! stays a viewer, since an agent may do more than read.
+//! An agent is a principal of kind agent, signing in with its own token, never a person's: what it
+//! may do is its role's, and what it did is under its own name. `holon mcp` signs in as one (on a
+//! server this user runs, one it makes for them: mcphosts.rs).
 //!
 //! Anyone may change their own password and sign out. Open without signing in: a CORS
 //! preflight, the health check, and signing in itself (`/auth/…`: the server's state, setup,
@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::accounts::{Accounts, Who};
+use crate::accounts::{Accounts, Kind, Who};
 use crate::http::err;
 use rouille::{Request, Response};
 
@@ -48,12 +48,13 @@ pub(crate) enum Role {
     Agent,
 }
 
-/// Who a request comes from, once let through: an account's name or `token:<label>`, and its
-/// role; no one for what is open (signing in, the health check), and on a server without
-/// accounts (the tests).
+/// Who a request comes from, once let through: a principal's name (or the OS user's,
+/// `local:<user>`), its kind and its role; no one for what is open (signing in, the health
+/// check), and on a server without accounts (the tests).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
+    pub(crate) kind: Option<Kind>,
     pub(crate) role: Option<Role>,
 }
 
@@ -91,14 +92,25 @@ fn agent_may(method: &str, url: &str) -> bool {
     }
 }
 
-/// Whether `request` asks to act as an agent (`X-Holon-Role: agent`).
-fn asks_as_agent(request: &Request) -> bool {
-    request.header("X-Holon-Role").is_some_and(|r| r.trim().eq_ignore_ascii_case("agent"))
-}
-
 /// What anyone signed in may do to their own account, viewers too.
 fn is_own(method: &str, url: &str) -> bool {
-    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/prefs"))
+    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/owned" | "/auth/prefs"))
+}
+
+/// Whether `url` lists, makes or revokes the tokens of a principal: a person may for an agent or
+/// a service they own (auth.rs checks they own it), as an admin may for any.
+fn is_tokens_of_someone(method: &str, url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("/people/") else { return false };
+    match rest.split_once('/') {
+        Some((name, "tokens")) => !name.is_empty() && matches!(method, "GET" | "POST"),
+        Some((name, rest)) => !name.is_empty() && method == "DELETE" && rest.strip_prefix("tokens/").is_some_and(|id| !id.is_empty() && !id.contains('/')),
+        None => false,
+    }
+}
+
+/// What only an admin may do: the admin panel and managing people.
+fn is_admins(url: &str) -> bool {
+    url.starts_with("/admin/") || url == "/people" || url.starts_with("/people/")
 }
 
 impl Access {
@@ -113,10 +125,8 @@ impl Access {
     /// Who `request` comes from, or why it may not go on.
     pub(crate) fn check(&self, request: &Request) -> Result<Caller, Response> {
         let (method, url) = (request.method(), request.url());
-        // With no accounts (the tests' servers), whoever asks is let in; one asking as an agent is one.
-        let Some(accounts) = &self.accounts else {
-            return Ok(if asks_as_agent(request) { Caller { name: Some("agent".into()), role: Some(Role::Agent) } } else { Caller::default() });
-        };
+        // With no accounts (the tests' servers), whoever asks is let in.
+        let Some(accounts) = &self.accounts else { return Ok(Caller::default()) };
         if is_open(method, &url) {
             return Ok(Caller::default());
         }
@@ -126,21 +136,17 @@ impl Access {
             Some(who) => who,
             None => self.signed_in(accounts, presented)?,
         };
-        let who = match who.role {
-            Role::Agent => who,
-            Role::Editor | Role::Admin if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent },
-            _ => who,
-        };
         let allowed = match who.role {
             Role::Admin => true,
             _ if is_own(method, &url) => true,
-            _ if url.starts_with("/admin/") => false,
+            Role::Viewer | Role::Editor if who.kind == Kind::Person && is_tokens_of_someone(method, &url) => true,
+            _ if is_admins(&url) => false,
             Role::Viewer => method == "GET",
             Role::Editor => !is_secret_write(request),
             Role::Agent => agent_may(method, &url),
         };
         if !allowed {
-            let what = if url.starts_with("/admin/") || is_secret_write(request) {
+            let what = if is_admins(&url) || is_secret_write(request) {
                 "that needs an admin"
             } else if who.role == Role::Agent {
                 "an agent proposes and calls; approving, granting, starting, stopping and deleting are a person's"
@@ -149,13 +155,15 @@ impl Access {
             };
             return Err(err(403, format!("{} may not do that: {what}", who.name)));
         }
-        Ok(Caller { name: Some(who.name), role: Some(who.role) })
+        Ok(Caller { name: Some(who.name), kind: Some(who.kind), role: Some(who.role) })
     }
 
     /// Who a session, API token or provider's sign-in is, or why it isn't let in.
     fn signed_in(&self, accounts: &Accounts, presented: &str) -> Result<Who, Response> {
         if accounts.needs_setup() {
-            return Err(err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
+            // No person yet; only the run file's admin could have made an agent or a service
+            // since (`holon mcp` makes the OS user's agent before anyone sets the server up).
+            return accounts.who(presented).filter(|w| w.kind != Kind::Person).ok_or_else(|| err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
         }
         let refuse = |message: String| Err(err(401, message).with_additional_header("WWW-Authenticate", "Bearer"));
         if presented.is_empty() {
@@ -200,12 +208,13 @@ impl Access {
     }
 }
 
-/// Whether `request` sets, rolls back or removes a secret.
+/// Whether `request` sets, rolls back or removes a secret: any POST or DELETE under a
+/// deployment's `/secrets/`, with a name after it or not (http.rs routes one without a name to
+/// the secrets too, where it is refused, but only after the gate has let it through).
 pub(crate) fn is_secret_write(request: &Request) -> bool {
     let url = request.url();
     let Some(rest) = url.strip_prefix("/deployments/") else { return false };
-    let Some((_, after)) = rest.split_once("/secrets/") else { return false };
-    !after.is_empty() && matches!(request.method(), "POST" | "DELETE")
+    rest.contains("/secrets/") && matches!(request.method(), "POST" | "DELETE")
 }
 
 #[cfg(test)]
@@ -249,9 +258,10 @@ mod tests {
         assert_eq!(call(&access, "POST", "/auth/password", Some(&cy)), Ok(Some("cy".into())), "their own password");
         assert_eq!(call(&access, "POST", "/flows", Some(&bob)), Ok(Some("bob".into())));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&bob)), Err(403));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/people", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/admin/oidc", Some(&bob)), Err(403));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&ada)), Ok(Some("ada".into())));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&ada)), Ok(Some("ada".into())));
+        assert_eq!(call(&access, "GET", "/people", Some(&ada)), Ok(Some("ada".into())));
         // The variables an env secret can name: only for whoever sets secrets.
         assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&cy)), Err(403));
         assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&bob)), Err(403));
@@ -259,22 +269,49 @@ mod tests {
         assert_eq!(call(&access, "GET", "/health", None), Ok(None));
     }
 
+    /// A service's token acts as the service, with its role; disabled or removed, it is refused.
     #[test]
-    fn api_tokens_act_with_their_role() {
+    fn a_service_acts_with_its_role() {
         let (access, _) = server();
         let accounts = access.accounts().unwrap();
-        let (ci, _) = accounts.create_token("ci", Role::Editor, "ada").unwrap();
-        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("token:ci".into())));
-        assert_eq!(call(&access, "GET", "/admin/users", Some(&ci)), Err(403));
+        accounts.add("ci", Kind::Service, Role::Editor, "ada", "ada").unwrap();
+        let (ci, _) = accounts.create_token("ci", "CI on GitHub", "ada").unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("ci".into())));
+        assert_eq!(call(&access, "GET", "/people", Some(&ci)), Err(403));
+        assert_eq!(call(&access, "GET", "/people/ci/tokens", Some(&ci)), Err(403), "not a person");
+        accounts.set_disabled("ci", true).unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
+        accounts.set_disabled("ci", false).unwrap();
+        accounts.remove("ci").unwrap();
+        assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Err(401));
+    }
+
+    /// Managing people is an admin's; a person reaches the tokens routes of any name, for auth.rs
+    /// to answer only those of what they own.
+    #[test]
+    fn people_are_an_admins_and_tokens_their_owners_too() {
+        let (access, [ada, bob, cy]) = server();
+        for (method, url) in [("GET", "/people"), ("POST", "/people"), ("PATCH", "/people/cy"), ("DELETE", "/people/cy"), ("POST", "/people/cy/reset")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Err(403), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&ada)), Ok(Some("ada".into())), "{method} {url}");
+        }
+        for (method, url) in [("GET", "/people/claude/tokens"), ("POST", "/people/claude/tokens"), ("DELETE", "/people/claude/tokens/a1")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Ok(Some("bob".into())), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&cy)), Ok(Some("cy".into())), "a viewer may own one too: {method} {url}");
+        }
+        for (method, url) in [("DELETE", "/people/claude/tokens"), ("POST", "/people/claude/tokens/a1"), ("GET", "/people/claude/tokens/a1/b"), ("GET", "/people//tokens")] {
+            assert_eq!(call(&access, method, url, Some(&bob)), Err(403), "{method} {url}");
+        }
     }
 
     #[test]
     fn an_agent_proposes_and_calls_and_does_nothing_else() {
         let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
-        let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
+        accounts.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
         for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("POST", "/trigger/a/reset"), ("POST", "/deployments/a/restore"), ("GET", "/auth/me")] {
-            assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("token:claude".into())), "{method} {url}");
+            assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("claude".into())), "{method} {url}");
         }
         for (method, url) in [
             ("POST", "/deployments/a/grant"),
@@ -291,28 +328,44 @@ mod tests {
             ("POST", "/fire"),
             ("POST", "/registry/publish"),
             ("POST", "/permissions/reload"),
-            ("GET", "/admin/users"),
+            ("GET", "/people"),
+            ("GET", "/people/claude/tokens"),
         ] {
             assert_eq!(call(&access, method, url, Some(&claude)), Err(403), "{method} {url}");
         }
-        // An editor or an admin who says they are an agent is one, the run file's user too; the
-        // header never raises a role, so a viewer who says so stays a viewer.
-        let as_agent = |method: &str, url: &str, bearer: &str| {
-            let headers = vec![("Host".into(), "localhost:7420".into()), ("Authorization".into(), format!("Bearer {bearer}")), ("X-Holon-Role".into(), "agent".into())];
-            access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.role)).map_err(|r| r.status_code)
-        };
-        assert_eq!(as_agent("POST", "/deploy", &ada), Ok((Some("ada (agent)".into()), Some(Role::Agent))));
-        assert_eq!(as_agent("POST", "/deployments/a/grant", &ada), Err(403));
+        // What an agent may not, a person may: the run file's user, an admin.
         let local = accounts.new_local("bma");
         assert_eq!(call(&access, "POST", "/deployments/a/grant", Some(&local)), Ok(Some("local:bma".into())));
-        assert_eq!(as_agent("POST", "/deployments/a/grant", &local), Err(403));
-        assert_eq!(as_agent("POST", "/flows", &local), Ok((Some("local:bma (agent)".into()), Some(Role::Agent))));
-        assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("token:claude".into()), Some(Role::Agent))), "an agent's name as it is");
-        assert_eq!(as_agent("POST", "/flows", &bob), Ok((Some("bob (agent)".into()), Some(Role::Agent))));
-        for (method, url) in [("POST", "/deploy"), ("POST", "/flows"), ("POST", "/unit"), ("POST", "/deployments/a/request")] {
-            assert_eq!(as_agent(method, url, &cy), Err(403), "a viewer as an agent: {method} {url}");
+        assert_eq!((call(&access, "POST", "/deploy", Some(&ada)), call(&access, "POST", "/deploy", Some(&bob)), call(&access, "POST", "/deploy", Some(&cy))), (Ok(Some("ada".into())), Ok(Some("bob".into())), Err(403)));
+    }
+
+    /// `X-Holon-Role`, which once made an editor or an admin an agent, changes nothing: whoever
+    /// sends it is answered as they are, on every kind of route, and with no accounts too.
+    #[test]
+    fn a_role_header_changes_nothing() {
+        let (access, [ada, bob, cy]) = server();
+        let accounts = access.accounts().unwrap();
+        accounts.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
+        let local = accounts.new_local("bma");
+        let said = |access: &Access, method: &str, url: &str, bearer: &str, header: Option<&str>| {
+            let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {bearer}"))];
+            headers.extend(header.map(|h| ("X-Holon-Role".to_string(), h.to_string())));
+            access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.kind, c.role)).map_err(|r| r.status_code)
+        };
+        let routes = [("GET", "/flows"), ("POST", "/deploy"), ("POST", "/deployments/a/grant"), ("POST", "/deployments/a/runs/r/decide"), ("POST", "/deployments/a/secrets/k"), ("GET", "/people")];
+        for bearer in [&ada, &bob, &cy, &claude, &local] {
+            for (method, url) in routes {
+                for header in ["agent", "Agent", "admin", ""] {
+                    assert_eq!(said(&access, method, url, bearer, Some(header)), said(&access, method, url, bearer, None), "{method} {url}, X-Holon-Role: {header}");
+                }
+            }
         }
-        assert_eq!(as_agent("GET", "/flows", &cy), Ok((Some("cy".into()), Some(Role::Viewer))), "still a viewer");
+        assert_eq!(said(&access, "POST", "/deployments/a/grant", &ada, Some("agent")), Ok((Some("ada".into()), Some(Kind::Person), Some(Role::Admin))), "an admin is answered as the admin");
+        let open = Access::default();
+        for (method, url) in routes {
+            assert_eq!(said(&open, method, url, "", Some("agent")), Ok((None, None, None)), "no accounts: {method} {url}");
+        }
     }
 
     #[test]
