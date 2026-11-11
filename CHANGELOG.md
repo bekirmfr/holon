@@ -34,6 +34,11 @@
   the provider didn't answer; now it is asked once a minute at most, answered or not. A token for
   several audiences must name this client as the party it was issued to (`azp`), and one that names
   another is refused.
+- **A request body that stalls no longer holds the control plane.** A body was read for as long as
+  the client took, holding one of the 512 places the server answers at once: 512 connections
+  sending a long body slowly, or not at all, turned every other request away (503), signing in
+  included. A body must arrive within 30 seconds now, as on a flow's port; past that the request is
+  told 408 and its place goes back. (A body of 1 KiB or less never held a place.)
 - **A flow can write log lines, and the host keeps them beside its runs.** `console.log`, `info`, `debug`,
   `warn` and `error` work in a flow, with no import: the standard library's own form, which is how the
   editor's text reads. A line is no effect a run performed: `holon verify` checks a run without it, and a

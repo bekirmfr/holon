@@ -77,19 +77,58 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
     response
 }
 
+/// How long a request's body may take to arrive, all of it. Past it the client is told 408 and
+/// the request lets go of its admission (`IN_FLIGHT`, main.rs), so bodies that trickle in or stop
+/// can't hold every slot and lock everyone out, signing in included. The data plane's is its
+/// `body_timeout`, the same 30 seconds.
+pub(crate) const BODY_DEADLINE: Duration = if cfg!(test) { Duration::from_millis(600) } else { Duration::from_secs(30) };
+
+/// Every body the control plane reads, read by the deadline and the cap.
 pub(crate) fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
-    let Some(body) = request.data() else {
-        return Err(err(400, "body already consumed"));
-    };
-    let mut bytes = Vec::new();
-    // One byte past the cap is enough to tell "too large" apart from "exactly at the cap".
-    if body.take(MAX_BODY_BYTES + 1).read_to_end(&mut bytes).is_err() {
-        return Err(err(400, "failed to read request body"));
+    // Read on a thread of its own, from a copy of the request that shares its body: one that
+    // trickles or stops is left to that thread and its connection, and this request answers at
+    // the deadline. Given up on, the reader stops at its next read, so the 408 can be written
+    // (rouille holds the connection for each read).
+    let owned = request.remove_prefix("").expect("every url starts with the empty text");
+    let given_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = Arc::clone(&given_up);
+    let (sent, got) = std::sync::mpsc::sync_channel(1);
+    let reader = thread::Builder::new().name("body".into()).spawn(move || {
+        let read = owned.data().map(|body| {
+            let mut bytes = Vec::new();
+            // One byte past the cap is enough to tell "too large" apart from "exactly at the cap".
+            Until { inner: body, stop }.take(MAX_BODY_BYTES + 1).read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let _ = sent.send(read);
+    });
+    if reader.is_err() {
+        return Err(err(503, "the server can't read another request's body now: try again in a moment"));
     }
-    if bytes.len() as u64 > MAX_BODY_BYTES {
-        return Err(err(413, format!("request body exceeds {MAX_BODY_BYTES} bytes")));
+    match got.recv_timeout(BODY_DEADLINE) {
+        Ok(None) => Err(err(400, "body already consumed")),
+        Ok(Some(Ok(bytes))) if bytes.len() as u64 > MAX_BODY_BYTES => Err(err(413, format!("request body exceeds {MAX_BODY_BYTES} bytes"))),
+        Ok(Some(Ok(bytes))) => Ok(bytes),
+        Ok(Some(Err(_))) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(err(400, "failed to read request body")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            given_up.store(true, std::sync::atomic::Ordering::Release);
+            Err(err(408, format!("the request's body took more than {} seconds to arrive", BODY_DEADLINE.as_secs_f64())).with_additional_header("Connection", "close"))
+        }
     }
-    Ok(bytes)
+}
+
+/// A body read until it is given up on: then each read fails, the one under way once it returns.
+struct Until<R> {
+    inner: R,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<R: Read> Read for Until<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.inner.read(buf)
+    }
 }
 
 /// `response`, with what it did recorded in the activity log when it succeeded.

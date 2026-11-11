@@ -38,7 +38,12 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (503). The cap bounds the memory; the wait is long so a busy machine slows sign-ins rather
   than refusing them (2 s turned some away on a loaded two-core CI runner).
 - **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
-  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work.
+  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work. A body is read
+  by `BODY_DEADLINE` (30 s, as the data plane's `body_timeout`): `read_body`, the only reader
+  (a test says so), reads on a thread of its own and answers 408 at the deadline, so a body that
+  trickles or stops gives its place back. Rouille hides the socket, so the reader is left to the
+  connection and stops at its next read. tiny_http reads a body of 1 KiB or less before the
+  request is handed on, holding a thread but no place; slow headers likewise.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
   and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), an agent's or a service's tokens `ht_`
   (`credentials`, made by its owner or an admin, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),

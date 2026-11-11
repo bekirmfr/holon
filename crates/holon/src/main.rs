@@ -1023,13 +1023,7 @@ fn serve(args: Vec<String>) {
     let server = {
         let cell = Arc::clone(&state_cell);
         rouille::Server::new(&addr, move |request| {
-            let state = cell.get().expect("the server runs once its state is set");
-            // Each request has a thread of its own (rouille's): past MAX_IN_FLIGHT being answered
-            // at once, one more is told to try again rather than given work, signed in or not.
-            let Some(_admitted) = Admitted::take(&IN_FLIGHT, MAX_IN_FLIGHT) else {
-                return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
-            };
-            with_cors(&state.access, request, route(state, request))
+            admitted(cell.get().expect("the server runs once its state is set"), request, &IN_FLIGHT, MAX_IN_FLIGHT)
         })
     }
     .unwrap_or_else(|e| {
@@ -1262,6 +1256,17 @@ fn open_to_others(dir: &std::path::Path) -> Option<String> {
 /// counted.
 static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const MAX_IN_FLIGHT: usize = 512;
+
+/// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
+/// past `most` being answered at once, one more is told to try again rather than given work,
+/// signed in or not. Its body is read by a deadline (`http::BODY_DEADLINE`), so a slow one gives
+/// its place back.
+pub(crate) fn admitted(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
+    let Some(_admitted) = Admitted::take(in_flight, most) else {
+        return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
+    };
+    with_cors(&state.access, request, route(state, request))
+}
 
 /// One request counted in `IN_FLIGHT` while it is answered.
 pub(crate) struct Admitted<'a>(&'a std::sync::atomic::AtomicUsize);

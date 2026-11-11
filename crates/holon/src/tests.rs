@@ -4874,6 +4874,118 @@ fn the_gate_and_the_router_read_every_path_alike() {
     }
 }
 
+/// Every body the control plane reads goes through `read_body`, which reads it by the deadline:
+/// a handler reading one itself would hold its place for as long as the client likes. (Its own
+/// tests' servers read as they like.)
+#[test]
+fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
+    let mut read_elsewhere = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+    while let Some(dir) = dirs.pop() {
+        for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // Each test-only module left out: from its `#[cfg(test)]` to the `}` that closes it,
+            // the first at the start of a line.
+            let (mut lines, mut in_tests) = (text.lines().enumerate().peekable(), false);
+            let mut code = Vec::new();
+            while let Some((n, line)) = lines.next() {
+                let opens = line == "#[cfg(test)]" && lines.peek().is_some_and(|(_, l)| l.starts_with("mod ") || l.starts_with("pub(crate) mod "));
+                in_tests = (in_tests || opens) && line != "}";
+                if !in_tests && line != "}" {
+                    code.push((n, line));
+                }
+            }
+            for (n, line) in code.into_iter().filter(|(_, l)| l.contains(".data()")) {
+                let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
+                if !in_read_body {
+                    read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(read_elsewhere.is_empty(), "a body read but through read_body: {read_elsewhere:#?}");
+}
+
+/// A body that stops, or trickles in, holds its request's place no longer than the deadline, on
+/// every route here that reads one: past it the place is given back, and one that trickles is
+/// told 408. A whole body goes through as before.
+#[test]
+fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
+    use std::time::Instant;
+    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    let paths = ["/unit", "/registry/publish", "/admin/storage"];
+    let most = paths.len();
+    let state: &'static AppState = Box::leak(Box::new(test_state()));
+    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
+    let at = server.server_addr();
+    let (_, stop) = server.stoppable();
+    let send = |path: &str, body: &[u8], length: usize| {
+        let mut s = TcpStream::connect(at).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n").unwrap();
+        s.write_all(body).unwrap();
+        s
+    };
+    let status = |s: &mut TcpStream| {
+        let mut head = [0u8; 12];
+        s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head[9..]).into_owned()).unwrap_or_else(|e| format!("no answer: {e}"))
+    };
+    let until = |what: &str, by: Duration, done: &dyn Fn() -> bool| {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < by, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    // Bodies that stop part way: each holds its place while it waits, every place is held...
+    // (A body of 1 KiB or less tiny_http reads itself before handing the request on, holding no
+    // place: these say they are longer.)
+    let long = 100_000;
+    let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
+    until("every route reads its body", Duration::from_secs(5), &|| IN_FLIGHT.load(Acquire) == most);
+    assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
+    // ...and each gives it back by the deadline.
+    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+
+    // A body that trickles in, a byte every 100ms, is told 408 at the deadline.
+    for path in paths {
+        let mut s = send(path, b"", long);
+        let mut trickle = s.try_clone().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..99 {
+                std::thread::sleep(Duration::from_millis(100));
+                if trickle.write_all(b" ").is_err() {
+                    return;
+                }
+            }
+        });
+        let started = Instant::now();
+        assert_eq!(status(&mut s), "408", "{path}: a body that trickles is cut off");
+        let took = started.elapsed();
+        assert!(took >= BODY_DEADLINE && took < BODY_DEADLINE + Duration::from_secs(2), "{path}: told after {took:?}");
+    }
+    until("a trickled body held its place", Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+
+    // A whole body is read as before: the route answers it.
+    for path in paths {
+        let answered = status(&mut send(path, b"{}", 2));
+        assert!(!["408", "503"].contains(&answered.as_str()) && !answered.starts_with("no answer"), "{path}: a whole body answered {answered}");
+    }
+    drop(stopped);
+    let _ = stop.send(());
+}
+
 #[test]
 fn accounts_through_the_routes() {
     let mut state = test_state();
