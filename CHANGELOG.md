@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A run's writes land all or none, and a run whose state wasn't kept is told so.** A run whose
+  writes were refused partway (a value a state can't hold) kept those before it, and a state the
+  store couldn't keep (a full disk) was said only in the server's log, the run answered as done.
+  Now none of the run's state writes land when one is refused, and a run that changed its state
+  fails with "not every write landed" when the state, or the head that names it, can't be kept.
 - **In SQLite, `$2` is the second value wherever it comes in the statement.** SQLite numbers
   parameters by where each first appears, so `UPDATE t SET v = $2 WHERE id = $1` set `v` to the
   id and looked for the row by the value: the wrong row changed, or none. Now each `$n` is bound
