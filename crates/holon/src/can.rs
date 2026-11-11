@@ -293,7 +293,8 @@ fn owns(who: &Caller, action: Action, on: &Resource) -> bool {
 
 /// The host's fixed rules (the design's §8.4), past what a role holds.
 fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
-    let agent = who.role == Some(Role::Agent);
+    // An agent by its kind, whatever role it holds.
+    let agent = who.kind == Some(Kind::Agent);
     match on {
         // A person decides: not an agent, not a service, not the nameless caller of a server
         // without accounts.

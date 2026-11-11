@@ -318,8 +318,8 @@ fn every_route_lets_through_whom_its_table_says_and_refuses_the_rest_in_its_word
 /// What isn't a role's, for each kind of caller:
 /// - an agent saves over only a flow it saved, an editor over anyone's;
 /// - an agent runs an action only once the flow's grant lets agents (`AgentRuns`), and reads its
-///   log lines only once it lets them (`AgentReadsLogs`); an agent holding the viewer role reads
-///   them without (the plan's D11);
+///   log lines only once it lets them (`AgentReadsLogs`), whatever role it holds (one holding the
+///   viewer role reads no more than one holding the agent role);
 /// - an agent never approves what a flow may do: a deploy of its that needs approval is a
 ///   proposal, which a person's deploy of that version approves; it is refused where a person
 ///   turned proposing off, and never starts a stopped deployment, which a person does;
@@ -353,7 +353,7 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
                 Role::Agent if !granted => assert!(refused(ran.clone(), "agents may not run \"d\"'s action \"echo\""), "{asked}: {ran:?}"),
                 _ => assert_eq!(ran.0, 200, "{asked}: {ran:?}"),
             }
-            if c.role == Some(Role::Agent) && !granted {
+            if c.kind == Some(Kind::Agent) && !granted {
                 assert!(refused(read.clone(), "agents may not read \"d\"'s log lines"), "{asked}: {read:?}");
             } else {
                 assert_eq!(read.0, 200, "{asked}: {read:?}");

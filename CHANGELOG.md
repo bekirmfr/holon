@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **An agent reads a flow's log lines only where the flow lets agents, whatever role it holds.**
+  One holding the viewer role read them without `AgentReadsLogs`, as a person does; it is now
+  refused until a person approves it, as one holding the agent role is. What the flow lets agents
+  do is decided by the principal's kind, as the manual says, not by its role.
 - **Who may do what is decided in one place.** Every route the control plane answers is a row of
   one table (`crates/holon/src/can.rs`), saying what it asks: nothing, that its caller is signed
   in, or an action on what its path names, as the catalogue of the access design writes it
