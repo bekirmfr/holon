@@ -95,10 +95,13 @@ heads, named by their hash (`batch`) so a retry is harmless. `kind` is `run`, `e
 or `trim`, sent when a cut-back drops runs (its `seq` the oldest kept, its `head` the hash of the
 last dropped): runs before it are gone by the host's choice. Only heads leave the server. Before a
 batch goes, the server syncs its logs (`Exporter::before_send`, `sync_logs`), so a witness never
-holds a head the disk lacks. Until a 2xx, the heads wait in `<deployments>.heads/pending.jsonl`;
-the witness's answer is kept as a line of `receipts.jsonl`; a failing witness is tried again after
-a growing pause, up to `MAX_BACKOFF` (five minutes). `HOLON_EXPORT_HEADS_TOKEN` is sent as a bearer
-token.
+holds a head the disk lacks. Until a 2xx, the heads wait in `<deployments>.heads/pending.jsonl`,
+synced with the logs every second (`heads::sync`); the witness's answer is kept as a line of
+`receipts.jsonl`, synced; a failing witness is tried again after a growing pause, up to
+`MAX_BACKOFF` (five minutes). Past `MAX_PENDING` (10,000) heads waiting, each deployment's newest
+of each kind stands for the ones before it (`Exporter::compact`): a head pins every line before it
+in its chain, so the witness loses steps, not runs. The batch being sent is left as it is, as it
+is taken off the front once taken. `HOLON_EXPORT_HEADS_TOKEN` is sent as a bearer token.
 
 ### Exports
 
@@ -186,9 +189,9 @@ deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it
   leaves until the syncer cuts it.
 - **A changed log is detected, not repaired.** A break is reported at the entry after the change;
   without a witness, a log rewritten and re-chained whole is not detected by the log itself.
-- **The witness queue's `pending.jsonl` is not synced** (Q7); the export costs 4–13% of
-  throughput ([Performance](../themes/performance.md#limits)). A witness's receipt is whatever
-  JSON it answers: the sample `witness` keeps batches but signs nothing.
+- **The witness export costs 4–13% of throughput** ([Performance](../themes/performance.md#limits)).
+  A witness's receipt is whatever JSON it answers: the sample `witness` keeps batches but signs
+  nothing, and nothing checks a receipt.
 - **A page of old runs is parsed from the file each time**: a page of 200 runs past the 128 as
   written took 492–931 ms before sealing and 528–792 ms after, on the soaks' `notes-api` (storage
   L4 step 9). A log in memory only (`--deployments :memory:`) keeps every run.

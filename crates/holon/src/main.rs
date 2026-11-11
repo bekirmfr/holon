@@ -1069,9 +1069,10 @@ fn serve(args: Vec<String>) {
     dequeue::spawn(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     {
         // The run logs and event logs are synced to disk every second, so a power loss loses at most
-        // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes
-        // to a witness, so a witness never holds a head whose line the disk lacks. A log a run found
-        // past what it keeps is cut back here too, so no run waits for it.
+        // the last second of them (recorder.rs's `sync_logs`), the witness's queue with them; and
+        // before each batch of heads goes to a witness, so a witness never holds a head whose line
+        // the disk lacks. A log a run found past what it keeps is cut back here too, so no run
+        // waits for it.
         let syncing = Arc::clone(&deployments);
         let kept_at = deployments_at.clone();
         std::thread::spawn(move || {
@@ -1087,7 +1088,7 @@ fn serve(args: Vec<String>) {
                 if counted {
                     persist_deployments(&kept_at, &syncing);
                 }
-                match recorder::sync_logs(&syncing) {
+                match recorder::sync_logs(&syncing).and_then(|()| heads::sync()) {
                     Ok(()) if failing => {
                         println!("holon: the run logs are synced to disk again");
                         failing = false;

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The witness's queue is synced, and has a bound.** The heads waiting for a witness were
+  appended to `pending.jsonl` and never synced, and while the witness was down the queue grew by
+  a head a run, in memory and on disk, without end. Now the queue file is synced with the logs,
+  every second, and each receipt as it is kept; and past 10,000 heads waiting, each deployment's
+  newest head of each kind stands for the ones before it, since it pins every run before it: the
+  witness, back, is given fewer heads and loses no run. The batch being sent as the queue is cut
+  is left as it is.
 - **What the server writes by renaming it into place stays there after a power loss.** A state's
   head, a value in the store, the deployments file, a file a run wrote into a bound folder: each
   was synced and renamed in, but the folder holding its name wasn't synced, so a power loss could
