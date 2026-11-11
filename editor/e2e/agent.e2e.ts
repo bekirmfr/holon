@@ -1,23 +1,37 @@
 // The agent surface (docs/L4s/agent-surface-L4.md), through the real command, server and editor:
-// an agent writes a flow and deploys it with `holon mcp`, which the server holds to proposing (the
-// agent role, access.rs) though it signs in as the person; it waits for them, and they deploy it
-// from the flows page, approving what it may do; after that the agent's next version deploys
-// at once, and the agent calls it and reads the run back as its own text. And the proposal sample
-// (proposals.rs): proposed with a why and a note, declined in Approvals with a reason the agent
-// reads back, proposed again and approved from its review; then agents' proposals turned off.
+// an agent writes a flow and deploys it with `holon mcp`, which signs in as the OS user's agent
+// (made for them through the run file the first time, mcphosts.rs), so the server holds it to
+// proposing (the agent role, access.rs); it waits for a person, and they deploy it from the flows
+// page, approving what it may do; after that the agent's next version deploys at once, and the
+// agent calls it and reads the run back as its own text. And the proposal sample (proposals.rs):
+// proposed with a why and a note, declined in Approvals with a reason the agent reads back,
+// proposed again and approved from its review; then agents' proposals turned off.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { APIRequestContext } from "@playwright/test";
 import { expect, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 import { flowRow, gotoPage } from "./helpers";
 
-/** `holon mcp` against the test server, as an agent's host runs it: one JSON-RPC line each way. */
+/** The agent `holon mcp` made for the OS user here: the one with the tokens it made (mcphosts.rs). */
+async function mcpAgent(request: APIRequestContext, adminToken: string) {
+  const people = (await (await request.get(`${SERVER}/people`, { headers: { Authorization: `Bearer ${adminToken}` } })).json()) as { name: string; kind: string; tokens?: { label: string }[] }[];
+  const made = people.filter((p) => p.kind === "agent" && (p.tokens ?? []).some((t) => t.label.startsWith("holon mcp on ")));
+  expect(made.map((p) => p.name)).toHaveLength(1);
+  return made[0].name;
+}
+
+/** `holon mcp` against the test server, as an agent's host runs it: one JSON-RPC line each way.
+ *  Its home is a new folder, so it makes its agent's token there through the run file, as it
+ *  does the first time, and never keeps one in the user's own. */
 function mcp() {
   const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
-  const child = spawn(holon, ["mcp", "--server", String(PORTS.server)], { env: { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" } });
+  const home = mkdtempSync(join(tmpdir(), "holon-e2e-mcp-"));
+  const child = spawn(holon, ["mcp", "--server", String(PORTS.server)], { env: { ...process.env, HOLON_HOME: home, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" } });
   const waiting = new Map<number, (v: { result?: { content: { text: string }[]; isError: boolean }; error?: unknown }) => void>();
   createInterface({ input: child.stdout }).on("line", (line) => {
     const message = JSON.parse(line);
@@ -38,7 +52,7 @@ function mcp() {
   return { rpc, tool, close: () => child.kill() };
 }
 
-test("an agent proposes a flow through holon mcp, a person approves it in the editor, and the agent runs and explains it", async ({ page }) => {
+test("an agent proposes a flow through holon mcp, a person approves it in the editor, and the agent runs and explains it", async ({ page, request, adminToken }) => {
   const agent = mcp();
   try {
     const init = await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
@@ -56,11 +70,11 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     expect(proposed.text).toContain("Not deployed yet");
     expect(proposed.text).toContain("receive requests");
 
-    // The person: the flows page lists it, saved by the agent under their sign-in; they open it and deploy it, approving.
+    // The person: the flows page lists it, saved by the agent under its own name; they open it and deploy it, approving.
     await page.goto("/");
     await gotoPage(page, "flows");
     const row = flowRow(page, name);
-    await expect(row).toContainText(/by local:.+ \(agent\)/);
+    await expect(row).toContainText(`by ${await mcpAgent(request, adminToken)}`);
     await row.getByRole("button", { name: "open", exact: true }).click();
     await expect(page.locator(".hl-tab--active")).toContainText(name);
     await page.locator(".hl-canvas").getByRole("button", { name: /^deploy/ }).click();
@@ -123,7 +137,7 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     const bottom = page.getByRole("region", { name: "history" });
     await bottom.locator(".hl-history__row").filter({ hasText: `asks to put back the state run ${first} left` }).first().click();
     await expect(bottom.locator(".hl-history__details")).toContainText(`run ${first}'s state, for a person to restore`);
-    await expect(bottom.locator(".hl-history__details")).toContainText("(agent)");
+    await expect(bottom.locator(".hl-history__details")).toContainText(await mcpAgent(request, adminToken));
     const goBack = bottom.getByRole("region", { name: /^go back to / });
     await expect(goBack.getByRole("radio", { name: "Code only" })).toBeDisabled();
     await goBack.getByRole("radio", { name: "State only" }).click();

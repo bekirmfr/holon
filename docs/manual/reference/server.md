@@ -15,7 +15,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | `data/` | the server's state: **the one folder to back up** |
 | `keys/` | the secrets key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
-| `tokens.json` | agents' tokens `holon mcp setup` keeps for servers elsewhere, readable only by you |
+| `tokens.json` | the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
 
 In the data folder (`--data`, `HOLON_DATA`):
@@ -186,8 +186,9 @@ to the current ceilings whenever the server loads.
 
 Everyone signs in; there is no trust for requests from this machine. A new server prints a
 setup code (`XXXX-XXXX`, or `HOLON_SETUP_CODE`); whoever enters it in the editor is the first
-admin. Until then the server answers everything but setting up with 403; five wrong codes in a
-row refuse setting up for a minute, so the code can't be guessed.
+admin. Until then the server answers everything but setting up with 403, but for an agent or a
+service made already (below); five wrong codes in a row refuse setting up for a minute, so the code
+can't be guessed.
 
 | Role | May |
 |---|---|
@@ -215,11 +216,11 @@ row refuse setting up for a minute, so the code can't be guessed.
   another owner. An accounts file from before principals keeps its people; its API tokens, which
   had no owner, are not read, and a person with role agent is dropped (the server says so when it
   starts): add each as an agent or a service, and make it a token.
-- Commands on this machine (`holon export`, `holon folder`, `holon mcp`) sign in through the run
-  file in `~/.holon/run/`, as `local:<your user>`, while that server runs.
-- A request with `X-Holon-Role: agent` from an editor or an admin is treated as the agent role:
-  `holon mcp` sends it, so an agent acting through your sign-in still can't approve. It never
-  raises a role: a viewer who sends it stays a viewer, since an agent may do more than read.
+- Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
+  `~/.holon/run/`, as `local:<your user>`, while that server runs.
+- `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
+  yours the first time, `<your user>-agent`, owned by you, even before anyone has set the server up
+  (it is set up by the first person, as ever); its token is kept in `tokens.json`.
 
 ### Signing in through an identity provider
 

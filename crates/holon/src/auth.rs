@@ -162,7 +162,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         }
         ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
             Some(p) => Response::json(&serde_json::json!({ "name": p.name, "kind": p.kind, "role": p.role, "email": p.email, "owner": p.owner, "display": p.display })),
-            // The OS user, through the run file (`local:<user>`), or a person acting as an agent.
+            // The OS user, through the run file (`local:<user>`).
             None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.role })),
         },
         ("POST", "/auth/password") => {

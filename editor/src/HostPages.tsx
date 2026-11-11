@@ -569,8 +569,8 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         </button>
       </form>
       <div style={{ ...quiet, margin: "4px 0 6px" }}>
-        Connecting an agent: on this server&apos;s machine, <code>holon mcp</code> signs in as you and asks as the agent role; from another, give it a token of an
-        agent added here.
+        Connecting an agent: <code>holon mcp</code> signs in as an agent, never as you. On this server&apos;s machine, it is yours, made for you the first time
+        (<i>you</i>-agent, owned by you); from another, give it a token of an agent added here.
       </div>
       <div style={{ ...row, background: "transparent" }}>
         <input aria-label="the holon mcp line" readOnly value={`holon mcp setup claude-code --server ${location.origin}`} style={{ ...input, flex: 1, fontFamily: "ui-monospace, Menlo, Consolas, monospace" }} onFocus={(e) => e.target.select()} />

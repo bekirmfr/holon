@@ -150,7 +150,7 @@ nodes that need it have no value. A trigger can't be optional.
 
 The lines a flow writes with `console.log` are kept beside its runs ([`holon logs`](cli.md#holon-logs)). A person
 who may read the deployment reads them, in the console, in `holon editor` and with `holon logs`. An agent,
-`holon mcp` and anything that asks as an agent, reads them only where the deployment's grant lets agents:
+`holon mcp` and anything else that signs in as an agent, reads them only where the deployment's grant lets agents:
 `AgentReadsLogs`, which the deploy settings' **agents may read its logs** asks for and a person approves at the
 next deploy. Until then the route and `holon mcp`'s `logs` tool answer that agents may not read them, and revoking it
 (`holon grant <slug> --revoke AgentReadsLogs`, or on the flow's Settings) refuses them again. The flow runs either way.

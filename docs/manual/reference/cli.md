@@ -439,7 +439,7 @@ reason optional, or `--decline`, which needs one. It says what the decision did:
 more people, approved by whom, or declined; the run goes on with the decision once it is made.
 Each person counts once; one decline ends it. Only a person decides: an editor or an admin
 signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
-`holon mcp`, which asks as an agent.
+`holon mcp`, which signs in as an agent.
 
 ### `holon wait`
 
@@ -873,24 +873,27 @@ answer. Removing it stops its listener. Needs an admin; each takes `--server POR
 
 ```
 holon mcp [--server PORT|URL]
-holon mcp setup [HOST…|--all] [--server PORT|URL] [--project DIR] [--name NAME] [--print] [--remove]
+holon mcp setup [HOST…|--all] [--server PORT|URL] [--agent NAME] [--project DIR] [--name NAME] [--print] [--remove]
 holon mcp hosts [add NAME --config PATH --like HOST | remove NAME]
 ```
 
 `holon mcp` is an MCP server on stdin and stdout, for an agent's host to start. It reaches the
-server you run on this machine (or `--server`, or `HOLON_SERVER`), and always asks as the agent
-role. `setup` adds it to a host's settings; `hosts` lists the hosts Holon knows and keeps your
-own. See [Working with agents](../guides/agents.md).
+server you run on this machine (or `--server`, or `HOLON_SERVER`), and signs in as an agent,
+never as you: on a server you run, as yours (`<your user>-agent`, owned by you, made through the
+run file the first time); elsewhere, with the agent's token `setup` kept (or `HOLON_TOKEN`). A
+person's or a service's token is refused. `setup` adds it to a host's settings; `hosts` lists the
+hosts Holon knows and keeps your own. See [Working with agents](../guides/agents.md).
 
 | `setup` option | |
 |---|---|
 | `HOST…` | the hosts to set up (`holon mcp hosts` lists them) |
 | `--all` | every host found on this machine |
-| `--server PORT\|URL` | a server elsewhere: asks for an agent's token, checks it, and keeps it in `~/.holon/tokens.json` |
+| `--server PORT\|URL` | a server you don't run: asks for an agent's token, checks it is one, and keeps it in `~/.holon/tokens.json` |
+| `--agent NAME` | on a server you run, sign in as the agent `NAME` (made if it isn't there) rather than `<your user>-agent` |
 | `--project DIR` | the hosts' project files in `DIR` |
 | `--name NAME` | the entry's name (default `holon`), for a second server |
 | `--print` | show the entry and where it goes; write nothing |
-| `--remove` | take the entry out (with `--server`, and forget its token) |
+| `--remove` | take the entry out, and forget the token `holon mcp` signs in with there |
 | `--config PATH --like HOST [--key KEY]` | a host file Holon doesn't know, written as `HOST`'s is |
 
 ## `holon lsp`

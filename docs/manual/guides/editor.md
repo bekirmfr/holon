@@ -69,8 +69,8 @@ A flow tab shows the flow's name, **•** when it has unsaved changes, and wheth
 deployed yet; live, paused or stopped; runs waiting), what it may do, its runs and when it last
 changed, with **All**, **Live**, **Waiting** and **Paused** to narrow it and a search. A deployed
 flow opens its own page ([A flow's page](#a-flows-page)); a draft opens in the editor. A saved
-flow's row also has publish, download (`.holon.ts`) and delete. A flow an agent saved says so:
-"saved … by *name* (agent)". **Import** opens a flow's text, `NAME.holon.ts`, as a new, unsaved
+flow's row also has publish, download (`.holon.ts`) and delete. A flow an agent saved says so, by
+the agent's name: "saved … by *bma-agent*". **Import** opens a flow's text, `NAME.holon.ts`, as a new, unsaved
 tab.
 
 The **Library** has three tabs:

@@ -100,6 +100,11 @@ fn may_own(book: &Book, owner: &str, local: Option<&str>) -> Result<(), String> 
     }
 }
 
+/// Whether `book` has no person: a server not set up yet.
+fn no_person(book: &Book) -> bool {
+    !book.users.iter().any(|u| u.kind == Kind::Person)
+}
+
 /// A person, an agent or a service.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Principal {
@@ -485,7 +490,7 @@ impl Accounts {
     }
 
     fn with(path: Option<PathBuf>, book: Book) -> Accounts {
-        let code = book.users.is_empty().then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
+        let code = no_person(&book).then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
         Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
@@ -511,8 +516,10 @@ impl Accounts {
         hold(&self.setup_code).clone()
     }
 
+    /// Whether the first admin is still to be set up: there is no person yet, whatever agents or
+    /// services the run file's admin has made.
     pub(crate) fn needs_setup(&self) -> bool {
-        hold(&self.book).users.is_empty()
+        no_person(&hold(&self.book))
     }
 
     fn start_session(book: &mut Book, user: &str) -> String {
@@ -543,8 +550,11 @@ impl Accounts {
         check_password(password)?;
         let hash = hash_password(password)?;
         let out = self.change(|book| {
-            if !book.users.is_empty() {
+            if !no_person(book) {
                 return Err("this server is set up already".to_string());
+            }
+            if book.users.iter().any(|u| u.name == name) {
+                return Err(format!("there is a principal {name:?} already: pick another name"));
             }
             let account = Principal { password: Some(hash), ..Principal::new(name, Kind::Person, Role::Admin, None) };
             book.users.push(account.clone());
@@ -804,12 +814,17 @@ impl Accounts {
         })
     }
 
-    /// Whether, after `f`, an admin who can sign in is left; else the change is refused.
+    /// Whether, after `f`, an admin who can sign in is left, if there was one; else the change is
+    /// refused.
     fn keeping_an_admin(book: &mut Book, f: impl FnOnce(&mut Book) -> Result<(), String>) -> Result<(), String> {
         let before = std::mem::take(&mut book.users);
         book.users = before.clone();
+        let an_admin = |users: &[Principal]| users.iter().any(|u| u.role == Role::Admin && !u.disabled);
+        // Before the first person is set up there is none to keep (the run file's admin may
+        // change the agents it made).
+        let had = an_admin(&before);
         f(book)?;
-        if !book.users.iter().any(|u| u.role == Role::Admin && !u.disabled) {
+        if had && !an_admin(&book.users) {
             book.users = before;
             return Err("that would leave no admin: make someone else an admin first".into());
         }
@@ -997,6 +1012,21 @@ mod tests {
         assert!(!a.needs_setup());
         assert_eq!(a.setup_code(), None);
         assert!(a.setup(&code, "eve", PW).is_err(), "only once");
+    }
+
+    /// An agent the run file's admin makes before anyone sets the server up (`holon mcp` makes
+    /// the OS user's) leaves it to be set up: by a person, under a name of their own.
+    #[test]
+    fn an_agent_made_first_leaves_the_server_to_be_set_up() {
+        let a = Accounts::memory();
+        a.new_local("bma");
+        a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").unwrap();
+        assert!(a.needs_setup());
+        let code = a.setup_code().unwrap();
+        assert!(a.setup(&code, "bma-agent", PW).unwrap_err().contains("there is a principal"));
+        a.setup(&code, "bma", PW).unwrap();
+        assert!(!a.needs_setup());
+        assert_eq!(a.principal("bma-agent").and_then(|p| p.owner).as_deref(), Some("bma"), "owned by the person the OS user set up as");
     }
 
     /// Wrong passwords from one address lock the name for that address only: its owner signs in
