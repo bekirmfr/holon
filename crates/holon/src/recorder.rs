@@ -24,7 +24,7 @@
 //! check only once one with a `prev` has been seen.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
@@ -1035,6 +1035,9 @@ pub struct LogCell {
     synced: Mutex<u64>,
     /// How many times its file was synced, since the server started.
     syncs: AtomicU64,
+    /// Whether a recent entry's line couldn't be written (`Log::unkept` holds any), as of the
+    /// last use of the log: read without its lock.
+    lost: AtomicBool,
 }
 
 impl LogCell {
@@ -1042,20 +1045,24 @@ impl LogCell {
         log.defer_cuts = true;
         let next_seq = AtomicU64::new(log.next_seq);
         let synced = Mutex::new(log.next_seq);
-        LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0) }
+        LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0), lost: AtomicBool::new(false) }
     }
 
     /// Return once entry `seq` is on disk, with every entry before it: at once if a sync since it
     /// was written covered it, or after one sync, which covers every entry written so far, its
     /// own and others' (a strict run, before its answer). An error if its line was never written,
     /// or the sync failed.
+    ///
+    /// Whether its line was written is asked whichever sync covered its seq, its own or another
+    /// run's before it: a sync puts what was written on disk, and says nothing of an entry that
+    /// wasn't. With no line lost lately, which is the usual case, the log's lock isn't taken to
+    /// ask (`lost`).
     pub fn sync_through(&self, seq: u64) -> Result<(), String> {
         let mut synced = self.synced.lock().unwrap();
-        if *synced > seq {
-            return Ok(());
+        if *synced <= seq {
+            self.sync_locked(&mut synced)?;
         }
-        self.sync_locked(&mut synced)?;
-        if self.with(|log| log.unkept.contains(&seq)) {
+        if self.lost.load(Ordering::Acquire) && self.with(|log| log.unkept.contains(&seq)) {
             return Err(format!("its record (entry {seq}) couldn't be written to the log's file"));
         }
         Ok(())
@@ -1099,6 +1106,7 @@ impl LogCell {
         let mut log = self.log.lock().unwrap();
         let out = f(&mut log);
         self.next_seq.store(log.next_seq, Ordering::Release);
+        self.lost.store(!log.unkept.is_empty(), Ordering::Release);
         let gone = std::mem::take(&mut log.gone);
         drop(log);
         // The entries it let go of, freed with the lock released.
@@ -2898,6 +2906,20 @@ mod tests {
         let said = cell.sync_through(lost).unwrap_err();
         assert!(said.contains(&format!("entry {lost}")), "{said}");
         assert_eq!(cell.sync_through(kept), Ok(()), "the next one, written, is kept");
+
+        // The same, the run after it asking first: its sync covers every seq so far, the lost
+        // one's among them, and the run whose line was lost is still not told it is on disk
+        // (it once was, when another run's sync had passed its seq: it answered with no record).
+        cell.with(|log| log.handle = None);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let lost = cell.with(|log| log.push(entry()));
+        std::fs::remove_dir(&file).unwrap();
+        let kept = cell.with(|log| log.push(entry()));
+        assert_eq!(cell.sync_through(kept), Ok(()));
+        assert!(cell.synced() > lost, "the sync covered the lost entry's seq");
+        let said = cell.sync_through(lost).unwrap_err();
+        assert!(said.contains(&format!("entry {lost}")), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

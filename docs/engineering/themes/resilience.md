@@ -20,7 +20,10 @@ the guarantee won ([Standards](../README.md#standards-these-docs-record)).
 A `strict` run (the default) is answered once its log entry is synced: `log_run` calls
 `LogCell::sync_through(seq)` (`firing.rs`, `recorder.rs`), and every run waiting at once shares
 one sync. A line that couldn't be written, or a sync that failed, is answered with a 500 ("the
-request ran, but …"), never with a success.
+request ran, but …"), never with a success. Whether its line was written is asked whichever sync
+covered it, its own or another run's: a sync says what was written is on disk, nothing of an
+entry that wasn't (a run whose line was lost was once answered 200 when the run after it had
+synced first; `lost`, read without the log's lock, keeps the usual case as cheap as it was).
 
 - **Limits.** A `lazy` run is on disk within `SYNC_EVERY` (one second): a power loss can lose the
   last second of them. Requests no route took are recorded lazily (Q12). A run nobody waits for
