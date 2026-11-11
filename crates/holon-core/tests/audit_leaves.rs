@@ -212,6 +212,68 @@ fn every_pure_leaf_over_hostile_values_answers_finitely_and_the_same_twice() {
     assert!(found.is_empty(), "{} leaves misbehaved:\n{}", found.len(), found.join("\n"));
 }
 
+/// A number that isn't finite reaches a leaf from a module's answer (a `js` function's `1 / 0`),
+/// never from a leaf's own. Over NaN and the infinities, alone and inside a list and a record,
+/// beside ordinary values, no pure leaf panics. What a leaf answers isn't held to the rest of the
+/// sweep here: NaN equals nothing, itself included, and a leaf that hands its input on hands that
+/// on. The panic hook is left alone, so a panic says where.
+#[test]
+fn no_pure_leaf_panics_on_a_number_that_isnt_finite() {
+    let found = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(sweep_not_finite).unwrap().join().unwrap();
+    assert!(found.is_empty(), "{} leaves panicked:\n{}", found.len(), found.join("\n"));
+}
+
+fn sweep_not_finite() -> Vec<String> {
+    let mut r = MapResolver::new();
+    let fns = functions(&mut r);
+    let odd = [
+        num(f64::NAN),
+        num(f64::INFINITY),
+        num(f64::NEG_INFINITY),
+        Value::List(vec![num(1.0), num(f64::NAN), num(f64::INFINITY)]),
+        rec(&[("a", num(f64::NEG_INFINITY)), ("b", num(f64::NAN))]),
+    ];
+    let plain = [num(0.0), num(2.0), num(-7.5), num(36.0), txt(""), txt("a,b"), Value::Boolean(true), Value::List(vec![num(3.0), txt("b")]), rec(&[("a", num(1.0))])];
+    let pool: Vec<Value> = odd.iter().chain(&plain).cloned().collect();
+    let mut rng = Rng(0x6c62_272e_07bb_0142);
+    let mut found = Vec::new();
+    for (label, unit) in variants(&fns) {
+        // Every set holds one of the odd values at least.
+        let sets: Vec<Vec<Option<Value>>> = match unit.inputs.len() {
+            0 => continue,
+            1 => odd.iter().map(|v| vec![Some(v.clone())]).collect(),
+            2 => (0..pool.len())
+                .flat_map(|i| (0..pool.len()).map(move |j| (i, j)))
+                .filter(|(i, j)| *i < odd.len() || *j < odd.len())
+                .map(|(i, j)| vec![Some(pool[i].clone()), Some(pool[j].clone())])
+                .collect(),
+            n => (0..300)
+                .map(|_| {
+                    let mut set: Vec<Option<Value>> = (0..n).map(|_| Some(pool[rng.below(pool.len())].clone())).collect();
+                    set[rng.below(n)] = Some(odd[rng.below(odd.len())].clone());
+                    set
+                })
+                .collect(),
+        };
+        let mut panicked = (0usize, String::new());
+        for inputs in sets {
+            if std::env::var_os("HOLON_AUDIT_TRACE").is_some() {
+                eprintln!("{label} <- {}", inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", "));
+            }
+            if catch_unwind(AssertUnwindSafe(|| eval(&unit, &inputs, &r).into_vec())).is_err() {
+                if panicked.0 == 0 {
+                    panicked.1 = inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", ");
+                }
+                panicked.0 += 1;
+            }
+        }
+        if panicked.0 > 0 {
+            found.push(format!("{label}: panics on {} input sets, e.g. ({})", panicked.0, panicked.1));
+        }
+    }
+    found
+}
+
 fn sweep() -> Vec<String> {
     let mut r = MapResolver::new();
     let fns = functions(&mut r);

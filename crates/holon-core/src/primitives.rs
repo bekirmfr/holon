@@ -2103,13 +2103,17 @@ fn parse_bool(s: &str) -> Option<bool> {
         _ => None,
     }
 }
-/// A finite number as JavaScript writes it (ECMA-262 `Number::toString`): its shortest digits
+/// A number as JavaScript writes it (ECMA-262 `Number::toString`): its shortest digits
 /// that read back as it, in full from 1e-6 up to 1e21 and in exponent form outside
 /// (`1e+21`, `1.5e-7`). `-0` is `0`: the two are equal, and the canonical value encoding folds
-/// them.
+/// them. No leaf answers a number that isn't finite, but a module may (a `js` function's
+/// `1 / 0`), and one is written as JavaScript writes it too: `NaN`, `Infinity`, `-Infinity`.
 pub(crate) fn number_text(n: f64) -> String {
     if n == 0.0 {
         return "0".to_string();
+    }
+    if !n.is_finite() {
+        return if n.is_nan() { "NaN" } else if n > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
     }
     // Rust's `{:e}` writes the same shortest digits, as `d.ddde<exp>`.
     let e = format!("{:e}", n.abs());
@@ -2991,6 +2995,19 @@ mod tests {
             assert_eq!(number_text(n), js, "{n:e}");
             assert_eq!(compute("as_text", &[&num(n)], &[]), Some(txt(js)), "{n:e}");
             assert_eq!(crate::json::stringify(&list(vec![num(n)])), Some(format!("[{js}]")), "{n:e}");
+        }
+    }
+
+    /// A number that isn't finite comes only from a module (a `js` function's `1 / 0`), and is
+    /// written as JavaScript writes it, beside a text too: once a panic, on the run's thread.
+    #[test]
+    fn a_number_that_isnt_finite_is_written_as_javascript_writes_it() {
+        for (n, js) in [(f64::NAN, "NaN"), (f64::INFINITY, "Infinity"), (f64::NEG_INFINITY, "-Infinity")] {
+            assert_eq!(number_text(n), js);
+            assert_eq!(crate::texts::plus(&[&txt("ratio: "), &num(n)]), Some(txt(&format!("ratio: {js}"))));
+            // JSON has no form for one, and a sum that isn't finite is no number.
+            assert_eq!(crate::json::stringify(&num(n)), None);
+            assert_eq!(crate::texts::plus(&[&num(n), &num(1.0)]), None);
         }
     }
 

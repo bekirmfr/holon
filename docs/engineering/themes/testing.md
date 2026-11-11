@@ -188,6 +188,11 @@ host's size (2 MiB), since an overflowed stack aborts every deployment on the se
   among them: about 480 variants, 222,000 evaluations, none panicking, answering a number that
   isn't finite or a value nested past the bound, answering differently twice, or taking 2 s. It
   prints the slowest; `HOLON_AUDIT_TRACE=1` names each evaluation, for when one overflows.
+- `no_pure_leaf_panics_on_a_number_that_isnt_finite` (the same file): the same variants over NaN
+  and the infinities, alone and inside a list and a record. No leaf answers such a number, but a
+  module may (a `js` function's `1 / 0`), and the pool above holds none. It found a number written
+  beside a text panicking (`number_text`), and `number_format` in a radix asking for 64 GiB, which
+  aborts the server where a panic is answered 500.
 - How deep a value nests (256, `MAX_VALUE_DEPTH`): `a_leaf_puts_nothing_past_the_depth_a_value_may_nest`
   (each leaf that puts a value down, at the bound and one short of it, lent and given),
   `no_leaf_builds_a_value_nested_past_the_bound` (every leaf, a value at the bound or one short of

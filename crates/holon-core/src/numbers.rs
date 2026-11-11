@@ -486,7 +486,12 @@ fn radix_integer(digits: &str, radix: u32) -> f64 {
 /// `x` written as text, by `style`: `string` (`toString`, in radix `digits` when given), `fixed`
 /// (`toFixed`), `precision` (`toPrecision`) or `exponential` (`toExponential`). `digits` is read as
 /// JavaScript reads it (truncated); outside its range it gives nothing, where JavaScript throws.
+/// Nothing for an `x` that isn't finite either, asked first: the forms below take a number's
+/// digits, and it has none.
 pub(crate) fn number_format(style: &str, x: f64, digits: Option<&Value>) -> Option<Value> {
+    if !x.is_finite() {
+        return None;
+    }
     let d = match digits {
         None => None,
         Some(Value::Number(d)) => Some(d.trunc()),
@@ -506,7 +511,7 @@ pub(crate) fn number_format(style: &str, x: f64, digits: Option<&Value>) -> Opti
         ("exponential", Some(_)) => exponential(x, Some(within(0.0, 100.0)?)),
         _ => return None,
     };
-    x.is_finite().then_some(Value::Text(text))
+    Some(Value::Text(text))
 }
 
 /// |x|'s exact decimal digits, without trailing zeros, and the exponent of the first:
@@ -984,5 +989,12 @@ mod tests {
         assert_eq!(number_format("money", 1.0, None), None);
         // A digits value is truncated, as JavaScript reads it.
         assert_eq!(f("fixed", 1.25, Some(1.9)), "1.3");
+        // A number that isn't finite (a module's answer) has no digits to write: nothing, in
+        // every style, asked before any form is tried. In radix 2 it once asked for 64 GiB.
+        for x in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (style, d) in [("string", None), ("string", Some(2.0)), ("string", Some(10.0)), ("fixed", Some(2.0)), ("precision", Some(3.0)), ("exponential", None)] {
+                assert_eq!(number_format(style, x, d.map(num).as_ref()), None, "{style} of {x}");
+            }
+        }
     }
 }
