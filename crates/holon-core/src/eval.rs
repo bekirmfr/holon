@@ -3497,23 +3497,6 @@ mod tests {
     }
 
     #[test]
-    fn eval_composite_add() {
-        let mut r = MapResolver::new();
-        let c = add2(&mut r);
-        assert_eq!(eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(), vec![Some(num(7.0))]);
-    }
-
-    #[test]
-    fn promoted_input_routes_straight_to_output() {
-        // A composite whose output *is* its input (an identity passthrough): no
-        // children, a single BOUNDARY→BOUNDARY edge. Valid per validate; eval must
-        // return the input rather than index the scratch by BOUNDARY and panic.
-        let r = MapResolver::new();
-        let c = composite(vec![nport("x")], Type::Number, vec![], vec![edge(BOUNDARY, 0, BOUNDARY, 0)]);
-        assert_eq!(eval(&c, &[Some(num(42.0))], &r).into_vec(), vec![Some(num(42.0))]);
-    }
-
-    #[test]
     fn eval_composite_sum() {
         // The v3 seed (minus Map): list(a,b,c) → sum → 15.
         let mut r = MapResolver::new();
@@ -3535,20 +3518,6 @@ mod tests {
             eval(&c, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
             vec![Some(num(15.0))]
         );
-    }
-
-    #[test]
-    fn eval_nested_composite() {
-        let mut r = MapResolver::new();
-        let inner = add2(&mut r);
-        let hinner = r.insert(inner).unwrap();
-        let outer = composite(
-            vec![nport("x"), nport("y")],
-            Type::Number,
-            vec![hinner],
-            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        assert_eq!(eval(&outer, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(15.0))]);
     }
 
     #[test]
@@ -3613,20 +3582,6 @@ mod tests {
         assert_eq!(out, vec![Some(want)]);
     }
 
-    #[test]
-    fn none_propagates() {
-        // subtract is binary; one operand absent ⇒ compute None ⇒ output None.
-        let mut r = MapResolver::new();
-        let hsub = r.insert(prim("subtract", 2, Type::Number)).unwrap();
-        let c = composite(
-            vec![nport("a"), nport("b")],
-            Type::Number,
-            vec![hsub],
-            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        assert_eq!(eval(&c, &[Some(num(3.0)), None], &r).into_vec(), vec![None]);
-    }
-
     // hex-encode a hash for a `map` fn param (the inverse of hash::parse_hash).
     fn hex(h: &Hash) -> String {
         h.iter().map(|b| format!("{:02x}", b)).collect()
@@ -3636,24 +3591,6 @@ mod tests {
     }
     fn list(xs: Vec<Value>) -> Value {
         Value::List(xs)
-    }
-    // Double(x) = x * 2, as a composite: BOUNDARY.x → mul.0 ; const(2) → mul.1 ; mul → out.
-    fn double(r: &mut MapResolver) -> Hash {
-        let two = Unit {
-            body: UnitBody::Primitive { name: "const".into() },
-            params: vec![Param::frozen("type", "Number"), Param::frozen("value", "2")],
-            inputs: vec![],
-            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
-        };
-        let htwo = r.insert(two).unwrap();
-        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
-        let unit = composite(
-            vec![nport("x")],
-            Type::Number,
-            vec![hmul, htwo], // child0 = mul, child1 = const 2
-            vec![edge(BOUNDARY, 0, 0, 0), edge(1, 0, 0, 1), edge(0, 0, BOUNDARY, 0)],
-        );
-        r.insert(unit).unwrap()
     }
     fn map_unit(fn_hash: &Hash) -> Unit {
         Unit {
@@ -4110,29 +4047,6 @@ mod tests {
         assert_eq!(seen.asked.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![vec![0, 0], vec![1, 0]], "item k, the read at child 0");
     }
 
-    #[test]
-    fn map_doubles_list() {
-        // The v3 seed: list(3,7,5) → Map(Double) → [6, 14, 10].
-        let mut r = MapResolver::new();
-        let hdouble = double(&mut r);
-        let m = map_unit(&hdouble);
-        let input = list(vec![num(3.0), num(7.0), num(5.0)]);
-        assert_eq!(
-            eval(&m, &[Some(input)], &r).into_vec(),
-            vec![Some(list(vec![num(6.0), num(14.0), num(10.0)]))]
-        );
-    }
-
-    #[test]
-    fn map_none_propagates() {
-        // Double applied to a Text element fails ⇒ the whole map is None.
-        let mut r = MapResolver::new();
-        let hdouble = double(&mut r);
-        let m = map_unit(&hdouble);
-        let input = list(vec![num(3.0), txt("x")]);
-        assert_eq!(eval(&m, &[Some(input)], &r).into_vec(), vec![None]);
-    }
-
     fn fold_unit(fn_hash: &Hash) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "fold".into() },
@@ -4143,36 +4057,6 @@ mod tests {
             ],
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         }
-    }
-
-    #[test]
-    fn fold_sums_with_add() {
-        // sum expressed as a fold (the universal donor): fold(add, 0, [3,7,5]) = 15.
-        // `add` is the combiner — add(acc, elem) = acc + elem.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        let xs = list(vec![num(3.0), num(7.0), num(5.0)]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![Some(num(15.0))]);
-    }
-
-    #[test]
-    fn fold_on_empty_is_init() {
-        // No element ⇒ the accumulator is the seed, untouched. Total.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        assert_eq!(eval(&f, &[Some(num(42.0)), Some(list(vec![]))], &r).into_vec(), vec![Some(num(42.0))]);
-    }
-
-    #[test]
-    fn fold_none_propagates() {
-        // add(acc, true) fails ⇒ the whole fold is None.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let f = fold_unit(&hadd);
-        let xs = list(vec![num(3.0), Value::Boolean(true)]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![None]);
     }
 
     #[test]
@@ -4223,69 +4107,7 @@ mod tests {
         assert_eq!(eval(&host_prim, &inp, &r).into_vec(), vec![Some(num(14.0))]);
     }
 
-    #[test]
-    fn deterministic() {
-        let mut r = MapResolver::new();
-        let c = add2(&mut r);
-        let inp = [Some(num(3.0)), Some(num(4.0))];
-        assert_eq!(eval(&c, &inp, &r), eval(&c, &inp, &r));
-    }
-
     // ── P4.7: native multi-output (composite-only) ──────────────────────────
-
-    #[test]
-    fn eval_composite_multi_output() {
-        // Three independent ops fed the same two inputs, all three exposed — proving a
-        // multi-output composite genuinely carries several distinct values, not one value
-        // dressed up in a longer vec.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
-        let hsub = r.insert(prim("subtract", 2, Type::Number)).unwrap();
-        let c = multi_composite(
-            vec![nport("a"), nport("b")],
-            vec![Type::Number, Type::Number, Type::Number],
-            vec![hadd, hmul, hsub],
-            vec![
-                edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), // a, b → add
-                edge(BOUNDARY, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), // a, b → multiply
-                edge(BOUNDARY, 0, 2, 0), edge(BOUNDARY, 1, 2, 1), // a, b → subtract
-                edge(0, 0, BOUNDARY, 0), // add    → out0
-                edge(1, 0, BOUNDARY, 1), // multiply → out1
-                edge(2, 0, BOUNDARY, 2), // subtract → out2
-            ],
-        );
-        assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(),
-            vec![Some(num(7.0)), Some(num(12.0)), Some(num(-1.0))]
-        );
-    }
-
-    #[test]
-    fn multi_output_partial_success() {
-        // Two exposed outputs from two different children — one succeeds, one fails (divide by
-        // zero) — independently. This is the actual reason eval's return shape is per-slot
-        // (EvalOutputs, one Option per declared output) rather than Option<Vec<Value>>: a
-        // genuinely computed value is never discarded just because a sibling output failed.
-        let mut r = MapResolver::new();
-        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
-        let hdiv = r.insert(prim("divide", 2, Type::Number)).unwrap();
-        let c = multi_composite(
-            vec![nport("a"), nport("b")],
-            vec![Type::Number, Type::Number],
-            vec![hadd, hdiv],
-            vec![
-                edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), // a, b → add
-                edge(BOUNDARY, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), // a, b → divide
-                edge(0, 0, BOUNDARY, 0), // add    → out0
-                edge(1, 0, BOUNDARY, 1), // divide → out1
-            ],
-        );
-        assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(0.0))], &r).into_vec(),
-            vec![Some(num(3.0)), None] // add(3,0)=3 succeeds; divide(3,0) fails — independently
-        );
-    }
 
     #[test]
     fn eval_one_requires_exactly_one_output() {
@@ -4530,7 +4352,16 @@ mod tests {
 
     /// The property lazy choices rest on (L4 §2): for pure leaves, the lazy evaluator gives
     /// exactly what evaluating every node gives. Checked on generated graphs: random DAGs of
-    /// choices and ordinary leaves, over inputs some of which are absent, some nested one level.
+    /// choices and ordinary leaves (arithmetic that can fail among them, as dividing by zero),
+    /// of none to nine children and one to three outputs, an output sometimes an input itself,
+    /// over inputs some of which are absent, some nested one level, holons nested in them.
+    ///
+    /// Guards: every value a composite computes, its outputs one by one, whatever its shape.
+    /// Why: the lazy evaluator pulls only what an output needs, in an order of its own, and
+    /// carries each output in its own slot; the eager one, kept as the oracle, evaluates every
+    /// node in one pass. Any shortcut taken in pulling (a choice, an input routed straight out,
+    /// a slot left absent beside a computed one) shows as a difference.
+    /// If it fails: a flow answers something other than what its graph says.
     #[test]
     fn lazy_and_eager_agree_on_generated_graphs() {
         use crate::eager::eval_eager;
@@ -4547,11 +4378,24 @@ mod tests {
                 (self.next() % n as u64) as usize
             }
         }
-        const LEAVES: &[(&str, usize)] = &[("guard", 2), ("coalesce", 2), ("select", 3), ("add", 2), ("not", 1), ("equals", 2), ("and", 2), ("or", 2), ("is_truthy", 1)];
-        let values = [None, Some(Value::Boolean(true)), Some(Value::Boolean(false)), Some(num(0.0)), Some(num(1.0)), Some(text("x"))];
+        const LEAVES: &[(&str, usize)] = &[
+            ("guard", 2),
+            ("coalesce", 2),
+            ("select", 3),
+            ("add", 2),
+            ("subtract", 2),
+            ("multiply", 2),
+            ("divide", 2),
+            ("not", 1),
+            ("equals", 2),
+            ("and", 2),
+            ("or", 2),
+            ("is_truthy", 1),
+        ];
+        let values = [None, Some(Value::Boolean(true)), Some(Value::Boolean(false)), Some(num(0.0)), Some(num(1.0)), Some(num(3.0)), Some(text("x"))];
 
         fn graph(rng: &mut Rng, pool: &[(Hash, usize)], n_in: usize) -> Unit {
-            let n = 2 + rng.below(8);
+            let n = rng.below(10);
             let mut children = Vec::new();
             let mut edges = Vec::new();
             for c in 0..n {
@@ -4567,9 +4411,14 @@ mod tests {
                     }
                 }
             }
-            let outs = 1 + rng.below(2);
+            // An output from a child, or (always when there is none) an input routed straight out.
+            let outs = 1 + rng.below(3);
             for o in 0..outs {
-                edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, o as u32));
+                match rng.below(5) {
+                    _ if n == 0 => edges.push(edge(BOUNDARY, rng.below(n_in) as u32, BOUNDARY, o as u32)),
+                    0 => edges.push(edge(BOUNDARY, rng.below(n_in) as u32, BOUNDARY, o as u32)),
+                    _ => edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, o as u32)),
+                }
             }
             multi_composite((0..n_in).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(), vec![Type::Any; outs], children, edges)
         }
@@ -4625,6 +4474,13 @@ mod tests {
     /// evaluating every node gives. An observer
     /// that reads what each node produced sees the same steps at the same paths as one that
     /// doesn't, and the same outputs.
+    ///
+    /// Guards: what a function applied by a higher-order leaf gives, item by item, empty lists
+    /// and items it fails on included, and what giving a value away leaves for its other readers.
+    /// Why: a value given is moved, not copied; a reader the evaluator didn't count would find it
+    /// gone, and an application handed its accumulator and item in the wrong order is wrong only
+    /// for a function whose order shows.
+    /// If it fails: a `map`, `fold` or `filter` in a flow answers something its function doesn't.
     #[test]
     fn giving_and_lending_agree_with_eager_on_generated_graphs() {
         use crate::eager::eval_eager;
@@ -4758,8 +4614,10 @@ mod tests {
                 (r.insert(unit).unwrap(), k)
             })
             .collect();
-        // A `fold` and a `map` of a leaf: each application a leaf given its item.
-        for name in ["append", "extend", "cons", "concat", "pair"] {
+        // A `fold` and a `map` of a leaf: each application a leaf given its item. `subtract` is
+        // the one whose order shows (`acc - item` is not `item - acc`) and that fails on an item
+        // that isn't a number, so a whole map or fold gives nothing.
+        for name in ["append", "extend", "cons", "concat", "pair", "subtract"] {
             let leaf = pool[LEAVES.iter().position(|&(n, _)| n == name).unwrap()].0;
             let mut fold = fold_unit(&leaf);
             fold.inputs[0].ty = Type::Any;
