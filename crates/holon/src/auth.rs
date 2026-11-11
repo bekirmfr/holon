@@ -1,4 +1,4 @@
-//! Signing in, and the admin panel's API (accounts.rs, access.rs).
+//! Signing in, and the admin panel's API (accounts.rs; who may ask what is can.rs's table).
 //!
 //! Open: `GET /auth/state` (whether the server needs setting up, and whether signing in through a
 //! provider is offered), `POST /auth/setup` (the first admin, with the setup code),
@@ -15,7 +15,7 @@
 //! - `PATCH /people/<name>` (role, disabled, email, display, owner), `DELETE /people/<name>`,
 //!   `POST /people/<name>/reset` (a person's new invite link);
 //! - `GET`/`POST /people/<name>/tokens` (`{label}`), `DELETE /people/<name>/tokens/<id>`: also for
-//!   the agent's or service's owner.
+//!   the agent's or service's owner (can.rs's owner rule).
 //!
 //! Admins also: `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an
 //! admin does goes in the activity log.
@@ -91,7 +91,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         return Some(crate::grants::handle_get_admin_grants(state));
     }
     // The variables an env secret can name (secret_sources.rs), for the deploy settings to offer:
-    // names only, and only to an admin, who alone sets secrets (`/admin/…`, access.rs).
+    // names only, and only to an admin, who alone sets secrets (`/admin/…`, can.rs).
     if url == "/admin/secrets/env" && request.method() == "GET" {
         let (names, dotenv) = state.secrets.env_names();
         return Some(Response::json(&serde_json::json!({ "names": names, "dotenv": dotenv })));
@@ -196,7 +196,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             Response::empty_204()
         }
 
-        // ── people (access.rs lets only admins this far, and owners to their principals' tokens) ──
+        // ── people (the gate lets only admins this far, and owners to their principals' tokens) ──
         ("GET", "/people") => Response::json(&accounts.principals().iter().map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/people") => {
             #[derive(Deserialize)]
@@ -253,10 +253,6 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some((name, tokens)) = rest.split_once('/')
                 && (tokens == "tokens" || tokens.starts_with("tokens/"))
             {
-                // An admin's, or the owner's (access.rs lets a person this far for any name).
-                if caller.role != Some(Role::Admin) && accounts.principal(name).and_then(|p| p.owner).as_deref() != Some(me) {
-                    return Some(err(403, format!("{by} may not do that: an agent's or a service's tokens are its owner's or an admin's to make")));
-                }
                 return respond(match (method, tokens.strip_prefix("tokens/")) {
                     ("GET", None) => Ok(Response::json(&accounts.tokens(name))),
                     ("POST", None) => {

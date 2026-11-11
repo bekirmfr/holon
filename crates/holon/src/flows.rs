@@ -1,6 +1,8 @@
 //! Saved flows: the editor's canvas documents, by name.
 
 use crate::*;
+use crate::access::Caller;
+use crate::can::{can, Action, Resource};
 
 /// `POST /flows` — save (upsert) a flow document by name. The name follows the same rule as
 /// deployment slugs (`is_valid_slug`) — one naming convention across the API, not two. The
@@ -9,9 +11,8 @@ pub(crate) fn handle_post_flows(
     flows: &Mutex<BTreeMap<String, FlowRecord>>,
     flows_path: &Place,
     request: &Request,
-    by: Option<&str>,
-    // Whether an agent saves it (access.rs): it may replace only its own.
-    agent: bool,
+    // Who saves it: an agent replaces only its own.
+    who: &Caller,
     activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -29,34 +30,29 @@ pub(crate) fn handle_post_flows(
         return err(400, e);
     }
     let name = body.name.clone();
-    match save(flows, flows_path, &body.name, body.document, body.uses.clone(), by, agent, activity) {
-        Ok(saved_at_epoch_seconds) => Response::json(&FlowListEntry { name, saved_at_epoch_seconds, saved_by: by.map(String::from), uses: body.uses }),
+    match save(flows, flows_path, &body.name, body.document, body.uses.clone(), who, activity) {
+        Ok(saved_at_epoch_seconds) => Response::json(&FlowListEntry { name, saved_at_epoch_seconds, saved_by: who.name.clone(), uses: body.uses }),
         Err(refused) => refused,
     }
 }
 
-/// Save `document` as the flow `name`, by `by`, and answer the save's stamp; an agent replaces
-/// only a flow it saved itself (403 otherwise). An agent's proposal saves its flow this way too
-/// (proposals.rs).
-#[allow(clippy::too_many_arguments)]
+/// Save `document` as the flow `name`, by `who`, and answer the save's stamp; replacing a flow is
+/// `can`'s to let, and an agent replaces only a flow it saved itself (403 otherwise). An agent's
+/// proposal saves its flow this way too (proposals.rs).
 pub(crate) fn save(
     flows: &Mutex<BTreeMap<String, FlowRecord>>,
     flows_path: &Place,
     name: &str,
     document: serde_json::Value,
     uses: Option<Vec<HolonUse>>,
-    by: Option<&str>,
-    agent: bool,
+    who: &Caller,
     activity: &crate::activity::Activity,
 ) -> Result<u64, Response> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let by = who.name.as_deref();
     let mut table = flows.lock().unwrap();
-    if agent
-        && let Some(saved) = table.get(name)
-        && saved.saved_by.as_deref() != by
-    {
-        let whose = saved.saved_by.as_deref().unwrap_or("someone");
-        return Err(err(403, format!("a flow named \"{name}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name")));
+    if let Some(saved) = table.get(name) {
+        can(who, Action::FlowEdit, &Resource::Saved { name, by: saved.saved_by.as_deref() }).map_err(|refusal| refusal.response())?;
     }
     // Each save of a flow is stamped later than the one before, even within the same second: the
     // stamp is how a flow placed from it tells an older save from the newest (holonUsage.ts).

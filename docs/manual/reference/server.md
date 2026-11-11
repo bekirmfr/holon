@@ -197,6 +197,9 @@ can't be guessed.
 | admin | everything, and set secrets, bind folders and databases, manage people, agents, services and sign-in |
 | agent | read, check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
 
+What a role may not do is refused with 403, saying why. A path the control plane has no route for
+is answered 404, once its caller has signed in (401 before).
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,

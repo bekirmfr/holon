@@ -2,7 +2,7 @@
 //! CORS, and `route`, which dispatches every request to its handler.
 
 use crate::*;
-use crate::access::{Access, Caller, Role};
+use crate::access::{Access, Caller};
 
 pub(crate) fn err(status: u16, message: impl Into<String>) -> Response {
     Response::json(&ErrorBody { error: message.into() }).with_status_code(status)
@@ -58,7 +58,7 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
             return Err(err(415, format!("{} bodies must be sent as application/json or application/octet-stream", request.method())));
         }
     }
-    access.check(request)
+    access.admit(request)
 }
 
 /// Add CORS headers to every response, in one place — so a new endpoint can never forget them
@@ -160,7 +160,6 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         Err(rejection) => return rejection,
     };
     let by = caller.name.as_deref();
-    let agent = caller.role == Some(Role::Agent);
 
     // Preflight — answered before touching any endpoint logic.
     if method == "OPTIONS" {
@@ -190,40 +189,15 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return handle_post_unit(&state.store, request);
     }
 
-    if method == "POST" && url == "/registry/publish" {
-        return handle_post_publish(&state.registry, request);
-    }
-
-    if method == "GET" && url == "/registry" {
-        return handle_get_registry(&state.registry);
-    }
-
-    if method == "POST" && url == "/registry/fork" {
-        return handle_post_fork(&state.registry, request);
-    }
-
-    if method == "POST" && url == "/cache/ingest" {
-        return handle_post_cache_ingest(&state.cache, request);
-    }
-
-    if let Some(key_hex) = url.strip_prefix("/cache/")
-        && method == "GET" {
-            return handle_get_cache(&state.cache, &state.store, key_hex);
-        }
-
-    if method == "POST" && url == "/fire" {
-        return handle_post_fire(&state.store, request);
-    }
-
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(state, request, by, agent);
+        let response = handle_post_deploy(state, request, by, &caller);
         sync_listeners(state);
         return response;
     }
 
     if url == "/flows" {
         if method == "POST" {
-            return handle_post_flows(&state.flows, &state.flows_path, request, by, agent, &state.activity);
+            return handle_post_flows(&state.flows, &state.flows_path, request, &caller, &state.activity);
         }
         if method == "GET" {
             return handle_get_flows(&state.flows);
@@ -267,7 +241,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, request, agent);
+        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, request, &caller);
     }
 
     if method == "GET" && url == "/permissions" {
@@ -362,7 +336,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/restore") {
             if method == "POST" {
-                let response = handle_post_restore(state, slug, request, by, agent);
+                let response = handle_post_restore(state, slug, request, by, &caller);
                 sync_listeners(state);
                 return response;
             }
@@ -421,7 +395,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         && method == "POST"
     {
         return match rest.split_once('/') {
-            Some((slug, name)) => handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, agent),
+            Some((slug, name)) => handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, &caller),
             None => unnamed_action(&state.deployments, rest),
         };
     }

@@ -53,8 +53,8 @@ struct Listing {
     native_refused: Option<String>,
 }
 
-/// `/admin/folders/browse` and `/admin/folders/pick`, or None for any other path. Only an admin
-/// gets this far (access.rs).
+/// `/admin/folders/browse` and `/admin/folders/pick`, or None for any other path. Only whoever
+/// binds the host's resources gets this far, an admin (can.rs's table).
 pub(crate) fn route(request: &Request) -> Option<Response> {
     match (request.url().as_str(), request.method()) {
         ("/admin/folders/browse", "GET") => {

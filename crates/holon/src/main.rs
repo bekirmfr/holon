@@ -12,7 +12,7 @@
 //! through the same path (firing.rs) and is recorded (recorder.rs). It adds no trust of its own
 //! to what content addressing gives: every unit and value read from the store is checked against
 //! its hash (`Store::get`, holon-host; docs/L4s/P4.5-P4.6-transport-scoping-L4.md). What it adds
-//! is who may ask (access.rs) and what a run may do (permissions.rs).
+//! is who may ask (access.rs, can.rs) and what a run may do (permissions.rs).
 //! docs/engineering/components/holon.md maps the modules, what `serve` builds and the locks; the
 //! steps that built it are in docs/JOURNAL.md.
 //!
@@ -36,6 +36,7 @@ mod arrivals;
 mod auth;
 mod blobs;
 mod calls;
+mod can;
 mod changes;
 mod channels;
 mod claims;
@@ -127,12 +128,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use holon_core::{
     capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
     state_root,
-    read_server, Capability, CacheEntry, Server, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
-    Value, BOUNDARY,
+    read_server, Capability, Server, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
+    Value,
 };
 use holon_host::{
-    fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, InsertError, MemStore,
-    run_rounds, PublishError, Waiting, Registry, Round, SharedCache, State, Store, StoreError,
+    is_storable, write_atomically, FileStore, Host, InsertError, MemStore,
+    run_rounds, Waiting, Round, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use recorder::{Log, LogCell, LogEntry};
@@ -185,11 +186,8 @@ fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Opt
 type DynStore = Box<dyn Store + Send>;
 
 /// A cheap-to-clone handle onto one shared `DynStore`. Implements `Store` itself by locking and
-/// delegating, so it can be handed to `Registry::new` (which wants an owned `S: Store`) while a
-/// second clone stays with the server for direct `/unit` reads/writes — both clones lock the
-/// same underlying `Mutex`, so they see the same data. It exists instead of a `holon-host` change:
-/// `Registry::new` owns its store and hands it back read-only, while `POST /unit` writes children
-/// before a parent is published.
+/// delegating, so each clone (a run's, the server's for `/unit`) locks the same underlying
+/// `Mutex` and sees the same data.
 /// The second part is the hub through which flows call each other (calls.rs); the third notes
 /// the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
 /// the closures runs have loaded (units.rs's `FlowCache`); the fifth the values runs have read
@@ -237,20 +235,17 @@ impl Store for SharedStore {
     }
 }
 
-/// Everything a request handler needs. `registry`, `cache`, and `deployments` are each their
-/// own `Mutex` (not folded into `SharedStore`'s locking) since each needs its own lock scope
-/// distinct from a single store put/get.
+/// Everything a request handler needs. `deployments` is its own `Mutex` (not folded into
+/// `SharedStore`'s locking) since it needs its own lock scope distinct from a single store
+/// put/get.
 struct AppState {
     store: SharedStore,
-    registry: Mutex<Registry<SharedStore>>,
-    cache: Mutex<SharedCache>,
     /// slug → deployment. `Arc` (not just `Mutex`) because the clock scheduler thread
     /// (`spawn_clock_scheduler`) needs its own independent handle onto the same table, cloned
     /// before `AppState` is built — the same `Send`-shared-handle shape `SharedStore` already
-    /// uses for the store itself. `Registry`'s published set and `SharedCache` stay in-memory
-    /// only; `deployments` itself is now persisted write-through to `deployments_path` (see
-    /// `persist_deployments`/`load_deployments`) — a deployment definition surviving a restart
-    /// is the whole point of "standing," unlike a cache entry or a publish record.
+    /// uses for the store itself. It is persisted write-through to `deployments_path` (see
+    /// `persist_deployments`/`load_deployments`): a deployment definition surviving a restart
+    /// is the whole point of "standing."
     deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
     /// Where `deployments` is persisted, or nowhere (`--deployments :memory:`, matching
     /// `--store`'s own convention) to opt out entirely.
@@ -661,23 +656,8 @@ fn serve(args: Vec<String>) {
     //
     // `--emit-test-unit <path>` is a dev-only escape hatch, not a server flag: it writes a
     // trivial unit's canonical preimage bytes to `path` and exits *without* starting the
-    // server, so the `/unit`/`/registry` round trips can be checked with plain `curl` + a file
-    // diff — no HTTP client dependency needed just to generate a valid test payload.
-    //
-    // `--emit-test-pair <leaf-path> <composite-path>` is the same idea, extended to exercise
-    // `Registry::publish`'s `DanglingReference` refusal: a leaf plus a composite that
-    // references the leaf's real hash, written as two files. Publishing the composite before
-    // staging the leaf should 400; staging the leaf via `/unit` first, then publishing the
-    // composite, should succeed.
-    //
-    // `--emit-test-replacement <path>` writes a second, distinct leaf (same shape, a different
-    // frozen value, so a different hash) — the replacement unit for exercising
-    // `POST /registry/fork` against the composite from `--emit-test-pair`.
-    //
-    // `--emit-test-sink <path>` writes an `egress` unit (one Text input, no params) — stage it
-    // via `/unit`, then `POST /fire?root=<its hash>` with a real message input to see
-    // `RecordingHost` actually record something, unlike the pure `--emit-test-unit` leaf, which
-    // triggers nothing.
+    // server, so the `/unit` round trip can be checked with plain `curl` + a file diff — no
+    // HTTP client dependency needed just to generate a valid test payload.
     let mut args = args.into_iter();
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
@@ -857,54 +837,6 @@ fn serve(args: Vec<String>) {
             std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
             println!("wrote {} bytes to {path}", bytes.len());
             return;
-        } else if a == "--emit-test-pair" {
-            let (Some(leaf_path), Some(composite_path)) = (args.next(), args.next()) else {
-                eprintln!("--emit-test-pair needs <leaf-path> <composite-path>");
-                std::process::exit(1);
-            };
-            let leaf = test_unit();
-            let leaf_hash = hash_unit(&leaf).expect("test_unit() is a fixed, valid unit");
-            let leaf_bytes = encode_preimage(&leaf).expect("test_unit() is a fixed, valid unit");
-            let composite_bytes = encode_preimage(&test_composite(leaf_hash))
-                .expect("test_composite() is a fixed, valid unit given any leaf hash");
-            std::fs::write(&leaf_path, &leaf_bytes)
-                .unwrap_or_else(|e| panic!("write {leaf_path}: {e}"));
-            std::fs::write(&composite_path, &composite_bytes)
-                .unwrap_or_else(|e| panic!("write {composite_path}: {e}"));
-            println!(
-                "wrote leaf ({} bytes, hash {}) to {leaf_path}",
-                leaf_bytes.len(),
-                to_hex(&leaf_hash)
-            );
-            println!(
-                "wrote composite referencing it ({} bytes) to {composite_path}",
-                composite_bytes.len()
-            );
-            println!("try publishing the composite BEFORE staging the leaf — it should 400.");
-            return;
-        } else if a == "--emit-test-replacement" {
-            let Some(path) = args.next() else {
-                eprintln!("--emit-test-replacement needs a path");
-                std::process::exit(1);
-            };
-            let bytes = encode_preimage(&test_replacement())
-                .expect("test_replacement() is a fixed, valid unit");
-            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
-            println!("wrote {} bytes to {path} — a distinct unit for /registry/fork's replacement", bytes.len());
-            return;
-        } else if a == "--emit-test-sink" {
-            let Some(path) = args.next() else {
-                eprintln!("--emit-test-sink needs a path");
-                std::process::exit(1);
-            };
-            let bytes = encode_preimage(&test_sink()).expect("test_sink() is a fixed, valid unit");
-            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
-            println!(
-                "wrote {} bytes to {path} — an egress sink; stage it via /unit, then POST /fire \
-                 with {{\"inputs\":[{{\"type\":\"Text\",\"value\":\"hello\"}}]}} to see it in performed",
-                bytes.len()
-            );
-            return;
         } else {
             eprintln!("holon serve: no option {a:?}
 
@@ -1059,8 +991,6 @@ fn serve(args: Vec<String>) {
             }
         }
     }
-    let registry = Mutex::new(Registry::new(store.clone()));
-    let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {
         eprintln!("holon: {e}");
         eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
@@ -1188,8 +1118,6 @@ fn serve(args: Vec<String>) {
     store.1.connect(Arc::clone(&deployments), deployments_at.clone());
     let state = AppState {
         store,
-        registry,
-        cache,
         deployments,
         deployments_path: deployments_at,
         flows,

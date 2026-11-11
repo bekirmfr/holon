@@ -563,7 +563,7 @@ Step 2 (`can` and the catalogue) starts from step 1's end:
 Its first commit is the table test the design asks for: every route in `http.rs` and `auth.rs`,
 against every built-in role and kind, with what step 1 answers. Its second moves those decisions
 into built-in roles as data and a route table, with `Access::check` left only authenticating, and
-the table test still passing.
+the table test still passing. `can-and-catalogue-plan.md` is its plan; `can.rs` is what it built.
 
 ## D. Decisions
 

@@ -935,54 +935,6 @@ pub(crate) fn run_id_of(
     run_id(&deployment, &root)
 }
 
-/// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
-/// is no standing process left running afterward, no listener bound to a driver — this is a
-/// single call-and-return, the same shape `eval`/`design_eval` already are, just via `fire`
-/// (deploy mode) instead. The genuine "keep a flow alive, bound to `ingress`/`timer`" pillar is
-/// real and different work, deliberately not this endpoint — see the L4.
-///
-/// `root` must already be resolvable from the store (staged via `/unit`, or published) — this
-/// resolves it through `closure` exactly as the cache endpoints do, rather than accepting the
-/// unit fresh in the body, since firing something implies it's a real, referenceable unit, not
-/// a throwaway one.
-pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
-    let Some(root_hex) = request.get_param("root") else {
-        return err(400, "missing ?root=<hex> query param");
-    };
-    let Some(root_hash) = parse_hash(&root_hex) else {
-        return err(400, "root is not a 64-char hex hash");
-    };
-    let bytes = match read_body(request) {
-        Ok(b) => b,
-        Err(r) => return r,
-    };
-    let fire_body: FireRequestBody = match serde_json::from_slice(&bytes) {
-        Ok(b) => b,
-        Err(e) => return err(400, format!("not a valid fire request JSON: {e}")),
-    };
-    let resolver = match closure(store, root_hash) {
-        Ok(r) => r,
-        Err(e) => return e.response(),
-    };
-    let Some(root_unit) = resolver.resolve(&root_hash) else {
-        return err(404, "no unit stored at that hash — stage or publish it first");
-    };
-    let inputs: Vec<Option<Value>> =
-        fire_body.inputs.into_iter().map(|o| o.map(SValue::into_core)).collect();
-
-    let mut host = RecordingHost::new();
-    let outputs = fire(root_unit, &inputs, &resolver, &mut host);
-
-    Response::json(&FireResponseBody {
-        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
-        performed: host
-            .performed
-            .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
-            .collect(),
-    })
-}
-
 /// Add a run to `slug`'s flow log, in its current session: redacted of its secrets and of
 /// `tokens` (the run's), in one pass, so that the log's marks are only ever its own.
 ///

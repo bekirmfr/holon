@@ -20,7 +20,7 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 
 ## 2. How it works
 
-### 2.1 Accounts and sign-in (accounts.rs, access.rs, oidc.rs, local.rs)
+### 2.1 Accounts, sign-in and roles (accounts.rs, access.rs, can.rs, oidc.rs, local.rs)
 
 - **First run.** A server with no accounts prints a setup code (`new_setup_code`: 8 characters
   from a 32-letter alphabet, `XXXX-XXXX`; or `HOLON_SETUP_CODE`) and answers 403 to all but the
@@ -58,17 +58,30 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   one in, and is told why.
 - **The OS user running the server** signs in through the run file `local::publish` writes
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token, an admin's, for this run only.
-- **Roles** (`Access::check`): `viewer` reads (GET); `editor` also saves, deploys and approves,
-  runs, pauses, stops, deletes and changes grants; `admin` everything, writing secrets and every
-  `/admin/` and `/people` path included; `agent` reads and proposes (`agent_may`: `POST /unit`,
-  `/deploy/preview`, `/deploy`, `/flows`, a deployment's `/request`, an action, a restore, which
-  is a dry run or saved as an ask: `ask_restore`). Only an agent, a principal of kind agent with
-  its own token, holds `agent`; no header changes a caller's role. `holon mcp` signs in as one
-  (`mcp::agent_http`), never with the run file's token: on a server the OS user runs, the run
-  file's admin makes theirs (`mcphosts::local_agent`), before setup too, which only a person's
-  setup ends (`Accounts::needs_setup`). Open without signing in
-  (`is_open`): `OPTIONS`, `GET /health`, `/auth/state`, `/auth/config`, `/auth/setup`,
-  `/auth/sign-in`, `/auth/invite`.
+- **Roles** (can.rs): the catalogue of actions (`Action`, the access design's §4) and the
+  built-in roles made from it (`BUILTIN`, §5.1): `viewer` reads flows, runs, state, a secret's
+  names and the policy, and exports runs; `editor` also saves, deploys and approves, restores,
+  runs, pauses, stops, deletes, calls, decides approvals, writes state, reloads the policy and
+  checks the logs again; `admin` everything, a flow's secrets and every `/admin/` and `/people`
+  path included; `agent` reads and proposes: storing units, previewing and deploying, saving its
+  own flows, calling, and a restore that is a dry run or saved as an ask (`ask_restore`). Only an
+  agent, a principal of kind agent with its own token, holds `agent`; no header changes a
+  caller's role. `holon mcp` signs in as one (`mcp::agent_http`), never with the run file's
+  token: on a server the OS user runs, the run file's admin makes theirs
+  (`mcphosts::local_agent`), before setup too, which only a person's setup ends
+  (`Accounts::needs_setup`).
+- **The gate** (`Access::admit`): it finds the request's route in `ROUTES`, one row for each route
+  the control plane answers, each saying what it asks. Open without signing in: `OPTIONS`,
+  `GET /health`, `/auth/state`, `/auth/config`, `/auth/invite`, and `POST /auth/setup`,
+  `/auth/sign-in`, `/auth/invite`. For anyone signed in: their own account. The rest name an
+  action and what the path names (the host, the flows, a flow by its slug, a principal), and
+  `can` answers. Deny by default: a path no row has is answered 404 once its caller has signed in,
+  so a route added to a router without a row is never reached. `can` also holds the rules no role
+  decides: an agent replaces only a flow it saved (flows.rs asks it with the saved flow), runs an
+  action and reads log lines only where the flow's grant lets agents (`AgentRuns`,
+  `AgentReadsLogs`: deploy.rs and logs.rs ask), and never approves or starts what it deploys
+  (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); only a person decides an approval
+  (durable.rs's `decider`); a person manages the tokens of an agent or a service they own.
 
 ### 2.2 The request gate (http.rs)
 
@@ -95,11 +108,11 @@ origin's. A request with no `Host` (HTTP/1.0) is answered; a browser always send
 
 ### 2.3 What `/admin/` and `/people` require
 
-The `admin` role, for every path under them (`is_admins`): `Access::check` refuses any other role
-there ("that needs an admin"), and so for writing a deployment's secret (`is_secret_write`). One
-exception: a person who is a viewer or an editor reaches an agent's or a service's tokens
-(`/people/<name>/tokens[/<id>]`, `is_tokens_of_someone`), and auth.rs lets them through only for
-what they own. Principals (accounts.rs): a `Kind` (person, agent, service) and the roles it may
+The `admin` role, for every path under them: no other built-in role holds `resource.*`,
+`people.*`, `host.view` or `host.operate`, so `can` refuses any other there ("that needs an
+admin"), and so for writing a deployment's secret (`secret.set`, `secret.roll-back`). One
+exception: a person reaches the tokens of an agent or a service they own
+(`/people/<name>/tokens[/<id>]`, the owner rule in `can`, with the owner the accounts name). Principals (accounts.rs): a `Kind` (person, agent, service) and the roles it may
 hold (`may_hold`: a service is never an admin, an agent only agent or viewer), and an owner, a
 person, for an agent or a service. The paths:
 `/people[/<name>[/reset|/tokens[/<id>]]]` (PATCH changes one), `/admin/oidc` (auth.rs);
@@ -107,7 +120,8 @@ person, for an agent or a service. The paths:
 `/admin/grants`; `/admin/folders` and below, with `browse` and `pick` (pick.rs: the OS dialog
 only for a request from the machine itself, not one a proxy forwarded); `/admin/databases` and below; `/admin/host`, `/admin/warnings`, `/admin/storage`
 (which writes `holon.toml`) and `/admin/store/sweep`. A server built without accounts lets
-everything through (`Access::check`'s first line); only the tests build one.
+everything through but deciding an approval, which needs a person (`can` with a caller that has
+no role); only the tests build one.
 
 ### 2.4 What a flow may do: grants and approvals
 
