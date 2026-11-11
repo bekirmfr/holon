@@ -33,7 +33,7 @@ use std::sync::{Mutex, OnceLock};
 
 use holon_core::{decode_value, encode_value, validate_module, Hash, ModuleError, ModuleLimits, Resolver, Unit, Value};
 use wasmi_core::LimiterError;
-use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
+use wasmi::{Config, CustomFuelCosts, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
 
 /// Holon's JavaScript engine module (docs/L4s/js-node-L4.md §4), as built and committed in
 /// `fixtures/modules/js-engine/`: a module unit with no imports whose interface is
@@ -41,7 +41,7 @@ use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, Tra
 pub const JS_ENGINE: &[u8] = include_bytes!("../../../fixtures/modules/js-engine/js-engine.wasm");
 
 /// A `js` node's fuel when its text names none. Measured (tests/js_engine.rs, `what_a_call_costs`):
-/// a fresh realm and a compiled one-line function cost about 15M instructions under the
+/// a fresh realm and a compiled one-line function cost about 12M instructions under the
 /// interpreter, an edit-distance search over eight words 41M, a loop of a hundred thousand
 /// iterations 271M. So the module default (10M) can never run a body, and 200M runs real
 /// request-sized work with room; a heavier body says `fuel 500M`, up to the host's ceiling.
@@ -146,6 +146,13 @@ impl Engine {
     pub fn new() -> Engine {
         let mut config = Config::default();
         config.consume_fuel(true);
+        // A function is translated the first time a call reaches it, and the module stays
+        // compiled for the process's life (`compiled`). Were translating charged, the first call
+        // in a process would pay for it and later ones not, so a call's fuel would say how warm
+        // the process was: a run close to its budget would fit on a server long up and run out
+        // in a `holon verify` just started. Translating costs nothing, then: a call's fuel is its
+        // module's and its inputs' alone. Copying keeps wasmi's own price.
+        config.fuel_cost(CustomFuelCosts { bytes_copied_per_fuel: 64, fuel_per_bytes_translated: 0, fuel_per_bytes_validated: 0 });
         Engine { wasmi: Wasmi::new(&config), compiled: Mutex::new(BTreeMap::new()) }
     }
 

@@ -166,6 +166,20 @@ fn the_same_call_answers_the_same_bytes() {
     assert_eq!(a, b);
 }
 
+/// A call's fuel is its module's and its inputs' alone: the first call in a process, which
+/// translates the functions it reaches, burns what a later one does. Otherwise a run close to its
+/// budget would fit on a server long up and run out in a `holon verify` just started.
+#[test]
+fn a_call_burns_the_same_fuel_cold_and_warm() {
+    let limits = ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 };
+    let inputs = [Some(t("(x) => ({ x, keys: Object.keys({ b: 1, a: 2 }) })")), Some(Value::List(vec![n(1.5)]))];
+    let engine = Engine::new();
+    let (cold_answer, cold) = engine.run_measured(ENGINE, &limits, &inputs).unwrap();
+    let (warm_answer, warm) = engine.run_measured(ENGINE, &limits, &inputs).unwrap();
+    assert_eq!(cold_answer, warm_answer);
+    assert_eq!(cold.fuel, warm.fuel, "the first call paid for translating");
+}
+
 /// What a call costs, printed: how the `js` defaults were chosen. Half a minute under the debug
 /// interpreter, so it runs on request: `cargo test -p holon-module --test js_engine -- --ignored --no-capture`.
 #[test]

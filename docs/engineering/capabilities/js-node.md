@@ -121,7 +121,7 @@ closure that places it (`units.rs`, `Loaded`).
   needs a custom backend (a fixed sequence), and Boa's clock read the system clock (a panic), so the
   realm gets a `FixedClock` at the epoch (JL4 §4). QuickJS stays the alternative.
 - **200M fuel by default**, measured (`what_a_call_costs`): a fresh realm and a one-line function
-  cost about 15M instructions, an edit distance over eight words 41M, a loop of 100,000 271M (JL4
+  cost about 12M instructions, an edit distance over eight words 41M, a loop of 100,000 271M (JL4
   §2).
 - **Modules by engine and params in a document**: carrying the binary, a flow with two budgets
   passed the control plane's 8 MiB body limit (JL4 §3).

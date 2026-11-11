@@ -34,7 +34,11 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
   call's. `Budget`, a `ResourceLimiter`, refuses `memory.grow` past `limits.memory` and remembers
   that it did. Each failure has its name (`RunError`): `NotAModule`, `Compile`, `Instantiate`,
   `OutOfFuel { fuel }`, `OutOfMemory { memory }`, `Trap`, `BadOutput`. A module that asked past its
-  memory and still answered is `OutOfMemory`: it computed without what it wanted.
+  memory and still answered is `OutOfMemory`: it computed without what it wanted. Translating a
+  function costs no fuel (`Config::fuel_cost`): wasmi translates one the first time a call reaches
+  it and the module stays compiled, so charging for it would make the first call in a process
+  dearer than the rest. A call's fuel is its module's and its inputs' alone, the same on a server
+  long up and in a `holon verify` just started.
 - **The answer is read from inside its memory.** `out_ptr..out_ptr + out_len` is taken from the
   module's memory slice, never allocated to the length the module claims, so a lying length is
   `BadOutput`, not 4 GiB of the host's.
@@ -78,7 +82,7 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
   are a hundred times the default fuel and sixteen times the default memory
   (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`, `crates/holon/src/permissions.rs`).
 - **The js default of 200M fuel** is measured (`what_a_call_costs`, JS §2): a fresh realm and a
-  one-line function cost about 15M instructions, an edit-distance search over eight words 41M, a
+  one-line function cost about 12M instructions, an edit-distance search over eight words 41M, a
   loop of a hundred thousand iterations 271M. The module default (10M) can't run a body at all.
 - **A fresh store per call**: equal inputs give equal answers (I2), and no realm state can carry
   from one run to the next. Compilation may be cached, state may not (JS §4).
@@ -129,7 +133,8 @@ mapping (`records_cross_both_ways_in_key_order_and_undefined_fields_are_left_out
 `kinds_that_cannot_cross_are_errors_naming_the_kind`), errors (`an_exception_is_an_error_naming_it`,
 `a_syntax_error_is_an_error_too`), the prelude
 (`the_prelude_leaves_no_clock_randomness_io_or_locale`), determinism (`two_calls_share_nothing`,
-`the_same_call_answers_the_same_bytes`), `a_body_that_never_ends_runs_out_of_fuel`,
+`the_same_call_answers_the_same_bytes`, `a_call_burns_the_same_fuel_cold_and_warm`),
+`a_body_that_never_ends_runs_out_of_fuel`,
 `the_source_alone_is_compiled_and_not_run`. `what_a_call_costs` is ignored: a measurement, run by
 hand (`cargo test -p holon-module --test js_engine -- --ignored --no-capture`); it asserts only that
 the three bodies cost more in order.
