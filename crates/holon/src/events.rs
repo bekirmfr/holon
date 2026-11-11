@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 

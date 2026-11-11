@@ -277,7 +277,7 @@ mod tests {
     fn the_drain_waits_for_the_last_run_saying_how_many_are_left() {
         static DOOR: Door = Door::new();
         let running = DOOR.enter(true).unwrap();
-        let said = Arc::new(std::sync::Mutex::new(vec![]));
+        let said = Arc::new(crate::sync::Mutex::new(vec![]));
         let heard = Arc::clone(&said);
         let drained = std::thread::spawn(move || drain(&DOOR, Duration::from_millis(20), |n| heard.lock().unwrap().push(n)));
         std::thread::sleep(Duration::from_millis(200));

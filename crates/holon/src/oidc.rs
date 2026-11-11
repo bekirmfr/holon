@@ -16,7 +16,7 @@
 //! (access.rs), whose role says what they may do. Signing in proves who someone is; their
 //! account decides what they may do.
 
-use std::sync::RwLock;
+use crate::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::jwk::JwkSet;

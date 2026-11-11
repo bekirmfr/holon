@@ -25,7 +25,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Condvar;
+use crate::sync::Condvar;
 
 use crate::queues::{Binding, Queues};
 use crate::sqs::Received;

@@ -5,7 +5,7 @@
 //! `GET /activity?limit=n` answers the newest first.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use rouille::{Request, Response};
 

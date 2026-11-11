@@ -19,7 +19,8 @@
 //!   applies nothing the second time. The transaction stays open while the run's other writes land,
 //!   then commits: what it checked holds until then.
 
-use std::sync::{MutexGuard, RwLock};
+use std::sync::MutexGuard;
+use crate::sync::RwLock;
 use std::time::Instant;
 
 use rouille::{Request, Response};

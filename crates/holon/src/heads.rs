@@ -32,7 +32,8 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use crate::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};

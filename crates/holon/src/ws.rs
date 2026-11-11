@@ -148,7 +148,8 @@ pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], subscribe
 #[cfg(test)]
 pub(crate) mod stand_in {
     use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use crate::sync::Mutex;
     use std::time::Duration;
 
     use tungstenite::handshake::server::{Request, Response};

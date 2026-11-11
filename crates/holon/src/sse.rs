@@ -564,7 +564,8 @@ pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], last_id: 
 pub(crate) mod stand_in {
     use std::io::{BufRead, BufReader, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::{Arc, Condvar, Mutex};
+    use std::sync::Arc;
+    use crate::sync::{Condvar, Mutex};
     use std::time::Duration;
 
     #[derive(Default)]

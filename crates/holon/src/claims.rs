@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use holon_core::Value;

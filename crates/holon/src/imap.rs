@@ -457,7 +457,8 @@ pub(crate) mod stand_in {
     use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use crate::sync::Mutex;
 
     /// Its folders: each message by UID, and the next UID.
     #[derive(Default)]

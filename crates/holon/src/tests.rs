@@ -41,7 +41,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -2565,7 +2565,7 @@ fn deployments_persist_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
-            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+            policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
@@ -2598,7 +2598,7 @@ fn deployments_persist_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -4491,7 +4491,7 @@ fn state_persists_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
-            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+            policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
@@ -4524,7 +4524,7 @@ fn state_persists_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
-        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
@@ -6012,7 +6012,7 @@ const GATE_HOLDS: Duration = Duration::from_secs(20);
 #[derive(Default)]
 struct Gate {
     calls: Mutex<GateCalls>,
-    changed: std::sync::Condvar,
+    changed: crate::sync::Condvar,
 }
 
 #[derive(Default)]
@@ -6957,6 +6957,57 @@ fn a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopp
             assert_eq!((event.kind.as_str(), event.loaded.as_deref(), event.run_seq), ("lifecycle", Some(loaded.trim()), 1), "{row}");
         }
     }
+}
+
+/// **Guards:** what a run and a request take that every other one takes too (the deployments
+/// table, a deployment's log, its state, its secrets, the policy): after a thread panics holding
+/// each, the next run runs and is logged, and the control plane answers (sync.rs).
+///
+/// **Why:** a panic is caught as its run's failure (G3), but one holding a std lock poisoned it,
+/// and every `lock().unwrap()` after it panicked too: one panic in a run holding the deployments
+/// table failed every run and request until the server was started again.
+///
+/// **If it fails:** one panic takes a deployment, or the whole server, down until a restart.
+#[test]
+fn a_panic_holding_what_every_run_takes_stops_no_run_after_it() {
+    let state = test_state();
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    let bump = || run_action_named(&state, "c", "bump", serde_json::json!({})).status_code;
+    assert_eq!(bump(), 200);
+    type Held<'a> = Box<dyn Fn() + Sync + 'a>;
+    let dep = |f: &dyn Fn(&Deployment)| f(&state.deployments.lock().unwrap()["c"]);
+    let rows: Vec<(&str, Held)> = vec![
+        ("the deployments table", Box::new(|| {
+            let _held = state.deployments.lock().unwrap();
+            panic!("a run panics holding it")
+        })),
+        ("its log", Box::new(|| dep(&|d| d.log.with(|_| panic!("a run panics holding it"))))),
+        ("its state", Box::new(|| {
+            dep(&|d| {
+                let _held = d.state.as_ref().unwrap().state.lock().unwrap();
+                panic!("a run panics holding it")
+            })
+        })),
+        ("its secrets", Box::new(|| {
+            dep(&|d| {
+                let _held = d.secrets.lock().unwrap();
+                panic!("a run panics holding it")
+            })
+        })),
+        ("the policy", Box::new(|| {
+            let _held = state.policy.write().unwrap();
+            panic!("a run panics holding it")
+        })),
+    ];
+    let held = rows.len();
+    for (what, hold) in rows {
+        assert!(std::thread::scope(|s| s.spawn(&hold).join()).is_err(), "{what}");
+        assert_eq!(bump(), 200, "a run after a panic holding {what}");
+        assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200, "the control plane after a panic holding {what}");
+    }
+    assert_eq!(state.deployments.lock().unwrap()["c"].log.next_seq(), 1 + held as u64, "each run logged");
 }
 
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
@@ -9772,7 +9823,7 @@ struct Exchange {
     host: String,
     asked: Arc<Mutex<Vec<serde_json::Value>>>,
     placed: Arc<Mutex<Vec<serde_json::Value>>>,
-    held: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    held: Arc<(Mutex<bool>, crate::sync::Condvar)>,
 }
 
 impl Exchange {
@@ -9784,7 +9835,7 @@ impl Exchange {
     fn start() -> Exchange {
         let asked: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
         let placed: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
-        let held = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let held = Arc::new((Mutex::new(false), crate::sync::Condvar::new()));
         let (a, p, h) = (Arc::clone(&asked), Arc::clone(&placed), Arc::clone(&held));
         let server = rouille::Server::new("127.0.0.1:0", move |request| {
             use std::io::Read;

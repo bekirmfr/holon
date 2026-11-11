@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{parse_hash, Hash, Value};

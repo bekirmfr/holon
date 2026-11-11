@@ -23,7 +23,7 @@
 //!   at most its `commit_wait`, past which it lets go of every lock it took and says which
 //!   resource it waited for.
 
-use std::sync::Condvar;
+use crate::sync::Condvar;
 use std::time::Instant;
 
 use crate::*;

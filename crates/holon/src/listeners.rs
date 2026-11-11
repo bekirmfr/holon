@@ -513,7 +513,7 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
 /// tests side by side don't stop each other's.
 #[cfg(test)]
 pub(crate) mod panic_for_tests {
-    use std::sync::Mutex;
+    use crate::sync::Mutex;
 
     static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 

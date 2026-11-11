@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A panic holding a lock no longer stops what the lock guards until a restart.** A run that
+  panics is a run that failed, but a panic while it held one of the server's locks (the
+  deployments table, a log, a state, a vault, the policy, the content store's packs) poisoned
+  it, and every run and request after it that took that lock failed too, until the server was
+  started again. Now the next one takes the lock as the panic left it.
 - **A run a crash cut off reads as cut off, not as the state changed outside holon.** A run's
   state lands before its line is written, so a crash between the two left the state ahead of the
   log, and `holon verify` reported the next run's state as not following from the one before. Now

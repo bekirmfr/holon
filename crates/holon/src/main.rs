@@ -105,6 +105,7 @@ mod summary;
 mod sweep;
 mod sealing;
 mod stopping;
+mod sync;
 mod secret_sources;
 mod secretcmd;
 mod secrets;
@@ -122,7 +123,8 @@ mod workbench;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use crate::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -283,7 +285,7 @@ struct AppState {
     data_limits: dataplane::DataLimits,
     /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
     /// is granted without asking. Read at startup, and again on `POST /permissions/reload`.
-    policy: std::sync::RwLock<Arc<Policy>>,
+    policy: crate::sync::RwLock<Arc<Policy>>,
     /// Where the policy is read from: nowhere, the defaults (the tests).
     policy_path: Place,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
@@ -1131,7 +1133,7 @@ fn serve(args: Vec<String>) {
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
         data_limits,
-        policy: std::sync::RwLock::new(policy),
+        policy: crate::sync::RwLock::new(policy),
         policy_path: policy_at,
         secrets,
         folders,

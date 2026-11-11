@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -813,7 +813,7 @@ pub fn sync_file(path: &Path) -> std::io::Result<()> {
 /// after covers it. No lock is held while a file syncs. A failure puts that log's flag back.
 /// The packs of the runs a sync covered go out (channels.rs): a lazy run's wait for this.
 #[allow(clippy::type_complexity)]
-pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
+pub(crate) fn sync_logs(deployments: &crate::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
     let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>, std::sync::Arc<crate::folders::Scoped>)>, Vec<(String, PathBuf)>) = {
         let mut table = deployments.lock().unwrap();
         let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit), std::sync::Arc::clone(&d.folders))).collect();

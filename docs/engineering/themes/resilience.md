@@ -68,15 +68,25 @@ answer). Before the first, a panic in a clock's run ended the thread that ticks 
 deployment's clocks and the deadlines of every waiting run, and one in a feed's, a queue's or a
 mailbox's run ended the thread that reads it, for good and with nothing in any log.
 
+- **Locks.** A lock held where the panic was is taken again by the next run, as the panic left
+  what it guards: the server's locks are its own (`sync.rs`: std's, taken back from a panic, their
+  `lock` answering a `Result` that is never an error), and so are the content store's packs'
+  (holon-host's `packs.rs`). Before, a std lock a panic held stayed poisoned, and every later run
+  or request that took it failed the same way until the server restarted: one panic holding the
+  deployments table stopped the server.
 - **Limits.** A panic in a request's handler before its run leaves no log entry. A run that
   panicked says so, and that what it had sent or written by then isn't in its record: a panic
-  past its first round, or in its commit, is past things done. A lock held where the panic was
-  stays poisoned (`.lock().unwrap()` at 245 places): each later run that takes it fails the same
-  way, logged, until the server restarts.
+  past its first round, or in its commit, is past things done. What a panic left half changed
+  under a lock stays so (no lock rolls it back). logs.rs keeps std's lock, left to the work that
+  owns that file.
 - **Tests.** `a_panic_ends_its_run_and_nothing_else` (every way a run starts that a test drives
   without a far side, a panic in the run and before it, the deployment beside it unharmed),
   `a_staged_unit_loads_or_is_refused_whatever_its_wiring` (an effect wired into a write, the
-  wiring that once panicked a run under the state lock, is among what it refuses at deploy).
+  wiring that once panicked a run under the state lock, is among what it refuses at deploy),
+  `a_panic_holding_what_every_run_takes_stops_no_run_after_it` (the deployments table, a log, a
+  state, a vault, the policy), `every_lock_in_the_server_is_one_no_panic_poisons` (a sweep of the
+  source), `a_lock_a_panic_held_is_taken_again_as_the_panic_left_it`,
+  `a_panic_holding_the_packs_locks_stops_no_read_after_it`.
 
 ### G4. The evaluator fails closed, and its fast path answers as its plain one
 

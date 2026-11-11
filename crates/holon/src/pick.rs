@@ -174,10 +174,8 @@ fn desktop_refused() -> Option<String> {
 /// or none if it was cancelled.
 fn pick(start: Option<&str>) -> Result<Option<String>, (u16, String)> {
     static OPEN: Mutex<()> = Mutex::new(());
-    let _one = match OPEN.try_lock() {
-        Ok(g) => g,
-        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return Err((409, "a folder dialog is open already: answer it first".to_string())),
+    let Some(_one) = OPEN.try_lock() else {
+        return Err((409, "a folder dialog is open already: answer it first".to_string()));
     };
     let me = std::env::current_exe().map_err(|e| (500, format!("can't find this program to show the dialog: {e}")))?;
     let mut cmd = Command::new(me);

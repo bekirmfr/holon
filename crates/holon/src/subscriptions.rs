@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Condvar;
+use crate::sync::Condvar;
 
 use crate::feeds::{Binding, Event, Feeds, Incoming, OnFull};
 use crate::*;

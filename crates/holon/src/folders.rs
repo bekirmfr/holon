@@ -25,7 +25,7 @@
 //!   A folder may cap its size: a write that would take it past its cap doesn't land.
 
 use std::io::{Read as _, Seek as _, Write as _};
-use std::sync::RwLock;
+use crate::sync::RwLock;
 
 use holon_host::{Limits, Performer};
 use rouille::{Request, Response};

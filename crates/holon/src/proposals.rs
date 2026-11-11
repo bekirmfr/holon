@@ -7,7 +7,7 @@
 //! flow's timeline names each too (events.rs, kind `"proposal"`).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
