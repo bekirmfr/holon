@@ -2267,17 +2267,18 @@ export const pay = action(async (order) => {
 fn only_a_person_decides_an_approval() {
     use crate::accounts::Kind;
     let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    let decider = |c: access::Caller| durable::decider(&c, "d").map_err(|refusal| refusal.0);
+    assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
+    assert_eq!(decider(caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
     let refused = [
-        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude is an agent"),
+        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude may not do that: an agent proposes"),
         (Some("ci"), Some(Kind::Service), Some(access::Role::Editor), "ci is a service"),
         (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "a viewer only reads"),
         (None, None, None, "no accounts"),
     ];
     for (name, kind, role, why) in refused {
-        let said = durable::decider(&caller(name, kind, role)).unwrap_err();
+        let said = decider(caller(name, kind, role)).unwrap_err();
         assert!(said.contains(why), "{name:?}: {said}");
     }
 }
@@ -4736,15 +4737,16 @@ fn spellings(path: &str) -> Vec<String> {
     all
 }
 
-/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For each
-/// request only an admin, or only an editor, may make, every caller who may not (no one, a
-/// viewer, an editor, an agent, a service), under every spelling a router might take for its
-/// path, is refused before anything answers it: 401 or 403, or the router's bare 404 for a path
-/// it takes for nothing. A handler's answer (a 400 saying why, a 404 naming what is missing)
-/// means the gate and the router read that path apart, as they once did a secret's with no name.
+/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For every
+/// route can.rs's table asks `can` about, every caller the gate refuses it to (no one, a viewer, an
+/// editor, an agent, a service), under every spelling a router might take for its path, is refused
+/// before anything answers it: 401 or 403, or a bare 404 for a path no route has. A handler's
+/// answer (a 400 saying why, a 404 naming what is missing) means the gate and the router read that
+/// path apart, as they once did a secret's with no name.
 #[test]
 fn the_gate_and_the_router_read_every_path_alike() {
     use crate::accounts::{Accounts, Kind};
+    use crate::can::{Rule, ROUTES};
     use access::Role;
     let pw = "correct horse battery";
     let mut state = test_state();
@@ -4759,52 +4761,49 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
     let ci_token = accounts.tokens("ci")[0].id.clone();
     state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
-    let request = |method: &str, url: &str, body: &serde_json::Value, token: Option<&str>| {
-        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(body).unwrap() };
-        req_with(method, url, bytes, token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))).into_iter().collect())
+    // Sent as if through a proxy, so a folder dialog (pick.rs) is never shown here.
+    let request = |method: &str, url: &str, token: Option<&str>| {
+        let mut headers = vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())];
+        headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
+        req_with(method, url, vec![], headers)
     };
     let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
-    let null = serde_json::Value::Null;
-    let admins = ["ada"];
-    let editors = ["ada", "bob, an editor", "ci, a service"];
-    let tokens_of_ci = format!("/people/ci/tokens/{ci_token}");
-    let kept: [(&str, &str, serde_json::Value, &[&str]); 19] = [
-        // Only an admin's.
-        ("POST", "/deployments/d/secrets/k", serde_json::json!({ "from": "env:HOLON_SWEEP_UNSET" }), &admins),
-        ("POST", "/deployments/d/secrets/k/rollback", serde_json::json!({ "version": 1 }), &admins),
-        ("DELETE", "/deployments/d/secrets/k", null.clone(), &admins),
-        ("GET", "/people", null.clone(), &admins),
-        ("POST", "/people", serde_json::json!({ "name": "eve", "kind": "person", "role": "admin" }), &admins),
-        ("PATCH", "/people/cy", serde_json::json!({ "role": "admin" }), &admins),
-        ("POST", "/people/cy/reset", serde_json::json!({}), &admins),
-        ("DELETE", "/people/cy", null.clone(), &admins),
-        // ci's tokens: ada's, its owner and an admin; nobody else's.
-        ("POST", "/people/ci/tokens", serde_json::json!({ "label": "x" }), &admins),
-        ("GET", "/people/ci/tokens", null.clone(), &admins),
-        ("DELETE", tokens_of_ci.as_str(), null.clone(), &admins),
-        ("GET", "/admin/oidc", null.clone(), &admins),
-        ("POST", "/admin/secrets/k", serde_json::json!({ "value": "a value long enough" }), &admins),
-        ("GET", "/admin/secrets/env", null.clone(), &admins),
-        ("GET", "/admin/grants", null.clone(), &admins),
-        // An editor's, never an agent's or a viewer's.
-        ("POST", "/deployments/d/stop", serde_json::json!({}), &editors),
-        ("POST", "/deployments/d/pause", serde_json::json!({}), &editors),
-        ("DELETE", "/deployments/d", null.clone(), &editors),
-        ("DELETE", "/flows/f", null.clone(), &editors),
-    ];
-    for (method, path, body, may) in &kept {
-        // Not vacuous: whoever may is let through by the gate.
-        assert!(state.access.check(&request(method, path, body, Some(&ada))).is_ok(), "{method} {path}: ada, an admin, is let through");
-        for spelled in spellings(path) {
-            for (who, token) in callers.iter().filter(|(who, _)| !may.contains(who)) {
-                let answer = route(&state, &request(method, &spelled, body, *token));
+    let hash = "0".repeat(64);
+    let mut sent = 0;
+    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..))) {
+        // ci's tokens, the deployment d, its secret k.
+        let people = row.path.starts_with("/people/");
+        let path = row
+            .path
+            .split('/')
+            .map(|s| match s {
+                "{slug}" => "d",
+                "{name}" if people => "ci",
+                "{name}" => "k",
+                "{id}" if people => ci_token.as_str(),
+                "{id}" => "1",
+                "{hash}" => hash.as_str(),
+                s => s,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let admitted = |token: Option<&str>| state.access.admit(&request(row.method, &path, token)).is_ok();
+        // Not vacuous: an admin is let through, and no one isn't.
+        assert!(admitted(Some(&ada)), "{} {path}: ada, an admin, is let through", row.method);
+        let refused: Vec<_> = callers.iter().filter(|(_, token)| !admitted(*token)).collect();
+        assert!(refused.iter().any(|(who, _)| *who == "no one"), "{} {path}: no one is let through", row.method);
+        for spelled in spellings(&path) {
+            for (who, token) in &refused {
+                let answer = route(&state, &request(row.method, &spelled, *token));
                 let status = answer.status_code;
                 let said = String::from_utf8_lossy(&body_bytes(answer)).into_owned();
                 let refused = matches!(status, 401 | 403) || (status == 404 && said.is_empty());
-                assert!(refused, "{method} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}");
+                assert!(refused, "{} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}", row.method);
+                sent += 1;
             }
         }
     }
+    assert!(sent > 1000, "{sent} requests sent");
 }
 
 /// What `/auth/owned` lists is what its caller makes and revokes tokens for. Each caller (an admin,
@@ -10762,7 +10761,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
     let synced = || log.with(|l| l.take_dirty().inspect(|_| l.still_dirty())).is_none();
-    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, false, &[]).status;
+    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]).status;
 
     // Strict: a read, and a write.
     assert_eq!(call("GET", "/health", ""), 200);
@@ -10834,7 +10833,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
     assert!(state.deployments.lock().unwrap()[&slug].tallies_changed, "for the periodic sync to write");
     assert!(tally("GET /health").last_at_ms > 0);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
     assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
     assert_eq!(tally("action report").runs, 1);
 
@@ -10916,7 +10915,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     // (missing), which isn't a failure.
     let failing = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"failing\", { port: 8173 })\n\nexport const check = action((input) => input.nowhere, { log: \"unrecorded\" })\n");
     let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
     assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
@@ -11009,7 +11008,7 @@ route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
     };
     for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
         let slug = deploy_plain_text(&state, &text(level, port));
-        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
         let held = hold();
         assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
         let refused = hold();
@@ -12345,7 +12344,7 @@ fn the_server_records_what_its_golden_record_holds() {
             for name in &actions {
                 for body in &bodies {
                     let input = holon_core::parse_json(if body.is_empty() { "{}" } else { body }).unwrap_or(Value::Record(BTreeMap::new()));
-                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, false, &[]);
+                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, &[]);
                     wrote(&mut out, format!("== {slug} · action {name} · body {} → {} {}", body.len(), ran.status, ran.reply));
                 }
             }

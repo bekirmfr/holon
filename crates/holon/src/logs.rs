@@ -362,11 +362,9 @@ pub(crate) fn handle_get_logs(state: &crate::AppState, slug: &str, caller: &crat
     if !state.deployments.lock().unwrap().contains_key(slug) {
         return err(404, format!("no deployment {slug:?}"));
     }
-    if caller.role == Some(crate::access::Role::Agent) {
-        let granted = state.deployments.lock().unwrap().get(slug).is_some_and(|d| d.grant.items.iter().any(|i| i == "AgentReadsLogs"));
-        if !granted {
-            return err(403, format!("agents may not read {slug:?}'s log lines: a person lets them, under \"agents may read its logs\" in its deploy settings"));
-        }
+    let agents_may = state.deployments.lock().unwrap().get(slug).is_some_and(|d| d.grant.items.iter().any(|i| i == "AgentReadsLogs"));
+    if let Err(refusal) = crate::can::can(caller, crate::can::Action::RunView, &crate::can::Resource::Logs { slug, agents_may }) {
+        return refusal.response();
     }
     let number = |name: &str| request.get_param(name).and_then(|v| v.parse::<u64>().ok());
     let query = Query {

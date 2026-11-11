@@ -125,8 +125,9 @@ All paths are under `crates/holon/src/`.
 
 ## 2. The routes
 
-This is the route table 2b writes, and the rows 2a's test pins. There are 106 rows; the design
-counts 48 (§7). "Today" says who gets past every check:
+This is the route table 2b writes, and the rows 2a's test pins. There are 108 rows; the design
+counts 48 (§7). Two of them, the folder picker's, were found writing 2b: 2a's table didn't have
+them. "Today" says who gets past every check:
 
 - **open**: anyone, signed in or not;
 - **signed in**: any principal signed in;
@@ -203,6 +204,7 @@ the check a handler adds once it knows more.
 | `POST /admin/store/sweep`, `/admin/folders/sweep` | `sweep.rs:433`, `folders.rs:1318` | A | host.operate | Host |
 | `GET`, `POST /admin/folders`, `/admin/databases`, `/admin/mails`, `/admin/feeds`, `/admin/queues` | `folders.rs:1256`, `databases.rs:1292`, `mails.rs:867`, `feeds.rs:830`, `queues.rs:777` | A | resource.view; bind for POST | Host |
 | `GET /admin/databases/<name>/tables` | `databases.rs:1350` | A | resource.view | Host |
+| `GET /admin/folders/browse`, `POST /admin/folders/pick` (choosing a folder to bind) | `pick.rs:58` | A | resource.bind | Host |
 | `DELETE /admin/folders/<name>`, `/admin/databases/<name>`, `/admin/mails/<name>`, `/admin/feeds/<name>`, `/admin/queues/<name>` | `folders.rs:1334`, `databases.rs:1360`, `mails.rs:906`, `feeds.rs:870`, `queues.rs:816` | A | resource.unbind | Host |
 
 **People**
@@ -424,7 +426,7 @@ pub(crate) struct Route { pub(crate) method: &'static str, pub(crate) path: &'st
 /// Every route, in the order the routers read them: the first row that matches is the route.
 pub(crate) const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/deployments/{slug}/runs", rule: Rule::Can(Action::RunView, On::Slug) },
-    // … the 106 rows of §2
+    // … the 108 rows of §2
 ];
 
 /// The route `method` and `url` ask for, and the path's parts.
@@ -494,16 +496,19 @@ if let Rule::Can(action, on) = route.rule
 
 ### Tests in 2b
 
-- **2a's table** passes. Its D5 rows change, and the commit names them.
+- **2a's table** passes. Its D5 rows change, and the commit names them. It gains the folder
+  picker's two rows, sent as if through a proxy so that no folder dialog opens where the tests run.
 - **`the_gate_and_the_router_read_every_path_alike`** (`tests.rs:4905`) goes from its 19 kept
   routes to every `ROUTES` row that some caller may not take:
   - every spelling of the path, for every caller who may not, is refused or answered a bare 404.
     That the router knows every row is 2a's (ada's answers).
 - **New, in `can.rs`:**
-  - every row is reachable: no earlier row matches its canonical path;
-  - the admin holds every `Action`;
-  - `Action::name` matches the design's §4 names;
-  - the `BUILTIN` kinds are those of `Kind::may_hold`, as the design's §5.1 says.
+  - every row is reachable: no earlier row matches its canonical path; and its action is one its
+    resource takes;
+  - the admin holds every `Action`, on every resource that takes it;
+  - `Action::name` matches the design's §4 names, read from its table;
+  - `BUILTIN` is the design's §5.1 table, read from it, permissions and kinds. `Kind::may_hold`
+    reads its kinds from `BUILTIN`.
 - **`access.rs` tests.**
   - `each_role_does_what_it_may`, `people_are_an_admins_and_tokens_their_owners_too` and
     `an_agent_proposes_and_calls_and_does_nothing_else` are rows of the table now, so they go
@@ -518,7 +523,7 @@ if let Rule::Can(action, on) = route.rule
 - **`access-and-approvals-L4.md`**:
   - §4 gains `host.check` (D4);
   - §5.1's table becomes §2's built-in roles (D3);
-  - §7 says 106 routes, not 48, and says that a path no route has answers 404 (D5).
+  - §7 says 108 routes, not 48, and says that a path no route has answers 404 (D5).
 - **`principals-plan.md`**: "Step 2, for what step 1 leaves it" points here.
 - **`docs/manual/reference/server.md`**: where it says what a role may, unchanged. Where it says
   what a path no route has answers, 404.

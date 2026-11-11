@@ -1249,7 +1249,7 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 
 /// `/admin/folders` (list, bind), `/admin/folders/<name>` (unbind; `?deployment=<slug>` for a
 /// deployment's own), and the admin page's browse and pick (pick.rs), or None for any other path.
-/// Only an admin gets this far (access.rs); what they do goes in the activity log.
+/// Only an admin gets this far (can.rs); what they do goes in the activity log.
 pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
     let url = request.url();
     let method = request.method();

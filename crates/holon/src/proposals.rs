@@ -187,11 +187,12 @@ fn on_timeline(state: &AppState, slug: &str, what: String, by: Option<&str>) {
 
 /// An agent's deploy of `body` that needs a person to approve `needs`: the flow saved under the
 /// agent's name (never over someone else's), and kept as a proposal. 202, with the proposal.
-pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<String>, by: Option<&str>) -> Response {
+pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<String>, who: &crate::access::Caller) -> Response {
+    let by = who.name.as_deref();
     let Some(document) = body.document.clone() else {
         return err(400, "a proposal keeps its canvas for the person who reviews it: send \"document\"");
     };
-    let saved_at = match crate::flows::save(&state.flows, &state.flows_path, &body.slug, document.clone(), body.uses.clone(), by, true, &state.activity) {
+    let saved_at = match crate::flows::save(&state.flows, &state.flows_path, &body.slug, document.clone(), body.uses.clone(), who, &state.activity) {
         Ok(at) => at,
         Err(refused) => return refused,
     };
@@ -245,7 +246,7 @@ struct DeclineBody {
     reason: Option<String>,
 }
 
-/// `POST /proposals/<id>/decline`, `{ "reason" }`: a person declines it (access.rs keeps agents
+/// `POST /proposals/<id>/decline`, `{ "reason" }`: a person declines it (can.rs keeps agents
 /// and viewers out). It stays saved, and what runs keeps running; its author reads the reason.
 pub(crate) fn handle_post_decline(state: &AppState, id: &str, request: &Request, by: Option<&str>) -> Response {
     let Ok(id) = id.parse::<u64>() else { return err(404, format!("no proposal {id}")) };

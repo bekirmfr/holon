@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Who may do what is decided in one place.** Every route the control plane answers is a row of
+  one table (`crates/holon/src/can.rs`), saying what it asks: nothing, that its caller is signed
+  in, or an action on what its path names, as the catalogue of the access design writes it
+  (`flow.approve-deploy`, `run.decide`, `host.check`…). The built-in roles (viewer, editor, admin,
+  agent) are data made from that catalogue, and one function, `can`, answers whether a caller may.
+  It also holds the rules no role decides: an agent replaces only a flow it saved, runs an action
+  and reads its log lines only where the flow lets agents, and never approves or starts what it
+  deploys; only a person decides an approval; a person makes the tokens of an agent or a service
+  they own. Each role may do what it did before, refused in the same words. One change: a path no
+  route has is answered 404 to anyone signed in, where a viewer's or an agent's write, and anything
+  under `/admin/` but an admin's, was refused with 403. No sample changes: this is who may call
+  the control plane, not what a flow does.
 - **The registry, the shared cache and `/fire` are gone from the server.** `GET /registry`,
   `POST /registry/publish`, `POST /registry/fork`, `GET /cache/<key>`, `POST /cache/ingest` and
   `POST /fire` came before deployments: nothing in Holon called them (not the editor, the CLI or

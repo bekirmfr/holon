@@ -1,7 +1,7 @@
 //! Who is let through, route by route (docs/L4s/can-and-catalogue-plan.md, step 2a): every route
 //! the server answers, sent by every kind of caller, and what each is answered: let through, or
 //! refused with which status and words. What a caller is answered comes from the table here and
-//! `expected`, written from what each route lets today, never from access.rs: the same table
+//! `expected`, written from what each route lets today, never from can.rs: the same table
 //! judges whatever decides in its place.
 
 use super::*;
@@ -156,6 +156,8 @@ fn rows(unit: &str) -> Vec<Row> {
         at("POST", "/admin/storage", "[]", Admins),
         at("POST", "/admin/store/sweep", r#"{"dry_run":true}"#, Admins),
         at("POST", "/admin/folders/sweep", "", Admins),
+        at("GET", "/admin/folders/browse", "", Admins),
+        at("POST", "/admin/folders/pick", "{}", Admins),
         at("GET", "/admin/databases/none/tables", "", Admins),
         // People.
         at("GET", "/people", "", Admins),
@@ -165,11 +167,11 @@ fn rows(unit: &str) -> Vec<Row> {
         at("DELETE", "/people/nobody", "", Admins),
         at("POST", "/people/nobody/reset", "", Admins),
         at("POST", "/admin/oidc", "[]", Admins),
-        // Paths no route has.
+        // Paths no route has: a bare 404 to anyone signed in (the plan's D5).
         unrouted("GET", "/nope", All),
-        unrouted("POST", "/nope", Editors),
-        unrouted("POST", "/admin/nope", Admins),
-        unrouted("DELETE", "/flows", Editors),
+        unrouted("POST", "/nope", All),
+        unrouted("POST", "/admin/nope", All),
+        unrouted("DELETE", "/flows", All),
     ];
     for what in ["document", "versions", "events", "changes", "history", "manifest", "grant", "runs", "log", "sessions", "export", "replay", "state", "collections/c", "holds", "feeds", "queues"] {
         rows.push(at("GET", &format!("/deployments/d/{what}"), "", All));
@@ -193,10 +195,13 @@ fn rows(unit: &str) -> Vec<Row> {
     rows
 }
 
-/// `method` `path` sent to `state`, signed in with `token`: its status, and its body as text.
+/// `method` `path` sent to `state`, signed in with `token`: its status, and its body as text. Sent
+/// as if through a proxy, so a folder dialog (pick.rs) is never shown on the machine running the
+/// tests.
 fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Vec<u8>) -> (u16, String) {
-    let signed = token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))).into_iter().collect();
-    let answer = route(state, &req_with(method, path, body, signed));
+    let mut headers = vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())];
+    headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
+    let answer = route(state, &req_with(method, path, body, headers));
     (answer.status_code, String::from_utf8_lossy(&body_bytes(answer)).into_owned())
 }
 

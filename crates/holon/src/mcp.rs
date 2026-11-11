@@ -7,7 +7,7 @@
 //! It signs in as an agent, a principal of its own, never as a person: on the server this user
 //! runs, as theirs (`<user>-agent`, made by the run file's admin the first time: mcphosts.rs); on
 //! a server elsewhere, with the agent's token setup kept. So the server holds it to what an agent
-//! may do (access.rs), and what it did is under the agent's name.
+//! may do (can.rs), and what it did is under the agent's name.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Write};

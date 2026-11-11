@@ -12,7 +12,7 @@
 //! through the same path (firing.rs) and is recorded (recorder.rs). It adds no trust of its own
 //! to what content addressing gives: every unit and value read from the store is checked against
 //! its hash (`Store::get`, holon-host; docs/L4s/P4.5-P4.6-transport-scoping-L4.md). What it adds
-//! is who may ask (access.rs) and what a run may do (permissions.rs).
+//! is who may ask (access.rs, can.rs) and what a run may do (permissions.rs).
 //! docs/engineering/components/holon.md maps the modules, what `serve` builds and the locks; the
 //! steps that built it are in docs/JOURNAL.md.
 //!
@@ -36,6 +36,7 @@ mod arrivals;
 mod auth;
 mod blobs;
 mod calls;
+mod can;
 mod changes;
 mod channels;
 mod claims;

@@ -46,7 +46,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 
 | Area | Modules | Job |
 |---|---|---|
-| Control plane edge | http.rs, access.rs, auth.rs, accounts.rs, oidc.rs, local.rs, activity.rs, editor.rs | `route` dispatches every request after `reject_untrusted` (Host, Origin, Content-Type, `MAX_BODY_BYTES`) and `Access::check` (who, and their role); `/auth/…` and `/admin/…` are auth.rs's; `with_cors` adds CORS to every answer; the built-in editor is served at `/` before the gate |
+| Control plane edge | http.rs, access.rs, can.rs, auth.rs, accounts.rs, oidc.rs, local.rs, activity.rs, editor.rs | `route` dispatches every request after `reject_untrusted` (Host, Origin, Content-Type, `MAX_BODY_BYTES`) and `Access::admit` (who, and whether `can` lets them take the route: can.rs's `ROUTES`, deny by default); `/auth/…` and `/admin/…` are auth.rs's; `with_cors` adds CORS to every answer; the built-in editor is served at `/` before the gate |
 | Deployments | deploy.rs, persist.rs, lifecycle.rs, permissions.rs, grants.rs, restore.rs, history.rs, events.rs, flows.rs, wire.rs | deploy, delete, `/trigger`, run, pause, stop; the deployments and flows files; manifests, the policy, grants and permits; versions and restores; each deployment's events |
 | Run path | firing.rs, units.rs, claims.rs, locks.rs, taint.rs, secrets.rs | `fire_with_state` and what it is held to; the flow and value caches; key claims and commit locks; redaction |
 | Data plane | dataplane.rs, listeners.rs, data.rs, channels.rs, websockets.rs | the listeners and their limits; routing a request to its endpoint (`serve_data`); subscriptions as server-sent events; inbound WebSocket connections, a run for each block's event (`websockets::open`, hooked before routing) |
@@ -164,7 +164,7 @@ sweep.rs are the housekeeping: the content store's sweep, its packing, the host'
 - **Plumbing, not a second decider.** The server adds no trust logic to what content addressing
   gives: `Store::get` verifies every unit and value against its hash (main.rs's module doc;
   [P4.5–P4.6 scoping](../../L4s/P4.5-P4.6-transport-scoping-L4.md)). What it adds is who may ask
-  (access.rs) and what a run may do (permissions.rs).
+  (access.rs, can.rs) and what a run may do (permissions.rs).
 - **Two HTTP stacks.** The control plane stayed on `rouille`; the data plane, which faces
   strangers, is `hyper`, so every connection is held to limits from its first byte (dataplane.rs).
 - **A short table lock, a lock per part.** Holding the table across a fire would let one slow flow
@@ -215,7 +215,9 @@ In tests.rs unless named, in-process through `route` and `serve_data` (`test_sta
 - **Nothing changes by accident**: `the_server_records_what_its_golden_record_holds`
   ([Testing](../themes/testing.md#nothing-changes-by-accident)).
 - **The gate**: `cross_site_and_rebinding_requests_are_refused_before_routing`,
-  `oversized_body_is_refused`, and access.rs's own tests.
+  `oversized_body_is_refused`, access.rs's and can.rs's own tests, the access table
+  (`tests/access_table.rs`: every route, every kind of caller) and
+  `the_gate_and_the_router_read_every_path_alike`.
 - **By hand**: `request_throughput`, `profile_one_route` ([Measuring](../themes/measuring.md)).
 
 Gaps: nothing checks the lock order itself (code that took the table under a log's lock would

@@ -1231,8 +1231,7 @@ const SETTINGS: [(&str, &str); 5] = [
     ("backup", "where the runs a log lets go of are written first: a folder's whole path, or \"none\""),
 ];
 
-/// `GET /admin/host` and `POST /admin/storage` (an admin's: access.rs holds every `/admin/` path to
-/// one), or None for any other path.
+/// `GET /admin/host` and `POST /admin/storage` (an admin's: can.rs), or None for any other path.
 pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> Option<Response> {
     match (request.method(), request.url().as_str()) {
         ("GET", "/admin/host") => Some(Response::json(&host_view(state))),
