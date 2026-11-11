@@ -114,7 +114,7 @@ pub(crate) fn with_people(state: &mut AppState) -> People {
 fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
     headers.extend(more);
-    if matches!(method, "POST" | "PATCH") {
+    if matches!(method, "POST" | "PUT" | "PATCH") {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
         headers.push(("Content-Type".to_string(), ty.to_string()));
@@ -4280,8 +4280,8 @@ fn cors_allows_every_method_this_api_actually_uses() {
     // contents*, not just the preflight's status code, and silently refuses to ever send
     // the real DELETE if its method isn't listed. `assert!(..headers..)` alone (the test
     // above) would never have caught this — it only checks the header is PRESENT, never
-    // what it actually says. This checks the one thing that matters: every method a real
-    // endpoint in this file uses (GET, POST, DELETE) is actually named in the value.
+    // what it actually says. This checks the one thing that matters: every method a route
+    // in can.rs's table answers is actually named in the value.
     let state = test_state();
     let req = Request::fake_http(
         "OPTIONS",
@@ -4296,8 +4296,8 @@ fn cors_allows_every_method_this_api_actually_uses() {
         .find(|(k, _)| k.as_ref() == "Access-Control-Allow-Methods")
         .map(|(_, v)| v.as_ref().to_string())
         .unwrap_or_default();
-    for method in ["GET", "POST", "DELETE"] {
-        assert!(methods.contains(method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
+    for method in crate::can::ROUTES.iter().map(|r| r.method) {
+        assert!(methods.split(", ").any(|m| m == method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
     }
 }
 

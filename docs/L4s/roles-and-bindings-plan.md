@@ -471,9 +471,9 @@ host, so the table passes unchanged. New tests hold the rest.
 
 Built in two parts. **Part 1** (built): scopes, expiry and `why`, the lists and the handlers that
 know the flow, and the bindings and versions routes (`GET`/`POST /bindings`,
-`DELETE /bindings/{id}`, `GET /access/versions`, `GET /access`). **Part 2**: groups, custom
-roles, `/roles`, `/groups`, `/auth/me/can`, D20's fixed rule and D28. Where part 1 differs from
-the sections below:
+`DELETE /bindings/{id}`, `GET /access/versions`, `GET /access`). **Part 2** (built): groups,
+custom roles, `/roles`, `/groups`, `/auth/me/can`, D20's fixed rule and D28. Where part 1 differs
+from the sections below:
 
 - **D19's third rule** ("a role holding a host action is bound only at the host") would refuse
   `editor` at a flow, since `editor` holds `policy.edit` and `host.check`. As built, a binding is
@@ -495,6 +495,41 @@ the sections below:
 - **A version's words** for a binding: `bound editor to bob on "payout"`, with
   `, until <time>` when it expires; `unbound editor from bob on "payout"`. The activity log keeps
   the same, as `bound editor to` `bob on "payout"`.
+
+Where part 2 differs:
+
+- **The whole document is checked on every change** (`Document::check`, from
+  `accounts::change_access`): each role is one (`RoleText::def`) and defined once; each group is
+  named as a name is written, once, and its members are principals here; each binding is of a
+  role here, to a group here or to a principal whose kind may hold it. So changing a role's kinds
+  is refused while one of its bindings is to a principal it would no longer allow. A binding to a
+  group isn't refused for members of other kinds: it holds nothing for them, as §5.2 says.
+- **`bindings::route` comes before `auth::route`** in `http.rs`: `auth::route` answers every
+  `/auth/…` path, an unknown one with 404, so `/auth/me/can` must be reached first.
+- **`/auth/me/can` with no flow** asks on the host for the host's actions, on every flow at once
+  (`Resource::Flows`) for `flow.*` and `run.*`, as the lists ask, and everywhere
+  (`can::everywhere`'s empty slug) for `state.*` and `secret.*`, which no list asks. Its test,
+  `me_can_answers_what_each_route_asks`, holds it to `can::may` for every route that asks of the
+  host, the flows or a flow, for four callers.
+- **`PUT /roles/<name>` (D19)** asks `can` for each action the role allows: on the host for the
+  host's actions, everywhere for the others. 403 names the first its author doesn't hold.
+- **D28's words**: `watcher is bound 2 times: unbind them first` (`once: unbind it first`), 409;
+  `editor is a built-in role: it stays`, 400; `no role "x"`, 404.
+- **A custom role's actions** are kept as written, and answered and compared in the catalogue's
+  order (`RoleDef::custom`), so two roles allowing the same are the same role.
+- **The `role` a principal is shown as** (`host_role`) counts only the built-in roles its kind may
+  hold: an agent in a group bound `editor` isn't shown as one.
+- **The last admin (D15)** may be held through a group: an admin binding on the host, for good, to
+  a group with an enabled person in it counts.
+- **The versions' words**: `defined the role watcher: run.view, held by a person`,
+  `changed the role …`, `removed the role watcher`; `made the group ops: bob`,
+  `changed the group ops: bob, cy`, `removed the group ops`; `bound watcher to the group ops on
+  "d"`.
+- **Tests**: the D19 tests are part 1's `a_binding_gives_only_what_its_author_holds_there` and
+  part 2's `a_role_an_admin_defines_holds_what_it_allows`; `an_expired_binding_holds_nothing` is
+  part 1's `what_is_bound_is_listed_versioned_and_expires`; `bindings.rs` adds
+  `what_is_kept_is_checked_whole` and `a_groups_binding_holds_for_each_member`. The People guide
+  waits for 3c's pages and CLI.
 
 ### Scopes in `bindings.rs` and `can.rs`
 

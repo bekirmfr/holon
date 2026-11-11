@@ -74,7 +74,7 @@ impl Kind {
 }
 
 /// Why `kind` may not hold `role`, if it may not.
-fn held(kind: Kind, role: Role) -> Result<(), String> {
+pub(crate) fn held(kind: Kind, role: Role) -> Result<(), String> {
     if kind.may_hold(role) {
         return Ok(());
     }
@@ -215,17 +215,30 @@ pub(crate) struct Who {
     pub(crate) kind: Kind,
 }
 
+/// Why a role or a group `name` bound `times` isn't removed, if it is bound (the plan's D28): an
+/// admin unbinds each first, and sees what goes.
+fn still_bound(name: &str, times: usize) -> Result<(), String> {
+    match times {
+        0 => Ok(()),
+        1 => Err(format!("{name} is bound once: unbind it first")),
+        n => Err(format!("{name} is bound {n} times: unbind them first")),
+    }
+}
+
 /// A version's words for binding `role` to `name` on the host.
 fn bound(role: Role, name: &str) -> String {
     format!("bound {} to {name} on this host", role.name())
 }
 
 /// Whether an admin is left who can sign in: an enabled person here holding admin on the host,
-/// for good. The run file's admin isn't one: it is there only while its OS user runs the server;
-/// nor is a binding that expires.
+/// for good, bound to them or to a group of theirs. The run file's admin isn't one: it is there
+/// only while its OS user runs the server; nor is a binding that expires.
 fn an_admin(book: &Book, access: &Document) -> bool {
     let person = |name: &str| book.users.iter().any(|u| u.name == name && u.kind == Kind::Person && !u.disabled);
-    access.bindings.iter().any(|b| b.role == Role::Admin && b.scope == Scope::Host && b.expires_at.is_none() && matches!(&b.who, Subject::Principal(n) if person(n)))
+    access.bindings.iter().filter(|b| b.role == Role::Admin.name() && b.scope == Scope::Host && b.expires_at.is_none()).any(|b| match &b.who {
+        Subject::Principal(n) => person(n),
+        Subject::Group(g) => access.group(g).is_some_and(|g| g.members.iter().any(|m| person(m))),
+    })
 }
 
 /// A name's sign-ins: wrong passwords since its last lock, when it was locked, and how many are
@@ -290,7 +303,8 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn valid_name(name: &str) -> Result<(), String> {
+/// Why `name` isn't a name here, if it isn't: a principal's, a role's or a group's.
+pub(crate) fn valid_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b));
     if !ok || name == "admin-token" {
         return Err("a name is letters, digits and . _ - @, at most 64".into());
@@ -529,9 +543,10 @@ impl Accounts {
     }
 
     /// Change the book and the access document together, and keep both, as `change` does; the
-    /// document's new version, when its bindings changed, is by `by` and says `what` and `why`. Refused,
-    /// with nothing changed, when a binding would name a principal not here or a role its kind may
-    /// not hold, or when no admin would be left once there is one (the plan's D15).
+    /// document's new version, when it changed, is by `by` and says `what` and `why`. Refused, with
+    /// nothing changed, when the document isn't one the server keeps (`Document::check`: a binding
+    /// naming a principal not here, or a role its kind may not hold…), or when no admin would be
+    /// left once there is one (the plan's D15).
     fn change_access<T>(&self, by: &str, what: &str, why: Option<&str>, f: impl FnOnce(&mut Book, &mut Document) -> Result<T, String>) -> Result<T, String> {
         let mut book = hold(&self.book);
         let now = epoch_now();
@@ -540,15 +555,11 @@ impl Accounts {
         let before = self.access.document();
         let (mut next, mut access) = (book.clone(), Document::clone(&before));
         let out = f(&mut next, &mut access)?;
-        for b in &access.bindings {
-            let Subject::Principal(name) = &b.who;
-            let p = next.users.iter().find(|u| u.name == *name).ok_or(format!("no principal {name:?}"))?;
-            held(p.kind, b.role)?;
-        }
+        access.check(|name| next.users.iter().find(|u| u.name == name).map(|u| u.kind))?;
         if an_admin(&book, &before) && !an_admin(&next, &access) {
             return Err("that would leave no admin: make someone else an admin first".into());
         }
-        let mut access = (access.bindings != before.bindings).then(|| access.after(&before, by, what, why, now));
+        let mut access = (access != *before).then(|| access.after(&before, by, what, why, now));
         // A principal is made before what is bound to it is kept, and goes after: a server
         // stopped between the two writes leaves a principal holding nothing, never a binding that
         // a new principal of the same name would hold.
@@ -740,12 +751,18 @@ impl Accounts {
 
     /// The widest built-in role bound to `name` on the host: what the editor shows it as.
     pub(crate) fn host_role(&self, name: &str) -> Option<Role> {
-        bindings::host_role(&self.holding(name))
+        bindings::host_role(&self.holding(name), self.principal(name)?.kind)
     }
 
-    /// What is bound to `name`.
+    /// What is bound to `name`, itself (the tests: the routes answer what `reaching` says).
+    #[cfg(test)]
     pub(crate) fn bindings_of(&self, name: &str) -> Vec<Binding> {
         self.access.document().of(name).cloned().collect()
+    }
+
+    /// What holds for `name`: what is bound to it, and to its groups, with the group's name.
+    pub(crate) fn reaching(&self, name: &str) -> Vec<(Binding, Option<String>)> {
+        self.access.document().reaching(name).map(|(b, g)| (b.clone(), g.map(String::from))).collect()
     }
 
     /// The access document's newest version.
@@ -763,13 +780,13 @@ impl Accounts {
         self.access.version(n)
     }
 
-    /// Bind `role` to `name` at `scope`, until `expires_at` if given (seconds), by `by`, saying
-    /// why: the binding. Refused when `name` isn't here or its kind may not hold `role`.
-    pub(crate) fn bind(&self, name: &str, role: Role, scope: Scope, expires_at: Option<u64>, by: &str, why: Option<&str>) -> Result<Binding, String> {
-        let until = expires_at.map(|at| format!(", until {}", crate::cmdline::when(Some(at)))).unwrap_or_default();
-        let what = format!("bound {} to {name} {}{until}", role.name(), scope.said());
+    /// Bind `role` to `who` at `scope`, until `expires_at` if given (seconds), by `by`, saying
+    /// why: the binding. Refused when there is no such role, principal or group, or a principal's
+    /// kind may not hold `role`.
+    pub(crate) fn bind(&self, who: Subject, role: &str, scope: Scope, expires_at: Option<u64>, by: &str, why: Option<&str>) -> Result<Binding, String> {
+        let what = bindings::bound_words(&who, role, &scope, expires_at);
         self.change_access(by, &what, why, |_, access| {
-            let id = access.bind(name, role, scope, expires_at, by, epoch_now());
+            let id = access.bind(who, role, scope, expires_at, by, epoch_now());
             Ok(access.bindings.iter().find(|b| b.id == id).cloned().expect("just bound"))
         })
     }
@@ -778,9 +795,61 @@ impl Accounts {
     /// no admin (D15).
     pub(crate) fn unbind(&self, id: u64, by: &str, why: Option<&str>) -> Result<Binding, String> {
         let Some(b) = self.access.document().bindings.iter().find(|b| b.id == id).cloned() else { return Err(format!("no binding {id}")) };
-        let Subject::Principal(name) = &b.who;
-        let what = format!("unbound {} from {name} {}", b.role.name(), b.scope.said());
-        self.change_access(by, &what, why, |_, access| access.unbind(id).ok_or(format!("no binding {id}")))
+        self.change_access(by, &bindings::unbound_words(&b), why, |_, access| access.unbind(id).ok_or(format!("no binding {id}")))
+    }
+
+    /// Define the role `role.name`, or change it, by `by`, saying why: whether it was there
+    /// before. A role still bound changes for every binding of it; refused when one is to a
+    /// principal whose kind it no longer allows.
+    pub(crate) fn define_role(&self, role: bindings::RoleText, by: &str, why: Option<&str>) -> Result<bool, String> {
+        let there = self.access.document().roles.iter().any(|r| r.name == role.name);
+        let what = format!("{} the role {}: {}, held by {}", if there { "changed" } else { "defined" }, role.name, role.allows.join(", "), role.kinds.iter().map(|k| k.said()).collect::<Vec<_>>().join(" or "));
+        self.change_access(by, &what, why, |_, access| {
+            match access.roles.iter_mut().find(|r| r.name == role.name) {
+                Some(r) => *r = role,
+                None => access.roles.push(role),
+            }
+            Ok(there)
+        })
+    }
+
+    /// Remove the role `name`, by `by`, saying why. Refused while it is bound (D28), and for a
+    /// built-in role.
+    pub(crate) fn remove_role(&self, name: &str, by: &str, why: Option<&str>) -> Result<(), String> {
+        if crate::can::builtin(name).is_some() {
+            return Err(format!("{name} is a built-in role: it stays"));
+        }
+        self.change_access(by, &format!("removed the role {name}"), why, |_, access| {
+            let at = access.roles.iter().position(|r| r.name == name).ok_or(format!("no role {name:?}"))?;
+            still_bound(name, access.bound(Some(name), None))?;
+            access.roles.remove(at);
+            Ok(())
+        })
+    }
+
+    /// Make the group `group.name` with its members, or change it, by `by`, saying why: whether
+    /// it was there before.
+    pub(crate) fn set_group(&self, group: bindings::Group, by: &str, why: Option<&str>) -> Result<bool, String> {
+        let there = self.access.document().group(&group.name).is_some();
+        let members = if group.members.is_empty() { "no one".to_string() } else { group.members.join(", ") };
+        let what = format!("{} the group {}: {members}", if there { "changed" } else { "made" }, group.name);
+        self.change_access(by, &what, why, |_, access| {
+            match access.groups.iter_mut().find(|g| g.name == group.name) {
+                Some(g) => *g = group,
+                None => access.groups.push(group),
+            }
+            Ok(there)
+        })
+    }
+
+    /// Remove the group `name`, by `by`, saying why. Refused while a binding is to it (D28).
+    pub(crate) fn remove_group(&self, name: &str, by: &str, why: Option<&str>) -> Result<(), String> {
+        self.change_access(by, &format!("removed the group {name}"), why, |_, access| {
+            let at = access.groups.iter().position(|g| g.name == name).ok_or(format!("no group {name:?}"))?;
+            still_bound(name, access.bound(None, Some(name)))?;
+            access.groups.remove(at);
+            Ok(())
+        })
     }
 
     pub(crate) fn principal(&self, name: &str) -> Option<Principal> {
@@ -1356,7 +1425,7 @@ mod tests {
         assert_eq!(last(&a), (5, "ada".into(), "removed bob, and what was bound to bob".into()));
         assert!(a.holding("bob").is_empty() && a.bindings_of("bob").is_empty());
         a.invite("bob", Role::Editor, None, "ada").unwrap();
-        assert_eq!(a.holding("bob").iter().map(|h| h.role).collect::<Vec<_>>(), [Role::Editor], "only what is bound to the new bob");
+        assert_eq!(a.holding("bob").iter().map(|h| h.role.builtin).collect::<Vec<_>>(), [Some(Role::Editor)], "only what is bound to the new bob");
     }
 
     #[test]

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **An admin defines roles of their own, and groups.** A role (`PUT /roles/<name>`) allows the
+  actions it names from the catalogue, to the kinds of principal it names; its author holds on
+  the host everything it allows. A group (`PUT /groups/<name>`) is a set of principals, bound as
+  one is (`{"who": {"group": "payments"}, …}`); its binding holds for each member whose kind the
+  role allows. `GET /roles` and `GET /groups` list them, with how many bindings hold each, and
+  neither is removed while bound (409). Whatever role it holds, an agent never does what is a
+  person's: approving a deploy, starting, stopping, deleting or restoring a flow, writing a
+  secret, managing people, roles, resources or the host. `GET /auth/me/can?actions=…&flow=…`
+  answers, for each action, `true` or the words its refusal would say, as the routes ask it; the
+  editor's buttons will read it. `/auth/me` and `GET /people` answer a group's bindings too, with
+  the group's name. No sample changes: this is who may call the control plane, not what a flow
+  does.
 - **A role can be bound at one flow, or at one approval point, and until a time.** An admin binds
   it with `POST /bindings` (`{who, role, scope, expires_at, why}`), and unbinds it with
   `DELETE /bindings/<id>`. Bound at a flow, it holds there and nowhere else, and the lists (flows,

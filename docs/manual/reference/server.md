@@ -233,6 +233,30 @@ admin binds it (`POST /bindings`):
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
 answers one whole. Each change is also in the activity log.
 
+An admin also defines roles of their own, and groups:
+
+- **A role** (`PUT /roles/<name>`, `{"allows": ["run.view", "run.decide"], "kinds": ["person"],
+  "about": "decides payouts"}`) allows the actions it names, from the catalogue
+  (`GET /roles` lists every role with what it allows), to the kinds of principal it names. Its
+  author holds on the host everything it allows. Changing it changes every binding of it, and is
+  refused when one is to a principal whose kind it would no longer allow. A built-in role's name
+  is taken, and a built-in role isn't changed.
+- **A group** (`PUT /groups/<name>`, `{"members": ["bob", "cy"]}`: all of them) is bound as a
+  principal is, `{"who": {"group": "payments"}, …}`, and the binding holds for each member whose
+  kind its role allows. Its members are principals here, never groups; removing a principal takes
+  it out of its groups.
+- A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
+  them first.
+- **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
+  deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
+  or manages people, roles, resources or the host.
+
+`GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout` answers, for each action, `true`
+or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
+with `&approval=ok`), and with no flow, on the host for the host's actions and on every flow at
+once for the others. `/auth/me` and `GET /people` answer what holds for a principal, each binding
+to one of its groups with the group's name.
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
@@ -241,8 +265,8 @@ answers one whole. Each change is also in the activity log.
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
-  another role or unbound. The run file's admin (below) doesn't count: it is there only while the
-  server runs; nor does an admin binding that expires.
+  another role or unbound, bound to them or to a group of theirs. The run file's admin (below)
+  doesn't count: it is there only while the server runs; nor does an admin binding that expires.
 - **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
   who signs in with a password or a provider and may hold any role but agent; an **agent**, role
   agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and

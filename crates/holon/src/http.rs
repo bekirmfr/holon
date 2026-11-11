@@ -52,7 +52,7 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
     {
         return Err(err(403, format!("Origin {origin:?} is not allowed")));
     }
-    if matches!(request.method(), "POST" | "PATCH") {
+    if matches!(request.method(), "POST" | "PUT" | "PATCH") {
         let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
         if !["application/json", "application/octet-stream"].iter().any(|t| media_type.eq_ignore_ascii_case(t)) {
             return Err(err(415, format!("{} bodies must be sent as application/json or application/octet-stream", request.method())));
@@ -70,7 +70,7 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
         && access.allows_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
-                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 .with_additional_header("Vary", "Origin");
         }
@@ -166,13 +166,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::empty_204();
     }
 
-    // Signing in, and the admin panel (auth.rs).
-    if let Some(response) = crate::auth::route(state, request, &caller) {
+    // Roles, groups and what is bound to whom, with its versions, and what the caller may do
+    // (bindings.rs): before auth.rs, which answers every other `/auth/…` path.
+    if let Some(response) = crate::bindings::route(state, request, &caller) {
         return response;
     }
 
-    // What is bound to whom, and its versions (bindings.rs).
-    if let Some(response) = crate::bindings::route(state, request, &caller) {
+    // Signing in, and the admin panel (auth.rs).
+    if let Some(response) = crate::auth::route(state, request, &caller) {
         return response;
     }
 

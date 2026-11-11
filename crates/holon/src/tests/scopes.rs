@@ -1,11 +1,13 @@
 //! What a binding at a flow or at an approval point lets its holder do, through the real gate and
 //! handlers (docs/L4s/roles-and-bindings-plan.md, step 3b): there, and nowhere else; the lists
 //! keep what its holder may view; a binding that has expired holds nothing; and what is bound is
-//! listed, changed and kept as versions through its routes.
+//! listed, changed and kept as versions through its routes. A binding to a group holds for its
+//! members, a role an admin defines holds what it allows, neither is removed while bound, and
+//! `/auth/me/can` answers what the routes ask.
 
 use super::access_table::{ask, deploy, error_of};
 use super::*;
-use crate::accounts::Accounts;
+use crate::accounts::{Accounts, Kind};
 use access::Role;
 use serde_json::{json, Value};
 
@@ -167,7 +169,7 @@ fn what_is_bound_is_listed_versioned_and_expires() {
     assert_eq!(code, 200, "{said}");
     let made: Value = serde_json::from_str(&said).unwrap();
     assert_eq!((made["binding"]["role"].as_str(), made["binding"]["expired"].as_bool()), (Some("editor"), Some(false)));
-    accounts.bind("bob", Role::Editor, on("e"), Some(now - 1), "ada", None).unwrap();
+    accounts.bind(crate::bindings::Subject::Principal("bob".into()), "editor", on("e"), Some(now - 1), "ada", None).unwrap();
     assert_eq!(send(&state, &t.bob, "POST", "/deployments/d/stop", Value::Null).0, 200, "until it expires");
     assert_eq!(refusal(send(&state, &t.bob, "POST", "/deployments/e/stop", Value::Null)), (403, "bob may not do that: a viewer only reads".into()), "expired");
     let bobs: Value = serde_json::from_str(&ada("GET", "/bindings?who=bob&role=editor", Value::Null).1).unwrap();
@@ -198,4 +200,144 @@ fn what_is_bound_is_listed_versioned_and_expires() {
     let activity: Value = serde_json::from_str(&ada("GET", "/activity", Value::Null).1).unwrap();
     let done: Vec<String> = activity["entries"].as_array().unwrap().iter().map(|e| format!("{} {}", e["action"].as_str().unwrap(), e["target"].as_str().unwrap())).collect();
     assert!(done.contains(&"unbound editor from bob on \"e\"".to_string()) && done.contains(&"bound editor to bob on \"d\"".to_string()), "{done:?}");
+}
+
+/// A binding to a group holds for each member whose kind its role allows: bob, a person in
+/// `payments`, holds editor on `d` by it, and `/auth/me` says through which group; scout, an agent
+/// in it, doesn't, editor being a person's or a service's. Taken out of the group, bob holds
+/// nothing by it. A group's members are principals here, and a binding is to a group here.
+#[test]
+fn a_groups_binding_holds_for_its_members_of_the_kinds_its_role_allows() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    accounts.add("scout", Kind::Agent, Role::Viewer, "ada", "ada").unwrap();
+    let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
+
+    assert_eq!(ada("PUT", "/groups/payments", json!({ "members": ["scout", "bob", "bob"], "about": "pays out" })).0, 200);
+    let (code, said) = ada("POST", "/bindings", json!({ "who": { "group": "payments" }, "role": "editor", "scope": { "flows": { "slug": "d" } } }));
+    assert_eq!(code, 200, "{said}");
+    assert_eq!(send(&state, &t.bob, "POST", "/deployments/d/pause", Value::Null).0, 200);
+    let me: Value = serde_json::from_str(&send(&state, &t.bob, "GET", "/auth/me", Value::Null).1).unwrap();
+    let held: Vec<(&str, Option<&str>)> = me["bindings"].as_array().unwrap().iter().map(|b| (b["role"].as_str().unwrap(), b["group"].as_str())).collect();
+    assert_eq!(held, [("viewer", None), ("editor", Some("payments"))]);
+    let can: Value = serde_json::from_str(&send(&state, &scout, "GET", "/auth/me/can?actions=run.view,flow.lifecycle&flow=d", Value::Null).1).unwrap();
+    assert_eq!(can, json!({ "run.view": true, "flow.lifecycle": "scout may not do that: a viewer only reads" }));
+    let groups: Value = serde_json::from_str(&ada("GET", "/groups", Value::Null).1).unwrap();
+    assert_eq!(groups["groups"], json!([{ "name": "payments", "about": "pays out", "members": ["bob", "scout"], "bound": 1 }]));
+
+    assert_eq!(ada("PUT", "/groups/payments", json!({ "members": ["scout"] })).0, 200);
+    assert_eq!(refusal(send(&state, &t.bob, "POST", "/deployments/d/run", Value::Null)), (403, "bob may not do that: a viewer only reads".into()));
+    assert_eq!(refusal(ada("PUT", "/groups/payments", json!({ "members": ["nobody"] }))), (400, "no principal \"nobody\": a group's members are principals here".into()));
+    assert_eq!(refusal(ada("POST", "/bindings", json!({ "who": { "group": "nope" }, "role": "viewer", "scope": "host" }))), (400, "no group \"nope\"".into()));
+}
+
+/// A role an admin defines holds what it allows and nothing else, to the kinds it names: dee,
+/// `approver` on `d` only, decides and views its runs, and is told no role dee holds there holds
+/// anything more (D16). It changes for every binding of it, and isn't changed to refuse whom it is
+/// bound to. Its author holds on the host whatever it allows (D19); a built-in role's name is
+/// taken.
+#[test]
+fn a_role_an_admin_defines_holds_what_it_allows() {
+    let (state, t, run, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let (code, said) = ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"], "about": "decides payouts" }));
+    assert_eq!(code, 200, "{said}");
+    let roles: Value = serde_json::from_str(&ada("GET", "/roles", Value::Null).1).unwrap();
+    let names: Vec<(&str, bool)> = roles["roles"].as_array().unwrap().iter().map(|r| (r["name"].as_str().unwrap(), r["builtin"].as_bool().unwrap())).collect();
+    assert_eq!(names, [("viewer", true), ("agent", true), ("editor", true), ("admin", true), ("approver", false)]);
+    assert_eq!(roles["roles"][4], json!({ "name": "approver", "about": "decides payouts", "allows": ["run.view", "run.decide"], "kinds": ["person"], "builtin": false, "bound": 0 }));
+
+    only(&state, &t.ada, "dee", "approver", json!({ "flows": { "slug": "d" } }));
+    let (code, said) = send(&state, &t.dee, "POST", &format!("/deployments/d/runs/{run}/decide"), json!({ "name": "payout", "approve": true }));
+    assert_eq!(code, 200, "{said}");
+    assert_eq!(send(&state, &t.dee, "GET", "/deployments/d/runs", Value::Null).0, 200);
+    assert_eq!(refusal(send(&state, &t.dee, "POST", "/deployments/d/pause", Value::Null)), none_on("dee", "on \"d\"", "flow.lifecycle"));
+    assert_eq!(refusal(send(&state, &t.dee, "GET", "/deployments/e/runs", Value::Null)), none_on("dee", "on \"e\"", "run.view"));
+
+    assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.view"], "kinds": ["person"] })).0, 200);
+    let can: Value = serde_json::from_str(&send(&state, &t.dee, "GET", "/auth/me/can?actions=run.decide,run.view&flow=d", Value::Null).1).unwrap();
+    assert_eq!(can, json!({ "run.view": true, "run.decide": "dee may not do that: no role dee holds on \"d\" holds run.decide" }));
+    assert_eq!(refusal(ada("PUT", "/roles/approver", json!({ "allows": ["run.view"], "kinds": ["agent"] }))), (400, "a person may not hold approver: it is held by an agent".into()));
+    assert_eq!(refusal(ada("PUT", "/roles/editor", json!({ "allows": ["run.view"], "kinds": ["person"] }))), (400, "editor is a built-in role: name yours otherwise".into()));
+    assert_eq!(refusal(ada("PUT", "/roles/r", json!({ "allows": ["run.fly"], "kinds": ["person"] }))).0, 400);
+
+    // cy defines roles, and holds on the host only a viewer's besides.
+    assert_eq!(ada("PUT", "/roles/role-maker", json!({ "allows": ["role.define", "role.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "role-maker", "scope": "host" })).0, 200);
+    let cy = |body: Value| refusal(send(&state, &t.cy, "PUT", "/roles/mine", body));
+    assert_eq!(cy(json!({ "allows": ["flow.deploy"], "kinds": ["person"] })), (403, "mine would allow flow.deploy, which you don't hold on this host: a role allows only what its author holds".into()));
+    assert_eq!(cy(json!({ "allows": ["run.view", "role.view"], "kinds": ["person"] })).0, 200);
+}
+
+/// A role or a group still bound isn't removed (the plan's D28): the admin is told how many
+/// bindings hold it, unbinds them, and then removes it; a built-in role stays. Each change is a
+/// version, in words.
+#[test]
+fn a_bound_role_or_group_is_not_removed() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(ada("PUT", "/roles/watcher", json!({ "allows": ["run.view"], "kinds": ["service", "person"] })).0, 200);
+    assert_eq!(ada("PUT", "/groups/ops", json!({ "members": ["bob"] })).0, 200);
+    let bind = |who: Value, slug: &str| {
+        let (code, said) = ada("POST", "/bindings", json!({ "who": who, "role": "watcher", "scope": { "flows": { "slug": slug } } }));
+        assert_eq!(code, 200, "{said}");
+        serde_json::from_str::<Value>(&said).unwrap()["binding"]["id"].as_u64().unwrap()
+    };
+    let ids = [bind(json!({ "group": "ops" }), "d"), bind(json!({ "principal": "cy" }), "e")];
+    assert_eq!(refusal(ada("DELETE", "/roles/watcher", Value::Null)), (409, "watcher is bound 2 times: unbind them first".into()));
+    assert_eq!(refusal(ada("DELETE", "/groups/ops", Value::Null)), (409, "ops is bound once: unbind it first".into()));
+    for id in ids {
+        assert_eq!(ada("DELETE", &format!("/bindings/{id}"), Value::Null).0, 204);
+    }
+    assert_eq!(ada("DELETE", "/roles/watcher?why=no%20longer%20needed", Value::Null).0, 204);
+    assert_eq!(ada("DELETE", "/groups/ops", Value::Null).0, 204);
+    assert_eq!(refusal(ada("DELETE", "/roles/watcher", Value::Null)), (404, "no role \"watcher\"".into()));
+    assert_eq!(refusal(ada("DELETE", "/groups/ops", Value::Null)), (404, "no group \"ops\"".into()));
+    assert_eq!(refusal(ada("DELETE", "/roles/editor", Value::Null)), (400, "editor is a built-in role: it stays".into()));
+
+    let versions: Value = serde_json::from_str(&ada("GET", "/access/versions", Value::Null).1).unwrap();
+    let said: Vec<(&str, Option<&str>)> = versions["versions"].as_array().unwrap().iter().take(8).map(|v| (v["what"].as_str().unwrap(), v["why"].as_str())).collect();
+    assert_eq!(said, [
+        ("removed the group ops", None),
+        ("removed the role watcher", Some("no longer needed")),
+        ("unbound watcher from cy on \"e\"", None),
+        ("unbound watcher from the group ops on \"d\"", None),
+        ("bound watcher to cy on \"e\"", None),
+        ("bound watcher to the group ops on \"d\"", None),
+        ("made the group ops: bob", None),
+        ("defined the role watcher: run.view, held by a service or a person", None),
+    ]);
+}
+
+/// `GET /auth/me/can` answers what each route's gate answers: for every route that asks `can` of
+/// the host, the flows or a flow, and each caller, the answer for its action, on `d` when the
+/// route names a flow, is true exactly when the gate lets the caller through, and else the gate's
+/// words.
+#[test]
+fn me_can_answers_what_each_route_asks() {
+    use crate::can::{On, Parts, Rule, ROUTES};
+    let (state, t, _, _) = server();
+    only(&state, &t.ada, "bob", "editor", json!({ "flows": { "slug": "d" } }));
+    only(&state, &t.ada, "dee", "editor", json!({ "approval": { "flow": { "slug": "d" }, "name": "payout" } }));
+    let accounts = state.access.accounts().map(|a| &**a);
+    for token in [&t.ada, &t.bob, &t.dee, &t.cy] {
+        let who = state.access.admit(&req_with("GET", "/auth/me", vec![], vec![("Authorization".to_string(), format!("Bearer {token}"))])).unwrap();
+        let name = who.name.clone().unwrap();
+        for route in ROUTES {
+            let Rule::Can(action, on) = route.rule else { continue };
+            let (query, parts) = match on {
+                On::Principal => continue,
+                On::Slug | On::Approvals => ("&flow=d", Parts { slug: Some("d"), name: None }),
+                On::Host | On::Flows => ("", Parts::default()),
+            };
+            let (code, said) = send(&state, token, "GET", &format!("/auth/me/can?actions={}{query}", action.name()), Value::Null);
+            assert_eq!(code, 200, "{said}");
+            let answered = serde_json::from_str::<Value>(&said).unwrap()[action.name()].clone();
+            let gate = crate::can::may(&who, route, &parts, accounts);
+            assert_eq!(answered, gate.map_or_else(|r| json!(r.0), |_| json!(true)), "{} {} for {name}", route.method, route.path);
+        }
+    }
+    let (code, said) = send(&state, &t.cy, "GET", "/auth/me/can?actions=flow.fly", Value::Null);
+    assert_eq!((code, error_of(&said)), (400, "\"flow.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…".into()));
 }

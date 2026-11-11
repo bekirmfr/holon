@@ -29,9 +29,15 @@
 //!   (`/people…`) included.
 //!
 //! A viewer is anyone; an agent is an agent; an editor a person or a service; an admin a person.
-//! Past the roles, the host's fixed rules: only a person decides an approval; an agent runs a
-//! flow's action, and reads its log lines, only where the flow lets agents; and a person manages
-//! the tokens of an agent or a service they own, as an admin may for any.
+//! An admin defines roles of their own (bindings.rs's `RoleText`), of the same shape: what they
+//! allow, from the catalogue, and which kinds may hold them. Past the roles, the host's fixed
+//! rules, which no role overrides: only a person decides an approval; an agent never does what is
+//! a person's (approving a deploy, starting, stopping, deleting or restoring a flow, writing a
+//! secret, the host's people, roles, resources and operations), runs a flow's action, and reads
+//! its log lines, only where the flow lets agents; and a person manages the tokens of an agent or
+//! a service they own, as an admin may for any.
+
+use std::sync::{Arc, LazyLock};
 
 use rouille::Response;
 
@@ -42,10 +48,8 @@ use crate::http::err;
 use Action::*;
 use Holds::{Do, Own};
 
-/// What may be done, to what (the design's §4). Fixed here: roles are made from it. Nothing asks
-/// `role.view` or `role.define` yet: they are for custom roles (§5).
+/// What may be done, to what (the design's §4). Fixed here: roles are made from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum Action {
     FlowView,
     FlowEdit,
@@ -131,6 +135,11 @@ impl Action {
             HostOperate => "host.operate",
         }
     }
+
+    /// The action the catalogue names `name`, if it names one.
+    pub(crate) fn named(name: &str) -> Option<Action> {
+        Action::ALL.into_iter().find(|a| a.name() == name)
+    }
 }
 
 /// What an action is done to. Its slugs and names are what a binding's scope is checked against
@@ -175,6 +184,7 @@ impl Resource<'_> {
 }
 
 /// What a role holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Holds {
     /// Every action.
     All,
@@ -183,14 +193,29 @@ enum Holds {
     Own(Action),
 }
 
-/// A role: what it holds, and which kinds of principal may hold it.
+/// A role, built-in or an admin's own: what it holds, and which kinds of principal may hold it.
+#[derive(Debug, PartialEq)]
 pub(crate) struct RoleDef {
-    pub(crate) role: Role,
-    holds: &'static [Holds],
-    pub(crate) kinds: &'static [Kind],
+    pub(crate) name: String,
+    /// The built-in role it is, if it is one.
+    pub(crate) builtin: Option<Role>,
+    holds: Vec<Holds>,
+    pub(crate) kinds: Vec<Kind>,
 }
 
 impl RoleDef {
+    /// An admin's role, `name`: it allows `allows`, to `kinds`; the same role whatever order they
+    /// are written in.
+    pub(crate) fn custom(name: &str, allows: &[Action], kinds: &[Kind]) -> RoleDef {
+        let holds = Action::ALL.into_iter().filter(|a| allows.contains(a)).map(Do).collect();
+        RoleDef { name: name.into(), builtin: None, holds, kinds: ANYONE.iter().copied().filter(|k| kinds.contains(k)).collect() }
+    }
+
+    /// Each action it holds on something, in the catalogue's order.
+    pub(crate) fn allows(&self) -> Vec<Action> {
+        Action::ALL.into_iter().filter(|a| self.holds_any(*a)).collect()
+    }
+
     /// Whether it holds `action` on `on`, for `who`.
     fn holds(&self, action: Action, on: &Resource, who: &Caller) -> bool {
         self.holds.iter().any(|h| match *h {
@@ -221,36 +246,44 @@ impl RoleDef {
 const ANYONE: &[Kind] = &[Kind::Person, Kind::Agent, Kind::Service];
 
 /// The built-in roles (the design's §5.1): today's, as data.
-pub(crate) const BUILTIN: [RoleDef; 4] = [
-    RoleDef { role: Role::Viewer, holds: &[Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView)], kinds: ANYONE },
-    RoleDef {
-        role: Role::Agent,
-        holds: &[
-            Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
-            Own(FlowEdit), Do(FlowPropose), Do(FlowRestoreDryRun), Do(RunCall),
-        ],
-        kinds: &[Kind::Agent],
-    },
-    RoleDef {
-        role: Role::Editor,
-        holds: &[
-            Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
-            Do(FlowEdit), Do(FlowPropose), Do(FlowDeploy), Do(FlowApproveDeploy), Do(FlowRestore), Do(FlowRestoreDryRun), Do(FlowLifecycle), Do(FlowDelete),
-            Do(RunCall), Do(RunDecide), Do(StateWrite), Do(PolicyEdit), Do(HostCheck),
-        ],
-        kinds: &[Kind::Person, Kind::Service],
-    },
-    RoleDef { role: Role::Admin, holds: &[Holds::All], kinds: &[Kind::Person] },
-];
+pub(crate) static BUILTIN: LazyLock<[Arc<RoleDef>; 4]> = LazyLock::new(|| {
+    let def = |role: Role, holds: &[Holds], kinds: &[Kind]| Arc::new(RoleDef { name: role.name().into(), builtin: Some(role), holds: holds.to_vec(), kinds: kinds.to_vec() });
+    [
+        def(Role::Viewer, &[Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView)], ANYONE),
+        def(
+            Role::Agent,
+            &[
+                Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
+                Own(FlowEdit), Do(FlowPropose), Do(FlowRestoreDryRun), Do(RunCall),
+            ],
+            &[Kind::Agent],
+        ),
+        def(
+            Role::Editor,
+            &[
+                Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
+                Do(FlowEdit), Do(FlowPropose), Do(FlowDeploy), Do(FlowApproveDeploy), Do(FlowRestore), Do(FlowRestoreDryRun), Do(FlowLifecycle), Do(FlowDelete),
+                Do(RunCall), Do(RunDecide), Do(StateWrite), Do(PolicyEdit), Do(HostCheck),
+            ],
+            &[Kind::Person, Kind::Service],
+        ),
+        def(Role::Admin, &[Holds::All], &[Kind::Person]),
+    ]
+});
 
 /// The built-in role `role` names.
-pub(crate) fn role(role: Role) -> &'static RoleDef {
+pub(crate) fn role(role: Role) -> &'static Arc<RoleDef> {
     match role {
         Role::Viewer => &BUILTIN[0],
         Role::Agent => &BUILTIN[1],
         Role::Editor => &BUILTIN[2],
         Role::Admin => &BUILTIN[3],
     }
+}
+
+/// The built-in role named `name`, if one is.
+pub(crate) fn builtin(name: &str) -> Option<&'static Arc<RoleDef>> {
+    BUILTIN.iter().find(|d| d.name == name)
 }
 
 /// Why a caller may not: what the 403 says.
@@ -278,10 +311,7 @@ pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Ref
     debug_assert!(who.holds.is_some() || who.name.is_none(), "only a server without accounts has a caller who holds nothing at all");
     let held = match &who.holds {
         None => true,
-        Some(held) => covering(held, on).any(|r| {
-            let def = role(r);
-            who.kind.is_some_and(|k| def.kinds.contains(&k)) && def.holds(action, on, who)
-        }),
+        Some(held) => covering(held, on).any(|def| who.kind.is_some_and(|k| def.kinds.contains(&k)) && def.holds(action, on, who)),
     };
     if !held && !owns(who, action, on) {
         return Err(refused(who, action, on));
@@ -303,6 +333,14 @@ fn owns(who: &Caller, action: Action, on: &Resource) -> bool {
     action == PeopleManage && who.kind == Some(Kind::Person) && me == Some(*owner)
 }
 
+/// What is a person's, whatever role an agent holds (the plan's D20): approving a deploy, starting,
+/// stopping, deleting and restoring a flow (its dry run is an agent's), writing a secret, and the
+/// host's people, roles, resources and operations.
+fn a_persons(action: Action) -> bool {
+    let of = action.name().split('.').next().unwrap_or_default();
+    matches!(action, FlowApproveDeploy | FlowLifecycle | FlowDelete | FlowRestore | SecretSet | SecretRollBack | HostOperate) || matches!(of, "people" | "role" | "resource")
+}
+
 /// The host's fixed rules (the design's §8.4), past what a role holds.
 fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
     // An agent by its kind, whatever role it holds.
@@ -316,6 +354,8 @@ fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
             (Some(name), Some(Kind::Service)) => Err(Refusal(format!("{name} is a service, a script, not a person: sign in to decide an approval"))),
             _ => Ok(()),
         },
+        // No role an admin defines gives an agent what is a person's.
+        _ if agent && a_persons(action) => Err(Refusal(format!("{} may not do that: {AGENTS}", who.name.as_deref().unwrap_or_default()))),
         // The flow lets agents, as a person granted it.
         Resource::Action { slug, name, agents_may: false } if agent => Err(Refusal(format!(
             "agents may not run {slug:?}'s action {name:?}: a person lets them, under \"agents may run\" in its deploy settings, and approves it"
@@ -328,18 +368,19 @@ fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
 }
 
 /// The roles of `held` bound where `on` is.
-fn covering<'a>(held: &'a [Held], on: &'a Resource) -> impl Iterator<Item = Role> + 'a {
-    held.iter().filter(|h| h.covers(on)).map(|h| h.role)
+fn covering<'a>(held: &'a [Held], on: &'a Resource) -> impl Iterator<Item = &'a Arc<RoleDef>> + 'a {
+    held.iter().filter(|h| h.covers(on)).map(|h| &h.role)
 }
 
 /// What a refusal by the roles says: the flow isn't the agent's own; the tokens aren't the
-/// person's; that no role the caller holds there holds it; or what the action needs, "that needs
-/// an admin" when only the admin role holds it.
+/// person's; that no role the caller holds there holds it (also when one of them is an admin's
+/// own, the plan's D16); or what the action needs, "that needs an admin" when only the admin
+/// role holds it.
 fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
     let name = who.name.as_deref().unwrap_or_default();
-    let roles: Vec<Role> = covering(who.holds.as_deref().unwrap_or_default(), on).collect();
+    let roles: Vec<&Arc<RoleDef>> = covering(who.holds.as_deref().unwrap_or_default(), on).collect();
     match on {
-        Resource::Saved { name: flow, by } if roles.iter().any(|r| role(*r).holds_own(action)) => {
+        Resource::Saved { name: flow, by } if roles.iter().any(|r| r.holds_own(action)) => {
             let whose = by.unwrap_or("someone");
             return Refusal(format!("a flow named \"{flow}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name"));
         }
@@ -348,7 +389,7 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         }
         _ => {}
     }
-    if roles.is_empty() {
+    if roles.is_empty() || roles.iter().any(|r| r.builtin.is_none()) {
         let place = match on {
             Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
             Resource::Flows => "on any flow".to_string(),
@@ -357,10 +398,10 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         };
         return Refusal(format!("{name} may not do that: no role {name} holds {place} holds {}", action.name()));
     }
-    let only_admins = BUILTIN.iter().filter(|d| d.role != Role::Admin).all(|d| !d.holds_any(action));
+    let only_admins = BUILTIN.iter().filter(|d| d.builtin != Some(Role::Admin)).all(|d| !d.holds_any(action));
     let what = if only_admins {
         ADMINS
-    } else if roles.contains(&Role::Agent) {
+    } else if roles.iter().any(|r| r.builtin == Some(Role::Agent)) {
         AGENTS
     } else {
         VIEWERS
@@ -426,6 +467,8 @@ pub(crate) static ROUTES: &[Route] = &[
     open("GET", "/auth/invite"),
     open("POST", "/auth/invite"),
     signed_in("GET", "/auth/me"),
+    // What its caller may do, action by action (bindings.rs).
+    signed_in("GET", "/auth/me/can"),
     signed_in("GET", "/auth/owned"),
     signed_in("POST", "/auth/password"),
     signed_in("GET", "/auth/prefs"),
@@ -481,6 +524,12 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("DELETE", "/bindings/{id}", PeopleAssign, On::Host),
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
+    asks("GET", "/roles", RoleView, On::Host),
+    asks("PUT", "/roles/{name}", RoleDefine, On::Host),
+    asks("DELETE", "/roles/{name}", RoleDefine, On::Host),
+    asks("GET", "/groups", PeopleView, On::Host),
+    asks("PUT", "/groups/{name}", PeopleAssign, On::Host),
+    asks("DELETE", "/groups/{name}", PeopleAssign, On::Host),
     // The rest (http.rs).
     open("GET", "/health"),
     signed_in("GET", "/version"),
@@ -671,8 +720,8 @@ mod tests {
             designed.insert(name, (holds, kinds.split(", ").map(String::from).collect()));
         }
         assert_eq!(designed.len(), BUILTIN.len());
-        for def in &BUILTIN {
-            let name = serde_json::to_value(def.role).unwrap().as_str().unwrap().to_string();
+        for def in BUILTIN.iter() {
+            let name = serde_json::to_value(def.builtin.unwrap()).unwrap().as_str().unwrap().to_string();
             let holds: BTreeSet<String> = def
                 .holds
                 .iter()
@@ -684,7 +733,7 @@ mod tests {
                 .collect();
             let kinds: BTreeSet<String> = def.kinds.iter().map(|k| serde_json::to_value(k).unwrap().as_str().unwrap().to_string()).collect();
             assert_eq!(Some(&(holds, kinds)), designed.get(name.as_str()), "{name}");
-            assert_eq!(role(def.role).role, def.role);
+            assert_eq!(role(def.builtin.unwrap()).name, name);
         }
     }
 
@@ -714,7 +763,7 @@ mod tests {
     #[test]
     fn a_caller_may_do_what_any_role_it_holds_holds() {
         let holding = |roles: &[Role]| {
-            let holds = roles.iter().map(|&role| Held { role, scope: crate::bindings::Scope::Host }).collect();
+            let holds = roles.iter().map(|&r| Held { role: Arc::clone(role(r)), scope: crate::bindings::Scope::Host }).collect();
             Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds) }
         };
         let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
@@ -732,15 +781,16 @@ mod tests {
     }
 
     /// `can` is the union of the bindings that cover what is asked (the design's §5.3): for every
-    /// set of at most two bindings, of the built-in roles at each kind of scope, held by each kind
-    /// of principal, and every action on every resource it is done to, it lets through exactly
-    /// when a binding whose scope covers the resource, as the table here says, is of a role that
-    /// holds the action for the caller's kind, or the caller owns it; and the fixed rules let it.
-    /// Refused with no binding covering it, the caller is told so, in words naming where; and it
-    /// may do an action everywhere only by a binding on the host.
+    /// set of at most two bindings, of the built-in roles and two of an admin's at each kind of
+    /// scope, bound to the caller or to a group of theirs, held by each kind of principal, and every
+    /// action on every resource it is done to, it lets through exactly when a binding whose scope
+    /// covers the resource, as the table here says, is of a role that holds the action and that the
+    /// caller's kind may hold, or the caller owns it; and the fixed rules let it. A binding that
+    /// has expired holds nothing. Refused with no binding covering it, the caller is told so, in
+    /// words naming where; and it may do an action everywhere only by a binding on the host.
     #[test]
     fn can_is_the_union_of_the_bindings_that_cover_it() {
-        use crate::bindings::{Scope, Selector};
+        use crate::bindings::{Bindings, Document, Group, RoleText, Scope, Selector, Subject};
         let slug = |s: &str| Selector::Slug(s.into());
         let scopes = [
             ('H', Scope::Host),
@@ -768,33 +818,86 @@ mod tests {
             (Resource::Principal { name: "ci", owner: Some("eve") }, "H", "on this host"),
             (Resource::Principal { name: "scout", owner: Some("cy") }, "H", "on this host"),
         ];
-        let bindings: Vec<(char, Held)> = scopes.iter().flat_map(|(at, scope)| BUILTIN.iter().map(|d| (*at, Held { role: d.role, scope: scope.clone() }))).collect();
+        // An admin's roles: a person's, and one any kind may hold that allows a person's action
+        // and one of the host's.
+        let custom = [
+            RoleText { name: "approver".into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![Kind::Person] },
+            RoleText { name: "operator".into(), about: None, allows: vec!["flow.lifecycle".into(), "flow.view".into(), "people.view".into()], kinds: ANYONE.to_vec() },
+        ];
+        let roles: Vec<Arc<RoleDef>> = BUILTIN.iter().cloned().chain(custom.iter().map(|r| Arc::new(r.def().unwrap()))).collect();
+        let bindings: Vec<(char, Held)> = scopes.iter().flat_map(|(at, scope)| roles.iter().map(|d| (*at, Held { role: Arc::clone(d), scope: scope.clone() }))).collect();
         let mut sets: Vec<Vec<(char, Held)>> = vec![vec![]];
         for (i, one) in bindings.iter().enumerate() {
             sets.push(vec![one.clone()]);
             sets.extend(bindings[i + 1..].iter().map(|two| vec![one.clone(), two.clone()]));
         }
-        assert_eq!(sets.len(), 1 + 16 + 16 * 15 / 2);
-        for kind in [Kind::Person, Kind::Agent, Kind::Service] {
+        assert_eq!(sets.len(), 1 + 24 + 24 * 23 / 2);
+        let now = 1_800_000_000;
+        for &kind in ANYONE {
             for set in &sets {
-                let holds = set.iter().map(|(_, h)| h.clone()).collect();
-                let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(holds) };
-                let case = |what: &str| format!("{what}, {kind:?} holding {:?}", set.iter().map(|(at, h)| format!("{} at {at}", h.role.name())).collect::<Vec<_>>());
-                for (on, letters, place) in &covered {
-                    for action in Action::ALL.into_iter().filter(|a| on.takes(*a)) {
-                        let covering: Vec<&Held> = set.iter().filter(|(at, _)| letters.contains(*at)).map(|(_, h)| h).collect();
-                        let by_role = covering.iter().any(|h| role(h.role).kinds.contains(&kind) && role(h.role).holds(action, on, &who));
-                        let expected = (by_role || owns(&who, action, on)) && fixed(&who, action, on).is_ok();
-                        let got = can(&who, action, on);
-                        assert_eq!(got.is_ok(), expected, "{}", case(&format!("{} on {on:?}", action.name())));
-                        let told_whose = matches!(on, Resource::Principal { .. }) && kind == Kind::Person;
-                        if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
-                            assert_eq!(got.unwrap_err().0, format!("eve may not do that: no role eve holds {place} holds {}", action.name()), "{}", case(""));
+                for group in [None, Some("team")] {
+                    // What eve holds, as the document says it: the set, bound to eve or to eve's
+                    // group, and admin on the host, expired now.
+                    let mut d = Document::default();
+                    d.roles = custom.to_vec();
+                    d.groups.push(Group { name: "team".into(), about: None, members: vec!["cy".into(), "eve".into()] });
+                    d.bind(Subject::Principal("eve".into()), "admin", Scope::Host, Some(now), "ada", 1);
+                    for (_, h) in set {
+                        let to = group.map_or(Subject::Principal("eve".into()), |g| Subject::Group(g.into()));
+                        d.bind(to, &h.role.name, h.scope.clone(), None, "ada", 1);
+                    }
+                    let access = Bindings::memory();
+                    access.keep(d).unwrap();
+                    let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(access.held("eve", now)) };
+                    let case = |what: &str| {
+                        let held: Vec<String> = set.iter().map(|(at, h)| format!("{} at {at}", h.role.name)).collect();
+                        format!("{what}, {kind:?} holding {held:?}{}", group.map(|g| format!(" through {g}")).unwrap_or_default())
+                    };
+                    for (on, letters, place) in &covered {
+                        for action in Action::ALL.into_iter().filter(|a| on.takes(*a)) {
+                            let covering: Vec<&Held> = set.iter().filter(|(at, _)| letters.contains(*at)).map(|(_, h)| h).collect();
+                            let by_role = covering.iter().any(|h| h.role.kinds.contains(&kind) && h.role.holds(action, on, &who));
+                            let expected = (by_role || owns(&who, action, on)) && fixed(&who, action, on).is_ok();
+                            let got = can(&who, action, on);
+                            assert_eq!(got.is_ok(), expected, "{}", case(&format!("{} on {on:?}", action.name())));
+                            let told_whose = matches!(on, Resource::Principal { .. }) && kind == Kind::Person;
+                            if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
+                                assert_eq!(got.unwrap_err().0, format!("eve may not do that: no role eve holds {place} holds {}", action.name()), "{}", case(""));
+                            }
                         }
                     }
+                    let at_host = set.iter().any(|(at, h)| *at == 'H' && h.role.kinds.contains(&kind) && h.role.holds_any(FlowView));
+                    assert_eq!(everywhere(&who, FlowView), at_host, "{}", case("everywhere"));
                 }
-                let at_host = set.iter().any(|(at, h)| *at == 'H' && role(h.role).kinds.contains(&kind) && role(h.role).holds_any(FlowView));
-                assert_eq!(everywhere(&who, FlowView), at_host, "{}", case("everywhere"));
+            }
+        }
+    }
+
+    /// No role gives an agent what is a person's (the plan's D20): whatever it holds, an admin's
+    /// role allowing everything on the host included, it never approves a deploy, starts, stops,
+    /// deletes or restores a flow, writes a secret, or does the host's people, roles, resources or
+    /// operations; and every other action such a role allows it, it may.
+    #[test]
+    fn no_role_gives_an_agent_what_is_a_persons() {
+        let all = Arc::new(RoleDef::custom("everything", &Action::ALL, ANYONE));
+        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held { role: Arc::clone(&all), scope: crate::bindings::Scope::Host }])) };
+        let (agent, service) = (held(Kind::Agent), held(Kind::Service));
+        let persons = ["flow.approve-deploy", "flow.lifecycle", "flow.delete", "flow.restore", "secret.set", "secret.roll-back", "host.operate"];
+        for action in Action::ALL {
+            let of = action.name().split('.').next().unwrap();
+            let a_persons = persons.contains(&action.name()) || ["people", "role", "resource"].contains(&of);
+            for on in resources().iter().filter(|r| r.takes(action) && !matches!(r, Resource::Action { agents_may: false, .. } | Resource::Logs { agents_may: false, .. })) {
+                let said = can(&agent, action, on).err().map(|r| r.0);
+                if action == RunDecide {
+                    assert_eq!(said.as_deref(), Some("scout is an agent: deciding an approval is a person's"));
+                } else if a_persons {
+                    assert_eq!(said, Some(format!("scout may not do that: {AGENTS}")), "{} on {on:?}", action.name());
+                } else {
+                    assert_eq!(said, None, "{} on {on:?}", action.name());
+                }
+                if action != RunDecide {
+                    assert_eq!(can(&service, action, on), Ok(()), "a service holding it may: {} on {on:?}", action.name());
+                }
             }
         }
     }

@@ -173,6 +173,15 @@ fn rows(unit: &str) -> Vec<Row> {
         at("DELETE", "/bindings/none", "", Admins),
         at("GET", "/access/versions", "", Admins),
         at("GET", "/access", "", Admins),
+        // Roles and groups.
+        at("GET", "/roles", "", Admins),
+        at("PUT", "/roles/none", "[]", Admins),
+        at("DELETE", "/roles/none", "", Admins),
+        at("GET", "/groups", "", Admins),
+        at("PUT", "/groups/none", "[]", Admins),
+        at("DELETE", "/groups/none", "", Admins),
+        // What the caller may do.
+        at("GET", "/auth/me/can?actions=flow.view", "", SignedIn),
         // Paths no route has: a bare 404 to anyone signed in (the plan's D5).
         unrouted("GET", "/nope", All),
         unrouted("POST", "/nope", All),
@@ -227,13 +236,14 @@ pub(super) fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &s
 }
 
 /// What a let-through request must leave as it was: the deployments (each one's status and
-/// grant), the saved flows (each one's saver), and the principals (what is bound to each, whether
-/// it is disabled, its owner, and how many tokens it has).
+/// grant), the saved flows (each one's saver), the principals (what is bound to each, whether it
+/// is disabled, its owner, and how many tokens it has), and the roles and groups.
 fn kept(state: &AppState) -> String {
     let deployments: Vec<String> = state.deployments.lock().unwrap().iter().map(|(s, d)| format!("{s} {:?} {:?}", d.life.status, d.grant.items)).collect();
     let flows: Vec<String> = state.flows.lock().unwrap().values().map(|f| format!("{} {:?}", f.name, f.saved_by)).collect();
     let people: Vec<String> = state.access.accounts().map(|a| a.principals().iter().map(|p| format!("{} {:?} {} {:?} {}", p.name, a.bindings_of(&p.name), p.disabled, p.owner, a.tokens(&p.name).len())).collect()).unwrap_or_default();
-    format!("{deployments:?}\n{flows:?}\n{people:?}")
+    let defined = state.access.accounts().map(|a| format!("{:?} {:?}", a.access_document().roles, a.access_document().groups)).unwrap_or_default();
+    format!("{deployments:?}\n{flows:?}\n{people:?}\n{defined}")
 }
 
 /// A server with the deployment `d` (the flow `echo`, deployed as its unit, answered here) and the

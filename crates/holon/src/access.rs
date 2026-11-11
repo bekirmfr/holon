@@ -70,13 +70,13 @@ pub(crate) struct Caller {
 impl Caller {
     /// The widest built-in role it holds on the host: what the editor shows it as.
     pub(crate) fn host_role(&self) -> Option<Role> {
-        crate::bindings::host_role(self.holds.as_deref().unwrap_or_default())
+        crate::bindings::host_role(self.holds.as_deref().unwrap_or_default(), self.kind?)
     }
 
     /// `name`, of `kind`, holding `role` on the host (the tests).
     #[cfg(test)]
     pub(crate) fn holding(name: &str, kind: Kind, role: Role) -> Caller {
-        let held = Held { role, scope: crate::bindings::Scope::Host };
+        let held = Held { role: Arc::clone(crate::can::role(role)), scope: crate::bindings::Scope::Host };
         Caller { name: Some(name.into()), kind: Some(kind), holds: Some(Arc::from([held])) }
     }
 }
