@@ -10403,6 +10403,15 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
+  [0, 138] ·
+  [0, 139] Boolean(false)
+  [0, 159] Boolean(false)
+  [0, 160] ·
+  [0, 56] ·
+  [0, 57] Boolean(false)
+  [0, 137] Boolean(false)
+  [0, 163] ·
+  [0, 161] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -10410,61 +10419,52 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
-  [0, 138] Boolean(true)
-  [0, 139] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] ·
-  [0, 56] ·
-  [0, 57] Boolean(false)
-  [0, 137] Boolean(false)
-  [0, 144] ·
-  [0, 142] ·
-  [0, 145] Boolean(false)
-  [0, 146] ·
-  [0, 147] Boolean(false)
-  [0, 148] Boolean(true)
-  [0, 149] ·
-  [0, 150] Boolean(false)
-  [0, 151] Boolean(true)
-  [0, 152] Record({})
-  [0, 153] Text("a token a trusted partner signed for payouts-api is needed")
-  [0, 154] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 155] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 156] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 157] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 158] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 159] Boolean(false)
-  [0, 161] ·
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
+  [0, 164] Boolean(false)
   [0, 165] ·
   [0, 166] Boolean(false)
   [0, 167] Boolean(true)
-  [0, 168] Record({})
-  [0, 169] Text("Bearer")
-  [0, 170] Record({"www-authenticate": Text("Bearer")})
-  [0, 171] Record({"www-authenticate": Text("Bearer")})
-  [0, 172] Record({"www-authenticate": Text("Bearer")})
-  [0, 173] Record({"www-authenticate": Text("Bearer")})
-  [0, 174] Record({"www-authenticate": Text("Bearer")})
-  [0, 175] Boolean(false)
-  [0, 177] ·
+  [0, 168] ·
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 171] Record({})
+  [0, 172] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 173] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 174] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 175] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 176] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 177] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 178] Boolean(false)
-  [0, 179] Boolean(true)
   [0, 180] ·
   [0, 181] Boolean(false)
   [0, 182] Boolean(true)
-  [0, 183] Number(401.0)
-  [0, 184] Number(401.0)
-  [0, 185] Number(401.0)
-  [0, 186] Number(401.0)
-  [0, 187] Number(401.0)
-  [0, 188, 0] Record({})
-  [0, 188, 1] Record({"status": Number(401.0)})
-  [0, 188, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 188, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 184] ·
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Text("Bearer")
+  [0, 189] Record({"www-authenticate": Text("Bearer")})
+  [0, 190] Record({"www-authenticate": Text("Bearer")})
+  [0, 191] Record({"www-authenticate": Text("Bearer")})
+  [0, 192] Record({"www-authenticate": Text("Bearer")})
+  [0, 193] Record({"www-authenticate": Text("Bearer")})
+  [0, 194] Boolean(false)
+  [0, 196] ·
+  [0, 197] Boolean(false)
+  [0, 198] Boolean(true)
+  [0, 199] ·
+  [0, 200] Boolean(false)
+  [0, 201] Boolean(true)
+  [0, 202] Number(401.0)
+  [0, 203] Number(401.0)
+  [0, 204] Number(401.0)
+  [0, 205] Number(401.0)
+  [0, 206] Number(401.0)
+  [0, 207, 0] Record({})
+  [0, 207, 1] Record({"status": Number(401.0)})
+  [0, 207, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 207, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · POST /payouts · input 1
@@ -10492,6 +10492,15 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
+  [0, 138] ·
+  [0, 139] Boolean(false)
+  [0, 159] Boolean(false)
+  [0, 160] ·
+  [0, 56] ·
+  [0, 57] Boolean(false)
+  [0, 137] Boolean(false)
+  [0, 163] ·
+  [0, 161] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -10499,61 +10508,52 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
-  [0, 138] Boolean(true)
-  [0, 139] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] ·
-  [0, 56] ·
-  [0, 57] Boolean(false)
-  [0, 137] Boolean(false)
-  [0, 144] ·
-  [0, 142] ·
-  [0, 145] Boolean(false)
-  [0, 146] ·
-  [0, 147] Boolean(false)
-  [0, 148] Boolean(true)
-  [0, 149] ·
-  [0, 150] Boolean(false)
-  [0, 151] Boolean(true)
-  [0, 152] Record({})
-  [0, 153] Text("a token a trusted partner signed for payouts-api is needed")
-  [0, 154] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 155] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 156] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 157] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 158] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 159] Boolean(false)
-  [0, 161] ·
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
+  [0, 164] Boolean(false)
   [0, 165] ·
   [0, 166] Boolean(false)
   [0, 167] Boolean(true)
-  [0, 168] Record({})
-  [0, 169] Text("Bearer")
-  [0, 170] Record({"www-authenticate": Text("Bearer")})
-  [0, 171] Record({"www-authenticate": Text("Bearer")})
-  [0, 172] Record({"www-authenticate": Text("Bearer")})
-  [0, 173] Record({"www-authenticate": Text("Bearer")})
-  [0, 174] Record({"www-authenticate": Text("Bearer")})
-  [0, 175] Boolean(false)
-  [0, 177] ·
+  [0, 168] ·
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 171] Record({})
+  [0, 172] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 173] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 174] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 175] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 176] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 177] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 178] Boolean(false)
-  [0, 179] Boolean(true)
   [0, 180] ·
   [0, 181] Boolean(false)
   [0, 182] Boolean(true)
-  [0, 183] Number(401.0)
-  [0, 184] Number(401.0)
-  [0, 185] Number(401.0)
-  [0, 186] Number(401.0)
-  [0, 187] Number(401.0)
-  [0, 188, 0] Record({})
-  [0, 188, 1] Record({"status": Number(401.0)})
-  [0, 188, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 188, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 184] ·
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Text("Bearer")
+  [0, 189] Record({"www-authenticate": Text("Bearer")})
+  [0, 190] Record({"www-authenticate": Text("Bearer")})
+  [0, 191] Record({"www-authenticate": Text("Bearer")})
+  [0, 192] Record({"www-authenticate": Text("Bearer")})
+  [0, 193] Record({"www-authenticate": Text("Bearer")})
+  [0, 194] Boolean(false)
+  [0, 196] ·
+  [0, 197] Boolean(false)
+  [0, 198] Boolean(true)
+  [0, 199] ·
+  [0, 200] Boolean(false)
+  [0, 201] Boolean(true)
+  [0, 202] Number(401.0)
+  [0, 203] Number(401.0)
+  [0, 204] Number(401.0)
+  [0, 205] Number(401.0)
+  [0, 206] Number(401.0)
+  [0, 207, 0] Record({})
+  [0, 207, 1] Record({"status": Number(401.0)})
+  [0, 207, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 207, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · POST /payouts · input 2
@@ -10581,6 +10581,15 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
+  [0, 138] ·
+  [0, 139] Boolean(false)
+  [0, 159] Boolean(false)
+  [0, 160] ·
+  [0, 56] ·
+  [0, 57] Boolean(false)
+  [0, 137] Boolean(false)
+  [0, 163] ·
+  [0, 161] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -10588,61 +10597,52 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
-  [0, 138] Boolean(true)
-  [0, 139] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] ·
-  [0, 56] ·
-  [0, 57] Boolean(false)
-  [0, 137] Boolean(false)
-  [0, 144] ·
-  [0, 142] ·
-  [0, 145] Boolean(false)
-  [0, 146] ·
-  [0, 147] Boolean(false)
-  [0, 148] Boolean(true)
-  [0, 149] ·
-  [0, 150] Boolean(false)
-  [0, 151] Boolean(true)
-  [0, 152] Record({})
-  [0, 153] Text("a token a trusted partner signed for payouts-api is needed")
-  [0, 154] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 155] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 156] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 157] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 158] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 159] Boolean(false)
-  [0, 161] ·
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
+  [0, 164] Boolean(false)
   [0, 165] ·
   [0, 166] Boolean(false)
   [0, 167] Boolean(true)
-  [0, 168] Record({})
-  [0, 169] Text("Bearer")
-  [0, 170] Record({"www-authenticate": Text("Bearer")})
-  [0, 171] Record({"www-authenticate": Text("Bearer")})
-  [0, 172] Record({"www-authenticate": Text("Bearer")})
-  [0, 173] Record({"www-authenticate": Text("Bearer")})
-  [0, 174] Record({"www-authenticate": Text("Bearer")})
-  [0, 175] Boolean(false)
-  [0, 177] ·
+  [0, 168] ·
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 171] Record({})
+  [0, 172] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 173] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 174] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 175] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 176] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 177] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 178] Boolean(false)
-  [0, 179] Boolean(true)
   [0, 180] ·
   [0, 181] Boolean(false)
   [0, 182] Boolean(true)
-  [0, 183] Number(401.0)
-  [0, 184] Number(401.0)
-  [0, 185] Number(401.0)
-  [0, 186] Number(401.0)
-  [0, 187] Number(401.0)
-  [0, 188, 0] Record({})
-  [0, 188, 1] Record({"status": Number(401.0)})
-  [0, 188, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 188, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 188] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 184] ·
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Text("Bearer")
+  [0, 189] Record({"www-authenticate": Text("Bearer")})
+  [0, 190] Record({"www-authenticate": Text("Bearer")})
+  [0, 191] Record({"www-authenticate": Text("Bearer")})
+  [0, 192] Record({"www-authenticate": Text("Bearer")})
+  [0, 193] Record({"www-authenticate": Text("Bearer")})
+  [0, 194] Boolean(false)
+  [0, 196] ·
+  [0, 197] Boolean(false)
+  [0, 198] Boolean(true)
+  [0, 199] ·
+  [0, 200] Boolean(false)
+  [0, 201] Boolean(true)
+  [0, 202] Number(401.0)
+  [0, 203] Number(401.0)
+  [0, 204] Number(401.0)
+  [0, 205] Number(401.0)
+  [0, 206] Number(401.0)
+  [0, 207, 0] Record({})
+  [0, 207, 1] Record({"status": Number(401.0)})
+  [0, 207, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 207, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 207] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · action trust · input 0
@@ -19466,59 +19466,37 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/orders"), … #1957cbdc54144298 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 7] ·
-  [0, 2] Record({})
-  [0, 3] ·
-  [0, 4] ·
-  [0, 5, 4] Boolean(true)
-  [0, 5, 19] ·
-  [0, 5, 3] ·
-  [0, 5, 14] ·
-  [0, 5, 5] Number(0.0)
-  [0, 5, 20] ·
-  [0, 5, 17] ·
-  [0, 5, 11] Boolean(false)
-  [0, 5, 22] Boolean(true)
-  [0, 5, 7] Number(0.0)
-  [0, 5, 2] ·
-  [0, 5, 23] ·
-  [0, 5, 6] Number(0.0)
-  [0, 5, 24] ·
-  [0, 5, 16] ·
-  [0, 5, 10] Boolean(false)
-  [0, 5, 21] Boolean(true)
-  [0, 5, 18] ·
-  [0, 5, 9] ·
-  [0, 5, 15] ·
-  [0, 5, 8] ·
-  [0, 5] ·
-  [0, 6] ·
+  [0, 15] ·
+  [0, 16] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 8] ·
   [0, 9] Boolean(false)
   [0, 14] Boolean(false)
-  [0, 17] ·
-  [0, 15] ·
-  [0, 18] ·
-  [0, 19] Number(0.0)
-  [0, 20] Number(1.0)
-  [0, 21] Number(1.0)
-  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
-  [0, 23] Boolean(false)
-  [0, 24] Boolean(true)
-  [0, 25] Record({})
-  [0, 26] Text("not an order: the run's log says why")
-  [0, 27] Record({"error": Text("not an order: the run's log says why")})
-  [0, 28] Record({"error": Text("not an order: the run's log says why")})
-  [0, 32] Record({"error": Text("not an order: the run's log says why")})
-  [0, 33] Boolean(false)
-  [0, 34] Boolean(true)
-  [0, 35] Number(400.0)
-  [0, 36] Number(400.0)
+  [0, 23] ·
+  [0, 21] ·
+  [0, 24] ·
+  [0, 25] Number(0.0)
+  [0, 26] Number(1.0)
+  [0, 27] Number(1.0)
+  [0, 28] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 29] Boolean(false)
+  [0, 30] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not an order: the run's log says why")
+  [0, 33] Record({"error": Text("not an order: the run's log says why")})
+  [0, 34] Record({"error": Text("not an order: the run's log says why")})
+  [0, 38] Record({"error": Text("not an order: the run's log says why")})
+  [0, 39] Boolean(false)
+  [0, 40] Boolean(true)
   [0, 41] Number(400.0)
-  [0, 42, 0] Record({})
-  [0, 42, 1] Record({"status": Number(400.0)})
-  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Number(400.0)
+  [0, 47] Number(400.0)
+  [0, 48, 0] Record({})
+  [0, 48, 1] Record({"status": Number(400.0)})
+  [0, 48, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
   => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
 == intake · POST /orders · input 1
@@ -19530,6 +19508,8 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #0756e7c5f52a12a8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 7] Text("x")
+  [0, 15] Boolean(true)
+  [0, 16] Boolean(true)
   [0, 2] Record({})
   [0, 3] Text("x")
   [0, 4] Record({"id": Text("x")})
@@ -19556,35 +19536,39 @@
   [0, 5, 8] ·
   [0, 5] ·
   [0, 6] ·
+  [0, 17] ·
+  [0, 18] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 8] Boolean(true)
   [0, 9] Boolean(true)
   [0, 10] ·
   [0, 11] Boolean(false)
   [0, 14] Boolean(false)
-  [0, 17] ·
-  [0, 15] ·
-  [0, 18] ·
-  [0, 19] Number(0.0)
-  [0, 20] Number(1.0)
-  [0, 21] Number(1.0)
-  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
-  [0, 23] Boolean(false)
-  [0, 24] Boolean(true)
-  [0, 25] Record({})
-  [0, 26] Text("not an order: the run's log says why")
-  [0, 27] Record({"error": Text("not an order: the run's log says why")})
-  [0, 28] Record({"error": Text("not an order: the run's log says why")})
-  [0, 32] Record({"error": Text("not an order: the run's log says why")})
-  [0, 33] Boolean(false)
-  [0, 34] Boolean(true)
-  [0, 35] Number(400.0)
-  [0, 36] Number(400.0)
+  [0, 23] ·
+  [0, 21] ·
+  [0, 24] ·
+  [0, 25] Number(0.0)
+  [0, 26] Number(1.0)
+  [0, 27] Number(1.0)
+  [0, 28] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 29] Boolean(false)
+  [0, 30] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not an order: the run's log says why")
+  [0, 33] Record({"error": Text("not an order: the run's log says why")})
+  [0, 34] Record({"error": Text("not an order: the run's log says why")})
+  [0, 38] Record({"error": Text("not an order: the run's log says why")})
+  [0, 39] Boolean(false)
+  [0, 40] Boolean(true)
   [0, 41] Number(400.0)
-  [0, 42, 0] Record({})
-  [0, 42, 1] Record({"status": Number(400.0)})
-  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Number(400.0)
+  [0, 47] Number(400.0)
+  [0, 48, 0] Record({})
+  [0, 48, 1] Record({"status": Number(400.0)})
+  [0, 48, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
   => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
 == intake · POST /orders · input 2
@@ -19596,6 +19580,8 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #0d1ee3a89cfb69d7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 7] ·
+  [0, 15] Boolean(true)
+  [0, 16] Boolean(true)
   [0, 2] Record({})
   [0, 3] ·
   [0, 4] ·
@@ -19622,35 +19608,39 @@
   [0, 5, 8] ·
   [0, 5] ·
   [0, 6] ·
+  [0, 17] ·
+  [0, 18] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 8] Boolean(true)
   [0, 9] Boolean(true)
   [0, 10] ·
   [0, 11] Boolean(false)
   [0, 14] Boolean(false)
-  [0, 17] ·
-  [0, 15] ·
-  [0, 18] ·
-  [0, 19] Number(0.0)
-  [0, 20] Number(1.0)
-  [0, 21] Number(1.0)
-  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
-  [0, 23] Boolean(false)
-  [0, 24] Boolean(true)
-  [0, 25] Record({})
-  [0, 26] Text("not an order: the run's log says why")
-  [0, 27] Record({"error": Text("not an order: the run's log says why")})
-  [0, 28] Record({"error": Text("not an order: the run's log says why")})
-  [0, 32] Record({"error": Text("not an order: the run's log says why")})
-  [0, 33] Boolean(false)
-  [0, 34] Boolean(true)
-  [0, 35] Number(400.0)
-  [0, 36] Number(400.0)
+  [0, 23] ·
+  [0, 21] ·
+  [0, 24] ·
+  [0, 25] Number(0.0)
+  [0, 26] Number(1.0)
+  [0, 27] Number(1.0)
+  [0, 28] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 29] Boolean(false)
+  [0, 30] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not an order: the run's log says why")
+  [0, 33] Record({"error": Text("not an order: the run's log says why")})
+  [0, 34] Record({"error": Text("not an order: the run's log says why")})
+  [0, 38] Record({"error": Text("not an order: the run's log says why")})
+  [0, 39] Boolean(false)
+  [0, 40] Boolean(true)
   [0, 41] Number(400.0)
-  [0, 42, 0] Record({})
-  [0, 42, 1] Record({"status": Number(400.0)})
-  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
-  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Number(400.0)
+  [0, 47] Number(400.0)
+  [0, 48, 0] Record({})
+  [0, 48, 1] Record({"status": Number(400.0)})
+  [0, 48, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 48] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
   => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
 == intake · POST /check · input 0

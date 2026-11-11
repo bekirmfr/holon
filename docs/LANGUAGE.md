@@ -2677,7 +2677,11 @@ a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to 
 `after`), so they are made all together or not at all, and its returns answer only where `ok`
 holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
 name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
-`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are.
+`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are. And
+what follows a statement in the try block runs only where what that statement made arrived, as
+the rest of JavaScript's block is skipped once a statement throws: a call bound after a failure
+isn't made, and a function after it isn't entered. Its write is tied to that too (here,
+`notes[tried_1]` is written only where `note` arrived).
 
 ```ts
 route.post("/n", (req) => {
@@ -2700,7 +2704,7 @@ route.post("/n", (req) => {
   const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = note
+    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
@@ -2724,10 +2728,12 @@ absence:
   absence isn't a failure.
 - **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
   Holon makes none of them, as a run's writes are made at its end (§6.6).
-- **A call the try block binds is made when what it reads arrives,** as anywhere: one written
-  after a failure is made too, unless it reads what failed. Its answer's arriving is part of
-  `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as a
-  write is.
+- **A call the try block binds is made when the statements before it succeeded,** as
+  JavaScript's is: one written after a failure isn't made (until 2026-11-11 it was, unless it read
+  what failed). So the requests a try block makes go one after another, each in a round of its
+  own, where elsewhere those that don't read each other go together. Its answer's arriving is part
+  of `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as
+  a write is.
 - **The catch block sees the names as they were before the try,** not as the try block left them,
   since what the try block made may not have arrived.
 - `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries

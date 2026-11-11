@@ -135,6 +135,7 @@ const SHAPES: &[(&str, &str)] = &[
     ("tied to a value there", "let got\nif (req.json.v !== undefined) got = {V}\nreturn \"end\""),
     ("returned from a case", "switch (req.json.k) {\ncase \"a\":\nreturn {V}\ndefault:\nreturn \"no\"\n}"),
     ("in a try", "try {\nconst parsed = JSON.parse(req.body)\n{E}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("in an if in a try", "try {\nconst parsed = JSON.parse(req.body)\nif ({C}) {\n{E}\n}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
 ];
 
 /// A handler of the grid: where it comes from, its body, and its body as a flow reads it.
@@ -339,13 +340,11 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 /// the language and then struck from here. A difference outside these fails the test, and so does
 /// one of these that no longer differs anywhere.
 const DEBTS: &[(&str, &str)] = &[
-    ("try", "in a try block, a call bound after a statement that failed is still made, and a function after it still entered (docs/LANGUAGE.md §6.5a)"),
     ("a call in a function", "a request a function makes is sent when the function's answer is needed, not when it is called: bound and read only in a branch not taken, it isn't sent (docs/LANGUAGE.md F13)"),
 ];
 
-fn debt(case: &Case, request: &str) -> Option<&'static str> {
+fn debt(case: &Case, _request: &str) -> Option<&'static str> {
     match case.shape {
-        "in a try" if request == "not json" => Some("try"),
         "bound, and read in a branch" if case.mark.starts_with('g') => Some("a call in a function"),
         _ => None,
     }

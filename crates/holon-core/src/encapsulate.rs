@@ -14,7 +14,7 @@
 //! (subgraph extraction/renumbering is the editor's job).
 
 use crate::{validate, Edge, Hash, Port, Resolver, Unit, UnitBody, ValidationError, BOUNDARY};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A choice to promote an inner `(child, port)` to the new unit's interface, with the
 /// interface port `name`. The **order** of these in [`EncapSpec::promote`] is the
@@ -235,20 +235,17 @@ pub fn default_spec(
     // The dual of `bound` above: which (child, port) OUTPUTS already feed some inner
     // destination. Tracked by the full pair, not just `from_child` — a child with two
     // outputs, one consumed and one free, must still surface the free one.
-    // An effect a trigger reads (`after saved`) is still free: a trigger doesn't take the effect
-    // in, it only waits for it, so the effect still leaves the boundary and is performed.
-    // So is one read by a child that can't pass it on, every output of which is a number, a
-    // Boolean, a text or bytes (a test that it arrived, `same_value`): it tells of the effect and
-    // doesn't hold it, where a choice (`guard`, `select`) gives it on as its own output.
-    let effect_into_trigger = |e: &Edge| {
-        let from = resolved.get(e.from_child as usize).and_then(|u| u.outputs.get(e.from_port as usize));
-        let reader = resolved.get(e.to_child as usize);
-        let to = reader.and_then(|u| u.inputs.get(e.to_port as usize));
-        let plain = |t: &crate::Type| matches!(t, crate::Type::Number | crate::Type::Boolean | crate::Type::Text | crate::Type::Bytes);
-        from.is_some_and(|p| p.ty == crate::Type::Effect) && (to.is_some_and(|p| p.name == crate::TRIGGER) || reader.is_some_and(|u| u.outputs.iter().all(|p| plain(&p.ty))))
-    };
-    let consumed: BTreeSet<(u32, u32)> =
-        inner_edges.iter().filter(|e| !effect_into_trigger(e)).map(|e| (e.from_child, e.from_port)).collect();
+    // An effect is still free where what reads it doesn't take it in (`takes_in`): a trigger
+    // (`after saved`) only waits for it, and a test that it arrived (`same_value`) tells of it
+    // without holding it, so the effect still leaves the boundary and is performed.
+    let mut passes = BTreeMap::new();
+    let mut consumed: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for e in inner_edges {
+        let effect = resolved.get(e.from_child as usize).and_then(|u| u.outputs.get(e.from_port as usize)).is_some_and(|p| p.ty == crate::Type::Effect);
+        if !effect || takes_in(&resolved, inner_edges, e, &mut passes) {
+            consumed.insert((e.from_child, e.from_port));
+        }
+    }
     // A call tied to a trigger is made when the trigger arrives, whatever reads its answer: once
     // made it can't be taken back (`CALLS`). Its answer leaves the boundary too, so the call is
     // made even when what reads it is a branch not taken. One left untied is made when needed.
@@ -272,6 +269,33 @@ pub fn default_spec(
     }
 
     Ok(EncapSpec { promote, expose })
+}
+
+/// Whether edge `e` takes in what its source may hold, an effect: into an input that isn't a
+/// trigger, of a child with an output that can hold it (not a number, a Boolean, a text or bytes)
+/// and gives it on (`gives_on`). A `guard` read only by a `same_value`, as a `try`'s test of a
+/// value under a condition is, doesn't: what the test reads ends there.
+fn takes_in(resolved: &[&Unit], edges: &[Edge], e: &Edge, gives: &mut BTreeMap<(u32, u32), bool>) -> bool {
+    let plain = |t: &crate::Type| matches!(t, crate::Type::Number | crate::Type::Boolean | crate::Type::Text | crate::Type::Bytes);
+    let Some(reader) = resolved.get(e.to_child as usize) else { return false };
+    reader.inputs.get(e.to_port as usize).is_some_and(|p| p.name != crate::TRIGGER)
+        && (0..reader.outputs.len()).any(|q| !plain(&reader.outputs[q].ty) && gives_on(resolved, edges, e.to_child, q as u32, gives))
+}
+
+/// Whether output `port` of `child`, holding an effect, gives it on to where it is performed: it
+/// is an effect itself (free, or given on in turn), nothing reads it (it leaves the boundary), or
+/// a reader takes it in (`takes_in`).
+fn gives_on(resolved: &[&Unit], edges: &[Edge], child: u32, port: u32, gives: &mut BTreeMap<(u32, u32), bool>) -> bool {
+    if let Some(&known) = gives.get(&(child, port)) {
+        return known;
+    }
+    // Wiring is acyclic (`validate`); a cycle met before it is checked gives nothing on.
+    gives.insert((child, port), false);
+    let effect = resolved.get(child as usize).and_then(|u| u.outputs.get(port as usize)).is_some_and(|p| p.ty == crate::Type::Effect);
+    let readers: Vec<&Edge> = edges.iter().filter(|e| e.from_child == child && e.from_port == port).collect();
+    let on = effect || readers.is_empty() || readers.into_iter().any(|e| takes_in(resolved, edges, e, gives));
+    gives.insert((child, port), on);
+    on
 }
 
 #[cfg(test)]

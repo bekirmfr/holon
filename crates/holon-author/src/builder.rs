@@ -3,7 +3,7 @@
 //! is refused), holons grouped exactly as the editor groups them. What it builds is what opening
 //! the flow on a canvas loads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, PASSES_EXTRA, VARIADIC};
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,30 @@ struct Frame {
     prefix: String,
 }
 
+/// Whether wire `w` takes in what its source may hold, an effect, as core's `default_spec` reads
+/// it: into an input that isn't a trigger, of a node with an output that can hold it and gives it
+/// on (`gives_on`).
+fn takes_in(f: &Frame, w: &Wire, gives: &mut HashMap<(String, String), bool>) -> bool {
+    let plain = |t: &WType| matches!(t, WType::Number | WType::Boolean | WType::Text | WType::Bytes);
+    let Some(reader) = f.nodes.iter().find(|n| n.id == w.target) else { return false };
+    w.input() != holon_core::TRIGGER && reader.data.outputs.iter().any(|p| !plain(&p.ty) && gives_on(f, &reader.id, &p.name, gives))
+}
+
+/// Whether `node`'s `output`, holding an effect, gives it on to where it is performed: it is an
+/// effect itself, nothing reads it, or a reader takes it in (`takes_in`).
+fn gives_on(f: &Frame, node: &str, output: &str, gives: &mut HashMap<(String, String), bool>) -> bool {
+    let key = (node.to_string(), output.to_string());
+    if let Some(&known) = gives.get(&key) {
+        return known;
+    }
+    gives.insert(key.clone(), false);
+    let effect = f.nodes.iter().find(|n| n.id == node).and_then(|n| n.data.outputs.iter().find(|p| p.name == output)).is_some_and(|p| p.ty == WType::Effect);
+    let readers: Vec<&Wire> = f.wires.iter().filter(|w| w.source == node && w.output() == output).collect();
+    let on = effect || readers.is_empty() || readers.into_iter().any(|w| takes_in(f, w, gives));
+    gives.insert(key, on);
+    on
+}
+
 /// Places nodes and wires them, in a flow and in the holons it groups (`begin_holon`, then
 /// `end_holon` or `end_holon_exact`, build the holon's own flow in between). Its units are kept in
 /// its own store until `finish` hands them over in the document.
@@ -270,17 +294,20 @@ impl FlowBuilder {
     /// The Effect outputs nothing takes in (in the flow being built, or the holon begun), as
     /// `(node, output)` in the order placed: a handler's group exposes them by the IR's own rule
     /// (core's `default_spec`), and a holon's boundary must name them or they are never performed.
-    /// As there, a trigger that waits for one doesn't take it in, nor does a node that can't pass
-    /// it on (a test that it arrived).
+    /// As there, a trigger that waits for one doesn't take it in, nor does a test that it arrived,
+    /// nor a node that gives it on only to such tests (`takes_in`).
     pub fn unread_effects(&self) -> Vec<(String, String)> {
         let Some(f) = self.frames.last() else { return vec![] };
-        let plain = |t: &WType| matches!(t, WType::Number | WType::Boolean | WType::Text | WType::Bytes);
-        let takes = |w: &Wire| w.input() != holon_core::TRIGGER && !f.nodes.iter().any(|n| n.id == w.target && n.data.outputs.iter().all(|p| plain(&p.ty)));
-        let read = |n: &Node, output: &str| f.wires.iter().any(|w| w.source == n.id && w.output() == output && takes(w));
-        f.nodes
-            .iter()
-            .flat_map(|n| n.data.outputs.iter().filter(|p| p.ty == WType::Effect && !read(n, &p.name)).map(|p| (n.id.clone(), p.name.clone())))
-            .collect()
+        let mut gives = HashMap::new();
+        let mut unread = Vec::new();
+        for n in &f.nodes {
+            for p in n.data.outputs.iter().filter(|p| p.ty == WType::Effect) {
+                if !f.wires.iter().any(|w| w.source == n.id && w.output() == p.name && takes_in(f, w, &mut gives)) {
+                    unread.push((n.id.clone(), p.name.clone()));
+                }
+            }
+        }
+        unread
     }
 
     /// A variadic node given `inputs` inputs, as its "+" adds them.

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **In a `try` block, nothing after a statement that failed runs.** A call bound after a failure
+  was still made, and a function after it still entered, unless it read what failed: `const order
+  = JSON.parse(req.body)` and then `await api.post(…)` sent the request for a body that wasn't
+  JSON. Now what follows a failure in the block isn't run, as JavaScript skips it, so the requests
+  of one try block go one after another, a round each. A function's returned effect, called under
+  an `if` in a try block, is no longer lost (`return { put, … }`). And reading a folder's file
+  (`docs.bytes(…)`) under a condition or after an early `return` no longer fails `holon check` with
+  "`after` ties a write or a call to what it names". Flows with a try block of more than one
+  statement get a new version: redeploy them.
+- **A flow placed as a node is refused for any handler it has, by name.** Only routes were refused:
+  an action's flow was told it "has routes", and a clock's, a file's, a mail's, a feed's or a
+  queue's was placed with its period or its source lost.
 - **`&&` and `||` stop at the operand that decides, as JavaScript's do.** Every operand was run:
   `ok && record(x)` wrote whatever `ok` was, and a request on the right of `||` was sent after a
   `true`. Now what follows the operand that decides isn't run, and `false && x` is `false`, `true

@@ -151,6 +151,10 @@ enum Guard {
     Branch(Expr),
     /// That a `return` before it, in the same list of statements, didn't answer.
     Live(Expr),
+    /// In a `try` block, that a value made before it arrived: what follows a failure isn't run.
+    /// The block's own test (`ok`) tests that value already, so it isn't among the conditions a
+    /// value made after it is tested under (`cond_since`).
+    Arrived(Expr),
     /// `x`, in `if (x !== undefined) { … }`: what the writes and calls in it wait for.
     After(Expr),
 }
@@ -1306,11 +1310,15 @@ impl<'s, 't> Reader<'s, 't> {
                     // condition) keeps its own while the statements inside are read.
                     let outer = std::mem::take(&mut self.frame.updates);
                     let mark = stmts.len();
+                    let made: Option<BTreeSet<String>> = self.frame.trying.last().map(|t| t.made.iter().map(|(n, _)| n.clone()).collect());
                     let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
                     self.frame.updates = outer;
                     let r = r?;
                     if let Ret::When(e) = &r {
                         self.frame.guards.push(Guard::Live(otherwise(e)));
+                    }
+                    if let Some(made) = made {
+                        self.go_on_if_arrived(&made, stmts);
                     }
                     r
                 }
@@ -1585,7 +1593,7 @@ impl<'s, 't> Reader<'s, 't> {
                             "channel" => matches!(m, "send" | "pipe"),
                             "mail" | "queue" => m == "send",
                             "collection" => matches!(m, "put" | "delete"),
-                            "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
+                            "folder" => matches!(m, "put" | "delete" | "copy" | "create" | "create_copy"),
                             "database" => matches!(m, "exec" | "insert" | "update" | "delete"),
                             _ => false,
                         },
@@ -2116,7 +2124,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// runs under.
     fn live(&self) -> Option<Expr> {
         conj(self.frame.guards.iter().filter_map(|g| match g {
-            Guard::Branch(c) | Guard::Live(c) => Some(c.clone()),
+            Guard::Branch(c) | Guard::Live(c) | Guard::Arrived(c) => Some(c.clone()),
             Guard::After(_) => None,
         }))
     }
@@ -2169,9 +2177,9 @@ impl<'s, 't> Reader<'s, 't> {
     /// `try { A } catch { B } finally { C }` (§8). A's values arriving is the block succeeding,
     /// `ok`: A's writes, sends and returns are tied to it, B is read where it doesn't hold, and
     /// each name and state key either changes holds `if ok then A's else B's`, as after an `if`.
-    /// C is tied to neither. A call A binds is made when what it reads arrives, as anywhere: one
-    /// before a failure is made, as JavaScript's would be, and one after it too, unless it reads
-    /// what failed. Without a catch, A is a block, and nothing is caught.
+    /// C is tied to neither. A call A binds is made where what A made before it arrived, as
+    /// JavaScript's is made only until a statement throws (`go_on_if_arrived`). Without a catch, A
+    /// is a block, and nothing is caught.
     fn try_statement(&mut self, t: &js::TryStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let at = self.span(t.span);
         let ret = match &t.handler {
@@ -2350,6 +2358,22 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
+    /// After a statement in a `try` block, the rest of it runs only where what the statement made
+    /// arrived, as the rest of JavaScript's is skipped once a statement throws: a call bound after
+    /// a failure isn't made, a function after it isn't entered (§8). `before`: the names the block
+    /// had made before the statement; a value that can't fail holds nothing back.
+    fn go_on_if_arrived(&mut self, before: &BTreeSet<String>, stmts: &[Stmt]) {
+        let Some(t) = self.frame.trying.last() else { return };
+        let new: Vec<(String, Option<Expr>)> = t.made.iter().filter(|(n, _)| !before.contains(n)).cloned().collect();
+        for (name, cond) in new {
+            let fails = stmts.iter().any(|s| matches!(&s.kind, StmtKind::Bind { name: n, value } if n.text == name && !never_fails(value)));
+            if fails {
+                let span = stmts.iter().rev().find_map(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name).then_some(s.span)).expect("found above");
+                self.frame.guards.push(Guard::Arrived(arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref())));
+            }
+        }
+    }
+
     /// A binding no `try` block tests: one it reads, as a join reads what it chooses among.
     fn unmade(&mut self, name: &str) {
         for t in &mut self.frame.trying {
@@ -2360,9 +2384,10 @@ impl<'s, 't> Reader<'s, 't> {
     /// The conditions the statement being read runs under, from guard `start` on; an `if (x !==
     /// undefined)`'s, that `x` arrived.
     fn cond_since(&self, start: usize) -> Option<Expr> {
-        conj(self.frame.guards[start..].iter().map(|g| match g {
-            Guard::Branch(c) | Guard::Live(c) => c.clone(),
-            Guard::After(x) => has_value(x.clone()),
+        conj(self.frame.guards[start..].iter().filter_map(|g| match g {
+            Guard::Branch(c) | Guard::Live(c) => Some(c.clone()),
+            Guard::After(x) => Some(has_value(x.clone())),
+            Guard::Arrived(_) => None,
         }))
     }
 
@@ -6617,7 +6642,7 @@ route.post("/n", (req) => {
   const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = note
+    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
