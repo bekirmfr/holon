@@ -110,7 +110,7 @@ compose roles from it, never invent actions.
 | `people` | `view`, `manage` (principals, tokens), `assign` (bindings) |
 | `role` | `view`, `define` |
 | `policy` | `view`, `edit` (host limits, ceilings) |
-| `host` | `view` (health, disks, store), `operate` (sweep, settings) |
+| `host` | `view` (health, disks, store), `check` (read the run logs again for what needs attention), `operate` (sweep, settings) |
 
 Names are written `resource.action`: `run.decide`, `flow.approve-deploy`. A wildcard
 `resource.*` exists only in built-in roles.
@@ -132,14 +132,18 @@ struct RoleDef {
 }
 ```
 
-Built in, not deletable, their permissions fixed to reproduce today:
+Built in, not deletable, their permissions fixed to reproduce today (`can.rs`'s `BUILTIN`, which a
+test holds to this table):
 
 | Role | Permissions | Kinds |
 |---|---|---|
-| `viewer` | every `*.view`, `secret.list` | any |
-| `editor` | viewer's, and `flow.*` but `delete` of others' flows, `run.call`, `run.decide`, `run.export`, `state.write`, `resource.view` | person, service |
+| `viewer` | `flow.view`, `run.view`, `run.export`, `state.view`, `secret.list`, `policy.view` | any |
+| `editor` | viewer's, and `flow.edit`, `flow.propose`, `flow.deploy`, `flow.approve-deploy`, `flow.restore`, `flow.restore-dry-run`, `flow.lifecycle`, `flow.delete`, `run.call`, `run.decide`, `state.write`, `policy.edit`, `host.check` | person, service |
 | `admin` | everything | person |
 | `agent` | viewer's, and `flow.edit` (its own), `flow.propose`, `flow.restore-dry-run`, `run.call` | agent |
+
+None but `admin` holds `secret.set`, `secret.roll-back`, `resource.*`, `people.*`, `role.*`,
+`host.view` or `host.operate`: a refusal of one of those says "that needs an admin".
 
 `kinds` is how "an agent never approves a deploy" stays true: `flow.approve-deploy` is in no role
 an agent may hold unless an admin defines one, and §8.4 adds a host setting that forbids it outright.
@@ -221,11 +225,13 @@ Order of checks:
 `Refusal` says which of these failed, in the words used today: "a viewer only reads",
 "refunds-bot may not deploy payouts: no role it holds there does". The 403 body carries it.
 
-**Routes.** `Access::check` keeps authenticating (who is this), and stops authorizing by URL. Each
-handler in `http.rs` (48 today) calls `can` with its action and resource, through a small table
-`route → (action, resource from the path)` so the mapping is reviewable in one place and tested
-(every route has an entry; a test fails on a route without one). Handlers that act on several
-resources call `can` for each.
+**Routes.** The gate (`access.rs`) authenticates (who is this) and no longer authorizes by URL.
+Every route the control plane answers (108 today) has a row in one table, `can.rs`'s `ROUTES`: open
+to anyone, for anyone signed in, or an action and the resource its path names, which the gate asks
+`can` about. So the mapping is reviewable in one place and tested, and a path no row has is
+answered 404 once its caller is known: a new route without a row is never reached. A handler that
+learns more (whose saved flow it is, whether the flow lets agents run an action) calls `can` again;
+one that acts on several resources calls it for each.
 
 **Performance.** Bindings are few (tens to hundreds). `can` resolves a principal's effective
 bindings once per request from an in-memory index rebuilt on each access version: a lookup, no I/O.

@@ -61,7 +61,8 @@ fixtures/modules/ module sources and builds (js-engine)
 
 `holon-server` became the `holon` crate (one command, `holon serve`), and the marketplace pieces
 were never moved into a `holon-market` crate: the pure ones stay in core, the registry and shared
-cache in host, unused by the product. A `holon-pack` tool and `packs/` were never built (§6). §3
+cache in host, unused by the product (the server's `/registry`, `/cache` and `/fire` routes were
+removed on 2026-11-11). A `holon-pack` tool and `packs/` were never built (§6). §3
 below is the record of the moves that got here (M0 and M1).
 
 ---

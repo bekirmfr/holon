@@ -881,21 +881,13 @@ struct DecideBody {
 /// The longest reason a decision may give, in characters.
 const MAX_REASON_CHARS: usize = 1000;
 
-/// Who `caller` decides as: a person signed in, by their name (the OS user's local admin by the
-/// name it runs as); or why they can't decide. Not an agent, a service (a script), a viewer, or
-/// anyone on a server without accounts.
-pub(crate) fn decider(caller: &access::Caller) -> Result<String, String> {
-    if caller.role == Some(access::Role::Viewer) {
-        return Err("a viewer only reads: an editor or an admin decides an approval".into());
-    }
-    let Some(name) = caller.name.as_deref() else {
-        return Err("deciding an approval needs a person signed in to Holon, and this server has no accounts".into());
-    };
-    match caller.kind {
-        Some(accounts::Kind::Agent) => Err(format!("{name} is an agent: deciding an approval is a person's")),
-        Some(accounts::Kind::Service) => Err(format!("{name} is a service, a script, not a person: sign in to decide an approval")),
-        _ => Ok(name.strip_prefix("local:").unwrap_or(name).to_string()),
-    }
+/// Who `caller` decides `slug`'s approvals as: a person signed in, by their name (the OS user's
+/// local admin by the name it runs as); or why they can't decide (can.rs): not an agent, a service
+/// (a script), a viewer, or anyone on a server without accounts.
+pub(crate) fn decider(caller: &access::Caller, slug: &str) -> Result<String, crate::can::Refusal> {
+    crate::can::can(caller, crate::can::Action::RunDecide, &crate::can::Resource::Approval { slug })?;
+    let name = caller.name.as_deref().unwrap_or_default();
+    Ok(name.strip_prefix("local:").unwrap_or(name).to_string())
 }
 
 /// `POST /deployments/<slug>/runs/<run_id>/decide` — a person approves, or declines with a reason,
@@ -903,9 +895,9 @@ pub(crate) fn decider(caller: &access::Caller) -> Result<String, String> {
 /// `outcome` `waiting` while it waits for more people, else `approved` or `declined`, the run
 /// having been given the decision (`run_error` when its part then failed).
 pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, caller: &access::Caller, request: &Request) -> Response {
-    let by = match decider(caller) {
+    let by = match decider(caller, slug) {
         Ok(by) => by,
-        Err(e) => return err(403, e),
+        Err(refusal) => return refusal.response(),
     };
     let bytes = match read_body(request) {
         Ok(b) => b,

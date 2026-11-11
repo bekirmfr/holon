@@ -12,11 +12,6 @@ pub(crate) struct HashBody {
     pub(crate) hash: String,
 }
 
-#[derive(Serialize)]
-pub(crate) struct RegistryBody {
-    pub(crate) published: Vec<String>,
-}
-
 /// A JSON mirror of `core::Value`, for this HTTP/JSON boundary — the same reasoning as
 /// `WValue` at the wasm boundary (`core::Value` deliberately carries no serde, keeping
 /// `holon-core` dependency-minimal). Grounded exactly against the real `Value` enum (seven
@@ -25,7 +20,7 @@ pub(crate) struct RegistryBody {
 /// base64, so a log line holding them stays JSON.
 ///
 /// **A real, named limitation, not silently inherited:** `serde_json` cannot represent `NaN`/
-/// `Infinity` (JSON has no token for them) — a cache entry whose `Number` is non-finite (an
+/// `Infinity` (JSON has no token for them) — a value whose `Number` is non-finite (an
 /// overflow result) will fail to serialize back to the client. The wasm bridge sidesteps this
 /// entirely by using `serde-wasm-bindgen` instead of JSON, since JS numbers carry non-finite
 /// values natively; a plain-JSON HTTP boundary doesn't have that option. Not fixed here —
@@ -161,29 +156,6 @@ fn nesting(text: &[u8]) -> usize {
     deepest
 }
 
-/// Wire shape of a `CacheEntry` for `POST /cache/ingest` — `unit_hash` as hex (the one
-/// convention every hash already crosses this boundary as), `inputs`/`outputs` as `SValue`.
-#[derive(Deserialize)]
-pub(crate) struct SCacheEntry {
-    pub(crate) unit_hash: String,
-    pub(crate) inputs: Vec<Option<SValue>>,
-    pub(crate) outputs: Vec<Option<SValue>>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct CacheOutputsBody {
-    pub(crate) outputs: Vec<Option<SValue>>,
-}
-
-/// `POST /fire`'s request body — just the inputs, positional, same convention `eval` already
-/// uses everywhere (index = input-port index, `null` = absent). The root itself is named by
-/// the `?root=<hex>` query param (it must already be published/staged — see the handler doc),
-/// not re-sent in the body.
-#[derive(Deserialize)]
-pub(crate) struct FireRequestBody {
-    pub(crate) inputs: Vec<Option<SValue>>,
-}
-
 /// One `(capability, payload)` pair `RecordingHost` recorded instead of actually performing.
 /// `capability` is stringified via `{c:?}` (`Debug`) at the point a response is built, not
 /// when `RecordingHost` records it — `RecordingHost.performed` keeps the real `Capability`
@@ -196,18 +168,6 @@ pub(crate) struct FireRequestBody {
 pub(crate) struct PerformedEntry {
     pub(crate) capability: String,
     pub(crate) payload: SValue,
-}
-
-/// `POST /fire` and `POST /trigger/<slug>`'s response shape. `outputs` is every settled slot
-/// the fired unit declared — not just one. A single-output unit still gets a one-element
-/// array; nothing about the common case changes shape awkwardly. A two-output unit (a text
-/// response and a state-write effect, left as two separate exposed outputs rather than
-/// combined into one artificial `list(...)`) now shows both, cleanly, instead of needing to
-/// be merged into something that echoed the effect twice.
-#[derive(Serialize)]
-pub(crate) struct FireResponseBody {
-    pub(crate) outputs: Vec<Option<SValue>>,
-    pub(crate) performed: Vec<PerformedEntry>,
 }
 
 /// One saved flow — a named workspace document (see `AppState::flows` for why this is
@@ -468,8 +428,8 @@ pub(crate) struct DeploymentEntry {
     pub(crate) version: Option<u32>,
 }
 
-/// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape
-/// change as `FireResponseBody`, same reason — every settled slot, not just one.
+/// One clock tick's result, kept in a deployment's bounded history. `outputs` is every settled
+/// slot the flow declared, not just one.
 #[derive(Serialize, Clone)]
 pub(crate) struct TickEntry {
     pub(crate) at_epoch_seconds: u64,

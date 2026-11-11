@@ -8,8 +8,10 @@
 //! tested with a controlled `now`, not real sleeping.
 
 use super::*;
-use holon_core::hash_value;
+use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
+
+mod access_table;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -26,14 +28,10 @@ fn test_state_at(at: Place) -> AppState {
 }
 
 fn test_state_in(store: SharedStore, at: Place) -> AppState {
-    let registry = Mutex::new(Registry::new(store.clone()));
-    let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
     store.1.connect(Arc::clone(&deployments), at.clone());
     AppState {
         store,
-        registry,
-        cache,
         deployments,
         deployments_path: at,
         flows: Mutex::new(BTreeMap::new()),
@@ -170,6 +168,16 @@ fn test_store_write(key: &str) -> Unit {
     }
 }
 
+/// `egress` — sends its one input out: settles to an effect, which a run performs.
+fn test_sink() -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: "egress".into() },
+        params: vec![],
+        inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    }
+}
+
 /// A flow whose one action, `put`, writes what it is sent at `key`: the state most tests here
 /// keep, written by one run and still there for the next (checked through
 /// `GET /deployments/<slug>/state`).
@@ -258,161 +266,6 @@ fn unit_get_rejects_bad_hash_and_404s_a_missing_one() {
 
     let zeros = "0".repeat(64);
     assert_eq!(route(&state, &req("GET", &format!("/unit/{zeros}"), vec![])).status_code, 404);
-}
-
-// ── /registry ────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn publish_refuses_dangling_reference_then_succeeds_once_staged() {
-    let state = test_state();
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-    let composite_bytes = encode_preimage(&test_composite(leaf_hash)).unwrap();
-
-    let refused = route(&state, &req("POST", "/registry/publish", composite_bytes.clone()));
-    assert_eq!(refused.status_code, 400);
-
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-
-    let published = route(&state, &req("POST", "/registry/publish", composite_bytes));
-    assert_eq!(published.status_code, 200);
-
-    let list = route(&state, &req("GET", "/registry", vec![]));
-    assert_eq!(body_json(list)["published"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn fork_replaces_target_and_keeps_original_published() {
-    let state = test_state();
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let composite = test_composite(leaf_hash);
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(&state, &req("POST", "/registry/publish", encode_preimage(&composite).unwrap()));
-
-    let replacement_bytes = encode_preimage(&test_replacement()).unwrap();
-    let url =
-        format!("/registry/fork?root={}&target={}", to_hex(&composite_hash), to_hex(&leaf_hash));
-    let forked = route(&state, &req("POST", &url, replacement_bytes));
-    assert_eq!(forked.status_code, 200);
-    let new_hash = body_json(forked)["hash"].as_str().unwrap().to_string();
-    assert_ne!(new_hash, to_hex(&composite_hash));
-
-    let list = route(&state, &req("GET", "/registry", vec![]));
-    let published: Vec<String> = body_json(list)["published"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s.as_str().unwrap().to_string())
-        .collect();
-    assert!(published.contains(&to_hex(&composite_hash)));
-    assert!(published.contains(&new_hash));
-}
-
-#[test]
-fn fork_rejects_unknown_root_and_target_outside_closure() {
-    let state = test_state();
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let composite = test_composite(leaf_hash);
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(&state, &req("POST", "/registry/publish", encode_preimage(&composite).unwrap()));
-    let replacement_bytes = encode_preimage(&test_replacement()).unwrap();
-
-    let bad_root = "de".repeat(32);
-    let url1 = format!("/registry/fork?root={bad_root}&target={}", to_hex(&leaf_hash));
-    assert_eq!(route(&state, &req("POST", &url1, replacement_bytes.clone())).status_code, 404);
-
-    let zero_target = "0".repeat(64);
-    let url2 = format!("/registry/fork?root={}&target={zero_target}", to_hex(&composite_hash));
-    assert_eq!(route(&state, &req("POST", &url2, replacement_bytes)).status_code, 400);
-}
-
-// ── /cache ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn cache_ingest_rejects_key_mismatch_then_succeeds_under_the_real_key() {
-    use holon_core::entry_key;
-
-    let state = test_state();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-
-    let entry =
-        CacheEntry { unit_hash: leaf_hash, inputs: vec![], outputs: vec![Some(Value::Number(42.0))] };
-    let real_key = entry_key(&entry).unwrap();
-    let body = serde_json::to_vec(&serde_json::json!({
-        "unit_hash": to_hex(&leaf_hash),
-        "inputs": [],
-        "outputs": [{"type": "Number", "value": 42.0}],
-    }))
-    .unwrap();
-
-    let zero_key = "0".repeat(64);
-    let mismatch = route(&state, &req("POST", &format!("/cache/ingest?key={zero_key}"), body.clone()));
-    assert_eq!(mismatch.status_code, 400);
-
-    let ok = route(&state, &req("POST", &format!("/cache/ingest?key={}", to_hex(&real_key)), body));
-    assert_eq!(ok.status_code, 200);
-
-    let get = route(&state, &req("GET", &format!("/cache/{}", to_hex(&real_key)), vec![]));
-    assert_eq!(get.status_code, 200);
-    assert_eq!(body_json(get)["outputs"][0]["value"], 42.0);
-}
-
-#[test]
-fn cache_verified_read_refuses_a_lying_entry() {
-    use holon_core::entry_key;
-
-    let state = test_state();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-
-    // leaf really evaluates to 42, but this entry claims 999.
-    let lie =
-        CacheEntry { unit_hash: leaf_hash, inputs: vec![], outputs: vec![Some(Value::Number(999.0))] };
-    let key = entry_key(&lie).unwrap();
-    let body = serde_json::to_vec(&serde_json::json!({
-        "unit_hash": to_hex(&leaf_hash),
-        "inputs": [],
-        "outputs": [{"type": "Number", "value": 999.0}],
-    }))
-    .unwrap();
-    let ingested = route(&state, &req("POST", &format!("/cache/ingest?key={}", to_hex(&key)), body));
-    assert_eq!(ingested.status_code, 200); // structurally valid — ingest doesn't re-execute
-
-    let get = route(&state, &req("GET", &format!("/cache/{}", to_hex(&key)), vec![]));
-    assert_eq!(get.status_code, 422); // but the verified read catches the lie
-}
-
-// ── /fire ────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn fire_pure_unit_settles_with_no_performed_effects() {
-    let state = test_state();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-
-    let body = serde_json::to_vec(&serde_json::json!({"inputs": []})).unwrap();
-    let r = route(&state, &req("POST", &format!("/fire?root={}", to_hex(&leaf_hash)), body));
-    assert_eq!(r.status_code, 200);
-    let v = body_json(r);
-    assert_eq!(v["outputs"][0]["value"], 42.0);
-    assert_eq!(v["performed"].as_array().unwrap().len(), 0);
-}
-
-#[test]
-fn fire_sink_unit_records_a_performed_effect() {
-    let state = test_state();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let sink_hash = hash_unit(&test_sink()).unwrap();
-
-    let body =
-        serde_json::to_vec(&serde_json::json!({"inputs": [{"type": "Text", "value": "hi"}]})).unwrap();
-    let r = route(&state, &req("POST", &format!("/fire?root={}", to_hex(&sink_hash)), body));
-    assert_eq!(r.status_code, 200);
-    let v = body_json(r);
-    assert_eq!(v["performed"][0]["capability"], "NetworkEgress");
-    assert_eq!(v["performed"][0]["payload"]["value"], "hi");
 }
 
 // ── /deploy + /trigger ───────────────────────────────────────────────────────────────
@@ -2414,17 +2267,18 @@ export const pay = action(async (order) => {
 fn only_a_person_decides_an_approval() {
     use crate::accounts::Kind;
     let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
-    assert_eq!(durable::decider(&caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
+    let decider = |c: access::Caller| durable::decider(&c, "d").map_err(|refusal| refusal.0);
+    assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
+    assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
+    assert_eq!(decider(caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
     let refused = [
-        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude is an agent"),
+        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude may not do that: an agent proposes"),
         (Some("ci"), Some(Kind::Service), Some(access::Role::Editor), "ci is a service"),
         (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "a viewer only reads"),
         (None, None, None, "no accounts"),
     ];
     for (name, kind, role, why) in refused {
-        let said = durable::decider(&caller(name, kind, role)).unwrap_err();
+        let said = decider(caller(name, kind, role)).unwrap_err();
         assert!(said.contains(why), "{name:?}: {said}");
     }
 }
@@ -2712,10 +2566,7 @@ fn deployments_persist_across_a_simulated_restart() {
         assert_eq!(deployments.lock().unwrap().len(), 0);
 
         let state = AppState {
-            store: store.clone(),
-            registry: Mutex::new(Registry::new(store.clone())),
-            cache: Mutex::new(SharedCache::new()),
-            deployments,
+            store: store.clone(),            deployments,
             deployments_path: Place::parse(&deployments_path),
             flows: Mutex::new(BTreeMap::new()),
             flows_path: Place::Nowhere,
@@ -2748,10 +2599,7 @@ fn deployments_persist_across_a_simulated_restart() {
     assert_eq!(dep.triggers, vec!["action echo".to_string()]);
 
     let state2 = AppState {
-        store: store.clone(),
-        registry: Mutex::new(Registry::new(store.clone())),
-        cache: Mutex::new(SharedCache::new()),
-        deployments: Arc::new(Mutex::new(reloaded)),
+        store: store.clone(),        deployments: Arc::new(Mutex::new(reloaded)),
         deployments_path: Place::parse(&deployments_path),
         flows: Mutex::new(BTreeMap::new()),
         flows_path: Place::Nowhere,
@@ -4340,10 +4188,7 @@ fn state_persists_across_a_simulated_restart() {
     {
         let deployments = Arc::new(Mutex::new(load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap()));
         let state = AppState {
-            store: store.clone(),
-            registry: Mutex::new(Registry::new(store.clone())),
-            cache: Mutex::new(SharedCache::new()),
-            deployments,
+            store: store.clone(),            deployments,
             deployments_path: Place::parse(&deployments_path),
             flows: Mutex::new(BTreeMap::new()),
             flows_path: Place::Nowhere,
@@ -4376,10 +4221,7 @@ fn state_persists_across_a_simulated_restart() {
     drop(restored_state);
 
     let state2 = AppState {
-        store: store.clone(),
-        registry: Mutex::new(Registry::new(store.clone())),
-        cache: Mutex::new(SharedCache::new()),
-        deployments: Arc::new(Mutex::new(reloaded)),
+        store: store.clone(),        deployments: Arc::new(Mutex::new(reloaded)),
         deployments_path: Place::parse(&deployments_path),
         flows: Mutex::new(BTreeMap::new()),
         flows_path: Place::Nowhere,
@@ -4895,15 +4737,16 @@ fn spellings(path: &str) -> Vec<String> {
     all
 }
 
-/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For each
-/// request only an admin, or only an editor, may make, every caller who may not (no one, a
-/// viewer, an editor, an agent, a service), under every spelling a router might take for its
-/// path, is refused before anything answers it: 401 or 403, or the router's bare 404 for a path
-/// it takes for nothing. A handler's answer (a 400 saying why, a 404 naming what is missing)
-/// means the gate and the router read that path apart, as they once did a secret's with no name.
+/// Whatever the gate keeps for some, nobody else reaches, however its path is spelled. For every
+/// route can.rs's table asks `can` about, every caller the gate refuses it to (no one, a viewer, an
+/// editor, an agent, a service), under every spelling a router might take for its path, is refused
+/// before anything answers it: 401 or 403, or a bare 404 for a path no route has. A handler's
+/// answer (a 400 saying why, a 404 naming what is missing) means the gate and the router read that
+/// path apart, as they once did a secret's with no name.
 #[test]
 fn the_gate_and_the_router_read_every_path_alike() {
     use crate::accounts::{Accounts, Kind};
+    use crate::can::{Rule, ROUTES};
     use access::Role;
     let pw = "correct horse battery";
     let mut state = test_state();
@@ -4918,52 +4761,49 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
     let ci_token = accounts.tokens("ci")[0].id.clone();
     state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
-    let request = |method: &str, url: &str, body: &serde_json::Value, token: Option<&str>| {
-        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(body).unwrap() };
-        req_with(method, url, bytes, token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))).into_iter().collect())
+    // Sent as if through a proxy, so a folder dialog (pick.rs) is never shown here.
+    let request = |method: &str, url: &str, token: Option<&str>| {
+        let mut headers = vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())];
+        headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
+        req_with(method, url, vec![], headers)
     };
     let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
-    let null = serde_json::Value::Null;
-    let admins = ["ada"];
-    let editors = ["ada", "bob, an editor", "ci, a service"];
-    let tokens_of_ci = format!("/people/ci/tokens/{ci_token}");
-    let kept: [(&str, &str, serde_json::Value, &[&str]); 19] = [
-        // Only an admin's.
-        ("POST", "/deployments/d/secrets/k", serde_json::json!({ "from": "env:HOLON_SWEEP_UNSET" }), &admins),
-        ("POST", "/deployments/d/secrets/k/rollback", serde_json::json!({ "version": 1 }), &admins),
-        ("DELETE", "/deployments/d/secrets/k", null.clone(), &admins),
-        ("GET", "/people", null.clone(), &admins),
-        ("POST", "/people", serde_json::json!({ "name": "eve", "kind": "person", "role": "admin" }), &admins),
-        ("PATCH", "/people/cy", serde_json::json!({ "role": "admin" }), &admins),
-        ("POST", "/people/cy/reset", serde_json::json!({}), &admins),
-        ("DELETE", "/people/cy", null.clone(), &admins),
-        // ci's tokens: ada's, its owner and an admin; nobody else's.
-        ("POST", "/people/ci/tokens", serde_json::json!({ "label": "x" }), &admins),
-        ("GET", "/people/ci/tokens", null.clone(), &admins),
-        ("DELETE", tokens_of_ci.as_str(), null.clone(), &admins),
-        ("GET", "/admin/oidc", null.clone(), &admins),
-        ("POST", "/admin/secrets/k", serde_json::json!({ "value": "a value long enough" }), &admins),
-        ("GET", "/admin/secrets/env", null.clone(), &admins),
-        ("GET", "/admin/grants", null.clone(), &admins),
-        // An editor's, never an agent's or a viewer's.
-        ("POST", "/deployments/d/stop", serde_json::json!({}), &editors),
-        ("POST", "/deployments/d/pause", serde_json::json!({}), &editors),
-        ("DELETE", "/deployments/d", null.clone(), &editors),
-        ("DELETE", "/flows/f", null.clone(), &editors),
-    ];
-    for (method, path, body, may) in &kept {
-        // Not vacuous: whoever may is let through by the gate.
-        assert!(state.access.check(&request(method, path, body, Some(&ada))).is_ok(), "{method} {path}: ada, an admin, is let through");
-        for spelled in spellings(path) {
-            for (who, token) in callers.iter().filter(|(who, _)| !may.contains(who)) {
-                let answer = route(&state, &request(method, &spelled, body, *token));
+    let hash = "0".repeat(64);
+    let mut sent = 0;
+    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..))) {
+        // ci's tokens, the deployment d, its secret k.
+        let people = row.path.starts_with("/people/");
+        let path = row
+            .path
+            .split('/')
+            .map(|s| match s {
+                "{slug}" => "d",
+                "{name}" if people => "ci",
+                "{name}" => "k",
+                "{id}" if people => ci_token.as_str(),
+                "{id}" => "1",
+                "{hash}" => hash.as_str(),
+                s => s,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let admitted = |token: Option<&str>| state.access.admit(&request(row.method, &path, token)).is_ok();
+        // Not vacuous: an admin is let through, and no one isn't.
+        assert!(admitted(Some(&ada)), "{} {path}: ada, an admin, is let through", row.method);
+        let refused: Vec<_> = callers.iter().filter(|(_, token)| !admitted(*token)).collect();
+        assert!(refused.iter().any(|(who, _)| *who == "no one"), "{} {path}: no one is let through", row.method);
+        for spelled in spellings(&path) {
+            for (who, token) in &refused {
+                let answer = route(&state, &request(row.method, &spelled, *token));
                 let status = answer.status_code;
                 let said = String::from_utf8_lossy(&body_bytes(answer)).into_owned();
                 let refused = matches!(status, 401 | 403) || (status == 404 && said.is_empty());
-                assert!(refused, "{method} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}");
+                assert!(refused, "{} {spelled} ({path} spelled otherwise), by {who}: answered {status} {said}", row.method);
+                sent += 1;
             }
         }
     }
+    assert!(sent > 1000, "{sent} requests sent");
 }
 
 /// What `/auth/owned` lists is what its caller makes and revokes tokens for. Each caller (an admin,
@@ -5212,7 +5052,7 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
     use std::time::Instant;
     static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-    let paths = ["/unit", "/registry/publish", "/admin/storage"];
+    let paths = ["/unit", "/flows", "/admin/storage"];
     let most = paths.len();
     let state: &'static AppState = Box::leak(Box::new(test_state()));
     let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
@@ -10921,7 +10761,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
     let synced = || log.with(|l| l.take_dirty().inspect(|_| l.still_dirty())).is_none();
-    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, false, &[]).status;
+    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]).status;
 
     // Strict: a read, and a write.
     assert_eq!(call("GET", "/health", ""), 200);
@@ -10993,7 +10833,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
     assert!(state.deployments.lock().unwrap()[&slug].tallies_changed, "for the periodic sync to write");
     assert!(tally("GET /health").last_at_ms > 0);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
     assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
     assert_eq!(tally("action report").runs, 1);
 
@@ -11075,7 +10915,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     // (missing), which isn't a failure.
     let failing = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"failing\", { port: 8173 })\n\nexport const check = action((input) => input.nowhere, { log: \"unrecorded\" })\n");
     let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
     assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
@@ -11168,7 +11008,7 @@ route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
     };
     for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
         let slug = deploy_plain_text(&state, &text(level, port));
-        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
         let held = hold();
         assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
         let refused = hold();
@@ -12504,7 +12344,7 @@ fn the_server_records_what_its_golden_record_holds() {
             for name in &actions {
                 for body in &bodies {
                     let input = holon_core::parse_json(if body.is_empty() { "{}" } else { body }).unwrap_or(Value::Record(BTreeMap::new()));
-                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, false, &[]);
+                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, &[]);
                     wrote(&mut out, format!("== {slug} · action {name} · body {} → {} {}", body.len(), ran.status, ran.reply));
                 }
             }

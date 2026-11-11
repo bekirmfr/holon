@@ -2,6 +2,8 @@
 //! the flow log and the canvas a deployment came from.
 
 use crate::*;
+use crate::access::Caller;
+use crate::can::{can, Action, Resource};
 
 /// Whether a unit's derived capabilities include either state axis — the gate for whether a
 /// deployment gets its own `state` slot at all. Takes the iterator `Capabilities::iter()`
@@ -87,11 +89,12 @@ fn browsers_added(browsers: &[String], previous: &[String]) -> Vec<String> {
 /// offered back to a person, and one it needs waits for a person's approval. Nor does an unrecorded
 /// handler whose code it changed stay unrecorded: a person let that code's runs out of the log, not
 /// what an agent put in its place, so it is withheld too, and its runs logged until a person grants
-/// it back (an agent's later versions keep it withheld).
-fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, server: Option<&Server>, unit: Hash, agent: bool) -> (BTreeSet<String>, BTreeSet<String>) {
+/// it back (an agent's later versions keep it withheld). `proposes`: whoever deploys doesn't
+/// approve what a deploy needs (can.rs), as an agent doesn't.
+fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, server: Option<&Server>, unit: Hash, proposes: bool) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut needed = policy.needs_approval(manifest, previous.grant.as_ref());
     let mut withheld = BTreeSet::new();
-    if agent && previous.unit != Some(unit) {
+    if proposes && previous.unit != Some(unit) {
         let items = manifest.items();
         for item in items.iter().filter(|item| item.starts_with("SecretRead(")).cloned() {
             if manifest.is_optional(&item) {
@@ -127,8 +130,8 @@ pub(crate) fn handle_post_deploy(
     request: &Request,
     // Who deployed it (access.rs), kept with the deployment.
     by: Option<&str>,
-    // Whether an agent deploys it (access.rs): it never approves, it proposes.
-    agent: bool,
+    // Who deploys it: whether they approve what it needs or propose it is `can`'s to say.
+    who: &Caller,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -138,22 +141,24 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
-    deploy(state, body, by, agent, None)
+    deploy(state, body, by, who, None)
 }
 
 /// Deploy `body` (`POST /deploy`'s, or a restore's: `restored_from` names the version it deploys
-/// again). Every deploy is a new version, kept for good. An agent's that needs a person's approval
-/// is kept as a proposal instead (proposals.rs).
-fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bool, restored_from: Option<u32>) -> Response {
+/// again). Every deploy is a new version, kept for good. One by `who`, who doesn't approve what a
+/// deploy needs (an agent), that needs a person's approval is kept as a proposal instead
+/// (proposals.rs).
+fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Caller, restored_from: Option<u32>) -> Response {
     let (store, deployments, deployments_path, secrets, folders, activity) = (&state.store, &state.deployments, &state.deployments_path, &state.secrets, &state.folders, &state.activity);
     let policy = &*state.policy();
-    if agent && !body.acknowledge.is_empty() {
+    let approves = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_ok();
+    if !approves && !body.acknowledge.is_empty() {
         return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
     }
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
-    if agent && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
+    if !approves && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
         return err(403, format!("a person turned off agents proposing versions of {:?}: they turn it back on in its settings", body.slug));
     }
     if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
@@ -242,14 +247,14 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = previous_of(deployments, &body.slug);
-    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), unit_hash, agent);
-    if agent {
+    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), unit_hash, !approves);
+    if !approves {
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
     // host takes none.
-    if agent && !missing.is_empty() {
+    if !approves && !missing.is_empty() {
         if !policy.agents_propose {
             return err(
                 403,
@@ -260,7 +265,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
                 ),
             );
         }
-        return crate::proposals::propose(state, &body, missing, by);
+        return crate::proposals::propose(state, &body, missing, who);
     }
     if !missing.is_empty() {
         return err(
@@ -323,8 +328,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
         // A redeploy keeps the slug's sessions too, and runs it: a stopped deployment starts a new
         // session from its latest state, a paused one resumes. Starting is a person's, so an agent
         // replaces only a running deployment.
+        let starts = can(who, Action::FlowLifecycle, &Resource::Flow(&body.slug)).is_ok();
         let life = match deployments.get(&body.slug) {
-            Some(old) if agent && old.life.status != crate::lifecycle::Status::Running => {
+            Some(old) if !starts && old.life.status != crate::lifecycle::Status::Running => {
                 let status = if old.life.status == crate::lifecycle::Status::Paused { "paused" } else { "stopped" };
                 return err(
                     403,
@@ -431,7 +437,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bo
     persist_deployments(deployments_path, deployments);
     activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
     // A person's deploy of a version proposed approves the proposal.
-    if !agent {
+    if approves {
         state.proposals.approved(&body.slug, &to_hex(&unit_hash), by);
     }
 
@@ -488,8 +494,8 @@ pub(crate) fn handle_post_deploy_preview(
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
     request: &Request,
-    // Whether an agent asks (access.rs): what it needs approved is what its deploy would.
-    agent: bool,
+    // Who asks: what they need approved is what their deploy would.
+    who: &Caller,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -499,7 +505,8 @@ pub(crate) fn handle_post_deploy_preview(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
-    preview(store, deployments, policy, secrets, folders, &body, agent)
+    let proposes = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_err();
+    preview(store, deployments, policy, secrets, folders, &body, proposes)
 }
 
 /// What deploying `body` would ask for (`POST /deploy/preview`'s answer, and a restore's dry run).
@@ -510,15 +517,15 @@ fn preview(
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
     body: &DeployRequestBody,
-    agent: bool,
+    proposes: bool,
 ) -> Response {
-    match preview_value(store, deployments, policy, secrets, folders, body, agent) {
+    match preview_value(store, deployments, policy, secrets, folders, body, proposes) {
         Ok(v) => Response::json(&v),
         Err(r) => r,
     }
 }
 
-/// What `preview` answers, for a restore to add to.
+/// What `preview` answers, for a restore to add to; `proposes` as `approval_needed` takes it.
 fn preview_value(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -526,7 +533,7 @@ fn preview_value(
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
     body: &DeployRequestBody,
-    agent: bool,
+    proposes: bool,
 ) -> Result<serde_json::Value, Response> {
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return Err(err(400, "unit is not a 64-char hex hash"));
@@ -538,8 +545,8 @@ fn preview_value(
     let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let previous = previous_of(deployments, &body.slug);
     let server = read_server(root_unit, &resolver).ok();
-    let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, agent);
-    if agent {
+    let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, proposes);
+    if proposes {
         needs.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let items = manifest.items();
@@ -913,7 +920,7 @@ pub(crate) fn unnamed_action(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 /// (`action reset`) with what was sent and who ran it. The answer is `{answer, seq}`: the
 /// respond's body (`null` for an action that only writes) and the run's log entry. A respond's
 /// error (its `missing`) answers with its status; a run that failed, with why in its log. An
-/// `agent` runs only an action its grant lets agents run (`AgentRuns("reset")`).
+/// agent runs only an action its grant lets agents run (`AgentRuns("reset")`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_action(
     store: &SharedStore,
@@ -923,7 +930,7 @@ pub(crate) fn handle_post_action(
     name: &str,
     request: &Request,
     by: Option<&str>,
-    agent: bool,
+    who: &Caller,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -936,7 +943,7 @@ pub(crate) fn handle_post_action(
             holon_core::parse_json(&text).ok_or_else(|| "what is sent to an action is JSON, and this isn't".to_string())
         }
     });
-    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, agent, &[]);
+    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, Some(who), &[]);
     if ran.status == 404 && ran.reply.is_null() {
         return Response::empty_404();
     }
@@ -976,7 +983,9 @@ impl ActionRan {
 /// Run the deployment `slug`'s action `name` with `input` (or why that isn't one: a 400), as `by`,
 /// and say what came of it. `chain` is the flows whose calls led here, the first being the caller
 /// that started it (empty for a person's or an agent's run): the run carries it, so a flow called
-/// down a chain can't call one already in it, and the chain can't run past `max_call_depth`.
+/// down a chain can't call one already in it, and the chain can't run past `max_call_depth`. `who`
+/// is whoever runs it over HTTP, whom `can` asks whether they may; none for a flow's call, which its
+/// grant lets (calls.rs).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_action(
     store: &SharedStore,
@@ -986,7 +995,7 @@ pub(crate) fn run_action(
     name: &str,
     input: Result<Value, String>,
     by: Option<&str>,
-    agent: bool,
+    who: Option<&Caller>,
     chain: &[String],
 ) -> ActionRan {
     let (action, state, permit, vault, folders, channels) = {
@@ -1001,8 +1010,9 @@ pub(crate) fn run_action(
             return ActionRan::refused(404, "no_action", format!("{slug:?} has no action {name:?}"));
         };
         // An agent runs only what its grant lets agents run, as a person granted it.
-        if agent && !dep.grant.items.contains(&format!("AgentRuns({name:?})")) {
-            return ActionRan::refused(403, "refused", format!("agents may not run {slug:?}'s action {name:?}: a person lets them, under \"agents may run\" in its deploy settings, and approves it"));
+        let agents_may = dep.grant.items.contains(&format!("AgentRuns({name:?})"));
+        if let Some(Err(refusal)) = who.map(|who| can(who, Action::RunCall, &Resource::Action { slug, name, agents_may })) {
+            return ActionRan::refused(403, "refused", refusal.0);
         }
         (action.clone(), dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
@@ -1257,7 +1267,7 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
 /// An agent restores nothing: its restore (not a dry run) is saved for a person to approve, an
 /// `ask` event on the deployment's timeline naming the point and what of it, answered 202. The
 /// editor's history offers it as a restore, which a person makes (history-L4 §4).
-pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, agent: bool) -> Response {
+pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, who: &Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -1278,14 +1288,14 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         Ok(p) => p,
         Err(r) => return r,
     };
-    // Restoring is a person's (access.rs): an agent's is saved for one to approve.
-    if agent && !restore.dry_run {
+    // Restoring is a person's: an agent's is saved for one to approve.
+    if can(who, Action::FlowRestore, &Resource::Flow(slug)).is_err() && !restore.dry_run {
         return ask_restore(state, slug, point, code.as_ref().map(|(n, _)| *n), put_back.is_some(), by);
     }
     let code = code.map(|(n, body)| (n, DeployRequestBody { acknowledge: restore.acknowledge, ..body }));
     if restore.dry_run {
         let mut answer = match &code {
-            Some((_, body)) => match preview_value(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, body, agent) {
+            Some((_, body)) => match preview_value(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, body, can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_err()) {
                 Ok(v) => v,
                 Err(r) => return r,
             },
@@ -1324,7 +1334,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     let mut answer = serde_json::json!({ "slug": slug });
     if let Some((number, body)) = code {
         let deployed =
-            deploy(state, body, by, agent, Some(number));
+            deploy(state, body, by, who, Some(number));
         if !deployed.is_success() {
             return deployed;
         }

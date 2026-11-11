@@ -6,7 +6,7 @@
 //!   creates the first admin. Nobody else on the network can claim it first.
 //! - **Principals** have a name, unique across kinds, a kind and a role (`viewer`: reads;
 //!   `editor`: also saves, deploys, runs; `admin`: also writes secrets and manages the server;
-//!   `agent`: reads, proposes and calls, access.rs). The kind says who it is and which roles it
+//!   `agent`: reads, proposes and calls; can.rs). The kind says who it is and which roles it
 //!   may hold (docs/L4s/access-and-approvals-L4.md §3, §5.1):
 //!   - a **person** (viewer, editor or admin) signs in with a password, kept as an argon2id hash,
 //!     through an identity provider, or through the run file. Signing in gives a session token
@@ -53,14 +53,10 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// Whether it may hold `role` (the design's §5.1): a person any but agent, a service viewer
-    /// or editor, an agent viewer or agent.
+    /// Whether it may hold `role` (the design's §5.1, can.rs): a person any but agent, a service
+    /// viewer or editor, an agent viewer or agent.
     pub(crate) fn may_hold(self, role: Role) -> bool {
-        match self {
-            Kind::Person => role != Role::Agent,
-            Kind::Service => matches!(role, Role::Viewer | Role::Editor),
-            Kind::Agent => matches!(role, Role::Viewer | Role::Agent),
-        }
+        crate::can::role(role).kinds.contains(&self)
     }
 
     /// As a sentence says it: "an agent".

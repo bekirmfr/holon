@@ -105,7 +105,7 @@ impl Caller<'_> {
         let chain: Vec<String> = self.chain.iter().cloned().chain(std::iter::once(self.slug.to_string())).collect();
         #[cfg(test)]
         crate::firing::fixed::from(self.fixed.map(|n| ((n + 1) << 20) + ((path.iter().fold(0u64, |a, &p| a * 31 + p as u64) % 1024) << 10)));
-        let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), false, &chain);
+        let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), None, &chain);
         let run = ran.seq.map(|s| Value::Number(s as f64));
         if ran.waiting && start {
             // Started, and waiting: each point it waits at, with its token.
