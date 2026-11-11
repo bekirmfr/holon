@@ -229,9 +229,9 @@ In `crates/holon/src/tests.rs`:
 - In `mcp.rs`, `an_agent_reads_who_approved_a_waiting_run_and_never_decides_it`; in
   `decidecmd.rs`, how a waiting run, a decision and a run picked by its id's start read.
 
-End to end: `approval sends an order's progress on its channel: waiting as the run parks, paid when
-it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for two people's
-approval holding nothing, and pays from the balance as it is then` (`system.e2e.ts`): an invited
+End to end: `approval` deploys and answers in `sweep.e2e.ts` (what it sends on its channel as a
+run parks is `a_waiting_run_sends_what_didnt_wait_as_it_parks`), and `approved-payout waits for two
+people's approval holding nothing, and pays from the balance as it is then` (`system.e2e.ts`): an invited
 editor and the admin approve it through the decide route, the same person twice is refused, an
 agent is refused, and a second payout one person declines pays nothing.
 

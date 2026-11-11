@@ -281,7 +281,7 @@ In `crates/holon/src/tests.rs`:
   `a_policy_without_allow_unrecorded_refuses_the_deploy`; in `holon-core`'s `declare.rs`, a handler
   that writes refused as `lazy`.
 
-End to end (`editor/e2e/samples.e2e.ts`): every sample deploys; `ticker's clock ticks beside its
+End to end: every sample deploys (`editor/e2e/sweep.e2e.ts`); in `samples.e2e.ts`, `ticker's clock ticks beside its
 routes…` (tick now, the action from the editor and the deployed page, each run replayed);
 `shop runs billing's actions…`; `drop-board's file handlers run beside its routes…`; `drop-box
 runs once for a file dropped in its folder…`; `file-audit runs on a csv dropped in the inbox…`;

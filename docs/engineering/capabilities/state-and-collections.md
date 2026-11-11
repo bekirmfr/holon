@@ -147,9 +147,10 @@ from the leaves, never from the imports.
   `sinks_are_tied_to_their_block_or_to_what_after_names` (lower.rs).
 - **Samples**: `counter` (a sink's trigger, `if (saved !== undefined)`), `likes` (concurrent
   runs), `notes-api`, `heartbeat`, `idempotent` (claims), `basket` (a read inside `map`),
-  `balance-trail` (cell history), `price-rollback` (state restore). Every sample opens and
-  deploys in `editor/e2e/samples.e2e.ts`; `balance-trail`, `price-rollback`, `basket` and
-  `rolling-log` have tests of their own there, `counter` and `likes` in `system.e2e.ts`.
+  `balance-trail` (cell history), `price-rollback` (state restore). Every sample deploys and
+  answers in `editor/e2e/sweep.e2e.ts`; `balance-trail`, `price-rollback`, `basket` and
+  `rolling-log` have tests of their own in `samples.e2e.ts`. What `counter` and `likes` answer is
+  the server's golden record.
 - **Gaps**: nothing in CI measures a write's cost; the soak's disk floor is checked by hand.
 
 ## 6. History

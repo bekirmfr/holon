@@ -159,8 +159,10 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
 - **Samples**: `inbox-report` (reads and writes), `log-archive` (handles, copy between folders,
   ranges), `journal` (kept for a while, a cap), `shared-ledger` (commit locks across
   deployments), `stock-sheet` (a restore leaves files), `drop-box`, `file-audit`, `drop-board`
-  (`on.file.*` handlers). Each deploys in `samples.e2e.ts`, and each has a test of its own there:
-  `inbox-report`, `log-archive` and `journal` bind temporary folders and verify their runs.
+  (`on.file.*` handlers). Each deploys in `sweep.e2e.ts`; in `samples.e2e.ts`, `inbox-report`,
+  `log-archive` and `journal` bind temporary folders and verify their runs, `drop-box`,
+  `file-audit` and `drop-board` run on files dropped in, and `stock-sheet` restores its state.
+  `shared-ledger` is held by `two_deployments_appending_to_one_shared_file_lose_no_line`.
 - **Gaps**: no test crashes between a file's rename and the run's record; the sweep's pace under
   a large blob store isn't measured.
 

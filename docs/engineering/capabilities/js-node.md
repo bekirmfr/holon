@@ -179,8 +179,9 @@ In `holon-author`: `a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_
 `explain_says_why_a_js_node_gave_nothing` (`agent.rs`). In the server's `permissions.rs`,
 `a_module_s_budgets_are_limits_with_ceilings_and_no_defaults`.
 
-`editor/src/samples.test.ts` builds every sample with a js node; the end-to-end suite deploys them
-all, and `inbox-report reads a file from a bound folder…` runs one and verifies its runs.
+`editor/src/samples.test.ts` builds every sample with a js node; the end-to-end sweep
+(`sweep.e2e.ts`) deploys each and sends it a request, and `inbox-report reads a file from a bound
+folder…` runs one and verifies its runs.
 
 **Gaps.** No test runs `nearest`'s route end to end; nothing in CI rebuilds the engine and
 compares it with the committed binary; the cost measurement asserts only an order.

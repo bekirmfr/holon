@@ -140,9 +140,10 @@ templates at compile (`holon-core/src/documents.rs`) ([LANGUAGE.md](../../LANGUA
   `mongodb_holds_run_locks_shared_and_exclusive_across_servers`.
 - **Samples**: `orders-api` (SQL, `expect`), `refund-once` (claims), `ticket-numbers` (run locks),
   `approved-payout` (a waiting run checks at commit, after two people approve it), `atlas-notes` (MongoDB), `license-check` (a
-  key in a query). All deploy in `samples.e2e.ts` (`atlas-notes` only where `HOLON_TEST_MONGODB`
-  is set, as in CI); `orders-api`, `ticket-numbers`, `atlas-notes` and `license-check` have tests
-  there, `refund-once` and `approved-payout` in `system.e2e.ts`.
+  key in a query). All deploy and answer in `sweep.e2e.ts` (`atlas-notes` only where
+  `HOLON_TEST_MONGODB` is set, as in CI); `orders-api` (a bound database on Resources) has a test
+  in `samples.e2e.ts`, `refund-once` and `approved-payout` in `system.e2e.ts`. What
+  `ticket-numbers`, `atlas-notes` and `license-check` do is held by the Rust tests above.
 - **Gaps**: the end-to-end suite runs the SQL samples on SQLite only; a test without its
   environment variable runs on no remote engine and passes, saying so.
 

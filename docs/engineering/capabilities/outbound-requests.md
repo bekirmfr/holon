@@ -114,9 +114,9 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (
 - **Samples**: `fetch-json` (a call and its host permission), `cache-aside` (a call not made),
   `idempotent` and `refund-once` (one call per key or row), `drop-box` (`http_upload`),
   `chat-proxy` and `gemini-chat` (`http_stream`, `pipe`), `client-credentials` and `echoed-key`
-  (where a secret and its answer go), `stripe-to-slack`. All deploy in `samples.e2e.ts`;
-  `cache-aside`, `chat-proxy`, `gemini-chat`, `drop-box` and `client-credentials` have tests of
-  their own there, `refund-once` in `system.e2e.ts`.
+  (where a secret and its answer go), `stripe-to-slack`. All deploy and answer in `sweep.e2e.ts`;
+  `cache-aside`, `chat-proxy`, `gemini-chat` and `drop-box` have tests of their own in
+  `samples.e2e.ts`, `refund-once` in `system.e2e.ts`.
 - **Gaps**: the e2e samples call public hosts (httpbin, the APIs), so a test may pass on a
   failure answer (the drop-box test says so); DNS rebinding itself is held by the resolver's
   design, not a test that rebinds.

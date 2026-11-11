@@ -5,11 +5,18 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test as base, expect } from "@playwright/test";
 import { PORTS, RUN_DIR, SAMPLE_SHIFT } from "./ports.mjs";
 
 export { PORTS, RUN_DIR, SAMPLE_SHIFT };
 export const SERVER = `http://127.0.0.1:${PORTS.server}`;
+const ROOT = join(fileURLToPath(import.meta.url), "..", "..", "..");
+/** The `holon` command server.mjs built and runs the test servers from. */
+export const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(ROOT, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
+/** The samples' texts (crates/holon-author/samples) and their entries (samples.rs). */
+export const SAMPLES = join(ROOT, "crates", "holon-author", "samples");
+export const SAMPLES_RS = join(ROOT, "crates", "holon-author", "src", "samples.rs");
 /** The server left as installed, for the accounts tests (accounts.e2e.ts). */
 export const FRESH = `http://127.0.0.1:${PORTS.fresh}`;
 /** The editor pointed at it. */
