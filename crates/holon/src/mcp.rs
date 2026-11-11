@@ -51,7 +51,8 @@ examples:
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
-show what is already there, with its text, and `save` keeps a flow without deploying it. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
+show what is already there, with its text, and `save` keeps a flow without deploying it; \
+`whoami` says what you may do, and where. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
 deploy, and any version that needs a new permission, waits for a person to approve it in the \
 editor: tell the user what it asks for and where, and deploy again once they have. A proposal \
 is decided later, and a decline comes with a reason: with a shell, run `holon wait <slug>` in the \
@@ -234,6 +235,13 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
         },
         {
+            "name": "whoami",
+            "title": "Who you are signed in as",
+            "description": "Who you are signed in as on the server (your name, your kind, the person who owns you) and what you may do: each role bound to you or to a group you are in, where it holds (this host, one flow, one approval point), until when, and the actions it allows. What none of them allows, a person does.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
             "name": "deployments",
             "title": "List what is deployed",
             "description": "What is deployed, one line each (state, version, port, runs, who deployed it), what each waits on a person for, and the flows saved but never deployed. With a slug, that one in full: its routes, what it may do, what its grant doesn't cover, the secrets it reads and which are set, what it waits for, and its text as deployed, even when it has never run.",
@@ -404,6 +412,7 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect, ctx: &Ctx) 
             })
         }
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
+        "whoami" => whoami(&*connect()?),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
         "logs" => logs(&*connect()?, arg(args, "slug")?, args),
@@ -418,6 +427,39 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect, ctx: &Ctx) 
         "restore" => restore(&*connect()?, args),
         other => Err(format!("there is no tool \"{other}\"")),
     }
+}
+
+/// Who the tools are signed in as, and what each binding of theirs allows, where: what the
+/// server answers on `/auth/me`, which an agent reads though it may not read the roles.
+fn whoami(api: &dyn Api) -> Result<String, String> {
+    let me = json_of(api, "GET", "/auth/me", None)?;
+    let name = me["name"].as_str().unwrap_or("-");
+    let kind = me["kind"].as_str().unwrap_or("principal");
+    let a = if kind.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    let owner = me["owner"].as_str().map(|o| format!(", owned by {o}")).unwrap_or_default();
+    let mut lines = vec![format!("You are {name}, {a} {kind}{owner}, on {}.", api.server())];
+    let bindings = me["bindings"].as_array().cloned().unwrap_or_default();
+    match me["role"].as_str() {
+        _ if !bindings.is_empty() => {
+            lines.push("You hold:".into());
+            for b in &bindings {
+                let via = b["group"].as_str().map(|g| format!(" (through the group {g})")).unwrap_or_default();
+                let until = match b["expires_at"].as_u64() {
+                    _ if b["expired"] == true => ", expired: it holds nothing now".into(),
+                    Some(at) => format!(", until {}", crate::cmdline::when(Some(at))),
+                    None => String::new(),
+                };
+                let allows: Vec<&str> = b["allows"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                lines.push(format!("  - {} {}{via}{until}: {}", b["role"].as_str().unwrap_or_default(), crate::accesscmd::place(&b["scope"]), allows.join(", ")));
+            }
+        }
+        Some(role) => lines.push(format!("You hold {role} on this host.")),
+        None => lines.push("Nothing is bound to you: you may do nothing here until a person binds you a role (holon bind).".into()),
+    }
+    if kind == "agent" {
+        lines.push("Whatever you hold, a person approves a deploy that needs it, starts, stops, deletes and restores a flow, writes its secrets, decides its approvals, and reads and changes people, roles and resources.".into());
+    }
+    Ok(lines.join("\n"))
 }
 
 /// What an agent says of a version it proposes, for the person who reviews it.
@@ -1463,6 +1505,21 @@ mod tests {
     const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
 
     #[test]
+    fn whoami_says_what_each_binding_allows_and_where() {
+        let mut state = test_state();
+        let p = with_people(&mut state);
+        let said = tool(&state, &p.claude, "whoami", json!({})).unwrap();
+        assert!(said.starts_with("You are claude, an agent, owned by ada, on the test server.\nYou hold:\n  - agent on this host: flow.view, "), "{said}");
+        assert!(said.ends_with("and reads and changes people, roles and resources."), "{said}");
+        // Bound more, through a group, until a time: each its own line.
+        let ok = |method: &str, path: &str, body: Value| assert_eq!(route(&state, &req_as(&p.ada, method, path, body.to_string().into_bytes())).status_code, 200, "{path}");
+        ok("PUT", "/groups/bots", json!({ "members": ["claude"] }));
+        ok("POST", "/bindings", json!({ "who": { "group": "bots" }, "role": "viewer", "scope": { "flows": { "slug": "payout" } }, "expires_at": 4_000_000_000u64 }));
+        let said = tool(&state, &p.claude, "whoami", json!({})).unwrap();
+        assert!(said.contains("\n  - viewer on \"payout\" (through the group bots), until 2096-10-02T07:06:40: flow.view, "), "{said}");
+    }
+
+    #[test]
     fn a_flow_goes_from_text_to_an_explained_run_and_the_agent_never_approves() {
         let mut state = test_state();
         let p = with_people(&mut state);
@@ -1901,7 +1958,7 @@ mod tests {
         let mut state = test_state();
         let p = with_people(&mut state);
         let accounts = state.access.accounts().unwrap();
-        let dan = accounts.accept(&accounts.invite("dan", crate::access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+        let dan = accounts.accept(&accounts.invite("dan", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
         let (agent, person, other) = (Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &p.ada }, Signed { state: &state, token: &dan });
         let text = "import { action, approval, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  state.decided = decision\n  return decision.approved\n})\n";
         let plan = agent::plan(text).unwrap();
@@ -2279,7 +2336,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "deployments", "flows", "runs", "logs", "state", "explain", "history", "restore"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "whoami", "deployments", "flows", "runs", "logs", "state", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

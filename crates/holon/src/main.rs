@@ -25,6 +25,7 @@
 //! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
 mod access;
+mod accesscmd;
 mod accounts;
 mod accountscmd;
 mod decidecmd;
@@ -468,6 +469,10 @@ const USAGE: &str = "usage: holon <command>
   activity [--last N]                what was done on the server, by whom
   people | oidc                      people, agents and services, and their tokens; signing in
                                      through a provider (admin)
+  roles | groups                     the roles principals are bound, and groups of them (admin)
+  bind | unbind                      a role to a principal or a group, on the host, a flow or an
+                                     approval point, until a time if you say
+  access [versions|show]             who may do what, every version of it (for an audit)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
@@ -612,6 +617,11 @@ fn main() {
         Some("activity") => std::process::exit(flowscmd::activity(&rest)),
         Some("people") => std::process::exit(accountscmd::people(&rest)),
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
+        Some("roles") => std::process::exit(accesscmd::roles(&rest)),
+        Some("groups") => std::process::exit(accesscmd::groups(&rest)),
+        Some("bind") => std::process::exit(accesscmd::bind(&rest)),
+        Some("unbind") => std::process::exit(accesscmd::unbind(&rest)),
+        Some("access") => std::process::exit(accesscmd::access(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
         Some("host") => std::process::exit(storage::cli(&rest)),

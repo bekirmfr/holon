@@ -105,7 +105,7 @@ pub(crate) fn with_people(state: &mut AppState) -> People {
     use crate::accounts::{Accounts, Kind};
     let accounts = Arc::new(Accounts::memory());
     let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
-    accounts.add("claude", Kind::Agent, access::Role::Agent, "ada", "ada").unwrap();
+    accounts.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
     let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
     state.access = access::Access::new(accounts, vec![], vec![]);
     People { ada, claude }
@@ -2199,9 +2199,9 @@ export const pay = action(async (order) => {
     // From here on, people sign in.
     let People { ada, claude } = with_people(&mut state);
     let accounts = Arc::clone(state.access.accounts().unwrap());
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    accounts.add("ci", crate::accounts::Kind::Service, access::Role::Editor, "ada", "ada").unwrap();
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    accounts.add("ci", crate::accounts::Kind::Service, "editor", "ada", "ada").unwrap();
     let ci = accounts.create_token("ci", "CI on GitHub", "ada").unwrap().0;
     let decide = |token: &str, run: &str, body: serde_json::Value| {
         let r = route(&state, &req_as(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), serde_json::to_vec(&body).unwrap()));
@@ -4756,10 +4756,10 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let mut state = test_state();
     let accounts = std::sync::Arc::new(Accounts::memory());
     let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
-    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), pw).unwrap().0;
+    let person = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role.name(), None, "ada").unwrap(), pw).unwrap().0;
     let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
-    let token = |name: &str, kind, role| {
-        accounts.add(name, kind, role, "ada", "ada").unwrap();
+    let token = |name: &str, kind, role: Role| {
+        accounts.add(name, kind, role.name(), "ada", "ada").unwrap();
         accounts.create_token(name, "the sweep", "ada").unwrap().0
     };
     let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
@@ -4822,11 +4822,11 @@ fn what_one_owns_is_listed_and_its_tokens_are_theirs_to_make() {
     let mut state = test_state();
     let People { ada, claude } = with_people(&mut state);
     let accounts = Arc::clone(state.access.accounts().unwrap());
-    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let person = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role.name(), None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let (bob, cy, local) = (person("bob", Role::Editor), person("cy", Role::Viewer), accounts.new_local("bma"));
     // claude is ada's (with_people); bob owns two, cy one, the OS user its agent.
     for (name, kind, role, owner) in [("ci", Kind::Service, Role::Editor, "bob"), ("nightly", Kind::Service, Role::Viewer, "bob"), ("scout", Kind::Agent, Role::Agent, "cy"), ("bma-agent", Kind::Agent, Role::Agent, "bma")] {
-        accounts.add(name, kind, role, owner, "ada").unwrap();
+        accounts.add(name, kind, role.name(), owner, "ada").unwrap();
         accounts.create_token(name, "first", "ada").unwrap();
     }
     let ci = accounts.create_token("ci", "a script", "bob").unwrap().0;
@@ -5226,7 +5226,7 @@ fn what_is_done_names_who_did_it() {
     let mut state = test_state();
     let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
     accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let bob = bob.as_str();
     state.access = access::Access::new(accounts, vec![], vec![]);
     let as_bob = |method: &str, url: &str, body: Vec<u8>| {
@@ -8714,7 +8714,7 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     // From here on, people sign in: two of them decide.
     let accounts = Arc::new(crate::accounts::Accounts::memory());
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     state.access = access::Access::new(accounts, vec![], vec![]);
     let state = state;
     let as_person = |token: &str, method: &str, url: &str, body: serde_json::Value| {

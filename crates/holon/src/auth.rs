@@ -26,7 +26,7 @@
 use rouille::{Request, Response};
 use serde::Deserialize;
 
-use crate::access::{Caller, Role};
+use crate::access::Caller;
 use crate::accounts::{Accounts, Kind, OidcSettings, Principal};
 use crate::http::{err, read_body};
 use crate::AppState;
@@ -36,12 +36,16 @@ fn body<T: for<'de> Deserialize<'de>>(request: &Request) -> Result<T, Response> 
     serde_json::from_slice(&bytes).map_err(|e| err(400, format!("invalid body: {e}")))
 }
 
-/// What holds for `name`: each binding's id, role and scope, the group it holds through if it
-/// does, who bound it when, and until when, with whether it has expired.
+/// What holds for `name`: each binding's id, role and what it allows, scope, the group it holds
+/// through if it does, who bound it when, and until when, with whether it has expired. A principal
+/// reads its own here (`/auth/me`), what its roles allow included, where `GET /roles` is an
+/// admin's.
 fn bindings(name: &str, accounts: &Accounts) -> serde_json::Value {
     let now = crate::deploy::epoch_now();
+    let document = accounts.access_document();
     let each = |(b, group): &(crate::bindings::Binding, Option<String>)| {
-        serde_json::json!({ "id": b.id, "role": b.role, "scope": b.scope, "group": group, "by": b.by, "at": b.at, "expires_at": b.expires_at, "expired": !b.live(now) })
+        let allows: Vec<&str> = document.role(&b.role).map(|r| r.allows().into_iter().map(crate::can::Action::name).collect()).unwrap_or_default();
+        serde_json::json!({ "id": b.id, "role": b.role, "allows": allows, "scope": b.scope, "group": group, "by": b.by, "at": b.at, "expires_at": b.expires_at, "expired": !b.live(now) })
     };
     accounts.reaching(name).iter().map(each).collect()
 }
@@ -63,10 +67,11 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     v
 }
 
-/// Why `caller` may not give `role` on the host, as inviting, adding or setting someone with it
-/// binds it there (D19), if they may not.
-fn may_give(caller: &Caller, role: Role) -> Result<(), Response> {
-    crate::bindings::may_bind(caller, crate::can::role(role), &crate::bindings::Scope::Host)
+/// Why `caller` may not give the role named `role` on the host, as inviting, adding or setting
+/// someone with it binds it there (D19), if they may not: 400 for no such role.
+fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Response> {
+    let Some(def) = accounts.access_document().role(role) else { return Err(err(400, format!("no role {role:?}: GET /roles lists them"))) };
+    crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
 }
 
 /// Why `caller` may not make `name`'s sign-in or tokens, if they may not: they would act as
@@ -241,7 +246,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 name: String,
                 #[serde(default)]
                 kind: Kind,
-                role: Role,
+                /// A built-in role's name, or one an admin defined.
+                role: String,
                 #[serde(default)]
                 owner: Option<String>,
                 #[serde(default)]
@@ -250,15 +256,15 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 display: Option<String>,
             }
             return respond(body::<New>(request).and_then(|n| {
-                may_give(caller, n.role)?;
+                may_give(caller, accounts, &n.role)?;
                 let invite = if n.kind == Kind::Person {
-                    let link = accounts.invite(&n.name, n.role, n.email, by).map_err(fail)?;
+                    let link = accounts.invite(&n.name, &n.role, n.email, by).map_err(fail)?;
                     state.activity.record("invited", &n.name, Some(by));
                     Some(link)
                 } else {
                     // Owned by whoever adds it, unless they name someone.
                     let owner = n.owner.unwrap_or_else(|| me.to_string());
-                    accounts.add(&n.name, n.kind, n.role, &owner, by).map_err(fail)?;
+                    accounts.add(&n.name, n.kind, &n.role, &owner, by).map_err(fail)?;
                     state.activity.record(if n.kind == Kind::Agent { "added the agent" } else { "added the service" }, &n.name, Some(by));
                     None
                 };
@@ -341,7 +347,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if method == "PATCH" {
                 #[derive(Deserialize)]
                 struct Change {
-                    role: Option<Role>,
+                    role: Option<String>,
                     disabled: Option<bool>,
                     /// `""` clears it.
                     email: Option<String>,
@@ -351,9 +357,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 }
                 return respond(body::<Change>(request).and_then(|c| {
                     if let Some(role) = c.role {
-                        may_give(caller, role)?;
-                        accounts.set_role(name, role, by).map_err(fail)?;
-                        state.activity.record(&format!("made {}", role.name()), name, Some(by));
+                        may_give(caller, accounts, &role)?;
+                        accounts.set_role(name, &role, by).map_err(fail)?;
+                        state.activity.record(&format!("made {role}"), name, Some(by));
                     }
                     if let Some(disabled) = c.disabled {
                         accounts.set_disabled(name, disabled).map_err(fail)?;

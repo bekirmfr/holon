@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Roles, groups and bindings from the command line, `holon mcp` and the People page.**
+  `holon roles` lists the roles and defines or removes an admin's own, `holon groups` makes groups
+  and adds or drops members, `holon bind` binds a role to a principal or a group on the host, on
+  one flow (`--flow`) or at one approval point (`--approval FLOW:POINT`), until a date or for a
+  while (`--until 2026-12-01`, `7d`), and `holon unbind` takes a binding away; `holon access`
+  lists every version of who may do what, and `show` prints one whole, for an auditor.
+  `holon people` lists what each principal holds where it showed a role, and takes a role of an
+  admin's own as `--role`, as `POST` and `PATCH /people` now do. `holon mcp` has `whoami`: who
+  the agent is signed in as, and what each of its bindings allows, where (`/auth/me` answers
+  each binding's `allows`). The editor's People page offers each kind the roles it may hold, an
+  admin's own included, and lists beside each principal what else holds for them; Approvals
+  offers Approve and Decline wherever the server says the person may decide, so one bound at a
+  flow or an approval point decides there, whatever their role on the host. The terminal editor
+  reads the roles from the server too. No sample changes: this is who may call the control
+  plane, not what a flow does.
 - **An admin defines roles of their own, and groups.** A role (`PUT /roles/<name>`) allows the
   actions it names from the catalogue, to the kinds of principal it names; its author holds on
   the host everything it allows. A group (`PUT /groups/<name>`) is a set of principals, bound as

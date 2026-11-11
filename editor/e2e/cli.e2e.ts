@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, OWN_PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { gotoPage } from "./helpers";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
 const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -130,6 +131,55 @@ test("flows are saved and read back, and people and tokens managed, from the com
   expect(holon(token, ["deployments"]).status).toBe(1);
   ok(adminToken, ["people", "remove", service, "--yes"]);
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
+});
+
+test("roles, groups and bindings are made and read back from the command line, and People and access offers and lists them", async ({ adminToken, page }) => {
+  const n = Date.now();
+  const [role, person, group] = [`approver-${n}`, `clib${n}`, `cli-group-${n}`];
+  expect(ok(adminToken, ["roles", "define", role, "--allow", "run.view,run.decide", "--about", "decides payouts", "--why", "e2e"])).toMatch(
+    new RegExp(`^${role}: allows run\\.view, run\\.decide, held by person \\(version \\d+\\)$`, "m"),
+  );
+  expect(ok(adminToken, ["roles"])).toMatch(new RegExp(`^${role} \\(decides payouts\\)\\s+person\\s+0\\s+run\\.view, run\\.decide$`, "m"));
+  ok(adminToken, ["people", "add", person, "--person", "--role", "viewer"]);
+
+  // Bound at an approval point for a week: a viewer on the host sees the runs, so nothing more is
+  // said. A group bound there sees nothing else, and is told what would let it.
+  const direct = ok(adminToken, ["bind", role, "--to", person, "--approval", "payout:ok", "--until", "7d", "--why", "covers this week"]);
+  expect(direct).toMatch(new RegExp(`^bound ${role} to ${person} for "payout"'s approval "ok", until \\S+ \\(binding \\d+, version \\d+\\)\\n$`));
+  ok(adminToken, ["groups", "add", group, person, "--about", "e2e"]);
+  expect(ok(adminToken, ["groups"])).toMatch(new RegExp(`^${group} \\(e2e\\)\\s+0\\s+${person}$`, "m"));
+  const toGroup = ok(adminToken, ["bind", role, "--group", group, "--approval", "payout:ok"]);
+  expect(toGroup).toContain(`the group ${group} decides payout's approval "ok" but can't see its runs: holon bind viewer --group ${group} --flow payout`);
+  const listed = ok(adminToken, ["people"]).split("\n").find((l) => l.startsWith(`${person} `)) ?? "";
+  expect(listed).toMatch(new RegExp(`^${person}\\s+person\\s+viewer, `));
+  for (const holds of [`${role} at payout:ok until `, `${role} at payout:ok via ${group}`]) expect(listed).toContain(holds);
+
+  // People and access lists what else holds beside the role, and offers the admin's own role.
+  await page.goto("/");
+  await gotoPage(page, "people");
+  const bindings = page.getByLabel(`${person}'s bindings`);
+  await expect(bindings).toContainText(`${role} at payout:ok until `);
+  await expect(bindings).toContainText(`${role} at payout:ok via ${group}`);
+  await expect(page.getByLabel(`${person}'s role`)).toHaveValue("viewer");
+  await page.getByLabel(`${person}'s role`).selectOption(role);
+  await expect(page.getByLabel(`${person}'s role`)).toHaveValue(role);
+  // Its role on the host is the admin's own now: a bare entry, not one at a scope.
+  expect(ok(adminToken, ["people"])).toMatch(new RegExp(`^${person}\\s+person\\s+(.*, )?${role}(, |\\s)`, "m"));
+
+  // Every change is a version, with who made it and why; each binding has its id.
+  const versions = ok(adminToken, ["access"]);
+  expect(versions).toMatch(new RegExp(`bound ${role} to ${person} for "payout"'s approval "ok", until \\S+\\s+covers this week`));
+  expect(versions).toContain(`defined the role ${role}`);
+  expect(ok(adminToken, ["access", "show"])).toMatch(new RegExp(`^\\d+\\s+${role}\\s+the group ${group}\\s+for "payout"'s approval "ok"\\s+-\\s+\\S+$`, "m"));
+
+  // Unbound by their ids; then nothing binds the role, and it goes.
+  const idOf = (said: string) => /\(binding (\d+),/.exec(said)?.[1] ?? "";
+  expect(ok(adminToken, ["unbind", idOf(direct), "--why", "back from leave"]).trim()).toBe(`unbound ${role} from ${person} for "payout"'s approval "ok"`);
+  expect(ok(adminToken, ["unbind", idOf(toGroup)]).trim()).toBe(`unbound ${role} from the group ${group} for "payout"'s approval "ok"`);
+  ok(adminToken, ["people", "remove", person, "--yes"]);
+  expect(ok(adminToken, ["groups", "remove", group]).trim()).toBe(`${group}: removed`);
+  expect(ok(adminToken, ["roles", "remove", role]).trim()).toBe(`${role}: removed`);
+  expect(ok(adminToken, ["roles"])).not.toContain(role);
 });
 
 test("a flow's log lines are read from the command line, kept beside its runs and not in them, and an agent is refused them", async ({ adminToken, agentToken, request }) => {

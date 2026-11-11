@@ -226,8 +226,8 @@ fn still_bound(name: &str, times: usize) -> Result<(), String> {
 }
 
 /// A version's words for binding `role` to `name` on the host.
-fn bound(role: Role, name: &str) -> String {
-    format!("bound {} to {name} on this host", role.name())
+fn bound(role: &str, name: &str) -> String {
+    format!("bound {role} to {name} on this host")
 }
 
 /// Whether an admin is left who can sign in: an enabled person here holding admin on the host,
@@ -613,7 +613,7 @@ impl Accounts {
         valid_name(name)?;
         check_password(password)?;
         let hash = hash_password(password)?;
-        let out = self.change_access(name, &format!("set up the server: {}", bound(Role::Admin, name)), None, |book, access| {
+        let out = self.change_access(name, &format!("set up the server: {}", bound("admin", name)), None, |book, access| {
             if !no_person(book) {
                 return Err("this server is set up already".to_string());
             }
@@ -622,7 +622,7 @@ impl Accounts {
             }
             let account = Principal { password: Some(hash), ..Principal::new(name, Kind::Person, None) };
             book.users.push(account.clone());
-            access.set_host_role(name, Role::Admin, name, epoch_now());
+            access.set_host_role(name, "admin", name, epoch_now());
             Ok((Self::start_session(book, name), account))
         })?;
         *hold(&self.setup_code) = None;
@@ -913,9 +913,8 @@ impl Accounts {
 
     /// Add the person `name`, with `role` bound to them on the host: a one-time link token for
     /// them to set their password.
-    pub(crate) fn invite(&self, name: &str, role: Role, email: Option<String>, by: &str) -> Result<String, String> {
+    pub(crate) fn invite(&self, name: &str, role: &str, email: Option<String>, by: &str) -> Result<String, String> {
         valid_name(name)?;
-        held(Kind::Person, role)?;
         self.change_access(by, &format!("invited {name}: {}", bound(role, name)), None, |book, access| {
             if book.users.iter().any(|u| u.name == name) {
                 return Err(format!("there is a principal {name:?} already"));
@@ -931,12 +930,11 @@ impl Accounts {
 
     /// Add the agent or service `name`, with `role` bound to it on the host, owned by `owner`, a
     /// person (a person is invited instead). Its tokens are made after.
-    pub(crate) fn add(&self, name: &str, kind: Kind, role: Role, owner: &str, by: &str) -> Result<Principal, String> {
+    pub(crate) fn add(&self, name: &str, kind: Kind, role: &str, owner: &str, by: &str) -> Result<Principal, String> {
         valid_name(name)?;
         if kind == Kind::Person {
             return Err("a person is invited, to set their own password".into());
         }
-        held(kind, role)?;
         let local = self.local_user();
         self.change_access(by, &format!("added {name}, {}: {}", kind.said(), bound(role, name)), None, |book, access| {
             if book.users.iter().any(|u| u.name == name) {
@@ -993,7 +991,7 @@ impl Accounts {
     }
 
     /// Bind `role` to `name` on the host, in place of what was bound to it there.
-    pub(crate) fn set_role(&self, name: &str, role: Role, by: &str) -> Result<(), String> {
+    pub(crate) fn set_role(&self, name: &str, role: &str, by: &str) -> Result<(), String> {
         self.change_access(by, &bound(role, name), None, |book, access| {
             if !book.users.iter().any(|u| u.name == name) {
                 return Err(format!("no principal {name:?}"));
@@ -1177,7 +1175,7 @@ mod tests {
     fn an_agent_made_first_leaves_the_server_to_be_set_up() {
         let a = Accounts::memory();
         a.new_local("bma");
-        a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").unwrap();
+        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
         assert!(a.needs_setup());
         let code = a.setup_code().unwrap();
         assert!(a.setup(&code, "bma-agent", PW).unwrap_err().contains("there is a principal"));
@@ -1317,7 +1315,7 @@ mod tests {
     #[test]
     fn an_invite_link_lets_its_holder_set_a_password_once() {
         let (a, _) = set_up();
-        let link = a.invite("bob", Role::Editor, None, "ada").unwrap();
+        let link = a.invite("bob", "editor", None, "ada").unwrap();
         assert!(a.sign_in("bob", PW).is_err(), "no password until the link is used");
         assert_eq!(a.invite_for(&link).as_deref(), Some("bob"));
         let (token, account) = a.accept(&link, PW).unwrap();
@@ -1383,17 +1381,17 @@ mod tests {
     fn no_change_leaves_no_admin() {
         let (a, _) = set_up();
         a.new_local("bma");
-        assert!(a.set_role("ada", Role::Viewer, "local:bma").unwrap_err().contains("that would leave no admin: make someone else an admin first"));
+        assert!(a.set_role("ada", "viewer", "local:bma").unwrap_err().contains("that would leave no admin: make someone else an admin first"));
         assert!(a.set_disabled("ada", true).unwrap_err().contains("no admin"));
         assert!(a.remove("ada", "local:bma").unwrap_err().contains("no admin"));
         assert_eq!((a.host_role("ada"), a.access.document().version), (Some(Role::Admin), 1), "each refused, nothing changed");
-        a.invite("bob", Role::Admin, None, "ada").unwrap();
+        a.invite("bob", "admin", None, "ada").unwrap();
         // bob is another admin (enabled, even before using his link); a disabled one doesn't count.
         a.set_disabled("bob", true).unwrap();
         assert!(a.remove("ada", "ada").is_err());
-        assert!(a.set_role("ada", Role::Editor, "ada").is_err());
+        assert!(a.set_role("ada", "editor", "ada").is_err());
         a.set_disabled("bob", false).unwrap();
-        a.set_role("ada", Role::Editor, "bob").unwrap();
+        a.set_role("ada", "editor", "bob").unwrap();
         a.remove("ada", "bob").unwrap();
         assert_eq!(a.principals().iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["bob"]);
     }
@@ -1410,34 +1408,34 @@ mod tests {
         let started = epoch_now();
         let (a, _) = set_up();
         assert_eq!(last(&a), (1, "ada".into(), "set up the server: bound admin to ada on this host".into()));
-        a.invite("bob", Role::Editor, None, "ada").unwrap();
+        a.invite("bob", "editor", None, "ada").unwrap();
         assert_eq!(last(&a), (2, "ada".into(), "invited bob: bound editor to bob on this host".into()));
-        a.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
         assert_eq!(last(&a), (3, "ada".into(), "added claude, an agent: bound agent to claude on this host".into()));
-        a.set_role("bob", Role::Viewer, "ada").unwrap();
+        a.set_role("bob", "viewer", "ada").unwrap();
         assert_eq!(last(&a), (4, "ada".into(), "bound viewer to bob on this host".into()));
         assert!(a.access.document().at >= started);
-        a.set_role("bob", Role::Viewer, "ada").unwrap();
+        a.set_role("bob", "viewer", "ada").unwrap();
         a.set_disabled("bob", true).unwrap();
         a.set_email("bob", Some("bob@example.com".into())).unwrap();
         assert_eq!(last(&a).0, 4, "nothing bound anew: no version");
         a.remove("bob", "ada").unwrap();
         assert_eq!(last(&a), (5, "ada".into(), "removed bob, and what was bound to bob".into()));
         assert!(a.holding("bob").is_empty() && a.bindings_of("bob").is_empty());
-        a.invite("bob", Role::Editor, None, "ada").unwrap();
+        a.invite("bob", "editor", None, "ada").unwrap();
         assert_eq!(a.holding("bob").iter().map(|h| h.role.builtin).collect::<Vec<_>>(), [Some(Role::Editor)], "only what is bound to the new bob");
     }
 
     #[test]
     fn disabling_ends_sessions_and_api_tokens_are_shown_once() {
         let (a, _) = set_up();
-        let link = a.invite("cy", Role::Viewer, None, "ada").unwrap();
+        let link = a.invite("cy", "viewer", None, "ada").unwrap();
         let (token, _) = a.accept(&link, PW).unwrap();
         a.set_disabled("cy", true).unwrap();
         assert_eq!(a.who(&token), None);
         assert!(a.sign_in("cy", PW).is_err());
 
-        a.add("ci", Kind::Service, Role::Editor, "ada", "ada").unwrap();
+        a.add("ci", Kind::Service, "editor", "ada", "ada").unwrap();
         let (secret, listed) = a.create_token("ci", "CI on GitHub", "ada").unwrap();
         assert!(secret.starts_with("ht_"));
         assert_eq!(a.who(&secret), Some(Who { name: "ci".into(), kind: Kind::Service }), "the service, by its name");
@@ -1462,17 +1460,17 @@ mod tests {
     #[test]
     fn each_kind_holds_only_its_roles() {
         let (a, _) = set_up();
-        assert!(a.invite("bot", Role::Agent, None, "ada").unwrap_err().contains("a person is a viewer"));
-        assert!(a.add("ci", Kind::Service, Role::Admin, "ada", "ada").unwrap_err().contains("a service is a viewer or an editor"));
-        assert!(a.add("claude", Kind::Agent, Role::Editor, "ada", "ada").unwrap_err().contains("an agent is an agent or a viewer"));
-        assert!(a.add("bob", Kind::Person, Role::Editor, "ada", "ada").unwrap_err().contains("invited"));
-        let claude = a.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        assert!(a.invite("bot", "agent", None, "ada").unwrap_err().contains("a person is a viewer"));
+        assert!(a.add("ci", Kind::Service, "admin", "ada", "ada").unwrap_err().contains("a service is a viewer or an editor"));
+        assert!(a.add("claude", Kind::Agent, "editor", "ada", "ada").unwrap_err().contains("an agent is an agent or a viewer"));
+        assert!(a.add("bob", Kind::Person, "editor", "ada", "ada").unwrap_err().contains("invited"));
+        let claude = a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
         assert_eq!((claude.kind, a.host_role("claude"), claude.owner.as_deref(), claude.created_by.as_deref()), (Kind::Agent, Some(Role::Agent), Some("ada"), Some("ada")));
-        a.set_role("claude", Role::Viewer, "ada").unwrap();
-        assert!(a.set_role("claude", Role::Admin, "ada").unwrap_err().contains("an agent is"));
-        assert!(a.set_role("ada", Role::Agent, "ada").unwrap_err().contains("a person is"));
-        assert!(a.invite("claude", Role::Viewer, None, "ada").unwrap_err().contains("already"), "names are unique across kinds");
-        assert!(a.add("ada", Kind::Service, Role::Viewer, "ada", "ada").unwrap_err().contains("already"));
+        a.set_role("claude", "viewer", "ada").unwrap();
+        assert!(a.set_role("claude", "admin", "ada").unwrap_err().contains("an agent is"));
+        assert!(a.set_role("ada", "agent", "ada").unwrap_err().contains("a person is"));
+        assert!(a.invite("claude", "viewer", None, "ada").unwrap_err().contains("already"), "names are unique across kinds");
+        assert!(a.add("ada", Kind::Service, "viewer", "ada", "ada").unwrap_err().contains("already"));
         assert!(a.reset("claude").unwrap_err().contains("not a password"));
         assert!(a.set_email("claude", Some("c@example.com".into())).unwrap_err().contains("only a person"));
         assert!(a.sign_in("claude", PW).is_err());
@@ -1485,24 +1483,24 @@ mod tests {
     #[test]
     fn an_owner_is_a_person() {
         let (a, _) = set_up();
-        a.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
-        assert!(a.add("ci", Kind::Service, Role::Editor, "claude", "ada").unwrap_err().contains("an owner is a person"));
-        assert!(a.add("ci", Kind::Service, Role::Editor, "nobody", "ada").unwrap_err().contains("no person"));
-        a.invite("bob", Role::Editor, None, "ada").unwrap();
+        a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
+        assert!(a.add("ci", Kind::Service, "editor", "claude", "ada").unwrap_err().contains("an owner is a person"));
+        assert!(a.add("ci", Kind::Service, "editor", "nobody", "ada").unwrap_err().contains("no person"));
+        a.invite("bob", "editor", None, "ada").unwrap();
         a.set_disabled("bob", true).unwrap();
-        assert!(a.add("ci", Kind::Service, Role::Editor, "bob", "ada").unwrap_err().contains("disabled"));
+        assert!(a.add("ci", Kind::Service, "editor", "bob", "ada").unwrap_err().contains("disabled"));
         a.set_disabled("bob", false).unwrap();
-        a.add("ci", Kind::Service, Role::Editor, "bob", "ada").unwrap();
+        a.add("ci", Kind::Service, "editor", "bob", "ada").unwrap();
         assert!(a.set_owner("bob", "ada").unwrap_err().contains("only an agent or a service"));
         // The OS user owns one before it has an account here (`bma`, not `local:bma`).
-        assert!(a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").is_err(), "not before the server runs as bma");
+        assert!(a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").is_err(), "not before the server runs as bma");
         a.new_local("bma");
-        a.add("bma-agent", Kind::Agent, Role::Agent, "bma", "local:bma").unwrap();
+        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
         assert!(a.remove("bob", "ada").unwrap_err().contains("bob owns ci: give it another owner first"));
         a.set_owner("ci", "ada").unwrap();
         a.remove("bob", "ada").unwrap();
         // Disabling an owner leaves what they own as it was.
-        a.invite("eve", Role::Admin, None, "ada").unwrap();
+        a.invite("eve", "admin", None, "ada").unwrap();
         a.set_owner("claude", "eve").unwrap();
         a.set_disabled("eve", true).unwrap();
         let (token, _) = a.create_token("claude", "the agent", "ada").unwrap();
@@ -1534,7 +1532,7 @@ mod tests {
         let path = dir.join("accounts.json").to_str().unwrap().to_string();
         let a = Accounts::open(&path).unwrap();
         let (token, _) = a.setup(&a.setup_code().unwrap(), "ada", PW).unwrap();
-        a.invite("bob", Role::Editor, None, "ada").unwrap();
+        a.invite("bob", "editor", None, "ada").unwrap();
         let file = std::fs::read_to_string(&path).unwrap();
         assert!(!file.contains(&token) && !file.contains(PW), "only hashes are kept");
         let again = Accounts::open(&path).unwrap();
@@ -1565,7 +1563,7 @@ mod tests {
         assert!(a.holding("ada").is_empty() && a.holding("bob").is_empty(), "the file's roles aren't read");
         assert!(!a.needs_setup());
         a.new_local("bma");
-        a.set_role("ada", Role::Admin, "local:bma").unwrap();
+        a.set_role("ada", "admin", "local:bma").unwrap();
         assert_eq!(Accounts::open(&path).unwrap().host_role("ada"), Some(Role::Admin));
         assert!(dir.join(".holon-access.json").exists());
         let _ = std::fs::remove_dir_all(&dir);

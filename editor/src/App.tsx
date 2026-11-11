@@ -618,7 +618,7 @@ function Canvas({
   const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home", asks: page === "approvals" });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
-  const deciding = useMemo(() => toDecide(approvals.runs ?? [], me), [approvals.runs, me]);
+  const deciding = useMemo(() => toDecide(approvals.runs ?? [], me, approvals.decides), [approvals.runs, approvals.decides, me]);
   useEffect(() => onWaiting(approvals.approvals.length + deciding), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
@@ -1301,6 +1301,7 @@ function Canvas({
               approvals={approvals.approvals}
               deployments={deployments}
               runs={approvals.runs}
+              decides={approvals.decides}
               me={me}
               navigate={navigate}
               onDeclined={approvals.refresh}

@@ -715,6 +715,34 @@ for each.
 
 ## Step 3c. The CLI, `holon mcp` and the People pages
 
+Built. Where it differs from the sections below:
+
+- **No `--tag` yet**: a binding on a tag, and who may make one (D22), are 3d's, with tags.
+  `holon bind` takes `--flow` and `--approval` now; 3d adds `--tag`.
+- **The roles a kind may hold are the server's to say**, not the CLI's: `roles_of` is gone,
+  rather than read from `GET /roles`, and `holon people add --role` and `set --role` send the
+  name as given. `POST` and `PATCH /people` take any role here, an admin's own included
+  (`Accounts::invite`, `add`, `set_role` take a role's name, `Document::check` refuses one the
+  kind may not hold), so a mistake comes back in the server's words: `no role "nope": GET /roles
+  lists them`, `an agent may not hold approver: it is held by a person`.
+- **`/auth/me` and `GET /people` answer each binding's `allows`**: an agent may not read
+  `/roles` (`role.*` is a person's, D20), and `whoami` says what each of its bindings allows.
+- **`holon groups add` and `drop`** read `GET /groups` and `PUT` the whole member set, keeping
+  the group's `about` unless `--about` says another.
+- **`holon bind --approval`'s hint (D25)** asks only when its caller may read who holds what
+  (`/auth/me/can` for `people.view` and `role.view`): a principal sees the runs by a binding of
+  its own or of its groups', a group by its own, on the host or the flow, of a role allowing
+  `run.view`.
+- **`holon people list`'s role column is `holds`**: each binding, as `holon bind`'s flags write it
+  (`viewer, editor on payout via payments, editor at payout:ok until … (expired)`).
+- **The People page's role select** is the principal's own binding on the host (not a group's,
+  not expired); one with none shows "no role on the host". The rest of what holds for it is a
+  line beside it, read only. *Your agents and services*, which a non-admin opens, can't read
+  `/roles`, and titles its row with the bindings instead.
+- **Approvals asks `/auth/me/can` once per approval point** a run waits at, each time the runs
+  are read (`useApprovals`), and keeps the answers by `pointKey(slug, name)`; `mayDecide` and
+  the nav's count read them. Who decides is no longer a person who is an editor or an admin.
+
 ### `holon roles`, `groups`, `bind`, `unbind`, `access`
 
 As §11 writes them, through the run file's admin by default, as `holon people` is

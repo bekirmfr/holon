@@ -11,21 +11,19 @@ export type WaitingPoint = WaitingRun["waiting"][number];
 /** Whether people decide it: an approval, not an event a route delivers. */
 export const isApproval = (w: WaitingPoint) => (w.people ?? 0) > 0;
 
-/** Who `me` decides as, as the server says (durable.rs `decider`): a person who is an editor or
- *  an admin, by their name, the OS user's local admin by the name it runs as; null for a viewer,
- *  an agent or a service, who don't decide. */
-export function deciderOf(me: Me): string | null {
-  if (me.kind !== "person") return null;
-  if (me.role !== "editor" && me.role !== "admin") return null;
-  return me.name.replace(/^local:/, "");
-}
+/** Who `me` decides as, as the server says (durable.rs `decider`): their name, the OS user's
+ *  local admin by the name it runs as. */
+export const deciderOf = (me: Me) => me.name.replace(/^local:/, "");
+
+/** Where whether `me` decides an approval point is kept: its flow's slug and its name. */
+export const pointKey = (slug: string, name: string) => `${slug}\n${name}`;
 
 /** What `me` can do about `w`: decide it, nothing more (they approved it), or nothing (an event,
- *  or not theirs to decide). */
-export function mayDecide(w: WaitingPoint, me: Me): "decide" | "approved" | "no" {
-  const who = deciderOf(me);
-  if (!isApproval(w) || who === null) return "no";
-  return (w.approved ?? []).some((a) => a.by === who) ? "approved" : "decide";
+ *  or not theirs to decide: `may` is what the server's `can` answered for `run.decide` there, a
+ *  person bound a role allowing it on the host, on the flow, or at that approval point). */
+export function mayDecide(w: WaitingPoint, me: Me, may: boolean): "decide" | "approved" | "no" {
+  if (!isApproval(w) || !may) return "no";
+  return (w.approved ?? []).some((a) => a.by === deciderOf(me)) ? "approved" : "decide";
 }
 
 const and = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
@@ -38,8 +36,10 @@ export function approvalSaid(w: WaitingPoint): string {
   return by.length === 0 ? `${needs} "${w.name}"` : `${needs} "${w.name}" · ${by.length} of ${people}: ${and(by)} approved`;
 }
 
-/** How many approvals `me` can still decide, over these runs: what the nav adds to its count. */
-export const toDecide = (runs: { run: WaitingRun }[], me: Me) => runs.reduce((n, { run }) => n + run.waiting.filter((w) => mayDecide(w, me) === "decide").length, 0);
+/** How many approvals `me` can still decide, over these runs, `decides` saying which points are
+ *  theirs (`pointKey`): what the nav adds to its count. */
+export const toDecide = (runs: { slug: string; run: WaitingRun }[], me: Me, decides: ReadonlyMap<string, boolean>) =>
+  runs.reduce((n, { slug, run }) => n + run.waiting.filter((w) => mayDecide(w, me, decides.get(pointKey(slug, w.name)) === true) === "decide").length, 0);
 
 /** The decision an approval's event is, said: who approved, who declined and why, or that it
  *  ran out. Null for a value that isn't one (an event's request). */

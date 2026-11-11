@@ -286,15 +286,15 @@ impl Document {
         id
     }
 
-    /// Bind `role` to `name` at the host, in place of the roles bound to it there (none changes
-    /// if that is the one bound there already).
-    pub(crate) fn set_host_role(&mut self, name: &str, role: Role, by: &str, at: u64) {
+    /// Bind the role named `role` to `name` at the host, in place of the roles bound to it there
+    /// (none changes if that is the one bound there already).
+    pub(crate) fn set_host_role(&mut self, name: &str, role: &str, by: &str, at: u64) {
         let host = |b: &Binding| matches!(&b.who, Subject::Principal(n) if n == name) && b.scope == Scope::Host;
-        if self.bindings.iter().filter(|b| host(b)).map(|b| (b.role.as_str(), b.expires_at)).eq([(role.name(), None)]) {
+        if self.bindings.iter().filter(|b| host(b)).map(|b| (b.role.as_str(), b.expires_at)).eq([(role, None)]) {
             return;
         }
         self.bindings.retain(|b| !host(b));
-        self.bind(Subject::Principal(name.into()), role.name(), Scope::Host, None, by, at);
+        self.bind(Subject::Principal(name.into()), role, Scope::Host, None, by, at);
     }
 
     /// Unbind the binding `id`: it, if it was there.
@@ -894,16 +894,16 @@ mod tests {
         let path = dir("kept").join("access.json");
         let access = Bindings::open(path.clone()).unwrap();
         assert_eq!(*access.document(), Document::default(), "none yet");
-        let one = next(&access.document(), "ada", "bound admin to ada on this host", |d| d.set_host_role("ada", Role::Admin, "ada", 1));
+        let one = next(&access.document(), "ada", "bound admin to ada on this host", |d| d.set_host_role("ada", "admin", "ada", 1));
         access.keep(one.clone()).unwrap();
-        let two = next(&access.document(), "ada", "bound editor to bob on this host", |d| d.set_host_role("bob", Role::Editor, "ada", 2));
+        let two = next(&access.document(), "ada", "bound editor to bob on this host", |d| d.set_host_role("bob", "editor", "ada", 2));
         access.keep(two.clone()).unwrap();
-        let three = next(&access.document(), "ada", "bound viewer to bob on this host", |d| d.set_host_role("bob", Role::Viewer, "ada", 3));
+        let three = next(&access.document(), "ada", "bound viewer to bob on this host", |d| d.set_host_role("bob", "viewer", "ada", 3));
         access.keep(three.clone()).unwrap();
         assert_eq!(&*access.held("bob", 4), [at_host(Role::Viewer)], "in place of editor");
         assert_eq!(three.bindings.iter().map(|b| b.id).collect::<Vec<_>>(), [0, 2], "ids aren't reused");
         let mut same = three.clone();
-        same.set_host_role("bob", Role::Viewer, "ada", 4);
+        same.set_host_role("bob", "viewer", "ada", 4);
         assert_eq!(same, three, "the role bound there already: nothing changes");
 
         let again = Bindings::open(path).unwrap();
@@ -924,9 +924,9 @@ mod tests {
     fn the_history_is_never_behind_the_document() {
         let path = dir("history").join(".holon-access.json");
         let access = Bindings::open(path.clone()).unwrap();
-        let one = next(&access.document(), "ada", "bound admin to ada on this host", |d| d.set_host_role("ada", Role::Admin, "ada", 1));
+        let one = next(&access.document(), "ada", "bound admin to ada on this host", |d| d.set_host_role("ada", "admin", "ada", 1));
         access.keep(one.clone()).unwrap();
-        let two = next(&one, "ada", "bound editor to bob on this host", |d| d.set_host_role("bob", Role::Editor, "ada", 2));
+        let two = next(&one, "ada", "bound editor to bob on this host", |d| d.set_host_role("bob", "editor", "ada", 2));
         let mut line = serde_json::to_string(&two).unwrap();
         line.push('\n');
         std::fs::OpenOptions::new().append(true).open(history(&path)).unwrap().write_all(line.as_bytes()).unwrap();
@@ -935,7 +935,7 @@ mod tests {
         let access = Bindings::open(path.clone()).unwrap();
         assert_eq!(*access.document(), two, "not the line cut short");
         // The next version is on a line of its own, and read back.
-        let three = next(&two, "ada", "bound viewer to cy on this host", |d| d.set_host_role("cy", Role::Viewer, "ada", 3));
+        let three = next(&two, "ada", "bound viewer to cy on this host", |d| d.set_host_role("cy", "viewer", "ada", 3));
         access.keep(three.clone()).unwrap();
         assert_eq!(*Bindings::open(path.clone()).unwrap().document(), three);
         assert_eq!(access.version(3).unwrap(), Some(three));

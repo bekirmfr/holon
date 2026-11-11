@@ -1,6 +1,6 @@
 // An approval a run waits at, as the editor says it and who may decide it (decisions.ts).
 import { describe, expect, it } from "vitest";
-import { approvalSaid, decisionSaid, deciderOf, mayDecide, toDecide, type WaitingPoint } from "./decisions";
+import { approvalSaid, decisionSaid, deciderOf, mayDecide, pointKey, toDecide, type WaitingPoint } from "./decisions";
 import type { WValue } from "./holon";
 import type { WaitingRun } from "./server";
 
@@ -10,24 +10,28 @@ const t = (value: string): WValue => ({ type: "Text", value });
 const record = (fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
 
 describe("who decides an approval", () => {
-  it("is a person, an editor or an admin, the local admin by its name", () => {
+  it("decides by their name, the local admin by the name it runs as", () => {
     expect(deciderOf(ada)).toBe("ada");
     expect(deciderOf({ name: "local:ada", kind: "person", role: "admin" })).toBe("ada");
-    expect(deciderOf({ name: "cy", kind: "person", role: "viewer" })).toBeNull();
-    expect(deciderOf({ name: "ci", kind: "service", role: "editor" })).toBeNull();
-    expect(deciderOf({ name: "claude", kind: "agent", role: "agent" })).toBeNull();
-    expect(deciderOf({ name: "claude", kind: "agent", role: "viewer" })).toBeNull();
   });
-  it("decides each approval once, and never an event", () => {
-    expect(mayDecide(point(2), ada)).toBe("decide");
-    expect(mayDecide(point(2, "ada"), ada)).toBe("approved");
-    expect(mayDecide(point(2, "bob"), { name: "local:ada", kind: "person", role: "admin" })).toBe("decide");
-    expect(mayDecide({ name: "paid", expires_at: 0 }, ada)).toBe("no");
-    expect(mayDecide(point(1), { name: "cy", kind: "person", role: "viewer" })).toBe("no");
+  it("decides each approval once, where the server says they may, and never an event", () => {
+    expect(mayDecide(point(2), ada, true)).toBe("decide");
+    expect(mayDecide(point(2, "ada"), ada, true)).toBe("approved");
+    expect(mayDecide(point(2, "bob"), { name: "local:ada", kind: "person", role: "admin" }, true)).toBe("decide");
+    expect(mayDecide({ name: "paid", expires_at: 0 }, ada, true)).toBe("no");
+    // Whatever their role on the host: a viewer bound at the point decides, an editor not bound there doesn't.
+    expect(mayDecide(point(1), { name: "cy", kind: "person", role: "viewer" }, true)).toBe("decide");
+    expect(mayDecide(point(1), ada, false)).toBe("no");
   });
-  it("counts what is still theirs to decide", () => {
-    const run = (...waiting: WaitingPoint[]): { run: WaitingRun } => ({ run: { run_id: "r", kind: "trigger", route: "pay", parked_at: 0, waiting, delivered: [] } });
-    expect(toDecide([run(point(2)), run(point(2, "ada")), run({ name: "paid", expires_at: 0 }), run(point(1, "bob"), point(3))], ada)).toBe(3);
+  it("counts what is still theirs to decide, point by point", () => {
+    const run = (slug: string, ...waiting: WaitingPoint[]): { slug: string; run: WaitingRun } => ({ slug, run: { run_id: "r", kind: "trigger", route: "pay", parked_at: 0, waiting, delivered: [] } });
+    const decides = new Map([
+      [pointKey("payout", "payout"), true],
+      [pointKey("refunds", "payout"), false],
+    ]);
+    const runs = [run("payout", point(2)), run("payout", point(2, "ada")), run("payout", { name: "paid", expires_at: 0 }), run("payout", point(1, "bob"), point(3)), run("refunds", point(1))];
+    expect(toDecide(runs, ada, decides)).toBe(3);
+    expect(toDecide(runs, ada, new Map())).toBe(0);
   });
 });
 

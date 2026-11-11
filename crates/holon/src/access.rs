@@ -192,7 +192,7 @@ mod tests {
     fn server() -> (Access, [String; 3]) {
         let accounts = Arc::new(Accounts::memory());
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", PW).unwrap();
-        let signed = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), PW).unwrap().0;
+        let signed = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role.name(), None, "ada").unwrap(), PW).unwrap().0;
         let (bob, cy) = (signed("bob", Role::Editor), signed("cy", Role::Viewer));
         (Access::new(accounts, vec![], vec![]), [ada, bob, cy])
     }
@@ -218,7 +218,7 @@ mod tests {
     fn a_service_acts_with_its_role() {
         let (access, _) = server();
         let accounts = access.accounts().unwrap();
-        accounts.add("ci", Kind::Service, Role::Editor, "ada", "ada").unwrap();
+        accounts.add("ci", Kind::Service, "editor", "ada", "ada").unwrap();
         let (ci, _) = accounts.create_token("ci", "CI on GitHub", "ada").unwrap();
         assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("ci".into())));
         assert_eq!(call(&access, "GET", "/people", Some(&ci)), Err(403));
@@ -236,7 +236,7 @@ mod tests {
     fn a_role_header_changes_nothing() {
         let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
-        accounts.add("claude", Kind::Agent, Role::Agent, "ada", "ada").unwrap();
+        accounts.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
         let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
         let local = accounts.new_local("bma");
         let said = |access: &Access, method: &str, url: &str, bearer: &str, header: Option<&str>| {

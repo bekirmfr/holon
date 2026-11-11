@@ -260,7 +260,10 @@ An admin also defines roles of their own, and groups:
 or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
 with `&approval=ok`), and with no flow, on the host for the host's actions and on every flow at
 once for the others. `/auth/me` and `GET /people` answer what holds for a principal, each binding
-to one of its groups with the group's name.
+with what its role allows (an agent may not read `/roles`), and one to one of its groups with the
+group's name. `POST` and `PATCH /people` take any role the principal's kind may hold, an admin's
+own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
+([the command line](cli.md#roles-and-bindings)).
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;

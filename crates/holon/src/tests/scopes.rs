@@ -8,7 +8,6 @@
 use super::access_table::{ask, deploy, error_of};
 use super::*;
 use crate::accounts::{Accounts, Kind};
-use access::Role;
 use serde_json::{json, Value};
 
 const PW: &str = "correct horse battery";
@@ -48,7 +47,7 @@ fn server() -> (AppState, Tokens, String, String) {
     let run = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
     let book = Arc::new(Accounts::memory());
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", PW).unwrap();
-    let person = |name: &str| book.accept(&book.invite(name, Role::Viewer, None, "ada").unwrap(), PW).unwrap().0;
+    let person = |name: &str| book.accept(&book.invite(name, "viewer", None, "ada").unwrap(), PW).unwrap().0;
     let tokens = Tokens { ada, bob: person("bob"), dee: person("dee"), cy: person("cy") };
     state.access = access::Access::new(book, vec![], vec![]);
     (state, tokens, run, unit)
@@ -211,7 +210,7 @@ fn a_groups_binding_holds_for_its_members_of_the_kinds_its_role_allows() {
     let (state, t, _, _) = server();
     let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
     let accounts = Arc::clone(state.access.accounts().unwrap());
-    accounts.add("scout", Kind::Agent, Role::Viewer, "ada", "ada").unwrap();
+    accounts.add("scout", Kind::Agent, "viewer", "ada", "ada").unwrap();
     let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
 
     assert_eq!(ada("PUT", "/groups/payments", json!({ "members": ["scout", "bob", "bob"], "about": "pays out" })).0, 200);
@@ -248,7 +247,15 @@ fn a_role_an_admin_defines_holds_what_it_allows() {
     assert_eq!(names, [("viewer", true), ("agent", true), ("editor", true), ("admin", true), ("approver", false)]);
     assert_eq!(roles["roles"][4], json!({ "name": "approver", "about": "decides payouts", "allows": ["run.view", "run.decide"], "kinds": ["person"], "builtin": false, "bound": 0 }));
 
+    // Given on the host as a built-in role is: inviting or setting someone with it.
+    let (code, said) = ada("POST", "/people", json!({ "name": "fay", "kind": "person", "role": "approver" }));
+    assert_eq!(code, 200, "{said}");
+    assert_eq!(refusal(ada("POST", "/people", json!({ "name": "bot", "kind": "agent", "role": "approver" }))), (400, "an agent may not hold approver: it is held by a person".into()));
+    assert_eq!(refusal(ada("PATCH", "/people/cy", json!({ "role": "nope" }))), (400, "no role \"nope\": GET /roles lists them".into()));
+
     only(&state, &t.ada, "dee", "approver", json!({ "flows": { "slug": "d" } }));
+    let me: Value = serde_json::from_str(&send(&state, &t.dee, "GET", "/auth/me", Value::Null).1).unwrap();
+    assert_eq!(me["bindings"][0]["allows"], json!(["run.view", "run.decide"]), "what it allows, which dee reads here and not in GET /roles");
     let (code, said) = send(&state, &t.dee, "POST", &format!("/deployments/d/runs/{run}/decide"), json!({ "name": "payout", "approve": true }));
     assert_eq!(code, 200, "{said}");
     assert_eq!(send(&state, &t.dee, "GET", "/deployments/d/runs", Value::Null).0, 200);

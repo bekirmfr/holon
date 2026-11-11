@@ -259,11 +259,11 @@ fn server(accounts: bool) -> (AppState, String, Vec<Caller>) {
     }
     let book = Arc::new(Accounts::memory());
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", PW).unwrap();
-    let person = |name: &str, role| book.accept(&book.invite(name, role, None, "ada").unwrap(), PW).unwrap().0;
+    let person = |name: &str, role: Role| book.accept(&book.invite(name, role.name(), None, "ada").unwrap(), PW).unwrap().0;
     let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
     let local = book.new_local("bma");
-    let made = |name: &str, kind, role, owner: &str| {
-        book.add(name, kind, role, owner, "ada").unwrap();
+    let made = |name: &str, kind, role: Role, owner: &str| {
+        book.add(name, kind, role.name(), owner, "ada").unwrap();
         book.create_token(name, "the table", "ada").unwrap().0
     };
     let claude = made("claude", Kind::Agent, Role::Agent, "ada");

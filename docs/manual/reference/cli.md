@@ -32,6 +32,10 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
 | [`holon people`, `oidc`](#people-and-sign-in) | people, agents and services, and their tokens; signing in through a provider |
+| [`holon roles`](#holon-roles) | the roles principals are bound, and defining your own |
+| [`holon groups`](#holon-groups) | groups of principals, to bind a role to all of them |
+| [`holon bind`, `unbind`](#holon-bind) | a role to a principal or a group: on the host, a flow or an approval point, until a time |
+| [`holon access`](#holon-access) | who may do what, every version of it, for an audit |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon history`](#holon-history) | a deployment's timeline: its runs, and what was done to it |
@@ -607,9 +611,9 @@ revokes its tokens (in the editor, *Your agents and services*).
 
 ```
 holon people [list]
-holon people add <name> --person --role viewer|editor|admin [--email ADDRESS]
-holon people add <name> --agent [--role agent|viewer] [--owner PERSON]
-holon people add <name> --service --role viewer|editor [--owner PERSON]
+holon people add <name> --person --role ROLE [--email ADDRESS]
+holon people add <name> --agent [--role ROLE] [--owner PERSON]
+holon people add <name> --service --role ROLE [--owner PERSON]
 holon people set <name> [--role ROLE] [--disable | --enable] [--email ADDRESS] [--owner PERSON] [--display TEXT]
 holon people reset <name>
 holon people remove <name> --yes
@@ -623,9 +627,12 @@ choose a password, once, to send them. An **agent** (an AI through `holon mcp`, 
 shell) and a **service** (a script, CI) sign in with tokens of their own, and each has an
 **owner**, the person answerable for it (whoever adds it, unless `--owner` names another). An
 agent's role is `agent` (it reads, proposes and calls, never approves) or `viewer`; a service's is
-`viewer` or `editor`, never `admin`.
+`viewer` or `editor`, never `admin`; any of them may instead hold a role an admin defined for its
+kind ([`holon roles`](#holon-roles)). That `--role` is their role on the whole host;
+[`holon bind`](#holon-bind) binds one on a single flow or approval point instead. `list` shows what
+each holds, bound to them or to their groups: `viewer, editor on payout via payments`.
 
-`set` changes a role (one the kind may hold), stops someone signing in (`--disable`: an agent's or
+`set` changes their role on the host (one the kind may hold), stops someone signing in (`--disable`: an agent's or
 a service's tokens are refused) or lets them again, sets a person's email for a provider (`""`
 clears it), or gives an agent or a service another owner. `reset` clears a person's password and
 ends their sessions, with a new link. `remove` takes an agent's or a service's tokens with it, and
@@ -646,6 +653,84 @@ holon oidc off
 
 Signing in through an identity provider: its issuer, and the client id this server is registered
 with there. The server reads the issuer's discovery document before it takes them.
+
+## Roles and bindings
+
+Who may do what is a role bound to a principal or a group, where it holds: on the whole host, on
+one flow, or at one approval point of a flow, until a time if you say. Every change is a version
+kept for good, with who made it, when and why (`--why`). Admins, or whoever holds a role allowing
+`role.define` (roles) or `people.assign` (groups and bindings), and `role.view` and `people.view`
+to read them. No one gives more
+than they hold: a role allows, a binding gives and a member added to a group gets only what its
+author holds there. See [People and roles](../guides/people.md).
+
+### `holon roles`
+
+```
+holon roles [list] [--json]
+holon roles define <name> --allow ACTION,… [--kinds KIND,…] [--about TEXT] [--why TEXT]
+holon roles remove <name> [--why TEXT]
+```
+
+The roles principals are bound: the built-in ones (viewer, agent, editor, admin), then the ones an
+admin defined, each with who may hold it, how many bindings hold it, and what it allows. `define`
+makes a role of your own, or a new version of one, which changes each binding of it: `--allow`
+names actions from the catalogue (`run.view,run.decide`; a mistake lists them), `--kinds` who may
+hold it (`person`, the default; `agent`, `service`). Whatever role it holds, an agent never
+approves a deploy, starts, stops, deletes or restores a flow, writes a secret, decides an approval,
+operates the host, or reads or changes people, roles or resources; a service never decides an
+approval. `remove` takes a role nothing binds any more.
+
+```sh
+holon roles define payout-approver --allow run.view,run.decide --about "decides payouts"
+```
+
+### `holon groups`
+
+```
+holon groups [list] [--json]
+holon groups add <group> <name>… [--about TEXT] [--why TEXT]
+holon groups drop <group> <name>… [--why TEXT]
+holon groups remove <group> [--why TEXT]
+```
+
+Groups of principals: a role bound to a group holds for each member whose kind the role allows.
+`add` makes the group or adds members to it, `drop` takes them out, `remove` deletes a group
+nothing is bound to any more.
+
+### `holon bind`
+
+```
+holon bind <role> (--to NAME | --group GROUP) [--flow SLUG | --approval FLOW:POINT]
+           [--until DATE|WHILE] [--why TEXT] [--json]
+holon unbind <id> [--why TEXT]
+```
+
+Binds a role to a principal or a group: on the host, unless `--flow` names one flow (its runs,
+state, secrets and approvals) or `--approval` one approval point of a flow (deciding it, and
+nothing else, not even viewing its runs). `--until` takes a date in UTC (`2026-12-01`,
+`2026-12-01T09:00`) or a while (`30m`, `12h`, `7d`, `2w`); an expired binding holds nothing, and
+stays until unbound. It prints the binding's id, which `unbind` takes (`holon access show` lists
+them all). Binding at an approval point, it says when they can't see the flow's runs, and the
+command that lets them.
+
+```sh
+holon bind editor --to bob --flow payout --why "owns the payout flow"
+holon bind payout-approver --group payments --approval payout:ok --until 7d
+holon unbind 12 --why "back from leave"
+```
+
+### `holon access`
+
+```
+holon access [versions] [--json]
+holon access show [--version N] [--json]
+```
+
+Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
+version, newest first, with when, by whom, what it changed and why; `show` prints one whole, the
+newest by default: its roles, groups and bindings, each binding with its id, where it holds, until
+when and who made it. It holds no password or token, so it can be handed to an auditor.
 
 ## Runs
 

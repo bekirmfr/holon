@@ -7,7 +7,7 @@
 
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, deciderOf, isApproval, mayDecide, type WaitingPoint } from "./decisions";
+import { approvalSaid, isApproval, mayDecide, pointKey, type WaitingPoint } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
@@ -48,6 +48,7 @@ export function ApprovalsPage({
   approvals,
   deployments,
   runs,
+  decides,
   me,
   navigate,
   onDeclined,
@@ -58,6 +59,8 @@ export function ApprovalsPage({
   deployments: DeploymentEntry[];
   /** The runs waiting in them (useApprovals), null until first read. */
   runs: WaitingRunOf[] | null;
+  /** Whether `me` decides each approval point among them (decisions.ts `pointKey`). */
+  decides: ReadonlyMap<string, boolean>;
   me: Me;
   navigate: (r: Route) => void;
   /** A proposal was declined: what waits is read again. */
@@ -91,7 +94,7 @@ export function ApprovalsPage({
       {tab === "deploys" ? (
         <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} />
       ) : (
-        <RunsWaiting any={waiting.length > 0} runs={runs} me={me} navigate={navigate} onDecided={onDecided} />
+        <RunsWaiting any={waiting.length > 0} runs={runs} decides={decides} me={me} navigate={navigate} onDecided={onDecided} />
       )}
     </div>
   );
@@ -195,14 +198,27 @@ function useDecide(onDecided: () => void) {
 
 /** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
  *  decided here, by a person who may. */
-function RunsWaiting({ any, runs, me, navigate, onDecided }: { any: boolean; runs: WaitingRunOf[] | null; me: Me; navigate: (r: Route) => void; onDecided: () => void }) {
+function RunsWaiting({
+  any,
+  runs,
+  decides,
+  me,
+  navigate,
+  onDecided,
+}: {
+  any: boolean;
+  runs: WaitingRunOf[] | null;
+  decides: ReadonlyMap<string, boolean>;
+  me: Me;
+  navigate: (r: Route) => void;
+  onDecided: () => void;
+}) {
   const decide = useDecide(onDecided);
   if (!any) return <p className="hl-flow__none">No run is waiting.</p>;
-  const decider = deciderOf(me);
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
-        An approval waits for people here: {decider === null ? "an editor or an admin approves or declines it." : "Approve or Decline it; each person counts once."} An event goes on when its
+        An approval waits for people here: each person who may decide it approves or declines it, and counts once. An event goes on when its
         flow is sent it, through the flow&apos;s own route (each sample&apos;s &quot;try it&quot; says how).
       </p>
       <table className="hl-table">
@@ -233,7 +249,7 @@ function RunsWaiting({ any, runs, me, navigate, onDecided }: { any: boolean; run
                 <td>{when(run.parked_at)}</td>
                 <td className="hl-flows__do">
                   {run.waiting.filter(isApproval).map((w) => {
-                    const may = mayDecide(w, me);
+                    const may = mayDecide(w, me, decides.get(pointKey(slug, w.name)) === true);
                     if (may === "approved") return <span key={w.name} className="hl-chip">you approved</span>;
                     if (may === "no") return null;
                     const label = `"${w.name}" of ${slug} (${run.route ?? run.kind})`;
