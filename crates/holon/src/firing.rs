@@ -141,7 +141,18 @@ fn changed_from(start: &State, live: &State) -> bool {
     start.len() != live.len() || start.iter().zip(live.iter()).any(|((a, _), (b, _))| a != b || start.hash_of(a) != live.hash_of(b))
 }
 
-// Everything a run is held to arrives here, so it takes them all.
+/// What a run that panicked says first ([`panicked`]).
+pub(crate) const PANICKED: &str = "it panicked: ";
+
+/// One run, whatever started it: a request, an action, a clock, a file, a message, a mail, or a
+/// waiting run going on. Everything a run is held to arrives here, so it takes them all.
+///
+/// A panic in it ends the run and nothing else. It is a fault in Holon's own code (a flow has no
+/// way to ask for one), and it is caught here because every run passes here: a route's was
+/// already answered 500 where its request is answered (dataplane.rs), but a clock's ended the
+/// thread that ticks every deployment's clocks and expires every waiting run, and a feed's, a
+/// queue's or a mailbox's ended the thread that reads it, for good and without a word. Now it is
+/// a run that failed like another ([`panicked`]): logged, counted, and the next one runs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_with_state(
     root_unit: &Unit,
@@ -156,12 +167,35 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
+    // A resumed run keeps the nonce it started with: it is the same run.
+    let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
+    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fire_run(root_unit, inputs, resolver, store, state, extra_sourced, permit, clock, secrets, waits, resumed, nonce)));
+    fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fire_run(
+    root_unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    store: &SharedStore,
+    state: Option<&Arc<claims::StateCell>>,
+    extra_sourced: &[(Capability, Value)],
+    permit: &Permit,
+    clock: bool,
+    secrets: &Vault,
+    waits: &mut RunWaits,
+    resumed: Option<Resumed>,
+    nonce: [u8; 16],
+) -> FiredRun {
+    #[cfg(test)]
+    if let Some(slug) = &waits.slug {
+        crate::listeners::panic_for_tests::check(&format!("a run of {slug}"));
+    }
     let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
         run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
-    // A resumed run keeps the nonce it started with: it is the same run.
-    let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
     // The resources an admin set to `run` it holds from before it starts until it returns (it
     // commits, fails or waits); one held by others' runs past its claim_wait turns it away.
     let _run_locked = match RunLocked::take(waits.folders.as_deref(), permit, format!("run:{}", hex_bytes(&nonce)), std::time::Instant::now() + limits.claim_wait) {
@@ -401,6 +435,20 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
     run.grant = permit.grant.clone();
     run.error = Some(format!("busy: {resource} is held by another run for its whole length (its run lock) past claim_wait"));
     eprintln!("holon: run {} turned away: {resource} is run-locked by another run past claim_wait", run.run_id);
+    run
+}
+
+/// A run that panicked: nothing of what it computed is kept, and its record says that what it
+/// had sent or written by then isn't in it (a panic past its first round, or in its commit, is
+/// past things done). The panic itself is on the server's console, with where.
+fn panicked(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16]) -> FiredRun {
+    let mut run = FiredRun::nothing();
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce));
+    run.unit = to_hex(&permit.deployment);
+    run.nonce = hex_bytes(nonce);
+    run.grant = permit.grant.clone();
+    run.error = Some(format!("{PANICKED}a fault in Holon, named on the server's console. What it had sent or written by then isn't in this record"));
+    eprintln!("holon: run {} panicked (said above): it is logged as failed, and the next run goes on", run.run_id);
     run
 }
 

@@ -3700,31 +3700,201 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A run that panics is answered 500, on the data plane's own worker as on the blocking pool, and
-/// the deployment answers the next request (docs/L4s/resilience-audit-L4.md, R1). Before, the
-/// worker's connection was dropped with no answer.
+/// **Guards:** a panic ends the run it was in and nothing else, whatever started the run and
+/// wherever in it the panic is (docs/engineering/themes/resilience.md, G3).
+///
+/// **Why:** a panic is a fault in Holon's own code, which a flow can't ask for and nobody plans.
+/// What drives runs is shared: one thread ticks every deployment's clocks and the deadlines of
+/// every waiting run, one watches every folder, a connection's worker answers its requests. A
+/// panic that isn't caught where the run is ends whichever of those it was on.
+///
+/// **If it fails:** one faulty run stops every deployment's clocks and deadlines, or its folder's
+/// runs, until the server is restarted, with nothing in any log; or a caller's connection is
+/// dropped with no answer.
+///
+/// The test asks for the panic (`panic_for_tests`): in a run itself, where every run passes
+/// (`fire_with_state`), and in a request's handler before its run (answered where its connection
+/// is, dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
+/// comes back, a caller is told 500, and the deployment beside it runs all the same. Calm again,
+/// it runs: nothing that drives runs was ended. A run that panicked is on record as one that
+/// failed. The rows are every way a run starts that a test drives without a far side: a request
+/// answered on its connection's worker and one on the pool, an action, a clock, a file, and a
+/// waiting run going on at its deadline. A feed's, a queue's, a mailbox's and a socket's runs
+/// pass the same function.
 #[test]
-fn a_run_that_panics_is_answered_500_inline_as_on_the_pool() {
-    let mut state = test_state();
+fn a_panic_ends_its_run_and_nothing_else() {
+    use crate::listeners::panic_for_tests as fault;
+    use std::cell::Cell;
+    let mut state = claims_state("");
     state.listeners = Some(Mutex::new(BTreeMap::new()));
-    let port = free_port();
-    let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"boom\", {{ port: {port} }})\n\nroute.get(\"/light/:name\", (req) => `hi ${{req.params.name}}`, {{ log: \"unrecorded\" }})\n\nroute.get(\"/pooled/:name\", (req) => `hi ${{req.params.name}}`)\n");
-    let slug = deploy_plain_text(&state, &text);
-    sync_listeners(&state);
-    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
-    // Loaded by a first run, so the light route runs inline from here on.
-    assert!(get("/light/a").ends_with("hi a"));
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data("GET", "/light/boom", vec![]), &here), "inline");
-    crate::listeners::panic_for_tests::on("/light/boom");
-    crate::listeners::panic_for_tests::on("/pooled/boom");
-    for path in ["/light/boom", "/pooled/boom"] {
-        let answered = get(path);
-        assert!(answered.starts_with("HTTP/1.1 500") && answered.contains("the request's handler failed"), "{path}: {answered:?}");
+    let dir = std::env::temp_dir().join(format!("holon-panics-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    // Two deployments of one text: the one that faults, and one beside it.
+    let text = |name: &str, port: u16| {
+        format!(
+            r#"import {{ action, event, every, flow, on, route }} from "holon"
+import state from "state"
+import inbox from "folder:inbox"
+
+flow("{name}", {{ port: {port} }})
+
+route.get("/{name}-light/:x", (req) => `light ${{req.params.x}}`, {{ log: "unrecorded" }})
+
+route.get("/{name}-hit", () => `hit ${{++state.hits}}`)
+
+route.get("/{name}-seen", () => `${{state.hits ?? 0}} ${{state.bumps ?? 0}} ${{state.ticks ?? 0}} ${{state.files ?? 0}} ${{state.later ?? 0}}`)
+
+export const bump = action(() => ++state.bumps)
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  state.later = (state.later ?? 0) + (go.expired ? 1 : 1)
+}})
+
+every("1s", () => {{
+  ++state.ticks
+}})
+
+on.file.created(inbox, (f) => {{
+  ++state.files
+}})
+"#
+        )
+    };
+    let ports = [("faulty", free_port()), ("beside", free_port())];
+    for (name, port) in ports {
+        assert_eq!(deploy_plain_text(&state, &text(name, port)), name);
     }
-    assert!(get("/light/b").ends_with("hi b") && get("/pooled/c").ends_with("hi c"), "the next requests are answered");
-    crate::listeners::panic_for_tests::off();
-    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    sync_listeners(&state);
+    let get = |port: u16, path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    let status = |answered: &str| answered.get(9..12).and_then(|s| s.parse::<u16>().ok()).unwrap_or_else(|| panic!("no status: {answered:?}"));
+    // What a deployment has counted: its hits, bumps, ticks, files and waiting runs gone on.
+    let seen = |name: &str| -> Vec<u64> { data_call(&state, name, "GET", &format!("/{name}-seen"), "").1.split(' ').map(|n| n.parse().unwrap()).collect() };
+
+    // The passes that drive runs nobody asks for, each for every deployment at once.
+    let passes = Cell::new(0u64);
+    let tick = || {
+        passes.set(passes.get() + 2);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(passes.get()));
+    };
+    let dropped = Cell::new(0u32);
+    let drop_a_file = || {
+        dropped.set(dropped.get() + 1);
+        std::fs::write(dir.join(format!("f{}.txt", dropped.get())), "dropped").unwrap();
+        // New, settling; then the same, and it runs.
+        for _ in 0..2 {
+            arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        }
+    };
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+
+    // A way a run starts: what it counts in `seen` (a light request counts nothing: its answer
+    // says it ran), what its log entry is called, what to do calm beforehand, and how it starts,
+    // answering what its caller was told when it has one. `all` starts every deployment's at once.
+    struct Row<'a> {
+        what: &'a str,
+        counts: Option<usize>,
+        logged: Option<&'a str>,
+        before: Option<&'a dyn Fn(&str)>,
+        start: &'a dyn Fn(&str, u16) -> Option<u16>,
+        all: bool,
+    }
+    let light = |name: &str, port: u16| Some(status(&get(port, &format!("/{name}-light/x"))));
+    let hit = |name: &str, port: u16| Some(status(&get(port, &format!("/{name}-hit"))));
+    let bump = |name: &str, _: u16| Some(run_action_named(&state, name, "bump", serde_json::json!({})).status_code);
+    let wait = |name: &str| assert_eq!(run_action_named(&state, name, "later", serde_json::json!({})).status_code, 202, "{name} waits");
+    let ticked = |_: &str, _: u16| -> Option<u16> {
+        tick();
+        None
+    };
+    let filed = |_: &str, _: u16| -> Option<u16> {
+        drop_a_file();
+        None
+    };
+    let expired = |_: &str, _: u16| -> Option<u16> {
+        deadline();
+        None
+    };
+    let rows = [
+        Row { what: "a request answered on its connection's worker", counts: None, logged: None, before: None, start: &light, all: false },
+        Row { what: "a request answered on the pool", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
+        Row { what: "an action", counts: Some(1), logged: Some("trigger"), before: None, start: &bump, all: false },
+        Row { what: "a clock", counts: Some(2), logged: Some("tick"), before: None, start: &ticked, all: true },
+        Row { what: "a file", counts: Some(3), logged: Some("file"), before: None, start: &filed, all: true },
+        Row { what: "a waiting run at its deadline", counts: Some(4), logged: Some("resume"), before: Some(&wait), start: &expired, all: true },
+    ];
+    // Where the panic is: in the run, for every row; in the request's handler before its run, for
+    // the requests.
+    type Applies<'a> = &'a dyn Fn(&Row) -> bool;
+    let (every_row, requests): (Applies, Applies) = (&|_| true, &|row| row.what.starts_with("a request"));
+    let faults = [("in its run", vec!["a run of faulty"], every_row), ("in its request's handler", vec!["/faulty-light", "/faulty-hit"], requests)];
+
+    // Loaded by a first run, so the light route is answered on the worker from here on.
+    assert_eq!(light("faulty", ports[0].1), Some(200));
+    let here = Mutex::new(dataplane::Here::default());
+    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "faulty", &fake_data("GET", "/faulty-light/x", vec![]), &here), "answered on the worker");
+
+    let ran = |row: &Row, name: &str, was: &[u64], told: Option<u16>| match row.counts {
+        Some(at) => seen(name)[at] > was[at],
+        None => told == Some(200),
+    };
+    let mut failed_runs = 0;
+    for (wherever, asked, applies) in &faults {
+        for row in rows.iter().filter(|row| applies(row)) {
+            let says = format!("{}, a panic {wherever}", row.what);
+            let start = |faulted: bool| {
+                // What comes before is calm: only the run that goes on from it is faulted.
+                for (name, _) in ports {
+                    if let Some(before) = row.before {
+                        before(name);
+                    }
+                }
+                let was: Vec<Vec<u64>> = ports.iter().map(|(name, _)| seen(name)).collect();
+                if faulted {
+                    asked.iter().for_each(|what| fault::on(what));
+                }
+                let told: Vec<Option<u16>> = match row.all {
+                    true => vec![(row.start)("faulty", ports[0].1); 2],
+                    false => ports.iter().map(|(name, port)| (row.start)(name, *port)).collect(),
+                };
+                asked.iter().for_each(|what| fault::off(what));
+                (was, told)
+            };
+            let (was, told) = start(false);
+            assert!(ran(row, "faulty", &was[0], told[0]), "{says}: calm, it runs");
+            let (was, told) = start(true);
+            assert!(!ran(row, "faulty", &was[0], told[0]), "{says}: faulted, it didn't run");
+            if !row.all {
+                assert_eq!(told[0], Some(500), "{says}: its caller is told");
+            }
+            assert!(ran(row, "beside", &was[1], told[1]), "{says}: the deployment beside it runs all the same");
+            let (was, told) = start(false);
+            assert!(ran(row, "faulty", &was[0], told[0]), "{says}: calm again, it runs");
+            if *wherever == "in its run" && row.logged.is_some() {
+                failed_runs += 1;
+            }
+        }
+    }
+
+    // A run that panicked is on record as one that failed, under what started it; a request whose
+    // handler panicked before its run has none (G3's limit). Nothing of the deployment beside it
+    // failed.
+    let failed = |name: &str| -> Vec<String> {
+        log_entries(&state, name).iter().filter(|e| e["error"].as_str().is_some_and(|e| e.starts_with(crate::firing::PANICKED))).map(|e| e["kind"].as_str().unwrap().to_string()).collect()
+    };
+    let mut expected: Vec<String> = rows.iter().filter_map(|row| row.logged.map(String::from)).collect();
+    expected.sort();
+    let mut logged = failed("faulty");
+    logged.sort();
+    assert_eq!(logged, expected, "each run that panicked is logged as failed");
+    assert_eq!(logged.len(), failed_runs);
+    assert!(log_entries(&state, "beside").iter().all(|e| e["error"].is_null()), "nothing of the deployment beside it failed");
+    for (name, _) in ports {
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{name}/stop"), vec![])).status_code, 200);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A server deployment whose port another program holds says so on its entry, rather than looking

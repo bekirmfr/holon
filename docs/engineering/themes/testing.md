@@ -106,7 +106,11 @@ A slower path that is still right would pass every test above; these fail instea
 
 - `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (12.1, R2): which runs answer
   on the worker and which on the pool, then over a real socket.
-- `a_run_that_panics_is_answered_500_inline_as_on_the_pool` (R1).
+- `a_panic_ends_its_run_and_nothing_else` (R1, G3): a table, each way a run starts a row (a request
+  on the worker and on the pool, an action, a clock, a file, a waiting run at its deadline), a
+  panic asked for in the run and in the request's handler before it. Calm, faulted, calm again:
+  the run fails, its caller is told 500, it is logged as failed, the deployment beside it runs,
+  and what drives runs goes on. It replaced the test of the two request rows alone.
 - `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
   busy log is written and cut back.
 - `a_fire_in_progress_does_not_stall_the_table`, `effect_written_to_state_does_not_take_the_server_down`:

@@ -51,13 +51,24 @@ made before taking it.
 - **Tests.** `a_light_route_answers_on_the_data_planes_worker_as_any_route_does`,
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
 
-### G3. A run that panics is answered 500
+### G3. A panic ends its run and nothing else
 
-On the worker by `catch_unwind`, on the pool by its join error: "the request's handler failed",
-and the server goes on (R1). Before, the connection was dropped with no answer.
+A panic is caught where every run passes, `fire_with_state` (firing.rs), whatever started the
+run: it becomes a run that failed (`panicked`, its error starting `PANICKED`), logged and counted
+like another, and a caller is told 500 ("the request's handler failed"). One in a request's
+handler before its run is caught where the connection is answered: on the worker by
+`catch_unwind`, on the pool by its join error (R1; before, the connection was dropped with no
+answer). Before the first, a panic in a clock's run ended the thread that ticks every
+deployment's clocks and the deadlines of every waiting run, and one in a feed's, a queue's or a
+mailbox's run ended the thread that reads it, for good and with nothing in any log.
 
-- **Limit.** A run that panics leaves no log entry, on either path.
-- **Tests.** `a_run_that_panics_is_answered_500_inline_as_on_the_pool`,
+- **Limits.** A panic in a request's handler before its run leaves no log entry. A run that
+  panicked says so, and that what it had sent or written by then isn't in its record: a panic
+  past its first round, or in its commit, is past things done. A lock held where the panic was
+  stays poisoned (`.lock().unwrap()` at 245 places): each later run that takes it fails the same
+  way, logged, until the server restarts.
+- **Tests.** `a_panic_ends_its_run_and_nothing_else` (every way a run starts that a test drives
+  without a far side, a panic in the run and before it, the deployment beside it unharmed),
   `effect_written_to_state_does_not_take_the_server_down`.
 
 ### G4. The evaluator fails closed, and its fast path answers as its plain one
