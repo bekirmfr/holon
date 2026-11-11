@@ -364,7 +364,10 @@ function Level({
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           fitView
           fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.3}
+          // Low enough that fitting shows the whole level in a narrow overlay (beside the inspector,
+          // a holon of a dozen nodes needs under 0.2): at a higher floor the fit centres what it
+          // can't fit, and the outputs node, and the ports a person adds to it, stand past the edge.
+          minZoom={0.1}
           maxZoom={2}
           proOptions={{ hideAttribution: true }}
         >
