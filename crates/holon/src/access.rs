@@ -325,8 +325,6 @@ mod tests {
             ("POST", "/deployments/a/b/request"),
             ("POST", "/trigger/a"),
             ("POST", "/trigger/a/b/c"),
-            ("POST", "/fire"),
-            ("POST", "/registry/publish"),
             ("POST", "/permissions/reload"),
             ("GET", "/people"),
             ("GET", "/people/claude/tokens"),

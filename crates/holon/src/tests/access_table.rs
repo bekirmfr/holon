@@ -125,13 +125,6 @@ fn rows(unit: &str) -> Vec<Row> {
         at("POST", "/deployments/none/tick", "", Editors),
         at("POST", "/deployments/none/restore", "[]", EditorsAndAgents),
         at("DELETE", "/deployments/none", "", Editors),
-        at("GET", "/registry", "", All),
-        // A key that isn't one: a missing one is a bare 404.
-        at("GET", "/cache/k", "", All),
-        at("POST", "/registry/publish", "", Editors),
-        at("POST", "/registry/fork", "", Editors),
-        at("POST", "/fire", "", Editors),
-        at("POST", "/cache/ingest", "", Editors),
         at("POST", "/trigger/d", "[]", Editors),
         // Runs and state.
         at("GET", "/deployments/none/logs", "", All),

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The registry, the shared cache and `/fire` are gone from the server.** `GET /registry`,
+  `POST /registry/publish`, `POST /registry/fork`, `GET /cache/<key>`, `POST /cache/ingest` and
+  `POST /fire` came before deployments: nothing in Holon called them (not the editor, the CLI or
+  `holon mcp`), and what they kept lasted only until the server stopped. A request to one is now
+  answered as any path no route has. `holon serve --emit-test-pair`, `--emit-test-replacement` and
+  `--emit-test-sink`, which wrote units to try them with, are gone too.
 - **Docs.** A new guide, [People, agents and services](docs/manual/guides/people.md): the first
   admin, a teammate, an agent of your own, a token for CI, taking access away, and who did what;
   the concepts page names the three kinds and their owners.

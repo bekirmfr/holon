@@ -11,6 +11,9 @@ code, lists the tests it changes and adds, and gives the checks to run. Code her
 shape and names, not final code. Where the design leaves a decision open, or the code raises one
 the design doesn't, the sub-step names it (§D).
 
+Since `2839ba4b`, the registry, the shared cache and `/fire` are gone: their six routes were
+`http.rs:193-216`, so `http.rs`'s lines past :192 are 24 lower now. Nothing else here moved.
+
 ## 0. Conventions
 
 The conventions of `principals-plan.md` §0 hold, with these additions:
@@ -76,7 +79,7 @@ All paths are under `crates/holon/src/`.
     - the editor's files are served first, open (:151-156);
     - then the caller (`reject_untrusted`, :158);
     - then `auth::route` (:171);
-    - then an if-chain of 60 method-and-path pairs.
+    - then an if-chain of 60 method-and-path pairs (54 since the removal above).
   - `auth.rs` `route` (:57-335) takes `/auth/…`, `/admin/…` and `/people…` (:59). It hands
     `/admin/…` paths in turn to each module's `route`:
     - `folders.rs:1253`, `storage.rs:1236`, `sweep.rs:433`, `databases.rs:1288`, `mails.rs:863`,
@@ -122,7 +125,7 @@ All paths are under `crates/holon/src/`.
 
 ## 2. The routes
 
-This is the route table 2b writes, and the rows 2a's test pins. There are 112 rows; the design
+This is the route table 2b writes, and the rows 2a's test pins. There are 106 rows; the design
 counts 48 (§7). "Today" says who gets past every check:
 
 - **open**: anyone, signed in or not;
@@ -165,8 +168,6 @@ the check a handler adds once it knows more.
 | `POST /deployments/<slug>/tick` | :403 | E | flow.lifecycle | Flow |
 | `POST /deployments/<slug>/restore` | :363 | E+G | flow.restore-dry-run | Flow → flow.restore unless a dry run (`deploy.rs:1282`) |
 | `DELETE /deployments/<slug>` | :407 | E | flow.delete | Flow |
-| `GET /registry`, `GET /cache/<key>` | :197, :209 | all | flow.view | Flows |
-| `POST /registry/publish`, `/registry/fork`, `/fire`, `/cache/ingest` | :193, :201, :214, :205 | E | flow.deploy (D4) | Flows |
 | `POST /trigger/<slug>` (the hint naming an action, `deploy.rs:904`) | :425 | E | flow.deploy (D4) | Flow |
 
 **Runs and state**
@@ -423,7 +424,7 @@ pub(crate) struct Route { pub(crate) method: &'static str, pub(crate) path: &'st
 /// Every route, in the order the routers read them: the first row that matches is the route.
 pub(crate) const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/deployments/{slug}/runs", rule: Rule::Can(Action::RunView, On::Slug) },
-    // … the 112 rows of §2
+    // … the 106 rows of §2
 ];
 
 /// The route `method` and `url` ask for, and the path's parts.
@@ -517,7 +518,7 @@ if let Rule::Can(action, on) = route.rule
 - **`access-and-approvals-L4.md`**:
   - §4 gains `host.check` (D4);
   - §5.1's table becomes §2's built-in roles (D3);
-  - §7 says 112 routes, not 48, and says that a path no route has answers 404 (D5).
+  - §7 says 106 routes, not 48, and says that a path no route has answers 404 (D5).
 - **`principals-plan.md`**: "Step 2, for what step 1 leaves it" points here.
 - **`docs/manual/reference/server.md`**: where it says what a role may, unchanged. Where it says
   what a path no route has answers, 404.
@@ -556,8 +557,6 @@ These are for step 2 itself:
     every viewer's, for a flow's secrets.
     - **Recommended**: they are a resource bound at the host (§4 lists "keys" with resources), so
       resource.view, resource.bind and resource.unbind.
-  - **The registry, `/fire` and `/cache/ingest`**, the editor's and not the agent's: flow.deploy.
-    Each runs or publishes code that a person hasn't approved as a deployment.
   - **`POST /trigger/<slug>`**, which answers a hint naming the action. Today the gate refuses an
     agent and a viewer; the router answers an editor.
     - **Recommended** for step 2: flow.deploy, which keeps exactly that.

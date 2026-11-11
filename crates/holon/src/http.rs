@@ -190,31 +190,6 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return handle_post_unit(&state.store, request);
     }
 
-    if method == "POST" && url == "/registry/publish" {
-        return handle_post_publish(&state.registry, request);
-    }
-
-    if method == "GET" && url == "/registry" {
-        return handle_get_registry(&state.registry);
-    }
-
-    if method == "POST" && url == "/registry/fork" {
-        return handle_post_fork(&state.registry, request);
-    }
-
-    if method == "POST" && url == "/cache/ingest" {
-        return handle_post_cache_ingest(&state.cache, request);
-    }
-
-    if let Some(key_hex) = url.strip_prefix("/cache/")
-        && method == "GET" {
-            return handle_get_cache(&state.cache, &state.store, key_hex);
-        }
-
-    if method == "POST" && url == "/fire" {
-        return handle_post_fire(&state.store, request);
-    }
-
     if method == "POST" && url == "/deploy" {
         let response = handle_post_deploy(state, request, by, agent);
         sync_listeners(state);
