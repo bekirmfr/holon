@@ -426,6 +426,9 @@ pub(crate) struct DeploymentEntry {
     /// The number of the version deployed now (`v3`), as `/versions` counts them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<u32>,
+    /// The tags it is deployed with: a binding on one covers it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tags: Vec<String>,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history. `outputs` is every settled

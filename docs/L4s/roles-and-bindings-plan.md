@@ -909,6 +909,33 @@ The design's three-slot chain for it (§13) stays step 9's.
 - `samples.rs:1147-1165` checks that the text agrees with the entry. `samples.test.ts:101-108`
   reads the `flow(` line by a regex: both learn `tags`.
 
+### As built
+
+3d is built. Where it differs from the sections above:
+
+- **No `tags` on `Deployment` or `DeploymentRecord`.** A deployment's tags are its live unit's
+  (`read_server` reads them), so they are read from the unit where they are needed: the tag index
+  at deploy, restore and start, and `GET /deployments`' `tags`. Nothing is kept twice.
+- **A binding at an approval point of a tag is refused** (`Scope::check`): an approval point is
+  bound on one flow, by its slug. A role that decides, bound on the tag, decides every approval of
+  its flows.
+- **The tag row says who the tag lets in, as `on_tag` (`bindings.rs`) words it**: `joins payments:
+  bob as editor, the group ops as viewer` (`leaves …` when a version drops it, `tagged …` when it
+  keeps it), or "no one is bound on it yet". Not the role's actions, which the binding's role
+  names.
+- **A tag dropped is refused to whoever holds the flow only by it**, with its own words ("this
+  version takes "d" off the tag payments, which is how bob holds it; someone who holds it
+  otherwise deploys it"), after the check on the flow as it is passes; the version check says
+  where else (`on "m" without tags`).
+- **The sample has no `tags` field in its entry.** `samples.rs` checks that a sample shows
+  `tags` exactly when its text has some; `samples.test.ts` reads the tags from the `flow(` line
+  and checks the settings and the manifest's `Tag` items against them. There was no expected
+  manifest for `approved-payout` in `samples.test.ts` to change, and the goldens print no hash of
+  it, so neither moved.
+- **The editor has no field for tags.** They are the text's, and the settings carry them to the
+  unit and the manifest. `manifestItems` drops a setting left undefined before the wasm bridge,
+  which reads an absent key as its default but refuses an undefined one.
+
 ### Tests in 3d
 
 - `holon-author`: `tags` lowers into the settings and the server unit; a bad tag, a duplicate, a

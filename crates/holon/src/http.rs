@@ -247,7 +247,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, request, &caller);
+        return handle_post_deploy_preview(state, request, &caller);
     }
 
     if method == "GET" && url == "/permissions" {
@@ -386,6 +386,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            // Deleted, it is on no tag.
+            if response.status_code == 200
+                && let Some(accounts) = state.access.accounts()
+            {
+                accounts.set_tags(rest, &[]);
+            }
             if response.status_code == 200
                 && let Err(e) = state.secrets.forget(rest, by)
             {

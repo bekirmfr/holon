@@ -1098,7 +1098,7 @@ impl<'s> Printer<'s> {
         out
     }
 
-    /// `flow("name", { port, keep, limits, browsers, taint })`, from the document's settings and
+    /// `flow("name", { port, keep, limits, browsers, tags, taint })`, from the document's settings and
     /// its handlers' triggers.
     fn settings(&self, doc: &FlowDocument) -> Result<String, String> {
         let name = self.own.clone().unwrap_or_default();
@@ -1129,6 +1129,9 @@ impl<'s> Printer<'s> {
             if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
                 let origins: Vec<String> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).map(quote).collect();
                 fields.push(format!("browsers: {}", if origins.len() == 1 { origins[0].clone() } else { format!("[{}]", origins.join(", ")) }));
+            }
+            if !s.tags.is_empty() {
+                fields.push(format!("tags: [{}]", s.tags.iter().map(|t| quote(t)).collect::<Vec<_>>().join(", ")));
             }
         }
         // The keys it taints, from its handlers' triggers: one taints a key for every run.
@@ -4198,7 +4201,7 @@ mod tests {
         let mut store = MapResolver::new();
         restore(doc, &mut store, &Names::new());
         let port = doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or("");
-        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port).unwrap_or_else(|e| panic!("{e}")))
+        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port, doc.tags()).unwrap_or_else(|e| panic!("{e}")))
     }
 
     fn printed(name: Option<&str>, doc: &FlowDocument, bindings: &BTreeMap<String, String>) -> String {

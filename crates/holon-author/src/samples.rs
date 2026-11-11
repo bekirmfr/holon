@@ -697,13 +697,13 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "approved-payout",
         title: "Approved payout (two people approve it; a waiting run checks what it read)",
-        description: "Asks for a payout from an account: the route answers at once (202) and starts the payout's run, which waits for two different people to approve it, a day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. People signed in decide it, in the editor's Approvals or with holon decide; each counts once, and one decline, with a reason, ends it with nothing paid. Approved, the run reads the balance as it is now and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
-        shows: &["start", "approval", "two-person approval", "durable runs", "databases", "checks at commit", "running again"],
+        description: "Asks for a payout from an account: the route answers at once (202) and starts the payout's run, which waits for two different people to approve it, a day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. It is tagged payments, so whoever is bound on the tag acts on it, and the review says who the tag lets in. People signed in decide it, in the editor's Approvals or with holon decide; each counts once, and one decline, with a reason, ends it with nothing paid. Approved, the run reads the balance as it is now and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
+        shows: &["start", "approval", "two-person approval", "tags", "durable runs", "databases", "checks at commit", "running again"],
         port: Some("8153"),
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for two people); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); two people approve it: you, with holon decide approved-payout <run> payout --approve (holon decide approved-payout lists the run), and someone you invited (holon people add NAME --person), in the editor's Approvals, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
+        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for two people); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); two people approve it: you, with holon decide approved-payout <run> payout --approve (holon decide approved-payout lists the run), and someone you invited and bound on the tag (holon people add bob --person; holon bind editor --to bob --tag payments), in the editor's Approvals, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
         text: include_str!("../samples/approved-payout.holon.ts"),
     },
     Sample {
@@ -1151,6 +1151,8 @@ mod tests {
             let server = lowered.doc.server.unwrap_or_default();
             assert_eq!(server.port, s.port.unwrap_or_default(), "{}: port", s.name);
             assert_eq!(server.browsers.as_deref(), s.browsers, "{}: browsers", s.name);
+            // A tagged flow shows tags, and only one does.
+            assert_eq!(s.shows.contains(&"tags"), !server.tags.is_empty(), "{}: shows tags as it has them", s.name);
             let optional: Vec<String> = server.requirements.and_then(|r| r.optional).unwrap_or_default();
             assert_eq!(optional, s.optional, "{}: optional", s.name);
             // The secrets it imports (`import key from "secret:key"`) are the ones the entry says
@@ -1210,7 +1212,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
             for e in &server.endpoints {
                 let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
                 let params: BTreeMap<String, Value> = e.path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(|k| (k.to_string(), text("tea"))).collect();
@@ -1242,7 +1244,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
             for unit in store.units() {
                 if let Err(errors) = holon_core::validate(unit, &store) {
                     panic!("{}: {:?} refused: {errors:?}", s.name, holon_core::hash_unit(unit).map(holon_core::hex));

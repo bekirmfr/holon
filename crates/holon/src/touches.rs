@@ -16,9 +16,16 @@ use crate::recorder::LogEntry;
 use crate::secrets::SecretStore;
 
 /// The groups a dry run shows, in order: what starts it, what it is given, what it reaches
-/// outside, what it keeps, its limits.
-const GROUPS: [(&str, &str); 6] =
-    [("triggers", "What starts it"), ("resources", "Folders, databases and secrets"), ("outside", "What it reaches outside"), ("state", "What it keeps"), ("limits", "Its limits"), ("other", "Also")];
+/// outside, what it keeps, its limits, who may act on it.
+const GROUPS: [(&str, &str); 7] = [
+    ("triggers", "What starts it"),
+    ("resources", "Folders, databases and secrets"),
+    ("outside", "What it reaches outside"),
+    ("state", "What it keeps"),
+    ("limits", "Its limits"),
+    ("access", "Who may act on it"),
+    ("other", "Also"),
+];
 
 /// A capability item as a dry run groups it: its group, what kind of thing it touches, that
 /// thing's name (empty for one of a kind: the requests it receives) and what it does with it.
@@ -92,6 +99,8 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
             None => ("limits", "limit", arg, String::new()),
         },
         "Random" => ("other", "randomness", arg, s("use")),
+        // Who a binding on it lets act on the flow, the server says (`Server::tags`).
+        "Tag" => ("access", "tag", arg, String::new()),
         _ => ("other", "other", item.to_string(), String::new()),
     }
 }
@@ -120,14 +129,16 @@ fn read_sending(name: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String
     }
 }
 
-/// What this server has for a flow: its secrets, folders and databases, its policy, and the flows
-/// deployed beside it.
+/// What this server has for a flow: its secrets, folders and databases, its policy, the flows
+/// deployed beside it, and for each tag the flow joins or leaves, who a binding on it lets act on
+/// it (bindings.rs `on_tag`).
 pub(crate) struct Server<'a> {
     pub(crate) slug: &'a str,
     pub(crate) secrets: &'a SecretStore,
     pub(crate) folders: &'a Arc<folders::Folders>,
     pub(crate) policy: &'a Policy,
     pub(crate) deployed: Vec<String>,
+    pub(crate) tags: BTreeMap<String, String>,
 }
 
 impl Server<'_> {
@@ -191,7 +202,13 @@ pub(crate) fn touches(server: &Server, ask: &Ask) -> Value {
         // A secret's read says where the code sends it, and comes first: what else is done with
         // the secret follows.
         let read = item.starts_with("SecretRead(");
-        let what = if read { read_sending(&name, ask.sent) } else { what };
+        let what = if read {
+            read_sending(&name, ask.sent)
+        } else if kind == "tag" {
+            server.tags.get(&name).cloned().unwrap_or_default()
+        } else {
+            what
+        };
         let at = GROUPS.iter().position(|(g, _)| *g == group).unwrap_or(GROUPS.len());
         let uses = rows.entry((at, kind, name)).or_default();
         uses.insert(if read { 0 } else { uses.len() }, (item.clone(), what));
@@ -369,6 +386,12 @@ fn row_line(row: &Value) -> Said {
         })
         .collect();
     let thing = match (kind.as_str(), name.is_empty()) {
+        // A tag joined, left, or kept: who it lets act on the flow follows.
+        ("tag", _) => match row["change"].as_str() {
+            Some("new") => format!("joins {name}"),
+            Some("gone") => format!("leaves {name}"),
+            _ => format!("tagged {name}"),
+        },
         ("requests", _) => "requests".to_string(),
         ("clock", _) => "the clock".to_string(),
         ("process", _) => "processes".to_string(),
@@ -446,7 +469,7 @@ mod tests {
         let store = SecretStore::memory();
         let folders = Arc::new(folders::Folders::memory());
         let policy = Policy::default();
-        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![] };
+        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![], tags: BTreeMap::new() };
         let s = |v: &[&str]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>();
         let then = s(&["SecretAnswer(\"maps_key\")", "SecretRead(\"maps_key\")", "SecretRead(\"client_secret\")", "SecretRead(\"license_key\")"]);
         let to = |d: &[&str]| d.iter().map(|d| d.to_string()).collect::<BTreeSet<_>>();
@@ -460,13 +483,37 @@ mod tests {
         assert!(!said.iter().any(|l| l.contains("SecretAnswer")), "said in words, not as the item: {said:#?}");
     }
 
+    /// A tag's row is in its own group, and says who it lets act on the flow: joined, a person
+    /// approves it; kept, as it is; left, no longer.
+    #[test]
+    fn a_tag_s_row_says_who_it_lets_in() {
+        assert_eq!(part("Tag(\"payments\")"), ("access", "tag", "payments".into(), String::new()));
+        let store = SecretStore::memory();
+        let folders = Arc::new(folders::Folders::memory());
+        let policy = Policy::default();
+        let said = |t: &str| t.to_string();
+        let tags = BTreeMap::from([(said("payments"), said("bob as editor")), (said("ops"), said("no one is bound on it yet")), (said("old"), said("the group ops as viewer"))]);
+        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![], tags };
+        let s = |v: &[&str]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        let now = s(&["NetworkIngress", "Tag(\"old\")", "Tag(\"ops\")"]);
+        let then = s(&["NetworkIngress", "Tag(\"ops\")", "Tag(\"payments\")"]);
+        let rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &s(&["Tag(\"payments\")"]), withheld: &[], optional: &[], sent: &BTreeMap::new() });
+        let said = text(&lines(&rows, &json!([])));
+        let at = said.iter().position(|l| l == "Who may act on it").unwrap_or_else(|| panic!("{said:#?}"));
+        assert_eq!(
+            said[at + 1..at + 4],
+            ["  - leaves old: the group ops as viewer — no longer", "  · tagged ops: no one is bound on it yet", "  + joins payments: bob as editor — approved by confirming"],
+            "{said:#?}"
+        );
+    }
+
     #[test]
     fn a_restore_s_rows_say_what_changes_what_is_not_ready_and_what_is_not_undone() {
         let store = SecretStore::memory();
         store.set("f", "api_key", "a-dummy-value-for-tests", None).unwrap();
         let folders = Arc::new(folders::Folders::memory());
         let policy = Policy::default();
-        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![] };
+        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![], tags: BTreeMap::new() };
         let s = |v: &[&str]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>();
         let now = s(&["NetworkIngress", "StateWrite(\"count\")", "HttpRequest(\"a.example\")", "SecretRead(\"api_key\")", "FileRead(\"inbox\")"]);
         let then = s(&["NetworkIngress", "StateWrite(\"count\")", "HttpRequest(\"b.example\")", "SecretRead(\"api_key\")", "SecretRead(\"other\")", "FileRead(\"inbox\")", "FileWrite(\"inbox\")"]);

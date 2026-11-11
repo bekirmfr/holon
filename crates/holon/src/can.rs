@@ -153,6 +153,11 @@ pub(crate) enum Resource<'a> {
     Flows,
     /// A flow by its slug, saved or deployed, with its runs, its state and its secrets.
     Flow(&'a str),
+    /// Every flow deployed with a tag, now and later: what a binding on the tag gives.
+    Tag(&'a str),
+    /// A flow as a version would make it, with the version's tags: a deploy asks about it beside
+    /// the flow as it is deployed now (the plan's D22).
+    Version { slug: &'a str, tags: &'a [String] },
     /// A saved flow, and who saved it (none when no one was named, as on a server without accounts).
     Saved { name: &'a str, by: Option<&'a str> },
     /// A deployment's action, and whether its grant lets agents run it (`AgentRuns`).
@@ -173,7 +178,8 @@ impl Resource<'_> {
         match self {
             Resource::Host => matches!(of, "resource" | "people" | "role" | "policy" | "host"),
             Resource::Flows => matches!(of, "flow" | "run"),
-            Resource::Flow(_) => matches!(of, "flow" | "run" | "state" | "secret"),
+            Resource::Flow(_) | Resource::Tag(_) => matches!(of, "flow" | "run" | "state" | "secret"),
+            Resource::Version { .. } => of == "flow",
             Resource::Saved { .. } => action == FlowEdit,
             Resource::Action { .. } => action == RunCall,
             Resource::Logs { .. } => action == RunView,
@@ -393,6 +399,9 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         let place = match on {
             Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
             Resource::Flows => "on any flow".to_string(),
+            Resource::Tag(tag) => format!("on the flows tagged {tag:?}"),
+            Resource::Version { slug, tags: [] } => format!("on {slug:?} without tags"),
+            Resource::Version { slug, tags } => format!("on {slug:?} tagged {}", tags.join(", ")),
             Resource::Approval { slug, name: Some(point) } => format!("for {slug:?}'s approval {point:?}"),
             Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug, .. } => format!("on {slug:?}"),
         };
@@ -763,7 +772,7 @@ mod tests {
     #[test]
     fn a_caller_may_do_what_any_role_it_holds_holds() {
         let holding = |roles: &[Role]| {
-            let holds = roles.iter().map(|&r| Held { role: Arc::clone(role(r)), scope: crate::bindings::Scope::Host }).collect();
+            let holds = roles.iter().map(|&r| Held::new(Arc::clone(role(r)), crate::bindings::Scope::Host)).collect();
             Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds) }
         };
         let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
@@ -825,7 +834,7 @@ mod tests {
             RoleText { name: "operator".into(), about: None, allows: vec!["flow.lifecycle".into(), "flow.view".into(), "people.view".into()], kinds: ANYONE.to_vec() },
         ];
         let roles: Vec<Arc<RoleDef>> = BUILTIN.iter().cloned().chain(custom.iter().map(|r| Arc::new(r.def().unwrap()))).collect();
-        let bindings: Vec<(char, Held)> = scopes.iter().flat_map(|(at, scope)| roles.iter().map(|d| (*at, Held { role: Arc::clone(d), scope: scope.clone() }))).collect();
+        let bindings: Vec<(char, Held)> = scopes.iter().flat_map(|(at, scope)| roles.iter().map(|d| (*at, Held::new(Arc::clone(d), scope.clone())))).collect();
         let mut sets: Vec<Vec<(char, Held)>> = vec![vec![]];
         for (i, one) in bindings.iter().enumerate() {
             sets.push(vec![one.clone()]);
@@ -880,7 +889,7 @@ mod tests {
     #[test]
     fn no_role_gives_an_agent_what_is_a_persons() {
         let all = Arc::new(RoleDef::custom("everything", &Action::ALL, ANYONE));
-        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held { role: Arc::clone(&all), scope: crate::bindings::Scope::Host }])) };
+        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held::new(Arc::clone(&all), crate::bindings::Scope::Host)])) };
         let (agent, service) = (held(Kind::Agent), held(Kind::Service));
         let persons = ["flow.approve-deploy", "flow.lifecycle", "flow.delete", "flow.restore", "secret.set", "secret.roll-back", "host.operate"];
         for action in Action::ALL {

@@ -13,6 +13,7 @@ use holon_host::fire_sourced_with;
 
 mod access_table;
 mod scopes;
+mod tags;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -1602,7 +1603,7 @@ fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
         let unit = stage_text(&state, sample.text);
         let resolver = closure(&state.store, unit).unwrap();
         let Ok(server) = read_server(resolver.resolve(&unit).unwrap(), &resolver) else { continue };
-        let Server { port: _, taint: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
+        let Server { port: _, taint: _, tags: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
         let label = |l: &String| l.clone();
         let handlers: Vec<(&str, String, Hash, bool)> = [
             routes.iter().map(|r| ("request", format!("{} {}", r.method, r.path), r.endpoint, true)).collect::<Vec<_>>(),
@@ -12307,7 +12308,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], tags: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

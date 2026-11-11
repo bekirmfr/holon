@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use holon_core::{family_values, interface_of, is_taint_key, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, interface_of, is_tag, is_taint_key, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_ast_visit::Visit;
@@ -746,7 +746,7 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// `flow("chess", { port, keep, browsers, limits, taint })`: the flow's name and deploy settings.
+    /// `flow("chess", { port, keep, browsers, limits, taint, tags })`: the flow's name and deploy settings.
     fn kind(&mut self, c: &js::CallExpression) -> R<()> {
         let at = self.span(c.span);
         if std::mem::replace(&mut self.kind_seen, true) {
@@ -802,6 +802,23 @@ impl<'s, 't> Reader<'s, 't> {
                     }
                     self.header(HeaderKind::Taint(keys), span);
                 }
+                "tags" => {
+                    let shape = "tags are in quotes: tags: [\"payments\"]";
+                    let js::Expression::ArrayExpression(a) = self.unwrap(value) else {
+                        return fail(self.span(value.span()), shape);
+                    };
+                    let mut tags: Vec<String> = Vec::new();
+                    for item in &a.elements {
+                        match item.as_expression().map(|e| self.unwrap(e)) {
+                            Some(js::Expression::StringLiteral(t)) if tags.iter().any(|seen| *seen == t.value.as_str()) => return fail(self.span(t.span), format!("\"{}\" is tagged once", t.value)),
+                            Some(js::Expression::StringLiteral(t)) if is_tag(&t.value) => tags.push(t.value.to_string()),
+                            Some(js::Expression::StringLiteral(t)) => return fail(self.span(t.span), format!("\"{}\" isn't a tag: lowercase letters, digits and -, up to 40 of them", t.value)),
+                            _ => return fail(self.span(item.span()), shape),
+                        }
+                    }
+                    tags.sort();
+                    self.header(HeaderKind::Tags(tags), span);
+                }
                 "keep" => {
                     let js::Expression::ObjectExpression(k) = self.unwrap(value) else {
                         return fail(self.span(value.span()), "keep says how many runs and for how many days: keep: { runs: 500, days: 30 }");
@@ -832,7 +849,7 @@ impl<'s, 't> Reader<'s, 't> {
                         self.header(limit, span);
                     }
                 }
-                other => return fail(span, format!("a flow's settings are port, keep, browsers, limits and taint, not \"{other}\"")),
+                other => return fail(span, format!("a flow's settings are port, keep, browsers, limits, taint and tags, not \"{other}\"")),
             }
         }
         Ok(())
@@ -5976,7 +5993,7 @@ mod tests {
         let mut store = MapResolver::new();
         crate::text::restore(&lowered.doc, &mut store, &Names::new());
         let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
         assert!(server.errors.is_empty(), "{what}: {:?}", server.errors);
         assert!(server.server_hash.is_some(), "{what}: no server unit");
         (lowered.name, server.server_hash, lowered.doc.server)

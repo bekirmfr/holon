@@ -63,17 +63,20 @@ examples:
   holon groups
 ";
 
-const BIND_USAGE: &str = "usage: holon bind <role> (--to NAME | --group GROUP) [--flow SLUG | --approval FLOW:POINT]
+const BIND_USAGE: &str = "usage: holon bind <role> (--to NAME | --group GROUP)
+                         [--flow SLUG | --tag TAG | --approval FLOW:POINT]
                          [--until WHEN] [--why TEXT] [--json] [--server PORT|URL]
        holon unbind <id> [--why TEXT] [--server PORT|URL]
 
-  Bind a role to a principal or a group: on this host (the default), on one flow, or at one
-  approval point of a flow, until a time if you say. Unbind it by its id (holon access show lists
-  them). A binding gives only what you hold where it is made.
+  Bind a role to a principal or a group: on this host (the default), on one flow, on the flows
+  with a tag, or at one approval point of a flow, until a time if you say. Unbind it by its id
+  (holon access show lists them). A binding gives only what you hold where it is made.
 
   --to NAME                a person, an agent or a service
   --group GROUP            a group (holon groups): it holds for each member whose kind the role allows
   --flow SLUG              on that flow only: its runs, state, secrets and approvals
+  --tag TAG                on every flow deployed with that tag (flow(\"payout\", { tags: [\"payments\"] })),
+                           while it is, those tagged later too
   --approval FLOW:POINT    deciding that approval point of that flow, and nothing else, not even
                            viewing its runs
   --until WHEN             until a date, in UTC (2026-12-01, 2026-12-01T09:00), or for a while
@@ -85,6 +88,7 @@ const BIND_USAGE: &str = "usage: holon bind <role> (--to NAME | --group GROUP) [
 examples:
   holon bind editor --to bob --flow payout --why \"owns the payout flow\"
   holon bind payout-approver --group payments --flow payout
+  holon bind editor --to bob --tag payments
   holon bind editor --to dee --approval payout:ok --until 7d
   holon unbind 12 --why \"back from leave\"
 ";
@@ -248,7 +252,7 @@ pub(crate) fn groups(args: &[String]) -> i32 {
 pub(crate) fn bind(args: &[String]) -> i32 {
     const WHO: &str = "holon bind";
     let usage = usage(BIND_USAGE);
-    let valued = ["--to", "--group", "--flow", "--approval", "--until", "--why"];
+    let valued = ["--to", "--group", "--flow", "--tag", "--approval", "--until", "--why"];
     let args = match cmdline::parse(WHO, &usage, args, &valued, &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
@@ -265,7 +269,7 @@ pub(crate) fn bind(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let scope = match scope(args.value("--flow"), args.value("--approval")) {
+    let scope = match scope(args.value("--flow"), args.value("--tag"), args.value("--approval")) {
         Ok(scope) => scope,
         Err(e) => {
             eprintln!("{WHO}: {e}");
@@ -388,16 +392,17 @@ fn words(v: &Value) -> Vec<String> {
     v.as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect()
 }
 
-/// Where `--flow` or `--approval` says a binding holds: the host when neither does.
-fn scope(flow: Option<&str>, approval: Option<&str>) -> Result<Value, String> {
-    match (flow, approval) {
-        (None, None) => Ok(json!("host")),
-        (Some(slug), None) => Ok(json!({ "flows": { "slug": slug } })),
-        (None, Some(at)) => match at.split_once(':') {
+/// Where `--flow`, `--tag` or `--approval` says a binding holds: the host when none does.
+fn scope(flow: Option<&str>, tag: Option<&str>, approval: Option<&str>) -> Result<Value, String> {
+    match (flow, tag, approval) {
+        (None, None, None) => Ok(json!("host")),
+        (Some(slug), None, None) => Ok(json!({ "flows": { "slug": slug } })),
+        (None, Some(tag), None) => Ok(json!({ "flows": { "tag": tag } })),
+        (None, None, Some(at)) => match at.split_once(':') {
             Some((slug, point)) if !slug.is_empty() && !point.is_empty() => Ok(json!({ "approval": { "flow": { "slug": slug }, "name": point } })),
             _ => Err(format!("--approval is FLOW:POINT, a flow's slug and its approval point's name (payout:ok), not {at:?}")),
         },
-        (Some(_), Some(_)) => Err("--flow or --approval, not both: --approval names its flow".into()),
+        _ => Err("one of --flow, --tag and --approval: --approval names its flow".into()),
     }
 }
 
@@ -447,10 +452,13 @@ fn subject(who: &Value) -> String {
 }
 
 /// Where a binding holds, as the server's words say it: `on this host`, `on "payout"`,
-/// `for "payout"'s approval "ok"`.
+/// `on the flows tagged "payments"`, `for "payout"'s approval "ok"`.
 pub(crate) fn place(scope: &Value) -> String {
     if let Some(slug) = scope["flows"]["slug"].as_str() {
         return format!("on {slug:?}");
+    }
+    if let Some(tag) = scope["flows"]["tag"].as_str() {
+        return format!("on the flows tagged {tag:?}");
     }
     if let (Some(slug), Some(point)) = (scope["approval"]["flow"]["slug"].as_str(), scope["approval"]["name"].as_str()) {
         return format!("for {slug:?}'s approval {point:?}");
@@ -459,10 +467,13 @@ pub(crate) fn place(scope: &Value) -> String {
 }
 
 /// Where a binding holds, short, as the flags write it: nothing for the host, `on payout`,
-/// `at payout:ok`.
+/// `on tag payments`, `at payout:ok`.
 fn short_place(scope: &Value) -> String {
     if let Some(slug) = scope["flows"]["slug"].as_str() {
         return format!(" on {slug}");
+    }
+    if let Some(tag) = scope["flows"]["tag"].as_str() {
+        return format!(" on tag {tag}");
     }
     if let (Some(slug), Some(point)) = (scope["approval"]["flow"]["slug"].as_str(), scope["approval"]["name"].as_str()) {
         return format!(" at {slug}:{point}");
@@ -594,15 +605,17 @@ mod tests {
 
     #[test]
     fn a_scope_is_written_as_the_flags_say_it() {
-        assert_eq!(scope(None, None), Ok(json!("host")));
-        assert_eq!(scope(Some("payout"), None), Ok(json!({ "flows": { "slug": "payout" } })));
-        assert_eq!(scope(None, Some("payout:ok")), Ok(json!({ "approval": { "flow": { "slug": "payout" }, "name": "ok" } })));
-        assert!(scope(None, Some("payout")).is_err() && scope(None, Some(":ok")).is_err() && scope(Some("a"), Some("a:ok")).is_err());
-        for s in [scope(None, None), scope(Some("payout"), None), scope(None, Some("payout:ok"))] {
+        assert_eq!(scope(None, None, None), Ok(json!("host")));
+        assert_eq!(scope(Some("payout"), None, None), Ok(json!({ "flows": { "slug": "payout" } })));
+        assert_eq!(scope(None, Some("payments"), None), Ok(json!({ "flows": { "tag": "payments" } })));
+        assert_eq!(scope(None, None, Some("payout:ok")), Ok(json!({ "approval": { "flow": { "slug": "payout" }, "name": "ok" } })));
+        assert!(scope(None, None, Some("payout")).is_err() && scope(None, None, Some(":ok")).is_err() && scope(Some("a"), None, Some("a:ok")).is_err() && scope(Some("a"), Some("t"), None).is_err());
+        for s in [scope(None, None, None), scope(Some("payout"), None, None), scope(None, Some("payments"), None), scope(None, None, Some("payout:ok"))] {
             let s = s.unwrap();
             let said = (place(&s), short_place(&s));
             let want = match s {
                 Value::String(_) => ("on this host", ""),
+                _ if s["flows"]["tag"].is_string() => ("on the flows tagged \"payments\"", " on tag payments"),
                 _ if s["flows"].is_object() => ("on \"payout\"", " on payout"),
                 _ => ("for \"payout\"'s approval \"ok\"", " at payout:ok"),
             };

@@ -20,9 +20,9 @@ import { findRoutes } from "./derive";
 // unit it derives: the same code the command line runs.
 
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
- *  composite. Throws why it can't be derived. */
-export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string): string {
-  return ev.flow_unit(ns, es, portText);
+ *  composite. Throws why it can't be derived. `tags` are its settings'. */
+export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, tags: string[]): string {
+  return ev.flow_unit(ns, es, portText, tags);
 }
 
 /** A group of canvas nodes as core children (each node's hash) plus the wires among them, by
@@ -86,8 +86,8 @@ export type DerivedServer = {
 /** Derive the server from the canvas: each connected group holding a request node is one route.
  *  Each group is projected through core like a selection being grouped, narrowed to the request
  *  input and the response/effect outputs, and wrapped as an endpoint. */
-export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string): DerivedServer {
-  return ev.derive_server(ns, es, portText) as DerivedServer;
+export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, tags: string[]): DerivedServer {
+  return ev.derive_server(ns, es, portText, tags) as DerivedServer;
 }
 
 /** A projected canvas: the frozen composite, its promoted inputs with the values supplied for

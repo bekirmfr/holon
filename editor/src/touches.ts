@@ -34,6 +34,7 @@ const GROUPS: [string, string][] = [
   ["outside", "What it reaches outside"],
   ["state", "What it keeps"],
   ["limits", "Its limits"],
+  ["access", "Who may act on it"],
   ["other", "Also"],
 ];
 
@@ -74,8 +75,10 @@ function rowLine(row: Touch): TouchLine {
   const sign = (u: TouchUse) => (mark !== "changed" ? "" : u.change === "new" ? "+" : u.change === "gone" ? "−" : "");
   const said = row.uses.filter((u) => u.what !== "").map((u) => `${sign(u)}${u.what}${u.optional ? " (optional)" : ""}`);
   const { kind, name } = row;
+  // A tag joined, left, or kept: who it lets act on the flow follows.
+  const tagged = row.change === "new" ? `joins ${name}` : row.change === "gone" ? `leaves ${name}` : `tagged ${name}`;
   const thing =
-    ALONE[kind] ?? (kind === "network" && name === "" ? "the network" : kind === "other" || kind === "network" || kind === "limit" ? name : name === "" ? `${kind}s` : `${kind} ${name}`);
+    kind === "tag" ? tagged : ALONE[kind] ?? (kind === "network" && name === "" ? "the network" : kind === "other" || kind === "network" || kind === "limit" ? name : name === "" ? `${kind}s` : `${kind} ${name}`);
   const text = kind === "limit" ? `${thing} = ${said.join(", ")}` : said.length === 0 ? thing : `${thing}: ${said.join(", ")}`;
   const notes: string[] = [];
   if (mark === "approve") notes.push("approved by confirming");

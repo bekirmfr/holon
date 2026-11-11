@@ -76,7 +76,7 @@ impl Caller {
     /// `name`, of `kind`, holding `role` on the host (the tests).
     #[cfg(test)]
     pub(crate) fn holding(name: &str, kind: Kind, role: Role) -> Caller {
-        let held = Held { role: Arc::clone(crate::can::role(role)), scope: crate::bindings::Scope::Host };
+        let held = Held::new(Arc::clone(crate::can::role(role)), crate::bindings::Scope::Host);
         Caller { name: Some(name.into()), kind: Some(kind), holds: Some(Arc::from([held])) }
     }
 }

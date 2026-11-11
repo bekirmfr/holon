@@ -314,13 +314,19 @@ pub(crate) struct Requirements {
     pub(crate) agents: BTreeSet<String>,
     /// The handlers declared `unrecorded`, by label (`GET /health`): each an item a person grants,
     /// `Unrecorded("GET /health")`, without which its runs are recorded (docs/L4s/request-path-L4.md,
-    /// C5). Read from the unit (`with_unrecorded`), never taken from what a client sends.
+    /// C5). Read from the unit (`with_declared`), never taken from what a client sends.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) unrecorded: BTreeSet<String>,
     /// Whether agents may read its log lines (`holon mcp`'s `logs`): an item a person grants,
     /// `AgentReadsLogs`; off unless asked for, and taken back like any grant (docs/L4s/logs-L4.md §6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) agent_logs: bool,
+    /// The flow's tags, each an item a person approves, `Tag("payments")`: a binding on a tag
+    /// covers every flow deployed with it, so who may act on the flow is part of what is approved
+    /// (docs/L4s/roles-and-bindings-plan.md, D24). Read from the unit (`with_declared`), never
+    /// taken from what a client sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tags: Vec<String>,
 }
 
 impl Requirements {
@@ -336,17 +342,19 @@ impl Requirements {
         self
     }
 
-    /// These requirements with the handlers of `root` declared `unrecorded`, by label, in place of
-    /// any a client sent: what the unit says is what is asked.
-    pub(crate) fn with_unrecorded(mut self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
-        self.unrecorded = holon_core::read_server(root, resolver).map(|s| s.unrecorded()).unwrap_or_default();
+    /// These requirements with the handlers of `root` declared `unrecorded`, by label, and the
+    /// flow's tags, in place of any a client sent: what the unit says is what is asked.
+    pub(crate) fn with_declared(mut self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        let server = holon_core::read_server(root, resolver).ok();
+        self.unrecorded = server.as_ref().map(|s| s.unrecorded()).unwrap_or_default();
+        self.tags = server.map(|s| s.tags).unwrap_or_default();
         self
     }
 
     /// [`with_module_limits`](Requirements::with_module_limits) and
-    /// [`with_unrecorded`](Requirements::with_unrecorded): what the unit itself asks for.
+    /// [`with_declared`](Requirements::with_declared): what the unit itself asks for.
     pub(crate) fn of_unit(self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
-        self.with_module_limits(root, resolver).with_unrecorded(root, resolver)
+        self.with_module_limits(root, resolver).with_declared(root, resolver)
     }
 }
 
@@ -371,7 +379,7 @@ impl Manifest {
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
         let r = &self.requirements;
-        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded, r.agent_logs)
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded, r.agent_logs, &r.tags)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
@@ -773,9 +781,10 @@ impl Policy {
         limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.sockets, &self.log)
     }
 
-    /// Whether `item` is granted without asking.
+    /// Whether `item` is granted without asking. Never a tag: the policy says what a flow may
+    /// reach, not who may act on it (D24).
     fn is_auto(&self, item: &str) -> bool {
-        self.auto.iter().any(|pattern| match pattern.strip_suffix("(*)") {
+        !item.starts_with("Tag(") && self.auto.iter().any(|pattern| match pattern.strip_suffix("(*)") {
             Some(kind) => item.starts_with(&format!("{kind}(")),
             None => pattern == item,
         })
@@ -1370,6 +1379,20 @@ mod tests {
         assert!(policy.refuses(&manifest(&[], huge)).unwrap().contains("ceiling of 1000"));
         let private = Requirements { private_addresses: true, ..Default::default() };
         assert!(policy.refuses(&manifest(&[], private)).unwrap().contains("private addresses"));
+    }
+
+    /// A tag is a person's to approve: the policy grants none, by pattern or by name; a version
+    /// that keeps one asks nothing again, and one that adds another asks for it alone.
+    #[test]
+    fn a_tag_is_approved_by_a_person_once() {
+        let policy = Policy::parse("[grants]\nauto = [\"Tag(*)\", \"Tag(\\\"payments\\\")\", \"NetworkIngress\"]").unwrap();
+        let tagged = |tags: &[&str]| manifest(&[Capability::NetworkIngress], Requirements { tags: tags.iter().map(|t| t.to_string()).collect(), ..Default::default() });
+        let m = tagged(&["payments"]);
+        assert_eq!(policy.needs_approval(&m, None).into_iter().collect::<Vec<_>>(), ["Tag(\"payments\")"]);
+        let granted = Grant::for_manifest(&m, 0, "deploy");
+        assert!(policy.needs_approval(&m, Some(&granted)).is_empty());
+        assert_eq!(policy.needs_approval(&tagged(&["ops", "payments"]), Some(&granted)).into_iter().collect::<Vec<_>>(), ["Tag(\"ops\")"]);
+        assert!(policy.needs_approval(&tagged(&[]), Some(&granted)).is_empty(), "dropping a tag asks nothing");
     }
 
     #[test]

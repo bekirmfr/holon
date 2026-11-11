@@ -4,10 +4,11 @@
 
 import type { HeldBinding, Kind, Principal, RoleEntry, Scope } from "./server";
 
-/** Where a binding holds, as the flags write it: nothing for the host, ` on payout`, ` at payout:ok`. */
+/** Where a binding holds, as the flags write it: nothing for the host, ` on payout`,
+ *  ` on tag payments`, ` at payout:ok`. */
 export function placeSaid(scope: Scope): string {
   if (scope === "host") return "";
-  if ("flows" in scope) return ` on ${scope.flows.slug}`;
+  if ("flows" in scope) return "tag" in scope.flows ? ` on tag ${scope.flows.tag}` : ` on ${scope.flows.slug}`;
   return ` at ${scope.approval.flow.slug}:${scope.approval.name}`;
 }
 

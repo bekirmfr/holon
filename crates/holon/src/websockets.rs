@@ -706,6 +706,7 @@ mod tests {
         let server = |paths: &[&str]| Server {
             port: Some(1),
             taint: vec![],
+            tags: vec![],
             routes: vec![],
             clocks: vec![],
             files: vec![],

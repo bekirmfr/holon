@@ -470,8 +470,8 @@ const USAGE: &str = "usage: holon <command>
   people | oidc                      people, agents and services, and their tokens; signing in
                                      through a provider (admin)
   roles | groups                     the roles principals are bound, and groups of them (admin)
-  bind | unbind                      a role to a principal or a group, on the host, a flow or an
-                                     approval point, until a time if you say
+  bind | unbind                      a role to a principal or a group, on the host, a flow, a tag
+                                     or an approval point, until a time if you say
   access [versions|show]             who may do what, every version of it (for an audit)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
@@ -1124,6 +1124,10 @@ fn serve(args: Vec<String>) {
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
     // it prints here.
     let accounts = Arc::new(accounts::Accounts::open(&accounts_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    // The tags each flow is deployed with, for a binding on a tag to cover it (bindings.rs).
+    for (slug, dep) in deployments.lock().unwrap().iter() {
+        accounts.set_tags(slug, dep.server.as_ref().map(|s| s.tags.as_slice()).unwrap_or_default());
+    }
     if let Some(code) = accounts.setup_code() {
         println!("holon: no accounts yet. Open the editor and set up the first admin with this code: {code}");
     }

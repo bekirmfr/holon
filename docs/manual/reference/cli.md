@@ -34,7 +34,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon people`, `oidc`](#people-and-sign-in) | people, agents and services, and their tokens; signing in through a provider |
 | [`holon roles`](#holon-roles) | the roles principals are bound, and defining your own |
 | [`holon groups`](#holon-groups) | groups of principals, to bind a role to all of them |
-| [`holon bind`, `unbind`](#holon-bind) | a role to a principal or a group: on the host, a flow or an approval point, until a time |
+| [`holon bind`, `unbind`](#holon-bind) | a role to a principal or a group: on the host, a flow, a tag or an approval point, until a time |
 | [`holon access`](#holon-access) | who may do what, every version of it, for an audit |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
@@ -701,14 +701,15 @@ nothing is bound to any more.
 ### `holon bind`
 
 ```
-holon bind <role> (--to NAME | --group GROUP) [--flow SLUG | --approval FLOW:POINT]
+holon bind <role> (--to NAME | --group GROUP) [--flow SLUG | --tag TAG | --approval FLOW:POINT]
            [--until DATE|WHILE] [--why TEXT] [--json]
 holon unbind <id> [--why TEXT]
 ```
 
 Binds a role to a principal or a group: on the host, unless `--flow` names one flow (its runs,
-state, secrets and approvals) or `--approval` one approval point of a flow (deciding it, and
-nothing else, not even viewing its runs). `--until` takes a date in UTC (`2026-12-01`,
+state, secrets and approvals), `--tag` a tag (every flow deployed with it, while it is: a flow's
+text tags it, `flow("payout", { tags: ["payments"] })`), or `--approval` one approval point of a
+flow (deciding it, and nothing else, not even viewing its runs). `--until` takes a date in UTC (`2026-12-01`,
 `2026-12-01T09:00`) or a while (`30m`, `12h`, `7d`, `2w`); an expired binding holds nothing, and
 stays until unbound. It prints the binding's id, which `unbind` takes (`holon access show` lists
 them all). Binding at an approval point, it says when they can't see the flow's runs, and the
@@ -716,6 +717,7 @@ command that lets them.
 
 ```sh
 holon bind editor --to bob --flow payout --why "owns the payout flow"
+holon bind editor --to bob --tag payments --why "on the payments team"
 holon bind payout-approver --group payments --approval payout:ok --until 7d
 holon unbind 12 --why "back from leave"
 ```

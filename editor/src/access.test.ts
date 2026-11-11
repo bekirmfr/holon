@@ -24,6 +24,7 @@ describe("what a principal holds", () => {
   it("says each binding where it holds, through which group, until when", () => {
     expect(bindingSaid(bound("viewer"))).toBe("viewer");
     expect(bindingSaid(bound("editor", { scope: { flows: { slug: "payout" } }, group: "payments" }))).toBe("editor on payout via payments");
+    expect(bindingSaid(bound("editor", { scope: { flows: { tag: "payments" } } }))).toBe("editor on tag payments");
     expect(bindingSaid(bound("approver", { scope: { approval: { flow: { slug: "payout" }, name: "ok" } }, expires_at: 1_796_083_200 + 32_400, expired: true }))).toBe(
       "approver at payout:ok until 2026-12-01 09:00 UTC (expired)",
     );

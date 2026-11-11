@@ -61,6 +61,9 @@ pub enum HeaderKind {
     /// `taint: ["x-api-key", "number"]`: the keys whose values the host never keeps of any of the
     /// flow's runs, wherever a run has them (a request, a message, a call, an answer).
     Taint(Vec<String>),
+    /// `tags: ["payments"]`: the flow's tags, sorted, once each. A binding on a tag covers every
+    /// flow deployed with it.
+    Tags(Vec<String>),
     /// An import the flow can do without, `with { optional: "true" }`.
     Optional(Consent),
     /// `import key from "secret:signing_key"`: a secret the flow reads; someone sets it before the

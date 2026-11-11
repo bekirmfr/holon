@@ -765,6 +765,17 @@ impl Accounts {
         self.access.document().reaching(name).map(|(b, g)| (b.clone(), g.map(String::from))).collect()
     }
 
+    /// Keep `tags` as those `slug` is deployed with now, for a binding on a tag to cover it: none
+    /// once it isn't deployed.
+    pub(crate) fn set_tags(&self, slug: &str, tags: &[String]) {
+        self.access.set_tags(slug, tags);
+    }
+
+    /// The flows deployed with `tag` now, by slug.
+    pub(crate) fn tagged(&self, tag: &str) -> std::collections::BTreeSet<String> {
+        self.access.tagged(tag)
+    }
+
     /// The access document's newest version.
     pub(crate) fn access_document(&self) -> Arc<Document> {
         self.access.document()

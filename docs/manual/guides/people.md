@@ -127,6 +127,21 @@ holon groups add payments bob dee
 holon bind payout-approver --group payments --flow payout
 ```
 
+A flow's text can **tag** it, `flow("payout", { port: 8153, tags: ["payments"] })`, and a role
+bound on the tag holds on every flow deployed with it, while it is: a version without the tag
+takes the flow out of the binding's reach, and deleting it does too.
+
+```sh
+holon bind editor --to bob --tag payments --why "on the payments team"
+```
+
+Who may act on a flow is part of what its deploy approves: a version that adds a tag asks for it
+(`Tag("payments")`), and its review says who the tag lets in (`joins payments: bob as editor`);
+the host's policy never grants one by itself. Bob deploys a new flow tagged `payments`, and a new
+version of one, but neither tags a flow he holds nothing on (taking it over) nor takes the tag
+off one (taking it out of his own reach, and his team's): a host admin does those. An agent's
+version that adds a tag waits as a proposal, as any change it can't approve does.
+
 A role bound to a **group** holds for each member whose kind it allows. **People and access**
 offers roles of your own where it offers a role, and lists beside each principal what else holds
 for them (`editor on payout via payments`); `holon people` lists the same. Approvals offers

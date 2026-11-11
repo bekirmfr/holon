@@ -15,9 +15,13 @@
 //! to both, as inviting someone with a role, is made under the book's lock, checked whole
 //! (`Document::check`), and written so that no binding on disk names a principal the book doesn't
 //! have (accounts.rs `change_access`). The routes that read and change it are at the end of this
-//! file. Scopes by tag come next (docs/L4s/roles-and-bindings-plan.md, step 3d).
+//! file.
+//!
+//! A scope by tag (docs/L4s/roles-and-bindings-plan.md, step 3d) selects every flow whose deployed
+//! version is tagged so, while it is: the server keeps which flows are deployed with which tags
+//! (`Bindings::set_tags`), and what a principal holds is read against it (`Bindings::held`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -140,23 +144,18 @@ impl Subject {
     }
 }
 
-/// Which flows a scope is of: one, by its slug.
+/// Which flows a scope is of: one, by its slug, or every flow deployed with a tag.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Selector {
     Slug(String),
-}
-
-impl Selector {
-    pub(crate) fn selects(&self, slug: &str) -> bool {
-        match self {
-            Selector::Slug(s) => s == slug,
-        }
-    }
+    /// Every flow whose deployed version is tagged so (`flow("payout", { tags: ["payments"] })`),
+    /// while it is.
+    Tag(String),
 }
 
 /// Where a binding holds. On disk: `"host"`, `{"flows": {"slug": "payout"}}`,
-/// `{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`.
+/// `{"flows": {"tag": "payments"}}`, `{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Scope {
@@ -175,18 +174,23 @@ impl Scope {
         match self {
             Scope::Host => "on this host".into(),
             Scope::Flows(Selector::Slug(slug)) => format!("on {slug:?}"),
+            Scope::Flows(Selector::Tag(tag)) => format!("on the flows tagged {tag:?}"),
             Scope::Approval { flow: Selector::Slug(slug), name } => format!("for {slug:?}'s approval {name:?}"),
+            Scope::Approval { flow: Selector::Tag(tag), name } => format!("for the approval {name:?} of the flows tagged {tag:?}"),
         }
     }
 
-    /// Why it isn't a scope here, if it isn't: a slug or an approval point's name as they are
-    /// written.
+    /// Why it isn't a scope here, if it isn't: a slug, a tag or an approval point's name as they
+    /// are written; an approval point of a tag's flows (one is bound on a flow, by its slug).
     fn check(&self) -> Result<(), String> {
         let named = |what: &str, name: &str| if crate::deploy::is_valid_slug(name) { Ok(()) } else { Err(format!("{name:?} isn't {what}")) };
         match self {
             Scope::Host => Ok(()),
             Scope::Flows(Selector::Slug(slug)) => named("a flow's slug", slug),
+            Scope::Flows(Selector::Tag(tag)) if holon_core::is_tag(tag) => Ok(()),
+            Scope::Flows(Selector::Tag(tag)) => Err(format!("{tag:?} isn't a tag: lowercase letters, digits and -, up to 40 of them")),
             Scope::Approval { flow: Selector::Slug(slug), name } => named("a flow's slug", slug).and(named("an approval point's name", name)),
+            Scope::Approval { flow: Selector::Tag(_), .. } => Err("an approval point is bound on one flow, by its slug: bind a role that decides on the tag for every approval of its flows".into()),
         }
     }
 }
@@ -196,27 +200,49 @@ impl Scope {
 pub(crate) struct Held {
     pub(crate) role: Arc<RoleDef>,
     pub(crate) scope: Scope,
+    /// The flows its scope's tag selects, as they were deployed when it was read
+    /// (`Bindings::held`); none for a scope by slug, or the host.
+    pub(crate) tagged: Arc<BTreeSet<String>>,
 }
 
 impl Held {
+    pub(crate) fn new(role: Arc<RoleDef>, scope: Scope) -> Held {
+        Held { role, scope, tagged: Arc::default() }
+    }
+
     /// What the OS user's run file holds (local.rs): admin, on the host, while the server runs.
     /// It is never in the document.
     pub(crate) fn admin() -> Arc<[Held]> {
-        Arc::from([Held { role: Arc::clone(crate::can::role(Role::Admin)), scope: Scope::Host }])
+        Arc::from([Held::new(Arc::clone(crate::can::role(Role::Admin)), Scope::Host)])
+    }
+
+    /// Whether `flows` selects the flow `slug`: by its slug, or by a tag it is deployed with.
+    fn selects(&self, flows: &Selector, slug: &str) -> bool {
+        match flows {
+            Selector::Slug(s) => s == slug,
+            Selector::Tag(_) => self.tagged.contains(slug),
+        }
     }
 
     /// Whether it holds on `on` (the plan's §2): the host covers everything; a flow's scope what
-    /// is of that flow, and `Flows`, some flow, so its holder reaches the lists; an approval
-    /// point deciding it, and the decide route's question, some approval of its flow.
+    /// is of that flow, and `Flows`, some flow, so its holder reaches the lists; a tag's, every
+    /// flow it is on, and the tag itself; an approval point deciding it, and the decide route's
+    /// question, some approval of its flow. A version is covered where the flow it would make is
+    /// (D22): by its slug, or a tag it has.
     pub(crate) fn covers(&self, on: &Resource<'_>) -> bool {
         match &self.scope {
             Scope::Host => true,
             Scope::Flows(flows) => match on {
                 Resource::Flows => true,
                 Resource::Host | Resource::Principal { .. } => false,
-                Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug, .. } => flows.selects(slug),
+                Resource::Tag(tag) => matches!(flows, Selector::Tag(t) if t == tag),
+                Resource::Version { slug, tags } => match flows {
+                    Selector::Slug(s) => s == slug,
+                    Selector::Tag(t) => tags.contains(t),
+                },
+                Resource::Flow(slug) | Resource::Saved { name: slug, .. } | Resource::Action { slug, .. } | Resource::Logs { slug, .. } | Resource::Approval { slug, .. } => self.selects(flows, slug),
             },
-            Scope::Approval { flow, name } => matches!(on, Resource::Approval { slug, name: at } if flow.selects(slug) && at.is_none_or(|at| at == name)),
+            Scope::Approval { flow, name } => matches!(on, Resource::Approval { slug, name: at } if self.selects(flow, slug) && at.is_none_or(|at| at == name)),
         }
     }
 }
@@ -355,7 +381,7 @@ impl Document {
                 Subject::Group(group) => self.group(group).map(|g| g.members.as_slice()).unwrap_or_default(),
             };
             for name in names {
-                held.entry(name.clone()).or_default().push((Held { role: Arc::clone(role), scope: b.scope.clone() }, b.expires_at));
+                held.entry(name.clone()).or_default().push((Held::new(Arc::clone(role), b.scope.clone()), b.expires_at));
             }
         }
         held
@@ -393,6 +419,9 @@ pub(crate) struct Bindings {
     torn: AtomicBool,
     /// Every version, in memory only.
     kept: Mutex<Vec<Document>>,
+    /// The tags each flow is deployed with now (its live version's), by slug: what a scope by tag
+    /// selects. Set by a deploy and a restore, cleared by deleting the flow, filled at start.
+    tags: RwLock<HashMap<String, Vec<String>>>,
 }
 
 /// Where the access document is kept for the accounts at `accounts`: beside them, under the same
@@ -442,7 +471,7 @@ impl Bindings {
 
     fn with(path: Option<PathBuf>, document: Document) -> Bindings {
         let held = document.index();
-        Bindings { path, now: RwLock::new(Version { document: Arc::new(document), held }), torn: AtomicBool::new(false), kept: Mutex::new(Vec::new()) }
+        Bindings { path, now: RwLock::new(Version { document: Arc::new(document), held }), torn: AtomicBool::new(false), kept: Mutex::new(Vec::new()), tags: RwLock::default() }
     }
 
     /// The newest version.
@@ -451,11 +480,33 @@ impl Bindings {
     }
 
     /// What `name` holds at `at` (seconds): nothing if nothing is bound to it, and nothing by a
-    /// binding expired by then. A request is answered as what its caller held when it came.
+    /// binding expired by then; a binding on a tag, on the flows deployed with it now. A request
+    /// is answered as what its caller held when it came.
     pub(crate) fn held(&self, name: &str, at: u64) -> Arc<[Held]> {
         let now = self.now.read().unwrap();
         let held = now.held.get(name).map(Vec::as_slice).unwrap_or_default();
-        held.iter().filter(|(_, until)| until.is_none_or(|until| at < until)).map(|(h, _)| h.clone()).collect()
+        held.iter()
+            .filter(|(_, until)| until.is_none_or(|until| at < until))
+            .map(|(h, _)| match &h.scope {
+                Scope::Flows(Selector::Tag(tag)) | Scope::Approval { flow: Selector::Tag(tag), .. } => Held { tagged: Arc::new(self.tagged(tag)), ..h.clone() },
+                _ => h.clone(),
+            })
+            .collect()
+    }
+
+    /// Keep `tags` as those `slug` is deployed with now: none once it isn't deployed.
+    pub(crate) fn set_tags(&self, slug: &str, tags: &[String]) {
+        let mut index = self.tags.write().unwrap();
+        if tags.is_empty() {
+            index.remove(slug);
+        } else {
+            index.insert(slug.to_string(), tags.to_vec());
+        }
+    }
+
+    /// The flows deployed with `tag` now, by slug.
+    pub(crate) fn tagged(&self, tag: &str) -> BTreeSet<String> {
+        self.tags.read().unwrap().iter().filter(|(_, tags)| tags.iter().any(|t| t == tag)).map(|(slug, _)| slug.clone()).collect()
     }
 
     /// Keep `document` as the newest version. It is kept once it is in the history, and in force
@@ -519,6 +570,18 @@ pub(crate) fn bound_words(who: &Subject, role: &str, scope: &Scope, expires_at: 
     format!("bound {role} to {} {}{until}", who.said(), scope.said())
 }
 
+/// Who a binding on `tag` lets act on a flow deployed with it now, as a deploy's review says it
+/// (the plan's D24): `the group payments-team as editor, bob as payout-approver`.
+pub(crate) fn on_tag(document: &Document, tag: &str, now: u64) -> String {
+    let said: Vec<String> = document
+        .bindings
+        .iter()
+        .filter(|b| b.live(now) && matches!(&b.scope, Scope::Flows(Selector::Tag(t)) if t == tag))
+        .map(|b| format!("{} as {}", b.who.said(), b.role))
+        .collect();
+    if said.is_empty() { "no one is bound on it yet".into() } else { said.join(", ") }
+}
+
 /// The words a version says for unbinding `binding`: `unbound editor from bob on "payout"`.
 pub(crate) fn unbound_words(binding: &Binding) -> String {
     format!("unbound {} from {} {}", binding.role, binding.who.said(), binding.scope.said())
@@ -560,10 +623,10 @@ fn on_the_host(action: Action) -> Resource<'static> {
 /// covers.
 fn gives<'a>(role: &Arc<RoleDef>, scope: &'a Scope) -> Vec<(Action, Resource<'a>)> {
     let slug = match scope {
-        Scope::Host => "",
+        Scope::Host | Scope::Flows(Selector::Tag(_)) | Scope::Approval { flow: Selector::Tag(_), .. } => "",
         Scope::Flows(Selector::Slug(slug)) | Scope::Approval { flow: Selector::Slug(slug), .. } => slug.as_str(),
     };
-    let held = Held { role: Arc::clone(role), scope: scope.clone() };
+    let held = Held::new(Arc::clone(role), scope.clone());
     role.allows()
         .into_iter()
         .filter_map(|a| {
@@ -571,6 +634,8 @@ fn gives<'a>(role: &Arc<RoleDef>, scope: &'a Scope) -> Vec<(Action, Resource<'a>
                 Scope::Host => on_the_host(a),
                 _ if Resource::Host.takes(a) => Resource::Host,
                 Scope::Approval { name, .. } => Resource::Approval { slug, name: Some(name.as_str()) },
+                // Every flow on the tag, those tagged later too: only the host and the tag cover it.
+                Scope::Flows(Selector::Tag(tag)) => Resource::Tag(tag),
                 Scope::Flows(_) => Resource::Flow(slug),
             };
             (on.takes(a) && held.covers(&on)).then_some((a, on))
@@ -682,7 +747,8 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                     && role.as_ref().is_none_or(|r| *r == b.role)
                     && flow.as_ref().is_none_or(|f| match &b.scope {
                         Scope::Host => false,
-                        Scope::Flows(s) | Scope::Approval { flow: s, .. } => s.selects(f),
+                        Scope::Flows(Selector::Slug(s)) | Scope::Approval { flow: Selector::Slug(s), .. } => s == f,
+                        Scope::Flows(Selector::Tag(t)) | Scope::Approval { flow: Selector::Tag(t), .. } => accounts.tagged(t).contains(f),
                     })
             });
             Response::json(&serde_json::json!({ "version": document.version, "bindings": kept.map(|b| listed(b, now)).collect::<Vec<_>>() }))
@@ -880,7 +946,7 @@ mod tests {
     }
 
     fn at(role: Role, scope: Scope) -> Held {
-        Held { role: Arc::clone(crate::can::role(role)), scope }
+        Held::new(Arc::clone(crate::can::role(role)), scope)
     }
 
     fn at_host(role: Role) -> Held {
@@ -969,7 +1035,7 @@ mod tests {
         access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
         let approver = Arc::new(RoleDef::custom("payout-approver", &[Action::RunView, Action::RunDecide], &[Kind::Person]));
         for name in ["bob", "cy"] {
-            assert_eq!(&*access.held(name, 2), [Held { role: Arc::clone(&approver), scope: flow.clone() }], "{name}");
+            assert_eq!(&*access.held(name, 2), [Held::new(Arc::clone(&approver), flow.clone())], "{name}");
         }
         assert_eq!(access.document().reaching("bob").map(|(b, g)| (b.id, g)).collect::<Vec<_>>(), [(0, Some("payments"))]);
         d.forget("cy");
@@ -1058,6 +1124,7 @@ mod tests {
         let scopes = [
             (Scope::Host, serde_json::json!("host"), "on this host"),
             (Scope::Flows(Selector::Slug("payout".into())), serde_json::json!({ "flows": { "slug": "payout" } }), "on \"payout\""),
+            (Scope::Flows(Selector::Tag("payments".into())), serde_json::json!({ "flows": { "tag": "payments" } }), "on the flows tagged \"payments\""),
             (Scope::Approval { flow: Selector::Slug("payout".into()), name: "ok".into() }, serde_json::json!({ "approval": { "flow": { "slug": "payout" }, "name": "ok" } }), "for \"payout\"'s approval \"ok\""),
         ];
         for (scope, kept, said) in scopes {
@@ -1067,6 +1134,41 @@ mod tests {
         }
         assert!(Scope::Flows(Selector::Slug("a b".into())).check().is_err());
         assert!(Scope::Approval { flow: Selector::Slug("payout".into()), name: String::new() }.check().is_err());
+        assert!(Scope::Flows(Selector::Tag("Payments".into())).check().is_err());
+        assert!(Scope::Approval { flow: Selector::Tag("payments".into()), name: "ok".into() }.check().is_err(), "an approval point is a flow's");
+    }
+
+    /// A binding on a tag holds on each flow deployed with the tag, while it is, and on the tag
+    /// itself; a version is covered by the tags it has. The review says who it lets in, live ones
+    /// only.
+    #[test]
+    fn a_tags_binding_holds_on_the_flows_tagged_with_it() {
+        let access = Bindings::memory();
+        let mut d = Document::default();
+        d.groups.push(Group { name: "ops".into(), about: None, members: vec!["bob".into()] });
+        let payments = Scope::Flows(Selector::Tag("payments".into()));
+        d.bind(Subject::Principal("bob".into()), "editor", payments.clone(), Some(100), "ada", 1);
+        d.bind(Subject::Group("ops".into()), "viewer", payments.clone(), None, "ada", 1);
+        access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
+        access.set_tags("d", &["ops".into(), "payments".into()]);
+        access.set_tags("e", &["ops".into()]);
+        let on = |at: u64, resource: &Resource<'_>| access.held("bob", at).iter().filter(|h| h.covers(resource)).map(|h| h.role.name.clone()).collect::<Vec<_>>();
+        assert_eq!(on(2, &Resource::Flow("d")), ["editor", "viewer"]);
+        assert!(on(2, &Resource::Flow("e")).is_empty());
+        assert_eq!(on(2, &Resource::Tag("payments")), ["editor", "viewer"]);
+        assert!(on(2, &Resource::Tag("ops")).is_empty());
+        let (tagged, untagged) = (["payments".to_string()], []);
+        assert_eq!(on(2, &Resource::Version { slug: "e", tags: &tagged }), ["editor", "viewer"]);
+        assert!(on(2, &Resource::Version { slug: "d", tags: &untagged }).is_empty());
+        assert_eq!(on(100, &Resource::Flow("d")), ["viewer"], "bob's own expired at 100");
+        access.set_tags("d", &[]);
+        assert!(on(2, &Resource::Flow("d")).is_empty(), "off the tag, out of reach");
+        assert_eq!(access.tagged("ops"), BTreeSet::from(["e".to_string()]));
+
+        let document = access.document();
+        assert_eq!(on_tag(&document, "payments", 2), "bob as editor, the group ops as viewer");
+        assert_eq!(on_tag(&document, "payments", 100), "the group ops as viewer");
+        assert_eq!(on_tag(&document, "ops", 2), "no one is bound on it yet");
     }
 
     #[test]

@@ -345,11 +345,13 @@ struct AskedFor {
     unrecorded: std::collections::BTreeSet<String>,
     /// Whether agents may read its log lines.
     agent_logs: bool,
+    /// The flow's tags, as its settings hold them.
+    tags: Vec<String>,
 }
 
 /// A manifest's items (core's `manifest_items`, the rule the server grants by): `capabilities`
 /// (consent names), then what `requirements` (`{limits, plain_http, private_addresses, agents,
-/// unrecorded, agent_logs}`) ask.
+/// unrecorded, agent_logs, tags}`) ask.
 #[wasm_bindgen]
 pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Result<Vec<String>, JsError> {
     let asked: AskedFor = if requirements.is_undefined() || requirements.is_null() {
@@ -357,7 +359,7 @@ pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Resul
     } else {
         serde_wasm_bindgen::from_value(requirements).map_err(|e| JsError::new(&format!("requirements: {e}")))?
     };
-    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents, &asked.unrecorded, asked.agent_logs).into_iter().collect())
+    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents, &asked.unrecorded, asked.agent_logs, &asked.tags).into_iter().collect())
 }
 
 /// What starts the runs of a unit with these capabilities (core's `trigger`).
@@ -782,25 +784,25 @@ impl Evaluator {
     }
 
     /// The server a flow declares, `{endpoints, errors, serverHash, trace}`, its units stored here
-    /// (holon-author's `derive_server`). `port` is as the flow's settings hold it.
-    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
+    /// (holon-author's `derive_server`). `port` and `tags` are as the flow's settings hold them.
+    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port))
+        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port, &tags))
     }
 
     /// What each canvas node does with a secret, by node id: a line for each sink a secret reaches
     /// there (holon-author's `secret_marks`), for the canvas to mark it. `{}` for a canvas that
     /// doesn't derive.
-    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
+    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port))
+        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port, &tags))
     }
 
     /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
     /// as one composite. Throws why it can't be.
-    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<String, JsError> {
+    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<String, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        flow::flow_unit(&nodes, &wires, &mut self.resolver, port).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
+        flow::flow_unit(&nodes, &wires, &mut self.resolver, port, &tags).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
     }
 
     /// Parse a hex hash and resolve it against this Evaluator's own resolver — the identical

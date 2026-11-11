@@ -43,6 +43,26 @@ describe("what a flow touches", () => {
     ]);
   });
 
+  // The rows of touches.rs's a_tag_s_row_says_who_it_lets_in, said as it says them.
+  it("says who a tag lets act on the flow: joined, left or kept", () => {
+    const tag = (name: string, who: string, change: TouchUse["change"]): Touch => ({
+      group: "access",
+      kind: "tag",
+      name,
+      change,
+      uses: [use(`Tag("${name}")`, who, change, change === "new")],
+      ready: null,
+      has: null,
+    });
+    const rows = [tag("old", "the group ops as viewer", "gone"), tag("ops", "no one is bound on it yet", "same"), tag("payments", "bob as editor", "new")];
+    expect(touchText(touchLines(rows, []))).toEqual([
+      "Who may act on it",
+      "  - leaves old: the group ops as viewer — no longer",
+      "  · tagged ops: no one is bound on it yet",
+      "  + joins payments: bob as editor — approved by confirming",
+    ]);
+  });
+
   it("says nothing for a server that doesn't answer them", () => {
     expect(touchLines(undefined, undefined)).toEqual([]);
   });

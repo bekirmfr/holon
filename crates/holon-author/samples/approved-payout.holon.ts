@@ -11,6 +11,10 @@
 // again from the approval on the balance as it now is, the payout and the approval answered from
 // its record, not sent or asked again. No deposit is written over, and nothing is paid twice.
 //
+// It is tagged payments: whoever is bound on the tag acts on it, as on every flow deployed with
+// the tag, and on no other. A version that adds or drops a tag is approved like anything a flow
+// asks for, and the review says who the tag lets in.
+//
 // Where it goes next (docs/L4s/access-and-approvals-L4.md, §8 and §13): an approval in steps,
 // an agent classifying, an editor reviewing, an admin approving, each a different principal.
 //
@@ -26,13 +30,16 @@
 //   curl -X POST -d '{"amount":50}' http://127.0.0.1:8153/deposit/1   150, while the payout waits
 //   holon decide approved-payout                                      the run, and who approved
 // Then two people approve it: you (holon decide approved-payout <run> payout --approve), and
-// someone you invited (holon people add), in the editor's Approvals. It pays it:
+// someone you invited and bound on the tag, in the editor's Approvals:
+//   holon people add bob --person
+//   holon bind editor --to bob --tag payments                         bob acts on payments' flows
+// It pays it:
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
 import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"
 import httpbin from "host:httpbin.org"
 
-flow("approved-payout", { port: 8153 })
+flow("approved-payout", { port: 8153, tags: ["payments"] })
 
 // Starts the payout's run and answers at once, with the balance as it is now.
 route.post("/payout/:account", (req) => {

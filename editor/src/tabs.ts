@@ -108,6 +108,7 @@ export function settingsOf(server: FlowDocument["server"]): FlowSettings {
     port: server?.port ?? DEFAULT_SETTINGS.port,
     ...(server?.requirements ? { requirements: server.requirements } : {}),
     ...(server?.browsers ? { browsers: server.browsers } : {}),
+    ...(server?.tags?.length ? { tags: server.tags } : {}),
   };
 }
 

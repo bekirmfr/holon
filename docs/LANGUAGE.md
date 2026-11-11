@@ -86,7 +86,7 @@ unit.
 | Its syntax | TypeScript's: a flow is a valid TypeScript module, read by a TypeScript parser (oxc's). The meanings that differ from JavaScript's are Holon's; where a JavaScript reader would be misled, the compiler refuses and says what to write instead | §1, §2, §6 |
 | What it is not | General-purpose. No loops, recursion, classes, generics, imports of code, or standard library growth | §2 |
 | The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
-| Settings | `flow("name", { port, keep, limits, browsers })`, once, after the imports | §5.1 |
+| Settings | `flow("name", { port, keep, limits, browsers, taint, tags })`, once, after the imports | §5.1 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
@@ -1601,7 +1601,7 @@ import { now } from "holon:clock"
 import { random } from "holon:random"
 import { ACTION, … } from "flow:SLUG"
 
-flow("NAME", { port, keep, limits, browsers })
+flow("NAME", { port, keep, limits, browsers, taint, tags })
 
 const NAME = LITERAL
 function NAME(input, input: type, …) { statements; return outputs }
@@ -1661,6 +1661,8 @@ what the flow deploys as; its options are the deploy settings (`Settings`):
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days, the limits `keep_runs` and `keep_run_days`; either alone works |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s" }` | Any other limit of the deploy settings, by its name there (`docs/manual/reference/permissions.md`): a `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. Below the host's default asks nobody; above it asks for approval, `Limit(run_budget_ms=60000)`, up to the host's ceiling. A `js()` function's fuel and memory are its own options, not a limit |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`; one may be written alone, `browsers: "*"` |
+| `taint: ["x-api-key", "number"]` | Keys whose values the host never keeps of the flow's runs |
+| `tags: ["payments"]` | The flow's tags, each lowercase letters, digits and `-`, 1 to 40 of them; kept sorted, once each. They are a frozen `tags` param of its server unit, written only when there is one, so an untagged flow's hash is as it was, and a version that adds a tag is a different unit. Each is an item of its manifest, `Tag("payments")`, which a person approves and the policy never grants: a binding on the tag (`holon bind editor --to bob --tag payments`) covers every flow deployed with it, while it is |
 
 **Handlers start runs.** A flow has one or more, each a call at the top level whose function is
 the handler and whose options come last; each is everything tied to its trigger (§5.11), and a

@@ -147,7 +147,7 @@ export type Principal = {
   tokens?: TokenEntry[];
 };
 /** Where a binding holds (bindings.rs): the host, one flow, or one approval point of one. */
-export type Scope = "host" | { flows: { slug: string } } | { approval: { flow: { slug: string }; name: string } };
+export type Scope = "host" | { flows: { slug: string } | { tag: string } } | { approval: { flow: { slug: string }; name: string } };
 /** A role bound to a principal, or to a group it is in (`group`), with what the role allows. */
 export type HeldBinding = { id: number; role: string; allows: string[]; scope: Scope; group: string | null; by: string; at: number; expires_at: number | null; expired: boolean };
 /** A role (`GET /roles`): built in, or defined by an admin; who may hold it, how many bindings do. */
@@ -1410,7 +1410,7 @@ export type FlowDocument = {
   names?: Record<string, string>;
   /** The flow's deploy settings (DeployBar): the port for a flow with routes. Absent in older
    *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
-  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string };
+  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[] };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

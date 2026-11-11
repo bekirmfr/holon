@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Tags: a binding on a tag holds on every flow deployed with it.** A flow's text tags it,
+  `flow("payout", { port: 8153, tags: ["payments"] })` (lowercase letters, digits and `-`, kept
+  sorted, once each), and the tags are part of its unit, so a version that adds or drops one is a
+  new version; an untagged flow's hash is as it was. `holon bind editor --to bob --tag payments`
+  (`{"flows": {"tag": "payments"}}`) covers each flow while its deployed version has the tag:
+  restoring an untagged version or deleting the flow takes it out of reach, and
+  `GET /deployments` says each flow's tags. Each tag is an item of the manifest, `Tag("payments")`,
+  which a person approves and the policy never grants; the review groups it under "Who may act on
+  it" and says who the tag lets in (`joins payments: bob as editor, the group ops as viewer`). A
+  deploy asks the caller to hold the action on the flow as it is and as the version would make it:
+  bob, bound on `payments`, deploys a new flow tagged so, but doesn't tag one he holds nothing on
+  nor untag one he holds by the tag. An agent's version adding a tag waits as a proposal. The
+  `approved-payout` sample is tagged `payments`, and its try-it binds bob on the tag before he
+  decides; run live: deployed with the tag, approved by ada; bob, bound on the tag only, decided
+  its run and was refused a flow without it; an agent's version adding a tag was kept as a
+  proposal.
 - **Roles, groups and bindings from the command line, `holon mcp` and the People page.**
   `holon roles` lists the roles and defines or removes an admin's own, `holon groups` makes groups
   and adds or drops members, `holon bind` binds a role to a principal or a group on the host, on

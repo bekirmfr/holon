@@ -71,9 +71,10 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   const decide = (token: string, run: string, choice: { approve: boolean; reason?: string }) =>
     control(token, `/deployments/approved-payout/runs/${run}/decide`, { name: "payout", ...choice });
 
-  // A second person: an editor the admin invites, who joins by the link's token.
+  // A second person: a viewer the admin invites, who joins by the link's token, and decides as an
+  // editor on the tag payments, which the sample is deployed with.
   const name = `e2e-second-${Date.now()}`;
-  const invited = await control(adminToken, "/people", { name, kind: "person", role: "editor" });
+  const invited = await control(adminToken, "/people", { name, kind: "person", role: "viewer" });
   expect(invited.ok, await invited.clone().text()).toBe(true);
   const { invite } = (await invited.json()) as { invite: string };
   const joined = await fetch(`${SERVER}/auth/invite`, {
@@ -83,6 +84,8 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   });
   expect(joined.ok).toBe(true);
   const second = ((await joined.json()) as { token: string }).token;
+  const bound = await control(adminToken, "/bindings", { who: { principal: name }, role: "editor", scope: { flows: { tag: "payments" } } });
+  expect(bound.ok, await bound.clone().text()).toBe(true);
 
   const before = await balance();
   const earlier = await waiting();

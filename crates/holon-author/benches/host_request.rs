@@ -129,7 +129,7 @@ fn route(text: &str, method: &str, path: &str) -> Route {
     let mut store = MapResolver::new();
     holon_author::text::restore(&lowered.doc, &mut store, &Names::new());
     let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-    let server = flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port).unwrap_or_else(|e| panic!("{e}"));
+    let server = flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags()).unwrap_or_else(|e| panic!("{e}"));
     let server = read_server(store.resolve(&server).expect("stored"), &store).unwrap_or_else(|e| panic!("{e:?}"));
     let endpoint = server.routes.iter().find(|r| r.method == method && r.path == path).unwrap_or_else(|| panic!("no route {method} {path}")).endpoint;
     let units: BTreeMap<Hash, Arc<Unit>> = store.units().map(|u| (hash_unit(u).expect("hashed"), Arc::new(u.clone()))).collect();
