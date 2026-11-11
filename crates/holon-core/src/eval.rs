@@ -2756,50 +2756,81 @@ mod tests {
         )
     }
 
-    /// A port is a number an edge writes, and a unit's bytes are anyone's who can stage them: an
-    /// edge to port four billion, of a child or of the boundary, asks its composite's shape for
-    /// no more than its edges take (once a list that long, 51 GiB for one edge, which no
-    /// `catch_unwind` answers), and the composite computes what it would without that edge.
+    /// **Guards:** a composite's edges, however they are written, are read from the table the
+    /// evaluator looks them up in exactly as from a plain map of them (every lookup: a port that
+    /// is wired, one that isn't, one of a child that isn't there), and the table takes no more
+    /// room than a few times the edges it was made of.
+    ///
+    /// **Why:** the table is lists indexed by child and port, because it is looked up for every
+    /// port of every node of every run; a list is as long as its highest port, and a port is any
+    /// number an edge writes, in a unit that is anyone's who can stage one. So the table has a
+    /// second form, found by search, for edges that would make its lists outgrow their room, and
+    /// two forms of one thing can disagree.
+    ///
+    /// **If it fails:** on a disagreement, a flow reads the wrong wire and answers wrongly in
+    /// every run, with no error anywhere. On the room, one staged unit of sixty bytes with an edge
+    /// to port four billion asks the host for 51 GiB, which ends the server (it did, before the
+    /// second form), every deployment with it.
     #[test]
-    fn an_edge_to_a_port_far_out_costs_its_shape_nothing_and_changes_no_answer() {
-        let mut r = MapResolver::new();
-        let sum = add2(&mut r);
-        let UnitBody::Composite { children, edges } = &sum.body else { unreachable!() };
-        let answer = eval(&sum, &[Some(num(2.0)), Some(num(3.0))], &r);
-        assert_eq!(answer.as_slice(), &[Some(num(5.0))]);
-        for far in [u32::MAX, u32::MAX - 1, 4_000_000_000, 1 << 24] {
-            for stray in [edge(BOUNDARY, 0, 0, far), edge(0, 0, BOUNDARY, far), edge(BOUNDARY, 1, 7, far), edge(0, 0, 0, far)] {
-                let mut wired = edges.clone();
-                wired.push(stray);
-                let index = Incoming::of(1, &wired);
-                if stray.to_child == 7 {
-                    // To a child that isn't there: no port of anything, so the lists stay.
-                    assert!(index.far.is_empty() && index.ports.len() == 2 && index.outputs.len() == 1, "{stray:?}");
-                } else {
-                    assert!(index.ports.is_empty() && index.outputs.is_empty() && index.far.len() == wired.len(), "{stray:?}: kept by search, in no list");
-                }
-                // What the lists would say, edge for edge.
-                assert_eq!(index.source(0, 0), Source::Input(0));
-                assert_eq!(index.source(0, 1), Source::Input(1));
-                assert_eq!(index.source(0, 2), Source::Unwired);
-                assert_eq!(index.get(BOUNDARY, 0), Some((0, 0)));
-                assert_eq!(index.get(BOUNDARY, 1), None);
-                assert_eq!(index.wired(stray.to_child, stray.to_port), stray.to_child == BOUNDARY || stray.to_child == 0);
-                let strayed = composite(sum.inputs.clone(), Type::Number, children.clone(), wired);
-                // An edge from the sum back into itself is a cycle, which gives nothing, as it does
-                // at any port.
-                let expected = if stray.from_child == 0 && stray.to_child == 0 { vec![None] } else { answer.to_vec() };
-                assert_eq!(eval(&strayed, &[Some(num(2.0)), Some(num(3.0))], &r).to_vec(), expected, "{stray:?}");
-                assert!(Shape::of_unit(&strayed).is_some());
+    fn the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, m: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % m
             }
         }
-        // A wiring with ports to spare stays in its lists: the room is for any real flow's.
-        let spare = Incoming::of(1, &[edge(BOUNDARY, 0, 0, 900), edge(0, 0, BOUNDARY, 100)]);
-        assert!(spare.far.is_empty() && spare.ports.len() == 901 && spare.outputs.len() == 101);
-        assert_eq!(spare.source(0, 900), Source::Input(0));
-        // The last edge to a destination wins, kept by search as in the lists.
-        let twice = Incoming::of(1, &[edge(BOUNDARY, 0, 0, u32::MAX), edge(BOUNDARY, 1, 0, u32::MAX)]);
-        assert_eq!(twice.source(0, u32::MAX as usize), Source::Input(1));
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        // A port: small as a flow's are, now and then far out, the last port there is among them.
+        let port = |rng: &mut Rng| match rng.below(24) {
+            0 => u32::MAX,
+            1 => u32::MAX - 1,
+            2 => 1 << 30,
+            3 => 70_000,
+            4 => 900,
+            v => (v % 4) as u32,
+        };
+        let (mut in_lists, mut by_search) = (0, 0);
+        for case in 0..20_000 {
+            let n = rng.below(6) as usize;
+            // An end: the boundary, a child, or a child that isn't there.
+            let end = |rng: &mut Rng| match rng.below(n as u64 + 3) {
+                0 => BOUNDARY,
+                v => (v - 1) as u32,
+            };
+            let edges: Vec<Edge> = (0..rng.below(13)).map(|_| edge(end(&mut rng), port(&mut rng), end(&mut rng), port(&mut rng))).collect();
+            let table = Incoming::of(n, &edges);
+            // The plain map: the last edge to a destination that exists.
+            let plain: BTreeMap<(u32, u32), (u32, u32)> = edges.iter().filter(|e| e.to_child == BOUNDARY || (e.to_child as usize) < n).map(|e| ((e.to_child, e.to_port), (e.from_child, e.from_port))).collect();
+
+            let room = Incoming::room(n, edges.len()) as usize;
+            assert!(table.ports.len() + table.outputs.len() <= room && table.far.len() <= edges.len(), "case {case}: {} ports for {} edges", table.ports.len() + table.outputs.len(), edges.len());
+            match table.far.is_empty() {
+                true => in_lists += 1,
+                false => by_search += 1,
+            }
+            // Every destination an edge names, the ports beside each, and some drawn.
+            let mut asked: Vec<(u32, u32)> = edges.iter().flat_map(|e| [(e.to_child, e.to_port), (e.to_child, e.to_port.wrapping_add(1)), (e.to_child, e.to_port.wrapping_sub(1))]).collect();
+            asked.extend((0..8).map(|_| (end(&mut rng), port(&mut rng))));
+            for (child, at) in asked {
+                let wire = plain.get(&(child, at)).copied();
+                assert_eq!(table.get(child, at), wire, "case {case}: what feeds port {at} of {child}, among {edges:?}");
+                assert_eq!(table.wired(child, at), wire.is_some(), "case {case}");
+                if child != BOUNDARY && (child as usize) < n {
+                    let source = match wire {
+                        None => Source::Unwired,
+                        Some((BOUNDARY, from)) => Source::Input(from),
+                        Some((from, out)) if (from as usize) < n => Source::Child(from, out),
+                        Some((from, out)) => Source::Missing(from, out),
+                    };
+                    assert_eq!(table.source(child as usize, at as usize), source, "case {case}: the source of port {at} of {child}, among {edges:?}");
+                }
+            }
+        }
+        // Both forms are met, and the lists by far the more: they are what a flow's wiring gets.
+        assert!(by_search > 2_000 && in_lists > by_search, "{in_lists} tables in lists, {by_search} by search");
     }
 
     /// The cycle check the evaluator uses agrees with `topo_order` (the eager oracle's) on every

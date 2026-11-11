@@ -10372,76 +10372,101 @@ route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => 
         .unwrap();
 }
 
-/// `POST /unit` only decodes what it stores, so a unit whose wiring `validate` refuses can be
-/// staged; the closure it is in is refused before anything runs it, and a deploy of it is a 400.
-/// Every sample's closure loads (the test above), so every sample validates.
+/// **Guards:** whatever unit is staged, loading its closure answers: the closure, or why not. A
+/// unit core's `validate` refuses is refused exactly, by itself and nested in another, before
+/// anything is made of it; one it takes loads, a child nobody staged left missing.
+///
+/// **Why:** `POST /unit` only decodes what it stores, and an agent may call it: a unit's bytes
+/// are whoever's sent them. The evaluator is written for wiring that validates, and so is what is
+/// laid out for it (a shape, by the ports its edges name), so the loader is the one gate between
+/// any bytes and both.
+///
+/// **If it fails:** a unit that doesn't validate runs (two sources for one port, a cycle, a port
+/// its child doesn't have: what it computes is anyone's guess), or loading one ends the server:
+/// laid out before it was validated, an edge to port four billion asked for a list of 51 GiB.
+///
+/// Units are drawn, a few thousand: children staged or not, edges to and from ports that exist,
+/// don't, or are far out, to one port twice, round in a cycle. Each is loaded as a root and
+/// nested, and what the loader says is what `validate` says of it. The kinds of mistake are
+/// counted, so the drawing is known to make each.
 #[test]
-fn a_closure_with_a_unit_that_doesnt_validate_is_refused() {
-    let state = test_state();
-    let mut store = state.store.clone();
-    let clock = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let out = |ty| vec![Port { name: "out".into(), ty }];
-    // An output port the clock doesn't have, two sources for one port, and a cycle.
-    let no_such_port = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![e(0, 3, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
-    let random = store.put(&Unit { params: vec![], ..holon_core::interface_of("random").unwrap() }).unwrap();
-    let two_sources = Unit { body: UnitBody::Composite { children: vec![clock, random], edges: vec![e(0, 0, BOUNDARY, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
-    let not = store.put(&holon_core::interface_of("not").unwrap()).unwrap();
-    let and = store.put(&holon_core::interface_of("and").unwrap()).unwrap();
-    let cycle = Unit { body: UnitBody::Composite { children: vec![not, and], edges: vec![e(0, 0, 1, 0), e(1, 0, 0, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Boolean) };
-    for (bad, says) in [(no_such_port, "has no such output"), (two_sources, "more than one source"), (cycle, "contains a cycle")] {
-        let bad = store.put(&bad).unwrap();
-        // Refused whether it is the root or nested in one.
-        let wrapper = store.put(&Unit { body: UnitBody::Composite { children: vec![bad], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
-        for root in [bad, wrapper] {
-            let Err(e) = closure(&state.store, root) else { panic!("{says}: a closure with a unit that doesn't validate is refused") };
-            assert!(matches!(&e, crate::units::Closure::Invalid(why) if why.contains(&to_hex(&bad)) && why.contains("doesn't validate") && why.contains(says)), "{e:?}");
+fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
+    struct Rng(u64);
+    impl Rng {
+        fn below(&mut self, m: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % m
         }
-        let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "unwired", "unit": to_hex(&wrapper) })).unwrap()));
-        assert_eq!(deployed.status_code, 400);
-        assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
     }
-    // The clock alone, its closure loaded from the store, and again from memory.
-    closure(&state.store, clock).unwrap();
-    closure(&state.store, clock).unwrap();
-}
-
-/// A port is a number an edge writes, and anyone who may stage a unit writes it (an agent may):
-/// a unit with an edge to port four billion is refused like any wiring that doesn't validate,
-/// before a shape is made of it. Laid out first, as it was, that one edge asked for a list of
-/// 51 GiB, and a server out of memory ends, every deployment with it. An edge into a child
-/// that isn't staged can't be checked against it; the closure loads, that child missing, and its
-/// shape keeps the edge by search (holon-core's `Incoming`).
-#[test]
-fn a_staged_unit_with_an_edge_to_a_port_far_out_never_gets_its_list() {
     let state = test_state();
     let mut store = state.store.clone();
-    let clock = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
-    let not = store.put(&holon_core::interface_of("not").unwrap()).unwrap();
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let port = |name: &str, ty| vec![Port { name: name.into(), ty }];
-    for far in [u32::MAX - 1, u32::MAX, 4_000_000_000] {
-        let out_of_the_boundary = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![e(0, 0, BOUNDARY, far)] }, params: vec![], inputs: vec![], outputs: port("out", Type::Number) };
-        let into_a_child = Unit {
-            body: UnitBody::Composite { children: vec![not], edges: vec![e(BOUNDARY, 0, 0, far), e(0, 0, BOUNDARY, 0)] },
-            params: vec![],
-            inputs: port("in", Type::Boolean),
-            outputs: port("out", Type::Boolean),
+    // What a drawn unit's children are: leaves staged here, beside one nobody staged. The same
+    // units are core's to resolve, to say what it makes of a wiring.
+    let mut known = holon_core::MapResolver::new();
+    let mut leaves: Vec<Hash> = Vec::new();
+    for name in ["clock", "random", "not", "and", "add", "concat", "equals"] {
+        let unit = Unit { params: vec![], ..holon_core::interface_of(name).unwrap() };
+        leaves.push(store.put(&unit).unwrap());
+        known.insert(unit).unwrap();
+    }
+    let nobody: Hash = [0xee; 32];
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let port = |rng: &mut Rng| match rng.below(20) {
+        0 => u32::MAX,
+        1 => u32::MAX - 1,
+        2 => 4_000_000_000,
+        v => (v % 3) as u32,
+    };
+    let types = [Type::Number, Type::Boolean, Type::Text, Type::Any];
+    let (mut refused, mut loaded, mut kinds) = (0, 0, BTreeMap::<String, usize>::new());
+    for case in 0..3_000 {
+        let n = 1 + rng.below(4) as usize;
+        let children: Vec<Hash> = (0..n).map(|_| if rng.below(12) == 0 { nobody } else { leaves[rng.below(leaves.len() as u64) as usize] }).collect();
+        let end = |rng: &mut Rng| match rng.below(n as u64 + 2) {
+            0 => BOUNDARY,
+            v => (v - 1) as u32,
         };
-        for bad in [out_of_the_boundary, into_a_child] {
-            let bad = store.put(&bad).unwrap();
-            let Err(refused) = closure(&state.store, bad) else { panic!("port {far}: a closure with such an edge is refused") };
-            assert!(matches!(&refused, crate::units::Closure::Invalid(why) if why.contains(&to_hex(&bad)) && why.contains("doesn't validate")), "{refused:?}");
-            let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "far-out", "unit": to_hex(&bad) })).unwrap()));
+        let edges: Vec<Edge> = (0..rng.below(7)).map(|_| Edge { from_child: end(&mut rng), from_port: port(&mut rng), to_child: end(&mut rng), to_port: port(&mut rng) }).collect();
+        let ports = |rng: &mut Rng, name: &str| (0..rng.below(3)).map(|i| Port { name: format!("{name}{i}"), ty: types[rng.below(4) as usize].clone() }).collect::<Vec<_>>();
+        let unit = Unit { body: UnitBody::Composite { children, edges }, params: vec![], inputs: ports(&mut rng, "in"), outputs: ports(&mut rng, "out") };
+        // What core makes of it: a child that isn't staged is nothing to refuse it for.
+        let mistakes: Vec<String> = holon_core::validate(&unit, &known).err().unwrap_or_default().iter().map(|e| format!("{e:?}")).map(|e| e.split([' ', '(', '{']).next().unwrap().to_string()).filter(|e| e != "UnresolvedChild").collect();
+        for kind in &mistakes {
+            *kinds.entry(kind.clone()).or_default() += 1;
+        }
+        // A unit with no one encoding (two children alike that no edge tells apart) is no unit: it
+        // has no hash to be staged under.
+        let Ok(staged) = store.put(&unit) else { continue };
+        let nested = store.put(&Unit { body: UnitBody::Composite { children: vec![staged], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
+        for root in [staged, nested] {
+            match (closure(&state.store, root), mistakes.is_empty()) {
+                (Ok(held), true) => assert!(held.resolve(&staged).is_some(), "case {case}: it holds the unit"),
+                (Err(crate::units::Closure::Invalid(why)), false) => assert!(why.contains(&to_hex(&staged)) && why.contains("doesn't validate"), "case {case}: {why}"),
+                (Ok(_), false) => panic!("case {case}: loaded, though it doesn't validate ({mistakes:?}): {unit:?}"),
+                (Err(e), _) => panic!("case {case}: {e:?} for a unit with {mistakes:?}: {unit:?}"),
+            }
+        }
+        if mistakes.is_empty() {
+            loaded += 1;
+            continue;
+        }
+        refused += 1;
+        // A deploy of one is told so, and the server answers on.
+        if refused % 200 == 1 {
+            let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "unwired", "unit": to_hex(&nested) })).unwrap()));
             assert_eq!(deployed.status_code, 400);
             assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
         }
-        // Into a child nobody staged: nothing to validate the port against.
-        let nobody: Hash = [far as u8; 32];
-        let dangling = store.put(&Unit { body: UnitBody::Composite { children: vec![nobody], edges: vec![e(BOUNDARY, 0, 0, far)] }, params: vec![], inputs: port("in", Type::Any), outputs: vec![] }).unwrap();
-        let loaded = closure(&state.store, dangling).unwrap();
-        assert!(loaded.resolve(&dangling).is_some() && loaded.resolve(&nobody).is_none());
     }
+    assert!(refused > 1_000 && loaded > 300, "{refused} refused, {loaded} loaded");
+    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch"] {
+        assert!(kinds.get(kind).is_some_and(|n| *n >= 10), "the drawing makes {kind} too seldom: {kinds:?}");
+    }
+    // A leaf alone, its closure loaded from the store, and again from memory.
+    closure(&state.store, leaves[0]).unwrap();
+    closure(&state.store, leaves[0]).unwrap();
 }
 
 /// An action's answer names its own run's entry, however many runs of its deployment log at once
