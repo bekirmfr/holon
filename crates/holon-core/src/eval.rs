@@ -2783,24 +2783,26 @@ mod tests {
             }
         }
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-        // A port: small as a flow's are, now and then far out, the last port there is among them.
-        let port = |rng: &mut Rng| match rng.below(24) {
-            0 => u32::MAX,
-            1 => u32::MAX - 1,
-            2 => 1 << 30,
-            3 => 70_000,
+        // A port: small as a flow's are, now and then far out (in a case that may have far ports),
+        // the last port there is among them.
+        let port = |rng: &mut Rng, far: bool| match rng.below(24) {
+            0 if far => u32::MAX,
+            1 if far => u32::MAX - 1,
+            2 if far => 1 << 30,
+            3 if far => 70_000,
             4 => 900,
             v => (v % 4) as u32,
         };
         let (mut in_lists, mut by_search) = (0, 0);
         for case in 0..20_000 {
-            let n = rng.below(6) as usize;
+            let n = rng.below(9) as usize;
+            let far = rng.below(3) == 0;
             // An end: the boundary, a child, or a child that isn't there.
             let end = |rng: &mut Rng| match rng.below(n as u64 + 3) {
                 0 => BOUNDARY,
                 v => (v - 1) as u32,
             };
-            let edges: Vec<Edge> = (0..rng.below(13)).map(|_| edge(end(&mut rng), port(&mut rng), end(&mut rng), port(&mut rng))).collect();
+            let edges: Vec<Edge> = (0..rng.below(17)).map(|_| edge(end(&mut rng), port(&mut rng, far), end(&mut rng), port(&mut rng, far))).collect();
             let table = Incoming::of(n, &edges);
             // The plain map: the last edge to a destination that exists.
             let plain: BTreeMap<(u32, u32), (u32, u32)> = edges.iter().filter(|e| e.to_child == BOUNDARY || (e.to_child as usize) < n).map(|e| ((e.to_child, e.to_port), (e.from_child, e.from_port))).collect();
@@ -2811,9 +2813,12 @@ mod tests {
                 true => in_lists += 1,
                 false => by_search += 1,
             }
-            // Every destination an edge names, the ports beside each, and some drawn.
+            // Every destination an edge names, the ports beside each, some drawn (far ones in a
+            // table made in lists among them), and every small port of every child, of the
+            // boundary and of two children past the last.
             let mut asked: Vec<(u32, u32)> = edges.iter().flat_map(|e| [(e.to_child, e.to_port), (e.to_child, e.to_port.wrapping_add(1)), (e.to_child, e.to_port.wrapping_sub(1))]).collect();
-            asked.extend((0..8).map(|_| (end(&mut rng), port(&mut rng))));
+            asked.extend((0..8).map(|_| (end(&mut rng), port(&mut rng, true))));
+            asked.extend((0..n as u32 + 2).chain([BOUNDARY]).flat_map(|child| (0..6).map(move |at| (child, at))));
             for (child, at) in asked {
                 let wire = plain.get(&(child, at)).copied();
                 assert_eq!(table.get(child, at), wire, "case {case}: what feeds port {at} of {child}, among {edges:?}");
@@ -2859,38 +2864,6 @@ mod tests {
             if found { cyclic += 1 } else { acyclic += 1 }
         }
         assert!(cyclic > 100 && acyclic > 100, "both kinds tried: {cyclic} cyclic, {acyclic} not");
-    }
-
-    /// The flat index gives, for every child's port and every output, what a map of the edges by
-    /// destination gives (the last edge to one winning), edges naming children that don't exist
-    /// included.
-    #[test]
-    fn the_flat_index_finds_what_a_map_of_the_edges_finds() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = move |m: u64| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed % m
-        };
-        for _ in 0..4000 {
-            let n = next(8) as usize;
-            let end = |r: u64| if r == 0 { BOUNDARY } else { (r - 1) as u32 };
-            let edges: Vec<Edge> = (0..next(16)).map(|_| edge(end(next(n as u64 + 3)), next(4) as u32, end(next(n as u64 + 3)), next(4) as u32)).collect();
-            let mut by_destination = BTreeMap::new();
-            for e in &edges {
-                by_destination.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
-            }
-            let index = Incoming::of(n, &edges);
-            for child in (0..n as u32 + 2).chain([BOUNDARY]) {
-                for port in 0..6 {
-                    // A destination past the children is never looked up by the walk; the map
-                    // would hold it, the index needn't.
-                    let wanted = if child != BOUNDARY && child as usize >= n { None } else { by_destination.get(&(child, port)).copied() };
-                    assert_eq!(index.get(child, port), wanted, "child {child} port {port}, n {n}, edges {edges:?}");
-                }
-            }
-        }
     }
 
     /// Events as an observer hears them, standing in `false` for the outputs of the children at
