@@ -116,7 +116,8 @@ Several classes wait on the same missing piece. Built with the first class that 
    from it. Classes 2, 11, 15.
 3. **A server on disk that is closed and opened again**, where today's restart tests reload
    through the same store. Classes 2, 15, 16.
-4. **An upstream that holds a call until told**, in place of sleeps. Class 13.
+4. **An upstream that holds a call until told**, in place of sleeps. Class 13. *Built: the
+   `Gate` of `gated_counting_server` in tests.rs.*
 5. **One far side that misbehaves on a script** (slow, cut, too much, again), for every
    connector. Classes 14, 17.
 6. **Three generators shared between tests**: sound units (classes 1, 21, 22), the audit's value
@@ -280,6 +281,11 @@ out is made once, and nothing waits for a key it doesn't touch.**
   side's counts and `verify`. Seam 4.
 - From: T1§9, T2§10, T3§7, AL§11, AL§12, AL§13, HM§8, HM§10, HM§12, HM§17, CB§8 (53). Effort L.
 - Settles: `core-engine-b 4`; `server-big-modules 6`.
+- Done in part (2026-11-11), seam 4 for the tests that said "nothing waits" by the clock: a
+  `Gate` (`gated_counting_server`, tests.rs) holds `/slow` calls until the test opens it, and the
+  four tests that judged by elapsed time judge by what was out at once. One of them failed on CI
+  (998 ms, its bound 780) with the `semantics.rs` sweep on every core beside it. The model, and
+  the tests still ordered by a sleep, are open.
 
 **14. For every trigger with a far side, each item starts one run, in order, whatever is sent
 again, dropped or cut; and what a run sends after it goes once its record is on disk, once.**

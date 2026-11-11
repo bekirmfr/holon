@@ -3250,27 +3250,7 @@ fn concurrent_runs_lose_no_update() {
 /// from the new state; the call it already made is answered from its record, not sent again.
 #[test]
 fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let host = listener.local_addr().unwrap().to_string();
-    let hits = std::sync::Arc::new(AtomicUsize::new(0));
-    let counted = std::sync::Arc::clone(&hits);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().take(2) {
-            let mut stream = stream.unwrap();
-            let counted = std::sync::Arc::clone(&counted);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                counted.fetch_add(1, Ordering::SeqCst);
-                if String::from_utf8_lossy(&buf[..n]).starts_with("GET /slow") {
-                    std::thread::sleep(Duration::from_millis(400));
-                }
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-            });
-        }
-    });
+    let (host, hits, gate) = gated_counting_server();
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     // Each run counts, and calls the path it was sent; the call's answer is its own.
@@ -3283,17 +3263,21 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
     let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
     assert_eq!(deploy_json(&state, "slow", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
 
+    gate.shut();
     std::thread::scope(|s| {
         let first = s.spawn(|| run_action_named(&state, "slow", "bump", serde_json::json!("/slow")).status_code);
-        std::thread::sleep(Duration::from_millis(100));
-        let started = std::time::Instant::now();
-        assert_eq!(run_action_named(&state, "slow", "bump", serde_json::json!("/fast")).status_code, 200);
-        assert!(started.elapsed() < Duration::from_millis(250), "held up {:?} by the slow run", started.elapsed());
+        let out = gate.out_at_once(1);
+        let second = out.then(|| run_action_named(&state, "slow", "bump", serde_json::json!("/fast")).status_code);
+        let held = gate.out() == 1;
+        gate.open();
+        assert!(out, "the slow call went out");
+        assert_eq!(second, Some(200));
+        assert!(held, "the second run finished while the first's call was still out, not held up by it");
         assert_eq!(first.join().unwrap(), 200);
     });
     let shown = body_json(route(&state, &req("GET", "/deployments/slow/state", vec![])));
     assert_eq!(shown["state"]["count"]["value"], 2.0, "both counted: {shown}");
-    assert_eq!(hits.load(Ordering::SeqCst), 2, "the slow call went out once");
+    assert_eq!((hits_of(&hits, "/slow"), hits_of(&hits, "/fast")), (1, 1), "the slow call went out once");
     let log = body_json(route(&state, &req("GET", "/deployments/slow/log", vec![])));
     let retried: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|x| x["retries"].as_u64().unwrap_or(0)).collect();
     assert_eq!(retried.iter().sum::<u64>(), 1, "the slow run ran once more: {retried:?}");
@@ -5817,23 +5801,96 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
 
 /// A local HTTP server that counts hits per path: `/slow` answers after 400 ms, the rest at once.
 /// Lives as long as the test process.
-fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
+fn counting_server() -> (String, Hits) {
+    let (host, hits, _) = gated_counting_server();
+    (host, hits)
+}
+
+/// A counting server's hits: path → how many requests came for it.
+type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
+
+/// The longest a shut [`Gate`] holds a call: under the 30 s a run waits for an answer, so a run
+/// held up behind a held call is let go by the gate, not by its own timeout, and fails its test
+/// rather than hanging it.
+const GATE_HOLDS: Duration = Duration::from_secs(20);
+
+/// What a test holds `/slow` calls with, to see what happens while one is out without timing it:
+/// on a loaded machine (a sweep on every core beside it) "it took under 780 ms" fails, where "both
+/// calls were out at once" doesn't. Open, as it starts, a call answers after 400 ms; shut, once
+/// the test opens it ([`GATE_HOLDS`] at most).
+#[derive(Default)]
+struct Gate {
+    calls: Mutex<GateCalls>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct GateCalls {
+    shut: bool,
+    /// The `/slow` calls out now.
+    out: usize,
+}
+
+impl Gate {
+    fn shut(&self) {
+        self.calls.lock().unwrap().shut = true;
+    }
+
+    fn open(&self) {
+        self.calls.lock().unwrap().shut = false;
+        self.changed.notify_all();
+    }
+
+    /// The `/slow` calls out now.
+    fn out(&self) -> usize {
+        self.calls.lock().unwrap().out
+    }
+
+    /// Whether `n` calls were out at once, waiting up to 15 s for them (less than a shut gate
+    /// holds one, so none of them was let go meanwhile).
+    fn out_at_once(&self, n: usize) -> bool {
+        let calls = self.calls.lock().unwrap();
+        self.changed.wait_timeout_while(calls, Duration::from_secs(15), |c| c.out < n).unwrap().0.out >= n
+    }
+
+    /// One `/slow` call, answered once this returns.
+    fn pass(&self) {
+        let mut calls = self.calls.lock().unwrap();
+        calls.out += 1;
+        self.changed.notify_all();
+        if calls.shut {
+            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut).unwrap().0;
+        } else {
+            drop(calls);
+            std::thread::sleep(Duration::from_millis(400));
+            calls = self.calls.lock().unwrap();
+        }
+        calls.out -= 1;
+        self.changed.notify_all();
+    }
+}
+
+/// [`counting_server`], and the [`Gate`] its `/slow` calls pass.
+fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
     use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
     let hits = Arc::new(Mutex::new(BTreeMap::new()));
     let counted = Arc::clone(&hits);
+    let gate = Arc::new(Gate::default());
+    let passing = Arc::clone(&gate);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let counted = Arc::clone(&counted);
+            let passing = Arc::clone(&passing);
             std::thread::spawn(move || {
                 let Some((head, _)) = read_request(&mut stream) else { return };
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                 let body = match path.as_str() {
                     "/slow" => {
-                        std::thread::sleep(Duration::from_millis(400));
+                        passing.pass();
                         "slow"
                     }
                     "/name" => "k",
@@ -5845,7 +5902,7 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
             });
         }
     });
-    (host, hits)
+    (host, hits, gate)
 }
 
 /// A secret computed into something else is kept out of the log as surely as its value is: a
@@ -7220,7 +7277,7 @@ fn a_statements_dollar_n_is_its_nth_value_on_every_engine() {
 fn two_servers_refunding_one_order_call_the_payment_api_once() {
     for db in fresh_databases("refunds") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let servers = [server_with_database(&url), server_with_database(&url)];
         assert_eq!(bind_shop(&servers[0], Some(&format!("{}; insert into orders (id, customer, total) values (1, 'ada', 5), (2, 'bo', 7), (3, 'cy', 9)", shop_schema(engine)))).status_code, 200, "{engine}");
         assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
@@ -7242,18 +7299,21 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
         assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
 
-        // Two orders at once, one on each server: neither waits for the other's row.
-        let t0 = std::time::Instant::now();
+        // Two orders at once, one on each server: neither waits for the other's row, so both
+        // calls are out at once, each holding its order's.
+        gate.shut();
         let statuses: Vec<u16> = std::thread::scope(|s| {
             let calls = [(0, 2), (1, 3)].map(|(i, id)| {
                 let (server, slug) = (&servers[i], &slugs[i]);
                 s.spawn(move || data_call(server, slug, "POST", &format!("/refund/{id}"), "").0)
             });
+            let both = gate.out_at_once(2);
+            gate.open();
+            assert!(both, "{engine}: side by side, not one after the other");
             calls.into_iter().map(|c| c.join().unwrap()).collect()
         });
         assert_eq!(statuses, [200, 200], "{engine}");
         assert_eq!(hits_of(&hits, "/slow"), 3, "{engine}");
-        assert!(t0.elapsed() < Duration::from_millis(780), "{engine}: side by side, not one after the other: {:?}", t0.elapsed());
     }
 }
 
@@ -7416,7 +7476,7 @@ fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
 fn a_database_held_for_whole_runs_holds_across_servers() {
     for db in fresh_databases("runlock") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let servers = [server_with_database(&url), server_with_database(&url)];
         for s in &servers {
             *s.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n[limits]\nclaim_wait_ms = 3000").unwrap());
@@ -7440,15 +7500,17 @@ fn a_database_held_for_whole_runs_holds_across_servers() {
         assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
         let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
-        let t0 = std::time::Instant::now();
+        gate.shut();
         std::thread::scope(|s| {
             let calls = [0, 1].map(|i| {
                 let (server, slug) = (&servers[i], &readers[i]);
                 s.spawn(move || data_call(server, slug, "GET", "/peek", "").0)
             });
+            let both = gate.out_at_once(2);
+            gate.open();
+            assert!(both, "{engine}: readers of two servers share it, their calls out at once");
             assert_eq!(calls.map(|c| c.join().unwrap()), [200, 200], "{engine}");
         });
-        assert!(t0.elapsed() < Duration::from_millis(700), "{engine}: readers of two servers share it: {:?}", t0.elapsed());
         assert_eq!(hits_of(&hits, "/slow"), 4, "{engine}");
 
         // A writer deployed where claim_wait is 100 ms, while the other server's writer runs:
@@ -11012,18 +11074,21 @@ fn one_deployments_log_doesnt_hold_up_another() {
     let other = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon.ts"));
     let held = Arc::clone(&state.deployments.lock().unwrap()[&busy].log);
     let (holding, held_now) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     thread::scope(|s| {
-        s.spawn(|| {
+        // Held until the other's request is answered, GATE_HOLDS at most: whether the test let
+        // it go, not the time (a loaded machine takes as long as it takes, not 400 ms).
+        let holder = s.spawn(move || {
             held.with(|_| {
                 holding.send(()).unwrap();
-                thread::sleep(Duration::from_millis(800));
+                released.recv_timeout(GATE_HOLDS).is_ok()
             })
         });
         held_now.recv().unwrap();
-        let t = std::time::Instant::now();
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &other, &fake_data("GET", "/hello/Ada", vec![]));
+        let _ = release.send(());
         assert_eq!(r.status, 200);
-        assert!(t.elapsed() < Duration::from_millis(400), "{other} waited {:?} for {busy}'s log", t.elapsed());
+        assert!(holder.join().unwrap(), "{other} was answered only once {busy}'s log was let go");
     });
 }
 
