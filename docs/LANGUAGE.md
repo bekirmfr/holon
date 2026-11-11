@@ -2588,6 +2588,18 @@ its own tie, `if (first !== undefined) charged = await api.post(…)`, never by 
 else. The printer keeps each where it was written. (In a function, a call bound on a statement is
 still made when its answer is needed: F13.)
 
+What is held to its statement's conditions this way is everything a handler does, not requests
+alone: a write, a send, a log line, an action started (`payout(x)`), and a function of the flow's
+called, which is held by its trigger when it writes and entered only when the run reaches it. A
+function that writes, called in a branch (`c ? record(x) : undefined`, `kept ?? record(x)`, a
+`switch`'s case), writes only when the branch is taken. Until 2026-11-11 an action started and a
+function called weren't held: each ran on every path, after a `return` that answered included. What
+holds them now is a test, not the care of whoever adds the next kind of statement: the same handler
+is run as a flow and as JavaScript over every way a statement is reached, every kind of thing a
+handler does and requests with and without each field, and the two must do the same but for the
+rule of §5.6, which the test writes out
+(`crates/holon/src/tests/semantics.rs`, `a_handler_does_what_its_text_says`).
+
 The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
 is `select(c, a, b)`, written as a call. Being strict, it needs, and runs, both arms. It is rarely
 what a flow wants.

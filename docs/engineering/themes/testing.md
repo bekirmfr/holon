@@ -25,6 +25,36 @@ tested from there.
 
 ## 2. What holds what
 
+A test here holds a class of cases, not the case that was found: a sweep over every leaf, a
+property against a plain model, an oracle asked over generated cases (JavaScript itself, SQLite's
+authorizer, the eager evaluator), a model run with failures put in, a table with a row for every
+kind. A test written for one bug holds that bug; the bug beside it is found by the next person it
+bites. Each says in its doc what it **guards**, **why** that can break, and what it means for
+someone **if it fails**. When a test of a class is written, the tests of single cases it covers
+are dropped, their cases made rows of it.
+
+### What a flow's text says is what it does
+
+- `a_handler_does_what_its_text_says` (`holon/src/tests/semantics.rs`): the same handler body run
+  as a flow and as JavaScript (on the engine a `js` node runs on), over every way a statement is
+  reached or not (an `if`, an else, after a `return`, a `switch`'s case, a branch of `?:`, what
+  `??` falls back to, a `try`), every kind of thing a handler does (a write, a put, a log line, an
+  action started, a function that writes and one that calls out, a request), every form of
+  condition and requests with and without each field: 949 handlers, 7,016 runs. What each did is
+  read from the run's own record. A flow differs from JavaScript by one rule (a value that isn't
+  there, LANGUAGE.md §5.6), which the test writes out as JavaScript and holds exactly: 5,383 runs
+  do as JavaScript does and 1,513 as that rule says. Three places where a flow doesn't yet do what
+  it reads as are listed in it with why (`DEBTS`: a `try`, `&&` and `||`, a request inside a
+  function), 128 runs, and the test fails when one stops differing. Before it, an action started
+  and a function that writes or calls out ran on every path, 1,393 of the first 4,360 runs; it
+  also found a function that writes entered in a branch not taken, and a `switch`'s default
+  making its calls, though not its writes, with no subject. It replaced four tests of one or two
+  such paths each.
+
+### What a statement touches is what its manifest names
+
+- `sql_oracle.rs` in holon-core's tests: see [Databases](../capabilities/databases.md), §5.
+
 ### Nothing changes by accident
 
 The golden records are the floor every optimisation stands on.

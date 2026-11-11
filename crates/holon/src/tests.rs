@@ -11,6 +11,9 @@ use super::*;
 use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
+/// What a handler's text does, against what the same text does as JavaScript.
+mod semantics;
+
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
 }
@@ -5529,48 +5532,6 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
         }
     });
     (host, hits)
-}
-
-/// A call whose answer is read is made only on the path that reaches it: after a `return` that
-/// answered, or in an `if` not taken, nothing is sent, though a later statement reads the answer.
-#[test]
-fn a_call_on_a_path_not_taken_is_not_made() {
-    let (host, hits) = counting_server();
-    let state = claims_state("");
-    let text = format!(
-        r#"import {{ flow, route }} from "holon"
-import api from "host:{host}"
-
-flow("paths", {{ port: 18297 }})
-
-route.post("/early", async (req) => {{
-  if (!req.json.go) {{
-    return "stopped"
-  }}
-  const sent = await api.post("/early", {{ body: "x" }})
-  return `sent ${{sent.status}}`
-}})
-
-route.post("/branch", async (req) => {{
-  let said = "skipped"
-  if (req.json.go) {{
-    const sent = await api.post("/branch", {{ body: "x" }})
-    said = `sent ${{sent.status}}`
-  }}
-  return said
-}})
-"#
-    );
-    let slug = deploy_text(&state, &text, &host);
-    for path in ["/early", "/branch"] {
-        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":false}"#);
-        assert_eq!(status, 200, "{body}");
-        assert!(body == "stopped" || body == "skipped", "{path}: {body}");
-        assert_eq!(hits_of(&hits, path), 0, "{path}: a path not taken sends nothing");
-        let (status, body, _) = data_call(&state, &slug, "POST", path, r#"{"go":true}"#);
-        assert_eq!((status, body.as_str()), (200, "sent 200"), "{path}");
-        assert_eq!(hits_of(&hits, path), 1, "{path}: sent once, when taken");
-    }
 }
 
 /// A secret computed into something else is kept out of the log as surely as its value is: a

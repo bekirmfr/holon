@@ -1545,18 +1545,34 @@ impl<'s, 't> Reader<'s, 't> {
     /// A binding of a call that does something, made under a condition: tied to it if nothing
     /// reads the binding ([`Self::settle`]).
     fn note_call(&mut self, name: &str, value: &Expr, span: Span) {
-        if self.contains_sink(value)
+        if (self.contains_sink(value) || self.calls_function(value))
             && let Some(trigger) = self.trigger(span)
         {
             self.frame.guarded_calls.push((name.to_string(), trigger));
         }
     }
 
-    /// Whether `e` makes a call the host answers: a request, another flow's action, a send, a
-    /// write.
+    /// Whether `e` calls a function of the flow's. One whose body writes or calls is a node with
+    /// a trigger, like a leaf that does; which it is the lowering knows, where the function's body
+    /// is lowered (lower.rs `stmt`), so under a condition a call of any function is tied to the
+    /// condition, and the tie holds whatever in its body there is to hold.
+    fn calls_function(&self, e: &Expr) -> bool {
+        let mut found = false;
+        walk(&mut e.clone(), &mut |x| {
+            found |= matches!(&x.kind, ExprKind::Call { callee, .. } if matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })));
+            !matches!(x.kind, ExprKind::Lambda { .. })
+        });
+        found
+    }
+
+    /// Whether `e` makes a call the host answers: a request, an action called or started, a
+    /// send, a write.
     fn contains_sink(&self, e: &Expr) -> bool {
         let mut found = false;
         walk(&mut e.clone(), &mut |x| {
+            // An action started (`payout(x)`, read as `start`): done when the run reaches it, like
+            // a request.
+            found |= matches!(&x.kind, ExprKind::Call { callee, .. } if callee.text == "start");
             if let ExprKind::Method { receiver, method, .. } = &x.kind {
                 let m = method.text.as_str();
                 // A log line (`console.warn(…)`, read as `@log`) is a call the host answers: written only
@@ -1609,7 +1625,7 @@ impl<'s, 't> Reader<'s, 't> {
                     self.tried(value, stmts);
                     return Ok(());
                 }
-                let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
+                let after = if self.contains_sink(&value) || self.calls_function(&value) { self.trigger(at) } else { None };
                 stmts.push(Stmt { kind: StmtKind::Expr(value), span: at, after });
                 Ok(())
             }
@@ -2579,7 +2595,7 @@ impl<'s, 't> Reader<'s, 't> {
         if all.is_empty() {
             return fail(at, "a switch with a default alone is its statements: write them without it");
         }
-        let branches = cases.iter().map(|c| (Guard::Branch(if c.default { otherwise(&matched(&subject, &all, at)) } else { matched(&subject, &c.patterns, at) }), Some(c.body))).collect();
+        let branches = cases.iter().map(|c| (Guard::Branch(if c.default { no_case(&matched(&subject, &all, at)) } else { matched(&subject, &c.patterns, at) }), Some(c.body))).collect();
         let exits_before = self.frame.exits.len();
         let paths = self.branches(branches, block, stmts)?;
         for (i, (c, p)) in cases.iter().zip(&paths).enumerate() {
@@ -5540,6 +5556,12 @@ fn truthy(c: &Expr) -> Expr {
 /// `!(c ?? false)`: what holds where an `if (c)` takes its else.
 fn otherwise(c: &Expr) -> Expr {
     Expr { kind: ExprKind::Not(Box::new(truthy(c))), span: c.span }
+}
+
+/// `!c`: what holds where a `switch` takes its default. Unlike an `if`'s else, nothing where `c`
+/// is nothing: with its subject not there a switch is not there, its default with it (§6.3).
+fn no_case(c: &Expr) -> Expr {
+    Expr { kind: ExprKind::Not(Box::new(c.clone())), span: c.span }
 }
 
 /// The conditions, all of them: `a && b && …`.

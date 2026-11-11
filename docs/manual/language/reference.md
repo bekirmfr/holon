@@ -230,7 +230,7 @@ else does, an empty list or record included. A `c` with no value doesn't hold, a
 | `c ? a : b` | `a` when `c` holds, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
 | `c ? a : undefined` | `a` when `c` holds; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
-| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`" |
+| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`". Where either side has no value, the whole has none, whatever the other side is: `a \|\| b` with `a` true and `b` missing doesn't hold, where JavaScript's does (give the missing one its value first: `a \|\| (b ?? false)`) |
 | `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | comparison, of two numbers or of two texts (in UTF-16 code units, as JavaScript compares them) |
