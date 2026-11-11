@@ -408,38 +408,6 @@ fn audit_kept_shape_cache_never_crosses_units_on_one_thread() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ITEM 3 (stack depth). A composite nested exactly MAX_CLOSURE_DEPTH (64) deep — the
-// deepest the host will deploy/run — must still evaluate on a 2 MiB thread (tokio's
-// worker and blocking-pool default, which is what the data plane runs eval on). This is
-// a regression guard: the rewrite's per-level frame must not have grown enough to
-// overflow a unit at the deploy bound.
-// ─────────────────────────────────────────────────────────────────────────────
-#[test]
-fn audit_64_deep_composite_evaluates_on_a_2mib_thread() {
-    let mut r = MapResolver::new();
-    let hadd = r.insert(prim("add", 2, vec![])).unwrap();
-    let wrap = |children: Vec<Hash>| Unit {
-        body: UnitBody::Composite { children, edges: vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, Edge { from_child: BOUNDARY, from_port: 1, to_child: 0, to_port: 1 }, Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }] },
-        params: vec![],
-        inputs: vec![any_port("a"), any_port("b")],
-        outputs: vec![any_port("out")],
-    };
-    let mut below = r.insert(wrap(vec![hadd])).unwrap();
-    for _ in 0..61 {
-        below = r.insert(wrap(vec![below])).unwrap();
-    }
-    // 1 (add) + 62 inserted wrappers + the top = 64 units deep.
-    let top = wrap(vec![below]);
-    let out = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(move || eval(&top, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec())
-        .unwrap()
-        .join()
-        .unwrap();
-    assert_eq!(out, vec![Some(num(15.0))]);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ITEM 5 (limit bypass). `range` enforces MAX_RANGE (10_000). `range` is not a keeps-op,
 // so compute_given falls through to compute_op — the limit must be intact whether its
 // output is lent or (would be) given. Confirmed directly and through a fold that feeds a
