@@ -7773,7 +7773,8 @@ fn a_files_bytes_are_read_hashed_logged_and_verified() {
 
 /// A bank's deliveries (the statement-archive sample): a zip of camt.053 statements unzipped, and
 /// one statement gzipped by flate2 gunzipped, each read for its account and closing balance; each
-/// delivery archived as a zip written as bytes, a manifest beside its statements; a statement
+/// delivery archived as a zip written as bytes, a manifest beside its statements, that another
+/// tool reads (flate2 inflating each file, its checksum checked); a statement
 /// served back gzipped when the client takes it; what isn't a delivery refused; the archive kept
 /// in the log by its hash only; and the runs verify.
 #[test]
@@ -7829,10 +7830,30 @@ fn a_delivery_is_unzipped_read_and_archived_as_a_zip_written_as_bytes() {
         )
     );
 
-    // The archive: the statements as they came, and the manifest beside them.
-    let unzipped = |name: &str| match leaf("unzip", Value::Bytes(std::fs::read(archive.join(name)).unwrap())) {
-        Value::Record(files) => files,
-        other => panic!("{other:?}"),
+    // The archive, read as another tool reads a zip (each local header in turn, its file inflated
+    // and its checksum taken by flate2, not by the zip leaf): the statements as they came, and the
+    // manifest beside them.
+    let unzipped = |name: &str| {
+        let zip = std::fs::read(archive.join(name)).unwrap();
+        let u16_at = |at: usize| usize::from(u16::from_le_bytes([zip[at], zip[at + 1]]));
+        let u32_at = |at: usize| u32::from_le_bytes(zip[at..at + 4].try_into().unwrap());
+        let (mut files, mut at) = (BTreeMap::new(), 0);
+        while u32_at(at) == 0x0403_4b50 {
+            let (method, size, named, extra) = (u16_at(at + 8), u32_at(at + 18) as usize, u16_at(at + 26), u16_at(at + 28));
+            let data = &zip[at + 30 + named + extra..][..size];
+            let mut file = Vec::new();
+            match method {
+                0 => file.extend_from_slice(data),
+                8 => drop(std::io::Read::read_to_end(&mut flate2::read::DeflateDecoder::new(data), &mut file).unwrap()),
+                m => panic!("{name}: method {m}"),
+            }
+            let mut crc = flate2::Crc::new();
+            crc.update(&file);
+            assert_eq!(crc.sum(), u32_at(at + 14), "{name}: its checksum");
+            files.insert(String::from_utf8(zip[at + 30..at + 30 + named].to_vec()).unwrap(), Value::Bytes(file));
+            at += 30 + named + extra + size;
+        }
+        files
     };
     let day = unzipped("2026-11-06.zip");
     assert_eq!(day.keys().map(String::as_str).collect::<Vec<_>>(), ["de.xml", "fr.xml", "manifest.csv"]);

@@ -204,15 +204,19 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 missing asset) and `the_built_in_editor_is_served`.
 
 **End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
-labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eight
-files, 73 tests counted by listing their `test(` calls (one of which makes
-a test per eight samples); 72 pass and `atlas-notes` is skipped without `HOLON_TEST_MONGODB`
-([Resilience §4](../themes/resilience.md)), in 7.1 minutes at `9969f8b`
-([Testing](../themes/testing.md)).
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Sixteen
+files, 90 tests counted by their `test(` calls; the sweep skips `atlas-notes` and `ledger-watch`
+without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
+([Resilience §4](../themes/resilience.md), [Testing](../themes/testing.md)).
 
-- `samples.e2e.ts`: "the flows page lists every sample" (the titles read from `samples.rs`, so
-  none is left out); "samples N to M open from the flows page and deploy", through the consent
-  screen; then one test per feature, most replaying a run exactly in view mode.
+- `sweep.e2e.ts`: every sample `samples.rs` lists, with no browser: its text deployed with
+  `holon deploy` (which builds the unit the editor's Deploy builds), its port moved, a request
+  sent to it and found in its log, then removed. One test, a step a sample, about a minute; its
+  failures are listed together, each by its sample's name (as one test, it weighs as one in the
+  shards' split by count).
+- `samples.e2e.ts`: "the library lists every sample" (the titles read from `samples.rs`, so none
+  is left out); then a test per feature only the editor shows, opened from the flows page and
+  deployed through the consent screen, most replaying a run exactly in view mode.
 - `text.e2e.ts`: a mistake marked while the canvas stays, a fix driving the canvas, a node's line
   marked, completion, Format as `fmt` writes, the text saved as typed.
 - `agent.e2e.ts`: an agent proposes through `holon mcp`, a person approves in the editor.

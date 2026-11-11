@@ -12,7 +12,7 @@ named as it is in the code; search for the name.
 | wasm parity | `wasm-pack test --node crates/holon-wasm` | job `wasm-parity` | 23 under wasm, 15 native |
 | Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
 | Embedded editor | `cargo test -p holon --features embed-editor editor` | job `editor` | |
-| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | `e2e.yml`, jobs `e2e (1)` and `e2e (2)`: on main, nightly, and a pull request labelled `e2e` or a release's (`release-…`) | 72 passing, `atlas-notes` skipped without `HOLON_TEST_MONGODB` (7.1 minutes at `9969f8b`) |
+| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | `e2e.yml`, jobs `e2e (1)` and `e2e (2)`: on main, nightly, and a pull request labelled `e2e` or a release's (`release-…`) | 90 tests, one of them every sample deployed from its text (`sweep.e2e.ts`, about a minute); it skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES` |
 | VS Code extension | `xvfb-run -a npm run test:vscode` (in `editors/vscode`: `holon lsp` in a real VS Code) | job `vscode` | |
 | Golden records | inside `cargo test`; `HOLON_GOLDEN=update` rewrites them | yes | `crates/holon-author/tests/golden/eval.txt` (379 cases), `crates/holon/tests/golden/server.txt` (342 runs) |
 
@@ -43,7 +43,9 @@ The golden records are the floor every optimisation stands on.
   across the targets bit for bit. `check_hash_parity` and `check_eval_parity` check the bridge
   against the core within one target (a unit's hash as the bridge gives it and as the core
   does; a few evaluations, NaN by `is_nan`): no unit's hash is pinned as a literal. That the
-  editor's hashes are the server's is shown end to end, by every sample the editor deploys.
+  editor's hashes are the server's is shown end to end by the samples the editor's own tests
+  deploy through its Deploy (`samples.e2e.ts`); every sample's unit, built natively by
+  `holon deploy` from the same `flow_unit`, is deployed by `sweep.e2e.ts`.
 
 ### Fast paths answer as the plain ones
 
@@ -225,8 +227,10 @@ Every sample is a test ([`CLAUDE.md`](../../../CLAUDE.md)):
   `every` and `on_file` templates; its capabilities ask for nothing unknown and no `Spawn`, and
   for the secrets and optional permissions its entry names, and its `flow(…)`'s `keep` and
   `limits` are the limits the deploy asks for.
-- `editor/e2e/samples.e2e.ts`: the flows page lists every sample; each opens and deploys through
-  the real editor and server, its consent screen included.
+- `editor/e2e/sweep.e2e.ts`: each deploys from its text with `holon deploy` to the real server,
+  its port moved, and a request sent to it is found in its log; then it is removed.
+- `editor/e2e/samples.e2e.ts`: the flows page lists every sample; a sample is opened and deployed
+  through the editor, its consent screen included, only for what the editor alone shows.
 
 ## 3. Measurements, run by hand
 

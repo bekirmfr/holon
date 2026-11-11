@@ -1,8 +1,9 @@
 name: e2e
 
 # End to end: the editor in a real browser against a real `holon serve`, both started by Playwright
-# (editor/playwright.config.ts) with throwaway state. Every sample opens and deploys through the
-# consent screen; requests replay exactly in view mode. The costly suite (two self-hosted runners,
+# (editor/playwright.config.ts) with throwaway state. Every sample deploys from its text and answers
+# (sweep.e2e.ts); a sample whose feature only the editor shows opens and deploys through the consent
+# screen, its requests replayed exactly in view mode. The costly suite (two self-hosted runners,
 # a quarter of an hour), so it runs where its answer decides something, not on every push to a pull
 # request: main on every push; main every night, for what changes without a commit (the runners,
 # Chromium, the clock); a pull request labelled `e2e`, or a release's (`release-…`), on each push;

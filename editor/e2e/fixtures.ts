@@ -5,11 +5,22 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test as base, expect } from "@playwright/test";
 import { PORTS, RUN_DIR, SAMPLE_SHIFT } from "./ports.mjs";
 
 export { PORTS, RUN_DIR, SAMPLE_SHIFT };
 export const SERVER = `http://127.0.0.1:${PORTS.server}`;
+const ROOT = join(fileURLToPath(import.meta.url), "..", "..", "..");
+/** The `holon` command server.mjs built and runs the test servers from. */
+export const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(ROOT, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
+/** The samples' texts (crates/holon-author/samples) and their entries (samples.rs). */
+export const SAMPLES = join(ROOT, "crates", "holon-author", "samples");
+export const SAMPLES_RS = join(ROOT, "crates", "holon-author", "src", "samples.rs");
+/** The ports the tests' own flows take (a flow under a slug of its own), before SAMPLE_SHIFT:
+ *  in the samples' range, so a slot's ports stay its own, and in its gaps, so the sweep, which
+ *  deploys every sample on its own port moved, never finds one taken. The sweep says so first. */
+export const OWN_PORTS = { greeting: 8142, total: 8143, priceReplay: 8144, proposal: 8145, traced: 8146, ledgerWriter: 8148 } as const;
 /** The server left as installed, for the accounts tests (accounts.e2e.ts). */
 export const FRESH = `http://127.0.0.1:${PORTS.fresh}`;
 /** The editor pointed at it. */

@@ -270,7 +270,7 @@ holon-author golden` writes it afresh.
   `would_plan`). `tests/manual.rs`: `every_flow_in_the_manual_compiles`.
 
 Beyond the crate, `editor/src/samples.test.ts` builds every sample through the wasm core and
-`editor/e2e/samples.e2e.ts` deploys every one ([editor](editor.md)); CI's `native` job runs
+`editor/e2e/sweep.e2e.ts` deploys every one and sends it a request ([editor](editor.md)); CI's `native` job runs
 `holon new --sample slugs` and `holon check`. The crate had 146 tests at `5877fa0` (its commit
 message). Gaps: no test ties the editor's deploy document to `agent::plan`'s; file handlers are not
 in the golden record; no test sends a sample its `try_it`.

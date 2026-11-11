@@ -29,30 +29,6 @@ async function cliDeploy(token: string, file: string, slug: string): Promise<num
   return deployments.find((d) => d.slug === slug)?.port ?? null;
 }
 
-test("likes answers a count in a sentence: the number as text (as_text), then the words", async ({ adminToken }) => {
-  const port = await cliDeploy(adminToken, "likes.holon.ts", "likes");
-  expect(port).not.toBeNull();
-  const base = `http://127.0.0.1:${port}`;
-  const post = `e2e-${Date.now()}`;
-  expect((await fetch(`${base}/posts/${post}/like`, { method: "POST" })).status).toBe(200);
-  const shown = await fetch(`${base}/posts/${post}/likes`);
-  expect(shown.status).toBe(200);
-  expect(await shown.text()).toBe("1 likes");
-  expect(await (await fetch(`${base}/posts/${post}-never/likes`)).text()).toBe("0 likes");
-});
-
-test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ adminToken }) => {
-  const port = await cliDeploy(adminToken, "counter.holon.ts", "counter");
-  expect(port).not.toBeNull();
-  const base = `http://127.0.0.1:${port}`;
-  const hit = async () => Number((await (await fetch(`${base}/hit`)).text()).replace("hit ", ""));
-  const first = await hit();
-  expect(await hit()).toBe(first + 1);
-  const who = `e2e-${Date.now()}`;
-  expect(await (await fetch(`${base}/visits/${who}`, { method: "POST" })).text()).toBe(`visited ${who}`);
-  expect(await (await fetch(`${base}/last`)).text()).toBe(who);
-});
-
 test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ adminToken }) => {
   const orders = `http://127.0.0.1:${await cliDeploy(adminToken, "orders-api.holon.ts", "orders-api")}`;
   const refunds = `http://127.0.0.1:${await cliDeploy(adminToken, "refund-once.holon.ts", "refund-once")}`;

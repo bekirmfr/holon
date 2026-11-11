@@ -142,10 +142,11 @@ value is set for the deployment (the editor's ⚙, `holon secret set`), or once 
   `a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them`, `a_secret_is_never_sent_to_another_flow`.
 - **Samples**: `guarded-api` (sources, versions, rollback), `sign-payload` (verify with a secret),
   `stripe-to-slack`, `echoed-key`, `client-credentials`, `license-check` (where each goes),
-  `browser-key` (`SecretAnswer`), `shared-key` (the server's, capped). All deploy in
-  `samples.e2e.ts`, and each of `browser-key`, `stripe-to-slack`, `license-check`,
-  `client-credentials`, `shared-key` and `guarded-api` has a test there, as does an env secret
-  picked from `HOLON_SECRET_…` names with its dotenv file.
+  `browser-key` (`SecretAnswer`), `shared-key` (the server's, capped). All deploy and answer in
+  `sweep.e2e.ts`; `shared-key` (its refusal) and `guarded-api` (versions under ⚙) have tests in
+  `samples.e2e.ts`, as does an env secret picked from `HOLON_SECRET_…` names with its dotenv file.
+  What the approval says beside each secret is `touches.rs`'s `a_secret_s_row_says_where_it_goes`,
+  and the canvas's marks `commands.rs`'s, on these samples' texts.
 - **Gaps**: CI runs on Linux only, where the default is a key file: the OS key store (the
   default on Windows and macOS) isn't exercised there; redaction's cost with many secrets isn't
   measured.

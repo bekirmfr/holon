@@ -15,10 +15,13 @@ description, what it shows, how to try it) in `crates/holon-author/src/samples.r
 - covered by `editor/src/samples.test.ts`, which builds every sample and derives its routes
   through the real core: a sample that stops compiling fails the tests;
 - run live once (deployed, sent a request) before the commit, and the commit says so;
-- deployed by the end-to-end tests (`editor/e2e`, `npm run e2e`) through the real editor and
-  server, so a sample that stops deploying fails them. CI runs them on main, nightly, and a pull
-  request labelled `e2e` or a release's (`.github/workflows/e2e.yml`); before merging any other
-  pull request whose change they cover, run them locally or label it.
+- deployed by the end-to-end tests (`editor/e2e`, `npm run e2e`) against the real server, from
+  its text through the command line (`e2e/sweep.e2e.ts`, which builds the unit the editor's Deploy
+  builds) and sent a request, so a sample that stops deploying or answering fails them. What it
+  does is held below the browser (the golden record, a Rust test of its own); a sample gets an
+  end-to-end test of its own only for what the editor alone shows. CI runs them on main, nightly,
+  and a pull request labelled `e2e` or a release's (`.github/workflows/e2e.yml`); before merging
+  any other pull request whose change they cover, run them locally or label it.
 
 A change to an existing feature updates the samples that use it. The editor's flows page lists
 the samples; opening one starts an unsaved copy.
