@@ -94,8 +94,11 @@ export function plainText(tokens: Token[] | undefined): string {
     .join("");
 }
 
-/** Every heading anchor on a page. */
-export function anchorsOf(path: string): Set<string> {
+/** Every heading anchor on a page, read once: the pages are fixed at build time, and a page is
+ *  asked for again by every link that lands on it. */
+export function anchorsOf(path: string): ReadonlySet<string> {
+  const kept = ANCHORS.get(path);
+  if (kept) return kept;
   const slug = slugger();
   const out = new Set<string>();
   const walk = (ts: Token[]) => {
@@ -105,8 +108,11 @@ export function anchorsOf(path: string): Set<string> {
     }
   };
   walk(marked.lexer(PAGES.get(path) ?? ""));
+  ANCHORS.set(path, out);
   return out;
 }
+
+const ANCHORS = new Map<string, ReadonlySet<string>>();
 
 /** The flows on a page: its `ts` blocks, each a whole `.holon.ts` file (the manual's convention). */
 export function flowsOf(path: string): string[] {
