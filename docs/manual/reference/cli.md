@@ -176,6 +176,10 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
+Ctrl+C (or SIGTERM, or closing its console) stops it: it takes no new runs, finishes those going
+on, syncs its logs and exits. A second ctrl+c stops it at once ([Stopping
+it](server.md#stopping-it)).
+
 ## `holon deploy`
 
 ```

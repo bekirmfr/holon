@@ -118,6 +118,8 @@ pub(crate) struct FiredRun {
     pub(crate) state_after: Option<String>,
     /// The commit to its state it began after, and its own once it lands (`recorder::Commit`).
     pub(crate) commit: Option<recorder::Commit>,
+    /// It holds a stopping server's door open until it drops, after its log line (stopping.rs).
+    pub(crate) running: Option<stopping::Held>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -167,10 +169,14 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
+    // Counted before it does anything: a server stopping waits for it, or it never starts.
+    let running = stopping::run();
     // A resumed run keeps the nonce it started with: it is the same run.
     let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
     let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fire_run(root_unit, inputs, resolver, store, state, extra_sourced, permit, clock, secrets, waits, resumed, nonce)));
-    fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce))
+    let mut run = fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce));
+    run.running = Some(running);
+    run
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -840,6 +846,7 @@ fn run_attempt(
         answered: recorder::AnswerTokens(answered),
         state_after: None,
         commit: None,
+        running: None,
     };
     Attempt { run, start, overtaken }
 }
@@ -952,6 +959,8 @@ pub(crate) fn run_id_of(
 /// Its packs go out once its record is on disk (channels.rs): a strict run's, with those of every
 /// run before it, once its sync is done; a lazy one's with the next sync (`sync_logs`).
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
+    // Held while it writes, so a server stopping never cuts its line (stopping.rs).
+    let _writing = stopping::hold();
     let Some(Pushed { log, seq, level, channels, permit, folders }) = push_run(deployments, slug, entry, tokens, declared)? else {
         return Some(Logged { seq: None, kept: Ok(()) });
     };
@@ -998,6 +1007,8 @@ pub(crate) fn log_or_count(
     declared: holon_core::LogLevel,
     sends: bool,
 ) -> Option<Logged> {
+    // Held from before its run's `FiredRun` is let go (in `entry`) until its line is written.
+    let _writing = stopping::hold();
     // A run that failed with an error keeps it in its tally if it is only counted, redacted as its
     // entry would be: its entry is made first, to know what of (once: it is logged if it is).
     let mut entry = Some(entry);
@@ -1447,6 +1458,7 @@ impl FiredRun {
             answered: recorder::AnswerTokens::default(),
             state_after: None,
             commit: None,
+            running: None,
         }
     }
 }

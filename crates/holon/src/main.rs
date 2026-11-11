@@ -104,6 +104,7 @@ mod storage;
 mod summary;
 mod sweep;
 mod sealing;
+mod stopping;
 mod secret_sources;
 mod secretcmd;
 mod secrets;
@@ -311,6 +312,12 @@ impl Deployment {
     /// Fire each of its clocks on the scheduler's next pass.
     fn arm_clocks(&mut self, now: SystemTime) {
         self.clock_due = self.server.as_ref().map(|s| vec![now; s.clocks.len()]).unwrap_or_default();
+    }
+
+    /// Whether a trigger may start a run of it now: it runs, and its server (`store`'s) isn't
+    /// stopping (stopping.rs). Every trigger asks before it starts one.
+    fn takes_runs(&self, store: &SharedStore) -> bool {
+        self.life.status == Status::Running && !store.1.stopping()
     }
 }
 
@@ -1079,16 +1086,7 @@ fn serve(args: Vec<String>) {
             let mut failing = false;
             loop {
                 std::thread::sleep(recorder::SYNC_EVERY);
-                // Tallies counted since the deployments file was last written: written now.
-                // Every flag cleared, not only up to the first one set.
-                let mut counted = false;
-                for d in syncing.lock().unwrap().values_mut() {
-                    counted |= std::mem::take(&mut d.tallies_changed);
-                }
-                if counted {
-                    persist_deployments(&kept_at, &syncing);
-                }
-                match recorder::sync_logs(&syncing).and_then(|()| heads::sync()) {
+                match sync_to_disk(&syncing, &kept_at) {
                     Ok(()) if failing => {
                         println!("holon: the run logs are synced to disk again");
                         failing = false;
@@ -1157,7 +1155,38 @@ fn serve(args: Vec<String>) {
     }
     // The store's values and the folders' texts no kept run names any more are swept (storage.rs).
     storage::start(Arc::clone(&state_cell));
-    server.run();
+    // Told to stop, it finishes the runs it started and syncs them before it exits (stopping.rs).
+    stopping::install();
+    std::thread::spawn(move || server.run());
+    stopping::wait_until_told();
+    let state = state_cell.get().expect("set above");
+    state.store.1.stop();
+    println!("holon: stopping: no new runs, {} going on (ctrl+c again stops at once)", stopping::DOOR.runs());
+    stopping::drain(&stopping::DOOR, Duration::from_secs(5), |left| println!("holon: stopping: {left} run(s) still going on"));
+    match sync_to_disk(&state.deployments, &state.deployments_path) {
+        Ok(()) => {
+            println!("holon: stopped");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("holon: stopped, but {e}: the last second of runs may not be on disk");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The tallies counted since the deployments file was last written, written (every flag cleared,
+/// not only up to the first one set), then the run logs and event logs synced to disk, and the
+/// witness's queue: every second, and as the server stops.
+fn sync_to_disk(deployments: &Mutex<BTreeMap<String, Deployment>>, kept_at: &Place) -> Result<(), String> {
+    let mut counted = false;
+    for d in deployments.lock().unwrap().values_mut() {
+        counted |= std::mem::take(&mut d.tallies_changed);
+    }
+    if counted {
+        persist_deployments(kept_at, deployments);
+    }
+    recorder::sync_logs(deployments).and_then(|()| heads::sync())
 }
 
 /// Why the data folder `dir` is a warning, if it is: other users of this machine may read it
@@ -1191,6 +1220,10 @@ const MAX_IN_FLIGHT: usize = 512;
 /// signed in or not. Its body is read by a deadline (`http::BODY_DEADLINE`), so a slow one gives
 /// its place back.
 pub(crate) fn admitted(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
+    // A server stopping (stopping.rs) takes no more work: a run, a deploy, a decision.
+    if state.store.1.stopping() {
+        return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": stopping::REFUSED })).with_status_code(503).with_additional_header("Retry-After", "5"));
+    }
     let Some(_admitted) = Admitted::take(in_flight, most) else {
         return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
     };

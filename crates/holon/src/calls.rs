@@ -30,10 +30,12 @@
 use crate::*;
 
 /// How the runs of this server reach its deployments: set once, when the server starts, and kept
-/// on the store handle every run already has.
+/// on the store handle every run already has. And whether the server is stopping (stopping.rs),
+/// which every trigger reads there.
 #[derive(Default)]
 pub(crate) struct Hub {
     host: std::sync::OnceLock<Host>,
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 struct Host {
@@ -45,6 +47,15 @@ impl Hub {
     /// Let runs reach `deployments`, kept at `deployments_path`.
     pub(crate) fn connect(&self, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
         let _ = self.host.set(Host { deployments, deployments_path });
+    }
+
+    /// The server is stopping: its triggers start no more runs (`Deployment::takes_runs`).
+    pub(crate) fn stop(&self) {
+        self.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn stopping(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

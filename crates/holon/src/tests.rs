@@ -3824,6 +3824,197 @@ on.file.created(inbox, (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the run going
+/// on when it was told goes on to its end and its log line (stopping.rs).
+///
+/// **Why:** the server exits once no run goes on. A run a trigger started after it was told would
+/// keep the stop waiting, or be cut off at the exit half done: its calls made, its line never
+/// written.
+///
+/// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
+/// the exit with what it did on no record; or the run going on refused its own end.
+///
+/// Each way a run starts that a test drives without a far side is a row: a request answered on
+/// its connection's worker and one on the pool, a WebSocket opened, an action over the control
+/// plane (`admitted`), a clock, a file and a waiting run at its deadline. Before the stop each
+/// runs; after it none does, and a caller is told 503. A feed's, a queue's, a mailbox's and a
+/// socket message's runs ask `takes_runs` as the clock's and the file's do: the sweep at the end
+/// holds every file that starts runs to asking.
+#[test]
+fn a_server_told_to_stop_starts_no_run_and_finishes_the_one_going_on() {
+    use std::cell::Cell;
+    use tungstenite::client::IntoClientRequest;
+    let (host, hits, gate) = gated_counting_server();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let dir = std::env::temp_dir().join(format!("holon-stopping-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = format!(
+        r#"import {{ action, event, every, flow, on, route }} from "holon"
+import state from "state"
+import inbox from "folder:inbox"
+import api from "host:{host}"
+
+flow("stopping", {{ port: {port} }})
+
+route.get("/light/:x", (req) => `light ${{req.params.x}}`, {{ log: "unrecorded" }})
+
+route.get("/hit", () => `hit ${{++state.hits}}`)
+
+route.websocket("/hello", {{ open: () => "hello" }})
+
+export const bump = action(() => ++state.bumps)
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  state.later = (state.later ?? 0) + (go.expired ? 1 : 1)
+}})
+
+export const slow = action(async () => {{
+  const r = await api.get("/slow")
+  state.slow = r.body
+  return r.body
+}})
+
+every("1s", () => {{
+  ++state.ticks
+}})
+
+on.file.created(inbox, (f) => {{
+  ++state.files
+}})
+"#
+    );
+    assert_eq!(deploy_text_to(&state, &text, &[&host]), "stopping");
+    sync_listeners(&state);
+    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    let status = |answered: &str| answered.get(9..12).and_then(|s| s.parse::<u16>().ok()).unwrap_or_else(|| panic!("no status: {answered:?}"));
+    let shown = |key: &str| body_json(route(&state, &req("GET", "/deployments/stopping/state", vec![])))["state"][key]["value"].clone();
+    let waiting = || state.deployments.lock().unwrap()["stopping"].parked.len();
+
+    // A way a run starts: the state key its run counts (none: its answer says it ran), and how it
+    // starts, answering what its caller was told when it has one.
+    struct Row<'a> {
+        what: &'a str,
+        counts: Option<&'a str>,
+        start: &'a dyn Fn() -> Option<u16>,
+    }
+    let light = || Some(status(&get("/light/x")));
+    let hit = || Some(status(&get("/hit")));
+    let socket = || {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        match tungstenite::client(format!("ws://127.0.0.1:{port}/hello").into_client_request().unwrap(), stream) {
+            Ok(_) => Some(101),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Some(r.status().as_u16()),
+            Err(e) => panic!("{e}"),
+        }
+    };
+    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &std::sync::atomic::AtomicUsize::new(0), 1).status_code);
+    let passes = Cell::new(0u64);
+    let tick = || {
+        passes.set(passes.get() + 2);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(passes.get()));
+        None
+    };
+    let dropped = Cell::new(0u32);
+    let file = || {
+        dropped.set(dropped.get() + 1);
+        std::fs::write(dir.join(format!("f{}.txt", dropped.get())), "dropped").unwrap();
+        // New, settling; then the same, and it runs.
+        for _ in 0..2 {
+            arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        }
+        None
+    };
+    let deadline = || {
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        None
+    };
+    let rows = [
+        Row { what: "a request answered on its connection's worker", counts: None, start: &light },
+        Row { what: "a request answered on the pool", counts: Some("hits"), start: &hit },
+        Row { what: "a WebSocket opened", counts: None, start: &socket },
+        Row { what: "an action over the control plane", counts: Some("bumps"), start: &bump },
+        Row { what: "a clock", counts: Some("ticks"), start: &tick },
+        Row { what: "a file", counts: Some("files"), start: &file },
+        Row { what: "a waiting run at its deadline", counts: Some("later"), start: &deadline },
+    ];
+    let count = |row: &Row| row.counts.map_or(0.0, |key| shown(key).as_f64().unwrap_or(0.0));
+    let ran = |row: &Row, was: f64, told: Option<u16>| match row.counts {
+        Some(_) => count(row) > was,
+        None => told.is_some_and(|s| s < 300),
+    };
+
+    assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "a run waits");
+    for row in &rows {
+        let was = count(row);
+        let told = (row.start)();
+        assert!(ran(row, was, told), "{}: it runs ({told:?})", row.what);
+    }
+    let here = Mutex::new(dataplane::Here::default());
+    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "stopping", &fake_data("GET", "/light/x", vec![]), &here), "answered on the worker");
+    assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
+
+    // A run going on, its call out, as the server is told to stop.
+    gate.shut();
+    std::thread::scope(|s| {
+        let going_on = s.spawn(|| run_action_named(&state, "stopping", "slow", serde_json::json!({})));
+        let out = gate.out_at_once(1);
+        let logged = log_entries(&state, "stopping").len();
+        state.store.1.stop();
+        let refused: Vec<(&str, bool, Option<u16>)> = rows
+            .iter()
+            .map(|row| {
+                let was = count(row);
+                let told = (row.start)();
+                (row.what, ran(row, was, told), told)
+            })
+            .collect();
+        let (left_waiting, logged_after) = (waiting(), log_entries(&state, "stopping").len());
+        gate.open();
+        let answered = going_on.join().unwrap().status_code;
+        assert!(out, "its call went out");
+        for (what, ran, told) in refused {
+            assert!(!ran, "{what}: told to stop, it doesn't run");
+            assert!(told.is_none_or(|s| s == 503), "{what}: its caller is told to try again: {told:?}");
+        }
+        assert_eq!(left_waiting, 1, "the waiting run waits on");
+        assert_eq!(logged_after, logged, "no run started");
+        assert_eq!(answered, 200, "the run going on goes on to its end");
+    });
+    assert_eq!(shown("slow"), "slow");
+    assert_eq!(hits_of(&hits, "/slow"), 1);
+    let entries = log_entries(&state, "stopping");
+    assert!(entries.iter().any(|e| e["kind"] == "trigger" && e["error"].is_null() && e.to_string().contains("/slow")), "its line is written");
+
+    // Every file that starts runs asks first, but those whose runs start only where another asked.
+    let asked_elsewhere = [
+        // Where a run is fired.
+        "firing.rs",
+        // An action: over the control plane (`admitted`), or by a flow's call inside a counted run.
+        "deploy.rs",
+        // A waiting run going on: at a route (`serve_flow`), a decision (`admitted`) or its
+        // deadline (`scheduler::expire_waiting`).
+        "durable.rs",
+    ];
+    for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name == "tests.rs" || asked_elsewhere.contains(&name.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).unwrap();
+        if text.contains("fire_with_state(") {
+            assert!(text.contains(".takes_runs(") || text.contains(".stopping()"), "{name} starts runs: it asks `Deployment::takes_runs` before each, as the others do");
+        }
+    }
+    assert_eq!(route(&state, &req("POST", "/deployments/stopping/stop", vec![])).status_code, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A server deployment whose port another program holds says so on its entry, rather than looking
 /// like it answers; once the port is free, deploying again listens there and clears it.
 #[test]

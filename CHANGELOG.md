@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Ctrl+C finishes the runs going on before the server stops.** It ended the server where it
+  stood: a run half done (its calls made, its line never written), and the last second of `lazy`
+  runs and of the witness's queue unsynced. Now ctrl+c, SIGTERM or closing its console stops the
+  server taking runs (its flows' requests and the editor's are answered 503, its clocks, folders,
+  mailboxes, feeds and queues start none), lets the runs going on finish, each to its line,
+  syncs the logs and the witness's queue, and exits. A second ctrl+c stops it at once.
 - **A save that failed once no longer stops the next start.** A run kept the state it left by
   putting the values that differ from the state it began with, taking the others to be in the
   store. After a run whose save failed (a disk full for a moment), its state in place, the next

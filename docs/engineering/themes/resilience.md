@@ -26,7 +26,7 @@ entry that wasn't (a run whose line was lost was once answered 200 when the run 
 synced first; `lost`, read without the log's lock, keeps the usual case as cheap as it was).
 
 - **Limits.** A `lazy` run is on disk within `SYNC_EVERY` (one second): a power loss can lose the
-  last second of them. Requests no route took are recorded lazily (Q12). A run nobody waits for
+  last second of them (a stop syncs them first, G10). Requests no route took are recorded lazily (Q12). A run nobody waits for
   (a clock's, a file handler's, one resumed) only says its record may not be on disk yet. The
   log remembers the last 1,024 entries whose line was lost (`unkept`): one asked for after as many
   more were lost would be told it is kept, which no load reaches (a run asks as soon as it wrote).
@@ -208,6 +208,33 @@ by the syncer when they changed.
   keeps the runs in the log, so retention never loses what it was asked to move.
 - **Tests.** `the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`.
+
+### G10. A stop finishes the runs going on
+
+Told to stop (ctrl+c, SIGTERM, its console closing), `holon serve` starts no run, lets those
+going on finish, each to its log line, syncs the logs and the witness's queue, and exits
+(`stopping.rs`). It ended where it stood before: a run cut off half done, its calls made and its
+line never written, and a second of `lazy` lines unsynced.
+
+- **How.** The server's call hub says it is stopping (`calls::Hub::stop`); every trigger asks
+  `Deployment::takes_runs` before it starts a run, as it asks whether its deployment is paused,
+  and requests are answered 503 (`admitted`, `serve_flow`). A run holds a door open from
+  `fire_with_state` until its `FiredRun` drops, after its line; so do a flow's request, whole,
+  and the writing of a line, so the door is never left unheld between a run and its line. It
+  closes in the step that finds nothing holding it (`Door::close_if_empty`, one atomic word): a
+  run a trigger let through just before, arriving after, waits there for the exit and never
+  starts. A run inside a held one (a flow's call) finds the door held, so it is never shut out.
+- **Why a door.** Without it, a run that asked before the stop and started after the drain saw
+  none would be cut off by the exit. Refusing it in `fire_with_state` instead would fail it, and
+  a queue deletes a failed run's message.
+- **Limits.** A stop waits as long as the slowest run going on may take (its budget). A second
+  ctrl+c exits at once, as a power loss. A message a socket sends while it stops isn't run; a
+  waiting run's deadline that passes while it stops is delivered once it is back.
+- **Tests.** `a_server_told_to_stop_starts_no_run_and_finishes_the_one_going_on` (every way a run
+  starts that a test drives without a far side, before and after the stop, and a run with its
+  call out as it is told; and a sweep holding every file that starts runs to asking),
+  `the_door_closes_only_on_no_runs_and_a_run_is_counted_or_turned_away` (runs racing the drain),
+  `the_drain_waits_for_the_last_run_saying_how_many_are_left`.
 
 ## 3. Policy, not accident
 

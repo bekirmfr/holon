@@ -22,7 +22,7 @@ pub(crate) fn run_due_clock_ticks(
     let due: Vec<DueTick> = {
         let deployments = deployments.lock().unwrap();
         let mut due = Vec::new();
-        for (slug, dep) in deployments.iter().filter(|(_, d)| d.life.status == Status::Running) {
+        for (slug, dep) in deployments.iter().filter(|(_, d)| d.takes_runs(store)) {
             let clocks = dep.server.as_ref().map(|s| s.clocks.as_slice()).unwrap_or_default();
             for (clock, next_due) in clocks.iter().zip(&dep.clock_due) {
                 if now >= *next_due {
@@ -212,6 +212,14 @@ pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<B
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
-        durable::expire_waiting(&store, &deployments, &deployments_path, epoch_now());
+        expire_waiting(&store, &deployments, &deployments_path, epoch_now());
     });
+}
+
+/// The waiting runs past their deadlines go on, timed out (`durable::expire_waiting`), unless the
+/// server is stopping (stopping.rs): then they wait on, and time out once it is back.
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
+    if !store.1.stopping() {
+        durable::expire_waiting(store, deployments, deployments_path, now);
+    }
 }
