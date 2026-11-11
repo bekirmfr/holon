@@ -302,11 +302,11 @@ expected status and words for each caller:
 - `POST /trigger/<slug>/reset`, with and without `AgentRuns("reset")`.
 - `GET /deployments/<slug>/logs`, with and without `AgentReadsLogs`. scout, an agent holding the
   viewer role, reads them either way today (D11).
-- `POST …/runs/<id>/decide` on a run waiting at an approval:
-  - bob and `local:bma` are let through;
-  - claude, ci and nightly are refused, each with its words;
-  - so is the open server's caller.
 - `POST /deployments/<slug>/restore`, as a dry run and not: an agent's is saved as an ask (202).
+
+Deciding an approval is in part 1: the decider is asked before anything is read, so a run that
+isn't there is enough. Its row, `Deciders`, lets bob, ada and `local:bma` through, and refuses ci
+in the service's words and the open server's caller in its words; the gate refuses the rest.
 
 The owner rule is already swept by `what_one_owns_is_listed_and_its_tokens_are_theirs_to_make`.
 What an agent's changed code withholds is already covered by `mcp.rs:1615-1619`. Part 2

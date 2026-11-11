@@ -11,6 +11,8 @@ use super::*;
 use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
+mod access_table;
+
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
 }
