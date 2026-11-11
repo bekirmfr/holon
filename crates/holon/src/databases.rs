@@ -743,6 +743,26 @@ fn said(e: &rusqlite::Error, sql: &str) -> String {
     }
 }
 
+/// Binds a statement's values by each `$n`'s digits, the n-th value to `$n`: SQLite numbers named
+/// parameters in the order it meets them, so by position `$2 … $1` would take the values the
+/// other way round. As many values as the highest `$n`, as core counts them.
+fn bind(stmt: &mut rusqlite::Statement<'_>, sql: &str, params: &[Sql]) -> Result<(), String> {
+    let mut highest = 0;
+    for i in 1..=stmt.parameter_count() {
+        let Some(n) = stmt.parameter_name(i).and_then(|name| name.strip_prefix('$')?.parse::<usize>().ok()).filter(|&n| n >= 1) else {
+            return Err(format!("{sql:?}: write parameters as $1, $2, …"));
+        };
+        highest = highest.max(n);
+        if let Some(value) = params.get(n - 1) {
+            stmt.raw_bind_parameter(i, value).map_err(|e| said(&e, sql))?;
+        }
+    }
+    if highest != params.len() {
+        return Err(format!("{sql:?} takes {highest} parameters, not {}", params.len()));
+    }
+    Ok(())
+}
+
 fn busy(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
 }
@@ -800,7 +820,8 @@ fn select(conn: &Connection, sql: &str, params: &[Value], until: Instant, g: &mu
             return Err(format!("{sql:?} writes: a query reads"));
         }
         let names: Vec<String> = stmt.column_names().into_iter().map(str::to_string).collect();
-        let mut found = stmt.query(rusqlite::params_from_iter(params.iter())).map_err(|e| said(&e, sql))?;
+        bind(&mut stmt, sql, &params)?;
+        let mut found = stmt.raw_query();
         while let Some(row) = found.next().map_err(|e| said(&e, sql))? {
             let mut record = BTreeMap::new();
             for (i, name) in names.iter().enumerate() {
@@ -1057,7 +1078,12 @@ pub(crate) fn commit<T>(
                     let applied = statement_of(&w.name, exec, permit).and_then(|(sql, params, expect)| {
                         let params: Vec<Sql> = params.iter().map(param).collect::<Result<_, _>>().map_err(|why| format!("{WRITE_FAILED}{why}"))?;
                         let until = Instant::now() + lim.db_statement;
-                        let changed = timed(conn, until, |conn| conn.execute(sql, rusqlite::params_from_iter(params.iter()))).map_err(|e| format!("{WRITE_FAILED}{}", said(&e, sql)))?;
+                        let changed = timed(conn, until, |conn| {
+                            let mut stmt = conn.prepare(sql).map_err(|e| said(&e, sql))?;
+                            bind(&mut stmt, sql, &params)?;
+                            stmt.raw_execute().map_err(|e| said(&e, sql))
+                        })
+                        .map_err(|e| format!("{WRITE_FAILED}{e}"))?;
                         met(sql, changed as u64, expect)
                     });
                     if let Err(e) = applied {

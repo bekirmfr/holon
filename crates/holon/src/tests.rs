@@ -6685,6 +6685,68 @@ fn orders_api_runs_on_postgres_and_mysql_as_on_sqlite() {
     }
 }
 
+/// A statement's `$n` is the n-th value after it, whatever order its SQL names them in and however
+/// often, in a read, an insert and an update, on SQLite and on every engine the environment names.
+///
+/// Guards: how each engine binds a flow's values to its SQL: SQLite by each `$n`'s digits,
+/// Postgres as it numbers them itself, MySQL through `sql::positional`.
+/// Why: SQLite numbers named parameters as it meets them, not by their digits, so `$2 … $1` took
+/// the values the other way round, while the claims, read by the digits, named the row the flow
+/// meant.
+/// If it fails: a write lands on another row than the flow names, or on none, and a read answers
+/// with another row's values.
+#[test]
+fn a_statements_dollar_n_is_its_nth_value_on_every_engine() {
+    const ORDERS: [[usize; 3]; 6] = [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]];
+    // For each order: an insert names a, b, c by it; a read by the next, one of them twice; an
+    // update by the one after.
+    let mut text = String::from("import { flow, route, status } from \"holon\"\nimport shop from \"database:shop\"\n\nflow(\"numbered\", { port: 8197 })\n");
+    for (k, [ia, ib, ic]) in ORDERS.into_iter().enumerate() {
+        let [sa, sb, sc] = ORDERS[(k + 1) % 6];
+        let [ua, ub, uc] = ORDERS[(k + 2) % 6];
+        text += &format!(
+            "\nroute.post(\"/put/{k}\", (req) => {{\n  shop.exec(\"insert into t (a, b, c) values (${ia}, ${ib}, ${ic})\", req.json.v[0], req.json.v[1], req.json.v[2])\n  return status(201, {{ put: true }})\n}})\n\
+             route.post(\"/get/{k}\", (req) => shop.one(\"select a, b, c from t where b = ${sb} and c = ${sc} and a = ${sa} and ${sa} = a\", req.json.v[0], req.json.v[1], req.json.v[2]))\n\
+             route.post(\"/set/{k}\", (req) => {{\n  shop.exec(\"update t set b = ${ub} where a = ${ua} and c = ${uc}\", req.json.v[0], req.json.v[1], req.json.v[2], {{ expect: 1 }})\n  return {{ set: true }}\n}})\n"
+        );
+    }
+    // The values in the order a statement names a, b and c by: the value for $n n-th.
+    let values = |[pa, pb, pc]: [usize; 3], [a, b, c]: [&str; 3]| {
+        let mut v = [""; 3];
+        (v[pa - 1], v[pb - 1], v[pc - 1]) = (a, b, c);
+        serde_json::json!({ "v": v }).to_string()
+    };
+    let schema = "create table t (a varchar(16) not null, b varchar(16) not null, c varchar(16) not null)";
+    let check = |engine: &str, state: &AppState| {
+        let slug = deploy_text(state, &text, "");
+        for (k, order) in ORDERS.into_iter().enumerate() {
+            let (a, b, c, b2) = (format!("a{k}"), format!("b{k}"), format!("c{k}"), format!("B{k}"));
+            let row = |b: &str| serde_json::json!({ "a": a, "b": b, "c": c });
+            let call = |path: &str, order: [usize; 3], b: &str| data_call(state, &slug, "POST", &format!("/{path}/{k}"), &values(order, [&a, b, &c]));
+            let (status, said, _) = call("put", order, &b);
+            assert_eq!(status, 201, "{engine}, {order:?}: {said}");
+            let (status, said, _) = call("get", ORDERS[(k + 1) % 6], &b);
+            assert_eq!((status, serde_json::from_str::<serde_json::Value>(&said).ok()), (200, Some(row(&b))), "{engine}: inserted by {order:?}, read by {:?}", ORDERS[(k + 1) % 6]);
+            let (status, said, _) = call("set", ORDERS[(k + 2) % 6], &b2);
+            assert_eq!(status, 200, "{engine}: updated by {:?}: {said}", ORDERS[(k + 2) % 6]);
+            let (_, said, _) = call("get", ORDERS[(k + 1) % 6], &b2);
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&said).ok(), Some(row(&b2)), "{engine}: after the update by {:?}", ORDERS[(k + 2) % 6]);
+        }
+    };
+    let dir = std::env::temp_dir().join(format!("holon-numbered-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = claims_state("");
+    let body = serde_json::json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    check("sqlite", &state);
+    for db in fresh_databases("numbered") {
+        let state = server_with_database(&db.url);
+        assert_eq!(bind_shop(&state, Some(schema)).status_code, 200, "{}", db.engine);
+        check(db.engine, &state);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two servers on one Postgres (or MySQL), each running refund-once, refund one order at the same
 /// moment: their own tables of claims can't see each other's, the database can. The first to call
 /// out holds the order's row there until it commits, so the payment API is called once; the

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **In SQLite, `$2` is the second value wherever it comes in the statement.** SQLite numbers
+  parameters by where each first appears, so `UPDATE t SET v = $2 WHERE id = $1` set `v` to the
+  id and looked for the row by the value: the wrong row changed, or none. Now each `$n` is bound
+  by its name, on every engine alike.
 - **A public key is never taken for a shared secret.** `jwt_verify` read a PEM key only when its
   text began with `-----BEGIN`: the same key after a byte-order mark, a blank line or a line of
   explanation, given as bytes, as a DER key, or as a JWK's JSON text was taken as an HMAC secret,
