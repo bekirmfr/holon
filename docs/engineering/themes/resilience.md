@@ -27,9 +27,14 @@ synced first; `lost`, read without the log's lock, keeps the usual case as cheap
 
 - **Limits.** A `lazy` run is on disk within `SYNC_EVERY` (one second): a power loss can lose the
   last second of them. Requests no route took are recorded lazily (Q12). A run nobody waits for
-  (a clock's, a file handler's, one resumed) only says its record may not be on disk yet.
+  (a clock's, a file handler's, one resumed) only says its record may not be on disk yet. The
+  log remembers the last 1,024 entries whose line was lost (`unkept`): one asked for after as many
+  more were lost would be told it is kept, which no load reaches (a run asks as soon as it wrote).
 - **Tests.** `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`,
-  `one_sync_covers_every_entry_written_before_it`,
+  `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model: entries
+  written, some writes failing, asked for in drawn orders and by runs side by side; each is told
+  what its own write did, and the file holds the lines told kept and no other),
+  `one_sync_covers_every_entry_written_before_it` (the economy of it: one sync a batch),
   `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty`.
 
 ### G2. A deployment can't slow another

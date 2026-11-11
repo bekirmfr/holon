@@ -518,6 +518,9 @@ pub struct Log {
     /// The seqs of the recent entries whose line couldn't be written to the file, so a strict run
     /// isn't told its record is on disk (`LogCell::sync_through`). The newest few.
     unkept: VecDeque<u64>,
+    /// A test's: the next lines' writes fail, as a full disk fails them.
+    #[cfg(test)]
+    fail_writes: bool,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
@@ -1255,6 +1258,8 @@ impl Log {
             file_len: 0,
             dirty: false,
             unkept: VecDeque::new(),
+            #[cfg(test)]
+            fail_writes: false,
             gone: Vec::new(),
             defer_cuts: false,
             cut_wanted: false,
@@ -1572,6 +1577,10 @@ impl Log {
     /// file cut back to what it keeps.
     fn keep_line(&mut self, line: &str, mut at: LineAt) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
+        #[cfg(test)]
+        if self.fail_writes {
+            return Err(std::io::Error::other("a write a test failed"));
+        }
         if self.handle.is_none()
             && let Some(dir) = path.parent()
         {
@@ -2861,10 +2870,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// One sync covers every entry written before it (C2 e, group commit): a run whose entry an
-    /// earlier sync covered returns without one of its own, and a sync with nothing new written
-    /// syncs nothing. An entry whose line couldn't be written isn't said to be kept, even once a
-    /// sync after it succeeds.
+    /// **Guards:** one sync covers every entry written before it (C2 e, group commit): a run whose
+    /// entry an earlier sync covered returns without one of its own, and a sync with nothing new
+    /// written syncs nothing.
+    ///
+    /// **Why:** a sync is the dearest thing on a strict run's path, and runs side by side would
+    /// each pay one for the same bytes.
+    ///
+    /// **If it fails:** nothing is lost, and strict runs under load answer several times slower
+    /// (a sync each). Whether a run is told the truth about its own record is the test below's.
     #[test]
     fn one_sync_covers_every_entry_written_before_it() {
         let dir = temp_dir("group-commit");
@@ -2894,32 +2908,113 @@ mod tests {
         });
         assert!(cell.syncs() <= 2 + 32, "{}", cell.syncs());
         assert_eq!(cell.with(Log::take_dirty), None, "every entry is on disk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // A line that couldn't be written: a folder where the file was.
+    /// **Guards:** a run is told its record is on disk exactly when its line is in the file,
+    /// whichever writes fail and in whatever order the runs that share a sync ask
+    /// (docs/engineering/themes/resilience.md, G1).
+    ///
+    /// **Why:** runs share syncs. Whether a sync has passed a run's entry and whether that entry's
+    /// line was ever written are two facts, and a run needs both; they were once taken for one,
+    /// in the one order where it mattered (a run whose line was lost, asking after the next run
+    /// had synced).
+    ///
+    /// **If it fails:** a run answers its caller as done with nothing on record, the one thing a
+    /// strict run promises not to do (a payout made and no line of it); or it answers 500 for a
+    /// run that is on record, and its caller sends it again.
+    ///
+    /// A model, not a case: entries are written, some of their writes failing (`fail_writes`, as
+    /// a full disk fails one), and asked for in an order that is drawn, then by runs side by
+    /// side. Each is told what its own write did, and at the end the file holds the lines of
+    /// those told kept and no other.
+    #[test]
+    fn a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, m: usize) -> usize {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 % m as u64) as usize
+            }
+        }
+        // An entry written, its write failing when `fail`: its seq.
+        let write = |cell: &LogCell, fail: bool| {
+            cell.with(|log| {
+                log.fail_writes = fail;
+                let seq = log.push(entry());
+                log.fail_writes = false;
+                seq
+            })
+        };
+        let on_disk = |file: &Path| -> BTreeSet<u64> {
+            std::fs::read_to_string(file).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["seq"].as_u64().unwrap()).collect()
+        };
+
+        // One after another, in every order a schedule draws: written, and asked for later, or at
+        // once, or after others written since have been asked for.
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let (mut lost, mut covered_first) = (0, 0);
+        for round in 0..60 {
+            let dir = temp_dir(&format!("kept-{round}"));
+            let file = dir.join("slug.jsonl");
+            let cell = LogCell::new(Log::open_keeping(Some(file.clone()), 100_000));
+            let (mut waiting, mut kept): (Vec<(u64, bool)>, BTreeSet<u64>) = (Vec::new(), BTreeSet::new());
+            let mut ask = |cell: &LogCell, (seq, failed): (u64, bool), kept: &mut BTreeSet<u64>| {
+                // The order that was wrong: its line lost, and a sync already past its seq.
+                covered_first += usize::from(failed && cell.synced() > seq);
+                let told = cell.sync_through(seq);
+                assert_eq!(told.is_err(), failed, "round {round}, entry {seq}: told {told:?}");
+                if !failed {
+                    kept.insert(seq);
+                }
+            };
+            for _ in 0..120 {
+                if waiting.is_empty() || rng.below(3) > 0 {
+                    let fail = rng.below(5) == 0;
+                    lost += usize::from(fail);
+                    waiting.push((write(&cell, fail), fail));
+                } else {
+                    let next = waiting.swap_remove(rng.below(waiting.len()));
+                    ask(&cell, next, &mut kept);
+                }
+            }
+            for next in std::mem::take(&mut waiting) {
+                ask(&cell, next, &mut kept);
+            }
+            assert_eq!(on_disk(&file), kept, "round {round}: the file holds the lines told kept, and no other");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(lost > 500 && covered_first > 100, "{lost} writes failed, {covered_first} of them asked for after a sync had passed them");
+
+        // Side by side: each run writes and asks at once, as a strict run does.
+        let dir = temp_dir("kept-together");
         let file = dir.join("slug.jsonl");
-        cell.with(|log| log.handle = None);
-        std::fs::remove_file(&file).unwrap();
-        std::fs::create_dir(&file).unwrap();
-        let lost = cell.with(|log| log.push(entry()));
-        std::fs::remove_dir(&file).unwrap();
-        let kept = cell.with(|log| log.push(entry()));
-        let said = cell.sync_through(lost).unwrap_err();
-        assert!(said.contains(&format!("entry {lost}")), "{said}");
-        assert_eq!(cell.sync_through(kept), Ok(()), "the next one, written, is kept");
-
-        // The same, the run after it asking first: its sync covers every seq so far, the lost
-        // one's among them, and the run whose line was lost is still not told it is on disk
-        // (it once was, when another run's sync had passed its seq: it answered with no record).
-        cell.with(|log| log.handle = None);
-        std::fs::remove_file(&file).unwrap();
-        std::fs::create_dir(&file).unwrap();
-        let lost = cell.with(|log| log.push(entry()));
-        std::fs::remove_dir(&file).unwrap();
-        let kept = cell.with(|log| log.push(entry()));
-        assert_eq!(cell.sync_through(kept), Ok(()));
-        assert!(cell.synced() > lost, "the sync covered the lost entry's seq");
-        let said = cell.sync_through(lost).unwrap_err();
-        assert!(said.contains(&format!("entry {lost}")), "{said}");
+        let cell = LogCell::new(Log::open_keeping(Some(file.clone()), 100_000));
+        let kept: BTreeSet<u64> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..8u64)
+                .map(|t| {
+                    let (cell, write) = (&cell, &write);
+                    s.spawn(move || {
+                        let mut rng = Rng(0x2545_f491_4f6c_dd1d ^ (t + 1));
+                        let mut kept = Vec::new();
+                        for _ in 0..150 {
+                            let fail = rng.below(4) == 0;
+                            let seq = write(cell, fail);
+                            let told = cell.sync_through(seq);
+                            assert_eq!(told.is_err(), fail, "entry {seq}: told {told:?}");
+                            if !fail {
+                                kept.push(seq);
+                            }
+                        }
+                        kept
+                    })
+                })
+                .collect();
+            runs.into_iter().flat_map(|r| r.join().unwrap()).collect()
+        });
+        assert_eq!(on_disk(&file), kept, "side by side: the file holds the lines told kept, and no other");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
