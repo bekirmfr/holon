@@ -2207,7 +2207,13 @@ mod tests {
         let connect = || -> Result<Box<dyn Api>, String> { Ok(Box::new(Undecided)) };
         let (tx, rx) = mpsc::channel::<String>();
         let said = Said::default();
-        let lines = |said: &Said| -> Vec<Value> { String::from_utf8(said.0.lock().unwrap().clone()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect() };
+        // The lines `serve` has finished: `writeln!` hands a line to the writer in pieces, and the
+        // test reads while it writes, so what follows the last newline may be half a message.
+        let lines = |said: &Said| -> Vec<Value> {
+            let said = said.0.lock().unwrap().clone();
+            let whole = said.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            String::from_utf8(said[..whole].to_vec()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+        };
         let until = |said: &Said, what: &str, found: &dyn Fn(&Value) -> bool| {
             let by = std::time::Instant::now() + Duration::from_secs(6);
             while std::time::Instant::now() < by {

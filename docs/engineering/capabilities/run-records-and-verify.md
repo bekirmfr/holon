@@ -50,6 +50,17 @@ entry whose `prev` isn't the line before it (changed, removed or inserted outsid
 chain (no `prev`) check only once one with a `prev` has been seen. A line half-written by a crash
 is skipped (`Log::cut`).
 
+A line that couldn't be written (a full disk) leaves the chain where it was: `head` moves, and the
+witness is sent a head, only once a line is in the file. The next line written follows the last
+one that was and says from which run on the lines before it were lost (`lost_since`), so a lost
+run reads as lost, not as a break: `verify` lists it as not in the file, and the run after it
+isn't checked where it began, as the lost run may have left its state. Lines lost just before a
+restart are said by nothing, as a crash's are, and their seqs are given again. Seqs are otherwise
+one after another (a cut-back drops only the oldest), so `verify` reports runs missing between two
+lines that no `lost_since` covers as **gaps** (`Report::gaps`), a failure: runs removed and the
+lines after them chained again. A removal chained again with a `lost_since` saying it reads as a
+loss; only a witnessed head, no longer found, tells it.
+
 ### Keeping and cutting back
 
 A log keeps the newest `keep_runs` runs (default `DEFAULT_KEEP`, 500, or the host's

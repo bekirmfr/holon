@@ -8,3 +8,6 @@ wasm
 # Playwright: test results and reports
 test-results
 playwright-report
+
+# TypeScript's incremental build records (`tsc -b`): rebuilt by every build
+*.tsbuildinfo

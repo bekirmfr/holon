@@ -15,8 +15,8 @@ use holon_core::{interface_of, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
-use crate::builder::{FlowBuilder, FlowDocument, Holon, HolonPort, Requirements, Settings};
-use crate::canvas::next_port_name;
+use crate::builder::{call_port, FlowBuilder, FlowDocument, Holon, HolonPort, Requirements, Settings};
+use crate::canvas::{next_port_name, PlacedBody};
 use crate::templates;
 use crate::wire::{WParam, WPort, WType};
 
@@ -262,6 +262,13 @@ struct Frame {
     branches: usize,
     /// The calls placed in a branch: made only when the branch needs them, so left untied.
     in_branches: HashSet<String>,
+    /// The functions with a trigger placed in a branch, in order: a call is made when its answer
+    /// is needed, but a function that writes hands its writes to its block whatever reads its
+    /// answer, so its trigger is what holds it to its branch (`branch_ties`).
+    branch_fns: Vec<String>,
+    /// For each of those, a value there only when every branch around it is taken: its trigger
+    /// is tied to its statement's or its block's only then (`tie`).
+    branch_ties: HashMap<String, Val>,
     /// The types its inputs are known to have, by port: a function's, as its ports are written,
     /// and the values a function takes from around it, as they were known there.
     types: HashMap<String, WType>,
@@ -279,6 +286,8 @@ impl Frame {
             created: vec![],
             branches: 0,
             in_branches: HashSet::new(),
+            branch_fns: vec![],
+            branch_ties: HashMap::new(),
             types: HashMap::new(),
         }
     }
@@ -332,6 +341,8 @@ struct Lowerer<'a> {
     names: BTreeMap<String, String>,
     spans: BTreeMap<String, Span>,
     lambdas: usize,
+    /// How many calls of a function have been placed: whether a statement placed one (`stmt`).
+    placed: usize,
     /// Each route's request node, the nodes its handler placed, and its head's span: a route is
     /// everything wired to its request, so a node left unwired to it would silently fall out.
     routes: Vec<(String, Vec<String>, Span)>,
@@ -401,6 +412,7 @@ impl<'a> Lowerer<'a> {
             names: BTreeMap::new(),
             spans: BTreeMap::new(),
             lambdas: 0,
+            placed: 0,
             routes: vec![],
             ticks: vec![],
             socket: false,
@@ -645,6 +657,47 @@ impl<'a> Lowerer<'a> {
         v
     }
 
+    /// The functions placed in a branch since `since` are entered only where `cond` holds: each
+    /// one's tie is there only then, and only where the branches inside this one were taken too.
+    fn taken_when(&mut self, since: usize, cond: &Val, span: Span) -> R<()> {
+        let until = self.cur().branch_fns.len();
+        self.taken_between(since, until, cond, span)
+    }
+
+    /// The same for the functions placed from `since` to `until`: a branch's, where its condition
+    /// is lowered after it and places functions of its own (`when`), which aren't in the branch.
+    fn taken_between(&mut self, since: usize, until: usize, cond: &Val, span: Span) -> R<()> {
+        let placed: Vec<String> = self.cur().branch_fns[since..until].to_vec();
+        for id in placed {
+            let inner = self.cur().branch_ties.get(&id).cloned().unwrap_or_else(|| cond.clone());
+            let tie = self.node_with("guard", &[], &[("cond", cond.clone()), ("value", inner)], span)?;
+            self.frame().branch_ties.insert(id, tie);
+        }
+        Ok(())
+    }
+
+    /// The same for what `a ?? …` falls back to: taken where `a` has no value. `a === a` is
+    /// true of a value and nothing of none, so its `!`, or `true` in its place, says which.
+    fn taken_without(&mut self, since: usize, a: &Val, span: Span) -> R<()> {
+        if self.cur().branch_fns.len() == since {
+            return Ok(());
+        }
+        let there = self.node_with("equals", &[], &[("a", a.clone()), ("b", a.clone())], span)?;
+        let not_there = self.node_with("not", &[], &[("v", there)], span)?;
+        let missing = self.node_with("default", &[("value".into(), "true".into()), ("type".into(), "Boolean".into())], &[("value", not_there)], span)?;
+        self.taken_when(since, &missing, span)
+    }
+
+    /// Tie node `id`'s trigger to `v`: for a function placed in a branch, only where the branch
+    /// is taken (`branch_ties`).
+    fn tie(&mut self, v: &Val, id: &str, span: Span) -> R<()> {
+        let v = match self.cur().branch_ties.get(id).cloned() {
+            Some(taken) => self.node_with("guard", &[], &[("cond", taken), ("value", v.clone())], span)?,
+            None => v.clone(),
+        };
+        self.connect(&v, id, TRIGGER, span)
+    }
+
     fn out(&self, id: &str) -> Val {
         let outputs = self.b.data(id).map(|d| d.outputs.clone()).unwrap_or_default();
         Val::Out { id: id.into(), outputs, port: 0, explicit: false }
@@ -652,13 +705,14 @@ impl<'a> Lowerer<'a> {
 
     /// `v` read whole. A function placed with several value outputs (one returning `{ a, b }`,
     /// which lowers to one output per key) is the record of them, as JavaScript reads what such a
-    /// function gives; its effects stay outputs of their own. One output, one picked by `.name`,
-    /// or a template's first (a route's request) is itself.
+    /// function gives; its effects and its calls' answers stay outputs of their own. One output,
+    /// one picked by `.name`, or a template's first (a route's request) is itself.
     fn whole(&mut self, v: Val, span: Span) -> R<Val> {
         let Val::Out { id, outputs, explicit: false, .. } = &v else { return Ok(v) };
-        let placed = self.b.data(id).is_some_and(|d| matches!(d.body, crate::canvas::PlacedBody::Composite { .. }));
-        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect).collect();
-        if !placed || values.len() < 2 {
+        let Some(PlacedBody::Composite { hash }) = self.b.data(id).map(|d| &d.body) else { return Ok(v) };
+        let calls = self.b.call_outputs_of(hash);
+        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect && !calls.contains(&outputs[k].name)).collect();
+        if values.len() < 2 {
             return Ok(v);
         }
         let (id, outputs) = (id.clone(), outputs.clone());
@@ -833,17 +887,52 @@ impl<'a> Lowerer<'a> {
     /// block's trigger when the block ends (`route`, `holon`).
     fn stmt(&mut self, s: &'a Stmt) -> R<()> {
         let Some(after) = &s.after else { return self.stmt_kind(s) };
-        let before = self.cur().created.len();
+        let (before, functions) = (self.cur().created.len(), self.placed);
         self.stmt_kind(s)?;
         let placed: Vec<String> = self.cur().created[before..].to_vec();
+        // A call made in a branch of the value bound (`v ?? (await api.get(…)).body`, `c ? ping(x)
+        // : undefined`) is made when the value needs it, so the value is held to `after`: where
+        // `after` doesn't hold it isn't needed, and the call isn't made.
+        let held = match &s.kind {
+            StmtKind::Bind { name, .. } if placed.iter().any(|id| self.cur().in_branches.contains(id)) => Some(name),
+            _ => None,
+        };
         let sinks: Vec<String> = placed.into_iter().filter(|id| self.untied(id)).collect();
-        if sinks.is_empty() {
+        if sinks.is_empty() && held.is_none() {
+            // A call of a function is tied whatever the function is (ts.rs `calls_function`): one
+            // that only computes has no trigger, and nothing to hold back.
+            if self.placed > functions {
+                return Ok(());
+            }
             return err(after.span, "`after` ties a write or a call to what it names: this statement makes none");
         }
         let v = self.expr(after)?;
         for id in &sinks {
-            self.connect(&v, id, TRIGGER, after.span)?;
+            self.tie(&v, id, after.span)?;
         }
+        if let Some(name) = held {
+            self.hold(name, v, after.span)?;
+        }
+        Ok(())
+    }
+
+    /// The name `name` bound to its value `when` `cond`: a guard, which runs the value only where
+    /// `cond` holds. The guard takes the name.
+    fn hold(&mut self, name: &Name, cond: Val, span: Span) -> R<()> {
+        let value = self.cur().env.get(&name.text).cloned().expect("bound by the statement");
+        let held = self.node_with("guard", &[], &[("cond", cond), ("value", value.clone())], span)?;
+        if let (Val::Out { id: inner, .. }, Val::Out { id, .. }) = (&value, &held)
+            && self.names.get(inner) == Some(&name.text)
+        {
+            self.names.remove(inner);
+            self.names.insert(id.clone(), name.text.clone());
+        }
+        if let FrameKind::Holon { bound, .. } = &mut self.frame().kind
+            && let Some(b) = bound.get_mut(&name.text)
+        {
+            b.0 = held.clone();
+        }
+        self.frame().env.insert(name.text.clone(), held);
         Ok(())
     }
 
@@ -860,7 +949,7 @@ impl<'a> Lowerer<'a> {
     fn tie_block(&mut self, v: &Val, span: Span) -> R<bool> {
         let untied: Vec<String> = self.cur().created.iter().filter(|id| self.untied(id)).cloned().collect();
         for id in &untied {
-            self.connect(v, id, TRIGGER, span)?;
+            self.tie(v, id, span)?;
         }
         Ok(!untied.is_empty())
     }
@@ -1656,6 +1745,46 @@ impl<'a> Lowerer<'a> {
                 wiring_out.push((id.clone(), output, pname.clone()));
                 outputs.push(HolonPort { name: pname, unit: None });
             }
+            // So do the effects nothing in it reads: a function it places whose writes it doesn't
+            // return, or a write bound and not used. A handler's group exposes them by the IR's
+            // rule (§5.10); a holon's boundary names them, after the port they left their own by.
+            for (id, output) in self.b.unread_effects() {
+                if wiring_out.iter().any(|(node, out, _)| *node == id && *out == output) {
+                    continue;
+                }
+                let mut pname = output.clone();
+                let mut n = 1;
+                while outputs.iter().any(|o| o.name == pname) || def.inputs.iter().any(|i| i.name.text == pname) {
+                    n += 1;
+                    pname = format!("{output}_{n}");
+                }
+                wiring_out.push((id, output, pname.clone()));
+                outputs.push(HolonPort { name: pname, unit: None });
+            }
+            // And the answers of the calls tied to its trigger, read or not: a call is made when
+            // the run reaches its statement, whatever reads its answer. A handler's group exposes
+            // them by the IR's rule (core's `default_spec`); a holon's boundary names them, so
+            // it is entered for them even where nothing reads what it returns. One made in a
+            // branch is left untied, and made when the branch needs it.
+            for id in &frame.created {
+                let Some(d) = self.b.data(id) else { continue };
+                let answers: Vec<String> = match &d.body {
+                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) => {
+                        let tied = self.b.is_wired(id, TRIGGER) || wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER);
+                        if tied { d.outputs.iter().map(|o| o.name.clone()).collect() } else { vec![] }
+                    }
+                    PlacedBody::Composite { hash } => self.b.call_outputs_of(hash),
+                    _ => vec![],
+                };
+                for output in answers {
+                    if wiring_out.iter().any(|(node, out, _)| node == id && *out == output) {
+                        continue;
+                    }
+                    let pname = call_port(|n| outputs.iter().any(|o| o.name == n) || def.inputs.iter().any(|i| i.name.text == n));
+                    wiring_out.push((id.clone(), output, pname.clone()));
+                    outputs.push(HolonPort { name: pname, unit: None });
+                }
+            }
             let mut inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
             if implicit_trigger {
                 inputs.push(HolonPort { name: TRIGGER.into(), unit: None });
@@ -1776,6 +1905,10 @@ impl<'a> Lowerer<'a> {
             })
             .collect::<R<_>>()?;
         let id = self.b.place(&h, None);
+        self.placed += 1;
+        if self.cur().branches > 0 && h.inputs.iter().any(|p| p.name == TRIGGER) {
+            self.frame().branch_fns.push(id.clone());
+        }
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());
         for (port, v) in &vals {
@@ -1946,12 +2079,16 @@ impl<'a> Lowerer<'a> {
             // `undefined`, instead of falling to `b`; and `c` absent takes the else, as `if` does.
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond)?;
+                let since = self.cur().branch_fns.len();
                 let t = self.branch(then)?;
+                self.taken_when(since, &c, then.span)?;
                 let guarded = self.node_with("guard", &[], &[("cond", c.clone()), ("value", t)], e.span)?;
                 let Some(b) = els else { return Ok(guarded) };
                 let held = self.node_with("default", &[("value".into(), "false".into()), ("type".into(), "Boolean".into())], &[("value", c)], cond.span)?;
                 let otherwise = self.node_with("not", &[], &[("v", held)], cond.span)?;
+                let since = self.cur().branch_fns.len();
                 let v = self.branch(b)?;
+                self.taken_when(since, &otherwise, b.span)?;
                 let taken = self.node_with("guard", &[], &[("cond", otherwise), ("value", v)], b.span)?;
                 self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
@@ -2042,8 +2179,11 @@ impl<'a> Lowerer<'a> {
     fn binary(&mut self, op: BinOp, lhs: &'a Expr, rhs: &'a Expr, span: Span) -> R<Val> {
         match op {
             BinOp::When => {
+                let since = self.cur().branch_fns.len();
                 let v = self.branch(lhs)?;
+                let until = self.cur().branch_fns.len();
                 let c = self.expr(rhs)?;
+                self.taken_between(since, until, &c, span)?;
                 self.node_with("guard", &[], &[("cond", c), ("value", v)], span)
             }
             BinOp::Coalesce => {
@@ -2098,8 +2238,28 @@ impl<'a> Lowerer<'a> {
                     _ => "or",
                 };
                 let mut vals = Vec::new();
-                for o in &operands {
-                    vals.push(self.expr(o)?);
+                for (i, o) in operands.iter().enumerate() {
+                    if i == 0 || !matches!(op, BinOp::And | BinOp::Or) {
+                        vals.push(self.expr(o)?);
+                        continue;
+                    }
+                    // `&&` and `||` read their operands in order and stop at the one that decides
+                    // (core's `choose`): each after the first is a branch, run only while those
+                    // before it are all true (`&&`) or all false (`||`).
+                    let since = self.cur().branch_fns.len();
+                    let v = self.branch(o)?;
+                    if self.cur().branch_fns.len() > since {
+                        let before = if i == 1 {
+                            vals[0].clone()
+                        } else {
+                            let ports = Self::variadic_ports(&[WPort::new("a", WType::Boolean), WPort::new("b", WType::Boolean)], i);
+                            let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals.iter().cloned()).collect();
+                            self.node_with(leaf, &[], &inputs, o.span)?
+                        };
+                        let reached = if op == BinOp::And { before } else { self.node_with("not", &[], &[("v", before)], o.span)? };
+                        self.taken_when(since, &reached, o.span)?;
+                    }
+                    vals.push(v);
                 }
                 if leaf == "add"
                     && let Some(d) = vals.iter().find_map(|v| self.decimal_leaf(v))
@@ -2138,7 +2298,9 @@ impl<'a> Lowerer<'a> {
                 eqs.push(self.node_with("equals", &[], &[("a", s.clone()), ("b", c)], p.span)?);
             }
             let m = self.any_of(eqs, span)?;
+            let since = self.cur().branch_fns.len();
             let v = self.branch(&arm.value)?;
+            self.taken_when(since, &m, arm.value.span)?;
             let at = arm.patterns[0].span.to(arm.value.span);
             let guarded = self.node_with("guard", &[], &[("cond", m.clone()), ("value", v)], at)?;
             matched.push(m);
@@ -2151,7 +2313,9 @@ impl<'a> Lowerer<'a> {
         if let Some(e) = els {
             let any = self.any_of(matched, span)?;
             let none = self.node_with("not", &[], &[("v", any)], span)?;
+            let since = self.cur().branch_fns.len();
             let v = self.branch(e)?;
+            self.taken_when(since, &none, e.span)?;
             let guarded = self.node_with("guard", &[], &[("cond", none), ("value", v)], e.span)?;
             chain = self.node_with("coalesce", &[], &[("a", chain), ("b", guarded)], span)?;
         }
@@ -2173,7 +2337,9 @@ impl<'a> Lowerer<'a> {
         if let Some((ty, value)) = literal_param(b) {
             return self.node_with("default", &[("value".into(), value), ("type".into(), ty.into())], &[("value", a)], span);
         }
+        let since = self.cur().branch_fns.len();
         let v = self.branch(b)?;
+        self.taken_without(since, &a, b.span)?;
         self.node_with("coalesce", &[], &[("a", a), ("b", v)], span)
     }
 
@@ -3007,7 +3173,7 @@ pub(crate) mod tests {
     use crate::flow::{derive_server, flow_unit};
     use crate::lang::ts;
     use crate::{samples, text, to_hex};
-    use holon_core::{parse_hash, MapResolver, Resolver, UnitBody};
+    use holon_core::{parse_hash, MapResolver, Resolver};
 
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
@@ -4564,76 +4730,6 @@ route.post("/a", (req) => {
         );
     }
 
-    /// A call is made when the run reaches its statement, under its tie, whatever reads its
-    /// answer: tied to its block, the handler keeps it as an output, so a branch not taken doesn't
-    /// keep it from being made. One written in a branch (of `?:`, `switch`, or what `??` falls
-    /// back to) is made only when the branch needs it: it is left untied, and not kept.
-    #[test]
-    fn a_call_is_made_where_its_statement_is() {
-        let kept = |handler: &str| {
-            let src = format!("import {{ flow, route }} from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
-            let d = compiled(&src).doc;
-            let mut store = MapResolver::new();
-            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
-            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
-            let endpoint = store.resolve(&parse_hash(&server.endpoints[0].hash).unwrap()).unwrap().clone();
-            let UnitBody::Composite { children, .. } = &endpoint.body else { panic!("an endpoint wraps its handler") };
-            let handler = store.resolve(&children[0]).unwrap();
-            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
-            let tied = d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER);
-            (tied, handler.outputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
-        };
-        // The respond's answer first, then the call's.
-        let answer_and_call = vec!["response".to_string(), "out".to_string()];
-        let reached = kept("route.get(\"/a\", async (req) => {\n  const page = await a.get(\"/x\")\n  return req.json.go ? page.body : undefined\n})\n");
-        assert_eq!(reached, (true, answer_and_call.clone()));
-        let guarded = kept("route.get(\"/a\", async (req) => {\n  let page\n  if ((req.json.go ? true : undefined) !== undefined) page = await a.get(\"/x\")\n  return page.body ?? \"no\"\n})\n");
-        assert_eq!(guarded, (true, answer_and_call));
-        for in_branch in [
-            "route.get(\"/a\", async (req) => (req.json.go ? (await a.get(\"/x\")).body : undefined))\n",
-            "route.get(\"/a\", async (req) => (req.json.go ? (await a.get(\"/x\")).body : \"no\"))\n",
-            "route.get(\"/a\", async (req) => req.json.cached ?? (await a.get(\"/x\")).body)\n",
-            "route.get(\"/a\", async (req) => {\n  switch (req.json.op) {\n    case \"go\":\n      return (await a.get(\"/x\")).body\n    default:\n      return \"no\"\n  }\n})\n",
-        ] {
-            assert_eq!(kept(in_branch), (false, vec!["response".to_string()]), "{in_branch}");
-        }
-    }
-
-    /// A call bound in an `if`, or after a `return` that may have answered, is tied to the condition
-    /// it runs under, though something reads its answer: a branch not taken makes no call. (Read, it
-    /// was once tied to its block alone, and made whatever the condition.)
-    #[test]
-    fn a_call_under_a_condition_is_tied_to_it_read_or_not() {
-        for handler in [
-            "route.post(\"/a\", async (req) => {\n  if (req.json.go) {\n    const page = await a.get(\"/x\")\n    return page.body\n  }\n  return \"no\"\n})\n",
-            "route.post(\"/a\", async (req) => {\n  if (!req.json.go) {\n    return \"no\"\n  }\n  const page = await a.get(\"/x\")\n  return page.body\n})\n",
-        ] {
-            let src = format!("import {{ flow, route }} from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
-            let d = compiled(&src).doc;
-            let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
-            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
-            let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
-            assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
-        }
-    }
-
-    /// A log line under a condition, or after a `return` that may have answered, is tied to the
-    /// condition it runs under, as a call's is: a branch not taken writes no line.
-    #[test]
-    fn a_log_line_under_a_condition_is_tied_to_it() {
-        for handler in [
-            "route.post(\"/a\", (req) => {\n  if (req.json.big) {\n    console.warn(\"big\")\n  }\n  return \"ok\"\n})\n",
-            "route.post(\"/a\", (req) => {\n  if (req.json.big) {\n    return \"no\"\n  }\n  console.log(\"small\")\n  return \"ok\"\n})\n",
-        ] {
-            let src = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
-            let d = compiled(&src).doc;
-            let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
-            let line = d.nodes.iter().find(|n| n.data.name == "log").unwrap();
-            let tie = d.edges.iter().find(|w| w.target == line.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("tied: {handler}"));
-            assert_eq!(node(&tie.source).data.name, "guard", "tied to its condition, not the request: {handler}");
-        }
-    }
-
     /// `every("2s", () => { … })` is a clock handler: its tick node, everything wired to it, its
     /// sinks tied to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
     #[test]
@@ -5682,7 +5778,9 @@ route.post("/t", (req) => {
     }
 
     /// `c ? a : b` chooses as JavaScript does: the side chosen is the answer, absent if it is, and
-    /// `c` absent takes the else. The `if`, its early-return form and the ternary are one unit.
+    /// `c` absent takes the else. An `if` on an absent `c` takes neither branch, so its answer is
+    /// absent (§6.4); with `c` there it chooses as the ternary does. The `if` and its early-return
+    /// form are one unit.
     #[test]
     fn a_ternary_chooses_and_its_chosen_sides_absence_is_its() {
         use holon_core::Value::{Boolean, Number, Text};
@@ -5691,11 +5789,21 @@ route.post("/t", (req) => {
         assert_eq!(picked(&ternary, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)));
         assert_eq!(picked(&ternary, Some(Boolean(true)), None), None, "the then chosen, absent: absent, not the else");
         assert_eq!(picked(&ternary, Some(Boolean(false)), None), other, "the else chosen");
-        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as an if takes undefined");
-        let hash = hash_of(&compiled(&ternary).doc);
-        for body in ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""] {
-            assert_eq!(hash_of(&compiled(&with_pick(body)).doc), hash, "{body}");
+        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as ?: takes undefined");
+        let ifs = ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""].map(with_pick);
+        for pick in &ifs {
+            assert_eq!(picked(pick, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)), "{pick}");
+            assert_eq!(picked(pick, Some(Boolean(true)), None), None, "{pick}");
+            assert_eq!(picked(pick, Some(Boolean(false)), None), other, "{pick}");
+            assert_eq!(picked(pick, None, Some(Number(1.0))), None, "the condition absent: neither branch, {pick}");
         }
+        assert_eq!(hash_of(&compiled(&ifs[0]).doc), hash_of(&compiled(&ifs[1]).doc));
+        // A name either branch changes keeps the value it had before the `if`, where its
+        // condition is absent: changed in both, in the then alone, in the else alone.
+        let names = with_pick("  let fee = 1\n  let tax = 0\n  if (op) {\n    fee = v\n    tax = 2\n  } else {\n    fee = 3\n  }\n  return fee * 10 + tax");
+        assert_eq!(picked(&names, Some(Boolean(true)), Some(Number(5.0))), Some(Number(52.0)));
+        assert_eq!(picked(&names, Some(Boolean(false)), Some(Number(5.0))), Some(Number(30.0)));
+        assert_eq!(picked(&names, None, Some(Number(5.0))), Some(Number(10.0)), "neither branch: each name as it was");
         // The fallback written as one still falls.
         let fallback = with_pick("  return (op ? v : undefined) ?? \"other\"");
         assert_eq!(picked(&fallback, Some(Boolean(true)), None), other);

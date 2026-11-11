@@ -151,6 +151,10 @@ enum Guard {
     Branch(Expr),
     /// That a `return` before it, in the same list of statements, didn't answer.
     Live(Expr),
+    /// In a `try` block, that a value made before it arrived: what follows a failure isn't run.
+    /// The block's own test (`ok`) tests that value already, so it isn't among the conditions a
+    /// value made after it is tested under (`cond_since`).
+    Arrived(Expr),
     /// `x`, in `if (x !== undefined) { … }`: what the writes and calls in it wait for.
     After(Expr),
 }
@@ -279,12 +283,12 @@ enum Ret {
 }
 
 impl Ret {
-    /// This statement's, then the next's.
+    /// This statement's, then the next's: absent where this one's is, as the next isn't reached.
     fn or(self, next: Ret) -> Ret {
         match (self, next) {
             (Ret::Always, _) | (_, Ret::Always) => Ret::Always,
             (Ret::Never, r) | (r, Ret::Never) => r,
-            (Ret::When(a), Ret::When(b)) => Ret::When(binary(BinOp::Or, truthy(&a), b)),
+            (Ret::When(a), Ret::When(b)) => Ret::When(binary(BinOp::Or, a, b)),
         }
     }
 }
@@ -1321,11 +1325,17 @@ impl<'s, 't> Reader<'s, 't> {
                     // condition) keeps its own while the statements inside are read.
                     let outer = std::mem::take(&mut self.frame.updates);
                     let mark = stmts.len();
+                    let made: Option<BTreeSet<String>> = self.frame.trying.last().map(|t| t.made.iter().map(|(n, _)| n.clone()).collect());
                     let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
                     self.frame.updates = outer;
                     let r = r?;
+                    // What follows runs where the statement didn't return: not where whether it
+                    // did has no value, as an `if` on an absent condition (§6.4).
                     if let Ret::When(e) = &r {
-                        self.frame.guards.push(Guard::Live(otherwise(e)));
+                        self.frame.guards.push(Guard::Live(no_case(e)));
+                    }
+                    if let Some(made) = made {
+                        self.go_on_if_arrived(&made, stmts);
                     }
                     r
                 }
@@ -1560,18 +1570,34 @@ impl<'s, 't> Reader<'s, 't> {
     /// A binding of a call that does something, made under a condition: tied to it if nothing
     /// reads the binding ([`Self::settle`]).
     fn note_call(&mut self, name: &str, value: &Expr, span: Span) {
-        if self.contains_sink(value)
+        if (self.contains_sink(value) || self.calls_function(value))
             && let Some(trigger) = self.trigger(span)
         {
             self.frame.guarded_calls.push((name.to_string(), trigger));
         }
     }
 
-    /// Whether `e` makes a call the host answers: a request, another flow's action, a send, a
-    /// write.
+    /// Whether `e` calls a function of the flow's. One whose body writes or calls is a node with
+    /// a trigger, like a leaf that does; which it is the lowering knows, where the function's body
+    /// is lowered (lower.rs `stmt`), so under a condition a call of any function is tied to the
+    /// condition, and the tie holds whatever in its body there is to hold.
+    fn calls_function(&self, e: &Expr) -> bool {
+        let mut found = false;
+        walk(&mut e.clone(), &mut |x| {
+            found |= matches!(&x.kind, ExprKind::Call { callee, .. } if matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })));
+            !matches!(x.kind, ExprKind::Lambda { .. })
+        });
+        found
+    }
+
+    /// Whether `e` makes a call the host answers: a request, an action called or started, a
+    /// send, a write.
     fn contains_sink(&self, e: &Expr) -> bool {
         let mut found = false;
         walk(&mut e.clone(), &mut |x| {
+            // An action started (`payout(x)`, read as `start`): done when the run reaches it, like
+            // a request.
+            found |= matches!(&x.kind, ExprKind::Call { callee, .. } if callee.text == "start");
             if let ExprKind::Method { receiver, method, .. } = &x.kind {
                 let m = method.text.as_str();
                 // A log line (`console.warn(…)`, read as `@log`) is a call the host answers: written only
@@ -1584,7 +1610,7 @@ impl<'s, 't> Reader<'s, 't> {
                             "channel" => matches!(m, "send" | "pipe"),
                             "mail" | "queue" => m == "send",
                             "collection" => matches!(m, "put" | "delete"),
-                            "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
+                            "folder" => matches!(m, "put" | "delete" | "copy" | "create" | "create_copy"),
                             "database" => matches!(m, "exec" | "insert" | "update" | "delete"),
                             _ => false,
                         },
@@ -1624,7 +1650,7 @@ impl<'s, 't> Reader<'s, 't> {
                     self.tried(value, stmts);
                     return Ok(());
                 }
-                let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
+                let after = if self.contains_sink(&value) || self.calls_function(&value) { self.trigger(at) } else { None };
                 stmts.push(Stmt { kind: StmtKind::Expr(value), span: at, after });
                 Ok(())
             }
@@ -2098,7 +2124,7 @@ impl<'s, 't> Reader<'s, 't> {
         let i = self.frame.writes.iter().position(|(k, ..)| *k == key);
         let old = i.map(|i| self.frame.writes[i].1.clone());
         let value = match conj(self.frame.guards[start..].iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) {
-            Some(live) => choose(&Choice::If(live), vec![Some(value)], old, at).expect("a value"),
+            Some(live) => choose(&Choice::If(live), vec![Some(value)], old.clone(), old, at).expect("a value"),
             None => value,
         };
         match i {
@@ -2115,7 +2141,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// runs under.
     fn live(&self) -> Option<Expr> {
         conj(self.frame.guards.iter().filter_map(|g| match g {
-            Guard::Branch(c) | Guard::Live(c) => Some(c.clone()),
+            Guard::Branch(c) | Guard::Live(c) | Guard::Arrived(c) => Some(c.clone()),
             Guard::After(_) => None,
         }))
     }
@@ -2156,7 +2182,8 @@ impl<'s, 't> Reader<'s, 't> {
         // A `++` in the condition counts before either branch, which reads what it made.
         self.flush_updates(stmts, stmts.len(), start)?;
         let cond = self.hide(cond, "cond", stmts);
-        let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
+        // A condition with no value runs neither branch (§6.4).
+        let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(no_case(&cond)), f.alternate.as_ref().map(statements_of))];
         let mut paths = self.branches(branches, block, stmts)?;
         let b = paths.pop().expect("an else");
         let a = paths.pop().expect("a then");
@@ -2168,9 +2195,9 @@ impl<'s, 't> Reader<'s, 't> {
     /// `try { A } catch { B } finally { C }` (§8). A's values arriving is the block succeeding,
     /// `ok`: A's writes, sends and returns are tied to it, B is read where it doesn't hold, and
     /// each name and state key either changes holds `if ok then A's else B's`, as after an `if`.
-    /// C is tied to neither. A call A binds is made when what it reads arrives, as anywhere: one
-    /// before a failure is made, as JavaScript's would be, and one after it too, unless it reads
-    /// what failed. Without a catch, A is a block, and nothing is caught.
+    /// C is tied to neither. A call A binds is made where what A made before it arrived, as
+    /// JavaScript's is made only until a statement throws (`go_on_if_arrived`). Without a catch, A
+    /// is a block, and nothing is caught.
     fn try_statement(&mut self, t: &js::TryStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let at = self.span(t.span);
         let ret = match &t.handler {
@@ -2349,6 +2376,22 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
+    /// After a statement in a `try` block, the rest of it runs only where what the statement made
+    /// arrived, as the rest of JavaScript's is skipped once a statement throws: a call bound after
+    /// a failure isn't made, a function after it isn't entered (§8). `before`: the names the block
+    /// had made before the statement; a value that can't fail holds nothing back.
+    fn go_on_if_arrived(&mut self, before: &BTreeSet<String>, stmts: &[Stmt]) {
+        let Some(t) = self.frame.trying.last() else { return };
+        let new: Vec<(String, Option<Expr>)> = t.made.iter().filter(|(n, _)| !before.contains(n)).cloned().collect();
+        for (name, cond) in new {
+            let fails = stmts.iter().any(|s| matches!(&s.kind, StmtKind::Bind { name: n, value } if n.text == name && !never_fails(value)));
+            if fails {
+                let span = stmts.iter().rev().find_map(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name).then_some(s.span)).expect("found above");
+                self.frame.guards.push(Guard::Arrived(arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref())));
+            }
+        }
+    }
+
     /// A binding no `try` block tests: one it reads, as a join reads what it chooses among.
     fn unmade(&mut self, name: &str) {
         for t in &mut self.frame.trying {
@@ -2359,9 +2402,10 @@ impl<'s, 't> Reader<'s, 't> {
     /// The conditions the statement being read runs under, from guard `start` on; an `if (x !==
     /// undefined)`'s, that `x` arrived.
     fn cond_since(&self, start: usize) -> Option<Expr> {
-        conj(self.frame.guards[start..].iter().map(|g| match g {
-            Guard::Branch(c) | Guard::Live(c) => c.clone(),
-            Guard::After(x) => has_value(x.clone()),
+        conj(self.frame.guards[start..].iter().filter_map(|g| match g {
+            Guard::Branch(c) | Guard::Live(c) => Some(c.clone()),
+            Guard::After(x) => Some(has_value(x.clone())),
+            Guard::Arrived(_) => None,
         }))
     }
 
@@ -2530,7 +2574,7 @@ impl<'s, 't> Reader<'s, 't> {
                         let named = |v: &Option<String>| v.as_ref().map(|n| Expr { kind: ExprKind::Name(n.clone()), span: at });
                         let mut picks: Vec<Option<Expr>> = vs.iter().zip(&goes_on).map(|(v, g)| if *g { named(v) } else { named(&fallback) }).collect();
                         let els = picks.pop().expect("an else");
-                        match choose(choice, picks, els, at) {
+                        match choose(choice, picks, els, named(&v0), at) {
                             Some(value) => {
                                 let name = self.fresh(&ts);
                                 self.unmade(&name);
@@ -2563,7 +2607,7 @@ impl<'s, 't> Reader<'s, 't> {
                 continue;
             }
             let els = picks.pop().expect("an else");
-            if let Some(value) = choose(choice, picks, els, at) {
+            if let Some(value) = choose(choice, picks, els, old, at) {
                 self.update_write(key, value, at, key_span, stmts, start);
             }
         }
@@ -2594,7 +2638,7 @@ impl<'s, 't> Reader<'s, 't> {
         if all.is_empty() {
             return fail(at, "a switch with a default alone is its statements: write them without it");
         }
-        let branches = cases.iter().map(|c| (Guard::Branch(if c.default { otherwise(&matched(&subject, &all, at)) } else { matched(&subject, &c.patterns, at) }), Some(c.body))).collect();
+        let branches = cases.iter().map(|c| (Guard::Branch(if c.default { no_case(&matched(&subject, &all, at)) } else { matched(&subject, &c.patterns, at) }), Some(c.body))).collect();
         let exits_before = self.frame.exits.len();
         let paths = self.branches(branches, block, stmts)?;
         for (i, (c, p)) in cases.iter().zip(&paths).enumerate() {
@@ -2802,13 +2846,13 @@ impl<'s, 't> Reader<'s, 't> {
                                 })
                                 .collect();
                             let els = picks.pop().expect("an else");
-                            (k.clone(), choose(choice, picks, els, span).expect("a side answers"), span)
+                            (k.clone(), choose(choice, picks, els, None, span).expect("a side answers"), span)
                         })
                         .collect()
                 });
                 let mut values: Vec<Option<Expr>> = parts.into_iter().map(|p| p.map(|(v, _)| v)).collect();
                 let els = values.pop().expect("an else");
-                Ok(Some(Answer::Value { value: choose(choice, values, els, span).expect("a side answers"), name: None, fields }))
+                Ok(Some(Answer::Value { value: choose(choice, values, els, None, span).expect("a side answers"), name: None, fields }))
             }
         }
     }
@@ -2835,7 +2879,7 @@ impl<'s, 't> Reader<'s, 't> {
             // Statuses alone: the one chosen, 404 where the route ends unanswered.
             let mut statuses: Vec<Option<Expr>> = sides.into_iter().map(|r| Some(r.and_then(|r| r.status).unwrap_or_else(|| number("404")))).collect();
             let els = statuses.pop().expect("an else");
-            return Ok(Some(Response { body: None, status: choose(choice, statuses, els, span), missing: None, headers: None, stream: None, span }));
+            return Ok(Some(Response { body: None, status: choose(choice, statuses, els, None, span), missing: None, headers: None, stream: None, span }));
         }
         let mut missing: Option<(String, Span)> = None;
         for r in sides.iter().flatten().filter(|r| r.body.is_some()) {
@@ -2873,18 +2917,18 @@ impl<'s, 't> Reader<'s, 't> {
         } else {
             let mut picks: Vec<Option<Expr>> = statuses.into_iter().map(|s| Some(s.unwrap_or_else(|| first.clone()))).collect();
             let els = picks.pop().expect("an else");
-            choose(choice, picks, els, span)
+            choose(choice, picks, els, None, span)
         };
         let headers = if any_headers {
             let empty = Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span };
             let mut picks: Vec<Option<Expr>> = headers.into_iter().map(|h| Some(h.unwrap_or_else(|| empty.clone()))).collect();
             let els = picks.pop().expect("an else");
-            choose(choice, picks, els, span)
+            choose(choice, picks, els, None, span)
         } else {
             None
         };
         let els = bodies.pop().expect("an else");
-        let body = choose(choice, bodies, els, span);
+        let body = choose(choice, bodies, els, None, span);
         Ok(Some(Response { body, status, missing: (missing != "404").then(|| number(&missing)), headers, stream: None, span }))
     }
 
@@ -5504,6 +5548,11 @@ fn when(value: Expr, c: Expr) -> Expr {
     binary(BinOp::When, value, c)
 }
 
+/// `c ? a : b`.
+fn if_else(c: Expr, a: Expr, b: Expr, at: Span) -> Expr {
+    Expr { kind: ExprKind::If { cond: Box::new(c), then: Box::new(a), els: Some(Box::new(b)) }, span: at }
+}
+
 /// `same_value(x, x) ?? false`: whether `x` arrived, a NaN too (§8).
 fn has_value(x: Expr) -> Expr {
     let at = x.span;
@@ -5552,9 +5601,32 @@ fn truthy(c: &Expr) -> Expr {
     Expr { kind: ExprKind::Paren(Box::new(binary_at(BinOp::Coalesce, c.clone(), no, c.span))), span: c.span }
 }
 
-/// `!(c ?? false)`: what holds where an `if (c)` takes its else.
+/// `!(c ?? false)`: what holds where `c` doesn't, or has no value: where a `try`'s catch runs,
+/// and where a value made under `c` isn't looked for.
 fn otherwise(c: &Expr) -> Expr {
     Expr { kind: ExprKind::Not(Box::new(truthy(c))), span: c.span }
+}
+
+/// `!c`: what holds where an `if (c)` takes its else, or a `switch` its default. Nothing where `c`
+/// is nothing: with its condition not there neither branch runs (§6.4), with its subject not there
+/// a switch is not there, its default with it (§6.3). `!!x` is `x`, a condition being a Boolean.
+fn no_case(c: &Expr) -> Expr {
+    match &c.kind {
+        ExprKind::Not(x) => (**x).clone(),
+        _ => Expr { kind: ExprKind::Not(Box::new(c.clone())), span: c.span },
+    }
+}
+
+/// Whether condition `c` always has a value: `x ?? false`, `true` or `false`, and `!`, `&&` and
+/// `||` of those.
+fn sure(c: &Expr) -> bool {
+    match &c.kind {
+        ExprKind::Bool(_) => true,
+        ExprKind::Not(x) | ExprKind::Paren(x) => sure(x),
+        ExprKind::Binary { op: BinOp::Coalesce, rhs, .. } => matches!(rhs.kind, ExprKind::Bool(_)),
+        ExprKind::Binary { op: BinOp::And | BinOp::Or, lhs, rhs } => sure(lhs) && sure(rhs),
+        _ => false,
+    }
 }
 
 /// The conditions, all of them: `a && b && …`.
@@ -5567,36 +5639,71 @@ fn matched(subject: &Expr, patterns: &[Expr], at: Span) -> Expr {
     patterns.iter().map(|p| binary_at(BinOp::Eq, subject.clone(), p.clone(), at)).reduce(|a, b| binary_at(BinOp::Or, a, b, at)).expect("a case has a pattern")
 }
 
-/// Whether `if (c) a else b` returns, from whether each branch does.
+/// Whether `if (c) a else b` returns, from whether each branch does: absent where `c` is, as
+/// neither branch runs then, and nothing after the `if` either if one of them may return (§6.4).
 fn ret_if(c: &Expr, a: &Ret, b: &Ret) -> Ret {
     match (a, b) {
         (Ret::Never, Ret::Never) => Ret::Never,
         (Ret::Always, Ret::Always) => Ret::Always,
         (Ret::Always, Ret::Never) => Ret::When(c.clone()),
-        (Ret::Never, Ret::Always) => Ret::When(otherwise(c)),
+        (Ret::Never, Ret::Always) => Ret::When(no_case(c)),
         (Ret::When(x), Ret::Never) => Ret::When(binary(BinOp::And, c.clone(), x.clone())),
-        (Ret::Never, Ret::When(y)) => Ret::When(binary(BinOp::And, otherwise(c), y.clone())),
-        (Ret::Always, Ret::When(y)) => Ret::When(binary(BinOp::Or, truthy(c), y.clone())),
-        (Ret::When(x), Ret::Always) => Ret::When(binary(BinOp::Or, otherwise(c), x.clone())),
-        (Ret::When(x), Ret::When(y)) => Ret::When(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(x.clone()), els: Some(Box::new(y.clone())) }, span: c.span }),
+        (Ret::Never, Ret::When(y)) => Ret::When(binary(BinOp::And, no_case(c), y.clone())),
+        (Ret::Always, Ret::When(y)) => Ret::When(binary(BinOp::Or, c.clone(), y.clone())),
+        (Ret::When(x), Ret::Always) => Ret::When(binary(BinOp::Or, no_case(c), x.clone())),
+        (Ret::When(x), Ret::When(y)) => Ret::When(choose(&Choice::If(c.clone()), vec![Some(x.clone())], Some(y.clone()), None, c.span).expect("both sides have one")),
     }
 }
 
 /// One value choosing among `arms` by `choice`, else `els`; `None` where no side has one. Where
-/// one side alone has a value, it is that value `when` its side is taken (§5).
-fn choose(choice: &Choice, arms: Vec<Option<Expr>>, els: Option<Expr>, at: Span) -> Option<Expr> {
-    let first = arms.iter().chain(std::iter::once(&els)).flatten().next()?.clone();
-    if arms.iter().chain(std::iter::once(&els)).all(|s| s.as_ref().is_some_and(|s| same(s, &first))) {
-        return Some(first);
-    }
+/// one side alone has a value, it is that value `when` its side is taken (§5). Where an `if`'s
+/// condition has no value neither side is taken: the value is `prior`, what held before it, or
+/// none (§6.4). A switch on an absent subject is absent, `prior` aside (§6.3).
+fn choose(choice: &Choice, arms: Vec<Option<Expr>>, els: Option<Expr>, prior: Option<Expr>, at: Span) -> Option<Expr> {
+    let first = arms.iter().chain(std::iter::once(&els)).flatten().next().cloned();
+    let all_one = first.as_ref().is_some_and(|f| arms.iter().chain(std::iter::once(&els)).all(|s| s.as_ref().is_some_and(|s| same(s, f))));
     match choice {
-        Choice::If(c) => match (arms.into_iter().next().flatten(), els) {
-            (Some(a), Some(b)) => Some(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(a), els: Some(Box::new(b)) }, span: at }),
-            (Some(a), None) => Some(when(a, c.clone())),
-            (None, Some(b)) => Some(when(b, otherwise(c))),
-            (None, None) => None,
-        },
+        // A condition that always has a value (a `try`'s): one side or the other.
+        Choice::If(c) if sure(c) => {
+            if all_one {
+                return first;
+            }
+            match (arms.into_iter().next().flatten(), els) {
+                (Some(a), Some(b)) => Some(if_else(c.clone(), a, b, at)),
+                (Some(a), None) => Some(when(a, c.clone())),
+                (None, Some(b)) => Some(when(b, no_case(c))),
+                (None, None) => None,
+            }
+        }
+        Choice::If(c) => {
+            let a = arms.into_iter().next().flatten();
+            let is_prior = |x: &Option<Expr>| match (x, &prior) {
+                (Some(x), Some(p)) => same(x, p),
+                (x, p) => x.is_none() && p.is_none(),
+            };
+            // Where `c` doesn't hold, `els`; where it has no value, `prior`.
+            let rest = if is_prior(&els) {
+                prior.clone()
+            } else {
+                let b = els.unwrap_or_else(|| absent(at));
+                Some(match &prior {
+                    Some(p) => if_else(no_case(c), b, p.clone(), at),
+                    None => when(b, no_case(c)),
+                })
+            };
+            if is_prior(&a) {
+                return rest;
+            }
+            let a = a.unwrap_or_else(|| absent(at));
+            Some(match rest {
+                Some(r) => if_else(c.clone(), a, r, at),
+                None => when(a, c.clone()),
+            })
+        }
         Choice::Match(subject, patterns) => {
+            if all_one {
+                return first;
+            }
             let mut out = Vec::new();
             for (p, a) in patterns.iter().zip(arms) {
                 match (a, &els) {
@@ -6144,7 +6251,7 @@ route.post("/fee", (req) => {
   return { fee }
 })
 "#,
-                r#"import { flow, route } from "holon"
+                r#"import { flow, is_truthy, route } from "holon"
 
 flow("f", { port: 8000 })
 
@@ -6153,7 +6260,8 @@ route.post("/fee", (req) => {
   const fee_2 = 5
   const fee_3 = 2
   const fee_4 = req.json.amount > 100 ? fee_3 : fee
-  const fee_5 = req.json.express ? fee_2 : fee_4
+  const cond_1 = is_truthy(req.json.express)
+  const fee_5 = cond_1 ? fee_2 : !cond_1 ? fee_4 : fee
   return { fee: fee_5 }
 })
 "#,
@@ -6178,8 +6286,8 @@ flow("p", { port: 8000 })
 route.post("/pay", (req) => {
   const amount = req.json.amount
   const cond_1 = amount > 1000
-  state.paid = !(cond_1 ?? false) ? amount : undefined
-  return status(cond_1 ? 403 : 200, cond_1 ? "too much" : { paid: amount })
+  state.paid = !cond_1 ? amount : undefined
+  return status(cond_1 ? 403 : !cond_1 ? 200 : undefined, cond_1 ? "too much" : !cond_1 ? { paid: amount } : undefined)
 })
 "#,
             ),
@@ -6572,7 +6680,10 @@ route.post("/n", (req) => {
 
 flow("t", { port: 8000 })
 
-route.post("/n", (req) => status(req.json.x === 1 ? 400 : 201, ""))
+route.post("/n", (req) => {
+  const cond_1 = req.json.x === 1
+  return status(cond_1 ? 400 : !cond_1 ? 201 : undefined, "")
+})
 "#,
             ),
         ];
@@ -6610,7 +6721,7 @@ route.post("/n", (req) => {
   const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = note
+    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
@@ -6631,7 +6742,7 @@ flow("t", { port: 8000 })
 
 route.post("/n", (req) => {
   const cond_1 = req.json.n > 10
-  return cond_1 ? fail("too many") : { n: req.json.n }
+  return cond_1 ? fail("too many") : !cond_1 ? { n: req.json.n } : undefined
 })
 "#,
             ),
@@ -6655,7 +6766,7 @@ flow("t", { port: 8000 })
 function order(o) {
   const cond_1 = o.n > 10
   const thrown_1 = fail("too many")
-  return { id: cond_1 ? thrown_1 : o.id, n: cond_1 ? thrown_1 : o.n }
+  return { id: cond_1 ? thrown_1 : !cond_1 ? o.id : undefined, n: cond_1 ? thrown_1 : !cond_1 ? o.n : undefined }
 }
 
 route.post("/n", (req) => {

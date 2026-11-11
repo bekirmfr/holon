@@ -201,7 +201,7 @@ In tests.rs unless named, in-process through `route` and `serve_data` (`test_sta
 - **Isolation**: `a_fire_in_progress_does_not_stall_the_table`,
   `one_deployments_log_doesnt_hold_up_another`,
   `a_light_route_answers_on_the_data_planes_worker_as_any_route_does`,
-  `a_run_that_panics_is_answered_500_inline_as_on_the_pool`.
+  `a_panic_ends_its_run_and_nothing_else`.
 - **State under concurrency**: `concurrent_runs_lose_no_update`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`, `redeploy_keeps_state`.
 - **Persistence**: `deployments_persist_across_a_simulated_restart`,

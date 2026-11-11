@@ -32,6 +32,19 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
         _ if crate::SOURCED.contains(&name) => crate::sourced_value(unit, resolver.sourced(unit)),
         "coalesce" => inputs.iter().flatten().next().cloned(),
+        // In order, to the input that decides (`false` for `and`, `true` for `or`) or the last:
+        // what follows it may be absent. One before it absent or not a Boolean, absent.
+        "and" | "or" => {
+            let decides = name == "or";
+            for (p, v) in inputs.iter().enumerate() {
+                match v {
+                    Some(Value::Boolean(b)) if *b == decides || p + 1 == inputs.len() => return Some(Value::Boolean(*b)),
+                    Some(Value::Boolean(_)) => {}
+                    _ => return None,
+                }
+            }
+            None
+        }
         _ => {
             if VARIADIC.contains(&name) && inputs.iter().any(Option::is_none) {
                 return None;

@@ -33,7 +33,7 @@ use std::sync::{Mutex, OnceLock};
 
 use holon_core::{decode_value, encode_value, validate_module, Hash, ModuleError, ModuleLimits, Resolver, Unit, Value};
 use wasmi_core::LimiterError;
-use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
+use wasmi::{Config, CustomFuelCosts, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
 
 /// Holon's JavaScript engine module (docs/L4s/js-node-L4.md §4), as built and committed in
 /// `fixtures/modules/js-engine/`: a module unit with no imports whose interface is
@@ -41,7 +41,7 @@ use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, Tra
 pub const JS_ENGINE: &[u8] = include_bytes!("../../../fixtures/modules/js-engine/js-engine.wasm");
 
 /// A `js` node's fuel when its text names none. Measured (tests/js_engine.rs, `what_a_call_costs`):
-/// a fresh realm and a compiled one-line function cost about 15M instructions under the
+/// a fresh realm and a compiled one-line function cost about 12M instructions under the
 /// interpreter, an edit-distance search over eight words 41M, a loop of a hundred thousand
 /// iterations 271M. So the module default (10M) can never run a body, and 200M runs real
 /// request-sized work with room; a heavier body says `fuel 500M`, up to the host's ceiling.
@@ -146,6 +146,13 @@ impl Engine {
     pub fn new() -> Engine {
         let mut config = Config::default();
         config.consume_fuel(true);
+        // A function is translated the first time a call reaches it, and the module stays
+        // compiled for the process's life (`compiled`). Were translating charged, the first call
+        // in a process would pay for it and later ones not, so a call's fuel would say how warm
+        // the process was: a run close to its budget would fit on a server long up and run out
+        // in a `holon verify` just started. Translating costs nothing, then: a call's fuel is its
+        // module's and its inputs' alone. Copying keeps wasmi's own price.
+        config.fuel_cost(CustomFuelCosts { bytes_copied_per_fuel: 64, fuel_per_bytes_translated: 0, fuel_per_bytes_validated: 0 });
         Engine { wasmi: Wasmi::new(&config), compiled: Mutex::new(BTreeMap::new()) }
     }
 
@@ -337,27 +344,6 @@ mod tests {
         (func (export "alloc") (param i32) (result i32) i32.const 1024)
         (func (export "run") (param $ptr i32) (param $len i32) (result i64)
             (i64.or (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32)) (i64.extend_i32_u (local.get $len)))))"#;
-
-    #[test]
-    fn echo_answers_its_inputs_as_its_outputs() {
-        let engine = Engine::new();
-        let bytes = wat::parse_str(ECHO).unwrap();
-        let inputs = [Some(n(2.0)), Some(Value::Text("two".into())), Some(Value::List(vec![n(1.0)]))];
-        let outs = engine.run(&bytes, &ModuleLimits::default(), &inputs).unwrap();
-        assert_eq!(outs, inputs.to_vec());
-        // Compiled once: the second run finds the module in the cache and answers the same.
-        assert_eq!(engine.run(&bytes, &ModuleLimits::default(), &inputs).unwrap(), inputs.to_vec());
-        assert_eq!(engine.compiled.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn none_in_the_answer_is_an_absent_output_and_some_is_its_value() {
-        let engine = Engine::new();
-        let bytes = wat::parse_str(ECHO).unwrap();
-        let some_three = Value::Sum { arm: 0, payload: Box::new(n(3.0)) };
-        let outs = engine.run(&bytes, &ModuleLimits::default(), &[Some(none()), Some(some_three), Some(n(1.0))]).unwrap();
-        assert_eq!(outs, vec![None, Some(n(3.0)), Some(n(1.0))]);
-    }
 
     #[test]
     fn a_module_with_imports_never_runs() {

@@ -4,7 +4,7 @@
 // language (reading, lowering, printing) is holon-author's (crates/holon-author/src/lang/),
 // through the wasm bridge: the same code the command line runs.
 
-import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_usage } from "../wasm/holon_wasm.js";
+import { compile_holon, document_text, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_usage } from "../wasm/holon_wasm.js";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
@@ -72,6 +72,27 @@ export function compileHolon(
 }
 
 type Printable = Pick<FlowDocument, "nodes" | "edges"> & Partial<FlowDocument>;
+
+/** A saved or proposed document as text, wherever one is shown (a review, a diff, a tab opened):
+ *  the text it was saved with, comments and all, when that compiles to the unit its canvas deploys
+ *  as; else its canvas printed. A document carries its code twice, a canvas that deploys and a
+ *  text for people, and whoever saved it wrote both, so the text is shown only where it is the
+ *  canvas's code (holon-author's `text_of`, through the bridge: the same rule the command line and
+ *  the agent tools read a document by). Never `doc.source` as it comes. */
+export function documentText(name: string | null, doc: Printable): string {
+  return document_text(name ?? "", doc);
+}
+
+/** The text a document was saved with, when it is its canvas's code (`documentText`); null when
+ *  it has none, or has one that says something else, or can't be read. */
+export function sourceOf(name: string | null, doc: Printable): string | null {
+  if (!doc.source) return null;
+  try {
+    return documentText(name, doc) === doc.source ? doc.source : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A flow document as its text: its settings, its holons (each with its boundary given, so it
  *  compiles back to the same unit), its handlers. Positions

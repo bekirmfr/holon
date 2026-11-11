@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
-use holon_core::{parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
+use holon_core::{parse_hash, parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Resolver, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
 use serde::Serialize;
 
+use crate::builder::call_outputs;
 use crate::canvas::{Node, PlacedBody, Wire};
 use crate::wire::WType;
 
@@ -171,7 +172,7 @@ impl FileGroup {
 
 /// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, a
 /// message, an action.
-fn trigger_label(n: &Node) -> Option<String> {
+pub(crate) fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
     } else if n.is_template("every") {
@@ -519,32 +520,32 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
 /// input that may be left empty (an `http_request`'s `headers` or `body`) stays unbound, so it is
 /// absent when the endpoint runs, rather than refusing the route.
 /// `group` is in the same order as the children the spec was proposed over.
-pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
     // A route answers and is done: what waits is an action it starts (docs/L4s/typescript-syntax-L4.md §9).
     if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "approval" | "resume_token")) {
         return Err(format!("{label}: a route answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start, and answer with what it says", n.data.name));
     }
-    caller_spec(spec, group, label, "request")
+    caller_spec(spec, group, label, "request", store)
 }
 
 /// A websocket block's boundary, as a route's: the one input left open is its `websocket` node's
 /// (the record), the outputs its respond's (the answer) and its effects. It answers and is done,
 /// as a route does.
-pub fn socket_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+pub fn socket_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
     if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
         return Err(format!("{label}: a block answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start", n.data.name));
     }
-    caller_spec(spec, group, label, "websocket")
+    caller_spec(spec, group, label, "websocket", store)
 }
 
 /// An action's boundary, as a route's: the one input left open is its `action` node's (what was
 /// sent), the outputs its respond's (the answer) and its effects.
-pub fn action_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    caller_spec(spec, group, label, "action")
+pub fn action_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    caller_spec(spec, group, label, "action", store)
 }
 
 /// A handler with a caller to answer, whose `trigger` node takes what the caller sent.
-fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> Result<EncapSpec, String> {
+fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
     let promote: Vec<_> =
         spec.promote.into_iter().filter(|p| !is_optional_input(group[p.child as usize], input_name(p.child, p.port))).collect();
@@ -556,9 +557,9 @@ fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> 
         }
     }
     let is_respond = |child: u32| group[child as usize].is_template("respond");
-    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_respond(x.child) || is_effect(group, x.child, x.port)).collect();
+    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_respond(x.child) || is_effect(group, x.child, x.port, store)).collect();
     let (responses, effects): (Vec<_>, Vec<_>) = expose.into_iter().partition(|x| is_respond(x.child));
-    let (calls, writes): (Vec<_>, Vec<_>) = effects.into_iter().partition(|x| is_call(group, x.child));
+    let (calls, writes): (Vec<_>, Vec<_>) = effects.into_iter().partition(|x| is_call(group, x.child, x.port, store));
     if responses.len() > 1 {
         return Err(format!("{label}: more than one respond node"));
     }
@@ -575,49 +576,56 @@ fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> 
     Ok(EncapSpec { promote, expose: responses.into_iter().chain(writes).chain(calls).collect() })
 }
 
-/// Whether node `child` makes a call ([`CALLS`]): made for what it does, whatever it answers.
-fn is_call(group: &[&Node], child: u32) -> bool {
-    CALLS.contains(&group[child as usize].data.name.as_str())
+/// Whether output `port` of node `child` answers a call ([`CALLS`]), made for what it does,
+/// whatever it answers: the call's own, or a function's that makes one (`call_outputs`).
+fn is_call(group: &[&Node], child: u32, port: u32, store: &impl Resolver) -> bool {
+    let n = group[child as usize];
+    match &n.data.body {
+        PlacedBody::Composite { hash } => parse_hash(hash)
+            .and_then(|h| store.resolve(&h))
+            .is_some_and(|u| u.outputs.get(port as usize).is_some_and(|p| call_outputs(u, store).contains(&p.name))),
+        _ => CALLS.contains(&n.data.name.as_str()),
+    }
 }
 
 /// Whether output `port` of node `child` is an effect the host performs: an Effect value, or a
 /// call's answer, kept so the call is made whether or not anything reads it.
-fn is_effect(group: &[&Node], child: u32, port: u32) -> bool {
-    is_call(group, child) || group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
+fn is_effect(group: &[&Node], child: u32, port: u32, store: &impl Resolver) -> bool {
+    is_call(group, child, port, store) || group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
 }
 
 /// Narrow core's proposed boundary for one clock's group to what a clock handler is: no inputs
 /// (a tick has none: every input a node needs must be wired) and its effects as outputs.
-pub fn clock_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    handler_spec(spec, group, label, "a clock")
+pub fn clock_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a clock", store)
 }
 
 /// A file handler's boundary, as a clock's: no inputs (the file's handle is its `on_file` node's)
 /// and its effects as outputs.
-pub fn file_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    handler_spec(spec, group, label, "a file's run")
+pub fn file_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a file's run", store)
 }
 
 /// A mail handler's boundary, as a file's: no inputs (the message is its `on_mail` node's) and its
 /// effects as outputs.
-pub fn mail_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    handler_spec(spec, group, label, "a message's run")
+pub fn mail_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run", store)
 }
 
 /// A feed handler's boundary, as a mail's: no inputs (the event is its `on_feed` node's) and its
 /// effects as outputs.
-pub fn feed_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    handler_spec(spec, group, label, "an event's run")
+pub fn feed_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "an event's run", store)
 }
 
 /// A queue handler's boundary, as a feed's: no inputs (the message is its `on_queue` node's) and
 /// its effects as outputs.
-pub fn queue_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
-    handler_spec(spec, group, label, "a message's run")
+pub fn queue_spec(spec: EncapSpec, group: &[&Node], label: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run", store)
 }
 
 /// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
-fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
+fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str, store: &impl Resolver) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
     let promote: Vec<_> =
         spec.promote.into_iter().filter(|p| !is_optional_input(group[p.child as usize], input_name(p.child, p.port))).collect();
@@ -629,7 +637,7 @@ fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Res
     if let Some(n) = group.iter().find(|n| n.is_template("respond") || n.is_template("request")) {
         return Err(format!("{label}: {} is a route's; {who} answers nobody", n.data.name));
     }
-    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(group, x.child, x.port)).collect();
+    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(group, x.child, x.port, store)).collect();
     if expose.is_empty() {
         return Err(format!("{label}: it does nothing: write something (state, a collection, a channel)"));
     }
@@ -861,7 +869,7 @@ mod tests {
     use crate::canvas::NodeData;
     use crate::templates;
     use crate::wire::{WParam, WPort};
-    use holon_core::{Expose, Promote};
+    use holon_core::{Expose, MapResolver, Promote};
 
     fn node(id: &str, name: &str, params: Vec<WParam>, template: bool) -> Node {
         let (inputs, outputs) = if template {
@@ -939,17 +947,17 @@ mod tests {
             promote: vec![promote(0, 0, "request")],
             expose: vec![expose(0, 2, "query"), expose(2, 0, "write"), expose(3, 0, "response")],
         };
-        let got = route_spec(spec, &group, "POST /todos").unwrap();
+        let got = route_spec(spec, &group, "POST /todos", &MapResolver::new()).unwrap();
         assert_eq!(got.promote, [promote(0, 0, "request")]);
         assert_eq!(got.expose, [expose(3, 0, "response"), expose(2, 0, "write")]);
 
         let base = || EncapSpec { promote: vec![promote(0, 0, "request")], expose: vec![] };
         let unwired = EncapSpec { promote: vec![promote(0, 0, "request"), promote(1, 0, "a")], ..base() };
-        assert_eq!(route_spec(unwired, &group, "POST /todos").unwrap_err(), "POST /todos: field · a is not wired");
+        assert_eq!(route_spec(unwired, &group, "POST /todos", &MapResolver::new()).unwrap_err(), "POST /todos: field · a is not wired");
         let two = EncapSpec { expose: vec![expose(3, 0, "r1"), expose(3, 0, "r2")], ..base() };
-        assert_eq!(route_spec(two, &group, "POST /todos").unwrap_err(), "POST /todos: more than one respond node");
+        assert_eq!(route_spec(two, &group, "POST /todos", &MapResolver::new()).unwrap_err(), "POST /todos: more than one respond node");
         assert_eq!(
-            route_spec(base(), &group, "POST /todos").unwrap_err(),
+            route_spec(base(), &group, "POST /todos", &MapResolver::new()).unwrap_err(),
             "POST /todos: add a respond node (or an effect, answered 204)"
         );
     }
@@ -962,7 +970,7 @@ mod tests {
             let g = [req("r", "POST", "/a"), plain("w", leaf), res("s")];
             let group: Vec<&Node> = g.iter().collect();
             let spec = EncapSpec { promote: vec![promote(0, 0, "request")], expose: vec![expose(2, 0, "response")] };
-            let e = route_spec(spec, &group, "POST /a").unwrap_err();
+            let e = route_spec(spec, &group, "POST /a", &MapResolver::new()).unwrap_err();
             assert!(e.starts_with("POST /a: a route answers and is done, so it doesn't wait"), "{e}");
         }
     }
@@ -974,27 +982,27 @@ mod tests {
         let spec = |expose: Vec<Expose>| EncapSpec { promote: vec![promote(0, 0, "request")], expose };
         // Read by nothing, each call is kept: after the answer and the writes.
         let all = vec![expose(1, 0, "sent"), expose(2, 0, "write"), expose(3, 0, "response"), expose(4, 0, "paid")];
-        let got = route_spec(spec(all), &group, "POST /hook").unwrap();
+        let got = route_spec(spec(all), &group, "POST /hook", &MapResolver::new()).unwrap();
         assert_eq!(got.expose, [expose(3, 0, "response"), expose(2, 0, "write"), expose(1, 0, "sent"), expose(4, 0, "paid")]);
         // Without a respond a write answers (204), not the call before it.
-        let got = route_spec(spec(vec![expose(1, 0, "sent"), expose(2, 0, "write")]), &group, "POST /hook").unwrap();
+        let got = route_spec(spec(vec![expose(1, 0, "sent"), expose(2, 0, "write")]), &group, "POST /hook", &MapResolver::new()).unwrap();
         assert_eq!(got.expose, [expose(2, 0, "write"), expose(1, 0, "sent")]);
         // A call alone isn't the route's answer, nor an action's, but is a clock's work.
         assert_eq!(
-            route_spec(spec(vec![expose(1, 0, "sent")]), &group, "POST /hook").unwrap_err(),
+            route_spec(spec(vec![expose(1, 0, "sent")]), &group, "POST /hook", &MapResolver::new()).unwrap_err(),
             "POST /hook: a call's answer is the far side's, not the route's: add a respond node"
         );
         let mut act = g.clone();
         act[0] = node("r", "action", vec![WParam::frozen("name", "notify")], true);
         let group: Vec<&Node> = act.iter().collect();
         assert_eq!(
-            action_spec(spec(vec![expose(1, 0, "sent")]), &group, "action notify").unwrap_err(),
+            action_spec(spec(vec![expose(1, 0, "sent")]), &group, "action notify", &MapResolver::new()).unwrap_err(),
             "action notify: a call's answer is the far side's, not the action's: respond with something"
         );
         let tick = [plain("t", "every"), plain("h", "http_request")];
         let group: Vec<&Node> = tick.iter().collect();
         let clock = EncapSpec { promote: vec![], expose: vec![expose(1, 0, "sent")] };
-        assert_eq!(clock_spec(clock, &group, "every 1h").unwrap().expose, [expose(1, 0, "sent")]);
+        assert_eq!(clock_spec(clock, &group, "every 1h", &MapResolver::new()).unwrap().expose, [expose(1, 0, "sent")]);
     }
 
     #[test]
@@ -1007,10 +1015,10 @@ mod tests {
             promote: vec![promote(0, 0, "request"), promote(1, 1, "headers"), promote(1, 2, "body")],
             expose: vec![expose(2, 0, "response")],
         };
-        assert_eq!(route_spec(spec(), &group, "GET /fetch").unwrap().promote, [promote(0, 0, "request")]);
+        assert_eq!(route_spec(spec(), &group, "GET /fetch", &MapResolver::new()).unwrap().promote, [promote(0, 0, "request")]);
         let mut unwired = spec();
         unwired.promote.push(promote(1, 0, "path"));
-        assert_eq!(route_spec(unwired, &group, "GET /fetch").unwrap_err(), "GET /fetch: http_request · path is not wired");
+        assert_eq!(route_spec(unwired, &group, "GET /fetch", &MapResolver::new()).unwrap_err(), "GET /fetch: http_request · path is not wired");
     }
 
     fn port(name: &str, ty: Type) -> Port {

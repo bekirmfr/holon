@@ -2,6 +2,98 @@
 
 ## Unreleased
 
+- **A run whose log line couldn't be written reads as lost, not as the log changed.** A line the
+  server couldn't write (a full disk) still moved the chain on, and its head went to the witness:
+  the next line named one that wasn't in the file, so `holon verify` said the chain was BROKEN
+  there, "changed, removed or inserted outside holon", the witness's head was NOT FOUND, and the
+  run after it failed the state check. Now the chain stays on the last line written, its head goes
+  to the witness only once it is in the file, and the next line says from which run on the lines
+  before it were lost (`lost_since`): `verify` lists those runs as not in the file, the chain
+  whole, and doesn't check where the run after them began. Lines lost just before a restart are
+  said by nothing, as a crash's are. And as the server says each run it lost, `verify` now fails
+  an export with runs missing that no line says were lost (`runs 5 to 7 MISSING`): runs removed
+  and the lines after them chained again, which it passed before.
+- **A log line cut short partway doesn't take the next with it.** A write to a flow's log that
+  failed partway (a full disk) left part of its line, and the next line was written on to the end
+  of it, unreadable: a run told it was on record had no record. Now the next line starts a line of
+  its own, as after a crash, and the part is skipped when the log is read.
+- **A run's writes land all or none, and a run whose state wasn't kept is told so.** A run whose
+  writes were refused partway (a value a state can't hold) kept those before it, and a state the
+  store couldn't keep (a full disk) was said only in the server's log, the run answered as done.
+  Now none of the run's state writes land when one is refused, and a run that changed its state
+  fails with "not every write landed" when the state, or the head that names it, can't be kept.
+- **In SQLite, `$2` is the second value wherever it comes in the statement.** SQLite numbers
+  parameters by where each first appears, so `UPDATE t SET v = $2 WHERE id = $1` set `v` to the
+  id and looked for the row by the value: the wrong row changed, or none. Now each `$n` is bound
+  by its name, on every engine alike.
+- **A public key is never taken for a shared secret.** `jwt_verify` read a PEM key only when its
+  text began with `-----BEGIN`: the same key after a byte-order mark, a blank line or a line of
+  explanation, given as bytes, as a DER key, or as a JWK's JSON text was taken as an HMAC secret,
+  so a token signed HS256 with the public key itself (which anyone may have) verified. Now a
+  public key in any of those forms is that key or nothing, and a JWK or JWKS may be given as its
+  JSON, as text or bytes.
+- **The editor's HTML preview shows the page and nothing else.** A value shown as HTML (a run's
+  output, a request's body: text from outside) ran its scripts in the preview's frame, and loaded
+  whatever it named from any address: an image, a style sheet, a font, telling that address the
+  value was looked at, and by whom. Now the frame runs no script and sends no form, and a content
+  policy put before the page holds it to what it carries inline (`data:` images, sounds and fonts,
+  inline styles). A value shown as an image or a sound is shown only when it is a `data:` URL of
+  that kind.
+- **A request a function makes is sent when the function is called, whatever reads its answer.**
+  `const sent = await api.post(…)` in a function was sent only when the function's answer was
+  needed, so `const got = await ask(x)` in a route, read only in a branch not taken, sent nothing,
+  where a request bound in the route itself is sent. Now the request's answer leaves the function
+  by an output of its own, `called`, which the route keeps as it keeps its own requests, and the
+  function is entered for it. What the function returns, and what `ask(x)` reads, is unchanged.
+  Flows with such a function get a new version (the `dexpaprika` and `stripe-to-slack` samples
+  among them): redeploy them.
+- **A call in a branch of a value bound under a condition is accepted, and held to it.** `if (d) {
+  got = v ?? (await api.get(…)).body }`, the same after an early `return`, and `c ? ping(x) :
+  undefined` in an `if` failed `holon check` with "`after` ties a write or a call to what it names:
+  this statement makes none". Now the value is guarded by the statement's conditions, so the call
+  is made only where they hold and the branch needs it. And with a call bound on the statement
+  beside it, `if (d) { const got = ping(x) ?? ping(y) }`, the fallback was made where the `if`
+  didn't hold, since the first call wasn't: it is held now too. Flows with a statement like that
+  get a new version: redeploy them.
+- **An `if` on a condition with no value runs neither branch.** It took its else, as `?:` does,
+  and what followed a `return` in it ran: `if (req.json.amount > 1000) return status(403)` followed
+  by `payout(…)` paid when `amount` was missing, or a text (`"5000"`). Now neither branch runs, a
+  name either changes keeps the value it had, and if a branch can return, nothing after the `if`
+  runs: the route answers 404, or what its `?? status(…)` says. What follows a `switch` that
+  returns from a case is held so too, where its subject is absent. `?:` and `??` are unchanged.
+  Where a missing value should count as false, say so with `?? false`: the trading-bot sample's
+  `if (approved.expired)` now reads `approved.expired ?? false`, as an approval that came has no
+  `expired`, and tidewheel's `/touch` and `/witness` do the same to answer 400 for a body without
+  a touch or a hash. Flows with an `if` get a new version: redeploy them, and look at each `if` on
+  a field a request may lack.
+- **In a `try` block, nothing after a statement that failed runs.** A call bound after a failure
+  was still made, and a function after it still entered, unless it read what failed: `const order
+  = JSON.parse(req.body)` and then `await api.post(…)` sent the request for a body that wasn't
+  JSON. Now what follows a failure in the block isn't run, as JavaScript skips it, so the requests
+  of one try block go one after another, a round each. A function's returned effect, called under
+  an `if` in a try block, is no longer lost (`return { put, … }`). And reading a folder's file
+  (`docs.bytes(…)`) under a condition or after an early `return` no longer fails `holon check` with
+  "`after` ties a write or a call to what it names". Flows with a try block of more than one
+  statement get a new version: redeploy them.
+- **A flow placed as a node is refused for any handler it has, by name.** Only routes were refused:
+  an action's flow was told it "has routes", and a clock's, a file's, a mail's, a feed's or a
+  queue's was placed with its period or its source lost.
+- **`&&` and `||` stop at the operand that decides, as JavaScript's do.** Every operand was run:
+  `ok && record(x)` wrote whatever `ok` was, and a request on the right of `||` was sent after a
+  `true`. Now what follows the operand that decides isn't run, and `false && x` is `false`, `true
+  || x` `true`, whatever `x` is; an operand reached that is absent still makes them absent. And a
+  function called in a branch of an `if`'s condition (`if (c ? f() : undefined)`, `if (a && f())`)
+  no longer fails `holon check` with "the wiring contains a cycle". Flows with a function on the
+  right of `&&` or `||` get a new version: redeploy them.
+- **A function that calls a function no longer loses what it writes.** A write, a put or a send
+  made by a function was performed only when a handler called it. Called from another function
+  that didn't return it by name, it was dropped without a word: the flow passed `holon check`, its
+  approval listed the write, the run answered 200, and nothing was written. A function now passes
+  on every effect it doesn't read, at any depth. And inside a `try`, a function called only for
+  what it does performs the effect it returns first (`return { put, … }`): the block's test that
+  the call arrived read that effect, and an effect that was read was no longer performed. A node
+  that only tests an effect, and can't pass it on, now leaves it to be performed, in text and on
+  the canvas alike. Flows that did either get a new version: redeploy them.
 - **Who may do what is decided in one place.** Every route the control plane answers is a row of
   one table (`crates/holon/src/can.rs`), saying what it asks: nothing, that its caller is signed
   in, or an action on what its path names, as the catalogue of the access design writes it
@@ -143,6 +235,49 @@
   from the newest fossil and the touches since. A fossil can be replayed in the browser against
   the hash the flow kept, and forked into a sea of one's own. It shows what the flow is for when
   the compute doesn't belong in it: the order of things, their record, and who agrees.
+
+- **A handler does what its text says: an action started, and a function that writes or calls
+  out, are held to the `if` and the `return` they are written under.** Until now each ran on
+  every path: `if (amount > 1000) return status(403)` followed by `payout(…)` answered 403 and
+  started the payout. A function that writes, called in a branch (`c ? record(x) : undefined`,
+  `kept ?? record(x)`, a `switch`'s case), now writes only when the branch is taken, and a
+  `switch`'s default makes no call when its subject isn't there, as it already wrote nothing. A
+  flow that has one of these compiles to another unit: **redeploy it** (`holon check` shows the
+  same permissions). The rule a flow has of its own is unchanged, and now said in the reference
+  where it surprises: a condition with no value doesn't hold, so a guard on a missing field lets
+  the request through (`if (req.headers["x-admin"] !== key) return status(401)` with no header),
+  and `a || b` has no value when either side has none. The same handler is now run as a flow and
+  as JavaScript over every way a statement is reached, every kind of thing a handler does and
+  requests with and without each field, and the two must do the same but for that rule.
+- **A review shows the code that deploys.** A document carries its code as a canvas, which
+  deploys, and as a text, which people read; an agent's proposal could carry a text that wasn't
+  its canvas's, and the review, the deploy's diff, `holon flows`, `holon history`, the agent's own
+  tools and the terminal editor showed it as it came. Each now shows a saved text only when it
+  compiles to the unit the canvas deploys as, and the canvas printed otherwise.
+- **SQL: forms that hid a table or a function from a flow's permissions are refused.** A name in
+  SQLite's brackets holding a quote (`select 1 as ["], pan from cards -- "]` read `cards` unseen),
+  a function called by a quoted name or as a schema's (`"query_to_xml"($1, …)`), `table x`, an
+  update or a delete of several tables and `update ignore` (MySQL), `straight_join`'s table, a
+  number run into a word (`1from t`) and Postgres's `U&"…"`. Each says why. What a statement
+  touches is now checked against SQLite's own account of it, over some 17,000 generated
+  statements.
+- **One flow or one staged unit no longer takes the server, or its clocks, down.** A run that
+  panics, whatever started it, is a run that failed, logged as one: a clock's used to end the
+  thread that ticks every deployment's clocks and the deadlines of waiting runs, for good and
+  with nothing in any log. A staged unit with an edge to port four billion is refused like any
+  wiring that doesn't validate (it asked for 51 GiB first, which ended the server). A number
+  that isn't finite, which only a `js` function makes (`1 / 0`), is written `Infinity` or `NaN`
+  beside a text, where it panicked, and `toString(2)` of one gives nothing, where it asked for
+  64 GiB.
+- **A strict run whose record couldn't be written is told so, whichever run synced first.** With
+  a write failing and runs side by side, a run could answer as recorded with no line on record.
+- **A `js` function's fuel is its code's and its arguments' alone.** The first call in a process
+  paid for translating the engine's functions (15.8M instructions against 12.1M after), so a run
+  near its budget could pass on a server long up and fail when checked by `holon verify`. And a
+  module's answer holding an effect is refused: a module computes, and only a leaf performs.
+- **The trading-bot sample doesn't place an order nobody approved.** Its approval running out
+  placed the order as approved by "someone"; it now leaves the order unplaced, and no longer
+  waiting. The reference says what a wait gives when it runs out (`{ expired: true }`).
 
 ## 0.1.0-rc.34
 

@@ -247,6 +247,14 @@ pub(crate) struct Report {
     pub(crate) bad_lines: Vec<usize>,
     /// Runs that don't follow the line before them.
     pub(crate) breaks: Vec<u64>,
+    /// Runs whose lines the server couldn't write, as the line after them says
+    /// (`LogEntry::lost_since`): the first and the last of each run of them. Not a break: the
+    /// chain goes on from the line before them.
+    pub(crate) lost: Vec<(u64, u64)>,
+    /// Runs missing between two lines that no line says were lost: the first and the last of each.
+    /// The server numbers runs one after another and says each it couldn't write, so a gap nothing
+    /// says is runs removed, the lines after them chained again.
+    pub(crate) gaps: Vec<(u64, u64)>,
     /// Its newest line's hash, and whether that is the head the export names.
     pub(crate) head: String,
     pub(crate) head_matches: bool,
@@ -333,6 +341,7 @@ impl Report {
     /// unit what it says, and every run that could be run again producing what the log says.
     pub(crate) fn ok(&self) -> bool {
         self.breaks.is_empty()
+            && self.gaps.is_empty()
             && self.head_matches
             && self.event_breaks.is_empty()
             && self.bad_event_lines.is_empty()
@@ -356,6 +365,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     let mut entries: Vec<(LogEntry, &str)> = Vec::new();
     let mut head = String::new();
     let mut chained = false;
+    let mut last: Option<u64> = None;
     for (i, line) in export.lines.iter().enumerate() {
         let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes()) else {
             report.bad_lines.push(i + 1);
@@ -366,6 +376,16 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         } else if (chained || !entry.prev.is_empty()) && entry.prev != head {
             report.breaks.push(entry.seq);
         }
+        // The runs missing before it, but those it says were lost.
+        let said = lost_before(&entry);
+        if let Some(before) = last
+            && let from = said.map_or(entry.seq, |(from, _)| from)
+            && from > before + 1
+        {
+            report.gaps.push((before + 1, from - 1));
+        }
+        last = Some(entry.seq);
+        report.lost.extend(said);
         chained |= !entry.prev.is_empty();
         head = line_hash(line);
         if witnessed == Some(head.as_str()) {
@@ -538,6 +558,12 @@ fn moves_state(ev: &crate::events::Event) -> bool {
     matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle")
 }
 
+/// The runs whose lines the server couldn't write before `entry`'s, as it says: the first and the
+/// last.
+fn lost_before(entry: &LogEntry) -> Option<(u64, u64)> {
+    entry.lost_since.filter(|from| *from < entry.seq).map(|from| (from, entry.seq - 1))
+}
+
 /// Whether two runs ran at once, give or take a millisecond.
 fn beside(a: &LogEntry, b: &LogEntry) -> bool {
     let ((a0, a1), (b0, b1)) = (span(a), span(b));
@@ -563,7 +589,9 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a power loss lost:
 /// where every cell that doesn't follow is one such a handler may write, it is said unchecked, as
 /// its author chose, not a break. A cell no such handler writes, a handler whose units aren't all
-/// here, or a run before it that couldn't be run again leaves it a break.
+/// here, or a run before it that couldn't be run again leaves it a break. Nor is a run whose line
+/// the server couldn't write, which the line after it says: a run after the one before it here,
+/// and after it, may have begun from what it left, and is said unchecked.
 fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks, resolver: &impl holon_core::Resolver) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
@@ -587,6 +615,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         })
         .collect();
     let hash = |i: usize| began[i].as_ref().map(|(h, _)| h);
+    let lost: Vec<(u64, u64)> = entries.iter().filter_map(|(e, _)| lost_before(e)).collect();
     for (i, (b, _)) in entries.iter().enumerate() {
         if !ran(b) {
             continue;
@@ -650,6 +679,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                                 .and_then(|moved| lightly(&moved, light(p), light(b)))
                             {
                                 states.unchecked(why, b.seq);
+                            } else if lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) {
+                                states.unchecked("where it began: a run between it and the run before it here, whose line the server couldn't write, may have left it", b.seq);
                             } else {
                                 states.breaks.push((b.seq, format!("it began from a state the run before it (run {}) didn't leave, nor a run beside it", p.seq)));
                             }
@@ -1516,6 +1547,28 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     out += &format!("  {chain}\n");
     if !r.bad_lines.is_empty() {
         out += &format!("  lines {} aren't runs (cut short by a crash, or changed)\n", list(&r.bad_lines));
+    }
+    // Runs, first to last: theirs, and whether they are one.
+    let spans = |s: &[(u64, u64)]| {
+        let runs: Vec<String> = s.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a} to {b}") }).collect();
+        (runs.join(", "), matches!(s, [(a, b)] if a == b))
+    };
+    if !r.lost.is_empty() {
+        let (runs, one) = spans(&r.lost);
+        out += &format!(
+            "  {} {runs} {} in the file: the server couldn't write {}, and the line after says so\n",
+            if one { "run" } else { "runs" },
+            if one { "isn't" } else { "aren't" },
+            if one { "its line" } else { "their lines" }
+        );
+    }
+    if !r.gaps.is_empty() {
+        let (runs, one) = spans(&r.gaps);
+        out += &format!(
+            "  {} {runs} MISSING: not in the file, and no line says the server couldn't write {} (removed, and the lines after chained again)\n",
+            if one { "run" } else { "runs" },
+            if one { "it" } else { "them" }
+        );
     }
     out += &if r.head_matches {
         format!("  head: {} is the newest run's\n", short(&r.head))

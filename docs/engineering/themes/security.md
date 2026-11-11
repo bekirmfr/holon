@@ -151,6 +151,16 @@ carrying a secret goes to the caller only under `SecretAnswer("name")` (listener
 can be changed while deployed (grants.rs): a revoke that leaves the manifest uncovered pauses the
 deployment (`attention`) until it is granted back; load rechecks every grant.
 
+**What a person reads is what deploys.** A document carries its code twice: a canvas, which is
+what deploys, and a text (`source`), which is what a person reads, and whoever saves or proposes a
+document writes both (an agent's token can post any JSON). So a document's text is shown only
+when it compiles to the unit its canvas deploys as, and its canvas printed otherwise
+(`holon_author::agent::text_of`): the review of a proposal and the diff beside a deploy in the
+editor (through the bridge, `document_text`), `holon flows`, `holon history`, a deploy's diff, the
+agent's own tools and the terminal editor all read it there. Before, each showed the saved text
+as it came, so a proposal could show one program and deploy another within the permissions shown.
+The permissions were never in question: they are derived from the unit that deploys.
+
 ### 2.5 Outbound requests (outbound.rs)
 
 `Outbound::send` holds every `http_request`, on every redirect too: only granted hosts (`check`:
@@ -219,7 +229,9 @@ databases an admin bound, only the tables granted, no DDL (databases.rs); the gr
 (above); its secrets by name; other flows' actions (calls.rs, never handed a secret:
 `a_secret_is_never_sent_to_another_flow`); the clock, random numbers and its request. A module
 runs as WebAssembly with no imports under a fuel and memory budget (holon-module), its budgets
-limits with ceilings (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`). No folder or database
+limits with ceilings (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`), and answers values only:
+an answer holding an effect is refused whole (`run_module_outputs`), so a module performs nothing
+and what a flow performs is what its leaves build. No folder or database
 may be bound to, or over, the server's own files (`server_files`, `Folders::open`): those it was
 given, what it keeps beside the deployments file (`BESIDE_DEPLOYMENTS`: the logs, the state heads,
 the arrivals, the heads, the activity log), the secrets' audit, the `.env`, the key's file, and
@@ -230,7 +242,11 @@ them and `POST /unit` only decodes what it stores: a closure nested past 64 unit
 than 20,000 is refused, and so is one with a unit core's `validate` refuses (an edge outside its
 children's ports, two sources for one port, a cycle, types that don't fit, a module that isn't
 one, a family leaf's parameter outside its values), each unit validated as a closure reads it from
-the store, not again while the closure cache keeps it (units.rs `load_closure`). A deploy of one is
+the store, not again while the closure cache keeps it (units.rs `load_closure`), and before a
+shape is made of it: a shape is laid out by the ports its edges name, and one edge to port four
+billion asked for a list of 51 GiB, which ends the server where a panic is answered 500. Core's
+shape no longer makes such a list either (`Incoming::room`), for the unit whose far edge goes into
+a child nobody staged, which can't be validated against it. A deploy of one is
 a 400 saying which unit and why; `holon verify` doesn't run one again (verify.rs `past_bounds`).
 The bound is one a run's thread holds: a route nested to it, composites in composites or maps
 whose function maps again, answers on a thread of 2 MiB, a runtime's, in a debug build.
@@ -401,11 +417,15 @@ What is not defended, or only partly:
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the
   folder on their way then swapped for a link out: each lands, or reads, where it was checked),
   `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`.
-- **Units**: `a_closure_with_a_unit_that_doesnt_validate_is_refused` (a port a child doesn't have,
-  two sources for one, a cycle; the unit as the root and nested), `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`
+- **Units**: `a_staged_unit_loads_or_is_refused_whatever_its_wiring` (3,000 units drawn: children
+  staged or not, edges to and from ports that exist, don't, or are far out, to one port twice,
+  round in a cycle, an effect into a sink; each as the root and nested, and what the loader says
+  is what `validate` says, every kind of mistake made at least ten times; it replaced a test of
+  three wirings picked by hand, and one of an effect wired into a write), core's `the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room` (20,000 edge
+  sets: the table the evaluator reads answers every lookup as a plain map would, in the room of
+  its edges) and `audit_unvalidated_composites_never_panic_in_eval`, `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`
   (every sample's closure loads, so every sample validates; holon-author's
-  `every_samples_units_pass_validation` says so before the server), `effect_written_to_state_does_not_take_the_server_down`
-  (an effect wired into a write is refused at deploy), and `holon verify`'s
+  `every_samples_units_pass_validation` says so before the server), and `holon verify`'s
   `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`;
   `the_deepest_route_a_server_runs_fits_a_runtimes_thread` (a route nested to the bound answers on
   a 2 MiB thread through the server's own resolver).

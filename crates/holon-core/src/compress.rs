@@ -348,6 +348,9 @@ mod tests {
         let zeros = gzip(&vec![0u8; 100_000]);
         assert_eq!(gunzip_within(&zeros, 100_000).map(|b| b.len()), Some(100_000));
         assert_eq!(gunzip_within(&zeros, 99_999), None);
+        let members = [gzip(&[0u8; 600]), gzip(&[0u8; 600])].concat();
+        assert!(gunzip_within(&members, 1200).is_some());
+        assert_eq!(gunzip_within(&members, 1199), None, "the members together");
         let two = zip([("a", &[0u8; 600][..]), ("b", &[0u8; 600][..])]).unwrap();
         assert!(unzip_within(&two, 1200).is_some());
         assert_eq!(unzip_within(&two, 1199), None, "the files together");

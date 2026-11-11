@@ -88,17 +88,33 @@ pub fn plan(source: &str) -> Result<Plan, String> {
 }
 
 /// A flow's document as the language's text: the text it was saved with (the editor's text pane
-/// and the agent tools keep it, comments and all) when that still compiles, else printed from the
-/// canvas, with the binding names an agent gave it.
+/// and the agent tools keep it, comments and all) when that is the code its canvas is, else
+/// printed from the canvas, with the binding names an agent gave it.
+///
+/// What a document deploys as is its canvas; its text is beside it, for people, and whoever
+/// saves or proposes a document writes both. So a saved text is shown only when it compiles to
+/// the unit the canvas deploys as ([`says_its_canvas`]): a text that says something else (one
+/// that no longer compiles, or one written to be read while another is deployed) gives way to
+/// the canvas. Every reading of a document's text comes through here, and the editor's through
+/// the bridge (`document_text`), so what a person reviews is what would run.
 pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-        && plan(source).is_ok()
+        && says_its_canvas(source, &doc)
     {
         return Ok(source.to_string());
     }
-    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
     print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings).map(|(text, _)| text)
+}
+
+/// Whether `source` compiles to the unit `doc`'s canvas deploys as.
+fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
+    let Ok(said) = plan(source) else { return false };
+    let mut store = MapResolver::new();
+    crate::text::restore(doc, &mut store, &Names::new());
+    let port = doc.server.clone().unwrap_or_default().port;
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
@@ -946,19 +962,73 @@ mod tests {
         assert!(!noted.iter().any(|l| *l >= 11), "the other action didn't run: {noted:?}");
     }
 
-    /// A flow's text: as it was saved, comments and all, when that still compiles; else printed
-    /// from its canvas, with the names it was written with.
+    /// **Guards:** the text a document is shown as is the code it deploys as, whatever text was
+    /// saved beside its canvas: as saved, comments and all, when that text is the canvas's code,
+    /// and printed from the canvas when it isn't.
+    ///
+    /// **Why:** a document carries its code twice, as a canvas (what deploys) and as a text (what
+    /// a person reads), and whoever saves or proposes it writes both: the editor, the agent tools,
+    /// or anything that can post JSON with an agent's token. Nothing else ties the two.
+    ///
+    /// **If it fails:** a person approving an agent's proposal reads one program and deploys
+    /// another, within the permissions the approval shows: the review, the diff, `holon flows`,
+    /// the agent's own `flows` tool and the terminal editor all showed the saved text as it came.
+    ///
+    /// Every sample is a document; beside each canvas is put its own text, another sample's, its
+    /// own with a route added or its port changed, and one that doesn't compile, and each sample's
+    /// text is put beside another's canvas. What is shown always compiles to what deploys.
     #[test]
-    fn a_flows_text_is_the_saved_text_or_its_canvas_printed() {
-        let text = samples::sample("slugs").unwrap().text;
-        let mut document = plan(text).unwrap().document;
-        let printed = text_of("slugs", &document).unwrap();
-        assert!(printed.contains("\nflow(\"slugs\", { port: 8110 })\n") && printed.contains("  const author = slugify(req.json.author)\n"), "{printed}");
-        assert!(!printed.contains("//"), "printed from the canvas: no comments");
-        document["source"] = json!(text);
-        assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
-        document["source"] = json!("import { flow, route } from \"holon\"\n\nflow(\"slugs\")\n\nroute.get(\"/a\", () => nope)\n");
-        assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
+    fn the_text_a_document_shows_is_the_code_it_deploys() {
+        let all = samples::samples();
+        let plans: Vec<Plan> = all.iter().map(|s| plan(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name))).collect();
+        // A text's unit, compiled once: a sample's text is asked for many times over.
+        let units = std::cell::RefCell::new(HashMap::<String, Result<String, String>>::new());
+        let unit_of = |text: &str| units.borrow_mut().entry(text.to_string()).or_insert_with(|| plan(text).map(|p| p.unit)).clone();
+        let (mut forged, mut kept) = (0, 0);
+        for (i, (sample, own)) in all.iter().zip(&plans).enumerate() {
+            let shown = |source: Option<&str>| {
+                let mut document = own.document.clone();
+                if let Some(source) = source {
+                    document["source"] = json!(source);
+                }
+                text_of(sample.name, &document).unwrap_or_else(|e| panic!("{}: {e}", sample.name))
+            };
+            // With no text saved, its canvas printed (a sample opens with a comment, which a canvas
+            // doesn't keep): the same unit.
+            let printed = shown(None);
+            assert_ne!(printed, sample.text, "{}: printed from the canvas", sample.name);
+            assert_eq!(unit_of(&printed).as_ref(), Ok(&own.unit), "{}: its canvas printed is its code", sample.name);
+            // Its own text, as saved.
+            assert_eq!(shown(Some(sample.text)), sample.text, "{}: its own text is shown as saved", sample.name);
+            // Texts that say something else.
+            let other = &all[(i + 1) % all.len()];
+            let mut others = vec![
+                other.text.to_string(),
+                format!("{}\nroute.get(\"/one-more\", () => \"added\")\n", sample.text),
+                "import { flow, route } from \"holon\"\n\nflow(\"x\")\n\nroute.get(\"/a\", () => nope)\n".to_string(),
+                "not a flow at all".to_string(),
+            ];
+            if let Some(port) = sample.port {
+                others.push(sample.text.replacen(&format!("port: {port}"), &format!("port: {}", port.parse::<u32>().unwrap() + 1), 1));
+            }
+            for said in &others {
+                let text = shown(Some(said));
+                assert_eq!(unit_of(&text).as_ref(), Ok(&own.unit), "{}: what is shown is what deploys, beside a text that says {said:.60?}…", sample.name);
+                match unit_of(said) == Ok(own.unit.clone()) {
+                    // The same code written otherwise (a sample whose text has no port to change).
+                    true => kept += 1,
+                    false => {
+                        assert_ne!(&text, said, "{}: a text that isn't its canvas's code isn't shown", sample.name);
+                        forged += 1;
+                    }
+                }
+            }
+            // And its text beside another's canvas.
+            let mut document = plans[(i + 1) % all.len()].document.clone();
+            document["source"] = json!(sample.text);
+            assert_eq!(unit_of(&text_of(other.name, &document).unwrap()).as_ref(), Ok(&plans[(i + 1) % all.len()].unit), "{}'s text beside {}'s canvas", sample.name, other.name);
+        }
+        assert!(forged > all.len() * 4 && kept < all.len(), "{forged} texts that weren't the canvas's, {kept} that were");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that

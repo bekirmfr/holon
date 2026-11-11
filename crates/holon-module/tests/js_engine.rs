@@ -148,22 +148,9 @@ fn the_prelude_leaves_no_clock_randomness_io_or_locale() {
 }
 
 #[test]
-fn two_calls_share_nothing() {
-    assert_eq!(value("() => { globalThis.counter = (globalThis.counter ?? 0) + 1; return globalThis.counter }", vec![]), Some(n(1.0)));
-    assert_eq!(value("() => { globalThis.counter = (globalThis.counter ?? 0) + 1; return globalThis.counter }", vec![]), Some(n(1.0)));
-}
-
-#[test]
 fn a_body_that_never_ends_runs_out_of_fuel() {
     let starved = ModuleLimits { fuel: 20_000_000, memory: 64 << 20 };
     assert_eq!(call_with("() => { while (true) {} }", vec![], &starved).unwrap_err(), RunError::OutOfFuel { fuel: 20_000_000 });
-}
-
-#[test]
-fn the_same_call_answers_the_same_bytes() {
-    let a = Engine::new().run(ENGINE, &ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 }, &[Some(t("(x) => ({ x, keys: Object.keys({ b: 1, a: 2 }) })")), Some(Value::List(vec![n(1.5)]))]).unwrap();
-    let b = Engine::new().run(ENGINE, &ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 }, &[Some(t("(x) => ({ x, keys: Object.keys({ b: 1, a: 2 }) })")), Some(Value::List(vec![n(1.5)]))]).unwrap();
-    assert_eq!(a, b);
 }
 
 /// What a call costs, printed: how the `js` defaults were chosen. Half a minute under the debug

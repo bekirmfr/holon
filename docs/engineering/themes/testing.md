@@ -25,6 +25,36 @@ tested from there.
 
 ## 2. What holds what
 
+A test here holds a class of cases, not the case that was found: a sweep over every leaf, a
+property against a plain model, an oracle asked over generated cases (JavaScript itself, SQLite's
+authorizer, the eager evaluator), a model run with failures put in, a table with a row for every
+kind. A test written for one bug holds that bug; the bug beside it is found by the next person it
+bites. Each says in its doc what it **guards**, **why** that can break, and what it means for
+someone **if it fails**. When a test of a class is written, the tests of single cases it covers
+are dropped, their cases made rows of it.
+
+### What a flow's text says is what it does
+
+- `a_handler_does_what_its_text_says` (`holon/src/tests/semantics.rs`): the same handler body run
+  as a flow and as JavaScript (on the engine a `js` node runs on), over every way a statement is
+  reached or not (an `if`, an else, after a `return`, a `switch`'s case, a branch of `?:`, what
+  `??` falls back to, a `try`), every kind of thing a handler does (a write, a put, a log line, an
+  action started, a function that writes and one that calls out, a request), every form of
+  condition and requests with and without each field: 949 handlers, 7,016 runs. What each did is
+  read from the run's own record. A flow differs from JavaScript by one rule (a value that isn't
+  there, LANGUAGE.md §5.6), which the test writes out as JavaScript and holds exactly: 5,383 runs
+  do as JavaScript does and 1,513 as that rule says. Three places where a flow doesn't yet do what
+  it reads as are listed in it with why (`DEBTS`: a `try`, `&&` and `||`, a request inside a
+  function), 128 runs, and the test fails when one stops differing. Before it, an action started
+  and a function that writes or calls out ran on every path, 1,393 of the first 4,360 runs; it
+  also found a function that writes entered in a branch not taken, and a `switch`'s default
+  making its calls, though not its writes, with no subject. It replaced four tests of one or two
+  such paths each.
+
+### What a statement touches is what its manifest names
+
+- `sql_oracle.rs` in holon-core's tests: see [Databases](../capabilities/databases.md), §5.
+
 ### Nothing changes by accident
 
 The golden records are the floor every optimisation stands on.
@@ -90,8 +120,9 @@ A slower path that is still right would pass every test above; these fail instea
 - `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`: strict reads,
   writes and actions sync before answering; lazy ones and 404s add no sync; 32 strict runs at once
   take at most one sync each.
-- `one_sync_covers_every_entry_written_before_it`, `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty`,
-  `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`.
+- `one_sync_covers_every_entry_written_before_it`, `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`;
+  `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model with failed
+  writes and failed syncs) holds what a run is told.
 - `a_run_writes_only_its_state_head_and_only_when_it_changed_the_state`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`.
 - `corrupt_persistence_file_is_an_error_not_an_empty_table` (a corrupt file once loaded as empty,
@@ -106,12 +137,17 @@ A slower path that is still right would pass every test above; these fail instea
 
 - `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (12.1, R2): which runs answer
   on the worker and which on the pool, then over a real socket.
-- `a_run_that_panics_is_answered_500_inline_as_on_the_pool` (R1).
+- `a_panic_ends_its_run_and_nothing_else` (R1, G3): a table, each way a run starts a row (a request
+  on the worker and on the pool, an action, a clock, a file, a waiting run at its deadline), a
+  panic asked for in the run and in the request's handler before it. Calm, faulted, calm again:
+  the run fails, its caller is told 500, it is logged as failed, the deployment beside it runs,
+  and what drives runs goes on. It replaced the test of the two request rows alone.
 - `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
   busy log is written and cut back.
-- `a_fire_in_progress_does_not_stall_the_table`, `effect_written_to_state_does_not_take_the_server_down`:
-  both regressions (a persist held the table's lock waiting on a state lock; a panic under a
-  state lock poisoned it for every later request).
+- `a_fire_in_progress_does_not_stall_the_table`: a regression (a persist held the table's lock
+  waiting on a state lock). The other of its kind, a panic under a state lock that poisoned it for
+  every later request (an effect written to state), is a row of
+  `a_staged_unit_loads_or_is_refused_whatever_its_wiring`.
 - `concurrent_runs_lose_no_update`, `a_slow_run_holds_up_no_other_and_retries_without_resending`.
 - `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`,
   `a_composite_nested_as_deep_as_a_host_runs_fits_half_a_threads_stack`.
@@ -188,6 +224,11 @@ host's size (2 MiB), since an overflowed stack aborts every deployment on the se
   among them: about 480 variants, 222,000 evaluations, none panicking, answering a number that
   isn't finite or a value nested past the bound, answering differently twice, or taking 2 s. It
   prints the slowest; `HOLON_AUDIT_TRACE=1` names each evaluation, for when one overflows.
+- `no_pure_leaf_panics_on_a_number_that_isnt_finite` (the same file): the same variants over NaN
+  and the infinities, alone and inside a list and a record. No leaf answers such a number, but a
+  module may (a `js` function's `1 / 0`), and the pool above holds none. It found a number written
+  beside a text panicking (`number_text`), and `number_format` in a radix asking for 64 GiB, which
+  aborts the server where a panic is answered 500.
 - How deep a value nests (256, `MAX_VALUE_DEPTH`): `a_leaf_puts_nothing_past_the_depth_a_value_may_nest`
   (each leaf that puts a value down, at the bound and one short of it, lent and given),
   `no_leaf_builds_a_value_nested_past_the_bound` (every leaf, a value at the bound or one short of
@@ -245,6 +286,11 @@ None of these fail on a slower build; they print numbers. See [Measuring](measur
 | `what_a_call_costs` | `cargo test -p holon-module --test js_engine -- --ignored` | a js call's cost, cold and warm |
 
 ## 4. Gaps
+
+Every test was read against §2's rule on 2026-11-11: five in six still hold a case, not a class.
+The classes they are examples of, the generic test conceived for each, the order to take them in
+and the holes in the class-level tests that exist are in
+[the test suite review](../../L4s/test-suite-review-L4.md).
 
 Known, and not yet covered:
 

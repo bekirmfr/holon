@@ -216,6 +216,22 @@ export function availableRenderers(v: WValue): RendererKind[] {
   return all;
 }
 
+/** The policy a run's HTML is shown under: it loads nothing but what it holds (inline styles,
+ *  `data:` images, media and fonts). */
+export const INERT_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; media-src data:; font-src data:";
+
+/** A run's HTML as the HTML renderer shows it, in a frame that runs no script (`sandbox=""`): the
+ *  policy first, after a leading doctype so the page keeps its mode, and so before anything of
+ *  the text's. A run's HTML is anyone's (a request's body, a far side's answer): shown with its
+ *  scripts and loads, it would run in the editor of whoever opens the run, and say who did.
+ *  Only HTML's own whitespace is kept before the doctype with it: `\s` would take a byte-order
+ *  mark too, which a browser drops from a srcdoc but a parser that doesn't reads as text, opening
+ *  the body before the policy, where it holds nothing. */
+export function inertHtml(text: string): string {
+  const doctype = /^[\t\n\f\r ]*<!doctype[^>]*>/i.exec(text)?.[0] ?? "";
+  return `${doctype}<meta http-equiv="Content-Security-Policy" content="${INERT_POLICY}">${text.slice(doctype.length)}`;
+}
+
 /** A one-line summary of a deployment's state for a session row: lists and records by size,
  *  other values as themselves (cut short). `todos: 5 items, count: 3`. */
 export function summarizeState(state: Record<string, WValue> | null): string {

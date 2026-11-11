@@ -8,7 +8,7 @@ import { createElement, useCallback, useMemo, useState, type MutableRefObject } 
 import type { Edge, Viewport } from "@xyflow/react";
 import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
-import { bindingsOf, printHolon } from "./holonText";
+import { bindingsOf, documentText, printHolon } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
@@ -186,7 +186,7 @@ export function useDeployFlow({
       const now = source ?? printHolon(name, { nodes: ns, edges: es, server: settings }, ev);
       if (!existing) return codeHunk(null, now);
       const doc = await getDeployedDocument(name);
-      return codeHunk(doc.source ?? printHolon(name, doc, ev), now);
+      return codeHunk(documentText(name, doc), now);
     } catch {
       return null;
     }

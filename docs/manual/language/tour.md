@@ -119,7 +119,8 @@ Three smaller forms:
 - `c ? a : undefined` is `a` only when `c` is `true`, and no value otherwise.
 - `c ? a : b` is `a` when `c` is `true`, otherwise `b`. Like a `switch` case, the side chosen is the
   answer: if `a` has no value, neither has the whole. `if (c) … else …` chooses between statements
-  the same way.
+  the same way, but where `c` has no value it runs neither branch, and if one of them returns,
+  nothing after it runs: the route answers 404.
 - `a ?? b`, from before.
 
 Like `switch`, they only run what they need: the branch not taken isn't computed, so its requests

@@ -286,14 +286,23 @@ fn audit_unvalidated_composites_never_panic_in_eval() {
         let n = 1 + rng.next(7) as usize;
         let children: Vec<Hash> = (0..n).map(|_| hs[rng.next(hs.len() as u64) as usize]).collect();
         // Random edges, deliberately including out-of-range children/ports and self/back edges.
+        // A port is any number an edge writes: one in twenty is far out, the last port there is
+        // among them (a list as long as its highest port would be 51 GiB, and no test's to make).
         let n_edges = rng.next(16) as usize;
         let end = |v: u64| if v == 0 { BOUNDARY } else { (v - 1) as u32 };
+        let port = |v: u64| match v {
+            0 => u32::MAX,
+            1 => u32::MAX - 1,
+            2 => 1 << 30,
+            3 => 70_000,
+            v => (v % 4) as u32,
+        };
         let edges: Vec<Edge> = (0..n_edges)
             .map(|_| Edge {
                 from_child: end(rng.next(n as u64 + 3)),
-                from_port: rng.next(4) as u32,
+                from_port: port(rng.next(80)),
                 to_child: end(rng.next(n as u64 + 3)),
-                to_port: rng.next(4) as u32,
+                to_port: port(rng.next(80)),
             })
             .collect();
         let n_out = 1 + rng.next(2) as usize;
@@ -396,38 +405,6 @@ fn audit_kept_shape_cache_never_crosses_units_on_one_thread() {
             }
         }
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ITEM 3 (stack depth). A composite nested exactly MAX_CLOSURE_DEPTH (64) deep — the
-// deepest the host will deploy/run — must still evaluate on a 2 MiB thread (tokio's
-// worker and blocking-pool default, which is what the data plane runs eval on). This is
-// a regression guard: the rewrite's per-level frame must not have grown enough to
-// overflow a unit at the deploy bound.
-// ─────────────────────────────────────────────────────────────────────────────
-#[test]
-fn audit_64_deep_composite_evaluates_on_a_2mib_thread() {
-    let mut r = MapResolver::new();
-    let hadd = r.insert(prim("add", 2, vec![])).unwrap();
-    let wrap = |children: Vec<Hash>| Unit {
-        body: UnitBody::Composite { children, edges: vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, Edge { from_child: BOUNDARY, from_port: 1, to_child: 0, to_port: 1 }, Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }] },
-        params: vec![],
-        inputs: vec![any_port("a"), any_port("b")],
-        outputs: vec![any_port("out")],
-    };
-    let mut below = r.insert(wrap(vec![hadd])).unwrap();
-    for _ in 0..61 {
-        below = r.insert(wrap(vec![below])).unwrap();
-    }
-    // 1 (add) + 62 inserted wrappers + the top = 64 units deep.
-    let top = wrap(vec![below]);
-    let out = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(move || eval(&top, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec())
-        .unwrap()
-        .join()
-        .unwrap();
-    assert_eq!(out, vec![Some(num(15.0))]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

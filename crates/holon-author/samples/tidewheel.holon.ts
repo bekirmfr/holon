@@ -545,7 +545,7 @@ route.post("/touch", (req) => {
   const y = Math.floor(req.json.y)
   const inside = x >= 0 && x < 96 && y >= 0 && y < 96
   const k = (state.n ?? 0) + 2
-  if (inside) {
+  if (inside ?? false) {
     inputs[`${String(k).padStart(8, "0")}-${Math.floor(random * 1000000000)}`] = { x, y }
     return status(202, { tick: k })
   }
@@ -587,7 +587,7 @@ route.post("/witness", (req) => {
   const key = String(n).padStart(8, "0")
   const asked =
     n % 60 === 0 && n <= (state.n ?? 0) && n > (state.n ?? 0) - 3000 && text_length(hash) === 64
-  if (asked) {
+  if (asked ?? false) {
     const others = Object.values(witnesses.list({ prefix: `${key}-`, limit: 500 })).filter(
       (v) => v.id !== who,
     )

@@ -71,6 +71,9 @@ writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresse
 // The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
 // admin binds them; fixtures.ts names them.
 const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
+// A run stopped before its clean-up leaves what its tests dropped there (a queue's messages, say):
+// emptied before the stand-ins start reading them, so none is handed out to this run again.
+rmSync(folders, { recursive: true, force: true });
 // The approval-mail sample's SMTP server (smtp-sink.mjs), its URL in the dotenv as an admin's
 // would be: each mail it takes lands in the folders' mail/, where the tests read it.
 const smtp = fresh ? null : await smtpSink(join(folders, "mail"));

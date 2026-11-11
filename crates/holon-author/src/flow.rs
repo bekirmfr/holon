@@ -212,7 +212,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let endpoint = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match route_spec(proposed, &group, &label) {
+            let spec = match route_spec(proposed, &group, &label, store) {
                 Ok(spec) => spec,
                 // Already says which route.
                 Err(e) => return Ok(Err(e)),
@@ -238,7 +238,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let clock = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match clock_spec(proposed, &group, &c.label) {
+            let spec = match clock_spec(proposed, &group, &c.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -263,7 +263,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let file = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match file_spec(proposed, &group, &f.label) {
+            let spec = match file_spec(proposed, &group, &f.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -288,7 +288,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let mail = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match mail_spec(proposed, &group, &m.label) {
+            let spec = match mail_spec(proposed, &group, &m.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -313,7 +313,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let feed = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match feed_spec(proposed, &group, &g.label) {
+            let spec = match feed_spec(proposed, &group, &g.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -338,7 +338,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let queue = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match queue_spec(proposed, &group, &g.label) {
+            let spec = match queue_spec(proposed, &group, &g.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -362,7 +362,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let socket = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match socket_spec(proposed, &group, &g.label) {
+            let spec = match socket_spec(proposed, &group, &g.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };
@@ -387,7 +387,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         let action = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;
             let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
-            let spec = match action_spec(proposed, &group, &a.label) {
+            let spec = match action_spec(proposed, &group, &a.label, store) {
                 Ok(spec) => spec,
                 Err(e) => return Ok(Err(e)),
             };

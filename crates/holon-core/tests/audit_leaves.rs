@@ -75,6 +75,11 @@ fn pool() -> Vec<Value> {
         txt("1e400"),
         txt("{\"a\":[1,{\"b\":null}],\"__proto__\":2}"),
         txt(&"ab😀".repeat(3000)),
+        // Texts that hex and base64 decode, in each alphabet, and padding alone.
+        txt("00ff7f80"),
+        txt("aGVsbG8gd29ybGQ="),
+        txt("_-8"),
+        txt("===="),
         Value::Boolean(true),
         Value::Boolean(false),
         Value::List(vec![]),
@@ -92,6 +97,41 @@ fn pool() -> Vec<Value> {
         rec(&[("a", rec(&[("a", rec(&[("a", num(0.0))]))]))]),
         Value::Sum { arm: 0, payload: Box::new(num(1.0)) },
         Value::Effect { sink: "store_write".into(), payload: Box::new(num(1.0)) },
+    ]
+    .into_iter()
+    .chain(bytes())
+    .collect()
+}
+
+/// Bytes a file, a request or another leaf can hand a leaf: none, odd ones, UTF-8 that isn't, the
+/// starts of a gzip, a zip and an OpenPGP packet with lengths past anything, a gzip that inflates
+/// past what a leaf may make (64 MiB and a byte of zeros, in one member: refused inside it, in a
+/// tenth of a second unoptimised; members each within it and together past it are
+/// compress.rs's `inflating_stops_at_its_budget`, as checking each one's checksum first takes a
+/// second here), a zip and a gzip that are whole, and noise.
+fn bytes() -> Vec<Value> {
+    let b = |v: Vec<u8>| Value::Bytes(v);
+    let made = |leaf: &str, input: Value| match holon_core::primitives::compute(leaf, &[&input], &[]) {
+        Some(Value::Bytes(v)) => v,
+        other => panic!("{leaf} gave {other:?}"),
+    };
+    let mut rng = Rng(0x5851_f42d_4c95_7f2d);
+    vec![
+        b(vec![]),
+        b(vec![0, 1, 0x7f, 0x80, 0xff]),
+        b(vec![0xc3, 0x28, 0xf0, 0x9f, 0x98]),
+        b("héllo".as_bytes().to_vec()),
+        b(vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0x01]),
+        b(made("gzip", b(vec![0; (64 << 20) + 1]))),
+        b(made("gzip", txt("hello"))),
+        b(b"PK\x03\x04\x14\0\0\0\x08\0".to_vec()),
+        b([b"PK\x05\x06\0\0\0\0".as_slice(), &[0xff; 12], &[0, 0]].concat()),
+        b(made("zip", rec(&[("a.txt", txt("hello")), ("b/c.bin", b(vec![1, 2, 3]))]))),
+        b(vec![0x99, 0xff, 0xff]),
+        b(vec![0xc6, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        b(b"-----BEGIN PGP MESSAGE-----\n\nwcBMA0\n=AAAA\n-----END PGP MESSAGE-----\n".to_vec()),
+        b((0..4096).map(|_| rng.below(256) as u8).collect()),
+        b(vec![0xaa; 64 << 10]),
     ]
 }
 
@@ -153,6 +193,9 @@ fn variants(fns: &[String]) -> Vec<(String, Unit)> {
             "json_stringify" => &[("indent", &["", "  ", "\t", "abcdefghijklmnop"]), ("keys", &["", "[\"a\",\"b\"]", "[1]", "["])],
             "field" | "with_field" | "without_field" => &[("name", &["a", "__proto__", ""])],
             "sha256" | "hmac_sha256" => &[("encoding", &["hex", "base64", "x"])],
+            // Their mode isn't a family, so each way is named here: decoding, too.
+            "hex" => &[("mode", &["encode", "decode", "x"])],
+            "base64" => &[("mode", &["encode", "decode"]), ("alphabet", &["standard", "url", "x"]), ("bytes", &["utf8", "latin1"])],
             _ => &[],
         };
         for (param, values) in odd {
@@ -205,11 +248,84 @@ fn input_sets(n: usize, pool: &[Value], rng: &mut Rng) -> Vec<Vec<Option<Value>>
     }
 }
 
+/// **Guards:** every pure leaf, in every form its parameters give it, over every value of the pool
+/// alone and in pairs (and drawn sets of three or more): it answers, the same twice, every number
+/// in its answer finite, nothing nested past the bound, in bounded time.
+///
+/// **Why:** a leaf's inputs are anyone's: a request's body, a file, a message, another leaf's
+/// answer. A leaf is code the host runs on its own thread, so one that panics, loops, answers a
+/// non-finite number or makes a value past the bounds takes more than its run with it.
+///
+/// **If it fails:** the report names each leaf and the inputs it misbehaved on; a request
+/// shaped like them could take the server down or hold a thread, so the leaf is fixed, not the
+/// pool.
 #[test]
 fn every_pure_leaf_over_hostile_values_answers_finitely_and_the_same_twice() {
     // A host runs a flow on a 2 MiB thread (tokio's); the sweep runs on one too.
     let found = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(sweep).unwrap().join().unwrap();
     assert!(found.is_empty(), "{} leaves misbehaved:\n{}", found.len(), found.join("\n"));
+}
+
+/// A number that isn't finite reaches a leaf from a module's answer (a `js` function's `1 / 0`),
+/// never from a leaf's own. Over NaN and the infinities, alone and inside a list and a record,
+/// beside ordinary values, no pure leaf panics. What a leaf answers isn't held to the rest of the
+/// sweep here: NaN equals nothing, itself included, and a leaf that hands its input on hands that
+/// on. The panic hook is left alone, so a panic says where.
+#[test]
+fn no_pure_leaf_panics_on_a_number_that_isnt_finite() {
+    let found = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(sweep_not_finite).unwrap().join().unwrap();
+    assert!(found.is_empty(), "{} leaves panicked:\n{}", found.len(), found.join("\n"));
+}
+
+fn sweep_not_finite() -> Vec<String> {
+    let mut r = MapResolver::new();
+    let fns = functions(&mut r);
+    let odd = [
+        num(f64::NAN),
+        num(f64::INFINITY),
+        num(f64::NEG_INFINITY),
+        Value::List(vec![num(1.0), num(f64::NAN), num(f64::INFINITY)]),
+        rec(&[("a", num(f64::NEG_INFINITY)), ("b", num(f64::NAN))]),
+    ];
+    let plain = [num(0.0), num(2.0), num(-7.5), num(36.0), txt(""), txt("a,b"), Value::Boolean(true), Value::List(vec![num(3.0), txt("b")]), rec(&[("a", num(1.0))])];
+    let pool: Vec<Value> = odd.iter().chain(&plain).cloned().collect();
+    let mut rng = Rng(0x6c62_272e_07bb_0142);
+    let mut found = Vec::new();
+    for (label, unit) in variants(&fns) {
+        // Every set holds one of the odd values at least.
+        let sets: Vec<Vec<Option<Value>>> = match unit.inputs.len() {
+            0 => continue,
+            1 => odd.iter().map(|v| vec![Some(v.clone())]).collect(),
+            2 => (0..pool.len())
+                .flat_map(|i| (0..pool.len()).map(move |j| (i, j)))
+                .filter(|(i, j)| *i < odd.len() || *j < odd.len())
+                .map(|(i, j)| vec![Some(pool[i].clone()), Some(pool[j].clone())])
+                .collect(),
+            n => (0..300)
+                .map(|_| {
+                    let mut set: Vec<Option<Value>> = (0..n).map(|_| Some(pool[rng.below(pool.len())].clone())).collect();
+                    set[rng.below(n)] = Some(odd[rng.below(odd.len())].clone());
+                    set
+                })
+                .collect(),
+        };
+        let mut panicked = (0usize, String::new());
+        for inputs in sets {
+            if std::env::var_os("HOLON_AUDIT_TRACE").is_some() {
+                eprintln!("{label} <- {}", inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", "));
+            }
+            if catch_unwind(AssertUnwindSafe(|| eval(&unit, &inputs, &r).into_vec())).is_err() {
+                if panicked.0 == 0 {
+                    panicked.1 = inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", ");
+                }
+                panicked.0 += 1;
+            }
+        }
+        if panicked.0 > 0 {
+            found.push(format!("{label}: panics on {} input sets, e.g. ({})", panicked.0, panicked.1));
+        }
+    }
+    found
 }
 
 fn sweep() -> Vec<String> {

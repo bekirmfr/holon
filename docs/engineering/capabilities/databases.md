@@ -114,12 +114,32 @@ templates at compile (`holon-core/src/documents.rs`) ([LANGUAGE.md](../../LANGUA
 - **A secret in a query's parameters** goes to the database the admin bound, with no run-time value
   check as a request has ([secret destinations L4](../../L4s/secret-destinations-L4.md) §8).
 - **Nothing is measured**: no number here for a read's, a claim's or a commit's cost.
+- **The scan is checked against one engine.** What a statement touches is held against SQLite's
+  own account of it (below); for Postgres and MySQL it is held against statements read out of
+  their grammars by hand, since no test here has those engines to ask. A form only one of them
+  reads, and nobody wrote down, is not covered. The host checks a statement against its grant with
+  the same scan, so the scan is the one line: a database's own account (a role that may read only
+  the granted tables) is the second, and the admin's to set.
+- **A function that reads the clock isn't refused by its name**: SQLite's `datetime('now')` is on
+  the list of functions that only compute.
+- **Table names are compared as the scan writes them**: an unquoted name in lower case. On a
+  MySQL that tells `Cards` from `cards`, the manifest names the second for the first.
 
 ## 5. What the tests hold
 
-- Core `sql.rs`: `a_select_reads_every_table_it_names`, `a_write_writes_its_table_and_reads_what_it_matches`,
-  `what_isnt_a_read_or_a_write_of_rows_is_refused_saying_why`, `comments_and_strings_hide_nothing`,
-  `a_where_pins_the_columns_it_sets_equal_to_parameters`, `dollar_parameters_become_question_marks_in_order`;
+- Core `tests/sql_oracle.rs`: `a_statement_the_scan_takes_touches_and_calls_nothing_the_scan_didnt_name`
+  asks SQLite, through its authorizer, what each of some 17,000 generated statements reads, writes
+  and calls (each place a table can be named, each spelling of one, each dressing, and the tricks
+  that make two readers disagree): a statement the scan takes is within it, a plain one exactly
+  it. `what_another_engine_reads_in_a_statement_the_scan_names_or_refuses` holds the same for what
+  only Postgres or MySQL reads, from a table. They replaced six tests of chosen statements, whose
+  statements are rows of them now, and found what those hadn't: a name in SQLite's brackets with a
+  quote in it hiding the rest of a statement, a quoted name called as a function, and, read from
+  the grammars, `table x`, MySQL's updates of several tables and its `straight_join`, a number run
+  into a word, and Postgres's `U&"…"`.
+- Core `sql.rs`: `what_isnt_a_read_or_a_write_of_rows_is_refused_saying_why`,
+  `a_where_pins_the_columns_it_sets_equal_to_parameters`, `parameters_are_counted_by_the_highest`,
+  `dollar_parameters_become_question_marks_in_order`;
   `kind.rs`: `database_leaves_name_the_tables_their_statement_touches`.
 - databases.rs: `values_cross_as_their_columns_say`,
   `a_database_is_bound_by_an_admin_with_its_schema_and_never_inside_the_server`,
