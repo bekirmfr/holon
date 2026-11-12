@@ -42,10 +42,12 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
-  // The admin's list says where it may go.
+  // The admin's table says where it may go, in its column.
   await gotoPage(page, "resources");
   await resourcesTab(page, "Secrets");
-  await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
+  const secret = page.getByLabel("server secret ops_api_key");
+  await expect(page.getByRole("table", { name: "the server's secrets" }).getByText("may go to", { exact: true })).toBeVisible();
+  await expect(secret.getByRole("cell", { name: "https://httpbin.dev", exact: true })).toBeVisible();
 });
 
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
@@ -1390,8 +1392,10 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   // made by its schema.
   await gotoPage(page, "resources");
   await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
-  await expect(page.getByLabel("shop's tables")).toContainText("tables: orders");
-  await expect(page.getByLabel("shop's tables")).not.toContainText("holon_commits");
+  // Its tables (the matrix beside them is "shop's tables and the flows that use them").
+  const tables = page.getByLabel("shop's tables", { exact: true });
+  await expect(tables).toContainText("tables: orders");
+  await expect(tables).not.toContainText("holon_commits");
   const scratch = join(FOLDERS, `scratch-${Date.now()}.db`);
   await page.getByLabel("database name").fill("scratch");
   await page.getByLabel("database path").fill(scratch);
@@ -1408,17 +1412,14 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await gotoPage(page, "policy");
   await expect(page.getByRole("button", { name: "read the policy again" })).toBeVisible();
   await expect(page.getByLabel("limits")).toBeVisible();
-  // Who may touch the shop, under Resources: orders-api, by table, with a link to its page,
+  // Who touches the shop, under Resources: its matrix of tables and flows (in place of who may
+  // touch what, for a database), orders-api reading and writing orders, with a link to its page,
   // where its grant changes.
   await gotoPage(page, "resources");
-  await resourcesTab(page, "Who may touch what");
-  const shop = page.getByLabel("database shop", { exact: true });
-  await expect(shop).toContainText("orders-api");
-  await expect(shop).toContainText("writes orders");
-  await page.getByLabel("show what").selectOption("folders");
-  await expect(shop).toHaveCount(0);
-  await page.getByLabel("show what").selectOption("databases");
-  await shop.getByRole("button", { name: "card →" }).first().click();
+  await resourcesTab(page, "Databases");
+  const shop = page.getByLabel("shop's tables and the flows that use them");
+  await expect(shop.getByRole("row").filter({ hasText: /^orders/ })).toContainText("read and write");
+  await shop.getByRole("link", { name: "orders-api" }).click();
   await expect(page).toHaveURL(/#orders-api\.settings$/);
   await expect(page.getByRole("region", { name: "permissions" }).getByRole("button", { name: "Revoke" }).first()).toBeInViewport();
 });
@@ -1515,7 +1516,8 @@ test("approval-mail mails a payout's approval link, its page's button approves i
   await gotoPage(page, "resources");
   await resourcesTab(page, "Mail");
   await expect(page.getByText(/^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_OPS_SMTP\) · as Treasury <treasury@acme\.com> · to \*@acme\.com$/)).toBeVisible();
-  await expect(page.getByText("used by approval-mail (who may touch what says how)")).toBeVisible();
+  // Who uses it, and how, under its row.
+  await expect(page.getByLabel("used by").filter({ has: page.getByRole("link", { name: "approval-mail" }) })).toContainText("approval-mail mails approvals@acme.com, addresses it computes");
   await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
 });
