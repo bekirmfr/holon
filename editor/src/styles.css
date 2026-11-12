@@ -1320,6 +1320,7 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-chip--agent { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
 .hl-chip--person { color: var(--body); background: none; border-color: var(--border-strong); }
 .hl-chip--ext { color: var(--ext); background: var(--ext-bg); border-color: transparent; }
+.hl-chip--secret { color: var(--db); background: var(--db-bg); border-color: transparent; }
 .hl-chip--pick { background: none; border-color: var(--border-strong); cursor: pointer; }
 .hl-chip--pick:hover { color: var(--ink); border-color: var(--border-strong); }
 .hl-chip--pick[aria-pressed="true"] { color: var(--sel-ink); background: var(--sel); border-color: var(--accent); }

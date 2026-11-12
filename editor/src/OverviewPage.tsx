@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { routeOf, said, type Approval, type Reviewable } from "./approvals";
 import { isApproval } from "./decisions";
 import { describeItem } from "./holon";
+import { itemParts } from "./holdings";
 import { checkChains, getWarnings, type DeploymentEntry, type HostWarning } from "./server";
 import { chainSaid, failedShare, greeting, hostLine, liveOf, tookSaid } from "./overview";
 import { MayCount, StateChips, startsOn, SummaryCells, time, useSummary, versionWaiting } from "./FlowCells";
@@ -297,8 +298,8 @@ export function OverviewPage({
 }
 
 /** A version that waits, as Needs a person says it: the versions it goes from and to, who proposed
- *  it (an agent in the accent, a person outlined), and up to two of the new things it asks for,
- *  teal. */
+ *  it (an agent in the accent, a person outlined), and up to two of the new things it asks for:
+ *  a secret it reads purple, as data, anything else teal. */
 function Change({ a }: { a: Reviewable }) {
   const from = a.kind === "update" && a.version !== null && a.version > 1 ? `v${a.version - 1} → ` : "";
   const to = a.version === null ? "a new version" : a.kind === "first" ? "new, v1" : `v${a.version}`;
@@ -315,7 +316,7 @@ function Change({ a }: { a: Reviewable }) {
         </span>
       )}
       {needs.slice(0, 2).map((n) => (
-        <span key={n} className="hl-chip hl-chip--ext" title="a new permission it asks for">
+        <span key={n} className={`hl-chip ${itemParts(n).kind === "SecretRead" ? "hl-chip--secret" : "hl-chip--ext"}`} title="a new permission it asks for">
           {describeItem(n)}
         </span>
       ))}
