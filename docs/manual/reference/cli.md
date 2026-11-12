@@ -734,12 +734,29 @@ holon unbind 12 --why "back from leave"
 ```
 holon access [versions] [--json]
 holon access show [--version N] [--json]
+holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT] [--json]
 ```
 
 Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
 version, newest first, with when, by whom, what it changed and why; `show` prints one whole, the
-newest by default: its roles, groups and bindings, each binding with its id, where it holds, until
-when and who made it. It holds no password or token, so it can be handed to an auditor.
+newest by default: its approval settings, roles, groups and bindings, each binding with its id,
+where it holds, until when and who made it. It holds no password or token, so it can be handed to
+an auditor.
+
+`approvals` shows how this server decides approvals beyond each step's role, and with a flag sets
+it, as a new version (holding `people.assign` on the host):
+
+```
+exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
+agents            on   agents take the steps written for them
+(version 7)
+```
+
+`--exclude-deployer on` keeps whoever deployed the version a run is on from deciding any of its
+approvals, whatever they hold (off by default). `--agents off` lets no agent decide one: a flow
+whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
+already waiting (on by default). Who started a run never decides its approvals, whatever these
+say.
 
 ## Runs
 

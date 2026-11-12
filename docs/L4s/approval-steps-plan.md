@@ -453,7 +453,8 @@ by default. A change makes a version, with who, when and why, as a binding does.
 - `exclude_deployer`: whoever deployed the version the run is on (`ParkedRun.version`, the
   deployment's version record) fills no slot.
 - `agents: false`: a deploy whose manifest has an `Approval(…)` with an agent's slot is refused
-  (`permissions.rs`, beside `refuses_item`), and an agent fills no slot of a run already waiting.
+  (`ApprovalSettings::refuses`, beside the policy's refusals in `deploy.rs`, the preview's
+  `refused` too), and an agent fills no slot of a run already waiting.
 - Set with `PUT /access/approvals` (`people.assign`) and
   `holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why …]`
   (`accesscmd.rs:337`); `holon access` shows them.

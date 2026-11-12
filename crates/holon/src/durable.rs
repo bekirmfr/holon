@@ -36,6 +36,7 @@ use holon_core::approval::{Slot, SlotKind, Steps};
 use holon_host::{Exchange, Waits, Waiting};
 
 use crate::accounts::Kind;
+use crate::bindings::ApprovalSettings;
 use crate::*;
 
 /// Every `await` and `approval` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
@@ -438,12 +439,12 @@ impl StoredWaiting {
         Ok(self.decided().then(|| self.decision(false)))
     }
 
-    /// The open steps `by` may fill now, by number, its run started by `starter`: what the decide
-    /// route would let them take without naming one. None when they started the run, or decided
-    /// a step of it already, or it is decided.
-    fn yours(&self, starter: Option<&str>, by: &Decider) -> Vec<u8> {
+    /// The open steps `by` may fill now, by number: what the decide route would let them take
+    /// without naming one. None when the run's `excluded` keeps them out, or they decided a step of
+    /// it already, or it is decided.
+    fn yours(&self, excluded: &Excluded, by: &Decider) -> Vec<u8> {
         let Some(steps) = Steps::parse(&self.steps) else { return Vec::new() };
-        if starter == Some(by.who) || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
+        if excluded.excludes(by, &self.name).is_some() || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
             return Vec::new();
         }
         let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| by.may_fill(slot, "").is_ok());
@@ -785,10 +786,48 @@ impl ParkedRun {
         })
     }
 
-    /// Who started it, as they decide: the OS user's local admin starts as `local:<name>`, and
-    /// decides as `<name>`.
-    fn starter(&self) -> Option<&str> {
-        self.started_by.as_deref().map(|s| s.strip_prefix("local:").unwrap_or(s))
+    /// Who decides none of its approvals, as this host's `settings` say: who started it, and who
+    /// deployed the version it is on (of its deployment's `versions`) when they are excluded.
+    fn excluded(&self, versions: &[wire::Version], settings: &ApprovalSettings) -> Excluded {
+        Excluded { starter: self.started_by.as_deref().map(as_decider), deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(), no_agents: !settings.agents }
+    }
+}
+
+/// A principal as they decide: the OS user's local admin acts as `local:<name>`, and decides as
+/// `<name>`.
+fn as_decider(name: &str) -> String {
+    name.strip_prefix("local:").unwrap_or(name).to_string()
+}
+
+/// Who deployed the version a run is on, of a deployment's `versions`: of those with the `unit`
+/// it started on, the last deployed by the time it parked, `at` (the last of them, if none was).
+fn deployer_of(versions: &[wire::Version], unit: &str, at: u64) -> Option<String> {
+    let by_then = versions.iter().rfind(|v| v.unit == unit && v.deployed_at.is_none_or(|d| d <= at));
+    by_then.or_else(|| versions.iter().rfind(|v| v.unit == unit))?.by.as_deref().map(as_decider)
+}
+
+/// Who decides none of a run's approvals, whatever they hold (the design's §8.4): who started
+/// it, whoever deployed the version it is on when this host excludes them, and every agent when
+/// it lets none decide (bindings.rs `ApprovalSettings`).
+#[derive(Default)]
+struct Excluded {
+    starter: Option<String>,
+    deployer: Option<String>,
+    no_agents: bool,
+}
+
+impl Excluded {
+    /// Why `by` decides none of the approval `name`, if they don't.
+    fn excludes(&self, by: &Decider, name: &str) -> Option<String> {
+        if self.starter.as_deref() == Some(by.who) {
+            Some(format!("{} started this run: someone else decides its approval {name:?}", by.who))
+        } else if self.deployer.as_deref() == Some(by.who) {
+            Some(format!("{} deployed the version this run is on: on this host, someone else decides its approval {name:?}", by.who))
+        } else if self.no_agents && by.kind == Kind::Agent {
+            Some(format!("{} is an agent, and this host lets no agent decide an approval", by.who))
+        } else {
+            None
+        }
     }
 }
 
@@ -1003,15 +1042,17 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval
-/// point with the open steps `caller` may fill (`yours`, by number), as the decide route says.
-pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller) -> Response {
+/// point with the open steps `caller` may fill (`yours`, by number), as the decide route says
+/// under this host's `settings`.
+pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
     let table = deployments.lock().unwrap();
     let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
     let runs = dep.parked.values().map(|run| {
         let mut listed = run.summary();
+        let excluded = run.excluded(&dep.versions, settings);
         for (w, point) in run.waiting.iter().zip(listed["waiting"].as_array_mut().into_iter().flatten()) {
             if !w.is_event() {
-                point["yours"] = yours(caller, slug, run.starter(), w).into();
+                point["yours"] = yours(caller, slug, &excluded, w).into();
             }
         }
         listed
@@ -1020,11 +1061,11 @@ pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>,
 }
 
 /// The open steps of `w` `caller` may fill, by number: none when `run.decide` refuses them there.
-fn yours(caller: &access::Caller, slug: &str, starter: Option<&str>, w: &StoredWaiting) -> Vec<u8> {
+fn yours(caller: &access::Caller, slug: &str, excluded: &Excluded, w: &StoredWaiting) -> Vec<u8> {
     let Ok(by) = decider(caller, slug, &w.name) else { return Vec::new() };
     let point = crate::can::Resource::Approval { slug, name: Some(&w.name) };
     let holds = |role: &str| crate::can::holds_role(caller, role, &point);
-    w.yours(starter, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds })
+    w.yours(excluded, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds })
 }
 
 /// What a decision did: the approval still waits for more, or it is decided, `approved` or not,
@@ -1058,21 +1099,22 @@ impl Decider<'_> {
     }
 }
 
-/// A decision: approved or not, the step it names (none: the one the decider may fill), why, and
-/// a note.
+/// A decision: approved or not, the step it names (none: the one the decider may fill), why, a
+/// note, and when, seconds since the epoch.
 pub(crate) struct Decision {
     pub(crate) approve: bool,
     pub(crate) slot: Option<u8>,
     pub(crate) reason: Option<String>,
     pub(crate) note: Option<serde_json::Value>,
+    pub(crate) at: u64,
 }
 
 impl StoredWaiting {
-    /// `by`'s decision on it, its run started by `starter`: the step it names, or the one open
-    /// step `by` may fill; never one of a run `by` started. The step taken, and the decision to
-    /// deliver once it is decided; the status and why when it can't be decided. One decided
-    /// already (its delivery turned away) is delivered again, whichever step is named.
-    fn decide(&mut self, starter: Option<&str>, by: &Decider, decision: Decision, now: u64) -> Result<(u8, Option<Value>), (u16, String)> {
+    /// `by`'s decision on it: the step it names, or the one open step `by` may fill; none when
+    /// the run's `excluded` keeps them out. The step taken, and the decision to deliver once it is
+    /// decided; the status and why when it can't be decided. One decided already (its delivery
+    /// turned away) is delivered again, whichever step is named.
+    fn decide(&mut self, excluded: &Excluded, by: &Decider, decision: Decision) -> Result<(u8, Option<Value>), (u16, String)> {
         let name = &self.name;
         if self.is_event() {
             return Err((409, format!("{name:?} is an event, which its route delivers: nobody decides it")));
@@ -1080,12 +1122,12 @@ impl StoredWaiting {
         let Some(steps) = Steps::parse(&self.steps) else {
             return Err((409, format!("{name:?} asks for steps this host can't read ({}): nobody decides it, and it runs out", self.steps)));
         };
-        if starter == Some(by.who) {
-            return Err((403, format!("{} started this run: someone else decides its approval {name:?}", by.who)));
+        if let Some(why) = excluded.excludes(by, name) {
+            return Err((403, why));
         }
         let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
-        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: now, approved: decision.approve, reason: decision.reason, note: decision.note };
+        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note };
         self.take(d).map(|taken| (slot, taken)).map_err(|why| (409, why))
     }
 
@@ -1115,10 +1157,10 @@ impl StoredWaiting {
 }
 
 /// `by`'s decision on the approval `name` of the run `run_id` in `slug`, made under the
-/// deployments lock, so two deciding at once decide it once (the design's §8.3). Each decision is
-/// kept on the waiting point (`StoredWaiting::decide`); when every step is filled, or one
-/// declines (with a `reason`), the run is claimed to be given the decision. The status and why
-/// when it can't be decided.
+/// deployments lock, so two deciding at once decide it once (the design's §8.3), and under this
+/// host's `settings`. Each decision is kept on the waiting point (`StoredWaiting::decide`); when
+/// every step is filled, or one declines (with a `reason`), the run is claimed to be given the
+/// decision. The status and why when it can't be decided.
 pub(crate) fn decide<'a>(
     deployments: &'a Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
@@ -1126,7 +1168,7 @@ pub(crate) fn decide<'a>(
     name: &str,
     by: &Decider,
     decision: Decision,
-    now: u64,
+    settings: &ApprovalSettings,
 ) -> Result<Outcome<'a>, (u16, String)> {
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or((404, format!("no deployment {slug:?}")))?;
@@ -1134,10 +1176,9 @@ pub(crate) fn decide<'a>(
     if run.resuming {
         return Err((409, format!("run {run_id} of {slug:?} is going on right now: try again in a moment")));
     }
-    let starter = run.starter().map(String::from);
-    let starter = starter.as_deref();
+    let excluded = run.excluded(&dep.versions, settings);
     let w = run.waiting.iter_mut().find(|w| w.name == name).ok_or((404, format!("run {run_id} of {slug:?} isn't waiting at {name:?}")))?;
-    let (slot, taken) = w.decide(starter, by, decision, now)?;
+    let (slot, taken) = w.decide(&excluded, by, decision)?;
     let slots = w.slots();
     let Some(event) = taken else {
         return Ok(Outcome::Waits { slot, slots });
@@ -1219,8 +1260,8 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     // In the activity log as what it was, by whom, at which step.
     let recorded = |state: &AppState, slot: u8| state.activity.record(if body.approve { "approved" } else { "declined" }, &format!("{slug} run {run_id} at {:?}, slot {slot}", body.name), Some(&by));
     let reply = |slot: u8, slots: &[SlotState], outcome: &str| serde_json::json!({ "name": body.name, "slot": slot, "slots": slots, "outcome": outcome });
-    let decision = Decision { approve: body.approve, slot: body.slot, reason, note: body.note };
-    match decide(deployments, slug, run_id, &body.name, &decider, decision, epoch_now()) {
+    let decision = Decision { approve: body.approve, slot: body.slot, reason, note: body.note, at: epoch_now() };
+    match decide(deployments, slug, run_id, &body.name, &decider, decision, &crate::bindings::approval_settings(state)) {
         Err((code, why)) => err(code, why),
         Ok(Outcome::Waits { slot, slots }) => {
             recorded(state, slot);
@@ -1467,8 +1508,9 @@ mod tests {
                 let (_, kind, roles) = cast.iter().find(|(name, ..)| *name == who).unwrap();
                 let holds = |role: &str| roles.contains(&role);
                 let by = Decider { who, kind: *kind, holds: &holds };
-                let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None };
-                let got = w.decide(starter, &by, decision, 10 + i as u64);
+                let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
+                let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };
+                let got = w.decide(&excluded, &by, decision);
                 let got = got.as_ref().map(|(slot, taken)| (*slot, taken.is_some())).map_err(|(code, why)| (*code, why.as_str()));
                 assert_eq!(got, then, "{what}: decision {i}, {who}");
                 decided |= got.is_ok_and(|(_, decides)| decides);
@@ -1477,6 +1519,28 @@ mod tests {
             let mut given: serde_json::Value = serde_json::from_str(&holon_core::stringify_json(&given).unwrap()).unwrap();
             given.as_object_mut().unwrap().remove("decisions");
             assert_eq!(given, want, "{what}");
+        }
+    }
+
+    /// Who deployed the version a run is on, which `exclude_deployer` keeps from its approvals:
+    /// the last to deploy its unit by the time it parked, a restore of it included, never who
+    /// deployed another unit since.
+    #[test]
+    fn the_deployer_of_a_run_is_whoever_deployed_its_unit() {
+        let version = |number: u32, unit: &str, at: u64, by: &str| -> wire::Version {
+            serde_json::from_value(serde_json::json!({ "number": number, "unit": unit, "deployed_at": at, "by": by })).unwrap()
+        };
+        let versions = [version(1, "aa", 100, "ada"), version(2, "bb", 200, "local:bma"), version(3, "aa", 300, "bob")];
+        for (unit, at, want) in [
+            ("aa", 150, Some("ada")),
+            ("aa", 250, Some("ada")),
+            ("aa", 350, Some("bob")),
+            ("bb", 250, Some("bma")),
+            ("aa", 50, Some("bob")),
+            ("cc", 250, None),
+            ("", 250, None),
+        ] {
+            assert_eq!(deployer_of(&versions, unit, at).as_deref(), want, "a run on {unit:?} parked at {at}");
         }
     }
 }

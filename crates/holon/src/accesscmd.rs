@@ -95,20 +95,29 @@ examples:
 
 const ACCESS_USAGE: &str = "usage: holon access [versions]
        holon access show [--version N]
+       holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT]
        (each with [--json] [--server PORT|URL])
 
   Who may do what on this server, as kept: every change is a version, with who made it, when, what
   it changed and why. It holds no password or token, so it can be handed to an auditor.
 
   versions                 every version, newest first (what holon access does alone)
-  show                     one version whole: its roles, groups and bindings
+  show                     one version whole: its approval settings, roles, groups and bindings
     --version N            that version (the newest by default)
+  approvals                how this server decides approvals, beyond each step's role; with a
+                           flag, set it, as a new version
+    --exclude-deployer on  whoever deployed the version a run is on decides none of its approvals
+                           (off by default)
+    --agents off           no agent decides an approval, and a flow whose approval has a step
+                           for one doesn't deploy (on by default)
+    --why TEXT             why, kept with the version
   --json                   print what the server answers, as JSON
   --server PORT|URL        which holon server to ask (see below)
 
 examples:
   holon access
   holon access show --version 3
+  holon access approvals --exclude-deployer on --why \"four eyes on payouts\"
 ";
 
 /// The usage, with where the server is, and how to sign in.
@@ -337,11 +346,46 @@ pub(crate) fn unbind(args: &[String]) -> i32 {
 pub(crate) fn access(args: &[String]) -> i32 {
     const WHO: &str = "holon access";
     let usage = usage(ACCESS_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--version"], &["--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--why"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
     match (args.word(0), args.word(1)) {
+        (Some("approvals"), None) => {
+            let mut change = serde_json::Map::new();
+            for (flag, key) in [("--exclude-deployer", "exclude_deployer"), ("--agents", "agents")] {
+                match args.value(flag) {
+                    None => {}
+                    Some(on @ ("on" | "off")) => {
+                        change.insert(key.into(), (on == "on").into());
+                    }
+                    Some(other) => {
+                        eprintln!("{WHO}: {flag} is on or off, not {other:?}");
+                        return 2;
+                    }
+                }
+            }
+            let answer = if change.is_empty() {
+                if args.value("--why").is_some() {
+                    eprintln!("{WHO}: --why says why a setting changes: give --exclude-deployer or --agents too");
+                    return 2;
+                }
+                cmdline::json(WHO, &args, "GET", "/access", None).map(|v| json!({ "approvals": v["approvals"], "version": v["version"] }))
+            } else {
+                change.insert("why".into(), args.value("--why").into());
+                cmdline::json(WHO, &args, "PUT", "/access/approvals", Some(&Value::Object(change)))
+            };
+            match answer {
+                Ok(v) => {
+                    if !as_json(&args, &v) {
+                        approval_lines(&v["approvals"]).iter().for_each(|l| println!("{l}"));
+                        println!("(version {})", v["version"]);
+                    }
+                    0
+                }
+                Err(code) => code,
+            }
+        }
         (None | Some("versions"), None) => match cmdline::json(WHO, &args, "GET", "/access/versions", None) {
             Ok(v) => {
                 if !as_json(&args, &v) {
@@ -554,9 +598,18 @@ fn version_lines(v: &Value) -> Vec<String> {
 }
 
 /// One version whole: who made it, then its roles (an admin's), groups and bindings.
+/// A version's approval settings, a line each: the setting as its flag says it, on or off, and
+/// what that means.
+fn approval_lines(v: &Value) -> Vec<String> {
+    let settings: crate::bindings::ApprovalSettings = serde_json::from_value(v.clone()).unwrap_or_default();
+    table(&settings.each().map(|(name, on, said)| vec![name.replace('_', "-"), if on { "on" } else { "off" }.into(), said.into()]))
+}
+
 fn document_lines(v: &Value, now: u64) -> Vec<String> {
     let why = v["why"].as_str().map(|w| format!(" (why: {w})")).unwrap_or_default();
     let mut lines = vec![format!("version {}, {} by {}: {}{why}", v["version"], when(v["at"].as_u64()), v["by"].as_str().unwrap_or("-"), v["what"].as_str().unwrap_or_default())];
+    lines.push(String::new());
+    lines.extend(approval_lines(&v["approvals"]));
     let roles = v["roles"].as_array().into_iter().flatten();
     let mut rows = vec![["role", "held by", "allows"].map(String::from).to_vec()];
     rows.extend(roles.map(|r| vec![r["name"].as_str().unwrap_or_default().into(), words(&r["kinds"]).join(", "), words(&r["allows"]).join(", ")]));
@@ -658,12 +711,19 @@ mod tests {
         assert_eq!(document_lines(&document, 60), [
             "version 4, 1970-01-01T00:00:00 by ada: bound editor to the group payments on \"d\"",
             "",
+            "exclude-deployer  off  whoever deployed the version a run is on may decide its approvals",
+            "agents            on   agents take the steps written for them",
+            "",
             "group     bound  members",
             "payments  1      bob",
             "",
             "id  role    to                  where         until                          by",
             "0   admin   ada                 on this host  -                              ada",
             "3   editor  the group payments  on \"d\"        1970-01-01T00:00:30 (expired)  ada",
+        ]);
+        assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false })), [
+            "exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals",
+            "agents            off  no agent decides an approval",
         ]);
     }
 }

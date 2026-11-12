@@ -259,6 +259,13 @@ admin binds it (`POST /bindings`):
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
 answers one whole. Each change is also in the activity log.
 
+`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "why": "…"}`, either or
+both; `people.assign` on the host) sets how the host decides approvals beyond each step's role,
+as a new version: with `exclude_deployer`, whoever deployed the version a run is on decides none
+of its approvals; with `agents` false, no agent decides one, and a deploy whose approval has a
+step for an agent is refused. They are `false` and `true` by default, and `GET /access` has them,
+`approvals`.
+
 An admin also defines roles of their own, and groups:
 
 - **A role** (`PUT /roles/<name>`, `{"allows": ["run.view", "run.decide"], "kinds": ["person"],

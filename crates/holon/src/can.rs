@@ -539,6 +539,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("DELETE", "/bindings/{id}", PeopleAssign, On::Host),
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
+    asks("PUT", "/access/approvals", PeopleAssign, On::Host),
     asks("GET", "/roles", RoleView, On::Host),
     asks("PUT", "/roles/{name}", RoleDefine, On::Host),
     asks("DELETE", "/roles/{name}", RoleDefine, On::Host),

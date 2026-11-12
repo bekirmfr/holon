@@ -508,7 +508,10 @@ filled, and takes a principal of its kind (a person's a person, an agent's an ag
 role, directly or through a group, on the host, the flow or the approval itself, and holding
 `run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
 step of an approval, once, and not of a run they started; one decline ends it. A decision names
-its step (`slot`), or takes the one open step its decider may fill.
+its step (`slot`), or takes the one open step its decider may fill. The host's approval settings
+say two things more, for every flow (§8.4, `holon access approvals`): with `exclude_deployer`,
+whoever deployed the version a run is on decides none of its steps; with `agents` off, no agent
+decides one, and a flow whose approval has an agent's step doesn't deploy.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its

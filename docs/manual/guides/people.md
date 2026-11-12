@@ -102,7 +102,7 @@ HOLON_TOKEN="$HOLON_CI_TOKEN" holon deploy shop.holon.ts --server https://holon.
 ```
 
 The deployment's history says it was deployed *by ci*. A service never decides an approval a run
-waits at: that is a person's.
+waits at: that is a person's, or an agent's step written for one.
 
 ## A role on one flow, and roles of your own
 
@@ -149,8 +149,27 @@ Approve and Decline wherever the server says you may decide.
 
 No one gives more than they hold: you define a role, bind it, or add someone to a group bound it
 only holding all it allows there yourself. Whatever an agent is bound, it never approves, starts,
-stops, deletes or restores, sets a secret, decides an approval, or manages people; a service never
-decides an approval. `holon unbind ID` takes a binding away, and an expired one holds nothing.
+stops, deletes or restores, sets a secret, decides a person's step of an approval, or manages
+people; a service never decides an approval. `holon unbind ID` takes a binding away, and an
+expired one holds nothing.
+
+## Who decides an approval
+
+An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"
+}]`), and each principal takes one step, once, never of a run they started. The host says two
+things more, for every flow, kept with the roles and bindings:
+
+```sh
+holon access approvals --exclude-deployer on --why "who ships a payout doesn't sign it off"
+holon access approvals --agents off --why "no agent decides money yet"
+```
+
+- `--exclude-deployer on`: whoever deployed the version a run is on decides none of its
+  approvals, whatever they hold. Off by default.
+- `--agents off`: no agent decides an approval. A flow whose approval has a step for an agent
+  doesn't deploy, and an agent takes no step of a run already waiting. On by default.
+
+Each change is a version, with who made it and why; `holon access approvals` alone shows them.
 
 ## Taking access away
 
@@ -172,8 +191,9 @@ What was done stays under the name that did it, after any of these.
   changed its grant or its secrets, among its runs.
 - **Approvals**: who proposed a version and why, and who approved or declined it; for a run waiting
   at an approval, who has approved it so far.
-- **Who held which role**: each change to the roles, groups and bindings is a version kept in
-  `access.versions.jsonl` in the data folder, with who made it, when, what it changed and why:
+- **Who held which role**: each change to the roles, groups, bindings and approval settings is a
+  version kept in `access.versions.jsonl` in the data folder, with who made it, when, what it
+  changed and why:
   `holon access` lists them, and `holon access show --version N` prints one whole, for an auditor
   ([the server reference](../reference/server.md#accounts-and-roles)).
 

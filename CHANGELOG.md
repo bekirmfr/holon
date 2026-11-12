@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The host's approval settings.** The access document keeps `approvals: { exclude_deployer,
+  agents }`, `false` and `true` by default, set with `PUT /access/approvals` (`people.assign`) or
+  `holon access approvals --exclude-deployer on|off --agents on|off --why …`, each change a
+  version with who and why. With `exclude_deployer`, whoever deployed the version a run is on
+  decides none of its approvals; with `agents` off, no agent decides one, a run already waiting
+  included, and a deploy (and its preview, `refused`) whose approval has a step for an agent is
+  refused. `holon access approvals` alone shows them, `holon access show` too, and a waiting
+  run's `yours` follows them.
 - **The server decides an approval by its steps.** Each step opens once every stage before it is
   filled, and takes a principal of its kind bound to its role where the approval is (on the host,
   the flow or the point; an admin holding everything doesn't hold `reviewer`); each principal

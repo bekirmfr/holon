@@ -277,7 +277,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {
-            return durable::handle_get_runs(&state.deployments, slug, &caller);
+            return durable::handle_get_runs(&state.deployments, slug, &caller, &crate::bindings::approval_settings(state));
         }
         if let Some(slug) = rest.strip_suffix("/logs")
             && method == "GET"

@@ -863,6 +863,16 @@ impl Accounts {
         })
     }
 
+    /// Set how this host decides approvals (§8.4), by `by`, saying why: whether they changed.
+    pub(crate) fn set_approvals(&self, settings: bindings::ApprovalSettings, by: &str, why: Option<&str>) -> Result<bool, String> {
+        let changed = self.access.document().approvals != settings;
+        let what = format!("set the approvals: {}", settings.said());
+        self.change_access(by, &what, why, |_, access| {
+            access.approvals = settings;
+            Ok(changed)
+        })
+    }
+
     /// Remove the group `name`, by `by`, saying why. Refused while a binding is to it (D28).
     pub(crate) fn remove_group(&self, name: &str, by: &str, why: Option<&str>) -> Result<(), String> {
         self.change_access(by, &format!("removed the group {name}"), why, |_, access| {

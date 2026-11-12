@@ -59,9 +59,68 @@ pub(crate) struct Document {
     pub(crate) groups: Vec<Group>,
     #[serde(default)]
     pub(crate) bindings: Vec<Binding>,
+    /// How this host decides approvals beyond each step's role and kind (§8.4).
+    #[serde(default)]
+    pub(crate) approvals: ApprovalSettings,
     /// The next binding's id: ids are never reused, so an old version's ids name what they named.
     #[serde(default)]
     next_id: u64,
+}
+
+/// How this host decides approvals beyond each step's role and kind (the design's §8.4, the
+/// plan's D41): whether whoever deployed the version a run is on decides any of its approvals,
+/// and whether agents take the steps written for them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ApprovalSettings {
+    #[serde(default)]
+    pub(crate) exclude_deployer: bool,
+    #[serde(default = "on")]
+    pub(crate) agents: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for ApprovalSettings {
+    fn default() -> Self {
+        ApprovalSettings { exclude_deployer: false, agents: true }
+    }
+}
+
+impl ApprovalSettings {
+    /// Each setting: its name, whether it is on, and what that means here.
+    pub(crate) fn each(&self) -> [(&'static str, bool, &'static str); 2] {
+        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
+        let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
+        [("exclude_deployer", self.exclude_deployer, deployer), ("agents", self.agents, agents)]
+    }
+
+    /// As a version says them.
+    pub(crate) fn said(&self) -> String {
+        self.each().map(|(_, _, said)| said).join("; ")
+    }
+
+    /// Why they refuse a deploy asking for `manifest`, if they do: an approval with a step for an
+    /// agent, while no agent decides one.
+    pub(crate) fn refuses(&self, manifest: &crate::permissions::Manifest) -> Option<String> {
+        if self.agents {
+            return None;
+        }
+        manifest.items().iter().find_map(|item| {
+            let (name, steps) = item.strip_prefix("Approval(\"")?.strip_suffix("\")")?.split_once('/')?;
+            let steps = holon_core::approval::Steps::parse(steps)?;
+            steps.slots().any(|(_, _, s)| s.kind == holon_core::approval::SlotKind::Agent).then(|| {
+                format!("this host lets no agent decide an approval, and {name:?} asks for {} (holon access approvals --agents on)", steps.said())
+            })
+        })
+    }
+}
+
+/// This host's approval settings: the access document's, the defaults on a server without
+/// accounts.
+pub(crate) fn approval_settings(state: &crate::AppState) -> ApprovalSettings {
+    state.access.accounts().map(|a| a.access_document().approvals.clone()).unwrap_or_default()
 }
 
 /// A role an admin defines (§5.1), as kept: what it allows, by the catalogue's names, and which
@@ -720,6 +779,8 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `DELETE /bindings/<id>` (`?why=`): 204; 409 for the last admin's (D15);
 /// - `GET /access/versions`: each version's number, when, by whom, what and why, newest first;
 /// - `GET /access` (`?version=n`): that version, whole; the newest without;
+/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, why?}`): how this host decides
+///   approvals (`ApprovalSettings`), each one given changed, as a new version;
 /// - `GET /roles`: every role, the built-in ones first, with how many bindings hold it;
 /// - `PUT /roles/<name>` (`{about?, allows, kinds, why?}`): an admin's role, defined or changed;
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
@@ -732,7 +793,7 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
     if url == "/auth/me/can" && method == "GET" {
         return Some(me_can(request, caller));
     }
-    let ours = ["/bindings", "/access", "/access/versions", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
+    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
     if !ours {
         return None;
     }
@@ -800,6 +861,36 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Err(r) => r,
             },
         },
+        ("PUT", "/access/approvals") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Change {
+                #[serde(default)]
+                exclude_deployer: Option<bool>,
+                #[serde(default)]
+                agents: Option<bool>,
+                #[serde(default)]
+                why: Option<String>,
+            }
+            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"why\": \"…\"}, either or both") {
+                Ok(c) => c,
+                Err(r) => return Some(r),
+            };
+            let mut settings = document.approvals.clone();
+            settings.exclude_deployer = change.exclude_deployer.unwrap_or(settings.exclude_deployer);
+            settings.agents = change.agents.unwrap_or(settings.agents);
+            let said = settings.said();
+            match accounts.set_approvals(settings, by, change.why.as_deref()) {
+                Ok(changed) => {
+                    if changed {
+                        recorded("set the approvals", &said);
+                    }
+                    let document = accounts.access_document();
+                    Response::json(&serde_json::json!({ "approvals": document.approvals, "version": document.version }))
+                }
+                Err(e) => err(400, e),
+            }
+        }
         ("GET", "/roles") => {
             let builtin = crate::can::BUILTIN.iter().map(|d| role_listed(d, d.builtin.map(about), document.bound(Some(&d.name), None)));
             let custom = document.roles.iter().filter_map(|r| Some(role_listed(&r.def().ok()?, r.about.as_deref(), document.bound(Some(&r.name), None))));

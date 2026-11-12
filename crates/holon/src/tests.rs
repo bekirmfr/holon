@@ -2417,6 +2417,101 @@ export const pay = action(async (order) => {
     assert!(at("scout").ends_with("at \"payout\", slot 0") && at("cy").ends_with("at \"payout\", slot 2"), "{activity:?}");
 }
 
+/// **Guards:** the host's approval settings (D41), each against a deploy and a decision: with
+/// `exclude_deployer`, whoever deployed the version a run is on fills none of its steps; with
+/// `agents` off, a flow whose approval has an agent's step neither previews nor deploys, and an
+/// agent fills no step of a run already waiting. A change is a version, with who and why, by
+/// someone holding people.assign; one changing nothing makes none.
+/// **Why:** separation of duties is the host's to set, not the flow's: whoever writes and deploys
+/// a flow can't write themselves into deciding it, and the record says who set it, and when.
+#[test]
+fn the_host_s_approval_settings_say_who_decides_beyond_each_step() {
+    use crate::accounts::Kind;
+    use crate::bindings::{RoleText, Scope, Selector, Subject};
+    use serde_json::{json, Value};
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", steps: [[{ role: "classifier", kind: "agent" }, { role: "reviewer" }]] })
+  return decision.approved
+})
+"#;
+    let unit = to_hex(&stage_text(&state, text));
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let invited = |name: &str, role: &str| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, eve) = (invited("bob", "viewer"), invited("eve", "editor"));
+    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person)] {
+        accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
+    }
+    let flow = Scope::Flows(Selector::Slug("payouts".into()));
+    for (who, role) in [("scout", "classifier"), ("ada", "reviewer")] {
+        accounts.bind(Subject::Principal(who.into()), role, flow.clone(), None, "ada", None).unwrap();
+    }
+    let ask = |token: &str, method: &str, path: &str, body: Value| {
+        let (code, said) = access_table::ask(&state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() });
+        (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
+    };
+    let deploy = json!({ "slug": "payouts", "unit": unit, "document": {}, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/agent:classifier+person:reviewer\")"] });
+    let (code, said) = ask(&ada, "POST", "/deploy", deploy.clone());
+    assert_eq!(code, 200, "{said}");
+    // eve starts the run, on the version ada deployed: ada holds reviewer, scout classifier.
+    assert_eq!(ask(&eve, "POST", "/trigger/payouts/pay", json!({ "amount": 10 })).0, 202, "it waits");
+    let run = ask(&ada, "GET", "/deployments/payouts/runs", Value::Null).1["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let yours = |token: &str| ask(token, "GET", "/deployments/payouts/runs", Value::Null).1["runs"][0]["waiting"][0]["yours"].clone();
+    let decide = |token: &str| ask(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), json!({ "name": "payout", "approve": true }));
+    let set = |token: &str, body: Value| ask(token, "PUT", "/access/approvals", body);
+
+    let agents_off = "this host lets no agent decide an approval, and \"payout\" asks for an agent holding classifier and a person holding reviewer, in any order (holon access approvals --agents on)";
+    let deployer = "ada deployed the version this run is on: on this host, someone else decides its approval \"payout\"";
+    let agent = "scout is an agent, and this host lets no agent decide an approval";
+    // Each pair of settings: whether the flow previews and deploys, and which step ada and scout
+    // may each fill of the run already waiting, or why not.
+    let rows = [(false, true, None, None), (true, true, Some(deployer), None), (false, false, None, Some(agent)), (true, false, Some(deployer), Some(agent))];
+    for (exclude_deployer, agents, ada_refused, scout_refused) in rows {
+        let row = format!("exclude_deployer {exclude_deployer}, agents {agents}");
+        let (code, said) = set(&ada, json!({ "exclude_deployer": exclude_deployer, "agents": agents, "why": row }));
+        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents })), "{row}: {said}");
+        let refused = (!agents).then_some(agents_off);
+        let (code, preview) = ask(&ada, "POST", "/deploy/preview", json!({ "slug": "payouts", "unit": unit }));
+        assert_eq!((code, preview["refused"].as_str()), (200, refused), "{row}: {preview}");
+        if let Some(why) = refused {
+            let (code, said) = ask(&ada, "POST", "/deploy", deploy.clone());
+            assert_eq!((code, said["error"].as_str()), (400, Some(format!("this host can't grant that: {why}").as_str())), "{row}: {said}");
+        }
+        for (token, slot, refused) in [(&ada, 1, ada_refused), (&scout, 0, scout_refused)] {
+            let Some(why) = refused else {
+                assert_eq!(yours(token), json!([slot]), "{row}");
+                continue;
+            };
+            assert_eq!(yours(token), json!([]), "{row}");
+            let (code, said) = decide(token);
+            assert_eq!((code, said["error"].as_str()), (403, Some(why)), "{row}: {said}");
+        }
+    }
+
+    // Back to the defaults, the run is decided by both: no step was taken while they refused.
+    let before = ask(&ada, "GET", "/access", Value::Null).1["version"].clone();
+    let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
+    assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
+    let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them";
+    assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
+    assert_eq!(decide(&scout).1["outcome"], "waiting");
+    assert_eq!(decide(&ada).1["outcome"], "approved");
+    // Setting what is set makes no version; a viewer sets nothing; an unknown setting is refused.
+    assert_eq!(set(&ada, json!({ "agents": true })).1["version"], json!(before.as_u64().unwrap() + 1));
+    assert_eq!(set(&bob, json!({ "agents": false })).0, 403);
+    let (code, said) = set(&ada, json!({ "deployer": true }));
+    assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
+    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true }));
+}
+
 /// Who may decide an approval: a person or an agent by their name, the OS user's local admin by
 /// the name it runs as, through a role that holds run.decide there (the built-in agent role
 /// doesn't); not a service, a viewer, or anyone on a server without accounts. Which step each
