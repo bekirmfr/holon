@@ -62,11 +62,12 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await expect(menuEntry(cy, "resources")).toHaveCount(0);
   await expect(menuEntry(cy, "people")).toHaveCount(0);
+  // Save is disabled for her, saying why as the server does (useCan.tsx); the server's own refusal
+  // is held by its tests (crates/holon/src/tests.rs).
   await gotoPage(cy, "new");
-  await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
-  await cy.locator('[aria-modal="true"] input').fill("cys-flow");
-  await cy.keyboard.press("Enter");
-  await expect(cy.getByRole("region", { name: "notices" })).toContainText("cy may not do that: a viewer only reads");
+  const save = cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true });
+  await expect(save).toBeDisabled();
+  await expect(save).toHaveAttribute("title", /a viewer only reads/);
   // The link is used up.
   const again = await someoneElse(browser);
   await again.goto(invite);
