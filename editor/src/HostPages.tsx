@@ -112,8 +112,9 @@ type SecretKind = "value" | "env" | "vault";
 
 /** What the host's pages read and do: every list (one page shows a part), what was said, and
  *  `act`, which does a change and reads everything again. `shown`: the databases' tables are
- *  read (Resources). */
-function useHost(shown = false) {
+ *  read (Resources). `tab`: the page's tab; picking another (by the address too, where the page
+ *  stays mounted) reads everything again, so what was bound elsewhere since shows. */
+function useHost(shown = false, tab: string | null = null) {
   const dialog = useDialog();
   const [principals, setPrincipals] = useState<Principal[]>([]);
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
@@ -230,7 +231,7 @@ function useHost(shown = false) {
       .catch(said);
     setVersion((v) => v + 1);
   }, []);
-  useEffect(refresh, [refresh]);
+  useEffect(refresh, [refresh, tab]);
 
   /** Read a database's tables again (after a migration, say). */
   const readTables = useCallback((d: DatabaseEntry) => {
@@ -487,7 +488,7 @@ function HeldElsewhere({ p }: { p: Principal }) {
 }
 
 export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: string | null }) {
-  const h = useHost();
+  const h = useHost(false, tab);
   // Every change here is to a principal (`people.manage` on the host, can.rs's routes).
   const can = useCan(["people.manage"]);
   const manage = can.may("people.manage");
@@ -717,7 +718,7 @@ export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: str
 }
 
 export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: ResourcesTab; deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
-  const h = useHost(true);
+  const h = useHost(true, tab);
   // Binding (and a server secret's where and roll back), unbinding, and the host's storage and
   // sweeps (can.rs's routes: resource.bind, resource.unbind, host.operate).
   const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
