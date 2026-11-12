@@ -105,7 +105,7 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   const asked = await post("/payout/1", { amount: 30 });
   expect(asked.status).toBe(202);
   const run = await parked(earlier);
-  // An agent never decides an approval: deciding is a person's.
+  // The agent decides nothing: its built-in role doesn't, and the step is a person's.
   expect((await decide(agentToken, run, { approve: true })).status).toBe(403);
   // One person's approval isn't enough, and the same person twice counts once.
   const first = await decide(adminToken, run, { approve: true });
@@ -114,9 +114,9 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   // While it waits, a deposit goes ahead: the waiting run holds nothing on the account.
   const deposited = await post("/deposit/1", { amount: 50 });
   expect(((await deposited.json()) as { balance: number }).balance).toBe(before + 50);
-  const both = (await (await decide(second, run, { approve: true })).json()) as { outcome: string; approved_by: string[] };
+  const both = (await (await decide(second, run, { approve: true })).json()) as { outcome: string; slots: { by: string[] }[] };
   expect(both.outcome).toBe("approved");
-  expect(both.approved_by).toEqual([ADMIN.name, name]);
+  expect(both.slots.map((s) => s.by)).toEqual([[ADMIN.name, name]]);
   await expect.poll(balance).toBe(before + 50 - 30);
   // The run was given every decision, each with its step (the short form's one, 0), who took it and as what.
   const approval = (who: string) => expect.objectContaining({ slot: 0, who, kind: "person", approved: true });

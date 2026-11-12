@@ -1099,7 +1099,7 @@ pub(crate) fn run_action(
     let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, random_bytes())];
     let started = started_now();
     let inputs = [Some(input.clone())];
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: by.map(String::from), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
     // or not (resilience-audit-L4.md, §2.8).

@@ -821,14 +821,6 @@ impl Policy {
         {
             return Some(format!("this host never lets a handler go unrecorded, asked for {label} (holon.toml: grants.allow_unrecorded)"));
         }
-        // An approval decided by people alone is the short form; one in steps waits for approvals
-        // decided by their slots (docs/L4s/access-and-approvals-L4.md §14, step 5).
-        if let Some((name, steps)) = item.strip_prefix("Approval(\"").and_then(|g| g.strip_suffix("\")")).and_then(|g| g.split_once('/'))
-            && holon_core::approval::Steps::parse(steps).is_none_or(|s| s.short().is_none())
-        {
-            let asks = holon_core::approval::Steps::parse(steps).map_or_else(|| steps.to_string(), |s| s.said());
-            return Some(format!("this host decides an approval by people alone for now ({name:?} asks for {asks}), and doesn't yet decide one in steps"));
-        }
         None
     }
 
@@ -1268,13 +1260,6 @@ mod tests {
         assert!(Policy::parse("[limits]\nmax_request = 3").unwrap_err().contains("unknown limit"));
         assert!(Policy::parse("[limits]\nmax_requests = 5000").unwrap_err().contains("above its ceiling"));
         assert!(Policy::parse("[grant]\nauto = []").is_err(), "a misspelt section is an error, not ignored");
-        for (steps, refused) in [("person", false), ("person*2", false), ("person*5", false), ("person:approver", true), ("agent:classifier>person", true), ("person+person", true), ("person*1", true), ("2", true)] {
-            assert_eq!(p.refuses_item(&format!("Approval(\"payout/{steps}\")")).is_some(), refused, "{steps}");
-        }
-        assert_eq!(
-            p.refuses_item("Approval(\"payout/agent:classifier>person*2\")").unwrap(),
-            "this host decides an approval by people alone for now (\"payout\" asks for an agent holding classifier, then 2 people), and doesn't yet decide one in steps"
-        );
 
         // How often the server sweeps: ten minutes unless said, off, or as often as once a minute.
         assert_eq!(Policy::default().storage.sweep_every, Some(Duration::from_secs(600)));

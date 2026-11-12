@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The server decides an approval by its steps.** Each step opens once every stage before it is
+  filled, and takes a principal of its kind bound to its role where the approval is (on the host,
+  the flow or the point; an admin holding everything doesn't hold `reviewer`); each principal
+  decides one step, once, and never one of a run they started; one decline ends it. A decision
+  names its step (`slot`), or takes the one open step its decider may fill: none is 403 saying
+  what each open step needs, several is 409 asking which. It may carry a `note`, any JSON up to
+  16 KiB, given to the run with it. An agent decides an agent's step through a role that allows
+  `run.decide`. A deploy with steps is no longer refused. The decide route answers
+  `{name, slot, slots, outcome}` and a waiting run's point lists `steps`, `said`, `slots` (each
+  step: its role, kind, people, who approved it, whether it is open), `decisions` and `yours`,
+  the open steps whoever asks may take, in place of `people` and `approved_by`. `holon decide`,
+  the `runs` tool and the editor's Runs waiting say each step as it stands; the editor offers the
+  steps that are yours, named when there are several, and says "you approved as reviewer".
 - **An approval's permission names its steps.** The `approval` leaf keeps who decides it as one
   canonical text, its `steps` param (`person*2`: two people), in place of `people`, and its
   permission names them: `Approval("payout/person*2")`, which was `Approval("payout/2")`, so a

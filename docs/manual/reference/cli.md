@@ -436,18 +436,21 @@ holon decide <slug> <run> <name> --decline --reason TEXT
 Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
 the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
 run (the first 12 characters of its id), what started it and since when, then an approval with
-how many people it asks and who has approved it so far, or an event, and until when:
+who decides it and each step as it stands, who approved it so far or whether it is open, or an
+event, and until when:
 
 ```
-run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout", 2 people's, 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout" (2 people): 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+run 0c2e81f4a9d3 (action pay, since 2026-11-09T14:50:12) waits at approval "release" (an agent holding classifier, then a person holding reviewer): classifier scout approved; reviewer open, until 2026-11-09T15:50:12
 ```
 
 Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
-reason optional, or `--decline`, which needs one. It says what the decision did: still waiting for
-more people, approved by whom, or declined; the run goes on with the decision once it is made.
-Each person counts once; one decline ends it. Only a person decides: an editor or an admin
-signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
-`holon mcp`, which signs in as an agent.
+reason optional, or `--decline`, which needs one. You take the open step you may fill: of your
+kind, bound to its role where the flow is. It says what the decision did: the step it took, what
+the approval still waits for, approved by whom, or declined; the run goes on with the decision
+once it is made. Each decides one step, once, and not of a run they started; one decline ends
+it. A person decides a person's step, signed in, as you are on your own machine. An API token
+for a service (`HOLON_TOKEN`) is refused, and `holon mcp`'s agent decides no person's step.
 
 ### `holon wait`
 

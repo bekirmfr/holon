@@ -417,15 +417,17 @@ written, a person's or an agent's. It is kept on `Decided`, and given to the run
 **The answer and the listing** (D44). The decide route answers
 `{name, slots: [{slot, stage, role?, kind, people, by, open}], outcome}`. `ParkedRun::summary`
 (`:647`) lists an approval point so, with `said` (`Steps::said`) and `decisions`; an event's
-point stays `{name, expires_at}`. `people` and `approved_by` go from both (dev phase), and their
-readers follow:
+point stays `{name, expires_at}`. Each approval point also lists `yours`, the open steps the
+caller may fill (the decide route's checks, without deciding), so the editor offers those and the
+nav counts them without asking `can` per point. `people` and `approved_by` go from both (dev
+phase), and their readers follow:
 
 - `decidecmd.rs:114` `decided_said` and `:136` `waiting_lines`: the slots in words, "reviewer:
   ada approved; approver: open";
 - `mcp.rs:891` `runs`, the same lines;
 - the editor: `decisions.ts:12` `isApproval` reads `steps`, and `:34` says the chain in words.
-  `ApprovalsPage.tsx` sends the slot when the caller can fill two, and says "you reviewed" where
-  they did. The chain drawn as a row is step 7's.
+  `ApprovalsPage.tsx` sends the slot it offers, named on its buttons when the caller can fill
+  two, and says "you approved as reviewer" where they did. The chain drawn as a row is step 7's.
 
 **The refusal goes.** `permissions.rs:824` and its test's rows (`:1271`): every canonical steps
 text deploys.

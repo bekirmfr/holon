@@ -2180,8 +2180,8 @@ export const pay = action(async (order) => {
         ids.push(new);
     }
     let first = runs(&state, None).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
-    assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
-    assert_eq!(first["waiting"][0]["steps"], "person*2", "who decides it, as the grant names it");
+    assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["slots"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
+    assert_eq!((&first["waiting"][0]["steps"], &first["waiting"][0]["said"]), (&serde_json::json!("person*2"), &serde_json::json!("2 people")), "who decides it, as the grant names it");
     assert!(durable::claim_by_token(&state.deployments, "payouts", "payout", &durable::token_for(&ids[0], "payout")).is_none(), "a token doesn't resume an approval");
     // A run that waits has no answer yet, and hasn't failed: counted, not as an error, and its log
     // entry says where it waits, with no status.
@@ -2211,10 +2211,10 @@ export const pay = action(async (order) => {
     let (code, said) = decide(&ci, &ids[0], approve.clone());
     assert_eq!(code, 403);
     assert!(said.contains("ci is a service, a script, not a person"), "{said}");
-    assert_eq!(decide(&claude, &ids[0], approve.clone()).0, 403, "an agent never decides");
+    assert_eq!(decide(&claude, &ids[0], approve.clone()).0, 403, "an agent's built-in role decides nothing, and the step is a person's");
     let (code, said) = decide(&ada, &ids[0], approve.clone());
     assert_eq!(code, 200, "{said}");
-    assert!(said.contains(r#""outcome":"waiting""#) && said.contains(r#""approved_by":["ada"]"#), "{said}");
+    assert!(said.contains(r#""outcome":"waiting""#) && said.contains(r#""by":["ada"]"#), "{said}");
     let (code, said) = decide(&ada, &ids[0], approve.clone());
     assert_eq!(code, 409);
     assert!(said.contains("ada already approved \\\"payout\\\": it needs 2 different people"), "{said}");
@@ -2277,10 +2277,9 @@ export const pay = action(async (order) => {
 
 /// **Guards:** an approval's steps are what its deploy asks for. A version that changes them asks
 /// for the new item as any new permission does, and an agent's such version waits for a person
-/// as a proposal; one in steps this host doesn't decide yet is refused at deploy, its preview
-/// saying why (docs/L4s/approval-steps-plan.md D29, D31).
+/// as a proposal (docs/L4s/approval-steps-plan.md D29).
 /// **Why:** who decides is the permission a person approves: a version decided by fewer people,
-/// or by roles nothing checks yet, mustn't run on the grant of the one before.
+/// or by other roles, mustn't run on the grant of the one before.
 #[test]
 fn an_approval_s_steps_are_what_its_deploy_asks_for() {
     use serde_json::{json, Value};
@@ -2310,18 +2309,120 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
     assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/person\")"), "{said}");
     let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "acknowledge": ["Approval(\"payout/person\")"] }));
     assert_eq!(code, 200, "{said}");
-    // In steps: refused, whoever acknowledges it, until approvals are decided by their steps.
-    let words = "this host decides an approval by people alone for now (\"payout\" asks for an agent holding classifier, then a person holding approver), and doesn't yet decide one in steps";
+    // In steps, the same: a new item, which deploys once acknowledged.
     let (code, said) = send(&ada, "/deploy/preview", json!({ "slug": "payouts", "unit": steps }));
-    assert_eq!((code, &said["refused"]), (200, &json!(words)), "{said}");
+    assert_eq!((code, &said["refused"]), (200, &Value::Null), "{said}");
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": {} }));
+    assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/agent:classifier>person:approver\")"), "{said}");
     let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": {}, "acknowledge": ["Approval(\"payout/agent:classifier>person:approver\")"] }));
-    assert!(code == 400 && said["error"].as_str().unwrap().contains(words), "{said}");
+    assert_eq!(code, 200, "{said}");
 }
 
-/// Who may decide an approval: a person by their name, the OS user's local admin by the name it
-/// runs as; not an agent, a service, a viewer, or anyone on a server without accounts.
+/// **Guards:** an approval in steps is decided a step at a time through the route (D36 to D40):
+/// the step named, or the one open step the caller may fill, of their kind, bound to its role
+/// where the approval is (at the flow, or at the point itself); never by the run's starter; a
+/// note given to the run with the decision, at most 16 KiB.
+/// **Why:** who decides each step is what the deploy's permission named, and the record of it is
+/// the evidence: the route must hold to it whoever asks.
 #[test]
-fn only_a_person_decides_an_approval() {
+fn an_approval_in_steps_is_decided_a_step_at_a_time() {
+    use crate::accounts::Kind;
+    use crate::bindings::{RoleText, Scope, Selector, Subject};
+    use serde_json::{json, Value};
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+import state from "state"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", steps: [{ role: "classifier", kind: "agent" }, [{ role: "reviewer" }, { role: "approver" }]] })
+  state.decided = decision
+  return decision.approved
+})
+"#;
+    let unit = to_hex(&stage_text(&state, text));
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    // Viewers on the host: what lets them decide is the role each step names.
+    let viewer = |name: &str| accounts.accept(&accounts.invite(name, "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy, dee) = (viewer("bob"), viewer("cy"), viewer("dee"));
+    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person), ("approver", Kind::Person)] {
+        accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
+    }
+    let flow = Scope::Flows(Selector::Slug("payouts".into()));
+    let point = Scope::Approval { flow: Selector::Slug("payouts".into()), name: "payout".into() };
+    for (who, role, at) in [("scout", "classifier", &flow), ("bob", "reviewer", &flow), ("dee", "reviewer", &flow), ("dee", "approver", &flow), ("cy", "approver", &point)] {
+        accounts.bind(Subject::Principal(who.into()), role, at.clone(), None, "ada", None).unwrap();
+    }
+    let ask = |token: &str, method: &str, path: &str, body: Value| {
+        let (code, said) = access_table::ask(&state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() });
+        (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
+    };
+    let steps = "agent:classifier>person:reviewer+person:approver";
+    let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": "payouts", "unit": unit, "document": {}, "acknowledge": ["Action(\"pay\")", format!("Approval(\"payout/{steps}\")"), "StateWrite(\"decided\")"] }));
+    assert_eq!(code, 200, "{said}");
+
+    // ada starts the run: it waits at the classifier's step.
+    assert_eq!(ask(&ada, "POST", "/trigger/payouts/pay", json!({ "amount": 10 })).0, 202, "it waits");
+    let listed = ask(&ada, "GET", "/deployments/payouts/runs", Value::Null).1["runs"][0].clone();
+    let run = listed["run_id"].as_str().unwrap().to_string();
+    let point = &listed["waiting"][0];
+    assert_eq!((point["steps"].as_str(), point["said"].as_str()), (Some(steps), Some("an agent holding classifier, then a person holding reviewer and a person holding approver, in any order")), "{point}");
+    let open = |slots: &Value| slots.as_array().unwrap().iter().map(|s| s["open"] == true).collect::<Vec<_>>();
+    assert_eq!(open(&point["slots"]), [true, false, false], "{point}");
+    // What each may take now, as the listing says it to them.
+    let yours = |token: &str| ask(token, "GET", "/deployments/payouts/runs", Value::Null).1["runs"][0]["waiting"][0]["yours"].clone();
+    assert_eq!([yours(&ada), yours(&scout), yours(&bob), yours(&dee)], [json!([]), json!([0]), json!([]), json!([])], "the starter none; the agent the classifier's step");
+
+    let decide = |token: &str, body: Value| ask(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), body);
+    let approve = |slot: Option<u8>, note: Option<Value>| {
+        let mut b = json!({ "name": "payout", "approve": true });
+        b["slot"] = slot.map_or(Value::Null, Value::from);
+        b["note"] = note.unwrap_or(Value::Null);
+        b
+    };
+    let refused = |token: &str, body: Value, code: u16, why: &str| {
+        let (got, said) = decide(token, body);
+        assert_eq!((got, said["error"].as_str()), (code, Some(why)), "{said}");
+    };
+    refused(&ada, approve(None, None), 403, "ada started this run: someone else decides its approval \"payout\"");
+    refused(&bob, approve(None, None), 403, "bob is a person, and slot 0 (classifier) of \"payout\" is an agent's");
+    refused(&scout, approve(None, Some(json!("x".repeat(16 * 1024)))), 400, "a note is at most 16 KiB of JSON");
+    let note = json!({ "label": "invoice", "confidence": 0.93 });
+    let (code, said) = decide(&scout, approve(None, Some(note.clone())));
+    assert_eq!((code, &said["slot"], &said["outcome"]), (200, &json!(0), &json!("waiting")), "{said}");
+    assert_eq!(open(&said["slots"]), [false, true, true], "{said}");
+    assert_eq!([yours(&scout), yours(&bob), yours(&cy), yours(&dee)], [json!([]), json!([1]), json!([2]), json!([1, 2])], "{said}");
+    refused(&scout, approve(Some(1), None), 403, "scout is an agent, and slot 1 (reviewer) of \"payout\" is a person's");
+    refused(&dee, approve(None, None), 409, "dee may fill slot 1 (reviewer) and slot 2 (approver) of \"payout\": say which, with slot");
+    refused(&bob, approve(Some(2), None), 403, "slot 2 (approver) of \"payout\" takes someone bound to approver here, and bob isn't");
+    assert_eq!(decide(&dee, approve(Some(1), None)).1["outcome"], "waiting");
+    // cy is bound at the approval point itself, and takes the one step left.
+    let (code, said) = decide(&cy, approve(None, None));
+    assert_eq!((code, &said["slot"], &said["outcome"]), (200, &json!(2), &json!("approved")), "{said}");
+
+    // The run is given every decision: who, as what, of which kind, and the classifier's note.
+    let decided = state.deployments.lock().unwrap()["payouts"].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
+    let d: Value = serde_json::from_str(&holon_core::stringify_json(&decided).unwrap()).unwrap();
+    assert_eq!((&d["approved"], &d["by"]), (&json!(true), &json!(["scout", "dee", "cy"])), "{d}");
+    let took: Vec<(Value, Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["role"].clone(), x["kind"].clone())).collect();
+    assert_eq!(took, [(json!("scout"), json!("classifier"), json!("agent")), (json!("dee"), json!("reviewer"), json!("person")), (json!("cy"), json!("approver"), json!("person"))], "{d}");
+    assert_eq!(d["decisions"][0]["note"], note, "{d}");
+    // The activity log says each decision with its step.
+    let activity = ask(&ada, "GET", "/activity", Value::Null).1["entries"].as_array().unwrap().clone();
+    let at = |who: &str| activity.iter().find(|e| e["action"] == "approved" && e["by"] == who).and_then(|e| e["target"].as_str()).unwrap_or_default().to_string();
+    assert!(at("scout").ends_with("at \"payout\", slot 0") && at("cy").ends_with("at \"payout\", slot 2"), "{activity:?}");
+}
+
+/// Who may decide an approval: a person or an agent by their name, the OS user's local admin by
+/// the name it runs as, through a role that holds run.decide there (the built-in agent role
+/// doesn't); not a service, a viewer, or anyone on a server without accounts. Which step each
+/// takes, its kind and role say (`an_approval_in_steps_is_decided_a_step_at_a_time`).
+#[test]
+fn who_may_decide_an_approval() {
     use crate::accounts::Kind;
     let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| match (name, kind, role) {
         (Some(name), Some(kind), Some(role)) => access::Caller::holding(name, kind, role),

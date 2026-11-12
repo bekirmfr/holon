@@ -311,6 +311,8 @@ declare module "holon" {
     at: number
     approved: boolean
     reason?: string
+    /** What they noted with it, any JSON (an agent's label and confidence, say). */
+    note?: unknown
   }
 
   /** A host's answer. */

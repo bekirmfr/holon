@@ -108,12 +108,11 @@ answers, oldest first, a line each (when, level, the run, the text), at a level 
 answers that agents may not read them, and so it does once you revoke it.
 
 A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
-`runs` shows which run waits and who has approved it so far, and the agent tells you. You decide
-it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide);
-no tool decides one, and the server refuses an agent's decision. In the target design
-([`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8) an approval can
-have steps, and an agent may fill a step a role gives it (classifying, say), never the one that
-approves.
+`runs` shows which run waits and who has approved each step so far, and the agent tells you. You
+decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide);
+no tool decides one. An approval in steps may have a step written for an agent
+(`{ role: "classifier", kind: "agent" }`), which an agent bound to that role takes, never a
+person's step ([`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8).
 
 ## Approving what an agent proposes
 

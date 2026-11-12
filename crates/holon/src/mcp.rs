@@ -904,7 +904,7 @@ fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
         out.push(String::new());
         out.push("Waiting now:".into());
         out.extend(points);
-        if waiting.iter().flat_map(|r| r["waiting"].as_array().cloned().unwrap_or_default()).any(|w| w["people"].as_u64().unwrap_or(0) > 0) {
+        if waiting.iter().flat_map(|r| r["waiting"].as_array().cloned().unwrap_or_default()).any(|w| w["steps"].is_string()) {
             out.push(format!("An approval is a person's to decide, and no tool decides it: tell the user which run waits, and that they decide it in the editor (Approvals, Runs waiting) or with `holon decide {slug} <run> <name> --approve` (or --decline --reason …)."));
         }
     }
@@ -1978,7 +1978,7 @@ mod tests {
 
         let listed = tool_as(&agent, "runs", json!({ "slug": "payouts" })).unwrap();
         assert!(listed.contains(&format!("run {} (action pay, since ", &run_id[..12])), "{listed}");
-        assert!(listed.contains("waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
+        assert!(listed.contains("waits at approval \"payout\" (2 people): 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
         assert!(listed.contains("no tool decides it") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
         assert!(tool_as(&agent, "deployments", json!({})).unwrap().contains("1 waiting (`runs` says for what)"));
         // The agent's own decision is refused before the route: deciding is a person's.

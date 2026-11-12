@@ -866,8 +866,12 @@ export type DeploymentEntry = {
 };
 
 /** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
- *  it, as what, and when. */
-export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string };
+ *  it, as what, when, and what they noted. */
+export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string; note?: unknown };
+
+/** One step of an approval as it stands (durable.rs `SlotState`): its number and stage, the role
+ *  and kind it takes, how many different principals, who approved it, and whether it is open. */
+export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; by: string[]; open: boolean };
 
 /** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
 export type WaitingRun = {
@@ -875,19 +879,20 @@ export type WaitingRun = {
   kind: string;
   route: string | null;
   parked_at: number;
-  /** Each point it waits at; an approval's with how many people it needs and the decisions taken
-   *  on it so far. */
-  waiting: { name: string; expires_at: number; people?: number; decisions?: WaitingDecision[] }[];
+  /** Each point it waits at; an approval's with its steps (`steps`, `said` in words), each as it
+   *  stands, the decisions taken on it so far, and the open steps whoever asked may take. */
+  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[] }[];
   delivered: string[];
 };
 
-/** What a decision did (`POST …/runs/<run_id>/decide`): the approval still waits for more people,
- *  or the run was given it (`run_error` when its part then failed). */
-export type Decided = { name: string; people: number; approved_by: string[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
+/** What a decision did (`POST …/runs/<run_id>/decide`): the step it took, each step as it now
+ *  stands, and whether the approval still waits or the run was given it (`run_error` when its
+ *  part then failed). */
+export type Decided = { name: string; slot: number; slots: WaitingSlot[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
 
-/** Approve, or decline with a reason, the approval `name` a run waits at: a person's to do. */
-export const decideRun = async (slug: string, runId: string, name: string, approve: boolean, reason: string) =>
-  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, approve, reason: reason.trim() || undefined }));
+/** Approve, or decline with a reason, step `slot` of the approval `name` a run waits at. */
+export const decideRun = async (slug: string, runId: string, name: string, slot: number, approve: boolean, reason: string) =>
+  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, slot, approve, reason: reason.trim() || undefined }));
 
 /** `GET /deployments/<slug>/collections/<name>`: one item (`key`) or a page of items in key order
  *  (`prefix`, `after`, `limit`), as of `root` (one the deployment's log shows) or live. `next`:

@@ -467,9 +467,9 @@ order carries no meaning beyond names being defined before use. `{ ...order, pai
 `approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no
 token is handed out for it and no route resumes it. Two different people signed in to Holon approve
 it (or one declines), and the run gets `{approved, by, decisions}`: who approved, and every decision
-taken, a decline included, as `{slot, who, kind, role, at, approved, reason}` (`slot` 0 and no
-`role` for `people`), with `declined_by` and `reason` when declined, or `expired: true` when nobody
-decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
+taken, a decline included, as `{slot, who, kind, role, at, approved, reason, note}` (`slot` 0
+and no `role` for `people`; `note` any JSON the decider sent with it), with `declined_by` and
+`reason` when declined, or `expired: true` when nobody decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
 one step of two people.
 
 An approval in steps names who takes each step, by the role they hold where the approval is (the
@@ -501,8 +501,14 @@ steps by `+`, a step its kind, `:role` and `*N`. Here,
 the steps changes the permission, so it asks anew, as weakening an approval should (§8.2).
 `holon fmt` writes one form for each steps: `people: N`; a flat `steps` when every stage is one
 step; a flat `steps` with `order: "any"` for one stage; nested lists otherwise, a stage of one step
-unwrapped. For now this host decides an approval by people alone: a deploy with steps is refused,
-saying so, until approvals are decided by their steps.
+unwrapped.
+
+The host decides each step in its order (§8.3, §8.4): a step opens once every stage before it is
+filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
+role, directly or through a group, on the host, the flow or the approval itself, and holding
+`run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
+step of an approval, once, and not of a run they started; one decline ends it. A decision names
+its step (`slot`), or takes the one open step its decider may fill.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
