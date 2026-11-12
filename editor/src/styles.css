@@ -455,6 +455,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-host__bad { color: var(--bad); }
 .hl-host__runs code { font-size: var(--fs-xs); color: var(--muted); }
 .hl-host__asof { font-size: var(--fs-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.hl-host--down .hl-host__asof { color: var(--bad); }
+.hl-host--down .hl-host__log, .hl-host--down .hl-host__runs { opacity: 0.5; }
 .hl-host__refresh { display: grid; place-items: center; width: 20px; height: 20px; margin: -2px -4px -2px 0; padding: 0; color: var(--muted); background: none; border: 0; border-radius: var(--r-sm); cursor: pointer; }
 .hl-host__refresh:hover:not(:disabled) { color: var(--ink); background: var(--row); }
 .hl-host__refresh:disabled { cursor: default; }

@@ -10,7 +10,7 @@ import { AccountMenu, type Me } from "../AuthGate";
 import { THEMES, type Theme, type Ui } from "../look";
 import { pageOf, type AppPage } from "../Pages";
 import { crumbs, follow, format, labelOf, type Route } from "../routes";
-import { getSummary, getVersion, hostAddress, type Summary } from "../server";
+import { ServerError, getSummary, getVersion, hostAddress, type Summary } from "../server";
 
 type Entry = { label: string; to: Route; icon: keyof typeof ICON; key?: number };
 
@@ -225,7 +225,7 @@ export function Shell({
  *  the run log's newest head and whether it is intact, and the keys worth knowing here. The host's
  *  summary is read again every 15 s while it shows. */
 function StatusBar({ route, waiting }: { route: Route; waiting: number }) {
-  const { summary } = useSummary(15_000);
+  const { summary } = useSummary(15_000, 15_000);
   const newest = summary?.latest[0] && summary.deployments.find((d) => d.slug === summary.latest[0].slug);
   const head = newest?.head ?? summary?.deployments[0]?.head;
   const breaks = summary ? (summary.chain.checked ? summary.chain.checked.breaks.length : summary.chain.breaks) : 0;
@@ -272,49 +272,81 @@ function useVersion(): string | null | undefined {
   return version;
 }
 
-/** The host's summary, read now and again every `every` ms while it shows (null until it comes),
- *  whether it is being read, and a way to read it again at once. */
-function useSummary(every: number): { summary: Summary | null; reading: boolean; refresh: () => void } {
+/** The host's summary, read now and again every `every` ms while it answers and every `retry` ms
+ *  while it doesn't (null until one comes; a failed read keeps the last), whether the last read got
+ *  an answer, a refusal included (undefined before the first), whether it is being read, and a way
+ *  to read it again at once. */
+function useSummary(
+  every: number,
+  retry: number,
+): { summary: Summary | null; answers: boolean | undefined; reading: boolean; refresh: () => void } {
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [answers, setAnswers] = useState<boolean | undefined>(undefined);
   const [reading, setReading] = useState(false);
   const [asked, setAsked] = useState(0);
   useEffect(() => {
     let on = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const read = () => {
       setReading(true);
       getSummary(1)
         .then(
-          (s) => on && setSummary(s),
-          () => undefined,
+          (s) => {
+            if (!on) return;
+            setSummary(s);
+            setAnswers(true);
+            timer = setTimeout(read, every);
+          },
+          (e: unknown) => {
+            if (!on) return;
+            // A refusal (say, signed out) is an answer; only a request that got none is not.
+            const answered = e instanceof ServerError;
+            setAnswers(answered);
+            timer = setTimeout(read, answered ? every : retry);
+          },
         )
         .finally(() => on && setReading(false));
     };
     read();
-    const timer = setInterval(read, every);
     return () => {
       on = false;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [every, asked]);
-  return { summary, reading, refresh: () => setAsked((n) => n + 1) };
+  }, [every, retry, asked]);
+  return { summary, answers, reading, refresh: () => setAsked((n) => n + 1) };
 }
 
-/** Which host the console is on: its address (and whether it answers), whether its run log is
- *  intact, how many runs it holds and the newest head, as of when it was last read; the refresh
- *  reads it again now. The version is the brand's. */
+/** Which host the console is on: its address (and whether it answers, as of its last read, or
+ *  of the version's before one), whether its run log is intact, how many runs it holds and the
+ *  newest head, as of when it was last read (dimmed while it doesn't answer); the refresh reads it
+ *  again now. The version is the brand's. */
 function HostCard({ version }: { version: string | null | undefined }) {
-  const { summary, reading, refresh } = useSummary(60_000);
+  const { summary, answers, reading, refresh } = useSummary(60_000, 10_000);
+  const up = answers ?? (version === null ? false : version ? true : undefined);
+  // A page's request that got no answer: read the host now, not at the next turn of the clock.
+  useEffect(() => {
+    const unanswered = () => !reading && answers !== false && refresh();
+    window.addEventListener("holon:unanswered", unanswered);
+    return () => window.removeEventListener("holon:unanswered", unanswered);
+  }, [reading, answers, refresh]);
   const breaks = summary ? (summary.chain.checked ? summary.chain.checked.breaks.length : summary.chain.breaks) : 0;
   const newest = summary?.latest[0] && summary.deployments.find((d) => d.slug === summary.latest[0].slug);
   const head = newest?.head ?? summary?.deployments[0]?.head;
+  const asOf = summary && new Date(summary.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return (
-    <section className="hl-host" aria-label="host">
+    <section className={`hl-host${up === false ? " hl-host--down" : ""}`} aria-label="host">
       <span className="hl-host__row">
         <b className="hl-host__address">{hostAddress()}</b>
-        <span className={`hl-host__dot hl-host__dot--${version === null ? "bad" : version ? "ok" : "wait"}`} aria-hidden="true" />
+        <span
+          className={`hl-host__dot hl-host__dot--${up === false ? "bad" : up ? "ok" : "wait"}`}
+          title={up === false ? "not answering" : up ? "answering" : "asking…"}
+          aria-hidden="true"
+        />
       </span>
       <span className="hl-host__row hl-host__asof">
-        <span>{version === null ? "can't be reached" : summary ? `as of ${new Date(summary.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "…"}</span>
+        <span title={up === false && asOf ? `what shows below was read at ${asOf}` : undefined}>
+          {up === false ? "can't be reached" : asOf ? `as of ${asOf}` : "…"}
+        </span>
         <button className="hl-host__refresh" onClick={refresh} disabled={reading} aria-label="refresh the host card" title="read the host's summary again now">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" className={reading ? "hl-host__spin" : undefined}>
             <path d="M20 11a8 8 0 1 0-2.3 5.7" />

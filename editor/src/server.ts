@@ -54,10 +54,16 @@ export function setSession(session: Session | null): void {
 
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 means the
- *  sign-in has ended: it is forgotten, and the editor asks to sign in again. */
+ *  sign-in has ended: it is forgotten, and the editor asks to sign in again. A request that gets
+ *  no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getSession()?.token ?? signedIn()?.idToken;
-  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init);
+  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
+    (e: unknown) => {
+      window.dispatchEvent(new Event("holon:unanswered"));
+      throw e;
+    },
+  );
   if (res.status === 401 && token) {
     setSession(null);
     signOut();
