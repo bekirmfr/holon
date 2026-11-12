@@ -1250,16 +1250,22 @@ const MAX_IN_FLIGHT: usize = 512;
 /// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
 /// past `most` being answered at once, one more is told to try again rather than given work,
 /// signed in or not. Its body is read by a deadline (`http::BODY_DEADLINE`), so a slow one gives
-/// its place back.
+/// its place back. Every answer, a refusal too, goes out with CORS's headers and the guards
+/// (http.rs `guarded`).
 pub(crate) fn admitted(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
+    guarded(with_cors(&state.access, request, answer(state, request, in_flight, most)))
+}
+
+/// `admitted`'s answer, before its headers.
+fn answer(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
     // A server stopping (stopping.rs) takes no more work: a run, a deploy, a decision.
     if state.store.1.stopping() {
-        return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": stopping::REFUSED })).with_status_code(503).with_additional_header("Retry-After", "5"));
+        return rouille::Response::json(&serde_json::json!({ "error": stopping::REFUSED })).with_status_code(503).with_additional_header("Retry-After", "5");
     }
     let Some(_admitted) = Admitted::take(in_flight, most) else {
-        return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
+        return rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1");
     };
-    with_cors(&state.access, request, route(state, request))
+    route(state, request)
 }
 
 /// One request counted in `IN_FLIGHT` while it is answered.

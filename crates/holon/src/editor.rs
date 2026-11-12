@@ -62,12 +62,33 @@ fn content_type(path: &Path) -> &'static str {
         "ico" => "image/x-icon",
         "json" => "application/json",
         "woff2" => "font/woff2",
+        "woff" => "font/woff",
         "txt" | "holon" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
 
-/// The file `url` names in the editor, when it is one: `/` is its `index.html`.
+/// What the editor's page may load and do, as the browser holds it to (its
+/// `Content-Security-Policy`): nothing but what is named here.
+///
+/// - Scripts are the editor's own files only, never inline or from elsewhere, so markup that
+///   finds its way into the page can't run; its wasm (the evaluator, `editor/wasm`) is compiled
+///   from its own file (`'wasm-unsafe-eval'`, not `'unsafe-eval'`: no `eval` of text).
+/// - Styles are its files and inline ones: React and CodeMirror set them on elements, and a run's
+///   HTML (the HTML renderer, in a `srcdoc` frame that inherits this policy under its own
+///   `INERT_POLICY`, diagnostics.ts) brings its own.
+/// - Images, sound and fonts: its files, and `data:` ones: a run's value shown as an image or a
+///   sound, that HTML's, and the font files small enough that the build writes them into its CSS.
+/// - Requests go to the server it was served from, the marketplace this browser named (anywhere:
+///   marketplace.ts) and the identity provider's token endpoint (signin.ts), so any address.
+/// - No frames of it (the server's `GUARDS` say so for every other answer), no `<base>`, and no
+///   form that leaves the page: every form is answered by script.
+pub(crate) const PAGE_POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src data:; font-src 'self' data:; \
+    connect-src 'self' http: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// The file `url` names in the editor, when it is one: `/` is its `index.html`. A page is sent
+/// with its policy (`PAGE_POLICY`).
 pub(crate) fn serve(source: &Source, url: &str) -> Option<Response> {
     let path = url.split('?').next().unwrap_or("/");
     let last = path.rsplit('/').next().unwrap_or("");
@@ -82,7 +103,9 @@ pub(crate) fn serve(source: &Source, url: &str) -> Option<Response> {
     let bytes = source.read(&relative)?;
     // The page is always read fresh; its assets carry a content hash in their names.
     let cache = if relative.starts_with("assets") { "public, max-age=31536000, immutable" } else { "no-cache" };
-    Some(Response::from_data(content_type(&relative), bytes).with_additional_header("Cache-Control", cache))
+    let ty = content_type(&relative);
+    let response = Response::from_data(ty, bytes).with_additional_header("Cache-Control", cache);
+    Some(if ty.starts_with("text/html") { response.with_additional_header("Content-Security-Policy", PAGE_POLICY) } else { response })
 }
 
 #[cfg(test)]

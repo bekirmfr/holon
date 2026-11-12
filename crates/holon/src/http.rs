@@ -77,6 +77,30 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
     response
 }
 
+/// What every control-plane response is sent with: no other page may show it in a frame (the
+/// editor, framed by a hostile page while signed in, could be lured into a click on Approve), with
+/// `X-Frame-Options` for browsers that don't read `frame-ancestors`; its type isn't guessed past
+/// the one it is sent as; and no address of it goes on to where its links lead.
+pub(crate) const GUARDS: [(&str, &str); 4] = [
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "frame-ancestors 'none'"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+];
+
+/// `response` with the `GUARDS`, added in one place as CORS's headers are (`with_cors`), so a new
+/// endpoint or an early refusal can't go out without them. One it already names is kept: the
+/// editor's page has a policy of its own (editor.rs `PAGE_POLICY`), which forbids frames too.
+pub(crate) fn guarded(response: Response) -> Response {
+    GUARDS.iter().fold(response, |response, &(name, value)| {
+        if response.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) {
+            response
+        } else {
+            response.with_additional_header(name, value)
+        }
+    })
+}
+
 /// How long a request's body may take to arrive, all of it. Past it the client is told 408 and
 /// the request lets go of its admission (`IN_FLIGHT`, main.rs), so bodies that trickle in or stop
 /// can't hold every slot and lock everyone out, signing in included. The data plane's is its
