@@ -196,11 +196,17 @@ The **run** pane at the bottom has two tabs:
 - **Timeline**: the nodes in the order they ran, or slowest first, with how long each took. **✎**
   marks state writes.
 
-On the canvas, each node that ran shows its value beside its outputs (click one to pin the whole
-value; **values off** hides them). What didn't run is dimmed: a node on a branch not taken has a
-dotted border, and the inspector says why it didn't run. **◀** and **▶** step through the run
-one node at a time. The text pane does the same: what didn't run is dimmed, and values sit beside
-expressions.
+Above the canvas, where edit mode says what the flow may do, a strip says the run: its number,
+how it ended, what came in, the version it ran on and when, and **↗ called out** and **✎ wrote**
+when it did.
+
+At the canvas's **Statements** level, each statement the run ran shows the value it made, what
+didn't run is dimmed, the step you are on has a thick border, and the statement a failed run
+failed at is red. At the **Nodes** level (`l` switches), each node that ran shows its value beside
+its outputs (click one to pin the whole value; **values off** hides them, on both levels). What
+didn't run is dimmed: a node on a branch not taken has a dotted border, and the inspector says
+why it didn't run. **◀** and **▶** step through the run one node at a time. The text pane does
+the same: what didn't run is dimmed, and values sit beside expressions.
 
 The header of the run pane says **✓ replay reproduces the run** when the editor, running the flow
 again from the log, got the same answer. A run on an earlier version is shown on the canvas it
@@ -212,6 +218,10 @@ node.
 
 **Flow state** (a tab of the inspector, in view mode) shows each state key and collection before
 and after the run, or after the step you are on.
+
+**Record** (another tab) shows the run as the log keeps it, and its **claims**: each key it read
+before calling out, held until it was done and for how long, or waited for while another run held
+it ([Calling out between a read and a write](databases.md#calling-out-between-a-read-and-a-write)).
 
 ## A flow's page
 

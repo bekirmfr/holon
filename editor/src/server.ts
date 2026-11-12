@@ -1048,6 +1048,10 @@ export type LogEntry = {
   reads?: { path: number[]; request: WValue; answer: WValue | null; file?: { hash: string; size: number; blob?: string } }[];
   /** How many times it ran again because what it read changed before it could commit. */
   retries?: number;
+  /** The keys it claimed before calling out (key-claims-L4.md), one per key per attempt: how long
+   *  it waited for another run, whether what it read had changed (it ran again), and how long it
+   *  held the key, from taken to let go (absent for one it never held). Absent when none. */
+  claims?: LoggedClaim[];
   /** The run's id, the nonce in it, and the grant it was held to (hex; empty for no run). */
   run_id?: string;
   nonce?: string;
@@ -1062,6 +1066,9 @@ export type LogEntry = {
    *  Absent when it didn't commit, and in runs from before rc.30. */
   state_after?: string;
 };
+
+/** A key a run claimed before calling out: `charges[k2]`, or `charges[*]` for a listing. */
+export type LoggedClaim = { key: string; waited_ms: number; overtaken: boolean; held_ms?: number };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,
  *  its response, and when, in microseconds from the run's start. */

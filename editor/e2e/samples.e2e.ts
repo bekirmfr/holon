@@ -198,6 +198,7 @@ test("slugs runs its holons, and view mode shows inside one", async ({ page, req
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Hello Holon World", author: "Ada Lovelace" } });
   expect(await answer.json()).toMatchObject({ title: "hello-holon-world", author: "ada-lovelace", receipt: "unsigned" });
   await viewNewestRun(page);
+  await nodesLevel(page);
   await page.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   const side = page.getByRole("complementary", { name: "Inspector" });
   await side.getByRole("button", { name: "Node", exact: true }).click();
@@ -955,6 +956,7 @@ test("cache-aside answers a name it has from its collection without the fetch, w
   expect(await got.text()).toContain("x-1");
   // The replay takes the branch the run took, which the run's timeline confirms.
   await viewNewestRun(page);
+  await nodesLevel(page);
   const skipped = page.locator('.hl-node[data-run="skipped"]');
   await expect(skipped.filter({ hasText: "http_request" })).toHaveCount(1);
   await skipped.filter({ hasText: "http_request" }).locator(".hl-node__title").click();
@@ -1220,6 +1222,7 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   expect((await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "div", a: 1, b: 0 } })).status()).toBe(400);
   // The division ran; the other three arms didn't.
   await viewNewestRun(page);
+  await nodesLevel(page);
   const skipped = page.locator('.hl-node[data-run="skipped"]');
   await expect(skipped).toHaveCount(3);
   for (const leaf of ["add", "subtract", "multiply"]) {

@@ -2,13 +2,17 @@
 // Statements level's wiring: the statement graph of the text as typed (drawn again after a pause in
 // the typing; a text that doesn't parse keeps the last graph that did, and says so), the cursor's
 // line selecting its row, a row picked putting the cursor on its mark, and a row opened showing its
-// nodes on the Nodes level, framed. `l` switches. View runs draws its nodes, with their values.
+// nodes on the Nodes level, framed. `l` switches. In View runs the graph is the text of the version
+// the run ran on (printed from its canvas, as the text pane shows it), with the run drawn on it
+// (runRows.ts); its Nodes level is the node canvas with values.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Evaluator } from "./holon";
 import { holonGraph, printHolon, type FlowGraph, type GraphRow } from "./holonText";
 import { compileRows, keepLevel, lineAt, rowOnCanvas, rowsMay, type CanvasLevel, type RowMay } from "./canvasLevel";
+import { graphRun, rowsOnCanvas, type RunOnCanvas } from "./runRows";
+import type { GraphRun } from "./StatementGraph";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { TextAsk } from "./TextPane";
 import type { PickedRow } from "./inspectText";
@@ -34,6 +38,7 @@ export function useCanvasLevel({
   inspecting,
   showText,
   onOpened,
+  run = null,
 }: {
   flow: FlowMeta;
   setFlow: (update: (m: FlowMeta) => FlowMeta) => void;
@@ -53,9 +58,11 @@ export function useCanvasLevel({
   /** A row opened: the canvas's nodes it stands for (none matched: the whole flow), to select
    *  and frame once the Nodes level shows. */
   onOpened: (ids: string[]) => void;
+  /** In View runs, the run shown, as replayed on the canvas: drawn on the rows. */
+  run?: RunOnCanvas | null;
 }) {
   const viewing = flow.viewing !== null;
-  const level: CanvasLevel = viewing ? "nodes" : flow.level;
+  const level: CanvasLevel = flow.level;
   const statements = level === "statements";
   const name = useRef(flow.name);
   name.current = flow.name;
@@ -66,17 +73,18 @@ export function useCanvasLevel({
     },
     [setFlow],
   );
-  useKeys("editor", { l: () => (viewing ? false : setLevel(statements ? "nodes" : "statements")) }, { enabled });
+  useKeys("editor", { l: () => setLevel(statements ? "nodes" : "statements") }, { enabled });
 
   // The text drawn: as typed while it stands for the canvas (a mistake in it too: the graph then
-  // keeps its last), else the canvas printed.
+  // keeps its last), else the canvas printed. In View runs, always the canvas printed: the version
+  // shown, as the text pane prints it.
   const key = useMemo(
     () => syncKeyOf(nodes, edges, flow.settings, flow.name),
     // canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [canvasKey, flow.settings, flow.name],
   );
-  const typed = flow.text.value !== null && flow.text.key === key ? flow.text.value : null;
+  const typed = !viewing && flow.text.value !== null && flow.text.key === key ? flow.text.value : null;
   const printed = useMemo(() => {
     if (!statements || typed !== null) return null;
     try {
@@ -123,7 +131,7 @@ export function useCanvasLevel({
 
   // Where the text's cursor is, and the line it is on: its row is selected.
   const [caret, setCaret] = useState<number | null>(null);
-  const paneText = flow.text.open ? flow.text.value : null;
+  const paneText = !flow.text.open ? null : viewing ? source : flow.text.value;
   const cursorLine = caret !== null && paneText !== null ? lineAt(paneText, caret) : null;
 
   // The graph's text compiled: which nodes each row stands for, and what each may do.
@@ -132,6 +140,14 @@ export function useCanvasLevel({
 
   const canvas = useRef({ nodes, edges });
   canvas.current = { nodes, edges };
+  // The run on the rows: each row's nodes on the canvas the run was replayed on.
+  const rows = useMemo(
+    () => (viewing && graph && compiled ? rowsOnCanvas(graph, compiled, canvas.current) : null),
+    // canvasKey changes exactly when the canvas's structure does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewing, graph, compiled, canvasKey],
+  );
+  const drawnRun = useMemo((): GraphRun | null => (rows && run ? graphRun(rows, run) : null), [rows, run]);
   // The row picked last: the Inspector shows it while the cursor is where picking it put it.
   const [picked, setPicked] = useState<PickedRow | null>(null);
   const onPick = useCallback(
@@ -153,9 +169,9 @@ export function useCanvasLevel({
   return {
     level,
     setLevel,
-    /** Whether the level may be switched: View runs draws its nodes. */
-    switchable: !viewing,
     graph,
+    /** In View runs, the run as the rows show it. */
+    run: drawnRun,
     /** Why the text drawn has no graph now (it doesn't parse): the last one stays. */
     error: shown?.error ?? null,
     caret,

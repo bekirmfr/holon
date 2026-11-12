@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { decisionSaid } from "./decisions";
-import { field, runActions, runLabel, text } from "./runs";
+import { claimNotes, field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
 import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
@@ -1247,14 +1247,18 @@ export function Inspector({
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : tab === "record" && run ? (
           <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
+        ) : statements ? (
+          // In View runs, the node picked below what the cursor is on: what it computed.
+          <>
+            {statements}
+            {run && node && <ComponentTab node={node} run={run} source={source ?? null} may={null} />}
+          </>
         ) : (
-          statements ?? (
           <>
             {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
             <ComponentTab node={node} run={run} source={source ?? null} may={run ? null : may} />
             {node && unit && <Section title="unit">{unit}</Section>}
           </>
-          )
         )}
       </div>
     </div>
@@ -1283,10 +1287,31 @@ function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null;
           {verdict === null ? "not checked: its version's canvas isn't shown" : verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded"}
         </div>
       </Section>
+      <Section title="claims">
+        <Claims run={run} />
+      </Section>
       <a href={`#${slug}.run-${run.seq}`} style={{ color: "var(--accent)", textDecoration: "none" }}>
         its page, to check it offline ›
       </a>
     </>
+  );
+}
+
+/** The Record tab's Claims (web-console-L4.md §5.5, key-claims-L4.md): whether the run held each
+ *  key it read before calling out until it was done, and for how long (the log's `held_ms`); one
+ *  it waited for another run to let go, or was turned away over. */
+export function Claims({ run }: { run: LogEntry }) {
+  const notes = claimNotes(run);
+  if (notes.length === 0) return <div style={{ color: dim }}>none: it held no key it read while calling out</div>;
+  const color = { ok: "var(--ok)", again: "var(--warn)", busy: FAIL };
+  return (
+    <ul className="hl-claims" aria-label="claims">
+      {notes.map((n, i) => (
+        <li key={i} style={{ color: color[n.tone] }}>
+          {n.said}
+        </li>
+      ))}
+    </ul>
   );
 }
 

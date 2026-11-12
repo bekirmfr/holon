@@ -49,8 +49,9 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   deployed flow, read only, with its runs. `replay.ts` replays a logged run on the canvas node by
   node from what the log recorded (the request, the state read, the clock, random numbers, the
   new file), and the editor says whether that reproduced the run; which nodes ran follows core's
-  choice rule (`choiceNext`). `timeline.ts` merges runs, versions and events as `holon history`
-  does.
+  choice rule (`choiceNext`). `runRows.ts` draws the replay on the statement graph, each row by
+  its nodes; `RunStrip.tsx` says the run in the It may strip's place. `timeline.ts` merges runs,
+  versions and events as `holon history` does.
 - **The API client.** `server.ts`, typed against the server's JSON. Its `BASE` is
   `VITE_HOLON_SERVER` when set; else, built, the origin it was served from; in development
   `http://127.0.0.1:7420`. The session is kept in `localStorage` under `holon.session`.

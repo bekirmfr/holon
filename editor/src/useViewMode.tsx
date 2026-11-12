@@ -34,6 +34,7 @@ import { stable } from "./textSync";
 import { printHolon } from "./holonText";
 import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
+import type { RunOnCanvas } from "./runRows";
 import type { FlowMeta } from "./tabs";
 
 type Setter<T> = (value: T | ((prev: T) => T)) => void;
@@ -302,6 +303,14 @@ export function useViewMode(input: ViewModeInput) {
     });
   }, [nodes, replayed, step, showValues]);
 
+  // The run as the statement graph draws it (runRows.ts): what it ran, the step, each row's value
+  // when values are shown, and where it failed.
+  const onCanvas = useMemo(
+    (): RunOnCanvas | null =>
+      replayed ? { order: replayed.order, traces: replayed.traces, step, issues: replayed.diagnosis?.issues, values: showValues } : null,
+    [replayed, step, showValues],
+  );
+
   // The wires show the run: the way a failure took in its colour, a wire that carried nothing
   // faded, and the value a wire carried on hover.
   const viewEdges = useMemo(() => {
@@ -346,6 +355,7 @@ export function useViewMode(input: ViewModeInput) {
     inside,
     viewNodes,
     viewEdges,
+    onCanvas,
     setHoveredWire,
     showNode,
     fitToNodes,

@@ -4,10 +4,11 @@
 // fallback answer (`?? status(404)`) is a side box on its row. Wires are the rows a row takes from
 // in its band, drawn as lanes in the column's gutter, as `holon editor` draws them; what it takes
 // from outside its band is a label. Against another version, the rows whose text is new are dashed
-// amber; over a run, the rows it didn't run are dimmed, the step it is at has a thick border, and a
-// row shows the value it made. Drawn from holonGraph (holonText.ts), the terminal's own graph; it
-// fetches nothing, and picking a row is the caller's to act on (put the cursor on its mark), as is
-// opening one (Enter, or a double click: the editor shows its nodes).
+// amber; over a run, the rows it didn't run are dimmed with the wires out of them, the step it is
+// at has a thick border, a row shows the value it made, and the row a failure began at is red.
+// Drawn from holonGraph (holonText.ts), the terminal's own graph; it fetches nothing, and picking
+// a row is the caller's to act on (put the cursor on its mark), as is opening one (Enter, or a
+// double click: the editor shows its nodes).
 
 import { useEffect, useMemo, useRef } from "react";
 import type { FlowGraph, GraphRow, RowKind } from "./holonText";
@@ -34,9 +35,9 @@ export function rowAtLine(graph: FlowGraph, line: number): { band: number; index
   return at(false) ?? at(true);
 }
 
-/** A run over the graph (View runs): what it ran, the step it is at, and the value each row made,
- *  by rowKey. */
-export type GraphRun = { ran: Set<string>; current?: string | null; values?: Map<string, string> };
+/** A run over the graph (View runs): what it ran, the step it is at, the value each row made, and
+ *  the rows a failure began at, with why, by rowKey (runRows.ts). */
+export type GraphRun = { ran: Set<string>; current?: string | null; values?: Map<string, string>; failed?: Map<string, string> };
 
 /** What a row is, to tell it in another version: its text and what its nodes are and are set to
  *  (not their names, which shift as other rows come and go). */
@@ -149,7 +150,7 @@ export function StatementGraph({
               <div className="hl-sg__rows" style={{ paddingLeft: gutter }}>
                 <svg className="hl-sg__wires" width={gutter} height={height} aria-hidden="true">
                   {[...lane].map(([s, l]) => (
-                    <g key={s}>
+                    <g key={s} className={run && !run.ran.has(rowKey(b, s)) ? "hl-sg__wire--idle" : undefined}>
                       <path d={`M${gutter},${mid(s)} H${x(l)} V${mid(last.get(s)!)}`} />
                       {band.rows.map((r, t) =>
                         t > s && r.from.includes(s) ? (
@@ -165,6 +166,7 @@ export function StatementGraph({
                 {band.rows.map((r, i) => {
                   const key = rowKey(b, i);
                   const value = run?.values?.get(key);
+                  const failed = run?.failed?.get(key);
                   const cls = [
                     "hl-sg__row",
                     `hl-sg--${r.kind}`,
@@ -172,6 +174,7 @@ export function StatementGraph({
                     fresh.has(key) && "hl-sg__row--new",
                     run && !run.ran.has(key) && "hl-sg__row--idle",
                     run?.current === key && "hl-sg__row--current",
+                    failed !== undefined && "hl-sg__row--failed",
                   ]
                     .filter(Boolean)
                     .join(" ");
@@ -182,7 +185,8 @@ export function StatementGraph({
                         className={cls}
                         aria-current={key === selected ? "true" : undefined}
                         data-new={fresh.has(key) ? "true" : undefined}
-                        title={[r.text, r.does && `is ${r.does}`, r.outside.length > 0 && `takes ${r.outside.join(", ")} from outside`, value !== undefined && `= ${value}`].filter(Boolean).join("\n")}
+                        data-run={run ? (failed !== undefined ? "failed" : run.current === key ? "current" : run.ran.has(key) ? "ran" : "idle") : undefined}
+                        title={[r.text, r.does && `is ${r.does}`, r.outside.length > 0 && `takes ${r.outside.join(", ")} from outside`, value !== undefined && `= ${value}`, failed !== undefined && `failed here: ${failed}`].filter(Boolean).join("\n")}
                         onClick={() => onPick?.(r, b, i)}
                         onDoubleClick={onOpen && (() => onOpen(r, b, i))}
                         onKeyDown={
@@ -198,6 +202,7 @@ export function StatementGraph({
                         <span className="hl-sg__said">
                           <span className="hl-sg__kind">{r.head ? "on" : KIND_WORD[r.kind]}</span>
                           <span className="hl-sg__line">line {r.line}</span>
+                          {failed !== undefined && <span className="hl-sg__failed">failed here</span>}
                           {r.outside.length > 0 && <span className="hl-sg__outside">← {r.outside.join(", ")}</span>}
                         </span>
                         <span className="hl-sg__name">

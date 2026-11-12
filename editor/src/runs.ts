@@ -70,3 +70,25 @@ export function runOutcome(e: LogEntry): Outcome {
 export function outside(e: LogEntry): { sent: number; did: number } {
   return { sent: (e.rounds ?? []).reduce((n, r) => n + r.exchanges.length, 0), did: e.performed.length };
 }
+
+/** What a run's claims say (key-claims-L4.md §5), each as `holon explain` says it: a key it held
+ *  until it was done and for how long, one it waited for and found changed (it ran again), or one
+ *  held by another run it waited for, turned away as busy or not. */
+export function claimNotes(e: LogEntry): { said: string; tone: "ok" | "again" | "busy" }[] {
+  const busy = e.error?.startsWith("busy:") ?? false;
+  const ms = (n: number) => `${Math.round(n)} ms`;
+  let retry = 0;
+  return (e.claims ?? []).map((c) => {
+    if (c.overtaken) {
+      retry++;
+      return {
+        said: `claimed ${c.key} before calling out: waited ${ms(c.waited_ms)} for another run, then found what it read had changed and ran again from there (retry ${retry} of ${e.retries ?? retry}), having sent nothing`,
+        tone: "again",
+      };
+    }
+    if (c.held_ms !== undefined) return { said: `claimed ${c.key} before calling out: waited ${ms(c.waited_ms)}, held it ${ms(c.held_ms)} until it was done`, tone: "ok" };
+    return busy
+      ? { said: `waited ${ms(c.waited_ms)} for ${c.key}, held by another run, and was turned away as busy`, tone: "busy" }
+      : { said: `waited ${ms(c.waited_ms)} for ${c.key}, held by another run`, tone: "again" };
+  });
+}

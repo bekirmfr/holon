@@ -452,6 +452,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-sg__row--head .hl-sg__name { color: var(--accent); }
 .hl-sg__row--new { border: 1.5px dashed var(--warn); border-left: 4px solid var(--k); background: var(--warn-panel); }
 .hl-sg__row--idle { opacity: 0.45; }
+.hl-sg__row--failed { border-color: var(--bad); border-left-color: var(--bad); background: var(--bad-bg); }
+.hl-sg__failed { color: var(--bad); font-weight: 600; }
+.hl-sg__wire--idle { opacity: 0.3; }
 .hl-sg__row--current { border-width: 3px 3px 3px 5px; border-top-color: var(--ink); border-right-color: var(--ink); border-bottom-color: var(--ink); }
 .hl-sg__said { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .hl-sg__kind { color: var(--k); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -1198,6 +1201,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-history__restore-go:disabled { opacity: 0.4; cursor: default; }
 
+/* The Record tab's claims (ViewPanes.tsx Claims). */
+.hl-claims { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 3px; white-space: normal; }
+
 /* ── The edit area: the It may strip over the canvas and its panes (MayStrip.tsx) ── */
 .hl-edit { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .hl-may {
@@ -1212,6 +1218,18 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-may__chip--gone { color: var(--faint); text-decoration: line-through; }
 .hl-may__tag { font-size: 10px; color: var(--warn); }
 .hl-may__chip--gone .hl-may__tag { color: var(--faint); text-decoration: none; }
+
+/* The run strip, in its place in View runs (RunStrip.tsx). */
+.hl-runstrip { gap: 4px 10px; }
+.hl-runstrip__seq { color: var(--ink); font-weight: 600; text-decoration: none; }
+.hl-runstrip__seq:hover { text-decoration: underline; }
+.hl-runstrip__ended { font-family: var(--font-mono); color: var(--ok-ink); }
+.hl-runstrip__ended--failed { color: var(--bad); }
+.hl-runstrip__ended--waiting { color: var(--warn); }
+.hl-runstrip__came { font-family: var(--font-mono); color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.hl-runstrip__version, .hl-runstrip__at { color: var(--muted); }
+.hl-runstrip__out { border-color: var(--ext); color: var(--ext); }
+.hl-runstrip__wrote { border-color: var(--db); color: var(--db); }
 
 /* ── The name at the text's cursor, in the Inspector (ViewPanes.tsx WordSection) ── */
 /* The Inspector at the Statements level (InspectorText.tsx): an import, a statement, this flow. */

@@ -298,7 +298,6 @@ export function FlowToolbar({
 export function CanvasHead({
   level,
   onLevel,
-  switchable,
   editing,
   histVersion,
   canUndo,
@@ -310,8 +309,6 @@ export function CanvasHead({
 }: {
   level: CanvasLevel;
   onLevel: (l: CanvasLevel) => void;
-  /** Whether the level may be switched (View runs draws its nodes). */
-  switchable: boolean;
   /** In edit mode: undo, redo and tidy are offered. */
   editing: boolean;
   histVersion: number;
@@ -328,11 +325,10 @@ export function CanvasHead({
     <button
       className="hl-levels__seg"
       onClick={() => l !== level && onLevel(l)}
-      disabled={!switchable && l !== level}
       aria-label={label}
       aria-pressed={l === level}
       aria-keyshortcuts="l"
-      title={switchable ? `${title} (l)` : "View runs draws the nodes, with their values"}
+      title={`${title} (l)`}
     >
       {label}
     </button>
