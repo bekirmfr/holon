@@ -88,8 +88,8 @@ Each faster path is tested against the one it stands in for, on many inputs.
   found the pass-through step answering absent instead of handing over),
   `a_run_whose_scratch_is_taken_uses_one_of_its_own` (S4), `a_composite_with_a_choice_is_walked`.
 - `has_cycle_is_exactly_where_topo_order_finds_no_order`,
-  `the_flat_index_finds_what_a_map_of_the_edges_finds`: the evaluator's indexes against the
-  eager evaluator's.
+  `the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room`: the evaluator's indexes
+  against the eager evaluator's.
 - `lazy_and_eager_agree_on_generated_graphs`, `every_samples_routes_give_what_the_eager_evaluator_gives`.
 - `keeping_each_composites_shape_changes_nothing_the_evaluator_gives` (step 1b).
 - `a_cut_back_keeps_its_lines_byte_for_byte_without_parsing_them`: the indexed cut-back against the
@@ -312,3 +312,8 @@ Known, and not yet covered:
    older ones the library changed, `slice`, `index_of`, `json_stringify`, but not `sort`, `flat`,
    `merge` or the date and math leaves) and runs no case through holon-host's sourced resolver;
    `differential.sh` builds only from `5f29d1d` on.
+10. A strict run whose log fails to sync answering 500 ("the request ran, but"): the log's cell is
+    tested, the answer the listener makes of it is not (G1).
+11. The plan against the walk on generated graphs draws only `add`, `subtract`, `divide` and
+    `guard`, with fixed inputs: nested composites, folds and maps, `coalesce`, text and drawn
+    inputs (NaN, `-0`, absent) are held only by the samples (G4).

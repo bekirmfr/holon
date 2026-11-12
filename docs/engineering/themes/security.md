@@ -380,15 +380,18 @@ What is not defended, or only partly:
   text/plain or JSON POST from another site, `Origin: null`, a look-alike origin, a rebinding or
   wrong-port Host, a form POST; none saves anything, the editor and curl still do);
   `oversized_body_is_refused` (one byte past `MAX_BODY_BYTES` is a 413).
-- **Roles and accounts**: `each_role_does_what_it_may`, `an_agent_proposes_and_calls_and_does_nothing_else`
-  (15 paths refused it; the header lowers, never raises), `a_new_server_answers_only_its_setup`,
+- **Roles and accounts**: `every_route_lets_through_whom_its_table_says_and_refuses_the_rest_in_its_words`
+  (the access table, every route by every principal),
+  `an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents`, `a_role_header_changes_nothing`
+  (the header lowers, never raises), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
-  `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
+  `no_change_leaves_no_admin`, `kept_as_hashes_and_read_back` (no token or password in the file),
   `wrong_setup_codes_lock_setting_up_for_a_while`,
   `wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten`,
   `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy`,
   `the_control_plane_admits_so_many_requests_at_once`,
-  `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
+  `which_id_tokens_are_taken` (another audience or `azp`, another issuer, expired past the leeway,
+  a forged payload, an unknown key, HS256, `alg: none`),
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email` (an email not said to be verified signs no
   one in).
@@ -450,7 +453,17 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: none named here beyond the limits above.
+Gaps, found by grounding every claim above in a test (2026-11-12):
+
+- a parking run's settled sends go through a second copy of the secret and grant filter
+  (`firing.rs`), and no test sends it a secret or an ungranted send;
+- a secret, a value derived from one or an answered token written to a database, a file, mail or
+  a queue (state, collections and channels are held);
+- sessions and invites past their time;
+- every file the server writes owner-only, swept (helpers are held one by one);
+- a name that resolves to a private address, and an answer mixing public and private ones (only
+  literal addresses are tested); a packed value changed on disk; two deployments' state kept
+  apart; constant-time comparing (`same`).
 
 ## 6. History
 
