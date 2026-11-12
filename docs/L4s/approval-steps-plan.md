@@ -12,7 +12,7 @@ to build the design's §14 step 4:
 
 Step 5 is the server's: deciding by slot, separation of duties, notes, the listing, the timeline
 and the evidence, `holon decide --slot --note`, the MCP `decide` tool. §6 says where step 4 leaves
-it.
+it, and §7 plans it.
 
 Each sub-step names the files, functions and lines it changes at `d289e435` (main, rc.35). It
 sketches the new code, lists the tests it changes and adds, and gives the checks to run. Code here
@@ -364,6 +364,142 @@ step 5.
 - `permissions.rs`'s refusal of steps goes, and `approved-payout` moves to the chain: an agent
   classifies, an editor reviews, an admin approves. It is run live with three principals (§13).
 
+## 7. Step 5. The server decides by slot
+
+What a flow can write since 4b, the host now decides: each slot by a principal of its kind holding
+its role, in its order, under the design's fixed rules (§8.3, §8.4). Four commits, each passing
+every check. Lines are at `661b9a16` (4c).
+
+| Sub-step | Change | Where | Decisions |
+|---|---|---|---|
+| 5a | Deciding by slot: a point's slots, open or filled; the slot named or picked; the role, the kind, one principal one slot, not the starter; the note; the answer and the listing; `permissions.rs`'s refusal goes | `holon` (`durable.rs`, `can.rs`, `listeners.rs`, `deploy.rs`, `permissions.rs`, `decidecmd.rs`, `mcp.rs`), the editor (`decisions.ts`, `ApprovalsPage.tsx`, `server.ts`) | D36 to D40, D44 |
+| 5b | The host's approval settings, `exclude_deployer` and `agents` | `holon` (`bindings.rs`, `permissions.rs`, `accesscmd.rs`) | D41 |
+| 5c | `holon decide --slot --note`, with an agent's token too; the MCP `decide` tool for agent slots | `holon` (`decidecmd.rs`, `mcp.rs`) | D42 |
+| 5d | The evidence: each decision with the binding and access version that let it; `approved-payout` on the chain, run live with three principals | `holon` (`durable.rs`), the sample, docs | D43 |
+
+### Step 5a. Deciding by slot
+
+**The waiting point** (`durable.rs:255` `StoredWaiting`). `people` goes. The slots are the
+steps' (`Steps::parse(&steps)`), and `decisions` says who filled each. In place of `approvals`,
+`approved` and `take`:
+
+- `slots()`: each slot with its number, its stage, role, kind and `people`, who approved it, and
+  whether it is open: every earlier stage filled, and itself not;
+- `take(d)`: refuses a decision on a slot that isn't open, and one by a principal who already
+  decided a slot of this point (one principal, one slot, and once within it, §8.4). The decision
+  to deliver once every slot is filled, or at the first decline;
+- an event's point has no steps: the `people == 0` tests (`:547`, `:853`, `:908`) read
+  `steps.is_empty()`.
+
+**Picking the slot** (D36). `decide` (`:888`) takes `slot: Option<u8>`. Without it, it looks at
+the open slots the caller may fill: one is taken; none is 403, naming the open slots and what each
+needs; two or more (in any order) is 409, asking for `slot`. With it, the slot must exist and be
+open: 409, "slot 2, approver, opens once reviewer is filled".
+
+**Whether the caller may fill it** (D37, D38, D39), under the lock, from the caller's `holds`
+(the `Held` list `can` reads, `bindings.rs:204`):
+
+- `can(caller, run.decide, the point)`, as now (`decider`, `:941`);
+- a slot with a role: some binding of that role, by name, directly or through a group, covers
+  the point (`Held::covers`, `bindings.rs:236`). Holding everything (admin) isn't holding
+  `reviewer`. A slot without a role takes anyone `run.decide` lets in, as now (D33);
+- the kind: a person's slot takes a person, an agent's an agent, and a service none. `can.rs:357`'s
+  fixed rule stops refusing an agent `run.decide` outright, and the slot refuses it a person's
+  slot: "claude is an agent: slot 1, reviewer, is a person's";
+- not the starter: `ParkedRun` (`:382`) gains `started_by: Option<String>`, the principal on the
+  run's first part: a control-plane call's `by` (`listeners.rs:304`) or the action's caller
+  (`deploy.rs:1122`), passed to `park_if_waiting` (`:664`); the other triggers pass none.
+
+**The note** (D40). `DecideBody` (`:927`) takes `slot` and `note`: any JSON, at most 16 KiB as
+written, a person's or an agent's. It is kept on `Decided`, and given to the run as its `note`
+(`Decided::value`, `:292`), read as a run reads a JSON body.
+
+**The answer and the listing** (D44). The decide route answers
+`{name, slots: [{slot, stage, role?, kind, people, by, open}], outcome}`. `ParkedRun::summary`
+(`:647`) lists an approval point so, with `said` (`Steps::said`) and `decisions`; an event's
+point stays `{name, expires_at}`. `people` and `approved_by` go from both (dev phase), and their
+readers follow:
+
+- `decidecmd.rs:114` `decided_said` and `:136` `waiting_lines`: the slots in words, "reviewer:
+  ada approved; approver: open";
+- `mcp.rs:891` `runs`, the same lines;
+- the editor: `decisions.ts:12` `isApproval` reads `steps`, and `:34` says the chain in words.
+  `ApprovalsPage.tsx` sends the slot when the caller can fill two, and says "you reviewed" where
+  they did. The chain drawn as a row is step 7's.
+
+**The refusal goes.** `permissions.rs:824` and its test's rows (`:1271`): every canonical steps
+text deploys.
+
+**Tests in 5a**
+
+- **T6** (`durable.rs`): one table over a cast (two people holding reviewer, one holding approver,
+  an agent holding classifier, an admin, the run's starter) and steps of each shape (sequence,
+  any order, stages, a slot of two). Each row is decisions in turn, each taken or refused with
+  its sentence, and the value at the end. It covers the order, the role, the kind, one principal
+  one slot, the starter, a decline ending it, and an expiry with the decisions so far.
+- `can.rs`'s route table: `run.decide` for an agent holding a role with it, at the point.
+- `tests.rs`, the route: a slot named, picked, ambiguous; a note too long; an agent on a person's
+  slot (403).
+- `decidecmd.rs`, `mcp.rs` and `decisions.test.ts`: the new lines.
+
+### Step 5b. The host's approval settings
+
+§8.4's two settings go in the access document (§6), beside the roles and bindings (D41):
+`approvals: { exclude_deployer, agents }` on `Document` (`bindings.rs:41`), `false` and `true`
+by default. A change makes a version, with who, when and why, as a binding does.
+
+- `exclude_deployer`: whoever deployed the version the run is on (`ParkedRun.version`, the
+  deployment's version record) fills no slot.
+- `agents: false`: a deploy whose manifest has an `Approval(…)` with an agent's slot is refused
+  (`permissions.rs`, beside `refuses_item`), and an agent fills no slot of a run already waiting.
+- Set with `PUT /access/approvals` (`people.assign`) and
+  `holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why …]`
+  (`accesscmd.rs:337`); `holon access` shows them.
+- Tests: one table of the two settings against a deploy and a decision.
+
+### Step 5c. `holon decide`, and the MCP `decide` tool
+
+- `holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note JSON]`
+  (`decidecmd.rs:10`). With an agent's token it fills an agent's slot; a person's slot answers
+  the route's 403.
+- `holon mcp` gains `decide` (D42), `{slug, run, name, approve, reason?, note?, slot?}`, as the
+  agent signs in. It fills an agent's slot when the agent holds its role. For a person's slot it
+  decides nothing, and says who decides it and where (the editor's Approvals, `holon decide`).
+  The instructions (`mcp.rs:59`) and `runs` (`:265`, `:908`) say an agent decides only a slot
+  written for an agent.
+- Tests: `mcp.rs`, one table of agent and person slots, open or not, through the tool.
+
+### Step 5d. The evidence, and the sample
+
+- **The binding** (D43). Each `Decided` keeps what let it: the binding's id and the access
+  version in force (`Bindings::document().version`), or `local` for the OS user's admin. The run
+  is given them with the decision (`binding`, `access`), so the resumed part's log entry carries
+  them, and the export and `holon verify` read them as logged input. An auditor checks the order,
+  the kinds, the different principals and their bindings offline, against `holon access show N`.
+- **The timeline.** The activity log says each decision with its slot ("ada reviewed payout for
+  approved-payout run 7b37…, slot 1"); the resumed part's entry carries them all (4c).
+- **`approved-payout`** moves to the chain, tagged `payments`:
+  `steps: [{ role: "classifier", kind: "agent" }, { role: "reviewer" }, { role: "approver" }]`.
+  Its comment says what to bind; its try-it classifies with `holon decide --note` as an agent,
+  and reviews and approves as two people. `samples.rs`'s entry and the goldens follow.
+- **Run live**, two people, an admin and an agent on scratch 7530 (the flow on 8230): out of turn
+  refused; one principal refused a second slot; the starter (who ran the action) refused; then
+  paid. A second run declined by the reviewer with a reason. The export holds each decision's
+  binding.
+- **e2e**: `approved-payout` decided through the real server by an agent's token and two people.
+- **Docs**: `docs/LANGUAGE.md` and the manual's approvals pages (deciding by slot, the fixed
+  rules, the note); `holon.d.ts` (`Decided.note`, `binding`, `access`); the server reference (the
+  route's body and answer, the listing); the MCP instructions; the CHANGELOG.
+
+### Checks for step 5
+
+| Sub-step | cargo test, clippy | wasm-pack | tsc, vitest | `npm run e2e` (slot 3) | Run live |
+|---|---|---|---|---|---|
+| 5a | yes | | yes | yes | a chain decided by slot, each refusal said |
+| 5b | yes | | | yes | each setting against a deploy and a decision |
+| 5c | yes | | | yes | an agent's slot through `holon decide` and the tool |
+| 5d | yes | yes (the sample) | yes | yes | §13's run, and its export |
+
 ## T. The universe of steps
 
 One generator, `holon_core::approval::universe()` (`#[doc(hidden)] pub`, since `#[cfg(test)]`
@@ -381,7 +517,7 @@ there; every combination isn't, which would be millions.
 
 ## D. Decisions
 
-Settled 2026-11-12: each as recommended.
+Settled 2026-11-12, each as recommended: D29 to D35, and step 5's, D36 to D44.
 
 - **D29. The canonical text and the capability.** The design writes
   `Approval("payout", "seq[agent:classifier, person:reviewer, person:approver]")`, two arguments.
@@ -427,6 +563,50 @@ Settled 2026-11-12: each as recommended.
   - **Recommended**: hold the roles an admin defines to the same 64 (`bindings.rs`, `PUT
     /roles`), so every role can be named in an approval. The built-in ones are short already.
   - Otherwise a longer role can't be named in an approval, and `holon check` says so.
+
+- **D36. When a decision names no slot.**
+  - **Recommended**: the design's (§8.3). The one open slot the caller can fill is taken; none is
+    403, naming the open slots and what each needs; two (in any order) is 409, asking for `slot`.
+  - Otherwise the first open slot in writing order, always.
+- **D37. Holding a slot's role.**
+  - **Recommended**: by name. The caller is bound to that role, directly or through a group, at a
+    scope covering the approval point, and holds `run.decide` there. An admin fills a `reviewer`
+    slot only when bound to reviewer: deciding is granted on purpose. A built-in role's name is a
+    role too (`{ role: "admin" }`).
+  - Otherwise any principal whose roles there hold everything the named role holds, so an admin
+    fills every slot (§8.4's "admin holds everything").
+- **D38. Agents and `run.decide`.**
+  - **Recommended**: `can.rs`'s fixed rule lets an agent decide, and the slot's kind refuses it a
+    person's slot. A service decides nothing.
+  - Otherwise keep the fixed rule, and let an agent through inside `decide` for an agent's slot
+    only.
+- **D39. The run's starter.**
+  - **Recommended**: the principal on the run's first part: a control-plane call's `by`, or the
+    action's caller. A request on the flow's own port names nobody, and a clock, a file, a queue,
+    a mail or a feed starts a run with no starter.
+  - Otherwise no starter rule until the flow's own port signs callers in.
+- **D40. The note.**
+  - **Recommended**: any JSON up to 16 KiB, a person's or an agent's, given to the run with the
+    decision (`note`) and recorded as input, like an event's body.
+  - Otherwise an agent's only.
+- **D41. Where the approval settings live.**
+  - **Recommended**: the access document (§6), versioned with the roles and bindings, changed by
+    whoever holds `people.assign`.
+  - Otherwise the host's policy (`holon.toml`, beside `allow_plain_http`), changed by editing the
+    file.
+- **D42. The MCP `decide` tool.**
+  - **Recommended**: one tool, for agent slots only. For a person's slot it decides nothing, and
+    says who decides and where.
+  - Otherwise no tool: an agent decides through `holon decide` with its token.
+- **D43. The binding on the record.**
+  - **Recommended**: the binding's id and the access version, given to the run with each decision,
+    so the log and the export carry them.
+  - Otherwise kept on the parked run and in the activity log, out of the run's value.
+- **D44. The listing's shape.**
+  - **Recommended**: `people` and `approved_by` go. A point lists `slots`
+    (`{slot, stage, role, kind, people, by, open}`), `said` and `decisions`, and every reader
+    follows in 5a.
+  - Otherwise keep `people` and `approved_by` beside `slots`, for the short form.
 
 The design's §15 Q2 (the short form) and Q4 (editors keep `run.decide`) were settled in step 3's
 plan, and step 4 builds on them. Q5 (deciding from a signed link) is later.
