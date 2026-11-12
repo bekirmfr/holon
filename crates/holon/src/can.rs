@@ -31,8 +31,9 @@
 //! A viewer is anyone; an agent is an agent; an editor a person or a service; an admin a person.
 //! An admin defines roles of their own (bindings.rs's `RoleText`), of the same shape: what they
 //! allow, from the catalogue, and which kinds may hold them. Past the roles, the host's fixed
-//! rules, which no role overrides: only a person decides an approval; an agent never does what is
-//! a person's (approving a deploy, starting, stopping, deleting or restoring a flow, writing a
+//! rules, which no role overrides: a service never decides an approval, and an agent takes only
+//! a step written for an agent; an agent never does what is a person's (a person's step of an
+//! approval, approving a deploy, starting, stopping, deleting or restoring a flow, writing a
 //! secret, the host's people, roles, resources and operations), runs a flow's action, and reads
 //! its log lines, only where the flow lets agents; and a person manages the tokens of an agent or
 //! a service they own, as an admin may for any.
@@ -325,6 +326,19 @@ pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Ref
     fixed(who, action, on)
 }
 
+/// The binding `who` is bound to the role named `role` through, directly or through a group,
+/// where `on` is, for its kind: what an approval's step with a role asks of whoever fills it (the
+/// design's §8.3, the plan's D37). By name: an admin holding everything doesn't hold `reviewer`.
+/// No role named, a role that holds run.decide there. Only a binding of the document: the run
+/// file's admin, which none holds, never decides (D45). A decision keeps it as what let it (D43).
+pub(crate) fn holding<'a>(who: &'a Caller, role: Option<&str>, on: &Resource) -> Option<&'a Held> {
+    let kind = who.kind?;
+    who.holds.as_deref()?.iter().filter(|h| h.from.is_some() && h.role.kinds.contains(&kind) && h.covers(on)).find(|h| match role {
+        Some(role) => h.role.name == role,
+        None => h.role.holds(RunDecide, on, who),
+    })
+}
+
 /// Whether `who` may do `action` to every flow, those no one has named yet included: as a binding
 /// on the host holds it. No binding names the empty slug (bindings.rs), so only the host covers it.
 pub(crate) fn everywhere(who: &Caller, action: Action) -> bool {
@@ -352,11 +366,10 @@ fn fixed(who: &Caller, action: Action, on: &Resource) -> Result<(), Refusal> {
     // An agent by its kind, whatever role it holds.
     let agent = who.kind == Some(Kind::Agent);
     match on {
-        // A person decides: not an agent, not a service, not the nameless caller of a server
-        // without accounts.
+        // A person or an agent decides, each the steps of its kind (durable.rs): not a service,
+        // not the nameless caller of a server without accounts.
         _ if action == RunDecide => match (who.name.as_deref(), who.kind) {
             (None, _) => Err(Refusal("deciding an approval needs a person signed in to Holon, and this server has no accounts".into())),
-            (Some(name), Some(Kind::Agent)) => Err(Refusal(format!("{name} is an agent: deciding an approval is a person's"))),
             (Some(name), Some(Kind::Service)) => Err(Refusal(format!("{name} is a service, a script, not a person: sign in to decide an approval"))),
             _ => Ok(()),
         },
@@ -395,7 +408,8 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         }
         _ => {}
     }
-    if roles.is_empty() || roles.iter().any(|r| r.builtin.is_none()) {
+    // Deciding takes a role bound where the approval is, whatever else the caller holds there.
+    if roles.is_empty() || roles.iter().any(|r| r.builtin.is_none()) || action == RunDecide {
         let place = match on {
             Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
             Resource::Flows => "on any flow".to_string(),
@@ -533,6 +547,9 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("DELETE", "/bindings/{id}", PeopleAssign, On::Host),
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
+    asks("PUT", "/access/approvals", PeopleAssign, On::Host),
+    asks("GET", "/access/local", PeopleView, On::Host),
+    asks("PUT", "/access/local", PeopleAssign, On::Host),
     asks("GET", "/roles", RoleView, On::Host),
     asks("PUT", "/roles/{name}", RoleDefine, On::Host),
     asks("DELETE", "/roles/{name}", RoleDefine, On::Host),
@@ -774,7 +791,7 @@ mod tests {
     fn a_caller_may_do_what_any_role_it_holds_holds() {
         let holding = |roles: &[Role]| {
             let holds = roles.iter().map(|&r| Held::new(Arc::clone(role(r)), crate::bindings::Scope::Host)).collect();
-            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds) }
+            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds), local: None }
         };
         let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
         for action in Action::ALL {
@@ -858,7 +875,7 @@ mod tests {
                     }
                     let access = Bindings::memory();
                     access.keep(d).unwrap();
-                    let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(access.held("eve", now)) };
+                    let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(access.held("eve", now)), local: None };
                     let case = |what: &str| {
                         let held: Vec<String> = set.iter().map(|(at, h)| format!("{} at {at}", h.role.name)).collect();
                         format!("{what}, {kind:?} holding {held:?}{}", group.map(|g| format!(" through {g}")).unwrap_or_default())
@@ -873,6 +890,14 @@ mod tests {
                             let told_whose = matches!(on, Resource::Principal { .. }) && kind == Kind::Person;
                             if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
                                 assert_eq!(got.unwrap_err().0, format!("eve may not do that: no role eve holds {place} holds {}", action.name()), "{}", case(""));
+                            }
+                        }
+                        // An approval's step with a role takes someone bound to it by name where the
+                        // approval is: holding everything (admin) isn't holding approver.
+                        if matches!(on, Resource::Approval { .. }) {
+                            for role in &roles {
+                                let bound = set.iter().any(|(at, h)| letters.contains(*at) && h.role.name == role.name && h.role.kinds.contains(&kind));
+                                assert_eq!(holding(&who, Some(&role.name), on).is_some(), bound, "{}", case(&format!("bound to {} on {on:?}", role.name)));
                             }
                         }
                     }
@@ -890,7 +915,7 @@ mod tests {
     #[test]
     fn no_role_gives_an_agent_what_is_a_persons() {
         let all = Arc::new(RoleDef::custom("everything", &Action::ALL, ANYONE));
-        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held::new(Arc::clone(&all), crate::bindings::Scope::Host)])) };
+        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held::new(Arc::clone(&all), crate::bindings::Scope::Host)])), local: None };
         let (agent, service) = (held(Kind::Agent), held(Kind::Service));
         let persons = ["flow.approve-deploy", "flow.lifecycle", "flow.delete", "flow.restore", "secret.set", "secret.roll-back", "host.operate"];
         for action in Action::ALL {
@@ -899,7 +924,7 @@ mod tests {
             for on in resources().iter().filter(|r| r.takes(action) && !matches!(r, Resource::Action { agents_may: false, .. } | Resource::Logs { agents_may: false, .. })) {
                 let said = can(&agent, action, on).err().map(|r| r.0);
                 if action == RunDecide {
-                    assert_eq!(said.as_deref(), Some("scout is an agent: deciding an approval is a person's"));
+                    assert_eq!(said, None, "an agent decides the steps written for an agent (durable.rs): {on:?}");
                 } else if a_persons {
                     assert_eq!(said, Some(format!("scout may not do that: {AGENTS}")), "{} on {on:?}", action.name());
                 } else {

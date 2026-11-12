@@ -36,7 +36,7 @@ import {
   manifestTrigger,
   describeItem,
 } from "./holon";
-import { mayDecide, pointKey, toDecide } from "./decisions";
+import { toDecide, yourSteps } from "./decisions";
 import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
@@ -644,7 +644,7 @@ function Canvas({
   const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals" });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
-  const deciding = useMemo(() => toDecide(approvals.runs ?? [], me, approvals.decides), [approvals.runs, approvals.decides, me]);
+  const deciding = useMemo(() => toDecide(approvals.runs ?? []), [approvals.runs]);
   useEffect(() => onWaiting({ changes: approvals.approvals.length, runs: deciding }), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it (useDeployFlow.ts); running, pausing or stopping it is its page's.
   const { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow } = useDeployFlow({
@@ -860,9 +860,9 @@ function Canvas({
   const decidable = useMemo(
     () =>
       (approvals.runs ?? []).flatMap(({ slug, run }) =>
-        run.waiting.some((w) => mayDecide(w, me, approvals.decides.get(pointKey(slug, w.name)) === true) === "decide") ? [{ slug, runId: run.run_id }] : [],
+        run.waiting.some((w) => yourSteps(w).length > 0) ? [{ slug, runId: run.run_id }] : [],
       ),
-    [approvals.runs, approvals.decides, me],
+    [approvals.runs],
   );
   const paletteRuns = usePaletteRuns(finding, decidable);
   const byNumber = useCallback(
@@ -1550,7 +1550,6 @@ function Canvas({
               approvals={approvals.approvals}
               deployments={deployments}
               runs={approvals.runs}
-              decides={approvals.decides}
               me={me}
               navigate={navigate}
               textOf={(slug, doc) => documentText(slug, doc)}

@@ -535,7 +535,7 @@ fn agent_name_for(user: &str) -> String {
 pub(crate) fn local_agent(admin: &dyn Api, name: Option<&str>, file: &Path) -> Result<(String, String, String), String> {
     let server = admin.server();
     let me = crate::mcp::json_of(admin, "GET", "/auth/me", None)?;
-    let Some(user) = me.get("name").and_then(Value::as_str).and_then(|n| n.strip_prefix("local:")) else {
+    let Some(user) = me.get("local").and_then(Value::as_str).and_then(|n| n.strip_prefix("local:")) else {
         return Err(format!("{server} didn't take this machine's run file as its admin"));
     };
     let name = name.map_or_else(|| agent_name_for(user), str::to_string);
@@ -1130,11 +1130,16 @@ mod tests {
         assert!(local_agent(&admin, Some("ci"), &file).unwrap_err().contains("ci on the test server is a service, not an agent"));
         accounts.set_disabled("bma-cursor", true).unwrap();
         assert!(local_agent(&admin, Some("bma-cursor"), &file).unwrap_err().contains("is disabled"));
+        // Set up, the run file is the account that set it up: the agent, still named for the OS
+        // user, is that account's.
+        accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        let (name, owner, _) = local_agent(&admin, None, &file).unwrap();
+        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "ada"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// holon mcp signs in as an agent only: never as a person (the run file's admin among them) or
-    /// a service; a token the server no longer takes says how to get one.
+    /// holon mcp signs in as an agent only: never as a person (the run file among them, the account
+    /// that set the server up) or a service; a token the server no longer takes says how to get one.
     #[test]
     fn holon_mcp_takes_only_an_agents_token() {
         use crate::tests::{with_people, Signed};
@@ -1146,7 +1151,7 @@ mod tests {
         let (ci, _) = accounts.create_token("ci", "CI", "ada").unwrap();
         let checked = |token: &str| an_agent(&who(&Signed { state: &state, token }).unwrap().unwrap(), "the server");
         assert_eq!(checked(&p.claude), Ok(()));
-        for (token, signs_in_as) in [(&p.ada, "ada, a person"), (&local, "local:bma, a person"), (&ci, "ci, a service")] {
+        for (token, signs_in_as) in [(&p.ada, "ada, a person"), (&local, "ada, a person"), (&ci, "ci, a service")] {
             let refused = checked(token).unwrap_err();
             assert!(refused.contains(&format!("signs in to the server as {signs_in_as}: holon mcp signs in as an agent")), "{refused}");
         }

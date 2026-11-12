@@ -401,10 +401,14 @@ export const refund = action(async (asked) => {
 ```
 
 No link is handed out and no route resumes it: two different people signed in to Holon approve it,
-in the editor's Approvals or with `holon decide`, or one declines, with a reason. An agent never
-decides one. The run then goes on with `decision.by`, who approved it; declined, it writes
-nothing. The `approved-payout` sample does this with a bank's balance. Where approvals go next,
-in steps filled by roles and in order, is the target design,
+in the editor's Approvals or with `holon decide`, or one declines, with a reason. The run then
+goes on with `decision.by`, who approved it; declined, it writes nothing. An approval can also
+name who takes each step, by the role they are bound to: `steps: [{ role: "reviewer" }, { role:
+"approver" }]`, each in turn, a different person each, never the one who started the run (the
+language reference has the rest). An agent takes only a step written for one (`{ role:
+"classifier", kind: "agent" }`), with a note the run is given. The `approved-payout` sample pays
+from a bank's balance in three steps: an agent classifies the payout, a person reviews it, and
+another approves it. The design is
 [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
 
 ## Files

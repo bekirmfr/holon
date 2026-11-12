@@ -273,17 +273,55 @@ declare module "holon" {
   /** Parks the run until the event arrives, or its deadline: in an action, not a route. */
   export function event(name: string, options?: { expires?: Duration }): Promise<any>
 
-  /** Parks the run until that many different people approve it in Holon, or one declines, or
-   *  its deadline: in an action, not a route. */
-  export function approval(name: string, options?: { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }): Promise<Decision>
+  /** Parks the run until people approve it in Holon, or one declines, or its deadline: in an
+   *  action, not a route. `people: 2` is two different people; `steps`, each step in turn (in any
+   *  order with `order: "any"`), taken by principals holding its role. */
+  export function approval(name: string, options?: ApprovalOptions): Promise<Decision>
+  /** An approval's options: how many people decide it, or its steps (up to 5). A list in
+   *  `steps` is a stage, its steps taken in any order. */
+  export type ApprovalOptions =
+    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }
+    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any" }
+  /** One step of an approval. */
+  export interface Step {
+    /** The role its principals hold where the approval is; left out, anyone holding run.decide
+     *  there, a person. An agent's step names one. */
+    role?: string
+    /** `"agent"` when an agent takes it; `"person"` when left out. A service never does. */
+    kind?: "person" | "agent"
+    /** How many different principals take it. */
+    people?: 1 | 2 | 3 | 4 | 5
+  }
   /** What people decided on an approval. */
   export interface Decision {
     approved: boolean
-    /** Who approved, by account. */
+    /** Who approved, by account, in the order they did. */
     by: string[]
+    /** Every decision taken on it, a decline included, in the order they came. */
+    decisions: Decided[]
     declined_by?: string
     reason?: string
     expired?: true
+  }
+  /** One decision on an approval: which step it took, who took it, and what they decided. */
+  export interface Decided {
+    /** The step's number, from 0 as the steps are written: 0 for `people`. */
+    slot: number
+    /** Who took it, by account. */
+    who: string
+    kind: "person" | "agent"
+    /** The step's role: none for `people`. */
+    role?: string
+    /** When, seconds since the epoch. */
+    at: number
+    approved: boolean
+    reason?: string
+    /** What they noted with it, any JSON (an agent's label and confidence, say). */
+    note?: unknown
+    /** What let them: the binding they took it through, by its id (`holon access show` lists it). */
+    binding?: number
+    /** The version of the access document that binding was read in (`holon access show N`). */
+    access?: number
   }
 
   /** A host's answer. */

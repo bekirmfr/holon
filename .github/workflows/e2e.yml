@@ -10,6 +10,10 @@ name: e2e
 # by hand on any branch. Anywhere else its two jobs are skipped, and a skipped job counts as passed,
 # so main's required checks (`e2e (1)`, `e2e (2)`) let a pull request through without them: label
 # one whose change the suite covers, or run `npm run e2e` before merging it.
+#
+# A pull request runs it only from a branch of this repository. The runners are machines of ours,
+# and a fork can name its branch `release-…`, or be labelled: a fork's pull request never reaches
+# them, whatever its branch or labels. To run the suite on one, push its branch here.
 on:
   push:
     branches: [main]
@@ -35,8 +39,9 @@ jobs:
     name: e2e (1)
     if: &wanted >-
       github.event_name != 'pull_request'
-      || startsWith(github.head_ref, 'release-')
-      || contains(github.event.pull_request.labels.*.name, 'e2e')
+      || (github.event.pull_request.head.repo.full_name == github.repository
+      && (startsWith(github.head_ref, 'release-')
+      || contains(github.event.pull_request.labels.*.name, 'e2e')))
     runs-on: [self-hosted, Linux, X64]
     env:
       SHARD: 1

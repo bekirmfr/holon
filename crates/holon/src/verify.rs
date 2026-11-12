@@ -20,14 +20,17 @@
 //! it was, and computed with (`Marks`).
 //!
 //! A run that failed is run again too: what it computed before it failed, and what its writes made
-//! of its state, are checked as any run's; not its status, which is its failure's. Some runs can't
-//! be run again at all: one that panicked (its record says what it did by then isn't in it), one
-//! whose such node the log keeps no outputs for (too large, or too deep), one that failed, and run
-//! again gets further (a limit of the server's stopped it, or dropped what it did), one that read a
-//! file whose text neither the export nor `--files` holds (its folder keeps only hashes). They are
-//! counted, not failed, and an export with any checks only so far: `holon verify` exits 3, not 0.
-//! A request no route took, and a run turned away before it began, ran nothing: there is nothing
-//! to run again, and their entries are checked to say they did nothing.
+//! of its state, are checked as any run's; its status may be its failure's. Some runs can't be run
+//! again at all: one that panicked (its record says what it did by then isn't in it, and is checked
+//! to), one whose such node the log keeps no outputs for (too large, or too deep), one that failed,
+//! and run again gets further (a limit of the server's stopped it, or dropped what it did), one
+//! that read a file whose text neither the export nor `--files` holds (its folder keeps only
+//! hashes). They are counted, not failed, and an export with any checks only so far: `holon
+//! verify` exits 3, not 0. One that failed may say less than it does run again, never other: the
+//! same run id, the outputs it keeps as computed, what it did and sent the start of what it does,
+//! and its status that or a failure's; one that says other differs. A request no route took, and a
+//! run turned away before it began, ran nothing: there is nothing to run again, and their entries
+//! are checked to say they did nothing.
 
 use std::collections::BTreeSet;
 
@@ -584,10 +587,12 @@ fn check_sends(entries: &[(LogEntry, &str)], resolver: &impl holon_core::Resolve
     }
 }
 
-/// Whether a log entry is of a run: a request no route took ran nothing, and nor did a run turned
-/// away before it began (it read no state, and left none).
+/// Whether a log entry is of a run the state follows from: a request no route took ran nothing,
+/// and nor did a run turned away before it began (it read no state, and left none). A run that
+/// panicked ran, but its entry keeps nothing of it (`firing::panicked`): no state it began from or
+/// left.
 fn ran(e: &LogEntry) -> bool {
-    !e.run_id.is_empty() && !e.error.as_deref().is_some_and(|e| e.ends_with(firing::TURNED_AWAY))
+    !e.run_id.is_empty() && !e.error.as_deref().is_some_and(|e| e.ends_with(firing::TURNED_AWAY) || e.starts_with(firing::PANICKED))
 }
 
 /// When a run ran, to the millisecond, its commit included (`duration_ms` is taken as it returns).
@@ -1088,6 +1093,11 @@ fn rerun(
     }
     match &entry.error {
         Some(e) if e.ends_with(firing::TURNED_AWAY) => return nothing_ran(entry, "it was turned away before it began (a run lock)"),
+        // As the server writes it (`firing::panicked`): nothing it did is in it, so nothing is
+        // checked, and one that says it did something is no such entry.
+        Some(e) if e.starts_with(firing::PANICKED) && did_something(entry) => {
+            return Rerun::Differs("it panicked, and yet its entry says it did something".into());
+        }
         Some(e) if e.starts_with(firing::PANICKED) => return Rerun::Skipped(format!("it failed: {e}")),
         _ => {}
     }
@@ -1285,23 +1295,41 @@ fn rerun(
             "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
         ),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
-        // server dropped what it did (a file's, a queue's size): run again, it goes further.
+        // server dropped what it did (a file's, a queue's size): run again, it goes further. So
+        // its entry may say less than the run again does, never other: the same run, each output
+        // it keeps as computed, what it did and sent the start of what it does again, and the
+        // status it answered either that or a failure's. A changed line can take away, not change.
         false if let Some(e) = &entry.error => {
-            Rerun::Skipped(format!("it failed, and run again it gets further than its entry says (a limit of the server's stopped it, or dropped what it did): {e}"))
+            let starts = |logged: &[PerformedEntry], again: &[PerformedEntry]| logged.len() <= again.len() && json(&logged) == json(&&again[..logged.len()]);
+            let failure = |status: u16| status >= 500 || (status == 409 && e.starts_with(databases::UNMET));
+            let less = id_matches
+                && entry.outputs.len() <= outputs.len()
+                && entry.outputs.iter().zip(&outputs).all(|(kept, again)| kept.is_none() || json(kept) == json(again))
+                && starts(&entry.performed, &performed)
+                && starts(&entry.progress, &progress)
+                && (entry.kind != "request" || entry.status.is_none_or(|status| failure(status) || answered() == status));
+            match less {
+                true => Rerun::Skipped(format!("it failed, and run again it gets further than its entry says (a limit of the server's stopped it, or dropped what it did): {e}")),
+                false => Rerun::Differs(format!("{} (it failed, and its entry says other than what it does run again, not only less)", differs.join(", "))),
+            }
         }
         false => Rerun::Differs(differs.join(", ")),
     }
 }
 
-/// What an entry of a run that didn't run comes to: nothing, if it says it did nothing.
-fn nothing_ran(entry: &LogEntry, why: &str) -> Rerun {
-    let did = entry.outputs.iter().any(Option::is_some)
+/// Whether an entry says its run did anything: computed, did, sent, called out, read or wrote.
+fn did_something(entry: &LogEntry) -> bool {
+    entry.outputs.iter().any(Option::is_some)
         || !entry.performed.is_empty()
         || !entry.progress.is_empty()
         || !entry.rounds.is_empty()
         || !entry.reads.is_empty()
-        || entry.state_after.is_some();
-    match did {
+        || entry.state_after.is_some()
+}
+
+/// What an entry of a run that didn't run comes to: nothing, if it says it did nothing.
+fn nothing_ran(entry: &LogEntry, why: &str) -> Rerun {
+    match did_something(entry) {
         true => Rerun::Differs(format!("{why}, and yet its entry says it did something")),
         false => Rerun::NothingRan(why.into()),
     }

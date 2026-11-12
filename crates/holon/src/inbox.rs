@@ -268,7 +268,7 @@ fn fire_one_mail(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("mail", started, &extra_sourced, &run);
     entry.route = Some(label.clone());
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "mail", Some(label.clone()), None, declared, &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "mail", Some(label.clone()), declared, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }

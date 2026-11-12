@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct RunFile {
     /// Where to reach its control plane, on this machine (`http://127.0.0.1:7420`).
     pub(crate) server: String,
-    /// Good as this user's admin while this run of the server lasts.
+    /// Good while this run of the server lasts: as the account the access document ties it to (the
+    /// person who set the server up), holding its bindings and admin on the host; tied to none, as
+    /// this user's admin (access.rs `authenticate`).
     pub(crate) token: String,
     pub(crate) pid: u32,
 }

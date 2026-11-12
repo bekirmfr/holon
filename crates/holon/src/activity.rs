@@ -29,6 +29,32 @@ pub(crate) struct ActivityEntry {
     /// What they said of it: a deploy's note, kept with its grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<String>,
+    /// How they signed in, when through this machine's run file: `local:<user>`, the OS user (the
+    /// plan's D45). The name is the account it is tied to; this says it was the run file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) via: Option<String>,
+}
+
+thread_local! {
+    /// The run file the request this thread serves signed in through (`Caller::local`), which each
+    /// entry it records says (`Via`).
+    static VIA: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// While it lives, what this thread records came through the run file `local:<user>`, if any: set
+/// once a request is let in (http.rs `route`), and put back when it is answered, a panic included.
+pub(crate) struct Via(Option<String>);
+
+impl Via {
+    pub(crate) fn set(local: Option<&str>) -> Via {
+        Via(VIA.with(|v| v.replace(local.map(String::from))))
+    }
+}
+
+impl Drop for Via {
+    fn drop(&mut self) {
+        VIA.with(|v| *v.borrow_mut() = self.0.take());
+    }
 }
 
 pub(crate) struct Activity {
@@ -57,7 +83,8 @@ impl Activity {
 
     /// Record it with what its doer said of it.
     pub(crate) fn record_noted(&self, action: &str, target: &str, by: Option<&str>, note: Option<&str>) {
-        let entry = ActivityEntry { at: crate::deploy::epoch_now(), action: action.into(), target: target.into(), by: by.map(String::from), note: note.map(String::from) };
+        let via = VIA.with(|v| v.borrow().clone());
+        let entry = ActivityEntry { at: crate::deploy::epoch_now(), action: action.into(), target: target.into(), by: by.map(String::from), note: note.map(String::from), via };
         let Some(path) = &self.path else {
             self.kept.lock().unwrap().push(entry);
             return;

@@ -264,7 +264,12 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
-    if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)).or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))) {
+    if let Some(why) = policy
+        .refuses(&manifest)
+        .or_else(|| seen.refuses(&manifest))
+        .or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver)))
+        .or_else(|| crate::bindings::approval_settings(state).refuses(&manifest))
+    {
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = previous_of(deployments, &body.slug);
@@ -645,7 +650,8 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
         }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest))
-        .or_else(|| secrets.refuses(&body.slug, &sent)),
+        .or_else(|| secrets.refuses(&body.slug, &sent))
+        .or_else(|| crate::bindings::approval_settings(state).refuses(&manifest)),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities
@@ -1156,7 +1162,7 @@ pub(crate) fn run_action(
     let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, random_bytes())];
     let started = started_now();
     let inputs = [Some(input.clone())];
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: by.map(String::from), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
     // or not (resilience-audit-L4.md, §2.8).
@@ -1179,7 +1185,7 @@ pub(crate) fn run_action(
     entry.by = by.map(String::from);
     let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
     entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
-    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), by, action.log, &inputs, &sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
@@ -1197,7 +1203,7 @@ pub(crate) fn run_action(
         Some(id) => entry
             .parked
             .iter()
-            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.people == 0))
+            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.approval.is_none()))
             .map(|name| (name.clone(), durable::token_for(id, name)))
             .collect(),
         None => Vec::new(),
