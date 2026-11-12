@@ -78,7 +78,7 @@ redeploying asks for whatever the old grant didn't cover, and every run names th
 **1. Install** (Linux, macOS; see [Installing](#installing) for Windows and details):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.35/holon-installer.sh | sh
 ```
 
 **2. Start the server and open the editor:**
@@ -232,14 +232,14 @@ checksums, and install scripts that fetch the right one, check it, and put it in
 macOS and Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.35/holon-installer.sh | sh
 ```
 
 Windows, in PowerShell (the script downloaded, then run):
 
 ```powershell
 cd $env:TEMP
-irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.34/holon-installer.ps1 -OutFile holon-installer.ps1
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.35/holon-installer.ps1 -OutFile holon-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
