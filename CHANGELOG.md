@@ -51,6 +51,12 @@
   design mode stops at the default too, and a replay computing with a secret (twice, with two
   placeholders, outside the round's count) is held to twice a round's steps and fuel, where before
   nothing bounded it.
+- **A replay computes no more than the deployment is granted.** Replaying a version on a
+  deployment's recent runs needs no approval, runs it on up to 200 runs, and nothing bounded its
+  computing but each `js()` call's fuel. Now each round is held to the deployment's own
+  `max_steps` and `max_fuel`, not the higher ceilings `holon verify` runs a run again with; a
+  version that asks for more has it once deployed, and replayed, a run that needs it says
+  `it doesn't finish within what the deployment is granted`, with the limit it ran past.
 
 ## 0.1.0-rc.35
 

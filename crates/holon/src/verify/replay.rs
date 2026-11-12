@@ -17,6 +17,11 @@
 //! in for the node, so the round's budget never counts it: it computes on a budget of its own,
 //! each round twice the round's steps and fuel (it computes a node twice), and a version that
 //! wants more can't be told either.
+//!
+//! Each round is held to the steps and fuel the deployment is granted (`within`): a replay needs
+//! no approval, so it computes no more than a person approved for the deployment's own runs. A
+//! version that asks for more has it once deployed; replayed, a run that needs it doesn't finish,
+//! and says so.
 
 use super::*;
 
@@ -67,8 +72,8 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Some(Ok(n)) if (1..=MOST_RUNS).contains(&n) => n,
         Some(_) => return err(400, format!("runs: how many recent runs, 1 to {MOST_RUNS}")),
     };
-    let (log, redactor) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets)),
+    let (log, redactor, granted) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let loaded = match units::closure(store, unit) {
@@ -88,11 +93,18 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Ok(export) => export,
         Err(e) => return err(500, e),
     };
-    Response::json(&replay(&export, unit, &resolver, runs, &super::rerun_limits()))
+    Response::json(&replay(&export, unit, &resolver, runs, &within(&granted)))
+}
+
+/// The limits a replay holds each round to: `holon verify`'s (`rerun_limits`: no clock or count
+/// of requests to stop it, so what a run comes to doesn't hang on the machine), but the steps and
+/// fuel the deployment is `granted`, never more: a replay needs no approval.
+fn within(granted: &Limits) -> Limits {
+    Limits { max_steps: granted.max_steps, max_fuel: granted.max_fuel, ..super::rerun_limits() }
 }
 
 /// `unit` replayed on the last `runs` runs among `export`'s lines that ran, each round held to
-/// `limits` as `holon verify` holds it (`rerun_limits`).
+/// `limits` (`within` the deployment's grant).
 pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, limits: &Limits) -> Replayed {
     let entries: Vec<LogEntry> = export.lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let files = BTreeMap::new();
@@ -242,7 +254,11 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     }
     let status = (entry.kind == "request").then(|| data::respond(outcome.outputs.first().and_then(Option::as_ref)).status);
     if let Some(e) = &outcome.error {
-        return Replay::Differs(vec![format!("it doesn't finish: {e:?}")], now_status(status));
+        let why = match e {
+            holon_host::RunError::StepBudget { .. } | holon_host::RunError::FuelBudget { .. } => format!("it doesn't finish within what the deployment is granted: {}", e.message()),
+            _ => format!("it doesn't finish: {}", e.message()),
+        };
+        return Replay::Differs(vec![why], now_status(status));
     }
 
     let mut differs = Vec::new();

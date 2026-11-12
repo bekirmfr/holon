@@ -7482,6 +7482,79 @@ fn a_round_past_its_fuel_fails_performs_nothing_and_a_flow_may_ask_for_more() {
     let _ = std::fs::remove_file(&file);
 }
 
+/// Guards: a replay holds each round to the steps and the fuel the deployment is granted, for
+/// each of those budgets: a version that computes more than the grant in a round is replayed as
+/// not finishing, saying it is the grant that stopped it and which limit; the deployment's own
+/// version within its grant replays the same; and once a person grants more, the same version
+/// finishes.
+/// Why: a replay needs no approval, and runs a version on up to 200 runs at once. Held to the
+/// ceilings, a version anyone may stage computed far more, on the server, than any run a person
+/// approved.
+/// If it fails: the replay route doesn't hold its rounds `within` the deployment's permit
+/// (verify/replay.rs), or a failed round's reason isn't said.
+#[test]
+fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000\nmax_fuel = 50000000").unwrap());
+    let text = |times: u32, limits: &str| {
+        format!(
+            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times}\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n"
+        )
+    };
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "budget", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "Limit(module_fuel=20000000)", "Limit(module_memory=16777216)"]);
+    let deployed = deploy(&text(1, ""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    // A run of each route, well within the grant.
+    assert_eq!(data_call(&state, "budget", "POST", "/loop", "{\"n\":10}").0, 200);
+    assert_eq!(data_call(&state, "budget", "POST", "/twice", "{\"n\":2}").0, 200);
+    let replay = |text: &str| {
+        let unit = stage_text(&state, text);
+        let r = body_json(route(&state, &req("GET", &format!("/deployments/budget/replay?unit={}", to_hex(&unit)), vec![])));
+        let by_route: BTreeMap<String, (String, String)> = r["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| (run["route"].as_str().unwrap().to_string(), (run["outcome"].as_str().unwrap().to_string(), run["why"][0].as_str().unwrap_or_default().to_string())))
+            .collect();
+        by_route
+    };
+    // Ten times the items: past the steps (100 × 100) and the fuel (20 calls) the grant gives.
+    let heavier = text(10, "");
+    let rows = [("max_steps", "POST /loop", "5000"), ("max_fuel", "POST /twice", "50000000")];
+    let held = replay(&heavier);
+    let own = replay(&text(1, ""));
+    for (limit, label, granted) in rows {
+        let (outcome, why) = &held[label];
+        assert_eq!(outcome, "differs", "{limit}: {why}");
+        assert!(why.starts_with("it doesn't finish within what the deployment is granted: the run took more than ") && why.contains(granted) && why.contains(limit), "{limit}: {why}");
+        assert_eq!(own[label].0, "same", "{limit}: its own version, within its grant: {:?}", own[label]);
+    }
+
+    // Granted more by a person, the same version finishes.
+    let more = text(1, ", limits: { max_steps: 100000, max_fuel: 300000000 }");
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_steps=100000)".into()]);
+    let r = deploy(&more, &approved);
+    let code = r.status_code;
+    assert_eq!(code, 200, "{}", body_json(r));
+    let held = replay(&heavier);
+    for (limit, label, _) in rows {
+        assert_eq!(held[label], ("differs".to_string(), "its answer".to_string()), "{limit}: granted more, it finishes");
+    }
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]
