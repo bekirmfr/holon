@@ -4,8 +4,12 @@
 // samples (guide.ts, tutorials.ts). And the editor's tabs (CanvasPanels.tsx,
 // EditorHome.tsx): its Home, a tab per flow, + and ×, and the panes its bar shows or hides.
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
-import { expect, SERVER, test } from "./fixtures";
+import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SERVER, test } from "./fixtures";
 import { gotoPage, navLink, nodesLevel, openSample } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
@@ -13,6 +17,18 @@ import { gotoPage, navLink, nodesLevel, openSample } from "./helpers";
 async function saved(request: APIRequestContext, token: string, holds: (prefs: string) => boolean) {
   const headers = { Authorization: `Bearer ${token}` };
   await expect.poll(async () => holds(await (await request.get(`${SERVER}/auth/prefs`, { headers })).text())).toBe(true);
+}
+
+/** Something deployed on the server: hello-api, deployed from its text by `holon deploy`, when
+ *  nothing is yet. */
+async function deployedOnce(request: APIRequestContext, token: string) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const { deployments } = (await (await request.get(`${SERVER}/deployments`, { headers })).json()) as { deployments: unknown[] };
+  if (deployments.length > 0) return;
+  const text = readFileSync(join(SAMPLES, "hello-api.holon.ts"), "utf8").replace(/(port: )8101\b/, `$1${8101 + SAMPLE_SHIFT}`);
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-e2e-welcome-")), "hello-api.holon.ts");
+  writeFileSync(copy, text);
+  execFileSync(HOLON, ["deploy", copy, "--server", SERVER, "--slug", "hello-api", "--approve"], { env: { ...process.env, HOLON_TOKEN: token }, stdio: "pipe" });
 }
 
 test("the welcome opens on start until told not to, and keeps the notes written there", async ({ page, request, adminToken }) => {
@@ -43,7 +59,10 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await saved(request, adminToken, (p) => p.includes("deploy the shop on friday"));
   await page.reload();
   await expect(page.getByLabel("notes", { exact: true })).toHaveValue("deploy the shop on friday");
-  // A step done is ticked: the tests deploy before this one, so "Deploy it" is.
+  // A step done is ticked: "Deploy it", once something is deployed (by the tests before this one,
+  // else here, as its command does, on the port the tests move samples to).
+  await deployedOnce(request, adminToken);
+  await page.reload();
   await expect(page.getByRole("listitem", { name: "Deploy it, done" })).toBeVisible();
   await page.getByLabel("show this on start").check();
   await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
