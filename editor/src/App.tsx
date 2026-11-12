@@ -765,7 +765,10 @@ function Canvas({
   }, [routeKey]);
   const hereKey = format(here);
   useEffect(() => {
-    if (shown !== "canvas" || reaching.current) return;
+    if (reaching.current) return;
+    // No flow open (the last tab closed): the editor shows its Home, and the address says so.
+    if (shown === "editor-home" && route.kind === "editor") return navigate({ kind: "editor-home" }, { replace: true });
+    if (shown !== "canvas") return;
     if (route.kind === "editor" && same(route, here)) return;
     navigate(here, { replace: true });
     // The address is written from where the editor is, not from what it is told.

@@ -100,10 +100,13 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await tabs.getByRole("button", { name: "close hello-api" }).click();
   await page.locator('[aria-modal="true"]').getByRole("button", { name: "Discard" }).click();
   await expect(tabs.getByRole("tab")).toHaveText([/^Home/]);
+  // The last flow closed, the address is the editor's Home, not the flow's.
+  await expect(page).toHaveURL(/#editor\.home$/);
   const closed = page.getByRole("region", { name: "recently closed" });
   await expect(closed).toContainText("with its unsaved changes");
   await closed.getByRole("button", { name: "reopen hello-api" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("hello-api");
+  await expect(page).toHaveURL(/#editor\.hello-api$/);
   await nodesLevel(page);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node").first()).toBeVisible();
   // The editor's tabs are the editor's: a page has none.
