@@ -11,6 +11,7 @@ import { THEMES, type Theme, type Ui } from "../look";
 import { pageOf, type AppPage } from "../Pages";
 import { crumbs, follow, format, labelOf, type Route } from "../routes";
 import { ServerError, getSummary, getVersion, hostAddress, type Summary } from "../server";
+import type { HostPages } from "../useCan";
 
 type Entry = { label: string; to: Route; icon: keyof typeof ICON; key?: number | string };
 
@@ -37,8 +38,8 @@ function Icon({ name }: { name: keyof typeof ICON }) {
   );
 }
 
-/** The nav's groups, in order: the work, the host's own pages (an admin's; another person sees
- *  only what they own), and help. The keys are keymap.ts's anywhere keys. */
+/** The nav's groups, in order: the work, the host's own pages (each to whoever may view it; a
+ *  person who may not see everyone, what they own), and help. The keys are keymap.ts's anywhere keys. */
 const WORK: Entry[] = [
   { label: "Overview", to: { kind: "overview" }, icon: "overview", key: 1 },
   { label: "Approvals", to: { kind: "approvals", tab: "deploys" }, icon: "approvals", key: 2 },
@@ -51,10 +52,14 @@ const HOST: Entry[] = [
   { label: "People and access", to: { kind: "people", tab: null }, icon: "people", key: 7 },
   { label: "Policy", to: { kind: "policy" }, icon: "policy", key: 8 },
 ];
-/** A person who isn't an admin: the agents and services they own, on People and access's page. */
+/** A person who may not see everyone: the agents and services they own, on People and access's page. */
 const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: null }, icon: "people", key: 7 };
-/** The host's pages `me` is shown: an admin's all of them, another person's what they own. */
-const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.kind === "person" ? [OWNED] : []);
+/** The host's pages the nav lists, as `can` answers who may view them (useCan.tsx's hostPagesOf). */
+export const hostEntries = (pages: HostPages): Entry[] => [
+  ...(pages.resources ? [HOST[0]] : []),
+  ...(pages.people === "everyone" ? [HOST[1]] : pages.people === "owned" ? [OWNED] : []),
+  ...(pages.policy ? [HOST[2]] : []),
+];
 const HELP: Entry[] = [
   { label: "Getting started", to: { kind: "start" }, icon: "start", key: "s" },
   { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs", key: "d" },
@@ -99,6 +104,7 @@ export function Shell({
   page,
   navigate,
   me,
+  pages,
   onNew,
   onFind,
   onStart,
@@ -115,6 +121,8 @@ export function Shell({
   page: AppPage;
   navigate: (r: Route) => void;
   me: Me;
+  /** The host's pages `me` is shown (useCan.tsx's useHostPages). */
+  pages: HostPages;
   onNew: () => void;
   /** Open the command palette. */
   onFind: () => void;
@@ -130,7 +138,7 @@ export function Shell({
   waiting?: Waiting;
   children: ReactNode;
 }) {
-  const host = hostEntries(me);
+  const host = hostEntries(pages);
   const waits = waiting.changes + waiting.runs;
   const groups: [string, Entry[]][] = [["work", WORK], ...(host.length > 0 ? ([["host", host]] as [string, Entry[]][]) : []), ["help", HELP]];
   const version = useVersion();
@@ -138,8 +146,8 @@ export function Shell({
   const at = page === "flow" ? "flows" : page;
   const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
-  // People and access is, for a person who isn't an admin, what they own.
-  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && me.role !== "admin" ? OWNED.label : labelOf(r));
+  // People and access is, for someone who may not see everyone, what they own.
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && pages.people === "owned" ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);

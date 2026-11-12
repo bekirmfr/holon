@@ -38,7 +38,7 @@ export function approvalSaid(w: WaitingPoint): string {
 
 /** How many approvals `me` can still decide, over these runs, `decides` saying which points are
  *  theirs (`pointKey`): what the nav adds to its count. */
-export const toDecide = (runs: { slug: string; run: WaitingRun }[], me: Me, decides: ReadonlyMap<string, boolean>) =>
+export const toDecide = (runs: { slug: string; run: WaitingRun }[], me: Me, decides: ReadonlyMap<string, boolean | string>) =>
   runs.reduce((n, { slug, run }) => n + run.waiting.filter((w) => mayDecide(w, me, decides.get(pointKey(slug, w.name)) === true) === "decide").length, 0);
 
 /** The decision an approval's event is, said: who approved, who declined and why, or that it

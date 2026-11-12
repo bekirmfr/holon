@@ -18,7 +18,8 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending, type Role } from "./server";
+import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending } from "./server";
+import { gateOf, type Answer } from "./useCan";
 import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 
@@ -120,8 +121,11 @@ type ToolsPanelProps = {
   errors: string[];
   /** The flow's server deployment, for "send live"; empty when it isn't deployed. */
   liveSlug: string;
-  /** Who is signed in: a viewer sees the actions, never runs one. */
-  role?: Role;
+  /** Whether whoever is signed in may call the deployment (`run.call`: its actions, send live),
+   *  or why not: one who may not sees the actions, never runs one. */
+  mayCall?: Answer;
+  /** Whether they may tick its clocks (`flow.lifecycle`), or why not. */
+  mayTick?: Answer;
   /** The canvas has changes not deployed (an action runs the deployed version). */
   outOfDate?: boolean;
   /** Open view mode on a run an action made. */
@@ -144,7 +148,8 @@ export function ToolsPanel({
   errors,
   liveSlug,
   tickSlug = "",
-  role,
+  mayCall = true,
+  mayTick = true,
   outOfDate = false,
   onViewRun,
 }: ToolsPanelProps) {
@@ -282,9 +287,8 @@ export function ToolsPanel({
                 <span style={{ color: "var(--accent)", ...lbl }}>every</span>
                 <span style={{ flex: 1, color: "var(--ink)" }}>{c.label.slice("every ".length)}</span>
                 <button
-                  style={{ ...btn, opacity: tickSlug ? 1 : 0.4 }}
-                  disabled={!tickSlug}
-                  title={tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it"}
+                  style={{ ...btn, opacity: tickSlug && mayTick === true ? 1 : 0.4 }}
+                  {...gateOf(mayTick, { disabled: !tickSlug, title: tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it" })}
                   onClick={() => tick(c.label)}
                 >
                   tick now
@@ -338,7 +342,7 @@ export function ToolsPanel({
                 </div>
               );
             })}
-            <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
+            <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} may={mayCall} outOfDate={outOfDate} onViewRun={onViewRun} />
             {[...new Set(websockets.map((w) => w.path))].map((path) => (
               <div
                 key={`websocket ${path}`}
@@ -410,10 +414,9 @@ export function ToolsPanel({
                   send local
                 </button>
                 <button
-                  style={{ ...btn, opacity: canSend && liveSlug && !sending ? 1 : 0.4 }}
-                  disabled={!canSend || !liveSlug || sending}
+                  style={{ ...btn, opacity: canSend && liveSlug && !sending && mayCall === true ? 1 : 0.4 }}
+                  {...gateOf(mayCall, { disabled: !canSend || !liveSlug || sending, title: liveSlug ? `send it to the deployed server "${liveSlug}"` : "deploy the server (or type its slug) first" })}
                   onClick={sendLive}
-                  title={liveSlug ? `send it to the deployed server "${liveSlug}"` : "deploy the server (or type its slug) first"}
                 >
                   {sending ? "sending…" : "send live"}
                 </button>
@@ -501,10 +504,11 @@ export function ServerPanel({
   errors,
   liveSlug,
   tickSlug = "",
-  role,
+  mayCall,
+  mayTick,
   outOfDate = false,
   onViewRun,
 }: Omit<ToolsPanelProps, "open" | "onOpen">) {
   const [open, setOpen] = useState(true);
-  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} queues={queues} sendsTo={sendsTo} websockets={websockets} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
+  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} queues={queues} sendsTo={sendsTo} websockets={websockets} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} mayCall={mayCall} mayTick={mayTick} outOfDate={outOfDate} onViewRun={onViewRun} />;
 }

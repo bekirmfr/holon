@@ -1,8 +1,10 @@
-// The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
+// The host's pages (holon-server's auth.rs, gaps-web.md G26–G29), each shown to whoever may view
+// it, its forms and buttons disabled, with the server's refusal as their title, for whoever may not
+// change what they change (useCan.tsx; can.rs's route table says which action each route needs), each at an
 // address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
 // .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may),
 // People and access (#people: people, the agents and services they own with their tokens,
-// signing in through an identity provider; for a person who isn't an admin, the agents and
+// signing in through an identity provider; for a person who may not see everyone, the agents and
 // services they own, with their tokens: OwnedPage) and Policy (#policy: what holon.toml allows, its limits
 // and ceilings, and the deployments it holds off). A section of People and access has its place in
 // the address too (#people.agents). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
@@ -73,7 +75,9 @@ import {
   rollbackSecret,
   type DeploymentEntry,
   type SecretHistory,
+  ServerError,
 } from "./server";
+import { Gated, gateOf, useCan, type Answer } from "./useCan";
 import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
@@ -99,6 +103,8 @@ const quiet: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-xs)" }
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A read refused (403) is what the caller may not view: left empty, not said as a failure. */
+const refusedRead = (e: unknown) => e instanceof ServerError && e.status === 403;
 /** The link someone opens to set their password. */
 const linkFor = (token: string) => `${location.origin}${location.pathname}?invite=${encodeURIComponent(token)}`;
 /** A connection typed in as a URL (`postgres://user:…@host/shop`), not where one is kept: the page never sends it. */
@@ -190,16 +196,17 @@ function useHost(shown = false) {
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
-    listPrincipals().then(setPrincipals).catch((e: unknown) => setMsg(messageOf(e)));
-    listRoles().then(setRoles).catch((e: unknown) => setMsg(messageOf(e)));
-    listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
-    listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
-    listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
-    listFeeds().then(setFeeds).catch((e: unknown) => setMsg(messageOf(e)));
-    listQueues().then(setQueues).catch((e: unknown) => setMsg(messageOf(e)));
-    listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
-    listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
-    getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
+    const said = (e: unknown) => refusedRead(e) || setMsg(messageOf(e));
+    listPrincipals().then(setPrincipals).catch(said);
+    listRoles().then(setRoles).catch(said);
+    listFolders().then(setFolders).catch(said);
+    listDatabases().then(setDatabases).catch(said);
+    listMails().then(setMails).catch(said);
+    listFeeds().then(setFeeds).catch(said);
+    listQueues().then(setQueues).catch(said);
+    listServerSecrets().then(setServerSecrets).catch(said);
+    listGrants().then(setGrants).catch(said);
+    getPermissions().then(setPolicy).catch(said);
     getHost()
       .then((h) => {
         setHost(h);
@@ -208,14 +215,14 @@ function useHost(shown = false) {
         setWarnDraft((d) => d || h.warn_at);
         setFullDraft((d) => d || h.full_at);
       })
-      .catch((e: unknown) => setMsg(messageOf(e)));
+      .catch(said);
     getOidcSettings()
       .then((s) => {
         setOidc(s);
         setIssuer(s?.issuer ?? "");
         setClientId(s?.client_id ?? "");
       })
-      .catch((e: unknown) => setMsg(messageOf(e)));
+      .catch(said);
     setVersion((v) => v + 1);
   }, []);
   useEffect(refresh, [refresh]);
@@ -340,8 +347,8 @@ function MadeTokenBox({ made, onDone }: { made: MadeToken; onDone: () => void })
   );
 }
 
-/** `p`'s tokens, each revoked from its row; or that it has none, so it can't sign in yet. */
-function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void> }) {
+/** `p`'s tokens, each revoked from its row (when `may`); or that it has none, so it can't sign in yet. */
+function TokenRows({ p, dialog, act, may = true }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void>; may?: Answer }) {
   const tokens = p.tokens ?? [];
   if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
   return (
@@ -355,6 +362,7 @@ function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof
           <button
             style={small}
             aria-label={`revoke ${p.name}'s token ${t.label}`}
+            {...gateOf(may)}
             onClick={async () => {
               if (await dialog.confirm(`Revoke ${p.name}'s token "${t.label}"? Whatever signs in with it stops working.`, "Revoke")) act(() => revokeToken(p.name, t.id));
             }}
@@ -455,10 +463,10 @@ export function OwnedPage() {
 
 /** A principal's own role on the host, to change: the roles its kind may hold, the ones an admin
  *  defined included. None when it holds one only through a group or on a flow (holon bind). */
-function RoleSelect({ p, roles, act }: { p: Principal; roles: RoleEntry[]; act: (f: () => Promise<unknown>) => void }) {
+function RoleSelect({ p, roles, act, may }: { p: Principal; roles: RoleEntry[]; act: (f: () => Promise<unknown>) => void; may: Answer }) {
   const now = hostRoleOf(p);
   return (
-    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value }))}>
+    <select aria-label={`${p.name}'s role`} value={now} style={input} {...gateOf(may, { title: roleTitle(roles, now) })} onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value }))}>
       {now === "" && (
         <option value="" disabled>
           no role on the host
@@ -485,8 +493,13 @@ function HeldElsewhere({ p }: { p: Principal }) {
   );
 }
 
-export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
+export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: string | null }) {
   const h = useHost();
+  // Every change here is to a principal (`people.manage` on the host, can.rs's routes).
+  const can = useCan(["people.manage"]);
+  const manage = can.may("people.manage");
+  /** An agent's or a service's tokens: an admin's to make, or its owner's (can.rs's owner rule). */
+  const tokensOf = (p: Principal): Answer => (kind === "person" && p.owner === me ? true : manage);
   const { principals, roles, oidc, link, setLink, secret, setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
   const people = principals.filter((p) => p.kind === "person");
   const others = principals.filter((p) => p.kind !== "person");
@@ -519,7 +532,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.name}
               {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
             </span>
-            <RoleSelect p={p} roles={roles} act={act} />
+            <RoleSelect p={p} roles={roles} act={act} may={manage} />
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
               <HeldElsewhere p={p} />
               {p.email ?? ""}
@@ -529,7 +542,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
             </span>
             <button
               style={small}
-              title="the email they sign in with through the identity provider"
+              {...gateOf(manage, { title: "the email they sign in with through the identity provider" })}
               onClick={async () => {
                 const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
                 if (email !== null) act(() => changePrincipal(p.name, { email }));
@@ -539,7 +552,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
             </button>
             <button
               style={small}
-              title="a new link to set a new password; their sign-ins end"
+              {...gateOf(manage, { title: "a new link to set a new password; their sign-ins end" })}
               onClick={async () => {
                 if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
                 act(async () => {
@@ -550,12 +563,12 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
             >
               reset
             </button>
-            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} {...gateOf(manage, { title: p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={owns.length > 0 ? "give what they own another owner first" : "remove them"}
+              {...gateOf(manage, { title: owns.length > 0 ? "give what they own another owner first" : "remove them" })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? What they deployed stays, and says who did it. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
               }}
@@ -565,6 +578,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           </div>
         );
       })}
+      <Gated may={manage}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -589,6 +603,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           add person
         </button>
       </form>
+      </Gated>
 
       <div className="hl-host-page__head" data-section="agents">agents and services</div>
       <div style={about}>
@@ -604,8 +619,8 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           <div style={row}>
             <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
             <span style={quiet}>{p.kind}</span>
-            <RoleSelect p={p} roles={roles} act={act} />
-            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} title="the person answerable for it" onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
+            <RoleSelect p={p} roles={roles} act={act} may={manage} />
+            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} {...gateOf(manage, { title: "the person answerable for it" })} onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
               {owners(p.owner).map((o) => (
                 <option key={o} value={o}>
                   owned by {o}
@@ -617,15 +632,15 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
-            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setSecret)}>
+            <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(tokensOf(p), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, dialog, act, setSecret)}>
               make token
             </button>
-            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} {...gateOf(manage, { title: p.disabled ? "let its tokens sign in again" : "refuse its tokens" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={`remove the ${p.kind}`}
+              {...gateOf(manage, { title: `remove the ${p.kind}` })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? Its tokens stop working. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
               }}
@@ -633,9 +648,10 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               ×
             </button>
           </div>
-          <TokenRows p={p} dialog={dialog} act={act} />
+          <TokenRows p={p} dialog={dialog} act={act} may={tokensOf(p)} />
         </Fragment>
       ))}
+      <Gated may={manage}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -680,6 +696,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           add {addDraft.kind}
         </button>
       </form>
+      </Gated>
       <ConnectingAnAgent />
 
       <div className="hl-host-page__head" data-section="sign-in">signing in through an identity provider</div>
@@ -687,6 +704,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
         with PKCE and this page&apos;s address as its redirect. Someone signing in is matched to the person with their email (set under people).
       </div>
+      <Gated may={manage}>
       <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
         <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
         <input aria-label="client id" placeholder="client id" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...input, flex: 1, minWidth: 120 }} />
@@ -699,6 +717,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           </button>
         )}
       </div>
+      </Gated>
       <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
     </HostPage>
   );
@@ -706,6 +725,10 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
 
 export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
   const h = useHost(true);
+  // Binding (and a server secret's where and roll back), unbinding, and the host's storage and
+  // sweeps (can.rs's routes: resource.bind, resource.unbind, host.operate).
+  const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
+  const [bind, unbind, operate] = [can.may("resource.bind"), can.may("resource.unbind"), can.may("host.operate")];
   const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
@@ -745,7 +768,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   </span>
                   <button
                     style={small}
-                    title="unbind the name: the database stays where it is"
+                    {...gateOf(unbind, { title: "unbind the name: the database stays where it is" })}
                     onClick={async () => {
                       const whose = d.deployment ? ` for ${d.deployment}` : "";
                       if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(databaseHolders(d))}`, "Unbind"))
@@ -773,6 +796,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               </Fragment>
             );
           })}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -847,6 +871,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind database
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -877,7 +902,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 </span>
                 <button
                   style={small}
-                  title="unbind the name: the files stay where they are"
+                  {...gateOf(unbind, { title: "unbind the name: the files stay where they are" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
                     if (await dialog.confirm(`Unbind the folder "${f.name}"${whose}? Its files stay where they are. ${unbindingSays(folderHolders(f))}`, "Unbind"))
@@ -890,6 +915,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               {usedBy(folderHolders(f))}
             </Fragment>
           ))}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -966,6 +992,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind folder
             </button>
           </form>
+          </Gated>
           {/* Outside the form: its own buttons and form would submit the binding. */}
           {browsing && (
             <FolderPicker
@@ -1008,7 +1035,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 {m.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {m.deployment} only</span>}
                 <button
                   style={small}
-                  title="unbind the name: mail on its way through it is given up"
+                  {...gateOf(unbind, { title: "unbind the name: mail on its way through it is given up" })}
                   onClick={async () => {
                     const whose = m.deployment ? ` for ${m.deployment}` : "";
                     if (await dialog.confirm(`Unbind the mail "${m.name}"${whose}? Mail on its way through it is given up. ${unbindingSays(mailHolders(m))}`, "Unbind"))
@@ -1021,6 +1048,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               {usedBy(mailHolders(m))}
             </Fragment>
           ))}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1103,6 +1131,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind mail
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1146,7 +1175,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 {f.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {f.deployment} only</span>}
                 <button
                   style={small}
-                  title="unbind the name: its connections close"
+                  {...gateOf(unbind, { title: "unbind the name: its connections close" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
                     if (await dialog.confirm(`Unbind the feed "${f.name}"${whose}? Its connections close. ${unbindingSays(feedHolders(f))}`, "Unbind")) act(() => unbindFeed(f.name, f.deployment));
@@ -1158,6 +1187,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               {usedBy(feedHolders(f))}
             </Fragment>
           ))}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1308,6 +1338,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind feed
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1339,7 +1370,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 {q.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {q.deployment} only</span>}
                 <button
                   style={small}
-                  title="unbind the name: its listeners stop"
+                  {...gateOf(unbind, { title: "unbind the name: its listeners stop" })}
                   onClick={async () => {
                     const whose = q.deployment ? ` for ${q.deployment}` : "";
                     if (await dialog.confirm(`Unbind the queue "${q.name}"${whose}? Its listeners stop, and what it holds stays in it. ${unbindingSays(queueHolders(q))}`, "Unbind"))
@@ -1352,6 +1383,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               {usedBy(queueHolders(q))}
             </Fragment>
           ))}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1403,6 +1435,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind queue
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1426,7 +1459,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               </span>
               <button
                 style={small}
-                title="change where it may go"
+                {...gateOf(bind, { title: "change where it may go" })}
                 onClick={async () => {
                   const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
                   if (typed === null) return;
@@ -1438,7 +1471,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               </button>
               <button
                 style={small}
-                title="remove the server's secret, every version"
+                {...gateOf(unbind, { title: "remove the server's secret, every version" })}
                 onClick={async () => {
                   if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
                     act(() => unbindServerSecret(s.name));
@@ -1447,9 +1480,10 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 ×
               </button>
             </div>
-            <ServerSecretHistory name={s.name} onChanged={refresh} />
+            <ServerSecretHistory name={s.name} onChanged={refresh} may={bind} />
             </Fragment>
           ))}
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={(e) => {
@@ -1495,6 +1529,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind secret
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1551,6 +1586,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   })}
                 </div>
               )}
+              <Gated may={operate}>
               <form
                 style={row}
                 onSubmit={(e) => {
@@ -1650,6 +1686,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   set
                 </button>
               </form>
+              </Gated>
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (
                   <div key={l} style={i === 0 ? quiet : undefined}>
@@ -1667,6 +1704,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
           </div>
           {sweeps && (
             <>
+              <Gated may={operate}>
               <form
                 style={row}
                 onSubmit={(e) => {
@@ -1692,6 +1730,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   set
                 </button>
               </form>
+              </Gated>
               <div style={{ ...row, ...quiet }}>
                 last: the store {reportLine(sweeps.store, "values", Date.now())}; file texts {reportLine(sweeps.folders, "texts", Date.now())}
               </div>
@@ -1701,7 +1740,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             <span style={{ flex: 1 }}>the store: states and values{swept.store && <span style={quiet}> · {swept.store}</span>}</span>
             <button
               style={small}
-              title="count what a sweep would remove, then ask"
+              {...gateOf(operate, { title: "count what a sweep would remove, then ask" })}
               onClick={() =>
                 act(async () => {
                   const would = await sweepStore(true);
@@ -1724,7 +1763,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             <span style={{ flex: 1 }}>file texts: what runs read and wrote in folders{swept.folders && <span style={quiet}> · {swept.folders}</span>}</span>
             <button
               style={small}
-              title="remove the file texts nothing kept names"
+              {...gateOf(operate, { title: "remove the file texts nothing kept names" })}
               onClick={async () => {
                 if (!(await dialog.confirm("Sweep the file texts no live run, kept run or folder names? A run whose files are removed can't be shown with them again.", "Sweep"))) return;
                 act(async () => {
@@ -1810,6 +1849,8 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
 
 export function PolicyPage({ deployments, onOpenDeployment }: { deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
   const h = useHost();
+  // Reading holon.toml again (`POST /permissions/reload`) is policy.edit's.
+  const can = useCan(["policy.edit"]);
   const { policy, setPolicy, reloaded, setReloaded, act } = h;
   return (
     <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
@@ -1862,7 +1903,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
         <button
           style={small}
-          title="read holon.toml again and hold every deployment to it"
+          {...can.gate("policy.edit", { title: "read holon.toml again and hold every deployment to it" })}
           onClick={() =>
             act(async () => {
               const r = await reloadPermissions();
@@ -1905,7 +1946,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
 /** A server secret's versions and changes, folded under its row; an older version is made
  *  current again after a dry run, as a deployment's is (DeployBar.tsx's SecretRow). Never a
  *  value: versions are told apart by their fingerprints. */
-function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () => void }) {
+function ServerSecretHistory({ name, onChanged, may = true }: { name: string; onChanged: () => void; may?: Answer }) {
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const [said, setSaid] = useState("");
   const dryRun = useDryRun();
@@ -1938,7 +1979,7 @@ function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () 
               {v.current ? (
                 <span style={{ color: "var(--ok)", width: 64, textAlign: "right" }}>current</span>
               ) : (
-                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} title={`make version ${v.version} current again`}>
+                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} {...gateOf(may, { title: `make version ${v.version} current again` })}>
                   roll back
                 </button>
               )}

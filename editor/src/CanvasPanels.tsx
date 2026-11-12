@@ -8,6 +8,7 @@ import { BoundaryField } from "./BoundaryField";
 import type { Projection } from "./canvasOps";
 import type { Mode } from "./tabs";
 import { Kbd } from "./ui/Kbd";
+import { gateOf, type Answer } from "./useCan";
 
 const primaryBtn: CSSProperties = {
   font: "inherit",
@@ -152,6 +153,7 @@ export function FlowToolbar({
   flowName,
   dirty,
   onSave,
+  maySave = true,
   canUndo,
   canRedo,
   onUndo,
@@ -170,6 +172,8 @@ export function FlowToolbar({
   flowName: string | null;
   dirty: boolean;
   onSave: () => void;
+  /** Whether whoever is signed in may save it (`flow.edit`), or why not. */
+  maySave?: Answer;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -212,7 +216,7 @@ export function FlowToolbar({
         <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
       ) : (
         <>
-          <button onClick={onSave} style={primaryBtn}>
+          <button onClick={onSave} style={primaryBtn} {...gateOf(maySave)}>
             save
           </button>
           <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>

@@ -81,9 +81,10 @@ static SVG (`ReviewPage.tsx:351`).
 - `/auth/me` answers `kind` and `owner` (`server.ts:107`);
 - `/auth/me/can` answers whether the caller may do each action, and why not (`server.ts:101`).
   Only Approvals asks it (`useApprovals.ts:46`);
-- the route table asks `resource.view` for reading resources (`can.rs:488`), and the built-in
-  viewer holds every `*.view`. So a viewer may read the host pages, but the nav shows them only to
-  an admin, and to a person their own agents and services (`Shell.tsx:57`).
+- the route table asks `resource.view` for reading resources (`can.rs:488`). The built-in viewer
+  and editor hold `policy.view` and none of the host's other views (`can.rs`'s `BUILTIN`); a role an
+  admin defines may hold them. But the nav shows the host pages only to an admin, and to a person
+  their own agents and services (`Shell.tsx:57`).
 
 **What the server doesn't answer yet**, which the views below need:
 
@@ -666,7 +667,8 @@ Everything else is the editor's, over routes that exist.
 - Clicking a row moves the cursor.
 - Replay the draft on a deployed sample.
 - An Approvals card's rows.
-- A viewer sees Resources read-only.
+- A viewer sees Policy read-only (the built-in viewer holds no `resource.view`; a role that
+  holds it alone sees Resources so).
 - The keys `j` `k` `Enter` on Flows, and `a` on Approvals.
 - Closing a changed tab with Save and close.
 

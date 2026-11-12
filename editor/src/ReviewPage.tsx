@@ -19,6 +19,7 @@ import { touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
 import { deployUnit, getDeployedDocument, getFlow, getProposal, getVersions, previewDeploy, type DeployPreview, type DeploymentEntry, type FlowDocument, type FlowRecord, type Proposal, type VersionEntry } from "./server";
 import { useKeys } from "./ui/Keys";
+import { useCan } from "./useCan";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -76,6 +77,9 @@ export function ReviewPage({
   const [line, setLine] = useState<number | null>(null);
   const [read, setRead] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Deploying it asks flow.deploy of the flow, and flow.approve-deploy for what it newly asks for;
+  // declining a proposal, flow.approve-deploy (can.rs, deploy.rs).
+  const can = useCan(["flow.deploy", "flow.approve-deploy"], { flow: slug });
 
   // Read again when another version is saved or proposed, or one is deployed.
   const proposalId = waiting?.proposal?.id;
@@ -305,7 +309,7 @@ export function ReviewPage({
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}
                 </label>
-                <button className="hl-flow__button hl-flow__button--go" disabled={!read || busy} onClick={() => void approve()}>
+                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 ? "flow.approve-deploy" : "flow.deploy", { disabled: !read || busy })} onClick={() => void approve()}>
                   {busy ? "Deploying…" : asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy"}
                 </button>
               </>
@@ -314,7 +318,7 @@ export function ReviewPage({
               Keep it saved, don't deploy
             </button>
             {data.proposal && (
-              <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })}>
+              <button className="hl-flow__button hl-flow__button--bad" {...can.gate("flow.approve-deploy")} onClick={() => void decline({ ...data.proposal!, version: data.version })}>
                 Decline with a reason…
               </button>
             )}

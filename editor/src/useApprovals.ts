@@ -31,8 +31,9 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
   const [runs, setRuns] = useState<WaitingRunOf[] | null>(null);
-  // Whether whoever is signed in decides each approval point a run waits at (pointKey).
-  const [decides, setDecides] = useState<ReadonlyMap<string, boolean>>(new Map());
+  // Whether whoever is signed in decides each approval point a run waits at (pointKey): true, or
+  // the server's refusal.
+  const [decides, setDecides] = useState<ReadonlyMap<string, true | string>>(new Map());
   const now = useRef(deployments);
   now.current = deployments;
 
@@ -44,8 +45,8 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
       const points = [...new Map(runs.flatMap(({ slug, run }) => run.waiting.filter(isApproval).map((w) => [pointKey(slug, w.name), { slug, name: w.name }] as const))).entries()];
       const asked = points.map(([key, { slug, name }]) =>
         mayI(["run.decide"], { flow: slug, approval: name }).then(
-          (may) => [key, may["run.decide"] === true] as const,
-          () => [key, false] as const,
+          (may) => [key, may["run.decide"] ?? "the host didn't say who decides it"] as const,
+          (e: unknown) => [key, e instanceof Error ? e.message : String(e)] as const,
         ),
       );
       setDecides(new Map(await Promise.all(asked)));

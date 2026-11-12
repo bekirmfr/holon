@@ -3,7 +3,8 @@
 // server panel and a flow's Status tab both show them (docs/L4s/triggers-L4.md §7).
 
 import { useState, type CSSProperties } from "react";
-import { actionUrl, runAction, type Role } from "./server";
+import { actionUrl, runAction } from "./server";
+import type { Answer } from "./useCan";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -23,7 +24,7 @@ type Ran = { text: string; ok: boolean; seq?: number };
 export function ActionRows({
   names,
   slug,
-  role,
+  may = true,
   outOfDate = false,
   onViewRun,
 }: {
@@ -31,8 +32,9 @@ export function ActionRows({
   names: string[];
   /** The running deployment that runs them; empty when there is none (the rows are greyed). */
   slug: string;
-  /** Who is signed in: a viewer sees the rows, never runs one. */
-  role?: Role;
+  /** Whether whoever is signed in may run them (`run.call` on the flow), or why not: one who
+   *  may not sees the rows, never runs one. */
+  may?: Answer;
   /** The canvas has changes not deployed: a run runs the deployed version, which says so. */
   outOfDate?: boolean;
   /** Open view mode on the run an action made. */
@@ -41,7 +43,7 @@ export function ActionRows({
   // What to send each action (JSON; empty is {}), and what each last answered.
   const [sent, setSent] = useState<Record<string, string>>({});
   const [ran, setRan] = useState<Record<string, Ran>>({});
-  const viewer = role === "viewer";
+  const refused = may !== true;
   const run = (name: string) => {
     const answered = (r: Ran) => setRan((m) => ({ ...m, [name]: r }));
     answered({ text: "running…", ok: true });
@@ -50,7 +52,7 @@ export function ActionRows({
       .catch((err: unknown) => answered({ text: err instanceof Error ? err.message : String(err), ok: false }));
   };
   if (names.length === 0) return null;
-  const why = viewer ? "an editor or an admin runs this" : !slug ? "deploy the flow to run it" : "run this action once, now, on the deployment, with what to send";
+  const why = may !== true ? may : !slug ? "deploy the flow to run it" : "run this action once, now, on the deployment, with what to send";
   return (
     <>
       {outOfDate && slug && (
@@ -66,16 +68,16 @@ export function ActionRows({
               <span style={{ color: "var(--accent)", width: 52, flexShrink: 0 }}>action</span>
               <span style={{ flex: 1, color: "var(--ink)" }}>{name}</span>
               <button
-                style={{ ...button, opacity: slug && !viewer ? 1 : 0.4 }}
-                disabled={!slug || viewer}
+                style={{ ...button, opacity: slug && !refused ? 1 : 0.4 }}
+                disabled={!slug || refused}
                 title={why}
                 onClick={() => run(name)}
               >
                 run
               </button>
             </div>
-            {viewer ? (
-              <div style={{ color: "var(--faint)" }}>an editor or an admin runs this</div>
+            {refused ? (
+              <div style={{ color: "var(--faint)" }}>{may}</div>
             ) : (
               <textarea
                 value={sent[name] ?? ""}
@@ -99,7 +101,7 @@ export function ActionRows({
                 )}
               </div>
             )}
-            {slug && !viewer && (
+            {slug && !refused && (
               <code style={{ color: "var(--faint)", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
                 curl -X POST {actionUrl(slug, name)} -H "Authorization: Bearer $HOLON_TOKEN" -H "Content-Type: application/json" -d '{(sent[name] ?? "").trim() || "{}"}'
               </code>

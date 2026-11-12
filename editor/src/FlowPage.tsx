@@ -1,6 +1,7 @@
 // A deployed flow's own page (gaps-web.md G15), at `#<slug>[.tab]`: its header (name, status,
 // open in the editor) and its tabs, each a place of its own in the address. The pages the
-// editor had for a deployment (its card, view mode's log) move here a tab at a time.
+// editor had for a deployment (its card, view mode's log) move here a tab at a time. Its buttons
+// follow `can` on the flow (useCan.tsx), asked once for every tab's.
 
 import { useMemo, useState, type ReactNode } from "react";
 import { HistoryTab } from "./HistoryPane";
@@ -12,7 +13,8 @@ import { SettingsTab } from "./FlowSettings";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { follow, format, type FlowTab, type Route } from "./routes";
-import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type Role } from "./server";
+import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
+import { gateOf, useCan, type Answer } from "./useCan";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 import { useKeys, useListKeys } from "./ui/Keys";
@@ -29,6 +31,20 @@ const TABS: [FlowTab, string][] = [
 
 const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
 
+/** What a flow's page asks `can` about, on the flow: each its buttons' routes need (can.rs). The
+ *  server's secrets' names (resource.view) are the host's, asked with them. */
+export const FLOW_ACTIONS = [
+  "flow.lifecycle",
+  "flow.delete",
+  "flow.restore",
+  "flow.approve-deploy",
+  "flow.deploy",
+  "run.call",
+  "run.export",
+  "secret.set",
+  "resource.view",
+] as const;
+
 
 export function FlowPage({
   slug,
@@ -36,7 +52,6 @@ export function FlowPage({
   run = null,
   entry,
   navigate,
-  role,
   card,
   codeText,
   onRestored,
@@ -49,7 +64,6 @@ export function FlowPage({
   /** Its row in the server's table; undefined while it isn't deployed. */
   entry: DeploymentEntry | undefined;
   navigate: (r: Route) => void;
-  role: Role;
   /** What a version's canvas may do, for since when it may do each thing. */
   manifestOf: (doc: FlowDocument) => { items: string[] };
   /** Its versions printed as text, for a restore's diff. */
@@ -72,6 +86,8 @@ export function FlowPage({
     navigate({ kind: "flow", slug, tab: TABS[(at + by + TABS.length) % TABS.length][0] });
   };
   useKeys("tabs", { "[": () => tabBeside(-1), "]": () => tabBeside(1) }, { enabled: entry !== undefined });
+  const can = useCan(FLOW_ACTIONS, { flow: slug });
+  const lifecycle = (title: string) => can.gate("flow.lifecycle", { title });
   const [failed, setFailed] = useState("");
   const act = (action: "run" | "pause" | "stop") => {
     setFailed("");
@@ -89,22 +105,22 @@ export function FlowPage({
         )}
         <span className="hl-flow__spacer" />
         {entry?.status === "running" && (
-          <button className="hl-flow__button" onClick={() => act("pause")} title="stop answering, keep the port and the session">
+          <button className="hl-flow__button" onClick={() => act("pause")} {...lifecycle("stop answering, keep the port and the session")}>
             Pause
           </button>
         )}
         {entry?.status === "paused" && (
-          <button className="hl-flow__button" onClick={() => act("run")} title="continue the same session">
+          <button className="hl-flow__button" onClick={() => act("run")} {...lifecycle("continue the same session")}>
             Resume
           </button>
         )}
         {entry && entry.status !== "stopped" && (
-          <button className="hl-flow__button" onClick={() => act("stop")} title="end the session, save its state, release the port">
+          <button className="hl-flow__button" onClick={() => act("stop")} {...lifecycle("end the session, save its state, release the port")}>
             Stop
           </button>
         )}
         {entry?.status === "stopped" && (
-          <button className="hl-flow__button" onClick={() => act("run")} title="a new session, from the state the last one left">
+          <button className="hl-flow__button" onClick={() => act("run")} {...lifecycle("a new session, from the state the last one left")}>
             Run
           </button>
         )}
@@ -130,20 +146,20 @@ export function FlowPage({
           {run !== null ? (
             <RunDetail slug={slug} seq={run} navigate={navigate} />
           ) : tab === "runs" ? (
-            <RunsTab slug={slug} navigate={navigate} />
+            <RunsTab slug={slug} navigate={navigate} mayExport={can.may("run.export")} />
           ) : tab === "logs" ? (
             <LogsPane slug={slug} navigate={navigate} />
           ) : tab === "state" ? (
             <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "history" ? (
-            <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
+            <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} mayRestore={can.may("flow.restore")} />
           ) : tab === "status" ? (
-            <StatusTab slug={slug} entry={entry} navigate={navigate} role={role} manifestOf={manifestOf} />
+            <StatusTab slug={slug} entry={entry} navigate={navigate} mayCall={can.may("run.call")} manifestOf={manifestOf} />
           ) : (
             <SettingsTab
               slug={slug}
               entry={entry}
-              role={role}
+              can={can}
               focus={card.focus}
               onChanged={card.onChanged}
               onRunFrom={(session) => card.onAction("run", session)}
@@ -163,7 +179,7 @@ const OUTCOME_SAID: Record<Outcome, string> = { ok: "", failed: "failed", waitin
  *  how long it took and what it did outside the flow; each opens its record. Above them, the
  *  chain the log is (each run names the hash of the one before it), checked on asking, and the
  *  runs exported for `holon verify`. */
-function RunsTab({ slug, navigate }: { slug: string; navigate: (r: Route) => void }) {
+function RunsTab({ slug, navigate, mayExport = true }: { slug: string; navigate: (r: Route) => void; mayExport?: Answer }) {
   const { entries, tallies, error } = useFlowLog(slug);
   const [show, setShow] = useState<Show>("all");
   const [said, setSaid] = useState<ReactNode>("");
@@ -217,7 +233,7 @@ function RunsTab({ slug, navigate }: { slug: string; navigate: (r: Route) => voi
         <button className="hl-flow__button" onClick={check} title="read the whole log and check each run names the hash of the one before it">
           Check the chain
         </button>
-        <button className="hl-flow__button" onClick={exportRuns} title="save the runs and the units they ran, for holon verify">
+        <button className="hl-flow__button" onClick={exportRuns} {...gateOf(mayExport, { title: "save the runs and the units they ran, for holon verify" })}>
           Export
         </button>
       </div>

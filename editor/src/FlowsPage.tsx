@@ -11,6 +11,7 @@ import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { useListKeys } from "./ui/Keys";
+import { gateOf, useCan, type Answer } from "./useCan";
 
 type Show = "all" | "live" | "waiting" | "paused";
 const SHOWS: [Show, string, string][] = [
@@ -78,6 +79,8 @@ export function FlowsPage({
   marketplace: { url: string; onPublish: (name: string) => Promise<string> };
 }) {
   const dialog = useDialog();
+  // Deleting a saved flow (`DELETE /flows/<name>` asks flow.delete, of any flow).
+  const can = useCan(["flow.delete"]);
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   const [msg, setMsg] = useState("");
   // What a publish answered.
@@ -221,6 +224,7 @@ export function FlowsPage({
                   onReload={() => load(r.name, true)}
                   onDownload={() => download(r.name)}
                   onDelete={() => remove(r.name)}
+                  mayDelete={can.may("flow.delete")}
                   publish={
                     marketplace.url
                       ? () => marketplace.onPublish(r.name).then((m) => m && setNote(m))
@@ -255,6 +259,7 @@ function FlowRow({
   onReload,
   onDownload,
   onDelete,
+  mayDelete = true,
   publish,
   publishTo,
 }: {
@@ -269,6 +274,8 @@ function FlowRow({
   onReload: () => void;
   onDownload: () => void;
   onDelete: () => void;
+  /** Whether whoever is signed in may delete it, or why not. */
+  mayDelete?: Answer;
   publish: (() => void) | null;
   publishTo: string;
 }) {
@@ -329,7 +336,7 @@ function FlowRow({
             <button className="hl-flow__button" title="download it as text (.holon.ts): edit it anywhere, keep it in git, check it with `holon check`" onClick={onDownload}>
               .holon.ts
             </button>
-            <button className="hl-flow__button" onClick={onDelete} aria-label={`delete ${name}`} title="delete this saved flow">
+            <button className="hl-flow__button" onClick={onDelete} aria-label={`delete ${name}`} {...gateOf(mayDelete, { title: "delete this saved flow" })}>
               ×
             </button>
           </>

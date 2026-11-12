@@ -14,6 +14,7 @@ import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from 
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
 import type { WaitingRunOf } from "./useApprovals";
+import { gateOf, useCan } from "./useCan";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
@@ -60,8 +61,9 @@ export function ApprovalsPage({
   deployments: DeploymentEntry[];
   /** The runs waiting in them (useApprovals), null until first read. */
   runs: WaitingRunOf[] | null;
-  /** Whether `me` decides each approval point among them (decisions.ts `pointKey`). */
-  decides: ReadonlyMap<string, boolean>;
+  /** Whether `me` decides each approval point among them (decisions.ts `pointKey`): true, or the
+   *  server's refusal. */
+  decides: ReadonlyMap<string, true | string>;
   me: Me;
   navigate: (r: Route) => void;
   /** A proposal was declined: what waits is read again. */
@@ -101,6 +103,17 @@ export function ApprovalsPage({
         <RunsWaiting any={waiting.length > 0} runs={runs} decides={decides} me={me} navigate={navigate} onDecided={onDecided} />
       )}
     </div>
+  );
+}
+
+/** Decline a proposal of `slug`'s, for whoever may approve its deploys (`flow.approve-deploy`
+ *  on the flow, as declining asks it); disabled, saying why not, for anyone else. */
+function DeclineButton({ slug, onDecline }: { slug: string; onDecline: () => void }) {
+  const can = useCan(["flow.approve-deploy"], { flow: slug });
+  return (
+    <button className="hl-flow__button" onClick={onDecline} aria-label={`decline ${slug}`} {...can.gate("flow.approve-deploy")}>
+      Decline with a reason…
+    </button>
   );
 }
 
@@ -150,11 +163,7 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
                   {proposal?.note && <div className="hl-flow__note">{proposal.note}</div>}
                 </td>
                 <td className="hl-flows__do">
-                  {proposal && (
-                    <button className="hl-flow__button" onClick={() => void decline(proposal)} aria-label={`decline ${a.slug}`}>
-                      Decline with a reason…
-                    </button>
-                  )}
+                  {proposal && <DeclineButton slug={a.slug} onDecline={() => void decline(proposal)} />}
                   {to === null ? (
                     <span className="hl-table__dim">…</span>
                   ) : (
@@ -230,7 +239,7 @@ function RunsWaiting({
 }: {
   any: boolean;
   runs: WaitingRunOf[] | null;
-  decides: ReadonlyMap<string, boolean>;
+  decides: ReadonlyMap<string, true | string>;
   me: Me;
   navigate: (r: Route) => void;
   onDecided: () => void;
@@ -280,16 +289,19 @@ function RunsWaiting({
                 <td>{when(run.parked_at)}</td>
                 <td className="hl-flows__do">
                   {run.waiting.filter(isApproval).map((w) => {
-                    const may = mayDecide(w, me, decides.get(pointKey(slug, w.name)) === true);
+                    const answer = decides.get(pointKey(slug, w.name));
+                    const may = mayDecide(w, me, answer === true);
                     if (may === "approved") return <span key={w.name} className="hl-chip">you approved</span>;
-                    if (may === "no") return null;
+                    // Not theirs to decide: the buttons say why, once the server has (run.decide).
+                    if (may === "no" && typeof answer !== "string") return null;
+                    const gate = gateOf(answer ?? true);
                     const label = `"${w.name}" of ${slug} (${run.route ?? run.kind})`;
                     return (
                       <span key={w.name}>
-                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, false)} aria-label={`decline ${label}`}>
+                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, false)} aria-label={`decline ${label}`} {...gate}>
                           Decline…
                         </button>
-                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, true)} aria-label={`approve ${label}`}>
+                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, true)} aria-label={`approve ${label}`} {...gate}>
                           Approve…
                         </button>
                       </span>

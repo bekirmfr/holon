@@ -21,6 +21,8 @@ import {
   type SecretInfo,
   type SecretRollbackPreview,
 } from "./server";
+// Its type only: server.ts imports this module, and useCan.tsx imports server.ts.
+import type { Answer } from "./useCan";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (unused without
  *  one). `requirements`: limits away from the host's defaults, and exceptions, which the host
@@ -108,6 +110,7 @@ export function DeployBar({
   onAction,
   startsNothing = false,
   onSettingsOpen,
+  may = { deploy: true, lifecycle: true },
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -120,6 +123,10 @@ export function DeployBar({
    *  action): deploy is greyed. */
   startsNothing?: boolean;
   onSettingsOpen?: () => void;
+  /** Whether whoever is signed in may deploy it (`flow.propose`, as `POST /deploy` asks: an
+   *  agent's version that needs a person waits as a proposal) and run, pause or stop it
+   *  (`flow.lifecycle`), or why not. */
+  may?: { deploy: Answer; lifecycle: Answer };
 }) {
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
@@ -128,14 +135,16 @@ export function DeployBar({
     : entry
       ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
       : "deploy this flow, named after it";
-  const off = busy || startsNothing;
+  const off = busy || startsNothing || may.deploy !== true;
+  // Running, pausing and stopping it: disabled, saying why, for whoever may not (useCan.tsx's gateOf).
+  const lifecycle = (title: string) => (may.lifecycle === true ? { title } : { disabled: true, title: may.lifecycle });
 
   return (
     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", position: "relative" }}>
       <button
         onClick={onDeploy}
         disabled={off}
-        title={title}
+        title={may.deploy === true ? title : may.deploy}
         style={{ ...primary, opacity: off ? 0.5 : 1, cursor: off ? "default" : "pointer" }}
       >
         {label}
@@ -163,21 +172,21 @@ export function DeployBar({
             </span>
           )}
           {entry.status === "running" && (
-            <button style={base} onClick={() => onAction("pause")} title="stop answering, keep the session">
+            <button style={base} onClick={() => onAction("pause")} {...lifecycle("stop answering, keep the session")}>
               pause
             </button>
           )}
           {entry.status === "paused" && (
-            <button style={base} onClick={() => onAction("run")} title="continue the same session">
+            <button style={base} onClick={() => onAction("run")} {...lifecycle("continue the same session")}>
               resume
             </button>
           )}
           {entry.status !== "stopped" ? (
-            <button style={base} onClick={() => onAction("stop")} title="end the session, save its state">
+            <button style={base} onClick={() => onAction("stop")} {...lifecycle("end the session, save its state")}>
               stop
             </button>
           ) : (
-            <button style={base} onClick={() => onAction("run")} title="start a new session from the latest state">
+            <button style={base} onClick={() => onAction("run")} {...lifecycle("start a new session from the latest state")}>
               run
             </button>
           )}

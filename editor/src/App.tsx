@@ -78,6 +78,7 @@ import { FlowsPage } from "./FlowsPage";
 import { ApprovalsPage, WAITING_LIST, waitingKey } from "./ApprovalsPage";
 import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
+import { useCan, useHostPages, type Answer } from "./useCan";
 import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
@@ -116,6 +117,9 @@ const ManualPage = lazy(() => import("./ManualPage").then((m) => ({ default: m.M
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
+/** Why one of the host's pages isn't shown: the server's refusal of what viewing it needs. */
+const notShown = (answer: Answer) => (answer === true ? "" : `This page isn't shown to you: ${answer}.`);
+
 function Canvas({
   catalog,
   variadic,
@@ -126,12 +130,15 @@ function Canvas({
   pendingNew,
   docs,
   me,
+  pages,
   start,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
   /** Who is signed in (AuthGate.tsx). */
   me: Me;
+  /** The host's pages they are shown, and the answers they follow (useCan.tsx). */
+  pages: ReturnType<typeof useHostPages>;
   /** What the editor keeps with the account (home.ts): home's panes, the welcome, the look,
    *  which of the editor's panes are hidden. */
   start: {
@@ -642,6 +649,10 @@ function Canvas({
       toast(`Deployed ${name}.`, "ok", { label: "Open the flow", to: { kind: "flow", slug: name, tab: "status" } });
     },
   });
+  // What the editor's buttons need (can.rs's routes): saving and deploying, of any flow as their
+  // routes ask it (an agent's deploy is a proposal); running, ticking and calling it, on it.
+  const canSave = useCan(["flow.edit", "flow.propose"]);
+  const canFlow = useCan(["flow.lifecycle", "run.call"], { flow: flowName });
 
   // The It may strip (MayStrip.tsx): the draft's manifest, as the server will read it, beside the
   // deployed version's, read again when another version is deployed. Worked out when the canvas's
@@ -843,25 +854,23 @@ function Canvas({
       out.push({ label: `Deploy ${name}`, kind: "this flow", run: () => void onDeployFlow() });
       out.push({ label: `Format ${name}`, kind: "this flow", run: () => askTextOpening({ do: "format" }) });
     }
-    const pages: [string, Route][] = [
+    const places: [string, Route][] = [
       ["Overview", { kind: "overview" }],
       ["Approvals", { kind: "approvals", tab: "deploys" }],
       ["Flows", { kind: "flows" }],
       ["Editor", { kind: "editor", slug: null, view: false, seq: null }],
       ["Library", { kind: "library", tab: "samples" }],
-      ...(me.role === "admin"
-        ? ([
-            ["Resources", { kind: "resources", tab: "databases" }],
-            ["People and access", { kind: "people", tab: null }],
-            ["Policy", { kind: "policy" }],
-          ] as [string, Route][])
-        : me.kind === "person"
+      ...(pages.resources ? ([["Resources", { kind: "resources", tab: "databases" }]] as [string, Route][]) : []),
+      ...(pages.people === "everyone"
+        ? ([["People and access", { kind: "people", tab: null }]] as [string, Route][])
+        : pages.people === "owned"
           ? ([["Your agents and services", { kind: "people", tab: null }]] as [string, Route][])
           : []),
+      ...(pages.policy ? ([["Policy", { kind: "policy" }]] as [string, Route][]) : []),
       ["Docs", { kind: "docs", page: null, anchor: null }],
       ["Getting started", { kind: "start" }],
     ];
-    for (const [label, to] of pages) out.push({ label, kind: "page", run: go(to) });
+    for (const [label, to] of places) out.push({ label, kind: "page", run: go(to) });
     const deployed = new Set(deployments.map((d) => d.slug));
     for (const { slug } of deployments) {
       out.push({ label: slug, kind: "flow", run: go({ kind: "flow", slug, tab: "status" }) });
@@ -894,7 +903,7 @@ function Canvas({
     out.push({ label: "Sign out", kind: "action", run: () => void signOutHere() });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue, paletteRuns]);
+  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue, paletteRuns, pages]);
   // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
   const askTextOpening = (ask: TextAsk) => {
     if (askText(ask)) return;
@@ -1218,6 +1227,7 @@ function Canvas({
           flowName={flowName}
           dirty={dirty}
           onSave={onSave}
+          maySave={canSave.may("flow.edit")}
           canUndo={history.current.past.length > 0}
           canRedo={history.current.future.length > 0}
           onUndo={undo}
@@ -1231,6 +1241,7 @@ function Canvas({
               busy={deployBusy}
               onDeploy={onDeployFlow}
               onAction={onFlowAction}
+              may={{ deploy: canSave.may("flow.propose"), lifecycle: canFlow.may("flow.lifecycle") }}
               startsNothing={startsNothing}
               onSettingsOpen={() => onDeployPanelOpen(true)}
             />
@@ -1402,15 +1413,18 @@ function Canvas({
               }}
             />
           )}
-          {/* The host's pages, an admin's (HostPages.tsx). */}
-          {(shown === "resources" || (shown === "people" && me.kind !== "person") || shown === "policy") && me.role !== "admin" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
-          {/* A person who isn't an admin: the agents and services they own. */}
-          {shown === "people" && me.role !== "admin" && me.kind === "person" && <OwnedPage />}
-          {shown === "resources" && route.kind === "resources" && me.role === "admin" && (
+          {/* The host's pages, to whoever may view them (HostPages.tsx); to anyone else, why not. */}
+          {pages.can.known &&
+            ((shown === "resources" && !pages.resources) || (shown === "people" && pages.people === null) || (shown === "policy" && !pages.policy)) && (
+              <p className="hl-flow__note">{notShown(pages.can.may(shown === "resources" ? "resource.view" : shown === "people" ? "people.view" : "policy.view"))}</p>
+            )}
+          {/* Someone who may not see everyone: the agents and services they own. */}
+          {shown === "people" && pages.people === "owned" && <OwnedPage />}
+          {shown === "resources" && route.kind === "resources" && pages.resources && (
             <ResourcesPage tab={route.tab} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}
-          {shown === "people" && route.kind === "people" && me.role === "admin" && <PeoplePage me={me.name} tab={route.tab} />}
-          {shown === "policy" && me.role === "admin" && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
+          {shown === "people" && route.kind === "people" && pages.people === "everyone" && <PeoplePage me={me.name} kind={me.kind} tab={route.tab} />}
+          {shown === "policy" && pages.policy && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
           {shown === "docs" && (
             <Suspense fallback={<div style={{ color: "var(--faint)" }}>loading the manual…</div>}>
               <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
@@ -1428,7 +1442,7 @@ function Canvas({
               onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && <OverviewPage name={me.name} admin={me.role === "admin"} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
+          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}
@@ -1436,7 +1450,6 @@ function Canvas({
               run={route.kind === "run" ? route.seq : null}
               entry={deployments.find((d) => d.slug === route.slug)}
               navigate={navigate}
-              role={me.role}
               codeText={async (unit) => {
                 const doc = await getDeployedDocument(route.slug, unit);
                 const plain = printHolon(route.slug, doc, ev);
@@ -1478,7 +1491,8 @@ function Canvas({
         errors={derived.errors}
         liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
         tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
-        role={me.role}
+        mayCall={canFlow.may("run.call")}
+        mayTick={canFlow.may("flow.lifecycle")}
         outOfDate={outOfDate === true}
         onViewRun={(seq) => flowName && onView(flowName, seq)}
       />
@@ -1512,6 +1526,8 @@ function Editor({ me }: { me: Me }) {
   const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
   const toast = useToast();
   const [waiting, setWaiting] = useState<Waiting>({ changes: 0, runs: 0 });
+  // The host's pages this person is shown, as `can` answers (the nav, the palette, the pages).
+  const pages = useHostPages(me);
   const routeKey = format(route);
   useEffect(() => {
     const as = shownAt(route);
@@ -1624,6 +1640,7 @@ function Editor({ me }: { me: Me }) {
       page={page}
       navigate={navigate}
       me={me}
+      pages={pages}
       onNew={onNew}
       onFind={() => setFinding(true)}
       onStart={() => setPage("welcome")}
@@ -1651,6 +1668,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
+                pages={pages}
                 start={{ prefs, onPrefs, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding, onWaiting: setWaiting }}
               />
             )}

@@ -265,6 +265,11 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
 .hl-flow__none { color: var(--muted); font-size: 12px; }
 .hl-flow__bar { display: flex; align-items: center; gap: 8px; }
+/* A form the caller may not use (useCan.tsx's Gated): its controls disabled, no box of its own. */
+.hl-gated { display: contents; border: 0; padding: 0; margin: 0; min-width: 0; }
+/* The host pages draw their controls inline: one refused is greyed, and says so on hover. */
+.hl-host-page :is(button, input, select, textarea):disabled,
+.hl-canvas__bar button:disabled { opacity: 0.5; cursor: not-allowed !important; }
 .hl-flow__count { color: var(--faint); margin-left: 3px; }
 .hl-flow__said { font-size: 12px; color: var(--body); }
 .hl-flow__said code { color: var(--ink); }

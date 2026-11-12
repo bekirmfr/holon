@@ -14,6 +14,7 @@ import { follow, format, type Route } from "./routes";
 import { ActivityList } from "./Pages";
 import { Spark } from "./ui/Spark";
 import { useToast, type Notify } from "./ui/Toast";
+import { useCan } from "./useCan";
 
 const STATE_SAID: Record<DeploymentEntry["status"], string> = { running: "live", paused: "paused", stopped: "stopped" };
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -60,6 +61,8 @@ export function OverviewPage({
   const [failed, setFailed] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<HostWarning[]>([]);
   const [checking, setChecking] = useState(false);
+  // Checking the run logs again (`POST /summary/check`) is host.check's.
+  const can = useCan(["host.check"]);
 
   const read = useCallback(() => {
     getSummary(24).then(
@@ -231,7 +234,7 @@ export function OverviewPage({
           <section className="hl-flow__section" aria-label="run log">
             <h2>
               Run log
-              <button className="hl-flow__button hl-overview__check" onClick={check} disabled={checking}>
+              <button className="hl-flow__button hl-overview__check" onClick={check} {...can.gate("host.check", { disabled: checking })}>
                 {checking ? "Checking…" : "Check now"}
               </button>
             </h2>

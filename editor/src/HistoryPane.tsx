@@ -30,6 +30,7 @@ import {
   type TimelineItem,
 } from "./timeline";
 import { useDryRun } from "./DryRun";
+import { gateOf, type Answer } from "./useCan";
 
 const POLL_MS = 3000;
 const dim = "var(--faint)";
@@ -52,7 +53,20 @@ const KIND_COLOR: Record<string, string> = { deploy: "var(--accent)", restore: "
 /** The History tab: the timeline, filtered by its kinds and by words; a row picked shows its
  *  details beside it and the Go back card above, and ↺ on a row goes back to it. `codeText`
  *  prints a version, for a restore's diff; `onRestored`: a restore changed the deployment. */
-export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: string; codeText: CodeText; onRestored: () => void; onOpenRun: (seq: number) => void }) {
+export function HistoryTab({
+  slug,
+  codeText,
+  onRestored,
+  onOpenRun,
+  mayRestore = true,
+}: {
+  slug: string;
+  codeText: CodeText;
+  onRestored: () => void;
+  onOpenRun: (seq: number) => void;
+  /** Whether whoever is signed in may go back (`flow.restore`), or why not. */
+  mayRestore?: Answer;
+}) {
   const history = useHistory(slug);
   const { entries } = useFlowLog(slug);
   const currentUnit = history.versions.find((v) => v.current)?.unit;
@@ -91,6 +105,7 @@ export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: st
           targetFor={targetFor}
           busy={restorer.busy}
           onRestore={restorer.restore}
+          may={mayRestore}
           error={history.error}
         />
         <div className="hl-history__details">
@@ -207,15 +222,14 @@ export function backTitle(t: Target): string {
   return `go back to ${t.label}: ${said.join(", and ")}`;
 }
 
-/** The ↺ on a row: go back to it. */
-export function BackButton({ target, busy, onBack }: { target: Target; busy: boolean; onBack: () => void }) {
-  const can = restoreParts(target, everything(target)).length > 0;
+/** The ↺ on a row: go back to it, for whoever may (`may`). */
+export function BackButton({ target, busy, onBack, may = true }: { target: Target; busy: boolean; onBack: () => void; may?: Answer }) {
+  const can = restoreParts(target, everything(target)).length > 0 && may === true;
   return (
     <button
       className="hl-history__back"
       style={{ ...small, padding: "0px 4px", fontSize: 10, opacity: can && !busy ? 1 : 0.4, cursor: can && !busy ? "pointer" : "default" }}
-      disabled={!can || busy}
-      title={backTitle(target)}
+      {...gateOf(may, { disabled: !can || busy, title: backTitle(target) })}
       aria-label={`restore to ${target.label}`}
       onClick={(ev) => {
         ev.stopPropagation();
@@ -235,6 +249,7 @@ export function HistoryList({
   targetFor,
   busy,
   onRestore,
+  may = true,
   error,
 }: {
   /** All of it, newest first, its runs too. */
@@ -246,6 +261,8 @@ export function HistoryList({
   targetFor: (item: TimelineItem) => Target;
   busy: boolean;
   onRestore: (target: Target, what: { code: boolean; state: boolean }) => void;
+  /** Whether whoever is signed in may go back, or why not. */
+  may?: Answer;
   error: string;
 }) {
   const [shown, setShown] = useState<Set<TimelineFilter>>(() => new Set(TIMELINE_FILTERS.map(([f]) => f).filter((f) => f !== "runs")));
@@ -284,6 +301,7 @@ export function HistoryList({
           target={pickedTarget}
           busy={busy}
           onRestore={(what) => onRestore(pickedTarget, what)}
+          may={may}
         />
       )}
       {error && <div style={{ color: bad, padding: "3px 8px" }}>{error}</div>}
@@ -297,7 +315,7 @@ export function HistoryList({
               item={item}
               active={item.key === pickedKey}
               onClick={() => onPick(item)}
-              back={<BackButton target={target} busy={busy} onBack={() => onRestore(target, everything(target))} />}
+              back={<BackButton target={target} busy={busy} onBack={() => onRestore(target, everything(target))} may={may} />}
             />
           );
         })}
@@ -369,10 +387,12 @@ function RestoreBar({
   target,
   busy,
   onRestore,
+  may = true,
 }: {
   target: Target;
   busy: boolean;
   onRestore: (what: { code: boolean; state: boolean }) => void;
+  may?: Answer;
 }) {
   const { code, state } = target.why;
   const codeFrom = target.code ? `${pointLabel(target.code)}'s code` : "its code";
@@ -419,7 +439,7 @@ function RestoreBar({
             ))}
         </ul>
       )}
-      <button className="hl-history__restore-go" disabled={chosen.why !== null || busy} onClick={() => onRestore(chosen.what)}>
+      <button className="hl-history__restore-go" {...gateOf(may, { disabled: chosen.why !== null || busy })} onClick={() => onRestore(chosen.what)}>
         Go back…
       </button>
     </section>
