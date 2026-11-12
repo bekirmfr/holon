@@ -31,6 +31,9 @@ export type FlowSettings = {
   /** The web pages from other sites a flow with routes answers (CORS): `*`, or origins separated
    *  by spaces or commas; blank for none (a browser then refuses them). */
   browsers?: string;
+  /** Its tags, sorted, as its text writes them (`tags: ["payments"]`): part of the unit it
+   *  deploys as, so a binding on one covers it. */
+  tags?: string[];
 };
 
 /** A flow's `browsers` setting as the list the server takes. */

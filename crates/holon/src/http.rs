@@ -52,7 +52,7 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
     {
         return Err(err(403, format!("Origin {origin:?} is not allowed")));
     }
-    if matches!(request.method(), "POST" | "PATCH") {
+    if matches!(request.method(), "POST" | "PUT" | "PATCH") {
         let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
         if !["application/json", "application/octet-stream"].iter().any(|t| media_type.eq_ignore_ascii_case(t)) {
             return Err(err(415, format!("{} bodies must be sent as application/json or application/octet-stream", request.method())));
@@ -70,7 +70,7 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
         && access.allows_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
-                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 .with_additional_header("Vary", "Origin");
         }
@@ -166,6 +166,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::empty_204();
     }
 
+    // Roles, groups and what is bound to whom, with its versions, and what the caller may do
+    // (bindings.rs): before auth.rs, which answers every other `/auth/…` path.
+    if let Some(response) = crate::bindings::route(state, request, &caller) {
+        return response;
+    }
+
     // Signing in, and the admin panel (auth.rs).
     if let Some(response) = crate::auth::route(state, request, &caller) {
         return response;
@@ -197,51 +203,51 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if url == "/flows" {
         if method == "POST" {
-            return handle_post_flows(&state.flows, &state.flows_path, request, &caller, &state.activity);
+            return handle_post_flows(state, request, &caller);
         }
         if method == "GET" {
-            return handle_get_flows(&state.flows);
+            return handle_get_flows(state, &caller);
         }
     }
 
     if let Some(name) = url.strip_prefix("/flows/") {
         if method == "GET" {
-            return handle_get_flow(&state.flows, name);
+            return handle_get_flow(state, name, &caller);
         }
         if method == "DELETE" {
-            return recorded(state, handle_delete_flow(&state.flows, &state.flows_path, name), "deleted flow", name, by);
+            return recorded(state, handle_delete_flow(state, name, &caller), "deleted flow", name, by);
         }
     }
 
     // Versions waiting for a person, and what became of the others (proposals.rs).
     if method == "GET" && url == "/proposals" {
-        return crate::proposals::handle_get_proposals(state);
+        return crate::proposals::handle_get_proposals(state, &caller);
     }
     if let Some(rest) = url.strip_prefix("/proposals/") {
         if let Some(id) = rest.strip_suffix("/decline")
             && method == "POST"
         {
-            return crate::proposals::handle_post_decline(state, id, request, by);
+            return crate::proposals::handle_post_decline(state, id, request, &caller);
         }
         if method == "GET" && !rest.contains('/') {
-            return crate::proposals::handle_get_proposal(state, rest);
+            return crate::proposals::handle_get_proposal(state, rest, &caller);
         }
     }
 
     // The host at a glance (the console's Overview), and its run logs checked again.
     if method == "GET" && url.split('?').next() == Some("/summary") {
-        return crate::summary::handle_get_summary(state, request);
+        return crate::summary::handle_get_summary(state, request, &caller);
     }
     if method == "POST" && url == "/summary/check" {
         return crate::summary::handle_post_check(state);
     }
 
     if method == "GET" && url.split('?').next() == Some("/activity") {
-        return crate::activity::handle_get_activity(&state.activity, request);
+        return crate::activity::handle_get_activity(&state.activity, request, &caller);
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, request, &caller);
+        return handle_post_deploy_preview(state, request, &caller);
     }
 
     if method == "GET" && url == "/permissions" {
@@ -253,7 +259,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "GET" && url == "/deployments" {
-        return handle_get_deployments(&state.deployments);
+        return handle_get_deployments(&state.deployments, &caller);
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
@@ -380,6 +386,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            // Deleted, it is on no tag.
+            if response.status_code == 200
+                && let Some(accounts) = state.access.accounts()
+            {
+                accounts.set_tags(rest, &[]);
+            }
             if response.status_code == 200
                 && let Err(e) = state.secrets.forget(rest, by)
             {

@@ -43,6 +43,9 @@ pub struct Settings {
     pub requirements: Option<Requirements>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browsers: Option<String>,
+    /// The flow's tags, sorted: part of its server unit (`routes::server_unit`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -93,6 +96,13 @@ pub struct FlowDocument {
     pub server: Option<Settings>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl FlowDocument {
+    /// The flow's tags, as its settings hold them: none without settings.
+    pub fn tags(&self) -> &[String] {
+        self.server.as_ref().map(|s| s.tags.as_slice()).unwrap_or_default()
+    }
 }
 
 /// Every hash reachable from `roots` (children, plus a `map`/`fold` `fn` param), each once,

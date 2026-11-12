@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::*;
+use crate::access::Caller;
+use crate::can::{can, Action, Resource};
 
 /// What became of a proposal.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,7 +194,7 @@ pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<Str
     let Some(document) = body.document.clone() else {
         return err(400, "a proposal keeps its canvas for the person who reviews it: send \"document\"");
     };
-    let saved_at = match crate::flows::save(&state.flows, &state.flows_path, &body.slug, document.clone(), body.uses.clone(), who, &state.activity) {
+    let saved_at = match crate::flows::save(state, &body.slug, document.clone(), body.uses.clone(), who) {
         Ok(at) => at,
         Err(refused) => return refused,
     };
@@ -205,7 +207,7 @@ pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<Str
         why,
         note,
         by: by.map(String::from),
-        agent: true,
+        agent: who.kind == Some(crate::accounts::Kind::Agent),
         at_ms: now_ms(),
         needs,
         saved_at: Some(saved_at),
@@ -222,19 +224,24 @@ pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<Str
     Response::json(&json!({ "proposal": listed(state, &proposal, false) })).with_status_code(202)
 }
 
-/// `GET /proposals`: the waiting ones, oldest first (the queue a person goes through), then the
-/// decided ones, newest first, the last `DECIDED`.
-pub(crate) fn handle_get_proposals(state: &AppState) -> Response {
+/// Whether `who` may view the flow `p` proposes a version of.
+fn views(who: &Caller, p: &Proposal) -> bool {
+    can(who, Action::FlowView, &Resource::Flow(&p.slug)).is_ok()
+}
+
+/// `GET /proposals`: of the flows `who` may view, the waiting ones, oldest first (the queue a
+/// person goes through), then the decided ones, newest first, the last `DECIDED`.
+pub(crate) fn handle_get_proposals(state: &AppState, who: &Caller) -> Response {
     let all = state.proposals.all();
-    let waiting = all.iter().filter(|p| p.state == Decision::Waiting);
-    let decided = all.iter().rev().filter(|p| p.state != Decision::Waiting).take(DECIDED);
+    let waiting = all.iter().filter(|p| p.state == Decision::Waiting && views(who, p));
+    let decided = all.iter().rev().filter(|p| p.state != Decision::Waiting && views(who, p)).take(DECIDED);
     let listed: Vec<Value> = waiting.chain(decided).map(|p| listed(state, p, false)).collect();
     Response::json(&json!({ "proposals": listed }))
 }
 
-/// `GET /proposals/<id>`: one, with its document.
-pub(crate) fn handle_get_proposal(state: &AppState, id: &str) -> Response {
-    match id.parse::<u64>().ok().and_then(|id| state.proposals.all().into_iter().find(|p| p.id == id)) {
+/// `GET /proposals/<id>`: one, with its document; none of a flow `who` may not view.
+pub(crate) fn handle_get_proposal(state: &AppState, id: &str, who: &Caller) -> Response {
+    match id.parse::<u64>().ok().and_then(|id| state.proposals.all().into_iter().find(|p| p.id == id && views(who, p))) {
         Some(p) => Response::json(&listed(state, &p, true)),
         None => err(404, format!("no proposal {id}")),
     }
@@ -246,10 +253,21 @@ struct DeclineBody {
     reason: Option<String>,
 }
 
-/// `POST /proposals/<id>/decline`, `{ "reason" }`: a person declines it (can.rs keeps agents
-/// and viewers out). It stays saved, and what runs keeps running; its author reads the reason.
-pub(crate) fn handle_post_decline(state: &AppState, id: &str, request: &Request, by: Option<&str>) -> Response {
+/// `POST /proposals/<id>/decline`, `{ "reason" }`: a person who approves its flow's deploys
+/// declines it (can.rs keeps agents and viewers out). It stays saved, and what runs keeps
+/// running; its author reads the reason.
+pub(crate) fn handle_post_decline(state: &AppState, id: &str, request: &Request, who: &Caller) -> Response {
+    let by = who.name.as_deref();
     let Ok(id) = id.parse::<u64>() else { return err(404, format!("no proposal {id}")) };
+    // A proposal of a flow they may not view is none; one they view but don't approve, refused.
+    match state.proposals.all().into_iter().find(|p| p.id == id && views(who, p)) {
+        None => return err(404, format!("no proposal {id}")),
+        Some(p) => {
+            if let Err(refusal) = can(who, Action::FlowApproveDeploy, &Resource::Flow(&p.slug)) {
+                return refusal.response();
+            }
+        }
+    }
     let body: DeclineBody = match read_body(request) {
         Ok(b) if b.is_empty() => DeclineBody::default(),
         Ok(b) => match serde_json::from_slice(&b) {

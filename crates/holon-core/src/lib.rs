@@ -128,6 +128,7 @@ pub use crypto::{bytes_text, text_bytes};
 pub use declare::{
     clock_label, declaration_of, log_level, match_route, parse_path, pick_path, same_requests, period_text, read_clock, read_action, read_endpoint,
     read_feed_handler, read_file_handler, read_mail_handler, read_queue_handler, read_server, read_websocket, feed_label, mail_label, queue_label, socket_label, match_websocket, Action, Clock, DeclError, EndpointError, FeedHandler, FileHandler, LogLevel, MailHandler, QueueHandler, Route, Segment, Server, SocketBlock, WebSocket, ALWAYS_TAINTED, MAX_PERIOD, METHODS, SOCKET_BLOCKS,
+    is_tag,
     is_taint_key,
 };
 

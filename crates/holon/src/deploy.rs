@@ -151,15 +151,21 @@ pub(crate) fn handle_post_deploy(
 fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Caller, restored_from: Option<u32>) -> Response {
     let (store, deployments, deployments_path, secrets, folders, activity) = (&state.store, &state.deployments, &state.deployments_path, &state.secrets, &state.folders, &state.activity);
     let policy = &*state.policy();
-    let approves = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_ok();
-    if !approves && !body.acknowledge.is_empty() {
-        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
-    }
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
-    if !approves && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
-        return err(403, format!("a person turned off agents proposing versions of {:?}: they turn it back on in its settings", body.slug));
+    // The route asked about every flow at once; this is the flow, as it is deployed now, if it
+    // is, and below, as this version would make it (D22). A restore was asked about it.
+    let tagged_now = tags_now(deployments, &body.slug);
+    if restored_from.is_none()
+        && tagged_now.is_some()
+        && let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug))
+    {
+        return refusal.response();
+    }
+    // An agent approves nothing, wherever it is bound: said before the unit is read.
+    if who.kind == Some(crate::accounts::Kind::Agent) && !body.acknowledge.is_empty() {
+        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
     }
     if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
         return err(400, e);
@@ -187,6 +193,21 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         Err(holon_core::DeclError::NotAServer | holon_core::DeclError::NoHandlers) => return err(400, STARTS_NOTHING),
         Err(e) => return err(400, format!("not a valid server declaration: {e:?}")),
     };
+    // As this version would make it, with its tags (D22): a binding on a tag neither takes a
+    // flow over by tagging it, nor takes one out of reach by untagging it.
+    let asks = if restored_from.is_some() { Action::FlowRestore } else { Action::FlowPropose };
+    if let Err(refusal) = as_it_would_be(who, asks, &body.slug, tagged_now.as_deref(), &server.tags) {
+        return refusal.response();
+    }
+    let approves = may_approve(who, &body.slug, tagged_now.is_some(), &server.tags);
+    if !approves && !body.acknowledge.is_empty() {
+        let name = who.name.as_deref().unwrap_or_default();
+        return err(403, format!("{name} doesn't approve what {:?} may do: deploy without \"acknowledge\"; what needs approval waits for someone who does, as a proposal", body.slug));
+    }
+    if !approves && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
+        return err(403, format!("a person turned off agents proposing versions of {:?}: they turn it back on in its settings", body.slug));
+    }
+    let tags = server.tags.clone();
     let caps = holon_core::deployed_capabilities(root_unit, &resolver);
     let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
     // What starts its clocks' runs is never optional, beside routes too (the manifest names one
@@ -435,6 +456,10 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         );
     }
     persist_deployments(deployments_path, deployments);
+    // A binding on a tag covers it from now on as this version is tagged.
+    if let Some(accounts) = state.access.accounts() {
+        accounts.set_tags(&body.slug, &tags);
+    }
     activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
     // A person's deploy of a version proposed approves the proposal.
     if approves {
@@ -442,6 +467,36 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     }
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
+}
+
+/// The tags `slug` is deployed with now; none if it isn't deployed.
+fn tags_now(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<Vec<String>> {
+    deployments.lock().unwrap().get(slug).map(|d| d.server.as_ref().map(|s| s.tags.clone()).unwrap_or_default())
+}
+
+/// Whether `who` may do `action` to `slug` as a version tagged `then` would make it (D22); the
+/// flow as it is now (tagged `now`, if deployed) is asked apart. A refusal of a version that takes
+/// the flow off a tag its caller holds it by says so.
+fn as_it_would_be(who: &Caller, action: Action, slug: &str, now: Option<&[String]>, then: &[String]) -> Result<(), crate::can::Refusal> {
+    let refusal = match can(who, action, &Resource::Version { slug, tags: then }) {
+        Ok(()) => return Ok(()),
+        Err(refusal) => refusal,
+    };
+    let off: Vec<&str> = now.unwrap_or_default().iter().filter(|t| !then.contains(t)).map(String::as_str).collect();
+    if off.is_empty() || can(who, action, &Resource::Flow(slug)).is_err() {
+        return Err(refusal);
+    }
+    let name = who.name.as_deref().unwrap_or_default();
+    Err(crate::can::Refusal(format!(
+        "{name} may not do that: this version takes {slug:?} off the tag {}, which is how {name} holds it; someone who holds it otherwise deploys it",
+        off.join(", ")
+    )))
+}
+
+/// Whether `who` approves what deploying a version of `slug` tagged `then` needs: on the flow as
+/// it is deployed now, if it is, and as the version would make it (D22).
+fn may_approve(who: &Caller, slug: &str, deployed: bool, then: &[String]) -> bool {
+    (!deployed || can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_ok()) && can(who, Action::FlowApproveDeploy, &Resource::Version { slug, tags: then }).is_ok()
 }
 
 /// Build the wire-facing summary of one deployment — shared by `GET /deployments` and
@@ -479,6 +534,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         waiting: dep.parked.len(),
         agents_propose: !dep.agents_propose_off,
         version: dep.versions.last().map(|v| v.number),
+        tags: dep.server.as_ref().map(|s| s.tags.clone()).unwrap_or_default(),
     }
 }
 
@@ -488,11 +544,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
 /// would. The body is a deploy request's (`acknowledge` is ignored). This is the consent screen's
 /// source: it shows asked against granted before anything changes.
 pub(crate) fn handle_post_deploy_preview(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    policy: &Policy,
-    secrets: &SecretStore,
-    folders: &Arc<folders::Folders>,
+    state: &AppState,
     request: &Request,
     // Who asks: what they need approved is what their deploy would.
     who: &Caller,
@@ -505,36 +557,38 @@ pub(crate) fn handle_post_deploy_preview(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
-    let proposes = can(who, Action::FlowApproveDeploy, &Resource::Flow(&body.slug)).is_err();
-    preview(store, deployments, policy, secrets, folders, &body, proposes)
-}
-
-/// What deploying `body` would ask for (`POST /deploy/preview`'s answer, and a restore's dry run).
-fn preview(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    policy: &Policy,
-    secrets: &SecretStore,
-    folders: &Arc<folders::Folders>,
-    body: &DeployRequestBody,
-    proposes: bool,
-) -> Response {
-    match preview_value(store, deployments, policy, secrets, folders, body, proposes) {
+    // The route asked about every flow at once; this is the flow, as it is now and as the
+    // version would make it (D22), as the deploy asks.
+    let tagged_now = tags_now(&state.deployments, &body.slug);
+    if tagged_now.is_some()
+        && let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug))
+    {
+        return refusal.response();
+    }
+    let then = unit_tags(&state.store, &body.unit);
+    if let Err(refusal) = as_it_would_be(who, Action::FlowPropose, &body.slug, tagged_now.as_deref(), &then) {
+        return refusal.response();
+    }
+    let proposes = !may_approve(who, &body.slug, tagged_now.is_some(), &then);
+    match preview_value(state, &body, proposes) {
         Ok(v) => Response::json(&v),
         Err(r) => r,
     }
 }
 
-/// What `preview` answers, for a restore to add to; `proposes` as `approval_needed` takes it.
-fn preview_value(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    policy: &Policy,
-    secrets: &SecretStore,
-    folders: &Arc<folders::Folders>,
-    body: &DeployRequestBody,
-    proposes: bool,
-) -> Result<serde_json::Value, Response> {
+/// The tags of the flow the unit at `unit` (hex) declares: none for one that isn't stored, or
+/// isn't a server (the preview says why).
+fn unit_tags(store: &SharedStore, unit: &str) -> Vec<String> {
+    let Some(hash) = parse_hash(unit) else { return vec![] };
+    let Ok(resolver) = closure(store, hash) else { return vec![] };
+    resolver.resolve(&hash).and_then(|root| read_server(root, &resolver).ok()).map(|s| s.tags).unwrap_or_default()
+}
+
+/// What deploying `body` would ask for (`POST /deploy/preview`'s answer, and, for a restore to add
+/// to, its dry run's); `proposes` as `approval_needed` takes it.
+fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> Result<serde_json::Value, Response> {
+    let (store, deployments, secrets, folders) = (&state.store, &state.deployments, &state.secrets, &state.folders);
+    let policy = &*state.policy();
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return Err(err(400, "unit is not a 64-char hex hash"));
     };
@@ -558,7 +612,9 @@ fn preview_value(
     };
     let now: Option<Vec<String>> = previous.grant.as_ref().map(|g| g.items.iter().cloned().collect());
     let optional: Vec<String> = manifest.requirements.optional.iter().cloned().collect();
-    let server = touches::Server { slug: &body.slug, secrets, folders, policy, deployed };
+    // Who each tag it joins or leaves lets act on it (D24).
+    let tags = tag_holders(state, manifest.requirements.tags.iter().chain(previous.grant.iter().flat_map(|g| &g.requirements.tags)));
+    let server = touches::Server { slug: &body.slug, secrets, folders, policy, deployed, tags };
     let list = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
     // Where each secret it reads is sent (secret → destinations).
@@ -596,6 +652,12 @@ fn preview_value(
             .filter(|name| !secrets.names(&body.slug).iter().any(|n| n == name))
             .collect::<Vec<_>>(),
     }))
+}
+
+/// For each of `tags`, who a binding on it lets act on a flow deployed with it now (D24).
+fn tag_holders<'a>(state: &AppState, tags: impl IntoIterator<Item = &'a String>) -> BTreeMap<String, String> {
+    let document = state.access.accounts().map(|a| a.access_document()).unwrap_or_default();
+    tags.into_iter().map(|t| (t.clone(), crate::bindings::on_tag(&document, t, epoch_now()))).collect()
 }
 
 /// `GET /deployments/<slug>/secrets` — its secrets' names, versions and sources, never values.
@@ -799,10 +861,11 @@ pub(crate) fn handle_get_permission_view(
     }))
 }
 
-/// `GET /deployments` — every deployment, its derived triggers, and its interval if clock-bound.
-pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Response {
+/// `GET /deployments` — every deployment `who` may view, its derived triggers, and its interval if
+/// clock-bound.
+pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>, who: &Caller) -> Response {
     let deployments = deployments.lock().unwrap();
-    let list = deployments.iter().map(|(slug, dep)| deployment_entry(slug, dep)).collect();
+    let list = deployments.iter().filter(|(slug, _)| can(who, Action::FlowView, &Resource::Flow(slug)).is_ok()).map(|(slug, dep)| deployment_entry(slug, dep)).collect();
     Response::json(&DeploymentsBody { deployments: list })
 }
 
@@ -1295,7 +1358,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     let code = code.map(|(n, body)| (n, DeployRequestBody { acknowledge: restore.acknowledge, ..body }));
     if restore.dry_run {
         let mut answer = match &code {
-            Some((_, body)) => match preview_value(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, body, can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_err()) {
+            Some((_, body)) => match preview_value(state, body, can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_err()) {
                 Ok(v) => v,
                 Err(r) => return r,
             },
@@ -1304,14 +1367,14 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         answer["code"] = serde_json::json!(code.as_ref().map(|(n, _)| n));
         if code.is_none() {
             // Its code stays: what it touches is what it touches now.
-            let (items, optional, deployed) = {
+            let (items, optional, deployed, tagged) = {
                 let table = state.deployments.lock().unwrap();
                 let grant = table.get(slug).map(|d| (d.grant.items.iter().cloned().collect(), d.grant.requirements.optional.iter().cloned().collect()));
                 let (items, optional): (Vec<String>, Vec<String>) = grant.unwrap_or_default();
-                (items, optional, table.keys().cloned().collect())
+                (items, optional, table.keys().cloned().collect(), table.get(slug).map(|d| d.grant.requirements.tags.clone()).unwrap_or_default())
             };
             let policy = state.policy();
-            let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed };
+            let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed, tags: tag_holders(state, &tagged) };
             // Its code isn't worked out again here: where its secrets go isn't said.
             answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default() });
             answer["settings"] = serde_json::json!([]);

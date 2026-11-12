@@ -314,12 +314,16 @@ export function describeItemSending(item: string, sent: Record<string, string[]>
 }
 
 /** A manifest's items: the capabilities (consent names), then what the deploy settings ask
- *  beyond the host's defaults, sorted as the server sorts them. */
+ *  beyond the host's defaults, then the flow's tags (`Tag("payments")`), sorted as the server
+ *  sorts them. */
 export function manifestItems(
   capabilities: string[],
-  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean; agents?: string[]; unrecorded?: string[]; agent_logs?: boolean },
+  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean; agents?: string[]; unrecorded?: string[]; agent_logs?: boolean; tags?: string[] },
 ): string[] {
-  return manifest_items(capabilities, requirements ?? null);
+  // A setting left undefined is one not asked for (`tags: settings.tags` of an untagged flow):
+  // the bridge reads an absent key as its default, but not an undefined one.
+  const asked = requirements && Object.fromEntries(Object.entries(requirements).filter(([, v]) => v !== undefined));
+  return manifest_items(capabilities, asked ?? null);
 }
 
 /** What starts a flow's runs: `NetworkIngress` for one with routes, else `Clock`. Never optional. */

@@ -54,8 +54,9 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
   const ev = new Evaluator();
   restoreUnits(doc, ev);
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
-  const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080");
-  const server = deriveServer(nodes, edges, ev, sample.port ?? "");
+  const tags = doc.server?.tags ?? [];
+  const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080", tags);
+  const server = deriveServer(nodes, edges, ev, sample.port ?? "", tags);
   const endpoints = sample.port ? server.endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
   return { caps, endpoints, clocks: server.clocks.length, files: server.files.length };
@@ -106,6 +107,10 @@ describe("sample flows", () => {
         limits[name] = unit ? Number(n) * SECONDS[unit] * (name.endsWith("_ms") ? 1000 : 1) : Number(n);
       }
       expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
+      // Its `tags` open as the settings' tags, and are in its manifest.
+      const tags = [...(/tags: \[([^\]]*)\]/.exec(said)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      expect(settingsOf(doc.server).tags ?? []).toEqual(tags);
+      expect(manifestItems(caps, { tags: settingsOf(doc.server).tags }).filter((i) => i.startsWith("Tag("))).toEqual(tags.map((t) => `Tag("${t}")`));
     });
   }
 

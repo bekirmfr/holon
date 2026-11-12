@@ -12,6 +12,8 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+mod scopes;
+mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
 mod semantics;
 
@@ -106,7 +108,7 @@ pub(crate) fn with_people(state: &mut AppState) -> People {
     use crate::accounts::{Accounts, Kind};
     let accounts = Arc::new(Accounts::memory());
     let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
-    accounts.add("claude", Kind::Agent, access::Role::Agent, "ada", "ada").unwrap();
+    accounts.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
     let (claude, _) = accounts.create_token("claude", "Claude Code", "ada").unwrap();
     state.access = access::Access::new(accounts, vec![], vec![]);
     People { ada, claude }
@@ -115,7 +117,7 @@ pub(crate) fn with_people(state: &mut AppState) -> People {
 fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
     headers.extend(more);
-    if matches!(method, "POST" | "PATCH") {
+    if matches!(method, "POST" | "PUT" | "PATCH") {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
         headers.push(("Content-Type".to_string(), ty.to_string()));
@@ -1593,7 +1595,7 @@ fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
         let unit = stage_text(&state, sample.text);
         let resolver = closure(&state.store, unit).unwrap();
         let Ok(server) = read_server(resolver.resolve(&unit).unwrap(), &resolver) else { continue };
-        let Server { port: _, taint: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
+        let Server { port: _, taint: _, tags: _, routes, clocks, files, mails, feeds, queues, websockets, actions } = &server;
         let label = |l: &String| l.clone();
         let handlers: Vec<(&str, String, Hash, bool)> = [
             routes.iter().map(|r| ("request", format!("{} {}", r.method, r.path), r.endpoint, true)).collect::<Vec<_>>(),
@@ -2190,9 +2192,9 @@ export const pay = action(async (order) => {
     // From here on, people sign in.
     let People { ada, claude } = with_people(&mut state);
     let accounts = Arc::clone(state.access.accounts().unwrap());
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let cy = accounts.accept(&accounts.invite("cy", access::Role::Viewer, None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    accounts.add("ci", crate::accounts::Kind::Service, access::Role::Editor, "ada", "ada").unwrap();
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    accounts.add("ci", crate::accounts::Kind::Service, "editor", "ada", "ada").unwrap();
     let ci = accounts.create_token("ci", "CI on GitHub", "ada").unwrap().0;
     let decide = |token: &str, run: &str, body: serde_json::Value| {
         let r = route(&state, &req_as(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), serde_json::to_vec(&body).unwrap()));
@@ -2258,8 +2260,11 @@ export const pay = action(async (order) => {
 #[test]
 fn only_a_person_decides_an_approval() {
     use crate::accounts::Kind;
-    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| access::Caller { name: name.map(String::from), kind, role };
-    let decider = |c: access::Caller| durable::decider(&c, "d").map_err(|refusal| refusal.0);
+    let caller = |name: Option<&str>, kind: Option<Kind>, role: Option<access::Role>| match (name, kind, role) {
+        (Some(name), Some(kind), Some(role)) => access::Caller::holding(name, kind, role),
+        _ => access::Caller::default(),
+    };
+    let decider = |c: access::Caller| durable::decider(&c, "d", "ok").map_err(|refusal| refusal.0);
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Editor))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
@@ -4572,8 +4577,8 @@ fn cors_allows_every_method_this_api_actually_uses() {
     // contents*, not just the preflight's status code, and silently refuses to ever send
     // the real DELETE if its method isn't listed. `assert!(..headers..)` alone (the test
     // above) would never have caught this — it only checks the header is PRESENT, never
-    // what it actually says. This checks the one thing that matters: every method a real
-    // endpoint in this file uses (GET, POST, DELETE) is actually named in the value.
+    // what it actually says. This checks the one thing that matters: every method a route
+    // in can.rs's table answers is actually named in the value.
     let state = test_state();
     let req = Request::fake_http(
         "OPTIONS",
@@ -4588,8 +4593,8 @@ fn cors_allows_every_method_this_api_actually_uses() {
         .find(|(k, _)| k.as_ref() == "Access-Control-Allow-Methods")
         .map(|(_, v)| v.as_ref().to_string())
         .unwrap_or_default();
-    for method in ["GET", "POST", "DELETE"] {
-        assert!(methods.contains(method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
+    for method in crate::can::ROUTES.iter().map(|r| r.method) {
+        assert!(methods.split(", ").any(|m| m == method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
     }
 }
 
@@ -5048,10 +5053,10 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let mut state = test_state();
     let accounts = std::sync::Arc::new(Accounts::memory());
     let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
-    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), pw).unwrap().0;
+    let person = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role.name(), None, "ada").unwrap(), pw).unwrap().0;
     let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
-    let token = |name: &str, kind, role| {
-        accounts.add(name, kind, role, "ada", "ada").unwrap();
+    let token = |name: &str, kind, role: Role| {
+        accounts.add(name, kind, role.name(), "ada", "ada").unwrap();
         accounts.create_token(name, "the sweep", "ada").unwrap().0
     };
     let (claude, ci) = (token("claude", Kind::Agent, Role::Agent), token("ci", Kind::Service, Role::Editor));
@@ -5114,11 +5119,11 @@ fn what_one_owns_is_listed_and_its_tokens_are_theirs_to_make() {
     let mut state = test_state();
     let People { ada, claude } = with_people(&mut state);
     let accounts = Arc::clone(state.access.accounts().unwrap());
-    let person = |name: &str, role| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let person = |name: &str, role: Role| accounts.accept(&accounts.invite(name, role.name(), None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let (bob, cy, local) = (person("bob", Role::Editor), person("cy", Role::Viewer), accounts.new_local("bma"));
     // claude is ada's (with_people); bob owns two, cy one, the OS user its agent.
     for (name, kind, role, owner) in [("ci", Kind::Service, Role::Editor, "bob"), ("nightly", Kind::Service, Role::Viewer, "bob"), ("scout", Kind::Agent, Role::Agent, "cy"), ("bma-agent", Kind::Agent, Role::Agent, "bma")] {
-        accounts.add(name, kind, role, owner, "ada").unwrap();
+        accounts.add(name, kind, role.name(), owner, "ada").unwrap();
         accounts.create_token(name, "first", "ada").unwrap();
     }
     let ci = accounts.create_token("ci", "a script", "bob").unwrap().0;
@@ -5518,7 +5523,7 @@ fn what_is_done_names_who_did_it() {
     let mut state = test_state();
     let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
     accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let bob = bob.as_str();
     state.access = access::Access::new(accounts, vec![], vec![]);
     let as_bob = |method: &str, url: &str, body: Vec<u8>| {
@@ -9459,7 +9464,7 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     // From here on, people sign in: two of them decide.
     let accounts = Arc::new(crate::accounts::Accounts::memory());
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
-    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     state.access = access::Access::new(accounts, vec![], vec![]);
     let state = state;
     let as_person = |token: &str, method: &str, url: &str, body: serde_json::Value| {
@@ -13119,7 +13124,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], tags: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

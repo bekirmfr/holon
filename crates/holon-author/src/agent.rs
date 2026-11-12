@@ -46,11 +46,11 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     let c = commands::compile("text", source, &mut store).map_err(|r| r.err.join("\n"))?;
     let name = c.name.clone().ok_or("the text needs a `flow <name>` line: the name is what it deploys as")?;
     let settings = c.doc.server.clone().unwrap_or_default();
-    let server = derive_server(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port);
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, &settings.tags);
     if !server.errors.is_empty() {
         return Err(server.errors.join("\n"));
     }
-    let hash = flow_unit(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port)?;
+    let hash = flow_unit(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, &settings.tags)?;
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
     // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
     // none runs whole.
@@ -114,7 +114,7 @@ fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
     let mut store = MapResolver::new();
     crate::text::restore(doc, &mut store, &Names::new());
     let port = doc.server.clone().unwrap_or_default().port;
-    flow_unit(&doc.nodes, &doc.edges, &mut store, &port).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.tags()).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
@@ -644,7 +644,8 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import { charge } from "flow:billing"         another deployed flow's action, by its slug
   flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
                                                 port, keep: { runs, days }, browsers, limits,
-                                                taint: ["x-api-key"] (keys the log never holds)
+                                                taint: ["x-api-key"] (keys the log never holds),
+                                                tags: ["payments"] (who is bound on one acts on it)
   The imports name everything that outlives a run or comes from outside it; the body uses only
   names they gave. An import names, it grants nothing: what the flow may do is worked out from
   what it does with them.

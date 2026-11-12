@@ -190,7 +190,7 @@ fn port_of(text: &str) -> Option<u16> {
 /// Derive the server from the flow: each connected group holding a request node is one route
 /// (routes.rs). Each group is grouped through core like a selection, narrowed to the request input
 /// and the response and effect outputs, and wrapped as an endpoint. Every unit made is stored.
-pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> DerivedServer {
+pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str, tags: &[String]) -> DerivedServer {
     let (routes, mut errors) = find_routes(nodes, wires);
     let (socket_groups, socket_errors) = find_websockets(nodes, wires, &routes);
     let approval = |name: &str| nodes.iter().any(|n| n.data.name == "approval" && n.param("name") == name);
@@ -409,6 +409,12 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
     if let Some(bad) = taint.iter().find(|k| !holon_core::is_taint_key(k)) {
         errors.push(format!("\"{bad}\" isn't a key to taint: a name of up to 128 characters, no spaces"));
     }
+    if let Some(bad) = tags.iter().find(|t| !holon_core::is_tag(t)) {
+        errors.push(format!("\"{bad}\" isn't a tag: lowercase letters, digits and -, up to 40 of them"));
+    }
+    if tags.windows(2).any(|w| w[0] >= w[1]) {
+        errors.push("a flow's tags are sorted, once each".into());
+    }
     // A port only with a route or a websocket: a flow of clocks, files, mails, feeds, queues and
     // actions listens on none.
     let port = if endpoints.is_empty() && websockets.is_empty() { Some(None) } else { port_of(port).map(Some) };
@@ -426,7 +432,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
                 .chain(actions.iter().map(|a| &a.hash))
                 .map(|h| parse_hash(h).expect("hashes made here"))
                 .collect();
-            put(store, server_unit(hashes, port, &taint)).ok().map(|h| to_hex(&h))
+            put(store, server_unit(hashes, port, &taint, tags)).ok().map(|h| to_hex(&h))
         }
         _ => None,
     };
@@ -437,9 +443,9 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
 /// sink a secret reaches there (core's `SecretFed`): a request it is sent in, a write or a call the
 /// host refuses, a route's answer. A holon placed on the canvas is marked for what its insides do.
 /// Nothing for a canvas that doesn't derive.
-pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> BTreeMap<String, Vec<String>> {
+pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str, tags: &[String]) -> BTreeMap<String, Vec<String>> {
     use holon_core::Resolver as _;
-    let derived = derive_server(nodes, wires, store, port);
+    let derived = derive_server(nodes, wires, store, port, tags);
     // Each handler (a route's, a clock's, a file's, a message's, a websocket block's, an action's: the
     // composite of its nodes, child 0 of what wraps it), the canvas node each of its children is,
     // and whether its first output answers a caller (a route's, a websocket's open and message
@@ -468,7 +474,7 @@ pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
     }
     // A flow without handlers runs whole.
     if derived.endpoints.is_empty() && derived.clocks.is_empty() && derived.files.is_empty() && derived.mails.is_empty() && derived.feeds.is_empty() && derived.queues.is_empty() && derived.websockets.is_empty() && derived.actions.is_empty() && derived.errors.is_empty() && !nodes.is_empty() {
-        let whole = flow_unit(nodes, wires, store, port).ok().and_then(|h| store.resolve(&h)).cloned();
+        let whole = flow_unit(nodes, wires, store, port, tags).ok().and_then(|h| store.resolve(&h)).cloned();
         if let Some(whole) = whole {
             let all: Vec<&Node> = nodes.iter().collect();
             let trace = trace_of(&whole, &all);
@@ -531,8 +537,8 @@ fn nodes_of(unit: &Unit, trace: &[String]) -> Vec<String> {
 
 /// The unit a flow deploys as, stored: its server when it has routes, else the whole flow grouped
 /// as one composite. Why it can't be, otherwise.
-pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> Result<Hash, String> {
-    let derived = derive_server(nodes, wires, store, port);
+pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str, tags: &[String]) -> Result<Hash, String> {
+    let derived = derive_server(nodes, wires, store, port, tags);
     if !derived.errors.is_empty() {
         return Err(derived.errors.join("; "));
     }
@@ -542,6 +548,10 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     }
     if nodes.is_empty() {
         return Err("the canvas is empty".into());
+    }
+    // A flow without handlers deploys as itself, with no server to carry its tags.
+    if !tags.is_empty() {
+        return Err("tags are a server's: a flow without handlers has none".into());
     }
     let all: Vec<&Node> = nodes.iter().collect();
     let (children, edges) = group_of(&all, wires, store)?;

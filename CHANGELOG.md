@@ -2,6 +2,77 @@
 
 ## Unreleased
 
+- **Tags: a binding on a tag holds on every flow deployed with it.** A flow's text tags it,
+  `flow("payout", { port: 8153, tags: ["payments"] })` (lowercase letters, digits and `-`, kept
+  sorted, once each), and the tags are part of its unit, so a version that adds or drops one is a
+  new version; an untagged flow's hash is as it was. `holon bind editor --to bob --tag payments`
+  (`{"flows": {"tag": "payments"}}`) covers each flow while its deployed version has the tag:
+  restoring an untagged version or deleting the flow takes it out of reach, and
+  `GET /deployments` says each flow's tags. Each tag is an item of the manifest, `Tag("payments")`,
+  which a person approves and the policy never grants; the review groups it under "Who may act on
+  it" and says who the tag lets in (`joins payments: bob as editor, the group ops as viewer`). A
+  deploy asks the caller to hold the action on the flow as it is and as the version would make it:
+  bob, bound on `payments`, deploys a new flow tagged so, but doesn't tag one he holds nothing on
+  nor untag one he holds by the tag. An agent's version adding a tag waits as a proposal. The
+  `approved-payout` sample is tagged `payments`, and its try-it binds bob on the tag before he
+  decides; run live: deployed with the tag, approved by ada; bob, bound on the tag only, decided
+  its run and was refused a flow without it; an agent's version adding a tag was kept as a
+  proposal.
+- **Roles, groups and bindings from the command line, `holon mcp` and the People page.**
+  `holon roles` lists the roles and defines or removes an admin's own, `holon groups` makes groups
+  and adds or drops members, `holon bind` binds a role to a principal or a group on the host, on
+  one flow (`--flow`) or at one approval point (`--approval FLOW:POINT`), until a date or for a
+  while (`--until 2026-12-01`, `7d`), and `holon unbind` takes a binding away; `holon access`
+  lists every version of who may do what, and `show` prints one whole, for an auditor.
+  `holon people` lists what each principal holds where it showed a role, and takes a role of an
+  admin's own as `--role`, as `POST` and `PATCH /people` now do. `holon mcp` has `whoami`: who
+  the agent is signed in as, and what each of its bindings allows, where (`/auth/me` answers
+  each binding's `allows`). The editor's People page offers each kind the roles it may hold, an
+  admin's own included, and lists beside each principal what else holds for them; Approvals
+  offers Approve and Decline wherever the server says the person may decide, so one bound at a
+  flow or an approval point decides there, whatever their role on the host. The terminal editor
+  reads the roles from the server too. No sample changes: this is who may call the control
+  plane, not what a flow does.
+- **An admin defines roles of their own, and groups.** A role (`PUT /roles/<name>`) allows the
+  actions it names from the catalogue, to the kinds of principal it names; its author holds on
+  the host everything it allows. A group (`PUT /groups/<name>`) is a set of principals, bound as
+  one is (`{"who": {"group": "payments"}, …}`); its binding holds for each member whose kind the
+  role allows. `GET /roles` and `GET /groups` list them, with how many bindings hold each, and
+  neither is removed while bound (409). No one gives more than they hold, whichever way: binding,
+  inviting or setting someone with a role, adding a member to a bound group, or resetting
+  someone's password or making their tokens (an owner still makes its agent's or service's), so a
+  role that manages people can't make an admin. Whatever role it holds, an agent never does what is a
+  person's: approving a deploy, starting, stopping, deleting or restoring a flow, writing a
+  secret, managing people, roles, resources or the host. `GET /auth/me/can?actions=…&flow=…`
+  answers, for each action, `true` or the words its refusal would say, as the routes ask it; the
+  editor's buttons will read it. `/auth/me` and `GET /people` answer a group's bindings too, with
+  the group's name. No sample changes: this is who may call the control plane, not what a flow
+  does.
+- **A role can be bound at one flow, or at one approval point, and until a time.** An admin binds
+  it with `POST /bindings` (`{who, role, scope, expires_at, why}`), and unbinds it with
+  `DELETE /bindings/<id>`. Bound at a flow, it holds there and nowhere else, and the lists (flows,
+  deployments, proposals, the overview, the activity) keep the flows its holder may view; a flow
+  they saved that no one has deployed is theirs wherever they hold the action. Bound at an approval
+  point, it decides that point only. A binding that has expired holds nothing, and stays listed
+  until it is unbound. A binding gives only what its author holds where it is made. Each change is
+  a version with who made it, what it changed and why: `GET /access/versions` lists them, and
+  `GET /access?version=N` answers one. Every caller holding a role on the host may do what it did
+  before; a person who proposes a version without approving it is told so in their name, not as an
+  agent. No sample changes: this is who may call the control plane, not what a flow does.
+- **The roles each principal holds are kept apart from the accounts, with every change to them.**
+  A role is now bound to a principal on the server, in `access.json` beside `accounts.json`
+  (`.holon-access.json` beside `.holon-accounts.json`), and `can` reads what is bound. Each change
+  (setting up, inviting or adding with a role, changing one, removing a principal) is a new
+  version, kept for good in `access.versions.jsonl` with who made it, when and what it changed; it
+  holds no password or token. No one may do more or less than before. `GET /people` and
+  `/auth/me` answer each principal's bindings beside its `role`. An accounts file from before
+  keeps its principals but not their roles: each holds none, the server names them when it
+  starts, and the OS user gives them roles again (`holon people set NAME --role ROLE`). No sample
+  changes: this is who may call the control plane, not what a flow does.
+- **An agent reads a flow's log lines only where the flow lets agents, whatever role it holds.**
+  One holding the viewer role read them without `AgentReadsLogs`, as a person does; it is now
+  refused until a person approves it, as one holding the agent role is. What the flow lets agents
+  do is decided by the principal's kind, as the manual says, not by its role.
 - **`holon verify` exits 3 when it couldn't run every run again, and runs a failed run again.**
   It exited 0 for an export some of whose runs it hadn't run again (a file whose text it wasn't
   given, a run that panicked), as if all of it checked; now it says `INCOMPLETE` and exits 3, and

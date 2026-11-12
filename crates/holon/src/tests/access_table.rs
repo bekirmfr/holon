@@ -167,6 +167,21 @@ fn rows(unit: &str) -> Vec<Row> {
         at("DELETE", "/people/nobody", "", Admins),
         at("POST", "/people/nobody/reset", "", Admins),
         at("POST", "/admin/oidc", "[]", Admins),
+        // What is bound to whom, and its versions.
+        at("GET", "/bindings", "", Admins),
+        at("POST", "/bindings", "[]", Admins),
+        at("DELETE", "/bindings/none", "", Admins),
+        at("GET", "/access/versions", "", Admins),
+        at("GET", "/access", "", Admins),
+        // Roles and groups.
+        at("GET", "/roles", "", Admins),
+        at("PUT", "/roles/none", "[]", Admins),
+        at("DELETE", "/roles/none", "", Admins),
+        at("GET", "/groups", "", Admins),
+        at("PUT", "/groups/none", "[]", Admins),
+        at("DELETE", "/groups/none", "", Admins),
+        // What the caller may do.
+        at("GET", "/auth/me/can?actions=flow.view", "", SignedIn),
         // Paths no route has: a bare 404 to anyone signed in (the plan's D5).
         unrouted("GET", "/nope", All),
         unrouted("POST", "/nope", All),
@@ -198,7 +213,7 @@ fn rows(unit: &str) -> Vec<Row> {
 /// `method` `path` sent to `state`, signed in with `token`: its status, and its body as text. Sent
 /// as if through a proxy, so a folder dialog (pick.rs) is never shown on the machine running the
 /// tests.
-fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Vec<u8>) -> (u16, String) {
+pub(super) fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Vec<u8>) -> (u16, String) {
     let mut headers = vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())];
     headers.extend(token.map(|t| ("Authorization".to_string(), format!("Bearer {t}"))));
     let answer = route(state, &req_with(method, path, body, headers));
@@ -206,12 +221,12 @@ fn ask(state: &AppState, token: Option<&str>, method: &str, path: &str, body: Ve
 }
 
 /// The `error` an answer says, or nothing.
-fn error_of(said: &str) -> String {
+pub(super) fn error_of(said: &str) -> String {
     serde_json::from_str::<Value>(said).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_default()
 }
 
 /// `slug` deployed as `unit`, with what its preview says needs approving approved.
-fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, requirements: Value) -> (u16, String) {
+pub(super) fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, requirements: Value) -> (u16, String) {
     let asked = json!({ "slug": slug, "unit": unit, "requirements": requirements });
     let (code, preview) = ask(state, token, "POST", "/deploy/preview", serde_json::to_vec(&asked).unwrap());
     assert_eq!(code, 200, "{preview}");
@@ -221,13 +236,14 @@ fn deploy(state: &AppState, token: Option<&str>, slug: &str, unit: &str, require
 }
 
 /// What a let-through request must leave as it was: the deployments (each one's status and
-/// grant), the saved flows (each one's saver), and the principals (each one's role, whether it
-/// is disabled, its owner, and how many tokens it has).
+/// grant), the saved flows (each one's saver), the principals (what is bound to each, whether it
+/// is disabled, its owner, and how many tokens it has), and the roles and groups.
 fn kept(state: &AppState) -> String {
     let deployments: Vec<String> = state.deployments.lock().unwrap().iter().map(|(s, d)| format!("{s} {:?} {:?}", d.life.status, d.grant.items)).collect();
     let flows: Vec<String> = state.flows.lock().unwrap().values().map(|f| format!("{} {:?}", f.name, f.saved_by)).collect();
-    let people: Vec<String> = state.access.accounts().map(|a| a.principals().iter().map(|p| format!("{} {:?} {} {:?} {}", p.name, p.role, p.disabled, p.owner, a.tokens(&p.name).len())).collect()).unwrap_or_default();
-    format!("{deployments:?}\n{flows:?}\n{people:?}")
+    let people: Vec<String> = state.access.accounts().map(|a| a.principals().iter().map(|p| format!("{} {:?} {} {:?} {}", p.name, a.bindings_of(&p.name), p.disabled, p.owner, a.tokens(&p.name).len())).collect()).unwrap_or_default();
+    let defined = state.access.accounts().map(|a| format!("{:?} {:?}", a.access_document().roles, a.access_document().groups)).unwrap_or_default();
+    format!("{deployments:?}\n{flows:?}\n{people:?}\n{defined}")
 }
 
 /// A server with the deployment `d` (the flow `echo`, deployed as its unit, answered here) and the
@@ -243,11 +259,11 @@ fn server(accounts: bool) -> (AppState, String, Vec<Caller>) {
     }
     let book = Arc::new(Accounts::memory());
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", PW).unwrap();
-    let person = |name: &str, role| book.accept(&book.invite(name, role, None, "ada").unwrap(), PW).unwrap().0;
+    let person = |name: &str, role: Role| book.accept(&book.invite(name, role.name(), None, "ada").unwrap(), PW).unwrap().0;
     let (cy, bob) = (person("cy", Role::Viewer), person("bob", Role::Editor));
     let local = book.new_local("bma");
-    let made = |name: &str, kind, role, owner: &str| {
-        book.add(name, kind, role, owner, "ada").unwrap();
+    let made = |name: &str, kind, role: Role, owner: &str| {
+        book.add(name, kind, role.name(), owner, "ada").unwrap();
         book.create_token(name, "the table", "ada").unwrap().0
     };
     let claude = made("claude", Kind::Agent, Role::Agent, "ada");
@@ -318,8 +334,8 @@ fn every_route_lets_through_whom_its_table_says_and_refuses_the_rest_in_its_word
 /// What isn't a role's, for each kind of caller:
 /// - an agent saves over only a flow it saved, an editor over anyone's;
 /// - an agent runs an action only once the flow's grant lets agents (`AgentRuns`), and reads its
-///   log lines only once it lets them (`AgentReadsLogs`); an agent holding the viewer role reads
-///   them without (the plan's D11);
+///   log lines only once it lets them (`AgentReadsLogs`), whatever role it holds (one holding the
+///   viewer role reads no more than one holding the agent role);
 /// - an agent never approves what a flow may do: a deploy of its that needs approval is a
 ///   proposal, which a person's deploy of that version approves; it is refused where a person
 ///   turned proposing off, and never starts a stopped deployment, which a person does;
@@ -353,7 +369,7 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
                 Role::Agent if !granted => assert!(refused(ran.clone(), "agents may not run \"d\"'s action \"echo\""), "{asked}: {ran:?}"),
                 _ => assert_eq!(ran.0, 200, "{asked}: {ran:?}"),
             }
-            if c.role == Some(Role::Agent) && !granted {
+            if c.kind == Some(Kind::Agent) && !granted {
                 assert!(refused(read.clone(), "agents may not read \"d\"'s log lines"), "{asked}: {read:?}");
             } else {
                 assert_eq!(read.0, 200, "{asked}: {read:?}");

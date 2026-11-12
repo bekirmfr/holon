@@ -10,9 +10,9 @@ use crate::cmdline::{self, seg, table, when, SIGN_IN};
 use crate::local;
 
 const PEOPLE_USAGE: &str = "usage: holon people [list]
-       holon people add <name> --person --role viewer|editor|admin [--email ADDRESS]
-       holon people add <name> --agent [--role agent|viewer] [--owner PERSON]
-       holon people add <name> --service --role viewer|editor [--owner PERSON]
+       holon people add <name> --person --role ROLE [--email ADDRESS]
+       holon people add <name> --agent [--role ROLE] [--owner PERSON]
+       holon people add <name> --service --role ROLE [--owner PERSON]
        holon people set <name> [--role ROLE] [--disable | --enable] [--email ADDRESS] [--owner PERSON]
                                [--display TEXT]
        holon people reset <name>
@@ -24,7 +24,8 @@ const PEOPLE_USAGE: &str = "usage: holon people [list]
   The server's people, agents and services, as its People page has them. Admins; an agent's or a
   service's owner also makes and revokes its tokens.
 
-  list                     everyone: kind, role, owner, email, since when and by whom, and whether
+  list                     everyone: kind, what they hold (their role on this host, and what holon
+                           bind bound them), owner, email, since when and by whom, and whether
                            disabled or still invited; then the agents' and services' tokens
   add <name>               someone new, of one kind:
     --person               signs in with a password (or a provider): the link they open to choose
@@ -32,12 +33,14 @@ const PEOPLE_USAGE: &str = "usage: holon people [list]
     --agent                an agent, which signs in with its own tokens (holon mcp, or one with a
                            shell): reads, proposes and calls, never approves
     --service              a script or CI, which signs in with its own tokens
-    --role ROLE            a person: viewer (reads), editor (also saves, deploys, runs) or admin;
-                           an agent: agent (the default) or viewer; a service: viewer or editor
+    --role ROLE            their role on this host, one their kind may hold: a person's viewer
+                           (reads), editor (also saves, deploys, runs) or admin; an agent's agent
+                           (the default) or viewer; a service's viewer or editor; or a role an
+                           admin defined (holon roles). holon bind binds one on a flow instead
     --owner PERSON         an agent's or a service's: the person answerable for it (you, by default)
     --email ADDRESS        a person's: the email a provider signs them in by (holon oidc)
   set <name>               change someone
-    --role ROLE            their role, one their kind may hold
+    --role ROLE            their role on this host, one their kind may hold
     --disable              sign them out for good (an agent's or a service's tokens stop), until
                            --enable
     --enable               let them sign in again
@@ -95,16 +98,6 @@ fn ask(who: &str, args: &cmdline::Args, method: &str, path: &str, body: Option<&
     Ok((server, serde_json::from_str(&answer).unwrap_or(Value::Null)))
 }
 
-/// The roles each kind may hold, as the server checks them (accounts.rs).
-fn roles_of(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "person" => &["viewer", "editor", "admin"],
-        "agent" => &["agent", "viewer"],
-        "service" => &["viewer", "editor"],
-        _ => &["viewer", "editor", "admin", "agent"],
-    }
-}
-
 pub(crate) fn people(args: &[String]) -> i32 {
     const WHO: &str = "holon people";
     let usage = format!("{PEOPLE_USAGE}\n{SIGN_IN}");
@@ -145,12 +138,13 @@ pub(crate) fn people(args: &[String]) -> i32 {
                 eprintln!("{WHO}: add {name} with one of --person, --agent or --service");
                 return 2;
             };
+            // The server says which roles a kind may hold, the ones an admin defined included.
             let role = match (args.value("--role"), kind) {
-                (Some(r), _) if roles_of(kind).contains(&r) => r,
+                (Some(r), _) => r,
                 (None, "agent") => "agent",
-                (r, _) => {
-                    let said = r.map(|r| format!(", not {r:?}")).unwrap_or_default();
-                    eprintln!("{WHO}: a {kind}'s --role is {}{said}", roles_of(kind).join(" or "));
+                (None, _) => {
+                    let builtin = if kind == "person" { "viewer, editor or admin" } else { "viewer or editor" };
+                    eprintln!("{WHO}: add {name} --{kind} --role ROLE: {builtin}, or one holon roles lists");
                     return 2;
                 }
             };
@@ -173,10 +167,6 @@ pub(crate) fn people(args: &[String]) -> i32 {
         (Some("set"), Some(name), None) => {
             let mut body = serde_json::Map::new();
             if let Some(r) = args.value("--role") {
-                if !roles_of("").contains(&r) {
-                    eprintln!("{WHO}: --role is viewer, editor, admin or agent, not {r:?}");
-                    return 2;
-                }
                 body.insert("role".into(), json!(r));
             }
             match (args.flag("--disable"), args.flag("--enable")) {
@@ -238,9 +228,9 @@ pub(crate) fn people(args: &[String]) -> i32 {
     }
 }
 
-/// Everyone, as columns.
+/// Everyone, as columns: what each holds, as bound to them or to their groups.
 pub(crate) fn people_lines(v: &Value) -> Vec<String> {
-    let mut rows = vec![["name", "kind", "role", "owner", "email", "since", "by", ""].map(String::from).to_vec()];
+    let mut rows = vec![["name", "kind", "holds", "owner", "email", "since", "by", ""].map(String::from).to_vec()];
     for p in v.as_array().into_iter().flatten() {
         let note = match (p["disabled"] == true, p["invited"] == true, p["owner_disabled"] == true) {
             (true, _, _) => "disabled",
@@ -251,7 +241,7 @@ pub(crate) fn people_lines(v: &Value) -> Vec<String> {
         rows.push(vec![
             p["name"].as_str().unwrap_or_default().into(),
             p["kind"].as_str().unwrap_or_default().into(),
-            p["role"].as_str().unwrap_or_default().into(),
+            crate::accesscmd::bindings_said(&p["bindings"]),
             p["owner"].as_str().unwrap_or("-").into(),
             p["email"].as_str().unwrap_or("-").into(),
             when(p["created_at"].as_u64()),
@@ -332,18 +322,18 @@ mod tests {
     #[test]
     fn people_and_tokens_list_as_columns_and_an_invite_is_a_link_to_the_editor() {
         let people = json!([
-            { "name": "ada", "kind": "person", "role": "admin", "email": null, "disabled": false, "created_at": 0, "created_by": null, "invited": false },
-            { "name": "bob", "kind": "person", "role": "editor", "email": "bob@example.com", "disabled": false, "created_at": 60, "created_by": "ada", "invited": true },
-            { "name": "ci", "kind": "service", "role": "editor", "owner": "bob", "owner_disabled": true, "disabled": false, "created_at": 0, "created_by": "ada", "invited": false,
+            { "name": "ada", "kind": "person", "bindings": [{ "role": "admin", "scope": "host" }], "email": null, "disabled": false, "created_at": 0, "created_by": null, "invited": false },
+            { "name": "bob", "kind": "person", "bindings": [{ "role": "viewer", "scope": "host" }, { "role": "editor", "scope": { "flows": { "slug": "payout" } }, "group": "payments" }], "email": "bob@example.com", "disabled": false, "created_at": 60, "created_by": "ada", "invited": true },
+            { "name": "ci", "kind": "service", "bindings": [], "owner": "bob", "owner_disabled": true, "disabled": false, "created_at": 0, "created_by": "ada", "invited": false,
               "tokens": [{ "id": "ab12", "principal": "ci", "label": "CI on GitHub", "created_at": 0, "created_by": "ada" }] },
         ]);
         assert_eq!(
             people_lines(&people),
             [
-                "name  kind     role    owner  email            since                by",
-                "ada   person   admin   -      -                1970-01-01T00:00:00  -",
-                "bob   person   editor  -      bob@example.com  1970-01-01T00:01:00  ada  invited, not joined yet",
-                "ci    service  editor  bob    -                1970-01-01T00:00:00  ada  its owner is disabled",
+                "name  kind     holds                                  owner  email            since                by",
+                "ada   person   admin                                  -      -                1970-01-01T00:00:00  -",
+                "bob   person   viewer, editor on payout via payments  -      bob@example.com  1970-01-01T00:01:00  ada  invited, not joined yet",
+                "ci    service  -                                      bob    -                1970-01-01T00:00:00  ada  its owner is disabled",
             ]
         );
         assert_eq!(token_lines(&people), ["", "token  of  label         made                 by", "ab12   ci  CI on GitHub  1970-01-01T00:00:00  ada"]);

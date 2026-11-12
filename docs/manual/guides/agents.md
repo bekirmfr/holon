@@ -71,6 +71,7 @@ The tools `holon mcp` offers:
 | `replay` | a new version of a deployed flow run offline on its recent runs: how many it answers the same, and how the others differ or why they can't be told; nothing is deployed, sent or written |
 | `call` | send a request to a deployed flow's route, logged as a run like any other |
 | `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
+| `whoami` | who it is signed in as, its owner, and what it may do: each role bound to it or to a group it is in, where (this host, a flow, an approval point), until when, and the actions it allows |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
 | `flows` | the saved flows; with a name, its text |
 | `runs` | a deployment's latest runs, one line each; then the runs waiting now, at an approval with who has approved it so far, or at an event |
@@ -87,6 +88,13 @@ replaces a flow someone else saved. The server enforces this, not the tool: it a
 (`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
 41 left", by *bma-agent*; in the editor's history, pick that row and restore what it asks, after
 the same dry run as any restore. Nothing changes until you do.
+
+Within that, an agent does what it is bound: its role on the host (agent, or only viewer), and
+any role an admin binds it on one flow or through a group it is in
+([`holon bind`](../reference/cli.md#holon-bind),
+[a role on one flow](people.md#a-role-on-one-flow-and-roles-of-your-own)), a role of the admin's
+own making included. `whoami` lists each, where it holds and what it allows, so the agent
+knows before it tries what it must ask you for.
 
 An agent runs a flow's [action](actions.md) only once you let it: in the deploy settings (**⚙**),
 **agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,

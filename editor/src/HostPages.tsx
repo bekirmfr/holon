@@ -39,6 +39,7 @@ import {
   invitePerson,
   listOwned,
   listPrincipals,
+  listRoles,
   reloadPermissions,
   removePrincipal,
   resetPerson,
@@ -65,7 +66,7 @@ import {
   type Kind,
   type OidcSettings,
   type Principal,
-  type Role,
+  type RoleEntry,
   type SecretInfo,
   getSecretHistory,
   previewSecretRollback,
@@ -79,20 +80,11 @@ import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 import { describeItem } from "./holon";
 import { holdersOf, kindsHeld, othersHeld, usesText, type Holder } from "./holdings";
+import { bindingSaid, hostRoleOf, otherBindings, rolesFor, roleTitle } from "./access";
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
 import { useDryRun } from "./DryRun";
 import { secretRollbackReport, sourceLabel } from "./DeployBar";
-
-/** The roles each kind holds (accounts.rs `Kind::may_hold`): an agent proposes or reads, a service
- *  never administers. */
-const ROLES_OF: Record<Kind, Role[]> = { person: ["viewer", "editor", "admin"], agent: ["agent", "viewer"], service: ["viewer", "editor"] };
-const ROLE_TITLE: Record<Role, string> = {
-  viewer: "reads flows, deployments and logs",
-  editor: "also saves, deploys, runs and deletes",
-  admin: "also writes secrets and manages this panel",
-  agent: "reads, proposes flows and calls them; never approves, starts, stops or deletes",
-};
 
 // The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
 // a row (a card of its own), what a section is about, and a quiet note. A section's heading is
@@ -131,9 +123,11 @@ function useHost(shown = false) {
   const [msg, setMsg] = useState("");
   const [link, setLink] = useState<{ name: string; url: string } | null>(null);
   const [secret, setSecret] = useState<{ label: string; token: string } | null>(null);
-  const [draft, setDraft] = useState({ name: "", role: "editor" as Role, email: "" });
+  // Every role (`GET /roles`), the built-in ones first: what a kind is offered.
+  const [roles, setRoles] = useState<RoleEntry[]>([]);
+  const [draft, setDraft] = useState({ name: "", role: "editor", email: "" });
   // An agent or a service being added: its owner empty for whoever adds it.
-  const [addDraft, setAddDraft] = useState({ name: "", kind: "agent" as Exclude<Kind, "person">, role: "agent" as Role, owner: "" });
+  const [addDraft, setAddDraft] = useState({ name: "", kind: "agent" as Exclude<Kind, "person">, role: "agent", owner: "" });
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -197,6 +191,7 @@ function useHost(shown = false) {
 
   const refresh = useCallback(() => {
     listPrincipals().then(setPrincipals).catch((e: unknown) => setMsg(messageOf(e)));
+    listRoles().then(setRoles).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
     listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
@@ -274,7 +269,7 @@ function useHost(shown = false) {
     holders.length === 0 ? "No deployment uses it." : `${named(holders)} ${holders.length === 1 ? "uses" : "use"} it: they keep running, and their calls to it fail until it is bound again.`;
 
   return {
-    principals, setPrincipals, oidc, setOidc, msg, setMsg, link, setLink, secret,
+    principals, setPrincipals, roles, oidc, setOidc, msg, setMsg, link, setLink, secret,
     setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId,
     folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
     databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
@@ -439,9 +434,9 @@ export function OwnedPage() {
         <Fragment key={p.name}>
           <div style={row}>
             <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
-            <span style={quiet} title={ROLE_TITLE[p.role]}>
+            <span style={quiet} title={p.bindings.map(bindingSaid).join(", ")}>
               {p.kind}
-              {p.role !== p.kind && `, ${p.role}`}
+              {hostRoleOf(p) !== p.kind && hostRoleOf(p) !== "" && `, ${hostRoleOf(p)}`}
             </span>
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
               {p.disabled && <span style={{ color: "var(--bad)" }}>disabled: its tokens are refused</span>}
@@ -458,9 +453,41 @@ export function OwnedPage() {
   );
 }
 
+/** A principal's own role on the host, to change: the roles its kind may hold, the ones an admin
+ *  defined included. None when it holds one only through a group or on a flow (holon bind). */
+function RoleSelect({ p, roles, act }: { p: Principal; roles: RoleEntry[]; act: (f: () => Promise<unknown>) => void }) {
+  const now = hostRoleOf(p);
+  return (
+    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value }))}>
+      {now === "" && (
+        <option value="" disabled>
+          no role on the host
+        </option>
+      )}
+      {rolesFor(roles, p.kind).map((r) => (
+        <option key={r.name} value={r.name} title={roleTitle(roles, r.name)}>
+          {r.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** What else holds for a principal, read only, on a line of its own above the row's notes: a role
+ *  on a flow or an approval point, or through a group (`holon bind`, `holon groups`). */
+function HeldElsewhere({ p }: { p: Principal }) {
+  const others = otherBindings(p);
+  if (others.length === 0) return null;
+  return (
+    <span aria-label={`${p.name}'s bindings`} style={{ display: "block", color: "var(--muted)" }} title="bound with holon bind; holon access show lists every binding">
+      {others.map(bindingSaid).join(", ")}
+    </span>
+  );
+}
+
 export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
   const h = useHost();
-  const { principals, oidc, link, setLink, secret, setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
+  const { principals, roles, oidc, link, setLink, secret, setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
   const people = principals.filter((p) => p.kind === "person");
   const others = principals.filter((p) => p.kind !== "person");
   /** Who may own an agent or a service: the people, and whoever owns it now (the OS user, say). */
@@ -492,20 +519,9 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.name}
               {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
             </span>
-            <select
-              aria-label={`${p.name}'s role`}
-              value={p.role}
-              style={input}
-              title={ROLE_TITLE[p.role]}
-              onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value as Role }))}
-            >
-              {ROLES_OF.person.map((r) => (
-                <option key={r} value={r} title={ROLE_TITLE[r]}>
-                  {r}
-                </option>
-              ))}
-            </select>
+            <RoleSelect p={p} roles={roles} act={act} />
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+              <HeldElsewhere p={p} />
               {p.email ?? ""}
               {owns.length > 0 && <span> · owns {owns.join(", ")}</span>}
               {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
@@ -561,10 +577,10 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         }}
       >
         <input aria-label="new person's name" placeholder="name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={input} />
-        <select aria-label="new person's role" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })} style={input}>
-          {ROLES_OF.person.map((r) => (
-            <option key={r} value={r}>
-              {r}
+        <select aria-label="new person's role" value={draft.role} title={roleTitle(roles, draft.role)} onChange={(e) => setDraft({ ...draft, role: e.target.value })} style={input}>
+          {rolesFor(roles, "person").map((r) => (
+            <option key={r.name} value={r.name} title={roleTitle(roles, r.name)}>
+              {r.name}
             </option>
           ))}
         </select>
@@ -588,19 +604,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           <div style={row}>
             <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
             <span style={quiet}>{p.kind}</span>
-            <select
-              aria-label={`${p.name}'s role`}
-              value={p.role}
-              style={input}
-              title={ROLE_TITLE[p.role]}
-              onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value as Role }))}
-            >
-              {ROLES_OF[p.kind].map((r) => (
-                <option key={r} value={r} title={ROLE_TITLE[r]}>
-                  {r}
-                </option>
-              ))}
-            </select>
+            <RoleSelect p={p} roles={roles} act={act} />
             <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} title="the person answerable for it" onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
               {owners(p.owner).map((o) => (
                 <option key={o} value={o}>
@@ -609,6 +613,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               ))}
             </select>
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
+              <HeldElsewhere p={p} />
               {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
@@ -647,17 +652,17 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           value={addDraft.kind}
           onChange={(e) => {
             const kind = e.target.value as Exclude<Kind, "person">;
-            setAddDraft({ ...addDraft, kind, role: ROLES_OF[kind][0] });
+            setAddDraft({ ...addDraft, kind, role: kind === "agent" ? "agent" : "viewer" });
           }}
           style={input}
         >
           <option value="agent">agent</option>
           <option value="service">service</option>
         </select>
-        <select aria-label="new agent's or service's role" value={addDraft.role} onChange={(e) => setAddDraft({ ...addDraft, role: e.target.value as Role })} style={input}>
-          {ROLES_OF[addDraft.kind].map((r) => (
-            <option key={r} value={r}>
-              {r}
+        <select aria-label="new agent's or service's role" value={addDraft.role} title={roleTitle(roles, addDraft.role)} onChange={(e) => setAddDraft({ ...addDraft, role: e.target.value })} style={input}>
+          {rolesFor(roles, addDraft.kind).map((r) => (
+            <option key={r.name} value={r.name} title={roleTitle(roles, r.name)}>
+              {r.name}
             </option>
           ))}
         </select>

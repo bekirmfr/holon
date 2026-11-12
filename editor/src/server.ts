@@ -21,7 +21,8 @@ import type { SettingChange, Touch } from "./touches";
  *  from (holon-server serves the editor itself, editor.rs), and in development the local one. */
 const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? (import.meta.env.DEV ? "http://127.0.0.1:7420" : "");
 
-/** A role on the server: what a principal may do (access.rs). */
+/** A built-in role on the server: what a principal may do (can.rs). An admin defines more
+ *  (`RoleEntry`), which a principal holds by its name. */
 export type Role = "viewer" | "editor" | "admin" | "agent";
 /** What a principal is (accounts.rs): a person signs in with a password or a provider; an agent
  *  (an AI, through holon mcp) and a service (a script, CI) sign in with their own tokens. */
@@ -95,6 +96,14 @@ export const signInWith = (name: string, password: string) => post(`${BASE}/auth
 /** Whose invite link `token` is. */
 export const inviteFor = async (token: string) => asJson<{ name: string }>(await fetch(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
 export const acceptInvite = (token: string, password: string) => post(`${BASE}/auth/invite`, { token, password }).then(keep);
+/** Whether whoever is signed in may do each of `actions` (`run.decide`…), as the server's `can`
+ *  answers it: true, or the words it would refuse in. On a flow, or one of its approval points. */
+export async function mayI(actions: string[], at: { flow?: string; approval?: string } = {}): Promise<Record<string, true | string>> {
+  const q = new URLSearchParams({ actions: actions.join(",") });
+  if (at.flow) q.set("flow", at.flow);
+  if (at.approval) q.set("approval", at.approval);
+  return asJson(await api(`${BASE}/auth/me/can?${q}`));
+}
 export const whoAmI = async () => asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null }>(await api(`${BASE}/auth/me`));
 export async function changePassword(current: string, next: string): Promise<void> {
   await asJson<void>(await post(`${BASE}/auth/password`, { current, new: next }));
@@ -122,7 +131,11 @@ export function setPrefs(prefs: unknown): Promise<void> {
 export type Principal = {
   name: string;
   kind: Kind;
-  role: Role;
+  /** The widest built-in role bound to it on the host; null when none is (a custom role, or only
+   *  on a flow). */
+  role: Role | null;
+  /** What holds for it: bound to it, or to a group it is in. */
+  bindings: HeldBinding[];
   display: string | null;
   email: string | null;
   disabled: boolean;
@@ -133,6 +146,13 @@ export type Principal = {
   invited: boolean;
   tokens?: TokenEntry[];
 };
+/** Where a binding holds (bindings.rs): the host, one flow, or one approval point of one. */
+export type Scope = "host" | { flows: { slug: string } | { tag: string } } | { approval: { flow: { slug: string }; name: string } };
+/** A role bound to a principal, or to a group it is in (`group`), with what the role allows. */
+export type HeldBinding = { id: number; role: string; allows: string[]; scope: Scope; group: string | null; by: string; at: number; expires_at: number | null; expired: boolean };
+/** A role (`GET /roles`): built in, or defined by an admin; who may hold it, how many bindings do. */
+export type RoleEntry = { name: string; about: string | null; allows: string[]; kinds: Kind[]; builtin: boolean; bound: number };
+export const listRoles = async () => (await asJson<{ roles: RoleEntry[] }>(await api(`${BASE}/roles`))).roles;
 /** An agent's or a service's token: what it is for, never its value. */
 export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string };
 export type OidcSettings = { issuer: string; client_id: string };
@@ -142,12 +162,12 @@ export const listPrincipals = async () => asJson<Principal[]>(await api(`${BASE}
 /** The agents and services whoever is signed in owns, with their tokens: an admin or not. */
 export const listOwned = async () => asJson<Principal[]>(await api(`${BASE}/auth/owned`));
 /** A new person; the one-time link for them to set their password. */
-export const invitePerson = async (name: string, role: Role, email: string) =>
+export const invitePerson = async (name: string, role: string, email: string) =>
   asJson<{ name: string; invite: string }>(await post(`${BASE}/people`, { name, kind: "person", role, email: email || null }));
 /** A new agent or service, owned by `owner` (by whoever adds it, when empty). */
-export const addPrincipal = async (name: string, kind: Exclude<Kind, "person">, role: Role, owner: string) =>
+export const addPrincipal = async (name: string, kind: Exclude<Kind, "person">, role: string, owner: string) =>
   asJson<Principal>(await post(`${BASE}/people`, { name, kind, role, owner: owner || null }));
-export const changePrincipal = async (name: string, change: { role?: Role; disabled?: boolean; email?: string; owner?: string }) => asJson<Principal>(await patch(principalAt(name), change));
+export const changePrincipal = async (name: string, change: { role?: string; disabled?: boolean; email?: string; owner?: string }) => asJson<Principal>(await patch(principalAt(name), change));
 export const resetPerson = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${principalAt(name)}/reset`));
 export async function removePrincipal(name: string): Promise<void> {
   await asJson<void>(await api(principalAt(name), { method: "DELETE" }));
@@ -1390,7 +1410,7 @@ export type FlowDocument = {
   names?: Record<string, string>;
   /** The flow's deploy settings (DeployBar): the port for a flow with routes. Absent in older
    *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
-  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string };
+  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[] };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

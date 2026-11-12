@@ -1126,7 +1126,7 @@ mod tests {
 
         let (cursor, _, _) = local_agent(&admin, Some("bma-cursor"), &file).unwrap();
         assert_eq!(cursor, "bma-cursor");
-        accounts.add("ci", crate::accounts::Kind::Service, crate::access::Role::Viewer, "bma", "local:bma").unwrap();
+        accounts.add("ci", crate::accounts::Kind::Service, "viewer", "bma", "local:bma").unwrap();
         assert!(local_agent(&admin, Some("ci"), &file).unwrap_err().contains("ci on the test server is a service, not an agent"));
         accounts.set_disabled("bma-cursor", true).unwrap();
         assert!(local_agent(&admin, Some("bma-cursor"), &file).unwrap_err().contains("is disabled"));
@@ -1142,7 +1142,7 @@ mod tests {
         let p = with_people(&mut state);
         let accounts = state.access.accounts().unwrap();
         let local = accounts.new_local("bma");
-        accounts.add("ci", crate::accounts::Kind::Service, crate::access::Role::Editor, "ada", "ada").unwrap();
+        accounts.add("ci", crate::accounts::Kind::Service, "editor", "ada", "ada").unwrap();
         let (ci, _) = accounts.create_token("ci", "CI", "ada").unwrap();
         let checked = |token: &str| an_agent(&who(&Signed { state: &state, token }).unwrap().unwrap(), "the server");
         assert_eq!(checked(&p.claude), Ok(()));

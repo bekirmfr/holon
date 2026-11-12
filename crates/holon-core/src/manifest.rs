@@ -6,8 +6,8 @@
 //! - A capability's **consent name**: `NetworkIngress`, `StateRead("todos")`,
 //!   `HttpRequest("hooks.slack.com")` (its `Debug` form, the name a deploy acknowledges).
 //! - The manifest's **items**: each capability, then each limit the author asks for
-//!   (`Limit(request_timeout_ms=60000)`), each host called over plain HTTP (`PlainHttp("h")`), and
-//!   `PrivateAddresses`; sorted, as a set.
+//!   (`Limit(request_timeout_ms=60000)`), each host called over plain HTTP (`PlainHttp("h")`),
+//!   `PrivateAddresses`, and each of the flow's tags (`Tag("payments")`); sorted, as a set.
 //! - Its **trigger**: what starts its runs, never optional.
 //! - Each item's **kind**: required (missing, the deployment pauses) or optional (the author
 //!   marked it so; missing, it runs with those calls refused).
@@ -24,7 +24,8 @@ pub fn consent_name(c: &Capability) -> String {
 }
 
 /// The manifest's items: `capabilities` (consent names), then what the author asks beyond the
-/// host's defaults.
+/// host's defaults, then the flow's `tags`.
+#[allow(clippy::too_many_arguments)]
 pub fn manifest_items(
     capabilities: &[String],
     limits: &BTreeMap<String, u64>,
@@ -33,6 +34,7 @@ pub fn manifest_items(
     agents: &BTreeSet<String>,
     unrecorded: &BTreeSet<String>,
     agent_logs: bool,
+    tags: &[String],
 ) -> BTreeSet<String> {
     // A log line reaches nothing outside the host (its own log folder), so it is no permission a
     // person approves: the capability is named in what a flow may do, not asked for.
@@ -58,6 +60,11 @@ pub fn manifest_items(
     // (docs/L4s/request-path-L4.md, C5): `Unrecorded("GET /health")`.
     for label in unrecorded {
         items.insert(format!("Unrecorded({label:?})"));
+    }
+    // Who may act on it: a binding on a tag covers every flow deployed with it, so a version that
+    // joins one is approved like any item (docs/L4s/roles-and-bindings-plan.md, D24).
+    for tag in tags {
+        items.insert(format!("Tag({tag:?})"));
     }
     items
 }
@@ -138,10 +145,11 @@ mod tests {
             &BTreeSet::from(["reset".to_string()]),
             &BTreeSet::from(["GET /health".to_string()]),
             true,
+            &caps(&["payments", "ops"]),
         );
         assert_eq!(
             items.into_iter().collect::<Vec<_>>(),
-            ["AgentReadsLogs", "AgentRuns(\"reset\")", "Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")", "Unrecorded(\"GET /health\")"]
+            ["AgentReadsLogs", "AgentRuns(\"reset\")", "Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")", "Tag(\"ops\")", "Tag(\"payments\")", "Unrecorded(\"GET /health\")"]
         );
     }
 

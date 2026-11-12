@@ -123,6 +123,12 @@ pub fn is_taint_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 128 && !key.chars().any(|c| c.is_whitespace() || c == '‹' || c == '›')
 }
 
+/// Whether `tag` can be a flow's tag: lowercase ASCII letters, digits and `-`, 1 to 40 of them. A
+/// binding on a tag covers every flow deployed with it.
+pub fn is_tag(tag: &str) -> bool {
+    (1..=40).contains(&tag.len()) && tag.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// One clock handler of a server, as declared: a run every `seconds`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clock {
@@ -276,6 +282,9 @@ pub struct Server {
     /// what the host keeps of any of its runs, wherever a run has them, nor do those of
     /// [`ALWAYS_TAINTED`].
     pub taint: Vec<String>,
+    /// Its flow's tags (its `tags` param, joined by spaces), sorted, once each ([`is_tag`]): a
+    /// binding on one covers the flow while it is deployed with it.
+    pub tags: Vec<String>,
     pub routes: Vec<Route>,
     pub clocks: Vec<Clock>,
     pub files: Vec<FileHandler>,
@@ -447,6 +456,8 @@ pub enum DeclError {
     BadLogLevel { child: u32, value: String },
     /// A key its `taint` param names isn't one ([`is_taint_key`]).
     BadTaintKey(String),
+    /// A tag its `tags` param names isn't one ([`is_tag`]), or comes again or out of order.
+    BadTag(String),
 }
 
 /// The declaration a unit carries (`"server"`, `"endpoint"`), if any.
@@ -595,7 +606,11 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     if let Some(bad) = taint.iter().find(|k| !is_taint_key(k)) {
         return Err(DeclError::BadTaintKey(bad.clone()));
     }
-    Ok(Server { port, taint, routes, clocks, files, mails, feeds, queues, websockets, actions })
+    let tags: Vec<String> = frozen(unit, "tags").unwrap_or("").split_whitespace().map(str::to_string).collect();
+    if let Some((_, bad)) = tags.iter().enumerate().find(|&(i, t)| !is_tag(t) || (i > 0 && tags[i - 1] >= *t)) {
+        return Err(DeclError::BadTag(bad.clone()));
+    }
+    Ok(Server { port, taint, tags, routes, clocks, files, mails, feeds, queues, websockets, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -820,6 +835,23 @@ mod tests {
         for (word, level) in [("lazy", LogLevel::Lazy), ("unrecorded", LogLevel::Unrecorded)] {
             let e = endpoint_logged(&mut r, "/a", writes.clone(), word);
             assert_eq!(read_server(&server("8080", vec![e]), &r).unwrap().routes[0].log, level, "{word}");
+        }
+    }
+
+    /// A server's tags are read as its `tags` param writes them: each a tag, sorted, once each;
+    /// none without the param.
+    #[test]
+    fn a_servers_tags_are_read_as_written_and_checked() {
+        let mut r = MapResolver::new();
+        let e = endpoint(&mut r, "GET", "/a");
+        let tagged = |tags: &str| Unit { params: [server("80", vec![e]).params, vec![Param::frozen("tags", tags)]].concat(), ..server("80", vec![e]) };
+        assert_eq!(read_server(&server("80", vec![e]), &r).unwrap().tags, Vec::<String>::new());
+        assert_eq!(read_server(&tagged("ops payments"), &r).unwrap().tags, ["ops", "payments"]);
+        for (tags, bad) in [("Payments", "Payments"), ("payments ops", "ops"), ("ops ops", "ops"), ("a_b", "a_b"), (&"x".repeat(41), &"x".repeat(41))] {
+            assert_eq!(read_server(&tagged(tags), &r), Err(DeclError::BadTag(bad.to_string())), "{tags}");
+        }
+        for (tag, is) in [("payments", true), ("ops-2", true), ("", false), ("A", false), ("a b", false), (&"x".repeat(40), true), (&"x".repeat(41), false)] {
+            assert_eq!(is_tag(tag), is, "{tag:?}");
         }
     }
 

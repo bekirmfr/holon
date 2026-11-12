@@ -28,6 +28,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
+| `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
 | `folders.json` | the named folders bound | `--folders` |
 | `databases.json` | the named databases bound | `--databases` |
@@ -226,6 +227,70 @@ can't be guessed.
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).
 
+A role is bound to a principal on the server when it is invited or added with one, and in place
+of it when it is changed. What is bound is kept apart from the accounts, in `access.json` beside
+them (`.holon-access.json` beside `.holon-accounts.json`), and each change is a new version, kept
+for good in `access.versions.jsonl` with who made it, when and what it changed: "bound editor to
+bob on this host". It holds no password or token, so it can be handed to an auditor. Removing a
+principal removes what is bound to it, so a new one of the same name holds only what it is given.
+`GET /people` and `/auth/me` answer each principal's bindings, and its `role`.
+
+A role may also be bound at one flow, or at one approval point of a flow, and until a time. An
+admin binds it (`POST /bindings`):
+
+```json
+{ "who": { "principal": "bob" }, "role": "editor", "scope": { "flows": { "slug": "payout" } },
+  "expires_at": 1798761600, "why": "on call this week" }
+```
+
+- **At a flow**, it holds there (the flow's runs, state, secrets and approvals) and nowhere else.
+  The lists (flows, deployments, proposals, the overview, the activity) keep the flows its holder
+  may view. A flow they saved that no one has deployed is theirs wherever they hold the action, so
+  they draft one, and deploy it where they may.
+- **At an approval point** (`{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`), it
+  decides that point and nothing else, not even viewing the runs: bind `viewer` on the flow with
+  it for that.
+- **A binding that has expired** holds nothing. It stays listed, `expired: true`, until it is
+  unbound.
+- A binding gives only what its author holds where it is made, and is refused where its role holds
+  nothing (a viewer at an approval point).
+
+`GET /bindings` (`?who=&role=&flow=`) lists what is bound, and `DELETE /bindings/<id>` (`?why=`)
+unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
+answers one whole. Each change is also in the activity log.
+
+An admin also defines roles of their own, and groups:
+
+- **A role** (`PUT /roles/<name>`, `{"allows": ["run.view", "run.decide"], "kinds": ["person"],
+  "about": "decides payouts"}`) allows the actions it names, from the catalogue
+  (`GET /roles` lists every role with what it allows), to the kinds of principal it names. Its
+  author holds on the host everything it allows. Changing it changes every binding of it, and is
+  refused when one is to a principal whose kind it would no longer allow. A built-in role's name
+  is taken, and a built-in role isn't changed.
+- **A group** (`PUT /groups/<name>`, `{"members": ["bob", "cy"]}`: all of them) is bound as a
+  principal is, `{"who": {"group": "payments"}, …}`, and the binding holds for each member whose
+  kind its role allows. Its members are principals here, never groups; removing a principal takes
+  it out of its groups.
+- A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
+  them first.
+- **No one gives more than they hold**, whichever way they give it: binding a role, inviting,
+  adding or setting someone with one, adding a member to a group that is bound, or resetting
+  someone's password or making their tokens (they would act as them). So a role that manages
+  people without holding everything an admin does can't make an admin. An agent's or a
+  service's owner still makes its tokens.
+- **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
+  deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
+  or manages people, roles, resources or the host.
+
+`GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout` answers, for each action, `true`
+or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
+with `&approval=ok`), and with no flow, on the host for the host's actions and on every flow at
+once for the others. `/auth/me` and `GET /people` answer what holds for a principal, each binding
+with what its role allows (an agent may not read `/roles`), and one to one of its groups with the
+group's name. `POST` and `PATCH /people` take any role the principal's kind may hold, an admin's
+own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
+([the command line](cli.md#roles-and-bindings)).
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
@@ -233,7 +298,9 @@ is answered 404, once its caller has signed in (401 before).
 - The server answers up to 512 requests at once; one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
-- The server never lets the last enabled admin be removed, disabled or demoted.
+- The server never lets the last enabled person holding admin be removed, disabled, given
+  another role or unbound, bound to them or to a group of theirs. The run file's admin (below)
+  doesn't count: it is there only while the server runs; nor does an admin binding that expires.
 - **Who acts** is a principal of one of three kinds, each name unique across them: a **person**,
   who signs in with a password or a provider and may hold any role but agent; an **agent**, role
   agent or viewer; a **service** (a script, CI), role viewer or editor, never admin. Agents and
@@ -243,9 +310,10 @@ is answered 404, once its caller has signed in (401 before).
   editor's *Your agents and services*). Tokens are shown once and kept only
   as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
   decides an approval. A person who still owns an agent or a service can't be removed until it has
-  another owner. An accounts file from before principals keeps its people; its API tokens, which
-  had no owner, are not read, and a person with role agent is dropped (the server says so when it
-  starts): add each as an agent or a service, and make it a token.
+  another owner. An accounts file from before `access.json` keeps its principals but not their
+  roles: each holds none until the run file's admin gives it one (`holon people set NAME --role
+  ROLE`), and the server names them when it starts. Its API tokens from before principals, which
+  had no owner, are not read: add each as an agent or a service, and make it a token.
 - Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
   `~/.holon/run/`, as `local:<your user>`, while that server runs.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes

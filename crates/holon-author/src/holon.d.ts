@@ -50,6 +50,9 @@ declare module "holon" {
      *  a message, an input, a call's request or answer, its own answer, what it read or wrote.
      *  `authorization`, `proxy-authorization`, `cookie` and `set-cookie` always are. */
     taint?: string[]
+    /** The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound
+     *  on a tag acts on every flow deployed with it; a version that adds one asks for approval. */
+    tags?: string[]
   }
   /** What the flow is: its name, which it deploys as, and its settings. Once, after the imports. */
   export function flow(name: string, settings?: Settings): void

@@ -38,7 +38,7 @@ function deploysAs(doc: FlowDocument): string {
   // In a fresh workspace, from what the document carries: as opening it does.
   const ev = new Evaluator();
   restoreUnits(doc, ev);
-  return flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, settingsOf(doc.server).port);
+  return flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, settingsOf(doc.server).port, settingsOf(doc.server).tags ?? []);
 }
 
 /** The unit `text` compiles to, or null when it doesn't compile. */
@@ -46,7 +46,7 @@ function says(text: string): string | null {
   try {
     const ev = new Evaluator();
     const { doc } = compileHolon(text, ev);
-    return flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, settingsOf(doc.server).port);
+    return flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, settingsOf(doc.server).port, settingsOf(doc.server).tags ?? []);
   } catch {
     return null;
   }

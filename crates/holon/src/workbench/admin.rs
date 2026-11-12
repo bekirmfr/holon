@@ -34,6 +34,8 @@ pub(crate) struct AdminView {
     pub(crate) scroll: usize,
     /// Every principal: people, agents and services.
     pub(crate) users: Vec<Value>,
+    /// Every role (`GET /roles`): the built-in ones, and the ones an admin defined.
+    pub(crate) roles: Vec<Value>,
     /// The agents' and services' tokens, each with its `principal`.
     pub(crate) tokens: Vec<Value>,
     pub(crate) folders: Vec<Value>,
@@ -107,6 +109,24 @@ fn here(path: &str) -> String {
     std::path::absolute(&p).unwrap_or(p).display().to_string()
 }
 
+/// The roles a principal of `kind` may hold, as `GET /roles` lists them: `viewer, editor,
+/// admin or payout-approver`.
+fn roles_of(roles: &[Value], kind: &Value) -> String {
+    let names: Vec<String> = roles.iter().filter(|r| r["kinds"].as_array().is_some_and(|k| k.contains(kind))).map(|r| s(&r["name"])).collect();
+    match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => "-".into(),
+    }
+}
+
+/// The role bound to a principal on the host itself, not through a group: what `PATCH /people`
+/// sets.
+fn host_role(u: &Value) -> String {
+    let own = u["bindings"].as_array().into_iter().flatten().find(|b| b["scope"] == "host" && b["group"].is_null() && b["expired"] != true);
+    own.map(|b| s(&b["role"])).unwrap_or_default()
+}
+
 fn only(v: &Value) -> String {
     v["deployment"].as_str().map(|d| format!("?deployment={}", seg(d))).unwrap_or_default()
 }
@@ -132,13 +152,14 @@ impl App {
     pub(crate) fn admin_load(&mut self) {
         let Some(c) = self.client.as_ref() else { return };
         let list = |path: &str| c.get(path).map(|v| v.as_array().cloned().unwrap_or_default());
-        match (list("/people"), list("/admin/folders"), list("/admin/databases")) {
-            (Ok(u), Ok(f), Ok(d)) => {
+        let roles = c.get("/roles").map(|v| v["roles"].as_array().cloned().unwrap_or_default());
+        match (list("/people"), list("/admin/folders"), list("/admin/databases"), roles) {
+            (Ok(u), Ok(f), Ok(d), Ok(r)) => {
                 self.admin.tokens = u.iter().flat_map(|p| p["tokens"].as_array().cloned().unwrap_or_default()).collect();
-                (self.admin.users, self.admin.folders, self.admin.databases) = (u, f, d);
+                (self.admin.users, self.admin.folders, self.admin.databases, self.admin.roles) = (u, f, d, r);
                 self.admin.error = None;
             }
-            (Err(e), ..) | (_, Err(e), _) | (.., Err(e)) => self.admin.error = Some(e),
+            (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (.., Err(e)) => self.admin.error = Some(e),
         }
         let n = self.admin_rows();
         let p = self.admin.part as usize;
@@ -171,7 +192,7 @@ impl App {
                 Some(u) if u["kind"] != "person" => vec![
                     text(Tone::Head, s(&u["name"])),
                     field("Kind", if u["kind"] == "agent" { "an agent" } else { "a service" }),
-                    field("Role", s(&u["role"])),
+                    field("Holds", crate::accesscmd::bindings_said(&u["bindings"])),
                     Row::Field("Owner".into(), format!("{}{}", s(&u["owner"]), if u["owner_disabled"] == true { " (disabled)" } else { "" }), if u["owner_disabled"] == true { Tone::Warn } else { Tone::Plain }),
                     field("API keys", u["tokens"].as_array().map_or(0, Vec::len).to_string()),
                     Row::Field("State".into(), if u["disabled"] == true { "disabled: its keys are refused".into() } else { "active".into() }, if u["disabled"] == true { Tone::Warn } else { Tone::Plain }),
@@ -182,7 +203,7 @@ impl App {
                 Some(u) => vec![
                     text(Tone::Head, s(&u["name"])),
                     field("Kind", "a person"),
-                    field("Role", s(&u["role"])),
+                    field("Holds", crate::accesscmd::bindings_said(&u["bindings"])),
                     field("Email", s(&u["email"])),
                     Row::Field("State".into(), if u["disabled"] == true { "disabled: can't sign in".into() } else if u["invited"] == true { "invited, not joined yet".into() } else { "active".into() }, if u["disabled"] == true { Tone::Warn } else { Tone::Plain }),
                     field("Since", crate::mcp::when(&u["created_at"])),
@@ -359,13 +380,16 @@ impl App {
         }
         let user = self.admin.users.get(i).map(|u| (s(&u["name"]), u.clone()));
         match (self.admin.part, k.code) {
-            (Part::People, KeyCode::Char('n')) => self.ask("Invite someone", &["Their name, a role (viewer, editor or admin) and, if they sign in through a provider, their email:", "ana editor ana@example.com", "They get a link to set a password; it is copied to your clipboard."], "", AdminAsk::Invite),
-            (Part::People, KeyCode::Char('a')) => self.ask(
-                "Add an agent or a service",
-                &["Its name, agent or service, a role (an agent: agent or viewer; a service: viewer or editor) and, if not you, its owner:", "refunds-bot agent agent ana", "It signs in with its own API keys: make one under API keys."],
-                "",
-                AdminAsk::Add,
-            ),
+            (Part::People, KeyCode::Char('n')) => {
+                let roles = roles_of(&self.admin.roles, &json!("person"));
+                let first = format!("Their name, a role ({roles}) and, if they sign in through a provider, their email:");
+                self.ask("Invite someone", &[first.as_str(), "ana editor ana@example.com", "They get a link to set a password; it is copied to your clipboard."], "", AdminAsk::Invite);
+            }
+            (Part::People, KeyCode::Char('a')) => {
+                let (agent, service) = (roles_of(&self.admin.roles, &json!("agent")), roles_of(&self.admin.roles, &json!("service")));
+                let first = format!("Its name, agent or service, a role (an agent: {agent}; a service: {service}) and, if not you, its owner:");
+                self.ask("Add an agent or a service", &[first.as_str(), "refunds-bot agent agent ana", "It signs in with its own API keys: make one under API keys."], "", AdminAsk::Add);
+            }
             (Part::Keys, KeyCode::Char('n')) => self.ask("A new API key", &["The agent or service it is for, then what it is for:", "ci nightly report", "The key is shown once, and copied to your clipboard."], "", AdminAsk::Token),
             (Part::Folders, KeyCode::Char('n')) => self.ask(
                 "Bind a folder",
@@ -381,12 +405,9 @@ impl App {
             ),
             (Part::People, KeyCode::Enter) => {
                 if let Some((name, u)) = user {
-                    let roles = match u["kind"].as_str() {
-                        Some("agent") => "agent or viewer:",
-                        Some("service") => "viewer or editor:",
-                        _ => "viewer, editor or admin:",
-                    };
-                    self.ask(format!("{name}'s role"), &[roles], s(&u["role"]), AdminAsk::Role(name));
+                    let roles = format!("Their role on this host: {}.", roles_of(&self.admin.roles, &u["kind"]));
+                    let elsewhere = "On one flow or approval point: holon bind ROLE --to NAME --flow SLUG.";
+                    self.ask(format!("{name}'s role"), &[roles.as_str(), elsewhere], host_role(&u), AdminAsk::Role(name));
                 }
             }
             (Part::People, KeyCode::Char('o')) => {
@@ -639,8 +660,9 @@ impl App {
                 self.admin_done(r, |v| format!("bound {} ({})", s(&v["name"]), s(&v["engine"])));
             }
             AdminAsk::Role(name) => {
-                let r = c.patch(&format!("/people/{}", seg(&name)), json!({ "role": value.trim() }));
-                self.admin_done(r, |v| format!("{name} is {} now", s(&v["role"])));
+                let role = value.trim().to_string();
+                let r = c.patch(&format!("/people/{}", seg(&name)), json!({ "role": role }));
+                self.admin_done(r, |_| format!("{name} holds {role} on this host now"));
             }
             AdminAsk::Email(name) => {
                 let r = c.patch(&format!("/people/{}", seg(&name)), json!({ "email": value.trim() }));
@@ -661,5 +683,25 @@ impl App {
                 self.admin_done(r, |_| if cleared { "no sign-in provider: a password only".into() } else { "the sign-in provider is set".into() });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kind_is_offered_the_roles_it_may_hold_and_its_own_host_role() {
+        let roles = [json!({ "name": "viewer", "kinds": ["person", "agent", "service"] }), json!({ "name": "admin", "kinds": ["person"] }), json!({ "name": "payout-approver", "kinds": ["person"] })];
+        assert_eq!(roles_of(&roles, &json!("person")), "viewer, admin or payout-approver");
+        assert_eq!(roles_of(&roles, &json!("agent")), "viewer");
+        assert_eq!(roles_of(&[], &json!("agent")), "-");
+        let held = |bindings: Value| host_role(&json!({ "bindings": bindings }));
+        let through = json!({ "role": "editor", "scope": "host", "group": "ops", "expired": false });
+        let on_a_flow = json!({ "role": "editor", "scope": { "flows": { "slug": "payout" } }, "group": null, "expired": false });
+        let gone = json!({ "role": "admin", "scope": "host", "group": null, "expired": true });
+        let own = json!({ "role": "payout-approver", "scope": "host", "group": null, "expired": false });
+        assert_eq!(held(json!([through, on_a_flow, gone, own])), "payout-approver");
+        assert_eq!(held(json!([through, on_a_flow])), "", "a group's, or a flow's, isn't the host role PATCH sets");
     }
 }
