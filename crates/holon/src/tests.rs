@@ -2256,6 +2256,49 @@ export const pay = action(async (order) => {
     assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
 }
 
+/// **Guards:** an approval's steps are what its deploy asks for. A version that changes them asks
+/// for the new item as any new permission does, and an agent's such version waits for a person
+/// as a proposal; one in steps this host doesn't decide yet is refused at deploy, its preview
+/// saying why (docs/L4s/approval-steps-plan.md D29, D31).
+/// **Why:** who decides is the permission a person approves: a version decided by fewer people,
+/// or by roles nothing checks yet, mustn't run on the grant of the one before.
+#[test]
+fn an_approval_s_steps_are_what_its_deploy_asks_for() {
+    use serde_json::{json, Value};
+    let mut state = test_state();
+    let text = |options: &str| {
+        format!("import {{ action, approval, flow }} from \"holon\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {{\n  const decision = await approval(\"payout\", {options})\n  return decision.approved\n}})\n")
+    };
+    let two = to_hex(&stage_text(&state, &text("{ people: 2 }")));
+    let one = to_hex(&stage_text(&state, &text("{}")));
+    let steps = to_hex(&stage_text(&state, &text("{ steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"approver\" }] }")));
+    let book = Arc::new(crate::accounts::Accounts::memory());
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    book.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    let (scout, _) = book.create_token("scout", "Scout", "ada").unwrap();
+    state.access = access::Access::new(book, vec![], vec![]);
+    let send = |token: &str, path: &str, body: Value| {
+        let (code, said) = access_table::ask(&state, Some(token), "POST", path, serde_json::to_vec(&body).unwrap());
+        (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
+    };
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": two, "document": {}, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] }));
+    assert_eq!(code, 200, "{said}");
+    // One person in place of two is a new item: an agent's version is a proposal needing it, and
+    // a person's deploys once it is acknowledged.
+    let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "why": "one is enough" }));
+    assert_eq!((code, &said["proposal"]["needs"]), (202, &json!(["Approval(\"payout/person\")"])), "{said}");
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {} }));
+    assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/person\")"), "{said}");
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "acknowledge": ["Approval(\"payout/person\")"] }));
+    assert_eq!(code, 200, "{said}");
+    // In steps: refused, whoever acknowledges it, until approvals are decided by their steps.
+    let words = "this host decides an approval by people alone for now (\"payout\" asks for an agent holding classifier, then a person holding approver), and doesn't yet decide one in steps";
+    let (code, said) = send(&ada, "/deploy/preview", json!({ "slug": "payouts", "unit": steps }));
+    assert_eq!((code, &said["refused"]), (200, &json!(words)), "{said}");
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": {}, "acknowledge": ["Approval(\"payout/agent:classifier>person:approver\")"] }));
+    assert!(code == 400 && said["error"].as_str().unwrap().contains(words), "{said}");
+}
+
 /// Who may decide an approval: a person by their name, the OS user's local admin by the name it
 /// runs as; not an agent, a service, a viewer, or anyone on a server without accounts.
 #[test]

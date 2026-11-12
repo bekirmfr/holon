@@ -12,6 +12,20 @@
   alone for now, and a deploy refuses any other steps, which only a hand-edited canvas can write
   so far. Approvals in steps are `docs/L4s/approval-steps-plan.md`. Run live: approved-payout was
   reviewed and deployed with `Approval("payout/person*2")`, and its payout was decided by two people.
+- **An approval in steps, in the language.** `await approval("payout", { steps: [{ role:
+  "classifier", kind: "agent" }, { role: "reviewer" }, { role: "approver", people: 2 }] })` names
+  who takes each step by the role they hold where the approval is, each in turn; `order: "any"`
+  takes them in any order, and a list inside `steps` is a stage taken in any order. A step with
+  no role is anyone holding `run.decide`, a person; an agent's step names its role; a service
+  never takes one; up to 5 steps. They lower to the canonical text the permission names,
+  `Approval("payout/agent:classifier>person:reviewer>person:approver*2")`, so a version that
+  changes them asks anew, and `holon fmt` writes one form for each. `holon.d.ts` types them
+  (`ApprovalOptions`, `Step`), the editor's hover says each option, and a role an admin defines
+  is held to the same name rule (letters, digits, `-` and `_`, up to 64), so every role can be
+  named in one. This host doesn't decide one yet: a deploy with steps is refused, saying so.
+  Run live: a flow in steps checked, and left as written by `holon fmt`; a one-line
+  `order: "any"` written over lines; a service's step refused; the steps flow's review and deploy
+  refused, saying why; the people form deployed; a role named `ops.lead` refused.
 
 ## 0.1.0-rc.35
 

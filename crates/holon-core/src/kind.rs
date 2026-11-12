@@ -1316,6 +1316,11 @@ mod tests {
             assert!(capabilities_of("approval", &approval(name, steps)).is_none(), "{name} {steps}");
         }
         assert!(capabilities_of("approval", &[Param::frozen("name", "payout"), Param::frozen("expires", "3600")]).is_none(), "no steps");
+        // Every two different steps are different items: a version that changes its steps asks
+        // for them anew.
+        let universe = crate::approval::universe();
+        let items: std::collections::BTreeSet<Capability> = universe.iter().flat_map(|s| capabilities_of("approval", &approval("payout", &s.text())).unwrap().iter().collect::<Vec<_>>()).collect();
+        assert_eq!(items.len(), universe.iter().collect::<std::collections::BTreeSet<_>>().len());
     }
 
     #[test]

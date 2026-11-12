@@ -76,14 +76,17 @@ pub(crate) struct RoleText {
 }
 
 impl RoleText {
-    /// It, as `can` reads it; or why it isn't a role: a built-in role's name, an action the
-    /// catalogue doesn't name, none at all, or no kind to hold it.
+    /// It, as `can` reads it; or why it isn't a role: a built-in role's name, a name an approval's
+    /// steps can't name (D35), an action the catalogue doesn't name, none at all, or no kind to
+    /// hold it.
     pub(crate) fn def(&self) -> Result<RoleDef, String> {
         let name = &self.name;
         if crate::can::builtin(name).is_some() {
             return Err(format!("{name} is a built-in role: name yours otherwise"));
         }
-        crate::accounts::valid_name(name)?;
+        if !holon_core::approval::is_role(name) {
+            return Err(format!("{name:?} isn't a role's name: letters, digits, - and _, at most 64, as an approval's steps name it"));
+        }
         let allows = self.allows.iter().map(|a| Action::named(a).ok_or(format!("{a:?} isn't an action: the catalogue names them as flow.deploy, run.decide…"))).collect::<Result<Vec<_>, _>>()?;
         if allows.is_empty() {
             return Err(format!("{name} allows nothing: give it an action"));
@@ -1065,6 +1068,9 @@ mod tests {
         assert_eq!(refused(&|d| d.roles.push(role("editor", &["run.view"], &[Kind::Person]))), "editor is a built-in role: name yours otherwise");
         assert_eq!(refused(&|d| d.roles.push(role("r", &["run.fly"], &[Kind::Person]))), "\"run.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…");
         assert_eq!(refused(&|d| d.roles.push(role("r", &[], &[Kind::Person]))), "r allows nothing: give it an action");
+        for name in ["ops.lead", "a@b", "", &"r".repeat(65)] {
+            assert_eq!(refused(&|d| d.roles.push(role(name, &["run.view"], &[Kind::Person]))), format!("{name:?} isn't a role's name: letters, digits, - and _, at most 64, as an approval's steps name it"));
+        }
         assert_eq!(refused(&|d| d.roles.push(role("r", &["run.view"], &[]))), "no kind may hold r: give it person, agent or service");
         assert_eq!(refused(&|d| d.roles.extend([role("r", &["run.view"], &[Kind::Person]), role("r", &["run.view"], &[Kind::Person])])), "the role r is defined twice");
         assert_eq!(refused(&|d| d.groups.push(Group { name: "g".into(), about: None, members: vec!["nobody".into()] })), "no principal \"nobody\": a group's members are principals here");

@@ -161,8 +161,9 @@ fn slot(text: &str) -> Option<Slot> {
     Some(Slot { kind, role, people })
 }
 
-/// A role's name as the steps take it: letters, digits, `-` and `_`, at most 64.
-fn is_role(name: &str) -> bool {
+/// A role's name as the steps take it: letters, digits, `-` and `_`, at most 64. A role an admin
+/// defines is held to it too, so every role can be named in an approval (D35).
+pub fn is_role(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_ROLE && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 

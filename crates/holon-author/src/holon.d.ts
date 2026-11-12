@@ -268,9 +268,25 @@ declare module "holon" {
   /** Parks the run until the event arrives, or its deadline: in an action, not a route. */
   export function event(name: string, options?: { expires?: Duration }): Promise<any>
 
-  /** Parks the run until that many different people approve it in Holon, or one declines, or
-   *  its deadline: in an action, not a route. */
-  export function approval(name: string, options?: { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }): Promise<Decision>
+  /** Parks the run until people approve it in Holon, or one declines, or its deadline: in an
+   *  action, not a route. `people: 2` is two different people; `steps`, each step in turn (in any
+   *  order with `order: "any"`), taken by principals holding its role. */
+  export function approval(name: string, options?: ApprovalOptions): Promise<Decision>
+  /** An approval's options: how many people decide it, or its steps (up to 5). A list in
+   *  `steps` is a stage, its steps taken in any order. */
+  export type ApprovalOptions =
+    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }
+    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any" }
+  /** One step of an approval. */
+  export interface Step {
+    /** The role its principals hold where the approval is; left out, anyone holding run.decide
+     *  there, a person. An agent's step names one. */
+    role?: string
+    /** `"agent"` when an agent takes it; `"person"` when left out. A service never does. */
+    kind?: "person" | "agent"
+    /** How many different principals take it. */
+    people?: 1 | 2 | 3 | 4 | 5
+  }
   /** What people decided on an approval. */
   export interface Decision {
     approved: boolean

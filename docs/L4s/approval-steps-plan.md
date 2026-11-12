@@ -266,7 +266,8 @@ It prints the canonical form back as the language writes it, one form for each `
 
 A slot prints as `{ role: "reviewer" }`, with `kind: "agent"` when it is an agent's and
 `people: N` from 2. The kind `"person"` is never written. `holon fmt` writes this form, and
-`fmt` of it is itself (§T2).
+`fmt` of it is itself (§T2). As built, a long one goes over lines as `fmt` wraps any options
+object, and a slot with neither role nor people prints `{}`.
 
 ### Elsewhere in `holon-author`
 
@@ -280,6 +281,8 @@ A slot prints as `{ role: "reviewer" }`, with `kind: "agent"` when it is an agen
 
 ### `holon`
 
+- `bindings.rs` `RoleText::def`: a role an admin defines is held to `approval::is_role`, so
+  every role can be named in an approval (D35; planned in 4a, built in 4b with the language).
 - `permissions.rs` `refuses_item` (4a's rule) now has flows that reach it. Its words, in the
   preview's `refused` and the deploy's 400: `this host decides an approval by people alone for
   now ("payout" asks for an agent holding classifier, then …), and doesn't yet decide one in
