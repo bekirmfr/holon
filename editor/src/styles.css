@@ -473,6 +473,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-sg--outside { --k: var(--ext); }
 .hl-sg--answer { --k: var(--accent); }
 .hl-sg--waits { --k: var(--warn); }
+/* Terminal's accent is teal, the colour of a call outside: an answer there is plain ink, as
+   `holon editor` draws it (kindColours.test.ts). */
+[data-ui="b"] .hl-sg--answer { --k: var(--ink); }
 .hl-sg__key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-xs); color: var(--muted); }
 .hl-sg__swatch::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--k); vertical-align: -1px; }
 .hl-sg__swatch--new::before { background: none; border: 1.5px dashed var(--warn); width: 7px; height: 7px; }

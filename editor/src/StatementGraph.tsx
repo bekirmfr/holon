@@ -1,6 +1,7 @@
 // A flow by its statements (web-console-L4.md §4): one column per trigger, headed by it, and a box
 // per statement under it, with its kind word and line, its name, and a bar in its kind's colour
-// (computes grey, reads or writes purple, calls out teal, answers in the accent, waits amber). A
+// (computes grey, reads or writes purple, calls out teal, answers in the accent, waits amber; in
+// Terminal, whose accent is teal, answers are plain ink). A
 // fallback answer (`?? status(404)`) is a side box on its row. Wires are the rows a row takes from
 // in its band, drawn as lanes in the column's gutter, as `holon editor` draws them; what it takes
 // from outside its band is a label. Against another version, the rows whose text is new are dashed
