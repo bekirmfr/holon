@@ -3,11 +3,15 @@
 // answer "cancel" instantly, without showing anything — which silently turned every delete, New
 // and first Save into a no-op there. These render inside the page instead, so they always show.
 //
-// A question is answered from the keys as well: Enter is its button and Esc cancels, and a yes/no
-// question also takes y and n (the workbench's Confirm), shown as chips on its buttons.
+// A question is answered from the keys as well: Enter answers with what has the focus (Cancel no,
+// the button that answers yes, the prompt's field yes with its text) and Esc cancels, and a yes/no
+// question also takes y and n (the workbench's Confirm), shown as chips on its buttons. Tab and
+// Shift+Tab go round the dialog's own controls: the focus stays in it while it is open
+// (useFocusTrap, as every modal's).
 
 import { Kbd } from "./ui/Kbd";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useFocusTrap } from "./ui/focusTrap";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
@@ -39,8 +43,11 @@ export function useOptionalDialog(): Dialogs | null {
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [text, setText] = useState("");
+  const box = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
+  const question = useId();
 
   const confirm = useCallback(
     (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, body, resolve })),
@@ -61,9 +68,12 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [ask, text],
   );
 
+  // Each question starts on its field or its yes, once (not on every letter typed into the
+  // prompt), even when the answer to one opens the next with no render between.
+  useFocusTrap(box, ask, () => (ask?.kind === "prompt" ? input.current : ok.current));
+
   useEffect(() => {
     if (!ask) return;
-    (ask.kind === "prompt" ? input.current : ok.current)?.focus();
     const yesNo = ask.kind === "confirm";
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || (yesNo && e.key === "n" && !held(e))) {
@@ -74,18 +84,22 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         e.preventDefault();
         close(true);
       }
-      // Handled here, so the same Enter can't also press the button of a dialog that opens next
-      // (a prompt's answer followed by a confirm would otherwise accept it unread).
+      // Enter answers as a click on what has the focus would: Cancel no, the button that answers
+      // yes or the prompt's field yes, anything else nothing. Handled here and never left to the
+      // browser, so the same Enter can't also press the button of a dialog that opens next (a
+      // prompt's answer followed by a confirm would otherwise accept it unread).
       if (e.key === "Enter") {
         e.preventDefault();
-        close(true);
+        if (e.target === cancel.current) close(false);
+        else if (e.target === ok.current || e.target === input.current) close(true);
       }
     };
     // Capturing, and kept from the page: a key that answers the question is not also one of the
     // page's keys beneath it. Typing in the prompt's own field still reaches the field, and a part
     // with keys of its own (a review's n, space…) has them while it has the focus: there only Esc
-    // answers.
+    // answers. Tab is the focus trap's.
     const guard = (e: KeyboardEvent) => {
+      if (e.key === "Tab") return;
       if (e.target instanceof Element && e.target.closest("[data-own-keys]")) {
         if (e.key === "Escape") onKey(e);
         return;
@@ -110,8 +124,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       {children}
       {ask && (
         <div
-          role="dialog"
-          aria-modal="true"
           onMouseDown={(e) => e.target === e.currentTarget && close(false)}
           style={{
             position: "fixed",
@@ -124,6 +136,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           }}
         >
           <div
+            ref={box}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={question}
             style={{
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
@@ -140,7 +156,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               gap: 12,
             }}
           >
-            <div style={{ whiteSpace: "pre-line", maxHeight: ask.kind === "confirm" && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            <div id={question} style={{ whiteSpace: "pre-line", maxHeight: ask.kind === "confirm" && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
             {ask.kind === "confirm" && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
             {ask.kind === "prompt" && (
               <input
@@ -159,6 +175,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
             )}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button
+                ref={cancel}
                 onClick={() => close(false)}
                 aria-keyshortcuts={ask.kind === "confirm" ? "N Escape" : "Escape"}
                 style={{ ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }}

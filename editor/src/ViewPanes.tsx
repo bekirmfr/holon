@@ -23,6 +23,7 @@ import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, t
 import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
+import { useFocusTrap } from "./ui/focusTrap";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
 import { fieldMarks, type MayHere } from "./mayHere";
@@ -1926,7 +1927,9 @@ export function renderValueContent(v: WValue, renderer: RendererKind, portName: 
   return pre(formatValue(v));
 }
 
-function ValueModal({ value, portName, onClose }: { value: WValue; portName: string; onClose: () => void }) {
+export function ValueModal({ value, portName, onClose }: { value: WValue; portName: string; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   const [stack, setStack] = useState<Array<{ value: WValue; name: string }>>([]);
   const current = stack.length > 0 ? stack[stack.length - 1] : { value, name: portName };
   const [renderer, setRenderer] = useState<RendererKind>(() => detectRenderer(value));
@@ -1952,8 +1955,10 @@ function ValueModal({ value, portName, onClose }: { value: WValue; portName: str
 
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
+      aria-label={`value of ${current.name}`}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
     >
