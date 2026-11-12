@@ -3,10 +3,11 @@
 // after (cellChanges.ts), and a restore or a deploy between runs that moved it. A run's row opens
 // that run in view mode.
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { cellName, cellRows, shown, type CellRow } from "./cellChanges";
 import { getChanges, getVersions, type CellHistory, type VersionEntry } from "./server";
+import { useFocusTrap } from "./ui/focusTrap";
 
 const dim = "var(--faint)";
 const PAGE = 50;
@@ -39,6 +40,8 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [error, setError] = useState("");
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   useEffect(() => {
     getChanges(slug, name, { item, limit: PAGE }).then(setHistory, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     getVersions(slug).then(setVersions, () => setVersions([]));
@@ -66,6 +69,7 @@ function CellHistoryModal({ slug, name, item, onOpenRun, onClose }: { slug: stri
   const cell: CSSProperties = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid var(--surface)", verticalAlign: "top" };
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
       aria-label="cell history"

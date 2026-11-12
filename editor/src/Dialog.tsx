@@ -6,9 +6,11 @@
 // A question is answered from the keys as well: Enter answers with what has the focus (Cancel no,
 // the button that answers yes, the prompt's field yes with its text) and Esc cancels, and a yes/no
 // question also takes y and n (the workbench's Confirm), shown as chips on its buttons. Tab and
-// Shift+Tab go round the dialog's own controls: the focus stays in it while it is open.
+// Shift+Tab go round the dialog's own controls: the focus stays in it while it is open
+// (useFocusTrap, as every modal's).
 
 import { Kbd } from "./ui/Kbd";
+import { useFocusTrap } from "./ui/focusTrap";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 type Ask =
@@ -66,10 +68,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [ask, text],
   );
 
-  // Once per question, not on every letter typed into the prompt (which remakes `close`).
-  useEffect(() => {
-    if (ask) (ask.kind === "prompt" ? input.current : ok.current)?.focus();
-  }, [ask]);
+  // Each question starts on its field or its yes, once (not on every letter typed into the
+  // prompt), even when the answer to one opens the next with no render between.
+  useFocusTrap(box, ask, () => (ask?.kind === "prompt" ? input.current : ok.current));
 
   useEffect(() => {
     if (!ask) return;
@@ -96,13 +97,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     // Capturing, and kept from the page: a key that answers the question is not also one of the
     // page's keys beneath it. Typing in the prompt's own field still reaches the field, and a part
     // with keys of its own (a review's n, space…) has them while it has the focus: there only Esc
-    // answers, and Tab still goes round the dialog.
+    // answers. Tab is the focus trap's.
     const guard = (e: KeyboardEvent) => {
-      if (e.key === "Tab" && !held(e)) {
-        if (box.current) around(box.current, e);
-        e.stopPropagation();
-        return;
-      }
+      if (e.key === "Tab") return;
       if (e.target instanceof Element && e.target.closest("[data-own-keys]")) {
         if (e.key === "Escape") onKey(e);
         return;
@@ -206,19 +203,4 @@ export function DialogProvider({ children }: { children: ReactNode }) {
 /** Whether a modifier is held: Ctrl+N and the like stay the browser's, not an answer. */
 function held(e: KeyboardEvent): boolean {
   return e.ctrlKey || e.metaKey || e.altKey;
-}
-
-/** Move the focus to the next of the dialog's controls (the previous with Shift), from the last
- *  round to the first: every Tab is moved here, so none can take the focus out to the page
- *  beneath. What is hidden (a review's closed rows) or disabled is skipped, as the browser would. */
-function around(box: HTMLElement, e: KeyboardEvent) {
-  e.preventDefault();
-  const stops = [...box.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, summary, [tabindex]")].filter(
-    (el) => el.tabIndex >= 0 && !el.matches(":disabled") && !el.closest("[hidden], [inert]"),
-  );
-  if (stops.length === 0) return;
-  const at = stops.indexOf(document.activeElement as HTMLElement);
-  const step = e.shiftKey ? -1 : 1;
-  const next = at < 0 ? (e.shiftKey ? stops.length - 1 : 0) : (at + step + stops.length) % stops.length;
-  stops[next].focus();
 }

@@ -1,12 +1,13 @@
 // A question in the page answers to keys as well as clicks: Enter answers with what has the focus,
 // Esc cancels, and a yes/no question takes y and n, shown as chips that stay out of the buttons'
-// names. Tab goes round the dialog and never out of it. Keys that answer it don't reach the page
-// beneath; typing in a prompt still reaches its field.
+// names. Keys that answer it don't reach the page beneath; typing in a prompt still reaches its
+// field. (Tab staying in it is every modal's: modals.test.tsx.)
 
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DialogProvider, useDialog } from "./Dialog";
+import { lap, press } from "./ui/pressKey";
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -53,33 +54,6 @@ async function ask<T>(open: () => Promise<T>): Promise<{ answer: Promise<T> }> {
   return { answer };
 }
 
-const settle = () => new Promise((r) => setTimeout(r, 0));
-
-/** Press a key where the focus is, as a browser does: the page's handlers first, then, unless one
- *  prevented it, the key's own default (jsdom has none): Enter clicks a focused button, Tab moves
- *  the focus to the next control in the page, and past the last out of it. The default comes after
- *  the handlers' microtasks have run, as in a browser, so a dialog the key opened is already there,
- *  its button focused, when it does. */
-async function press(key: string, init: KeyboardEventInit = {}, target: Element = document.activeElement ?? document.body) {
-  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
-  await act(async () => {
-    target.dispatchEvent(event);
-    await settle();
-  });
-  if (event.defaultPrevented) return;
-  await act(async () => {
-    const at = document.activeElement;
-    if (key === "Enter" && at instanceof HTMLButtonElement) at.click();
-    if (key === "Tab") {
-      const stops = [...document.querySelectorAll<HTMLElement>("button, input, [tabindex]")].filter((el) => el.tabIndex >= 0 && !el.closest("[hidden]"));
-      const next = stops[stops.indexOf(at as HTMLElement) + (init.shiftKey ? -1 : 1)];
-      if (next) next.focus();
-      else (at as HTMLElement | null)?.blur();
-    }
-    await settle();
-  });
-}
-
 const dialog = () => document.querySelector<HTMLElement>("[role=dialog]");
 const buttons = () => [...document.querySelectorAll<HTMLButtonElement>("[role=dialog] button")];
 /** A button's name as assistive technology reads it: its text without what is aria-hidden. */
@@ -118,20 +92,6 @@ const KINDS: { kind: string; open: (d: Dialogs) => Promise<unknown>; answers: Re
   },
   { kind: "prompt", open: (d) => d.prompt("Name this flow:", "  hello ", "Name it"), answers: { field: "hello", Cancel: null, "Name it": "hello" } },
 ];
-
-/** The dialog's controls in the order Tab (or Shift+Tab) reaches them, from where the focus is round
- *  to it again. Fails if the focus leaves the dialog on the way, or never comes back. */
-async function lap(shiftKey = false): Promise<string[]> {
-  const start = document.activeElement;
-  const seen: string[] = [];
-  for (let i = 0; i < 10; i++) {
-    expect(dialog()?.contains(document.activeElement), `the focus left the dialog after ${seen.join(", ")}`).toBe(true);
-    seen.push(called(document.activeElement));
-    await press("Tab", { shiftKey });
-    if (document.activeElement === start) return seen;
-  }
-  throw new Error(`Tab never came back to ${called(start)}: ${seen.join(", ")}`);
-}
 
 describe("dialog keys", () => {
   it("answers yes with y and no with n, and shows both as chips outside the buttons' names", async () => {
@@ -210,7 +170,7 @@ describe("the focused control answers", () => {
   it.each(KINDS)("$kind: Enter answers with each control it is pressed on", async ({ open, answers }) => {
     const d = mount();
     const { answer: first } = await ask(() => open(d));
-    const controls = await lap();
+    const controls = (await lap(dialog)).map(called);
     await press("Escape");
     await first;
     expect([...controls].sort()).toEqual(Object.keys(answers).sort());
@@ -226,31 +186,14 @@ describe("the focused control answers", () => {
     }
   });
 
-  // Guards: Tab and Shift+Tab go round the dialog's own controls, the same ones each way, and a
-  // focus that fell out of it (a click on its text) comes back in on the next Tab. Needed because a
-  // modal that lets Tab through puts the focus on the page beneath it, where Enter and the page's
-  // keys act on what the dialog hides. If it fails, the focus can leave an open dialog (the message
-  // says after which control), or skips or adds one going backwards.
-  it.each(KINDS)("$kind: Tab and Shift+Tab go round its controls, never out to the page", async ({ open }) => {
-    const d = mount();
-    await ask(() => open(d));
-    const forth = await lap();
-    const back = await lap(true);
-    expect(back).toEqual([forth[0], ...forth.slice(1).reverse()]);
-    act(() => (document.activeElement as HTMLElement).blur());
-    await press("Tab");
-    expect(dialog()!.contains(document.activeElement)).toBe(true);
-    act(() => (document.activeElement as HTMLElement).blur());
-    await press("Tab", { shiftKey: true });
-    expect(dialog()!.contains(document.activeElement)).toBe(true);
-  });
-
   // Guards: the Enter that answers one question doesn't also answer the question its answer opens,
-  // whichever control it was pressed on. Needed because a browser presses the focused button as
-  // Enter's own default, after the page has handled the key: by then the next dialog is open and
-  // its button has the focus, so a prompt answered with Enter would approve the confirm after it
-  // unread (AuthGate asks two prompts then a confirm; a deploy asks after a save). If it fails, a
-  // question can be answered before it was shown.
+  // whichever control it was pressed on, and that question starts on its own button, as any does.
+  // Needed because a browser presses the focused button as Enter's own default, after the page has
+  // handled the key: by then the next dialog is open and its button has the focus, so a prompt
+  // answered with Enter would approve the confirm after it unread (AuthGate asks two prompts then a
+  // confirm; a deploy asks after a save). And the two can come in one render, with no closed
+  // dialog between: the next one must still take the focus. If it fails, a question can be
+  // answered before it was shown, or one opens with the focus left on the last one's Cancel.
   it.each(KINDS)("$kind: the Enter that answers it doesn't answer the question it opens", async ({ open, answers }) => {
     const d = mount();
     const controls = Object.keys(answers).filter((c) => answers[c] !== UNANSWERED);
@@ -262,6 +205,7 @@ describe("the focused control answers", () => {
       await press("Enter");
       expect(dialog()?.textContent, `after Enter on ${control}`).toContain("Deploy it now?");
       expect(second, `after Enter on ${control}`).toBe(UNANSWERED);
+      expect(called(document.activeElement), `the focus after Enter on ${control}`).toBe("Deploy");
       await press("Escape");
       expect(second).toBe(false);
     }

@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import type { DiffLine } from "./diff";
 import { diffHunk } from "./hunks";
 import { Review } from "./Review";
+import { useFocusTrap } from "./ui/focusTrap";
 
 /** One part of a dry run's diff: `lines` from what is there now ("-") to what it would be ("+"),
  *  `legend` saying which is which; `whole` shows every line (a grant's few items), else unchanged
@@ -45,7 +46,9 @@ export function useDryRun(): { ask: (report: DryRunReport) => Promise<boolean>; 
 const heading = { color: "var(--accent)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" } as const;
 
 function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: boolean) => void }) {
+  const box = useRef<HTMLDivElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
+  useFocusTrap(box, true, () => ok.current);
   const [diff, setDiff] = useState<{ diffs?: Diff[]; error?: string }>({});
   useEffect(() => {
     let live = true;
@@ -58,7 +61,6 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
     };
   }, [report]);
   useEffect(() => {
-    ok.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose(false);
     };
@@ -70,6 +72,7 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
   const changes = report.changes ?? [];
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
       aria-label="dry run"
