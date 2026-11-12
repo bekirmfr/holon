@@ -2094,7 +2094,7 @@ impl<'a> Lowerer<'a> {
                 self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
-            ExprKind::Await { name, expires, people } => {
+            ExprKind::Await { name, expires, approval } => {
                 if self.socket {
                     return err(e.span, SOCKET_WAITS);
                 }
@@ -2105,9 +2105,9 @@ impl<'a> Lowerer<'a> {
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
                 }
-                match people {
-                    Some(n) => {
-                        params.push(("people".into(), n.to_string()));
+                match approval {
+                    Some(steps) => {
+                        params.push(("steps".into(), steps.text()));
                         self.node("approval", &params, e.span)
                     }
                     None => self.node("await", &params, e.span),
@@ -4627,8 +4627,8 @@ route.post("/hook", async (req) => {
         assert_eq!(s.endpoints.len(), 1);
     }
 
-    /// `await approval(…)` is an `approval` node, how many people it waits for a frozen param (1
-    /// when left out); it waits in an action, never a route, and no route resumes it.
+    /// `await approval(…)` is an `approval` node, who decides it a frozen param, its steps (one
+    /// person when left out); it waits in an action, never a route, and no route resumes it.
     #[test]
     fn an_approval_waits_for_people_in_an_action() {
         let src = |body: &str, route: &str| {
@@ -4639,10 +4639,10 @@ route.post("/hook", async (req) => {
         let node = |body: &str| {
             let doc = compiled(&src(body, "")).doc;
             let n = doc.nodes.iter().find(|n| n.data.name == "approval").expect("an approval").clone();
-            (n.param("name").to_string(), n.param("expires").to_string(), n.param("people").to_string())
+            (n.param("name").to_string(), n.param("expires").to_string(), n.param("steps").to_string())
         };
-        assert_eq!(node("  const d = await approval(\"payout\", { expires: \"1d\", people: 2 })"), ("payout".into(), "86400".into(), "2".into()));
-        assert_eq!(node("  const d = await approval(\"payout\")"), ("payout".into(), "604800".into(), "1".into()));
+        assert_eq!(node("  const d = await approval(\"payout\", { expires: \"1d\", people: 2 })"), ("payout".into(), "86400".into(), "person*2".into()));
+        assert_eq!(node("  const d = await approval(\"payout\")"), ("payout".into(), "604800".into(), "person".into()));
         let refused = |body: &str| ts::compile(&src(body, "")).unwrap_err().message;
         for people in ["0", "6", "1.5", "\"2\""] {
             assert!(refused(&format!("  const d = await approval(\"payout\", {{ people: {people} }})")).starts_with("people is how many different people approve"), "{people}");

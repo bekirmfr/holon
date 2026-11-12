@@ -464,10 +464,11 @@ order carries no meaning beyond names being defined before use. `{ ...order, pai
 `with_field` over an existing record (§5.5).
 
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
-`approval{name: payout, expires: 86400, people: 2}`, for people rather than a request: no token is
-handed out for it and no route resumes it. Two different people signed in to Holon approve it (or
-one declines), and the run gets `{approved, by}`. Its permission, `Approval("payout/2")`, names
-how many. Where it goes next is the target design,
+`approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no
+token is handed out for it and no route resumes it. Two different people signed in to Holon approve
+it (or one declines), and the run gets `{approved, by}`. Its permission,
+`Approval("payout/person*2")`, names who decides it: its steps, one slot of two people. Where it
+goes next is the target design,
 [`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8: an approval in steps,
 each filled by a principal holding a role, in order and by different principals (not the one who
 started the run), of which `people: N` stays the short form of one step.

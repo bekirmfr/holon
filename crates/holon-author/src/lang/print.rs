@@ -3357,10 +3357,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     Ok(s) if s > 0 => options.push(format!("expires: {}", quote(&duration(s)))),
                     _ => return Err(format!("an approval's expiry of {expires} seconds has no TypeScript form")),
                 }
-                match node.param("people") {
-                    "1" => {}
-                    n if n.parse::<u32>().is_ok_and(|n| (2..=5).contains(&n)) => options.push(format!("people: {n}")),
-                    n => return Err(format!("an approval by {n} people has no TypeScript form: 1 to 5")),
+                // The language writes people alone for now: one slot, a person's, with no role.
+                let steps = node.param("steps");
+                match holon_core::approval::Steps::parse(steps) {
+                    Some(s) => match s.short() {
+                        Some(1) => {}
+                        Some(n) => options.push(format!("people: {n}")),
+                        None => return Err(format!("an approval by {} has no TypeScript form yet", s.said())),
+                    },
+                    None => return Err(format!("an approval's steps {steps:?} aren't steps: person, or person*2 for 2 people")),
                 }
                 let options = if options.is_empty() { String::new() } else { format!(", {{ {} }}", options.join(", ")) };
                 self.awaits = true;

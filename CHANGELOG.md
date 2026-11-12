@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **An approval's permission names its steps.** The `approval` leaf keeps who decides it as one
+  canonical text, its `steps` param (`person*2`: two people), in place of `people`, and its
+  permission names them: `Approval("payout/person*2")`, which was `Approval("payout/2")`, so a
+  deployment granted the old item asks for the new one. The language is unchanged:
+  `{ people: 2 }` lowers to `person*2`, and prints back as it was written. The review says
+  "approved by 2 people", the permission "wait for approval "payout" by 2 people, and continue
+  later", and a waiting run's point lists its `steps`. This host decides an approval by people
+  alone for now, and a deploy refuses any other steps, which only a hand-edited canvas can write
+  so far. Approvals in steps are `docs/L4s/approval-steps-plan.md`. Run live: approved-payout was
+  reviewed and deployed with `Approval("payout/person*2")`, and its payout was decided by two people.
+
 ## 0.1.0-rc.35
 
 - **Tags: a binding on a tag holds on every flow deployed with it.** A flow's text tags it,

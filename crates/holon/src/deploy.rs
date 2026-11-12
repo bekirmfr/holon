@@ -1140,7 +1140,7 @@ pub(crate) fn run_action(
         Some(id) => entry
             .parked
             .iter()
-            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.people == 0))
+            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.approval.is_none()))
             .map(|name| (name.clone(), durable::token_for(id, name)))
             .collect(),
         None => Vec::new(),

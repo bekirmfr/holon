@@ -2162,7 +2162,7 @@ export const pay = action(async (order) => {
 })
 "#;
     let unit = stage_text(&state, text);
-    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/2\")", "StateWrite(\"decided\")"] });
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")", "StateWrite(\"decided\")"] });
     assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
     let runs = |state: &AppState, token: Option<&str>| {
         let mut headers = req("GET", "/deployments/payouts/runs", vec![]).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
@@ -2181,6 +2181,7 @@ export const pay = action(async (order) => {
     }
     let first = runs(&state, None).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
     assert_eq!((&first["waiting"][0]["name"], &first["waiting"][0]["people"]), (&serde_json::json!("payout"), &serde_json::json!(2)));
+    assert_eq!(first["waiting"][0]["steps"], "person*2", "who decides it, as the grant names it");
     assert!(durable::claim_by_token(&state.deployments, "payouts", "payout", &durable::token_for(&ids[0], "payout")).is_none(), "a token doesn't resume an approval");
     // A run that waits has no answer yet, and hasn't failed: counted, not as an error, and its log
     // entry says where it waits, with no status.

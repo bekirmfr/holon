@@ -987,7 +987,8 @@ misled, the compiler refuses instead.
 - **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
   that names it is refused. People signed in to Holon decide it, never an agent, and how many is
-  part of what the flow asks for, `Approval("name/2")`: a version that asks fewer asks anew.
+  part of what the flow asks for, `Approval("name/person*2")`: a version that asks fewer asks
+  anew.
   The target design, approvals in steps filled by roles in order, is
   [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8; `people: n`
   stays its short form.

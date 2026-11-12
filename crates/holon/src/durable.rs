@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 
+use holon_core::approval::Steps;
 use holon_host::{Exchange, Waits, Waiting};
 
 use crate::*;
@@ -257,6 +258,9 @@ pub(crate) struct StoredWaiting {
     /// How many different people must approve it: 0 (not written) for an event.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) people: u64,
+    /// An approval's steps, the canonical text (`person*2`): empty (not written) for an event.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) steps: String,
     /// The approvals it has had so far, in the order they came.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) approved: Vec<Approved>,
@@ -279,7 +283,14 @@ fn is_zero(n: &u64) -> bool {
 
 impl StoredWaiting {
     fn new(w: &Waiting, expires_at: u64) -> StoredWaiting {
-        StoredWaiting { name: w.name.clone(), expires_at, people: w.people, approved: Vec::new() }
+        // An approval decided by people alone: the short form's count. Any other steps, which a
+        // deploy refuses until they are decided by their slots (permissions.rs), wait for all their
+        // principals: never 0, an event's.
+        let people = w.approval.as_deref().map_or(0, |text| match Steps::parse(text) {
+            Some(steps) => steps.short().map_or_else(|| steps.slots().map(|(_, _, s)| u64::from(s.people)).sum(), u64::from),
+            None => u64::from(holon_core::approval::MAX_PEOPLE),
+        });
+        StoredWaiting { name: w.name.clone(), expires_at, people, steps: w.approval.clone().unwrap_or_default(), approved: Vec::new() }
     }
 
     /// What an approval delivers: `{approved, by, approvals}`, who approved and when, with

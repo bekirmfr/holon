@@ -47,9 +47,8 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "AgentReadsLogs" => ("other", "log", s("its lines"), s("read by agents")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
-        "Approval" => match arg.split_once('/') {
-            Some((name, "1")) => ("triggers", "approval", name.to_string(), s("a person approves")),
-            Some((name, people)) => ("triggers", "approval", name.to_string(), format!("{people} people approve")),
+        "Approval" => match arg.split_once('/').and_then(|(name, steps)| Some((name, holon_core::approval::Steps::parse(steps)?))) {
+            Some((name, steps)) => ("triggers", "approval", name.to_string(), format!("approved by {}", steps.said())),
             None => ("triggers", "approval", arg, s("people approve")),
         },
         "FileArrival" => ("resources", "folder", arg, s("watch")),
@@ -461,6 +460,12 @@ mod tests {
         assert_eq!(part("Limit(fuel=5000)"), ("limits", "limit", "fuel".into(), "5000".into()));
         assert_eq!(part("NetworkIngress"), ("triggers", "requests", String::new(), "receive".into()));
         assert_eq!(part("SecretAnswer(\"maps_key\")"), ("resources", "secret", "maps_key".into(), "answer its callers with it".into()));
+        assert_eq!(part("Approval(\"payout/person*2\")"), ("triggers", "approval", "payout".into(), "approved by 2 people".into()));
+        assert_eq!(part("Approval(\"payout/person\")"), ("triggers", "approval", "payout".into(), "approved by a person".into()));
+        assert_eq!(
+            part("Approval(\"payout/agent:classifier>person:approver\")"),
+            ("triggers", "approval", "payout".into(), "approved by an agent holding classifier, then a person holding approver".into())
+        );
     }
 
     /// A secret's row says where the code sends it, and what is answered to it, read first.

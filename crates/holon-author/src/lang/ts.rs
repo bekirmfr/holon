@@ -3780,7 +3780,7 @@ impl<'s, 't> Reader<'s, 't> {
             for (key, value, at) in self.fields(o)? {
                 if approval && key == "people" {
                     let n = match self.unwrap(value) {
-                        js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=5.0).contains(&n.value) => n.value as u32,
+                        js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=5.0).contains(&n.value) => n.value as u8,
                         _ => return fail(self.span(value.span()), "people is how many different people approve, a number from 1 to 5: { people: 2 }"),
                     };
                     people = Some(n);
@@ -3799,7 +3799,8 @@ impl<'s, 't> Reader<'s, 't> {
                 expires = Some(Box::new(Expr { kind: ExprKind::Duration { seconds, text: s.value.to_string() }, span: self.span(s.span) }));
             }
         }
-        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, people }, span })
+        let approval = people.map(holon_core::approval::Steps::people);
+        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, approval }, span })
     }
 
     /// `console.log("paid", order.id)`, as the standard library has it: a line for the deployment's

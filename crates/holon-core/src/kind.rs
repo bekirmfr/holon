@@ -136,8 +136,8 @@ pub enum Capability {
     /// Waits for an event at the named waiting point, a run continuing when it arrives (`await`,
     /// and `resume_token`, which hands out the token that delivers it). A durable run.
     Await(String),
-    /// Waits at the named point for people to decide, as `name/people` (`payout/2`): how many
-    /// different people must approve is part of the grant, so a version that asks fewer asks
+    /// Waits at the named point for people to decide, as `name/steps` (`payout/person*2`): who
+    /// decides it, and in what order, is part of the grant, so a version that asks less asks
     /// anew. Delivered by the host, never by a token (`approval`). A durable run.
     Approval(String),
     /// Sources entropy / nondeterminism.
@@ -405,7 +405,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // an event arrives (or the wait expires), never computed.
         "await" => vec![Await(ident(params, "name")?)],
         "resume_token" => vec![Await(ident(params, "await")?)],
-        // A waiting point people decide, and how many: both frozen params, so the grant names them.
+        // A waiting point people decide, and by what steps: both frozen params, so the grant names
+        // them.
         "approval" => vec![Approval(approval_grant(params)?)],
         "random" => vec![Random],
         "random_bytes" => vec![Random],
@@ -566,15 +567,15 @@ pub(crate) fn secret_name(params: &[Param]) -> Option<String> {
     ident(params, "name")
 }
 
-/// The frozen param `key` when it is a name: letters, digits, `-` and `_`, 1 to 64.
-/// An approval's grant, `name/people`: `None` for a bad name or a count not from 1 to
-/// [`MAX_APPROVAL_PEOPLE`](crate::primitives::MAX_APPROVAL_PEOPLE).
+/// An approval's grant, `name/steps`: `None` for a bad name, or steps that aren't canonical
+/// ([`Steps::parse`](crate::approval::Steps::parse)), so a hand-edited param fails closed.
 fn approval_grant(params: &[Param]) -> Option<String> {
     let name = ident(params, "name")?;
-    let people: u64 = params.iter().find(|p| p.name() == "people")?.value()?.parse().ok()?;
-    (1..=crate::primitives::MAX_APPROVAL_PEOPLE).contains(&people).then(|| format!("{name}/{people}"))
+    let steps = crate::approval::Steps::parse(params.iter().find(|p| p.name() == "steps")?.value()?)?;
+    Some(format!("{name}/{}", steps.text()))
 }
 
+/// The frozen param `key` when it is a name: letters, digits, `-` and `_`, 1 to 64.
 pub(crate) fn ident(params: &[Param], key: &str) -> Option<String> {
     let name = params.iter().find(|p| p.name() == key)?.value()?;
     let ok = !name.is_empty()
@@ -1303,15 +1304,18 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_names_its_point_and_how_many_people() {
-        let approval = |name: &str, people: &str| vec![Param::frozen("name", name), Param::frozen("expires", "3600"), Param::frozen("people", people)];
-        let caps = capabilities_of("approval", &approval("payout", "2")).unwrap();
-        assert_eq!(caps.iter().collect::<Vec<_>>(), [Capability::Approval("payout/2".into())]);
-        assert!(Capability::Approval("payout/2".into()).is_sourced());
-        assert_eq!(Capability::Approval("payout/2".into()).kind(), Kind::Driver);
-        for (name, people) in [("payout", "0"), ("payout", "6"), ("payout", "two"), ("a b", "1")] {
-            assert!(capabilities_of("approval", &approval(name, people)).is_none(), "{name} {people}");
+    fn an_approval_names_its_point_and_its_steps() {
+        let approval = |name: &str, steps: &str| vec![Param::frozen("name", name), Param::frozen("expires", "3600"), Param::frozen("steps", steps)];
+        let caps = capabilities_of("approval", &approval("payout", "person*2")).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), [Capability::Approval("payout/person*2".into())]);
+        let caps = capabilities_of("approval", &approval("payout", "agent:classifier>person:approver")).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), [Capability::Approval("payout/agent:classifier>person:approver".into())]);
+        assert!(Capability::Approval("payout/person*2".into()).is_sourced());
+        assert_eq!(Capability::Approval("payout/person*2".into()).kind(), Kind::Driver);
+        for (name, steps) in [("payout", "person*0"), ("payout", "person*6"), ("payout", "2"), ("payout", "person*1"), ("payout", "agent"), ("payout", ""), ("a b", "person")] {
+            assert!(capabilities_of("approval", &approval(name, steps)).is_none(), "{name} {steps}");
         }
+        assert!(capabilities_of("approval", &[Param::frozen("name", "payout"), Param::frozen("expires", "3600")]).is_none(), "no steps");
     }
 
     #[test]
