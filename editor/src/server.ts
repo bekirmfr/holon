@@ -717,6 +717,8 @@ export type Summary = {
     failed: number[];
     /** How long its runs in the window took, the middle of them: null with none. */
     p50_ms: number | null;
+    /** When its newest run on record started, in the window or before it: null with none. */
+    last_ms: number | null;
     /** Its unrecorded handlers' runs, all told: never logged, so in no hour. */
     unrecorded: { runs: number; failed: number };
     on_record: number;

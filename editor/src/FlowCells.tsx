@@ -74,7 +74,7 @@ export function SummaryCells({ slug, summary, may }: { slug: string; summary: Su
         {s && s.p50_ms !== null ? tookSaid(s.p50_ms) : none}
       </td>
       {may}
-      <td className="hl-table__dim">{!s ? none : last === null ? "–" : "at_ms" in last ? time(last.at_ms) : last.within === 1 ? "within the hour" : `within ${last.within} h`}</td>
+      <td className="hl-table__dim">{!s ? none : last === null ? "–" : time(last)}</td>
     </>
   );
 }

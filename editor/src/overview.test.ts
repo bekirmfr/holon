@@ -23,19 +23,17 @@ describe("the overview's words", () => {
     expect(tookSaid(undefined)).toBe("–");
   });
 
-  it("say when a flow last ran: the moment when among the latest, else the hour, else none", () => {
-    const flow = (slug: string, runs: number[]) => ({ slug, status: "running" as const, runs, failed: runs.map(() => 0), p50_ms: null, unrecorded: { runs: 0, failed: 0 }, on_record: 0, head: "", breaks: [] });
+  it("say when a flow last ran: its newest run's start, though not among the latest nor in the window", () => {
+    const flow = (slug: string, runs: number[], last_ms: number | null) => ({ slug, status: "running" as const, runs, failed: runs.map(() => 0), p50_ms: null, last_ms, unrecorded: { runs: 0, failed: 0 }, on_record: 0, head: "", breaks: [] });
     const s: Summary = {
       at_ms: 0,
       hours: 4,
       totals: { runs: 0, failed: 0, running: 3, paused: 0, stopped: 0 },
-      deployments: [flow("a", [0, 0, 0, 2]), flow("b", [1, 3, 0, 0]), flow("c", [0, 0, 0, 0])],
+      deployments: [flow("a", [0, 0, 0, 2], 1234), flow("b", [1, 3, 0, 0], 99), flow("c", [0, 0, 0, 0], 5), flow("d", [0, 0, 0, 0], null)],
       latest: [{ slug: "a", seq: 7, at_ms: 1234, duration_ms: 1, kind: "request", route: "GET /", status: 200, failed: false }],
       chain: { on_record: 0, breaks: 0, witness: null, checked: null },
     };
-    expect(lastRun("a", s)).toEqual({ at_ms: 1234 });
-    expect(lastRun("b", s)).toEqual({ within: 3 });
-    expect(lastRun("c", s)).toBeNull();
+    expect(["a", "b", "c", "d", "e"].map((slug) => lastRun(slug, s))).toEqual([1234, 99, 5, null, null]);
   });
 
   it("say the run log by its last check, else as it was written", () => {

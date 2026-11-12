@@ -2,8 +2,8 @@
 //!
 //! - each deployment's runs and failures hour by hour, and how long its runs in the window took
 //!   (the median), counted from what its log keeps of each run with no line read (recorder.rs's
-//!   `hourly` and `median_ms`), and its unrecorded handlers' runs (their tallies, which have no
-//!   hours);
+//!   `hourly` and `median_ms`), when its newest run on record started, and its unrecorded
+//!   handlers' runs (their tallies, which have no hours);
 //! - the host's totals: runs and failures in the window, and how many flows run, are paused or are
 //!   stopped;
 //! - the newest runs across every flow, from what each log holds in memory: when, which route, the
@@ -62,6 +62,8 @@ struct FlowSummary {
     failed: Vec<u64>,
     /// How long its runs in the window took, the middle of them: none if it had none.
     p50_ms: Option<f64>,
+    /// When its newest run on record started, in the window or before it: none if it has none.
+    last_ms: Option<u64>,
     /// Its unrecorded handlers' runs, all told: never logged, so never in an hour.
     unrecorded: Unrecorded,
     /// How many runs its log holds, its head (hex), and the runs whose line doesn't name the one
@@ -150,7 +152,7 @@ fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bo
     let mut latest: Vec<Latest> = Vec::new();
     let mut deployments = Vec::with_capacity(found.len());
     for (slug, status, unrecorded, log) in found {
-        let ((runs, failed), p50_ms, on_record, head, breaks) = log.with(|log| {
+        let ((runs, failed), p50_ms, last_ms, on_record, head, breaks) = log.with(|log| {
             latest.extend(log.newest().take(LATEST).map(|e| Latest {
                 slug: slug.clone(),
                 seq: e.seq,
@@ -162,7 +164,8 @@ fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bo
                 failed: crate::recorder::ran_failed(e),
                 waited: !e.parked.is_empty(),
             }));
-            (log.hourly(at_ms, hours), log.median_ms(at_ms, hours), log.runs_kept(), log.head().to_string(), log.breaks().to_vec())
+            let last_ms = log.newest().next().map(|e| e.at_ms);
+            (log.hourly(at_ms, hours), log.median_ms(at_ms, hours), last_ms, log.runs_kept(), log.head().to_string(), log.breaks().to_vec())
         });
         totals.runs += runs.iter().sum::<u64>();
         totals.failed += failed.iter().sum::<u64>();
@@ -171,7 +174,7 @@ fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bo
             Status::Paused => totals.paused += 1,
             Status::Stopped => totals.stopped += 1,
         }
-        deployments.push(FlowSummary { slug, status, runs, failed, p50_ms, unrecorded, on_record, head, breaks });
+        deployments.push(FlowSummary { slug, status, runs, failed, p50_ms, last_ms, unrecorded, on_record, head, breaks });
     }
     latest.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| b.seq.cmp(&a.seq)));
     latest.truncate(LATEST);

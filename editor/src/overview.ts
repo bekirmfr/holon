@@ -26,15 +26,10 @@ export function tookSaid(ms: number | null | undefined): string {
   return `${Math.round(ms / 60_000)} min`;
 }
 
-/** When a flow last ran, as its summary knows it: the moment, when its run is among the latest
- *  across every flow; else the hours since the newest hour it ran in (`within`); none when it
- *  didn't run in the window. */
-export function lastRun(slug: string, s: Summary): { at_ms: number } | { within: number } | null {
-  const newest = s.latest.find((r) => r.slug === slug);
-  if (newest) return { at_ms: newest.at_ms };
-  const runs = s.deployments.find((d) => d.slug === slug)?.runs ?? [];
-  for (let i = runs.length - 1; i >= 0; i--) if (runs[i] > 0) return { within: runs.length - i };
-  return null;
+/** When a flow last ran: its newest run on record's start, from its summary; none when it has
+ *  none on record. */
+export function lastRun(slug: string, s: Summary): number | null {
+  return s.deployments.find((d) => d.slug === slug)?.last_ms ?? null;
 }
 
 /** The run log tile: whether every line names the one before, by the last check if there was
