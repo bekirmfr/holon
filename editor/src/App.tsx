@@ -881,7 +881,9 @@ function Canvas({
       out.push({ label: `Save ${name}`, kind: "this flow", run: () => void onSave() });
       out.push({ label: `Deploy ${name}`, kind: "this flow", run: () => void onDeployFlow() });
       out.push({ label: `Format ${name}`, kind: "this flow", run: () => askTextOpening({ do: "format" }) });
-      out.push({ label: `Check ${name}`, kind: "this flow", run: runCheck });
+      // Called, not named: runCheck is declared below, and naming it here, on a render that opens
+      // the editor with the palette up, threw before it was (and blanked the page).
+      out.push({ label: `Check ${name}`, kind: "this flow", run: () => runCheck() });
     }
     const places: [string, Route][] = [
       ["Overview", { kind: "overview" }],
