@@ -76,7 +76,7 @@ fn port_of(c: &Lowered) -> &str {
 /// Nothing would start a run of it: no route, websocket, clock, file, mail, feed or queue handler or action. It is a holon, placed
 /// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
-    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.tags());
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.unit_settings());
     server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.websockets.is_empty() && server.actions.is_empty()
 }
 
@@ -85,8 +85,8 @@ pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a webs
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
-    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.tags());
-    let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.tags()).map(|hash| {
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.unit_settings());
+    let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.unit_settings()).map(|hash| {
         let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
@@ -440,7 +440,7 @@ mod tests {
         let marks_of = |text: &str| {
             let mut store = MapResolver::new();
             let c = compile("t.holon.ts", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
-            let marks = crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c), c.doc.tags());
+            let marks = crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c), c.doc.unit_settings());
             let kind = |id: &str| c.doc.nodes.iter().find(|n| n.id == id).map(|n| n.data.name.clone()).unwrap_or_default();
             marks.into_iter().map(|(id, lines)| (c.names.get(&id).cloned().unwrap_or_else(|| kind(&id)), lines)).collect::<std::collections::BTreeMap<String, Vec<String>>>()
         };

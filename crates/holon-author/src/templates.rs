@@ -62,8 +62,7 @@ use crate::wire::{frozen_value, WParam, WPort, WType};
 /// The templates, in palette order.
 pub const TEMPLATES: &[&str] = &["request", "respond", "websocket", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "on_queue", "action"];
 
-/// The templates a handler's run starts at: each says how its runs are recorded (`log`) and the
-/// keys the flow taints (`taint`, the same on each, which the server unit gathers).
+/// The templates a handler's run starts at: each says how its runs are recorded (`log`).
 pub const HANDLERS: &[&str] = &["request", "websocket", "every", "on_file", "on_mail", "on_feed", "on_queue", "action"];
 
 /// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
@@ -283,16 +282,16 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
 pub fn defaults(name: &str) -> Option<Vec<WParam>> {
     let f = WParam::frozen;
     Some(match name {
-        "request" => vec![f("method", "GET"), f("path", "/"), f("resume", ""), f("log", ""), f("taint", "")],
+        "request" => vec![f("method", "GET"), f("path", "/"), f("resume", ""), f("log", "")],
         "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
-        "websocket" => vec![f("path", "/chat"), f("on", "message"), f("log", ""), f("taint", "")],
+        "websocket" => vec![f("path", "/chat"), f("on", "message"), f("log", "")],
         "stripe_verify" => vec![f("tolerance", "300")],
-        "every" => vec![f("seconds", "10"), f("log", ""), f("taint", "")],
-        "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", ""), f("taint", "")],
-        "on_mail" => vec![f("mail", "ops"), f("log", ""), f("taint", "")],
-        "on_feed" => vec![f("feed", "prices"), f("log", ""), f("taint", "")],
-        "on_queue" => vec![f("queue", "payouts"), f("log", ""), f("taint", "")],
-        "action" => vec![f("name", "run"), f("log", ""), f("taint", "")],
+        "every" => vec![f("seconds", "10"), f("log", "")],
+        "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", "")],
+        "on_mail" => vec![f("mail", "ops"), f("log", "")],
+        "on_feed" => vec![f("feed", "prices"), f("log", "")],
+        "on_queue" => vec![f("queue", "payouts"), f("log", "")],
+        "action" => vec![f("name", "run"), f("log", "")],
         _ => return None,
     })
 }

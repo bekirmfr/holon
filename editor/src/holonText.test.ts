@@ -23,8 +23,8 @@ flow("hello-api", { port: 8101 })
 route.get("/hello/:name", (req) => concat("Hello, ", req.params.name))
 `;
 
-const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: string; tags?: string[] } }, ev: Evaluator) =>
-  flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? "", doc.server?.tags ?? []);
+const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: string; tags?: string[]; taint?: string[] } }, ev: Evaluator) =>
+  flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? "", doc.server ?? {});
 
 describe("flows as text", () => {
   it("compiles a flow written by hand into a server with its route", () => {
@@ -33,7 +33,7 @@ describe("flows as text", () => {
     expect(name).toBe("hello-api");
     expect((doc.nodes as PrimitiveNodeType[]).map((n) => n.data.name).sort()).toEqual(["concat", "const", "field", "request", "respond"]);
     expect(doc.server?.port).toBe("8101");
-    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8101", []);
+    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8101", {});
     expect(server.errors).toEqual([]);
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
   });
@@ -55,7 +55,7 @@ route.post("/notes", (req) => {
 })
 `;
     const { doc } = compileHolon(board, ev);
-    const derive = (d: typeof doc) => deriveServer(d.nodes as PrimitiveNodeType[], d.edges as Edge[], ev, "8170", []);
+    const derive = (d: typeof doc) => deriveServer(d.nodes as PrimitiveNodeType[], d.edges as Edge[], ev, "8170", {});
     const fine = derive(doc);
     expect(fine.errors).toEqual([]);
     expect(fine.endpoints.map((e) => `${e.method} ${e.path} ${e.log}`)).toEqual(["GET /health unrecorded", "GET /notes lazy", "POST /notes "]);

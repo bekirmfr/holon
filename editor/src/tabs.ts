@@ -110,7 +110,20 @@ export function settingsOf(server: FlowDocument["server"]): FlowSettings {
     ...(server?.requirements ? { requirements: server.requirements } : {}),
     ...(server?.browsers ? { browsers: server.browsers } : {}),
     ...(server?.tags?.length ? { tags: server.tags } : {}),
+    ...(server?.taint?.length ? { taint: server.taint } : {}),
   };
+}
+
+/** A flow's settings once a typed text, whose document's settings are `server`, is applied over
+ *  `was`, the flow's before: everything the text says (port, browsers, tags, taint, optional,
+ *  keep), and what only the deploy settings say (the other limits, the exceptions) as it was. */
+export function settingsSaid(server: FlowDocument["server"], was: FlowSettings): FlowSettings {
+  const { requirements: said, ...rest } = settingsOf(server);
+  const { optional: _, limits: before, ...unsaid } = was.requirements ?? {};
+  const optional = said?.optional;
+  const limits = { ...Object.fromEntries(Object.entries(before ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said?.limits };
+  const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
+  return { ...rest, ...(Object.keys(requirements).length > 0 ? { requirements } : {}) };
 }
 
 /** A fresh flow's meta, in edit mode. */

@@ -46,11 +46,11 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     let c = commands::compile("text", source, &mut store).map_err(|r| r.err.join("\n"))?;
     let name = c.name.clone().ok_or("the text needs a `flow <name>` line: the name is what it deploys as")?;
     let settings = c.doc.server.clone().unwrap_or_default();
-    let server = derive_server(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, &settings.tags);
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, settings.unit());
     if !server.errors.is_empty() {
         return Err(server.errors.join("\n"));
     }
-    let hash = flow_unit(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, &settings.tags)?;
+    let hash = flow_unit(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port, settings.unit())?;
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
     // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
     // none runs whole.
@@ -114,7 +114,7 @@ fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
     let mut store = MapResolver::new();
     crate::text::restore(doc, &mut store, &Names::new());
     let port = doc.server.clone().unwrap_or_default().port;
-    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.tags()).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").

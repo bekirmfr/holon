@@ -17,7 +17,7 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
-use holon_author::builder::FlowDocument;
+use holon_author::builder::{FlowDocument, UnitSettings};
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
 use holon_author::group::{self, GroupError};
@@ -303,6 +303,20 @@ pub fn primitive_catalog() -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn variadic_primitives() -> Vec<String> {
     holon_core::VARIADIC.iter().map(|s| s.to_string()).collect()
+}
+
+/// The keys every flow keeps out of its records (core's `ALWAYS_TAINTED`: credentials), beside
+/// those its settings' `taint` names: the deploy settings show them as fixed.
+#[wasm_bindgen]
+pub fn always_tainted() -> Vec<String> {
+    holon_core::ALWAYS_TAINTED.iter().map(|s| s.to_string()).collect()
+}
+
+/// Whether `key` can be one of a flow's taint keys (core's `is_taint_key`): the deploy settings
+/// check a key as it is added.
+#[wasm_bindgen]
+pub fn is_taint_key(key: &str) -> bool {
+    holon_core::is_taint_key(key)
 }
 
 /// The variadic leaves whose extra inputs are any type, passed to their function after the item
@@ -784,25 +798,26 @@ impl Evaluator {
     }
 
     /// The server a flow declares, `{endpoints, errors, serverHash, trace}`, its units stored here
-    /// (holon-author's `derive_server`). `port` and `tags` are as the flow's settings hold them.
-    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
+    /// (holon-author's `derive_server`). `port`, `tags` and `taint` are as the flow's settings hold
+    /// them.
+    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port, &tags))
+        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }))
     }
 
     /// What each canvas node does with a secret, by node id: a line for each sink a secret reaches
     /// there (holon-author's `secret_marks`), for the canvas to mark it. `{}` for a canvas that
     /// doesn't derive.
-    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
+    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port, &tags))
+        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }))
     }
 
     /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
     /// as one composite. Throws why it can't be.
-    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<String, JsError> {
+    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<String, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        flow::flow_unit(&nodes, &wires, &mut self.resolver, port, &tags).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
+        flow::flow_unit(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
     }
 
     /// Parse a hex hash and resolve it against this Evaluator's own resolver — the identical

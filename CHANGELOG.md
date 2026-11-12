@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **A flow's taint keys are a deploy setting, listed in the editor.** `taint: [...]` stays in the
+  text's `flow(...)` line, beside `tags`, and is held in the flow's deploy settings and frozen on
+  its server unit from there: the route nodes have no `taint` param any more. The editor's
+  deployment settings list the keys under "keeps out of its records", the four every flow taints
+  shown fixed: one is added by name, checked by core's rule as it is (one word, at most 128
+  characters, not listed already, in either case), and removed with its ×; the text's `flow(...)`
+  line is written again, as for the port. A key is listed once (`"number" is tainted once`). A
+  version that drops a key is a weakening: a person's review says the change (`keeps out of its
+  records: x-api-key number → x-api-key`), and an agent's version waits for a person as a
+  proposal, `Untaint("number")`, worded "record the values of "number" again". Typing `tags` or
+  `taint` in the text pane now reaches the flow's settings (`tags` typed there were dropped). The
+  `card-vault` sample's code is unchanged, and its try-it says what its run shows: the key it is
+  sent as the secret it is (`‹secret:merchant_key …›` wins over the taint mark), another key as
+  `‹taint:x-merchant-key›`. Run live: deployed with its two keys and no taint param on any node,
+  its run recorded with `‹taint:number›`; ada's review of a version dropping `number` said so, an
+  agent's was kept as a proposal with the deployment's keys unchanged, and once ada deployed it
+  the next card's number was recorded. In the editor, a key added to the list and removed with its
+  × rewrote the `flow(...)` line, one typed in the text joined the list, and `NUMBER` beside
+  `number` was refused as listed already.
 - **The run file is the account that set the server up.** Commands on the server's machine
   (`holon decide`, `holon deploy`…) sign in through its run file as the person who set the server
   up, holding what is bound to them and admin on the host, so that person is one principal
