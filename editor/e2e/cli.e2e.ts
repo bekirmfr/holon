@@ -3,7 +3,7 @@
 // is the built binary, signed in with the e2e admin's token (HOLON_TOKEN), as a script would be.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, OWN_PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
@@ -98,7 +98,12 @@ test("a clock flow is run by hand, its grant and secrets changed, and it is remo
   expect(holon(adminToken, ["remove", slug]).status).toBe(2);
   expect(holon(adminToken, ["remove", slug, "--yes"]).err).toContain("before deleting it");
   ok(adminToken, ["stop", slug]);
-  expect(ok(adminToken, ["remove", slug, "--yes"]).trim()).toBe(`${slug}: removed, its secrets forgotten`);
+  const [removed, records] = ok(adminToken, ["remove", slug, "--yes"]).trim().split("\n");
+  expect(removed).toBe(`${slug}: removed, its secrets forgotten`);
+  // Its run records stay, as an export holon verify checks.
+  const kept = /^its run records: (.+\.json\.gz) \(holon verify checks it\)$/.exec(records)?.[1];
+  expect(kept, records).toContain(`${slug}-runs-`);
+  expect(existsSync(kept!)).toBe(true);
   expect(ok(adminToken, ["deployments"])).not.toContain(slug);
 });
 

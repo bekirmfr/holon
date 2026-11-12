@@ -923,11 +923,29 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// `POST /trigger/<slug>` starts 404ing immediately afterward, the same 404 it already gives a
 /// slug that was never deployed. Returns the removed deployment's last known info, or 404 if
 /// the slug didn't exist.
+///
+/// Its run records stay (web console L4 §8.4): its log and its timeline, with the units its runs
+/// ran and the file texts they read, are written first as an export `holon verify` checks
+/// (`removed_file`), and the answer's `records` says where. Only then do its live files go, so
+/// the slug deployed again starts a new chain, and the old one stays readable beside it. If they
+/// can't be written, nothing is removed.
 pub(crate) fn handle_delete_deployment(
+    store: &SharedStore,
+    folders: &folders::Folders,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &Place,
     slug: &str,
 ) -> Response {
+    // What its records are read from, with the table's lock released while they are written.
+    let held = match deployments.lock().unwrap().get(slug) {
+        Some(dep) if dep.life.status != Status::Stopped => return err(409, format!("stop {slug:?} before deleting it")),
+        Some(dep) => (Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
+        None => return err(404, format!("no deployment {slug:?}")),
+    };
+    let records = match keep_records(store, folders, deployments_path, slug, held) {
+        Ok(at) => at,
+        Err(e) => return err(500, format!("{slug:?}'s run records couldn't be kept ({e}), so nothing was removed")),
+    };
     let removed = {
         let mut table = deployments.lock().unwrap();
         match table.get(slug) {
@@ -952,10 +970,46 @@ pub(crate) fn handle_delete_deployment(
             dep.channels.close();
             dep.sockets.close_all(websockets::REMOVED);
             persist_deployments(deployments_path, deployments);
-            Response::json(&deployment_entry(slug, &dep))
+            let mut answer = serde_json::to_value(deployment_entry(slug, &dep)).unwrap_or_default();
+            answer["records"] = serde_json::json!(records.map(|p| p.display().to_string()));
+            Response::json(&answer)
         }
         None => err(404, format!("no deployment {slug:?}")),
     }
+}
+
+/// Where a removed deployment's run records are kept: beside the logs, in `removed/`, by its slug
+/// and when it was removed (`shop-runs-1762963200000.json.gz`). None without a data folder.
+pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64) -> Option<PathBuf> {
+    deployments_path.beside("logs").map(|logs| PathBuf::from(logs).join("removed").join(format!("{slug}-runs-{at_ms}.json.gz")))
+}
+
+/// Write a deployment's log and timeline (`held`: its log, its secrets' redactor, its events and
+/// their head) as an export, gzipped as a backup's is (storage.rs): where it went, or None with
+/// no data folder or nothing on record.
+fn keep_records(
+    store: &SharedStore,
+    folders: &folders::Folders,
+    deployments_path: &Place,
+    slug: &str,
+    (log, redactor, events, events_head): (Arc<recorder::LogCell>, crate::secrets::Redactor, Vec<String>, String),
+) -> Result<Option<PathBuf>, String> {
+    let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let Some(to) = removed_file(deployments_path, slug, at_ms) else { return Ok(None) };
+    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    if lines.is_empty() && events.is_empty() {
+        return Ok(None);
+    }
+    let export = verify::export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, u64::MAX)?;
+    let json = serde_json::to_vec(&export).map_err(|e| e.to_string())?;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, &json).map_err(|e| e.to_string())?;
+    let bytes = gz.finish().map_err(|e| e.to_string())?;
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    crate::sealing::write_private(&to, &bytes).map_err(|e| e.to_string())?;
+    Ok(Some(to))
 }
 
 /// Bump a deployment's trigger/error counters after a fire attempt — a small, shared tail

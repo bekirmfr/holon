@@ -363,7 +363,9 @@ fn delete_deployment_stops_its_actions_and_removes_it_from_the_list() {
     assert_eq!(route(&state, &req("POST", "/deployments/echo/stop", vec![])).status_code, 200);
     let deleted = route(&state, &req("DELETE", "/deployments/echo", vec![]));
     assert_eq!(deleted.status_code, 200);
-    assert_eq!(body_json(deleted)["unit"], to_hex(&unit));
+    let deleted = body_json(deleted);
+    assert_eq!(deleted["unit"], to_hex(&unit));
+    assert_eq!(deleted["records"], serde_json::Value::Null, "kept in memory only, its records have nowhere to go");
 
     // 404s after deletion — same as a slug that was never deployed.
     assert_eq!(echo(), 404);
@@ -5922,6 +5924,49 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
 
     route(&state, &req("POST", "/deployments/verified/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/verified", vec![]));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Removing a deployment keeps its run records (web console L4 §8.4): its log and timeline are
+/// written first as an export `holon verify` checks, beside the logs, and the answer says where.
+/// Deployed again, the slug starts a new chain: its first run names no line before it, and the
+/// removed runs stay, checked as they were.
+#[test]
+fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() {
+    let mut state = test_state();
+    let path = unique_temp_path("removed-log");
+    state.deployments_path = path.clone().into();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "gone", writer, ack.clone()).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(put(&state, "gone", body).status_code, 200);
+    }
+    let head = body_json(route(&state, &req("GET", "/deployments/gone/log", vec![])))["head"].as_str().unwrap().to_string();
+    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
+    let removed = body_json(route(&state, &req("DELETE", "/deployments/gone", vec![])));
+    let kept = std::path::PathBuf::from(removed["records"].as_str().unwrap_or_else(|| panic!("where its records are: {removed}")));
+    let logs = recorder::file_for(&Place::parse(&path), "gone").unwrap();
+    assert_eq!(kept.parent(), Some(logs.with_file_name("removed").as_path()), "{}", kept.display());
+    assert!(!logs.exists(), "its live log goes");
+
+    let export = verify::read_export(&kept).unwrap();
+    assert_eq!((export.lines.len(), export.head.as_str()), (3, head.as_str()));
+    assert!(export.events.iter().any(|e| e.contains("\"deploy")), "its timeline: {:?}", export.events);
+    let report = verify::check(&export, Some(&head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    // The slug deployed again: a new chain, the old records where they were.
+    assert_eq!(deploy_json(&state, "gone", writer, ack).status_code, 200);
+    assert!(log_entries(&state, "gone").is_empty(), "no run on its new record yet");
+    assert_eq!(put(&state, "gone", "anew").status_code, 200);
+    let fresh = log_entries(&state, "gone");
+    assert_eq!((fresh.len(), fresh[0]["seq"].as_u64(), fresh[0].get("prev")), (1, Some(0), None), "{fresh:?}");
+    assert_eq!(verify::read_export(&kept).unwrap().lines, export.lines);
+
+    route(&state, &req("POST", "/deployments/gone/stop", vec![]));
+    route(&state, &req("DELETE", "/deployments/gone", vec![]));
+    let _ = std::fs::remove_dir_all(logs.parent().unwrap());
     let _ = std::fs::remove_file(&path);
 }
 

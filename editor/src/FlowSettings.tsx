@@ -518,9 +518,9 @@ function Lifecycle({ entry, onAction, may }: { entry: DeploymentEntry; onAction:
   );
 }
 
-/** Removing it: every session, its state and its log go, which can't be undone (its runs exported
- *  first keep their record). Asked by typing its name, once it is stopped, by whoever may delete
- *  it (`flow.delete`). */
+/** Removing it: every session and its state go, which can't be undone; its run records stay on the
+ *  host, written as an export `holon verify` checks (the server's DELETE). Asked by typing its
+ *  name, once it is stopped, by whoever may delete it (`flow.delete`). */
 function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boolean; onRemove: () => Promise<void>; may: Answer }) {
   const [typed, setTyped] = useState("");
   const [msg, setMsg] = useState("");
@@ -528,7 +528,8 @@ function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boole
     <section className="hl-flow__section hl-flow__danger" aria-label="remove">
       <h2>Remove</h2>
       <p className="hl-flow__note">
-        Removes the deployment, every session, its state and its log. It can't be undone; its saved flow stays, and its runs exported first (Runs, Export) keep their record.{stopped ? "" : " Stop it first."}
+        Removes the deployment, every session and its state. It can&apos;t be undone. Its run records stay: its log and timeline are kept on the host, as an export{" "}
+        <code>holon verify</code> checks, and deployed again, {slug} starts a new log. Its saved flow stays.{stopped ? "" : " Stop it first."}
       </p>
       <div className="hl-flow__bar">
         <input className="hl-flow__filter" aria-label={`type ${slug} to remove it`} placeholder={`type ${slug}`} value={typed} {...gateOf(may, { disabled: !stopped })} onChange={(e) => setTyped(e.target.value)} />

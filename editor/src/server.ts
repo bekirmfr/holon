@@ -1366,12 +1366,12 @@ export async function listDeployments(): Promise<DeploymentEntry[]> {
   return deployments;
 }
 
-/** `DELETE /deployments/<slug>` — stop a deployment. Sufficient on its own: the scheduler only
- *  ever acts on what's currently in the table, and its routes and actions start 404ing
- *  immediately afterward. */
-export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
+/** `DELETE /deployments/<slug>` — remove a stopped deployment. Its routes and actions start
+ *  404ing at once; its run records are kept first, as an export `holon verify` checks, and
+ *  `records` says where on the host (null for a server keeping them in memory only). */
+export async function deleteDeployment(slug: string): Promise<DeploymentEntry & { records: string | null }> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}`, { method: "DELETE" });
-  return asJson<DeploymentEntry>(res);
+  return asJson<DeploymentEntry & { records: string | null }>(res);
 }
 
 /** One `(capability, payload)` pair a trigger actually performed — mirrors `PerformedEntry`. */

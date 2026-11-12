@@ -1647,7 +1647,8 @@ function Canvas({
                 onAction: (action, from) => changeDeployment(route.slug, action, from).then(() => refreshDeployments()),
                 onChanged: refreshDeployments,
                 onRemove: async () => {
-                  await deleteDeployment(route.slug);
+                  const { records } = await deleteDeployment(route.slug);
+                  toast(`Removed ${route.slug}.${records ? ` Its run records are kept in ${records}.` : ""}`, "ok");
                   refreshDeployments();
                   navigate({ kind: "flows" });
                 },
