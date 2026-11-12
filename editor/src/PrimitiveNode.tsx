@@ -247,7 +247,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
     if (!name || name === old) return;
     const ports = side === "inputs" ? inputs : outputs;
     if (ports.some((p) => p.name === name)) {
-      await dialog.confirm(`"${name}" is already one of this node's ${side}.`, "OK");
+      await dialog.notice(`"${name}" is already one of this node's ${side}.`);
       return;
     }
     updateNodeData(id, { [side]: ports.map((p) => (p.name === old ? { ...p, name } : p)) });

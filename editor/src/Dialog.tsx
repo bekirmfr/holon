@@ -5,7 +5,8 @@
 //
 // A question is answered from the keys as well: Enter is its button and Esc cancels, and a yes/no
 // question also takes y and n (the workbench's Confirm), shown as chips on its buttons. A question
-// with several answers takes each one's letter (keymap.ts's lettersOf), shown on it.
+// with several answers takes each one's letter (keymap.ts's lettersOf), shown on it, and a notice
+// (something to read, with one button) takes its button's letter, Enter and Esc alike.
 
 import { Kbd } from "./ui/Kbd";
 import { keyOf, keysFor } from "./ui/Keys";
@@ -15,7 +16,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
   | { kind: "prompt"; message: string; initial: string; action: string; empty: boolean; resolve: (value: string | null) => void }
-  | { kind: "choose"; message: string; answers: string[]; resolve: (at: number | null) => void };
+  | { kind: "choose"; message: string; answers: string[]; resolve: (at: number | null) => void }
+  | { kind: "notice"; message: string; action: string; body?: ReactNode; resolve: () => void };
 
 type Dialogs = {
   /** Ask a yes/no question; resolves true only if confirmed. `action` labels the confirm button;
@@ -28,6 +30,9 @@ type Dialogs = {
   /** Ask a question with several answers, the last of them the highlighted one (Enter); resolves
    *  the answer's index, or null if cancelled (Esc, or a click beside it). */
   choose: (message: string, answers: string[]) => Promise<number | null>;
+  /** Say something, with one button that closes it (`action`, "OK" by default): nothing to
+   *  answer. `body` is shown under the message, as a confirm's is. Resolves once closed. */
+  notice: (message: string, action?: string, body?: ReactNode) => Promise<void>;
 };
 
 const DialogContext = createContext<Dialogs | null>(null);
@@ -58,12 +63,17 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, empty, resolve }));
   }, []);
   const choose = useCallback((message: string, answers: string[]) => new Promise<number | null>((resolve) => setAsk({ kind: "choose", message, answers, resolve })), []);
+  const notice = useCallback(
+    (message: string, action = "OK", body?: ReactNode) => new Promise<void>((resolve) => setAsk({ kind: "notice", message, action, body, resolve })),
+    [],
+  );
 
   /** `accepted`: the highlighted button (for a choice, the last answer; a number, that answer). */
   const close = useCallback(
     (accepted: boolean | number) => {
       if (!ask) return;
-      if (ask.kind === "confirm") ask.resolve(accepted !== false);
+      if (ask.kind === "notice") ask.resolve();
+      else if (ask.kind === "confirm") ask.resolve(accepted !== false);
       else if (ask.kind === "choose") ask.resolve(accepted === false ? null : accepted === true ? ask.answers.length - 1 : accepted);
       else ask.resolve(accepted !== false && (ask.empty || text.trim() !== "") ? text.trim() : null);
       setAsk(null);
@@ -71,8 +81,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [ask, text],
   );
 
-  // A choice's answers each take a letter; a yes/no question takes y and n.
-  const letters = ask?.kind === "choose" ? lettersOf(ask.answers) : [];
+  // A choice's answers each take a letter, as a notice's button does; a yes/no question takes y and n.
+  const letters = ask?.kind === "choose" ? lettersOf(ask.answers) : ask?.kind === "notice" ? lettersOf([ask.action]) : [];
 
   useEffect(() => {
     if (!ask) return;
@@ -88,7 +98,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     });
     const onKey = (e: KeyboardEvent) => {
       const k = keyOf(e);
-      const letter = ask.kind === "choose" ? lettersOf(ask.answers).indexOf(k) : -1;
+      const letter = ask.kind === "choose" ? lettersOf(ask.answers).indexOf(k) : ask.kind === "notice" && lettersOf([ask.action])[0] === k ? 0 : -1;
       const act = letter >= 0 ? () => close(letter) : keys[k];
       if (!act) return;
       e.preventDefault();
@@ -119,7 +129,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   } as const;
 
   return (
-    <DialogContext.Provider value={{ confirm, prompt, choose }}>
+    <DialogContext.Provider value={{ confirm, prompt, choose, notice }}>
       {children}
       {ask && (
         <div
@@ -142,7 +152,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               border: "1px solid var(--border)",
               borderRadius: 6,
               padding: 16,
-              width: ask.kind === "confirm" && ask.body ? 760 : 420,
+              width: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? 760 : 420,
               maxWidth: "calc(100vw - 32px)",
               // As tall as the window at most: the buttons stay in it, and what is above scrolls.
               maxHeight: "calc(100vh - 32px)",
@@ -153,8 +163,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               gap: 12,
             }}
           >
-            <div style={{ whiteSpace: "pre-line", maxHeight: ask.kind === "confirm" && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
-            {ask.kind === "confirm" && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
+            <div style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            {(ask.kind === "confirm" || ask.kind === "notice") && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
             {ask.kind === "prompt" && (
               <input
                 ref={input}
@@ -170,7 +180,19 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 }}
               />
             )}
-            {ask.kind === "choose" ? (
+            {ask.kind === "notice" ? (
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  ref={ok}
+                  onClick={() => close(true)}
+                  aria-keyshortcuts={[letters[0]?.toUpperCase(), "Enter", "Escape"].filter(Boolean).join(" ")}
+                  style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }}
+                >
+                  {letters[0] && <Kbd k={letters[0]} />}
+                  {ask.action}
+                </button>
+              </div>
+            ) : ask.kind === "choose" ? (
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
                 {ask.answers.map((answer, i) => {
                   const last = i === ask.answers.length - 1;

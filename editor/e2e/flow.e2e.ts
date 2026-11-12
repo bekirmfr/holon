@@ -32,6 +32,8 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   const chain = page.getByRole("dialog");
   await expect(chain).toContainText("The chain is unbroken");
   await expect(chain).toContainText("holon verify hello-api-runs.json --head ");
+  // A notice: one button, nothing to answer.
+  await expect(chain.getByRole("button")).toHaveCount(1);
   await chain.getByRole("button", { name: "Close" }).click();
 
   // A run opens its record: how it ended, its steps timed, what came in and went out; checked

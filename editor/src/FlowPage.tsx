@@ -325,7 +325,7 @@ function RunsTab({ slug, navigate, mayExport = true }: { slug: string; navigate:
     } catch (e) {
       body = <p className="hl-flow__bad">{say(e)}</p>;
     }
-    await dialog.confirm(`The chain of ${slug}'s runs`, "Close", body);
+    await dialog.notice(`The chain of ${slug}'s runs`, "Close", body);
   };
   const exportRuns = () =>
     downloadRuns(slug).then(

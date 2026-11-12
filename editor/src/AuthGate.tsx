@@ -292,9 +292,9 @@ export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () =>
     if (!next) return;
     try {
       await changePassword(current, next);
-      await dialog.confirm("Your password is changed.", "OK");
+      await dialog.notice("Your password is changed.");
     } catch (e) {
-      await dialog.confirm(`Not changed: ${messageOf(e)}`, "OK");
+      await dialog.notice(`Not changed: ${messageOf(e)}`);
     }
   };
   // s and d are Getting started and the docs elsewhere: not this dialog's letters.
