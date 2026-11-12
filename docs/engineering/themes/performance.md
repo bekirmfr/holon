@@ -382,6 +382,26 @@ In time, a release build took 10 to 20 million plain steps a second (a nested `r
 steps an item) and about 3 million that each build a record, so the default of 10 million is a
 second or a few of computing.
 
+In time, the editor's design mode (holon-wasm's `Evaluator.eval`, built as the editor ships it:
+release, no wasm-opt; run in Node) and the same workloads natively (eval under `Budgeted`, as the
+design mode evaluates), on a laptop's i7-1360P, each pinned to one performance core at high
+priority. Before and after in turn, the order turning each round: wasm in one Node process, 15
+rounds, twice (both shown); native one process a run, 15 rounds. Medians of the rounds:
+
+| Workload | wasm, before | a call a step | a batch at a time | native, before | a batch at a time |
+|---|---:|---:|---:|---:|---:|
+| `hello` | 13.5 / 12.4 µs | ×0.99 / ×0.99 | ×1.01 / ×0.99 | 4.3 µs | ×1.03 |
+| `crunch`, 100 items | 237 / 235 µs | ×1.07 / ×1.06 | ×1.04 / ×1.01 | 208 µs | ×1.01 |
+| `crunch`, 1,000 items | 1.90 / 2.00 ms | ×1.10 / ×1.04 | ×1.04 / ×1.00 | 1.87 ms | ×1.02 |
+| `crunch`, 5,000 items | 10.4 / 9.6 ms | ×1.09 / ×1.07 | ×1.08 / ×1.04 | 9.73 ms | ×1.04 |
+| nested loop, 1,000 × 1,000 | 164 / 169 ms | ×1.16 / ×1.16 | ×1.10 / ×1.08 | 140 ms | ×1.01 |
+
+A round's ratio still ranges ±10–20% pinned, so a median is good to a few percent. `crunch` costs
+0–4% in time either way. A loop of bare additions, three steps an item and little else, costs 8–10%
+in wasm and about 1% natively: V8 makes the count down a step dearer than the native build does.
+Unpinned, the scheduler moved the process between the laptop's performance and efficiency cores,
+and the same workload's time varied 1.6× from one run to the next.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
