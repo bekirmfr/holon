@@ -4,7 +4,7 @@
 // the body in base64. The key is never in the run log, yet holon verify checks each run from the
 // signature its log entry kept.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   signing_key   any secret of 6 characters or more to sign with
 //
 // Try it: deploy it, then

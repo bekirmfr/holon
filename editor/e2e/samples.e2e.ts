@@ -51,7 +51,7 @@ test("shared-key reads the server's secret, which may go only where an admin sai
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains
-  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙
+  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port in Settings
   // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
@@ -588,7 +588,7 @@ test("price-rollback: an earlier version's code restored from its page's history
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port: 8160", `port: ${port}`).replace("const fee = 0.5", "const fee = 5"));
-  // Compiled: the canvas is no longer what is deployed. (Its port already was: ⚙ saying so
+  // Compiled: the canvas is no longer what is deployed. (Its port already was: Settings saying so
   // doesn't show the new text has landed.)
   await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
   await settingsSayPort(page, String(port));
@@ -969,7 +969,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   const env = (await (await request.get(`${SERVER}/admin/secrets/env`, { headers: { Authorization: `Bearer ${adminToken}` } })).json()) as { names: string[]; dotenv: string };
   expect(env.names).toContain("HOLON_SECRET_GEMINI_API_KEY");
   expect(env.names).not.toContain("VAULT_TOKEN");
-  // A line added while the server runs is offered the next time ⚙ opens, with no restart.
+  // A line added while the server runs is offered the next time Settings opens, with no restart.
   const added = `HOLON_SECRET_E2E_${Date.now().toString(36).toUpperCase()}`;
   appendFileSync(env.dotenv, `${added}=e2e-added-value\n`);
 
@@ -1179,7 +1179,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });
 
-test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
+test("guarded-api's token rolls back in Settings once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
   const asAdmin = { Authorization: `Bearer ${adminToken}` };
   const set = (value: string) => request.post(`${SERVER}/deployments/guarded-api/secrets/api_token`, { data: { value }, headers: asAdmin });
   expect((await set(`e2e-token-one-${Date.now()}`)).ok()).toBe(true);

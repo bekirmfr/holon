@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::builder::FlowDocument;
 use crate::lang;
 
-/// A secret a sample needs set under ⚙ before it works.
+/// A secret a sample needs set (in the flow's Settings) before it works.
 #[derive(Serialize, Clone, Debug)]
 pub struct SampleSecret {
     pub name: &'static str,
@@ -133,7 +133,7 @@ static SAMPLES: &[Sample] = &[
         shows: &["secrets", "secret sources", "secret versions", "optional permissions", "secure_equals", "guard", "hmac_sha256", "default"],
         port: Some("8109"),
         secrets: &[
-            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸ (a dry run says what it would do first, its diff each version's fingerprint)", from: None },
+            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back in the flow's Settings (a dry run says what it would do first, its diff each version's fingerprint)", from: None },
             SampleSecret { name: "receipt_key", what: "the key receipts are signed with", from: Some("env:HOLON_SECRET_RECEIPT_KEY") },
         ],
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
@@ -379,7 +379,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "maps_browser_key", what: "the publishable key the page uses (6 characters or more)", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it (its approval lists answering with the secret), set the key under the gear, then curl http://127.0.0.1:8163/config; the run log shows the key as its placeholder",
+        try_it: "deploy it (its approval lists answering with the secret), set the key in the flow's Settings, then curl http://127.0.0.1:8163/config; the run log shows the key as its placeholder",
         text: include_str!("../samples/browser-key.holon.ts"),
     },
     Sample {
@@ -391,7 +391,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "demo_key", what: "any made-up value (6 characters or more); it is sent to httpbin.dev", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, set the key under the gear, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
+        try_it: "deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
         text: include_str!("../samples/echoed-key.holon.ts"),
     },
     Sample {
@@ -403,7 +403,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "client_secret", what: "secret, the demo server's published secret for its client m2m; it is sent to demo.duendesoftware.com", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, set the secret under the gear, then curl http://127.0.0.1:8166/token answers {\"issued\":200,\"api\":200,\"authenticated\":true}; holon export client-credentials, then holon verify on it says where the token went",
+        try_it: "deploy it, set the secret in the flow's Settings, then curl http://127.0.0.1:8166/token answers {\"issued\":200,\"api\":200,\"authenticated\":true}; holon export client-credentials, then holon verify on it says where the token went",
         text: include_str!("../samples/client-credentials.holon.ts"),
     },
     Sample {
@@ -427,7 +427,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "license_key", what: "lic-demo-1234, the licence the vendor table holds; it is sent to the database \"vendor\"", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "first bind the database (an admin): holon database add vendor ~/holon-vendor.db --schema \"create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)\"; deploy it, set the key under the gear, then curl http://127.0.0.1:8165/license answers {\"plan\":\"team\",\"seats\":5}",
+        try_it: "first bind the database (an admin): holon database add vendor ~/holon-vendor.db --schema \"create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)\"; deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8165/license answers {\"plan\":\"team\",\"seats\":5}",
         text: include_str!("../samples/license-check.holon.ts"),
     },
     Sample {
@@ -601,7 +601,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "chat-proxy",
         title: "Chat proxy (a streamed reply)",
-        description: "Asks Claude (the Messages API, streamed) what is posted, and forwards the answer to the caller as it arrives: the call's `stream: true` and the route's `respond(sent.body, { stream: true })` say so, and the page shows the words as they come. The flow still gets the whole answer once it ends, and stores the prompt with what was said (a js node reads the text out of the events). A call the API refuses (a bad key, a limit) forwards nothing: the reply is its answer, with its status, and the page says so. POST /room pipes the answer to the channel room instead (`room.pipe(anthropic.post(…))`): whoever watches GET /room/live gets its pieces as they arrive, then the whole of it once the run is over. The key is a secret; an answer has the run's 25 seconds (run_budget_ms under ⚙ for longer ones).",
+        description: "Asks Claude (the Messages API, streamed) what is posted, and forwards the answer to the caller as it arrives: the call's `stream: true` and the route's `respond(sent.body, { stream: true })` say so, and the page shows the words as they come. The flow still gets the whole answer once it ends, and stores the prompt with what was said (a js node reads the text out of the events). A call the API refuses (a bad key, a limit) forwards nothing: the reply is its answer, with its status, and the page says so. POST /room pipes the answer to the channel room instead (`room.pipe(anthropic.post(…))`): whoever watches GET /room/live gets its pieces as they arrive, then the whole of it once the run is over. The key is a secret; an answer has the run's 25 seconds (run_budget_ms in Settings for longer ones).",
         shows: &["streamed replies", "http_stream", "pipe", "channels", "server-sent events", "secrets", "js node", "collections"],
         port: Some("8127"),
         secrets: &[SampleSecret { name: "anthropic_api_key", what: "an Anthropic API key (sk-ant-…), from console.anthropic.com", from: None }],
@@ -613,7 +613,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "room",
         title: "Room (a chat over WebSockets)",
-        description: "A chat page over WebSockets: a page opens one on /room/<name>, and each of the connection's blocks is a run. open keeps who joined by the connection's id (conn), tells the room and subscribes the connection to the channel room, so every pack sent on it reaches every page in the room; message says each text the page sends to the room under its sender's name; close runs once the connection has ended, forgets them and says who left. A page from another site can't open one, and each connection may send ten messages a second (max_websockets, max_message_bytes and messages_per_second under ⚙).",
+        description: "A chat page over WebSockets: a page opens one on /room/<name>, and each of the connection's blocks is a run. open keeps who joined by the connection's id (conn), tells the room and subscribes the connection to the channel room, so every pack sent on it reaches every page in the room; message says each text the page sends to the room under its sender's name; close runs once the connection has ended, forgets them and says who left. A page from another site can't open one, and each connection may send ten messages a second (max_websockets, max_message_bytes and messages_per_second in Settings).",
         shows: &["websockets", "channels", "collections", "HTML response (an envelope with headers)"],
         port: Some("8132"),
         secrets: &[],
@@ -947,7 +947,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's server panel (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under ⚙ → agents may run, deploy and approve it",
+        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's Try a request (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under agents may run in the editor's Settings, deploy and approve it",
         text: include_str!("../samples/ticker.holon.ts"),
     },
     Sample {
