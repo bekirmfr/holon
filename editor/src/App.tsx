@@ -71,6 +71,7 @@ import {
   tieEdge,
   triggersOf,
   untiedSinks,
+  unitArgs,
   type Projection,
 } from "./canvasOps";
 import { expandComposite } from "./composites";
@@ -509,8 +510,8 @@ function Canvas({
       restoreDocument(doc, ev);
       const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
       const tags = doc.server?.tags ?? [];
-      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port, tags);
-      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port, tags);
+      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port, doc.server ?? {});
+      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port, doc.server ?? {});
       const caps = ev.deployed_capability_names(hash) as string[];
       // Its unrecorded handlers, each an item to approve (the server reads them from the unit).
       const unrecorded = [...server.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...server.clocks, ...server.files, ...server.mails, ...server.feeds, ...server.queues, ...server.actions]
@@ -526,7 +527,7 @@ function Canvas({
   const prepareSaved = useCallback(
     async (_slug: string, doc: FlowDocument) => {
       restoreDocument(doc, ev);
-      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? DEFAULT_SETTINGS.port, doc.server?.tags ?? []);
+      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? DEFAULT_SETTINGS.port, doc.server ?? {});
       if (server.errors.length > 0) throw new Error(server.errors.join("; "));
       if (!server.serverHash) throw new Error("nothing would start a run: it has no route, clock, file handler or action");
       await stageClosure(ev, server.serverHash, new Set());
@@ -539,10 +540,10 @@ function Canvas({
   // when the canvas's structure changes, not on moves.
   const derived = useMemo(() => {
     const { nodes: ns, edges: es } = live.current;
-    return deriveServer(ns, es, ev, settings.port, settings.tags ?? []);
+    return deriveServer(ns, es, ev, settings.port, settings);
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
 
   // What the canvas's flow would ask for, by consent name (null while it doesn't derive): the
   // deploy settings offer each one but its trigger as something it can run without.
@@ -550,14 +551,14 @@ function Canvas({
     try {
       const { nodes: ns, edges: es } = live.current;
       if (ns.length === 0) return null;
-      const hash = flowUnitHash(ns, es, ev, settings.port, settings.tags ?? []);
+      const hash = flowUnitHash(ns, es, ev, settings.port, settings);
       return (ev.deployed_capability_names(hash) as string[]).sort();
     } catch {
       return null;
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
   // The queues it sends to, by name: Try a request says what their messages came to.
   const sendsTo = useMemo(() => flowCapabilities.flatMap((c) => /^QueueSend\("(.*)"\)$/.exec(c)?.[1] ?? []), [flowCapabilities]);
@@ -566,13 +567,13 @@ function Canvas({
   const secretMarks = useMemo(() => {
     try {
       const { nodes: ns, edges: es } = live.current;
-      return ns.length === 0 ? {} : ((ev.secret_marks(ns, es, settings.port, settings.tags ?? []) ?? {}) as Record<string, string[]>);
+      return ns.length === 0 ? {} : ((ev.secret_marks(ns, es, settings.port, ...unitArgs(settings)) ?? {}) as Record<string, string[]>);
     } catch {
       return {} as Record<string, string[]>;
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   // Nothing would start a run: no route, clock, file, mail, feed or queue handler or action (docs/L4s/triggers-L4.md
   // fork 14). Deploy is greyed, saying what to add. Not said of a canvas that doesn't derive: that
   // has its own error.

@@ -12,14 +12,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Evaluator, WValue } from "./holon";
-import type { FlowSettings } from "./DeploySettings";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { TextLinked, TextNote } from "./TextPane";
 import { valueChip } from "./diagnostics";
 import { compileHolon, printedName, printHolon, type TextRange } from "./holonText";
 import { dimmed, pickAt } from "./textLink";
 import { carryOver, commentCount, syncedFromCanvas, type Graph, type Synced } from "./textSync";
-import { settingsOf, syncKeyOf, TEXT_LIMITS, type FlowMeta, type TextState } from "./tabs";
+import { settingsSaid, syncKeyOf, type FlowMeta, type TextState } from "./tabs";
 
 const WIDTH_KEY = "holon.textWidth";
 /** How long typing pauses before the text is compiled: for the person, not the machine. */
@@ -175,14 +174,8 @@ export function useTextPane({
         const o = old.get(n.id);
         return o ? { ...o, data: n.data, position: n.position } : n;
       });
-      // The settings the text says (port, every, browsers, optional, keep); the limits it doesn't
-      // say are the flow's as they were.
-      const said = settingsOf(compiled.doc.server);
-      const { optional: _, limits: was, ...unsaid } = f.settings.requirements ?? {};
-      const optional = said.requirements?.optional;
-      const limits = { ...Object.fromEntries(Object.entries(was ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said.requirements?.limits };
-      const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
-      const settings: FlowSettings = { port: said.port, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
+      // The settings the text says; the limits it doesn't say are the flow's as they were.
+      const settings = settingsSaid(compiled.doc.server, f.settings);
       const k2 = syncKeyOf(ns, out.edges, settings, f.name);
       synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines, spans: compiled.spans };
       remember(k2, typed);

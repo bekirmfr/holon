@@ -800,6 +800,7 @@ impl<'s, 't> Reader<'s, 't> {
                     let mut keys: Vec<String> = Vec::new();
                     for item in &a.elements {
                         match item.as_expression().map(|e| self.unwrap(e)) {
+                            Some(js::Expression::StringLiteral(k)) if keys.iter().any(|seen| *seen == k.value.as_str()) => return fail(self.span(k.span), format!("\"{}\" is tainted once", k.value)),
                             Some(js::Expression::StringLiteral(k)) if is_taint_key(&k.value) => keys.push(k.value.to_string()),
                             Some(js::Expression::StringLiteral(k)) => return fail(self.span(k.span), format!("\"{}\" isn't a key: a name of up to 128 characters, no spaces", k.value)),
                             _ => return fail(self.span(item.span()), shape),
@@ -6223,7 +6224,7 @@ mod tests {
         let mut store = MapResolver::new();
         crate::text::restore(&lowered.doc, &mut store, &Names::new());
         let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
         assert!(server.errors.is_empty(), "{what}: {:?}", server.errors);
         assert!(server.server_hash.is_some(), "{what}: no server unit");
         (lowered.name, server.server_hash, lowered.doc.server)

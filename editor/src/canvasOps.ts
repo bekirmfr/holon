@@ -19,10 +19,17 @@ import { findRoutes } from "./derive";
 // holon-author's (crates/holon-author/src/flow.rs), through the Evaluator, which stores every
 // unit it derives: the same code the command line runs.
 
+/** A flow's deploy settings that are part of the unit it deploys as: its tags, and the keys it
+ *  keeps out of its records. */
+export type UnitSettings = { tags?: string[]; taint?: string[] };
+
+/** `unit` as the Evaluator takes it: its tags, then its taint keys. */
+export const unitArgs = (unit: UnitSettings): [string[], string[]] => [unit.tags ?? [], unit.taint ?? []];
+
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
- *  composite. Throws why it can't be derived. `tags` are its settings'. */
-export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, tags: string[]): string {
-  return ev.flow_unit(ns, es, portText, tags);
+ *  composite. Throws why it can't be derived. */
+export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, unit: UnitSettings): string {
+  return ev.flow_unit(ns, es, portText, ...unitArgs(unit));
 }
 
 /** A group of canvas nodes as core children (each node's hash) plus the wires among them, by
@@ -86,8 +93,8 @@ export type DerivedServer = {
 /** Derive the server from the canvas: each connected group holding a request node is one route.
  *  Each group is projected through core like a selection being grouped, narrowed to the request
  *  input and the response/effect outputs, and wrapped as an endpoint. */
-export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, tags: string[]): DerivedServer {
-  return ev.derive_server(ns, es, portText, tags) as DerivedServer;
+export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string, unit: UnitSettings): DerivedServer {
+  return ev.derive_server(ns, es, portText, ...unitArgs(unit)) as DerivedServer;
 }
 
 /** A projected canvas: the frozen composite, its promoted inputs with the values supplied for

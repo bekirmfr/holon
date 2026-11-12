@@ -23,6 +23,8 @@ import init, {
   primitive_docs,
   variadic_primitives,
   passes_extra_primitives,
+  always_tainted,
+  is_taint_key,
   family_params,
   compatible as wasm_compatible,
 } from "../wasm/holon_wasm.js";
@@ -269,6 +271,26 @@ export function variadicPrimitives(): Set<string> {
  */
 export function passesExtraPrimitives(): Set<string> {
   return new Set(passes_extra_primitives() as string[]);
+}
+
+/**
+ * What is wrong with `key` as one more of a flow's taint keys (`taint: [...]`), beside `listed`,
+ * or null when nothing is: core's rule (`is_taint_key`), and a key every flow keeps out already
+ * (`alwaysTainted`) or one listed, named either case, as the host matches them. Call after
+ * {@link ensureReady}.
+ */
+export function taintKeyProblem(key: string, listed: string[]): string | null {
+  if (!is_taint_key(key)) return "a key is one word, at most 128 characters, without ‹ or ›";
+  const same = (k: string) => k.toLowerCase() === key.toLowerCase();
+  if (alwaysTainted().some(same)) return `every flow keeps "${key}" out already`;
+  if (listed.some(same)) return `"${key}" is listed already`;
+  return null;
+}
+
+/** The keys every flow keeps out of its records (core's `ALWAYS_TAINTED`: credentials). Call
+ *  after {@link ensureReady}. */
+export function alwaysTainted(): string[] {
+  return always_tainted() as string[];
 }
 
 /**

@@ -350,8 +350,6 @@ struct Lowerer<'a> {
     ticks: Vec<Block>,
     /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
     socket: bool,
-    /// The flow's `taint` keys, joined by spaces: each handler's trigger node carries them.
-    taint: String,
 }
 
 impl<'a> Lowerer<'a> {
@@ -385,7 +383,6 @@ impl<'a> Lowerer<'a> {
             })
             .chain(file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o.on.folder.clone()) } else { None }))
             .collect();
-        let taint = file.headers.iter().find_map(|h| if let HeaderKind::Taint(k) = &h.kind { Some(k.join(" ")) } else { None }).unwrap_or_default();
         Lowerer {
             b: FlowBuilder::new(),
             defs,
@@ -416,7 +413,6 @@ impl<'a> Lowerer<'a> {
             routes: vec![],
             ticks: vec![],
             socket: false,
-            taint,
         }
     }
 
@@ -582,8 +578,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Tags(t) => s.tags = t.clone(),
-                // On each handler's trigger, and so in the server unit's hash (`node`).
-                HeaderKind::Taint(_) => {}
+                HeaderKind::Taint(k) => s.taint = k.clone(),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
                 HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) | HeaderKind::Queue(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
@@ -631,14 +626,6 @@ impl<'a> Lowerer<'a> {
 
     /// A node from the catalog or the templates, with params, at `span`.
     fn node(&mut self, leaf: &str, params: &[(String, String)], span: Span) -> R<Val> {
-        // A handler's trigger carries the flow's taint, which the server unit gathers.
-        let tainted;
-        let params = if templates::HANDLERS.contains(&leaf) && !self.taint.is_empty() {
-            tainted = params.iter().cloned().chain([("taint".to_string(), self.taint.clone())]).collect::<Vec<_>>();
-            &tainted
-        } else {
-            params
-        };
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());
@@ -3171,6 +3158,7 @@ fn literal_json(e: &Expr) -> Option<serde_json::Value> {
 pub(crate) mod tests {
     use super::*;
     use crate::composites::Names;
+    use crate::builder::UnitSettings;
     use crate::flow::{derive_server, flow_unit};
     use crate::lang::ts;
     use crate::{samples, text, to_hex};
@@ -3181,7 +3169,7 @@ pub(crate) mod tests {
         let mut store = MapResolver::new();
         text::restore(doc, &mut store, &Names::new());
         let port = doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or("");
-        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port, doc.tags()).unwrap_or_else(|e| panic!("{e}")))
+        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port, doc.unit_settings()).unwrap_or_else(|e| panic!("{e}")))
     }
 
     /// Every sample's text (samples/*.holon.ts): the natural form, as fmt writes it.
@@ -3257,7 +3245,7 @@ every("10s", async () => {
 "#,
         );
         let mut store = MapResolver::new();
-        let server = derive_server(&got.doc.nodes, &got.doc.edges, &mut store, "", got.doc.tags());
+        let server = derive_server(&got.doc.nodes, &got.doc.edges, &mut store, "", got.doc.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         let unit = store.resolve(&parse_hash(&server.clocks[0].hash).unwrap()).expect("the clock's unit is stored");
         let inputs: Vec<&str> = unit.inputs.iter().map(|p| p.name.as_str()).collect();
@@ -4034,7 +4022,7 @@ route.get("/x", (req) => {
         let mut store = MapResolver::new();
         text::restore(&lowered.doc, &mut store, &Names::new());
         let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-        let server = derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+        let server = derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
         let text = |s: &str| Value::Text(s.into());
         server
             .endpoints
@@ -4514,7 +4502,7 @@ route.post("/p", async (req) => {
         let mut store = MapResolver::new();
         let mut server = |src: &str| {
             let d = compiled(src).doc;
-            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
             assert_eq!(server.errors, Vec::<String>::new(), "{src}");
             let answers: Vec<String> = d.nodes.iter().filter(|n| n.is_template("respond")).map(|n| n.param("status").to_string()).collect();
             (server, answers)
@@ -4656,12 +4644,12 @@ route.post("/hook", async (req) => {
         assert!(ts::compile(in_route).unwrap_err().message.starts_with("a route answers and is done"));
         let resumed = src("  const d = await approval(\"payout\")", "\nroute.get(\"/ok/:t\", () => \"ok\", { resumes: \"payout\" })\n");
         let d = compiled(&resumed).doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.unit_settings());
         assert!(server.errors.iter().any(|e| e == "GET /ok/:t: \"payout\" is an approval, which people decide in Holon: no route resumes it"), "{:?}", server.errors);
         let token = src("  const d = await approval(\"payout\")
   const t = resume_token(\"payout\")", "").replace("approval, flow, route", "approval, flow, resume_token, route").replace("return d.approved", "return { ok: d.approved, t }");
         let d = compiled(&token).doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.unit_settings());
         assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
     }
 
@@ -4819,12 +4807,12 @@ route.get("/n", () => state.n ?? 0)
         assert_eq!(from("channel_send", "pack"), tick, "now");
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!((server.endpoints.len(), server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>()), (1, vec!["every 2s"]));
         // A flow of clocks alone is a server with no port.
         let d = compiled("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n").doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.unit_settings());
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         let read = holon_core::read_server(unit, &store).unwrap();
         assert_eq!((read.port, read.routes.len(), read.clocks[0].seconds), (None, 0, 3600));
@@ -4880,7 +4868,7 @@ route.get("/n", () => state.ticks ?? 0)
         assert_eq!((respond.param("status"), respond.param("missing")), ("200", "404"));
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!(server.actions.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["action reset", "action note"]);
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
@@ -4888,7 +4876,7 @@ route.get("/n", () => state.ticks ?? 0)
         assert_eq!((read.port, read.routes.len(), read.actions.len()), (Some(8080), 1, 2));
         // A flow of actions alone listens on no port.
         let d = compiled("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nexport const reset = action(() => {\n  state.n = 0\n})\n").doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.unit_settings());
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
@@ -4940,7 +4928,7 @@ route.get("/last", () => state.last)
         assert_eq!(tied, Some((on[0].id.clone(), "message".to_string())), "the write is tied to the message");
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!(server.mails.iter().map(|m| (m.mail.as_str(), m.label.as_str())).collect::<Vec<_>>(), [("remit", "on mail remit")]);
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
@@ -4987,7 +4975,7 @@ route.get("/last", () => state.last)
         assert_eq!(tied, Some((on[0].id.clone(), "event".to_string())), "the write is tied to the event");
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!(server.feeds.iter().map(|f| (f.feed.as_str(), f.label.as_str())).collect::<Vec<_>>(), [("prices", "on feed prices")]);
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
@@ -5030,7 +5018,7 @@ route.get("/last", () => state.last)
             let tied = d.edges.iter().find(|w| w.target == sink.id && w.input() == TRIGGER).and_then(|w| d.nodes.iter().find(|n| n.id == w.source));
             assert_eq!(tied.map(|n| n.data.name.as_str()), Some("guard"), "{open}: tied to k, the choice");
             let mut store = MapResolver::new();
-            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
             assert_eq!(server.errors, Vec::<String>::new(), "{src}");
 
             let (line, _, e) = error(&format!("{head}{open}{k}}})\n"));
@@ -5042,7 +5030,7 @@ route.get("/last", () => state.last)
         let d = compiled(&src).doc;
         let mut store = MapResolver::new();
         text::restore(&d, &mut store, &Names::new());
-        assert_eq!(crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags()).errors, Vec::<String>::new(), "{src}");
+        assert_eq!(crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings()).errors, Vec::<String>::new(), "{src}");
     }
 
     /// `on.queue(payouts, (m) => { … })` is a queue handler: its `on_queue` node, its sinks tied to
@@ -5075,7 +5063,7 @@ route.get("/last", () => state.last)
         assert_eq!(send.param("queue"), "retries");
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!(server.queues.iter().map(|q| (q.queue.as_str(), q.label.as_str())).collect::<Vec<_>>(), [("payouts", "on queue payouts")]);
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
@@ -5146,7 +5134,7 @@ route.websocket("/room/:name", {
         assert_eq!(tied("collection_delete"), Some((blocks[2].id.clone(), "request".into())), "close's delete is tied to its record");
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!(
             server.websockets.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
@@ -5165,7 +5153,7 @@ route.websocket("/room/:name", {
         // A websocket's path is a page's or a connection's.
         let page = format!("{src}\nroute.get(\"/room/:who\", () => \"a page\")\n");
         let d = compiled(&page).doc;
-        let errors = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.tags()).errors;
+        let errors = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.unit_settings()).errors;
         assert!(errors.iter().any(|e| e.contains("WebSocket /room/:name clashes with GET /room/:who")), "{errors:?}");
 
         // One block of each at least, each a function; one call a path; open answers as a route,
@@ -5229,7 +5217,7 @@ route.get("/n", () => state.last)
         assert_eq!(from("store_write", TRIGGER), Some((on[1].id.clone(), "file".to_string())));
 
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080", d.unit_settings());
         assert_eq!(server.errors, Vec::<String>::new());
         let labels: Vec<&str> = server.files.iter().map(|f| f.label.as_str()).collect();
         assert_eq!((server.endpoints.len(), labels), (1, vec!["on file drop", "on file drop deleted matching \"*.csv\""]));
@@ -5239,7 +5227,7 @@ route.get("/n", () => state.last)
         assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FileArrival("drop".into())));
         // A flow of file handlers alone listens on no port.
         let d = compiled("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport drop from \"folder:drop\"\n\nflow(\"f\")\n\non.file.created(drop, (f) => {\n  state.n = f.size\n})\n").doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.tags());
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "", d.unit_settings());
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
@@ -5676,57 +5664,78 @@ route.get("/x", () => {
         assert_eq!(got.names[&node.id], "x");
     }
 
-    /// `tags` lower into the settings, sorted, and into the server unit as a frozen param, which
-    /// an untagged flow's unit hasn't; each mistake is said where it is.
+    /// What a flow's server unit holds of its settings, its `tags` and the keys it `taint`s, lowers
+    /// into the settings (tags sorted, keys as written) and into the server unit as a frozen param,
+    /// which a flow without them hasn't, and onto no node; core reads it back. Each mistake is said
+    /// where it is, and settings a canvas holds are held to the same rules.
     #[test]
-    fn tags_lower_into_the_settings_and_the_server_unit() {
-        let text = |tags: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200{tags} }})\n\nroute.get(\"/x\", () => 1)\n");
+    fn unit_settings_lower_into_the_settings_and_the_server_unit() {
+        let text = |field: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200{field} }})\n\nroute.get(\"/x\", () => 1)\n");
         let unit_of = |doc: &FlowDocument| {
             let mut store = MapResolver::new();
-            let server = derive_server(&doc.nodes, &doc.edges, &mut store, "8200", doc.tags());
+            let server = derive_server(&doc.nodes, &doc.edges, &mut store, "8200", doc.unit_settings());
             let unit = store.resolve(&parse_hash(server.server_hash.as_deref().expect("a server")).unwrap()).unwrap().clone();
             let read = holon_core::read_server(&unit, &store).unwrap();
-            (unit, read.tags)
+            (unit, read)
         };
-        let tagged = compiled(&text(", tags: [\"payments\", \"ops-2\"]")).doc;
-        assert_eq!(tagged.tags(), ["ops-2", "payments"]);
-        let (unit, read) = unit_of(&tagged);
-        assert_eq!(unit.params.iter().find(|p| p.name() == "tags").and_then(|p| p.value()), Some("ops-2 payments"));
-        assert_eq!(read, ["ops-2", "payments"]);
-        let untagged = compiled(&text("")).doc;
-        let (plain, read) = unit_of(&untagged);
-        assert!(plain.params.iter().all(|p| p.name() != "tags") && read.is_empty(), "no param without tags");
-        assert_ne!(hash_of(&tagged), hash_of(&untagged), "a tag is a change to the unit");
-        let shape = "tags are in quotes: tags: [\"payments\"]";
-        for (tags, col, said) in [
+        let held = |name: &str, s: UnitSettings<'_>| if name == "tags" { s.tags.to_vec() } else { s.taint.to_vec() };
+        let read_back = |name: &str, s: &holon_core::Server| if name == "tags" { s.tags.clone() } else { s.taint.clone() };
+        let plain = compiled(&text("")).doc;
+        let (plain_unit, read) = unit_of(&plain);
+        assert!(plain_unit.params.iter().all(|p| p.name() != "tags" && p.name() != "taint") && read.tags.is_empty() && read.taint.is_empty(), "no params without them");
+        for (name, field, as_held, param) in [
+            ("tags", ", tags: [\"payments\", \"ops-2\"]", ["ops-2", "payments"], "ops-2 payments"),
+            ("taint", ", taint: [\"x-api-key\", \"number\"]", ["x-api-key", "number"], "x-api-key number"),
+        ] {
+            let doc = compiled(&text(field)).doc;
+            assert_eq!(held(name, doc.unit_settings()), as_held, "{name}: the settings");
+            let (unit, read) = unit_of(&doc);
+            assert_eq!(unit.params.iter().find(|p| p.name() == name).and_then(|p| p.value()), Some(param), "{name}: the unit's param");
+            assert_eq!(read_back(name, &read), as_held, "{name}: as core reads it");
+            assert_ne!(hash_of(&doc), hash_of(&plain), "{name}: a change to the unit");
+            assert!(doc.nodes.iter().all(|n| n.param(name).is_empty()), "{name}: on no node");
+        }
+        let (tags, taint) = ("tags are in quotes: tags: [\"payments\"]", "taint lists keys in quotes: taint: [\"x-api-key\", \"number\"]");
+        for (field, col, said) in [
             (", tags: [\"Payments\"]", 32, "\"Payments\" isn't a tag: lowercase letters, digits and -, up to 40 of them"),
             (", tags: [\"\"]", 32, "\"\" isn't a tag: lowercase letters, digits and -, up to 40 of them"),
             (", tags: [\"a\", \"a\"]", 37, "\"a\" is tagged once"),
-            (", tags: [name]", 32, shape),
-            (", tags: [...more]", 32, shape),
-            (", tags: \"payments\"", 31, shape),
+            (", tags: [name]", 32, tags),
+            (", tags: [...more]", 32, tags),
+            (", tags: \"payments\"", 31, tags),
+            (", taint: [\"a b\"]", 33, "\"a b\" isn't a key: a name of up to 128 characters, no spaces"),
+            (", taint: [\"\"]", 33, "\"\" isn't a key: a name of up to 128 characters, no spaces"),
+            (", taint: [\"number\", \"number\"]", 43, "\"number\" is tainted once"),
+            (", taint: [name]", 33, taint),
+            (", taint: \"number\"", 32, taint),
         ] {
-            assert_eq!(error(&text(tags)), (3, col, said.to_string()), "{tags}");
+            assert_eq!(error(&text(field)), (3, col, said.to_string()), "{field}");
         }
         assert_eq!(error(&text(", labels: []")).2, "a flow's settings are port, keep, browsers, limits, taint and tags, not \"labels\"");
+        // Keys a canvas's settings hold (the editor's deploy panel writes them) are checked the same.
+        for (more, said) in [("a b", "\"a b\" isn't a key to taint: a name of up to 128 characters, no spaces"), ("number", "\"number\" is tainted once")] {
+            let mut doc = compiled(&text(", taint: [\"number\"]")).doc;
+            doc.server.as_mut().unwrap().taint.push(more.into());
+            assert_eq!(derive_server(&doc.nodes, &doc.edges, &mut MapResolver::new(), "8200", doc.unit_settings()).errors, [said], "{more}");
+        }
     }
 
-    /// A flow's tags are in its unit only when it has some: of the samples, only the tagged one's
-    /// unit is not what it is without them.
+    /// What a flow's server unit holds of its settings is in its unit only when it has some: of the
+    /// samples, only the tagged one's and the tainted one's units are not what they are without.
     #[test]
-    fn only_a_tagged_samples_unit_moves() {
+    fn only_a_tagged_or_tainted_samples_unit_moves() {
         let mut moved = vec![];
         for (name, src) in sample_texts() {
             let doc = compiled(src).doc;
             let mut store = MapResolver::new();
             text::restore(&doc, &mut store, &Names::new());
             let port = doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-            let with = flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.tags()).unwrap_or_else(|e| panic!("{name}: {e}"));
-            if with != flow_unit(&doc.nodes, &doc.edges, &mut store, &port, &[]).unwrap() {
+            let with = flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            if with != flow_unit(&doc.nodes, &doc.edges, &mut store, &port, UnitSettings::default()).unwrap() {
                 moved.push(name);
             }
         }
-        assert_eq!(moved, ["approved-payout"]);
+        assert_eq!(moved, ["card-vault", "approved-payout"]);
     }
 
     #[test]
@@ -5734,7 +5743,7 @@ route.get("/x", () => {
         // The tour's own spellings (interpolation): same routes and manifest shape.
         let hello = compiled("import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`)\n");
         let mut store = MapResolver::new();
-        let d = derive_server(&hello.doc.nodes, &hello.doc.edges, &mut store, "8101", hello.doc.tags());
+        let d = derive_server(&hello.doc.nodes, &hello.doc.edges, &mut store, "8101", hello.doc.unit_settings());
         assert!(d.errors.is_empty(), "{:?}", d.errors);
         assert_eq!(d.endpoints.iter().map(|e| (e.method.as_str(), e.path.as_str())).collect::<Vec<_>>(), [("GET", "/hello/:name")]);
         assert_eq!(leaves(&hello.doc), ["request", "const", "field", "as_text", "concat", "respond"]);

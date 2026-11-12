@@ -48,7 +48,8 @@ declare module "holon" {
     browsers?: string | string[]
     /** Keys whose values the host never keeps of any run, wherever the run has them: a request,
      *  a message, an input, a call's request or answer, its own answer, what it read or wrote.
-     *  `authorization`, `proxy-authorization`, `cookie` and `set-cookie` always are. */
+     *  `authorization`, `proxy-authorization`, `cookie` and `set-cookie` always are. Each once;
+     *  a version that drops one asks a person when an agent deploys it. */
     taint?: string[]
     /** The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound
      *  on a tag acts on every flow deployed with it; a version that adds one asks for approval. */
