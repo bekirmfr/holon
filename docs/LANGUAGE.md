@@ -2329,7 +2329,10 @@ budgets, and a `field` per output. The engine is Boa compiled to a WebAssembly m
 imports** (`fixtures/modules/js-engine/`): the body can reach no clock, randomness, network or
 storage, which is why a `js()` function adds nothing to what a flow may do; what it adds is two
 limits, its `fuel` (instructions per call, 200M when not written) and `memory` (16 MiB), which the
-deploy asks for and the host's policy caps. `"50M"`, `"2K"`, `"16MB"` are numbers with a scale.
+deploy asks for and the host's policy caps. `"50M"`, `"2K"`, `"16MB"` are numbers with a scale. A
+run's calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
+unless the flow asks for more in its `limits`): each gets its own fuel or what is left, the less,
+and a run that wants more fails, as one past `max_steps` does.
 
 The body is read by the same TypeScript parser, as a function, and is never Holon: nothing in it is
 interpolated or renamed, so the source is part of the unit's identity, verbatim (P3 stops at the

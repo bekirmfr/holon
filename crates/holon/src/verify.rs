@@ -41,6 +41,8 @@ use recorder::{line_hash, LogEntry};
 
 mod replay;
 pub(crate) use replay::handle_get_replay;
+#[cfg(test)]
+pub(crate) use replay::replay;
 
 /// What an export says it is.
 pub(crate) const FORMAT: &str = "holon-runs/1";
@@ -1167,9 +1169,7 @@ fn rerun(
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
         marks: marks.clone(),
     };
-    // Held to the most steps any grant gives a round (`max_steps`), so a run within its own is
-    // run again in full; one that ran out of its own gets further, as a run past its budget does.
-    let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, max_steps: Limits::ceilings().max_steps, ..Limits::clock_run() };
+    let limits = rerun_limits();
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
@@ -1290,6 +1290,15 @@ fn rerun(
         }
         false => Rerun::Differs(differs.join(", ")),
     }
+}
+
+/// The limits a run is run again with, here and by `replay`: no clock or count of requests to
+/// stop it, and the most steps and fuel any grant gives a round (`max_steps`, `max_fuel`), so a
+/// run within its own runs again in full, and one stopped by its own gets further, as a run past
+/// its budget does.
+pub(crate) fn rerun_limits() -> Limits {
+    let ceilings = Limits::ceilings();
+    Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, max_steps: ceilings.max_steps, max_fuel: ceilings.max_fuel, ..Limits::clock_run() }
 }
 
 /// Whether an entry says its run did anything: computed, did, sent, called out, read or wrote.

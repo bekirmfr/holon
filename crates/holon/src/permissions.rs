@@ -200,6 +200,7 @@ fn limits_to_numbers(
         ("max_header_bytes".into(), request.max_header_bytes as u64),
         ("max_redirects".into(), request.max_redirects as u64),
         ("max_steps".into(), request.max_steps),
+        ("max_fuel".into(), request.max_fuel),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
         ("max_call_depth".into(), durable.max_call_depth),
@@ -286,6 +287,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
             "max_header_bytes" => l.max_header_bytes = n as usize,
             "max_redirects" => l.max_redirects = n as u32,
             "max_steps" => l.max_steps = n,
+            "max_fuel" => l.max_fuel = n,
             _ => {}
         }
     }
@@ -730,10 +732,12 @@ impl Policy {
             }
         }
         policy.ceilings.extend(file.ceilings);
-        // `holon verify` runs a run again held to the built-in ceiling, not this host's: a run
-        // granted more steps than that would be read as failing where it finished.
-        if policy.ceilings["max_steps"] > holon_core::MAX_STEPS_CEILING {
-            return Err(format!("the ceiling max_steps = {} is above {}, the most steps holon verify runs a run again with", policy.ceilings["max_steps"], holon_core::MAX_STEPS_CEILING));
+        // `holon verify` runs a run again held to the built-in ceilings, not this host's: a run
+        // granted more steps or fuel than those would be read as failing where it finished.
+        for (name, most, what) in [("max_steps", holon_core::MAX_STEPS_CEILING, "steps"), ("max_fuel", holon_core::MAX_FUEL_CEILING, "fuel")] {
+            if policy.ceilings[name] > most {
+                return Err(format!("the ceiling {name} = {} is above {most}, the most {what} holon verify runs a run again with", policy.ceilings[name]));
+            }
         }
         let mut defaults = policy.defaults();
         defaults.extend(file.limits);
@@ -1324,6 +1328,10 @@ mod tests {
         assert_eq!((p.request.max_steps, p.ceilings["max_steps"]), (1000, 2000));
         assert_eq!(Policy::default().ceilings["max_steps"], holon_core::MAX_STEPS_CEILING);
         assert!(Policy::parse(&format!("[ceilings]\nmax_steps = {}", holon_core::MAX_STEPS_CEILING + 1)).unwrap_err().contains("holon verify"));
+        // And fuel per round, likewise.
+        let p = Policy::parse("[limits]\nmax_fuel = 1000\n[ceilings]\nmax_fuel = 2000").unwrap();
+        assert_eq!((p.request.max_fuel, p.ceilings["max_fuel"]), (1000, 2000));
+        assert_eq!((Policy::default().request.max_fuel, Policy::default().ceilings["max_fuel"]), (holon_core::DEFAULT_MAX_FUEL, holon_core::MAX_FUEL_CEILING));
     }
 
     /// A flow that places a module asks for its budgets as limits, whether or not its author
@@ -1365,6 +1373,31 @@ mod tests {
         assert_eq!(raised.refuses(&Manifest::new(std::iter::empty(), greedy)), None);
         // A default for a module budget makes no sense: a module's budget is its own.
         assert!(Policy::parse(&format!("[limits]\n{FUEL_LIMIT} = 5")).unwrap_err().contains("module's own budget"));
+    }
+
+    /// Guards: no round a host grants is more than `holon verify` runs it again with. For each
+    /// budget a round is held to (`max_steps`, `max_fuel`), a policy may raise its ceiling to
+    /// verify's and no further, and a flow granted that much gets a round of no more than
+    /// verify's.
+    /// Why: verify runs a run again under its own limits. A round the server ran to its end on
+    /// more than those fails run again, and verify would call a true record forged.
+    /// If it fails: the ceiling's check in `Policy::parse` is gone or above verify's, or
+    /// `verify::rerun_limits` gives a round less than the most a host may.
+    #[test]
+    fn no_round_a_host_grants_is_more_than_verify_runs_it_again_with() {
+        let again = crate::verify::rerun_limits();
+        type Budget = (&'static str, fn(&Limits) -> u64, u64);
+        let budgets: [Budget; 2] = [("max_steps", |l| l.max_steps, again.max_steps), ("max_fuel", |l| l.max_fuel, again.max_fuel)];
+        for (name, of, most) in budgets {
+            let at = Policy::parse(&format!("[ceilings]\n{name} = {most}")).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(Policy::parse(&format!("[ceilings]\n{name} = {}", most + 1)).is_err(), "{name}: a host may give a round more than verify does");
+            let mut asked = Requirements::default();
+            asked.limits.insert(name.into(), most);
+            let manifest = Manifest::new(std::iter::empty(), asked);
+            assert_eq!(at.refuses(&manifest), None, "{name}");
+            let permit = Permit::new([0; 32], &Grant::for_manifest(&manifest, 0, "test"), &at);
+            assert_eq!((of(&permit.request_limits), of(&permit.clock_limits)), (most, most), "{name}");
+        }
     }
 
     #[test]

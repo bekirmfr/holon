@@ -161,7 +161,10 @@ the run's answer to the same request (`ByRequest`), a read by the run's read of 
 (`ByRead`). What the run never asked can't be answered offline: the run is `cant_tell`, never
 sent. A pure leaf fed a placeholder is computed twice, with two placeholders (`Fed`): if what it
 gives depends on which, it computed with the secret's value, and the run is `cant_tell`; if not,
-it passed it along or picked past it, and stands. The run id isn't compared: another version's
+it passed it along or picked past it, and stands. What `Fed` computes stands in for the node, so
+the round's budget never counts it: it computes on a budget of its own, made afresh each round, of
+twice the round's steps and fuel, and a version that wants more is `cant_tell` too. Each round is
+held to `rerun_limits()`, as in `rerun`. The run id isn't compared: another version's
 differs by design. The file texts come from the export machinery (`export_of`), so a file holding
 a secret isn't read back, as in an export. The editor shows it on a version's review and in the
 deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.

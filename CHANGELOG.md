@@ -38,6 +38,19 @@
   200 million, so it finishes every run that finished; a policy may lower that ceiling, not raise
   it. The editor's design mode stops at the
   default too, rather than hang the tab.
+- **A run's `js()` calls are bounded together, not only each one: `max_fuel`.** A `js()`
+  function's fuel bounds one call, and a function mapped over a request's items is as many calls
+  as items: each call within its 200 million instructions, `range(10000).map(score)` computed for
+  minutes in one request. Now a run's calls between two of its outbound calls run on `max_fuel`
+  instructions in all (4 billion by default, two to five seconds by what the code does; chess's
+  costliest move burns 0.93 billion): each call gets its own fuel or what is left, the less, and a
+  run that wants more fails, answering 500 and performing nothing. A call that fails after
+  computing (a throw, a trap) is charged what it ran. It is a limit like `max_steps`: a flow asks
+  for more with `limits: { max_fuel: n }`, which a person approves, up to 20 billion, which
+  `holon verify` runs a run again with; a policy may lower that ceiling, not raise it. The editor's
+  design mode stops at the default too, and a replay computing with a secret (twice, with two
+  placeholders, outside the round's count) is held to twice a round's steps and fuel, where before
+  nothing bounded it.
 
 ## 0.1.0-rc.35
 

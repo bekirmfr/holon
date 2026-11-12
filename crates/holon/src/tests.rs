@@ -5892,6 +5892,61 @@ route.post(\"/sign\", (req) => {answer})
     assert_eq!(r["runs"][0]["why"][0], "it answers 503 where it answered 200", "{r}");
 }
 
+/// Guards: a replay computes a node fed a secret, a token or a tainted value (`Fed`: twice, with
+/// the placeholder and with another) on a budget of its own, made afresh each round, of twice the
+/// round's steps and fuel: a version that computes more with one than that in a round can't be
+/// told, and its replay ends; one within it in each of its rounds is computed and compared. For
+/// steps (a function mapped over items with the key) and for fuel (a `js()` function given the
+/// key), in a run of two rounds (an outbound call).
+/// Why: what `Fed` computes stands in for the node, so the round's budget never counts it.
+/// Without a budget of its own, a version that maps over many items with a secret, or loops in a
+/// js function given one, holds the server's replay for as long as it computes.
+/// If it fails: `Fed::asserted` (verify/replay.rs) evaluates with plain `eval`, or not on its
+/// budget, or `replay_one` doesn't read `too_much`; on "steps, two rounds", `Fed::round` doesn't
+/// make its budget afresh.
+#[test]
+fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
+    let state = claims_state("");
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": "whsec_test_123456" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    // The key reaches each computing node from outside it (`k`), so the node is fed it.
+    let signer = |n: &str| {
+        format!(
+            "import {{ flow, hmac_sha256, js, range, route }} from \"holon\"\nimport signing_key from \"secret:signing_key\"\nimport host from \"host:127.0.0.1:9\"\n\nflow(\"signer\", {{ port: 18199 }})\n\nconst spin = js(function count(key, n) {{\n  let s = 0\n  for (let i = 0; i < n; i++) {{\n    s = s + 1\n  }}\n  return s\n}})\n\nroute.post(\"/sign\", async (req) => {{\n  const k = {{ key: signing_key }}\n  const got = (await host.get(\"/x\")).status ?? 0\n  return {{ got, n: {n} }}\n}})\n"
+        )
+    };
+    deploy_text(&state, &signer("hmac_sha256(k.key, req.body)"), "127.0.0.1:9");
+    assert_eq!(data_call(&state, "signer", "POST", "/sign", "hello").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/signer/export", vec![])))).unwrap();
+    let again = verify::rerun_limits();
+    let (mapped, spun) = ("range(1000).map((i) => k.key).length", "spin(k.key, 1000)");
+    let replay = |n: &str, limits: &holon_host::Limits| {
+        let unit = stage_text(&state, &signer(n));
+        let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
+        let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
+        let r = verify::replay(&export, unit, &resolver, 1, limits);
+        (r.differ, r.cant_tell, r.runs[0].why.join("; "))
+    };
+    let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";
+    let too_much = |r: &(usize, usize, String)| r.1 == 1 && r.2.contains("more than a replay does in a round");
+    let rows: [(&str, &str, holon_host::Limits, bool); 5] = [
+        ("steps, within", mapped, again.clone(), true),
+        ("steps, past", mapped, holon_host::Limits { max_steps: 100, ..again.clone() }, false),
+        // Within a round's budget in each round, past it in the two together.
+        ("steps, two rounds", mapped, holon_host::Limits { max_steps: 4500, ..again.clone() }, true),
+        ("fuel, within", spun, again.clone(), true),
+        ("fuel, past", spun, holon_host::Limits { max_fuel: 1000, ..again.clone() }, false),
+    ];
+    for (name, n, limits, within) in rows {
+        let r = replay(n, &limits);
+        if within {
+            assert!(computed(r.clone()), "{name}: computed, and compared: {r:?}");
+        } else {
+            assert!(too_much(&r), "{name}: {r:?}");
+        }
+    }
+}
+
 #[test]
 fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
     let state = claims_state("");
@@ -7337,6 +7392,91 @@ fn a_round_past_its_steps_fails_performs_nothing_and_a_flow_may_ask_for_more() {
         .collect();
     assert_eq!(came, ["matched", "skipped", "matched"], "{text}");
     let file = unique_temp_path("steps-export");
+    std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
+    assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
+    let _ = std::fs::remove_file(&file);
+}
+
+/// Guards: a round whose `js()` calls burn more than its grant's `max_fuel` in all fails,
+/// answers 500 and performs nothing, though each call is within its own fuel; a flow that asks
+/// for more (`limits: { max_fuel }`) waits for a person to approve it and then has it; and
+/// `holon verify` reads the failed run as not run again to its end (exit 3), the runs either side
+/// of it as matched.
+/// Why: a call's fuel bounds one call, and a `js()` function mapped over a request's items is as
+/// many calls as items: without the round's pool, one request computes for as long as it has
+/// items. The pool is what bounds it, and verify must not read a run it stopped as one forged.
+/// If it fails: on the 200, the round's fuel (`Asking::take_fuel` in rounds.rs,
+/// `run_module_outputs` in eval.rs) isn't charged or isn't read after the round, or the policy's
+/// `max_fuel` isn't the permit's; on the write, the failure comes after the effects; on the
+/// verdict, verify's limits (verify.rs `rerun_limits`) aren't the ceiling's fuel.
+#[test]
+fn a_round_past_its_fuel_fails_performs_nothing_and_a_flow_may_ask_for_more() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_fuel = 50000000").unwrap());
+    let text = |limits: &str| {
+        format!(
+            "import {{ flow, js, range, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"fuel\", {{ port: 8308{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n).map(double)\n  const sum = doubled.reduce((acc, x) => acc + x, 0)\n  state.total = sum\n  return `total ${{sum}}`\n}})\n"
+        )
+    };
+    // As the command line deploys a text: the limits it asks for beside its unit.
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "fuel", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"total\")", "Limit(module_fuel=20000000)", "Limit(module_memory=16777216)"]);
+    let deployed = deploy(&text(""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    let total = || body_json(route(&state, &req("GET", "/deployments/fuel/state", vec![])))["state"]["total"]["value"].clone();
+    let twice = |n: u32| data_call(&state, "fuel", "POST", "/twice", &format!("{{\"n\":{n}}}"));
+
+    // Two calls, well within the round's 50M: answered and written.
+    assert_eq!(twice(2).0, 200);
+    assert_eq!(total(), serde_json::json!(2.0));
+    // Ten calls, each within its own 20M, past the round's 50M in all: failed, nothing written.
+    let (status, _, _) = twice(10);
+    assert_eq!(status, 500);
+    assert_eq!(total(), serde_json::json!(2.0), "a run past its fuel wrote");
+    let entries = log_entries(&state, "fuel");
+    let error = entries.last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with(holon_host::STEP_BUDGET) && error.contains("50000000") && error.contains("max_fuel"), "{error}");
+    assert_eq!(entries.last().unwrap()["performed"], serde_json::json!([]), "{error}");
+
+    // A flow that asks for more fuel waits for it to be approved, then has it.
+    let more = text(", limits: { max_fuel: 300000000 }");
+    let asked = deploy(&more, &ack);
+    assert_eq!(asked.status_code, 400);
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(max_fuel=300000000)"));
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().push("Limit(max_fuel=300000000)".into());
+    assert_eq!(deploy(&more, &approved).status_code, 200);
+    assert_eq!(twice(10).0, 200);
+    assert_eq!(total(), serde_json::json!(90.0));
+
+    // Verify runs each run again with the ceiling's fuel: the stopped one is skipped, not called
+    // forged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/fuel/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    let came: Vec<&str> = report
+        .reruns
+        .iter()
+        .map(|(_, r)| match r {
+            verify::Rerun::Matched => "matched",
+            verify::Rerun::Differs(_) => "differs",
+            verify::Rerun::Skipped(_) => "skipped",
+            verify::Rerun::NothingRan(_) => "nothing ran",
+        })
+        .collect();
+    assert_eq!(came, ["matched", "skipped", "matched"], "{text}");
+    let file = unique_temp_path("fuel-export");
     std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
     assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
     let _ = std::fs::remove_file(&file);

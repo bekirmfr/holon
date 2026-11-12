@@ -86,7 +86,10 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
   budget is part of its identity (WM §3.5). The manifest asks for the largest a flow places
   (`module_limits_of`: `Limit(module_fuel=…)`, `Limit(module_memory=…)`); the server's ceilings
   are a hundred times the default fuel and sixteen times the default memory
-  (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`, `crates/holon/src/permissions.rs`).
+  (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`, `crates/holon/src/permissions.rs`). A round's
+  calls share a pool besides (`max_fuel`): each runs on its own budget or what is left, and
+  `run_metered` says what each burned, answered or not, so the pool is charged for a call that
+  failed after computing.
 - **The js default of 200M fuel** is measured (`what_a_call_costs`, JS §2): a fresh realm and a
   one-line function cost about 12M instructions, an edit-distance search over eight words 41M, a
   loop of a hundred thousand iterations 271M. The module default (10M) can't run a body at all.

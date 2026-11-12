@@ -52,6 +52,7 @@ const LIMITS: [string, string][] = [
   ["max_header_bytes", "header size (bytes)"],
   ["max_redirects", "redirects"],
   ["max_steps", "steps between outbound calls"],
+  ["max_fuel", "js instructions between outbound calls"],
   ["max_await_seconds", "longest wait (s)"],
   ["max_waiting_runs", "runs waiting at once"],
   ["max_call_depth", "flows calling flows, deep"],

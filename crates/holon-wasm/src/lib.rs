@@ -687,14 +687,21 @@ impl Evaluator {
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
         // With the engine: a module placed on the canvas runs for real, under its budget.
         let with_engine = holon_module::WithEngine::new(&self.resolver, holon_module::shared());
-        // Held to the steps a deployed run gets by default, so a loop that doesn't end stops
-        // here as it would on the server, not hangs the tab.
-        let mut steps = holon_core::Budgeted::new(holon_core::DEFAULT_MAX_STEPS);
-        let outputs = holon_core::eval_observed(&unit, &core_inputs, &with_engine, &mut steps);
-        if steps.exhausted {
+        // Held to the steps a deployed run gets by default, and the fuel its js and module calls
+        // get all told, so a loop that doesn't end stops here as it would on the server, not
+        // hangs the tab.
+        let mut budget = holon_core::Budgeted::new(holon_core::DEFAULT_MAX_STEPS).with_fuel(holon_core::DEFAULT_MAX_FUEL);
+        let outputs = holon_core::eval_observed(&unit, &core_inputs, &with_engine, &mut budget);
+        if budget.exhausted {
             return Err(JsError::new(&format!(
                 "it took more than {} steps (max_steps): a deployed run stops there too",
                 holon_core::DEFAULT_MAX_STEPS
+            )));
+        }
+        if budget.out_of_fuel {
+            return Err(JsError::new(&format!(
+                "it took more than {} instructions of js and module code (max_fuel): a deployed run stops there too",
+                holon_core::DEFAULT_MAX_FUEL
             )));
         }
         let out: Vec<Option<WValue>> = outputs

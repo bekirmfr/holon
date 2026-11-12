@@ -184,6 +184,17 @@ pub trait Observer {
     }
     /// Steps taken ([`take_steps`](Observer::take_steps)) and not used, given back.
     fn give_back(&mut self, _steps: u32) {}
+    /// Fuel for a module call (instructions): up to `want`, its own budget, of what is left of
+    /// the round's. A host that pools a round's fuel gives what it has left when that is less,
+    /// and none once it has none, and the call is then not made. The default gives `want`: each
+    /// call its own budget, nothing pooled.
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        want
+    }
+    /// A module call given fuel ([`take_fuel`](Observer::take_fuel)) is done, and `unburned` of
+    /// it comes back. `short`: it ran out on less than its own budget, so the round's fuel ran
+    /// out, not the call's, and the round fails, as a step past its budget fails it.
+    fn give_back_fuel(&mut self, _unburned: u64, _short: bool) {}
 }
 
 /// The steps ([`Observer::step`]) a round may take when its host says nothing else: a second or a
@@ -194,17 +205,37 @@ pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
 /// The most steps any grant gives a round. `holon verify` runs a run again held to it, so a run
 /// within any grant's steps is run again in full.
 pub const MAX_STEPS_CEILING: u64 = 200_000_000;
+/// The fuel (instructions, [`Observer::take_fuel`]) a round's module and `js()` calls may burn in
+/// all when its host says nothing else: two to five seconds of a native engine's computing on a
+/// laptop, by what the code does (chess's rules run 2G a second, a `js()` loop 1G; the costliest
+/// round of the samples, chess's first move of a game, three calls of its rules, burns 0.93G).
+/// The host's `max_fuel` limit; a flow may ask for more, to [`MAX_FUEL_CEILING`].
+pub const DEFAULT_MAX_FUEL: u64 = 4_000_000_000;
+/// The most fuel any grant gives a round. `holon verify` runs a run again held to it, so a run
+/// within any grant's fuel is run again in full.
+pub const MAX_FUEL_CEILING: u64 = 20_000_000_000;
 
-/// Observes nothing but the steps, against a budget: plain [`eval`] held to `left` steps.
+/// Observes nothing but the steps and the modules' fuel, against budgets: plain [`eval`] held to
+/// `left` steps and `fuel` instructions of module calls.
 pub struct Budgeted {
     pub left: u64,
     /// Whether it ran out: what it computed is then absent where it stopped.
     pub exhausted: bool,
+    /// The fuel its module calls may still burn, all told.
+    pub fuel: u64,
+    /// Whether a module call ran out of it: that call, and any after it, gave nothing.
+    pub out_of_fuel: bool,
 }
 
 impl Budgeted {
+    /// `steps` steps, and the fuel a round gets when its host says nothing else.
     pub fn new(steps: u64) -> Budgeted {
-        Budgeted { left: steps, exhausted: false }
+        Budgeted { left: steps, exhausted: false, fuel: DEFAULT_MAX_FUEL, out_of_fuel: false }
+    }
+
+    /// The same, its module calls held to `fuel` instructions all told.
+    pub fn with_fuel(self, fuel: u64) -> Budgeted {
+        Budgeted { fuel, ..self }
     }
 }
 
@@ -231,6 +262,18 @@ impl Observer for Budgeted {
     }
     fn give_back(&mut self, steps: u32) {
         self.left += u64::from(steps);
+    }
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        if self.fuel == 0 && want > 0 {
+            self.out_of_fuel = true;
+        }
+        let taken = self.fuel.min(want);
+        self.fuel -= taken;
+        taken
+    }
+    fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+        self.fuel += unburned;
+        self.out_of_fuel |= short;
     }
     fn reads_produced(&self) -> bool {
         false
@@ -616,7 +659,7 @@ fn eval_as(
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
         // when it can't, the observer hears why, at this node.
         (_, UnitBody::Module { bytes }) => {
-            let (outs, reason) = run_module_outputs(bytes, unit, &owned(inputs), resolver);
+            let (outs, reason) = run_module_outputs(bytes, unit, &owned(inputs), resolver, observer);
             if let Some(reason) = reason {
                 observer.failed(path, &reason);
             }
@@ -722,7 +765,17 @@ fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Pa
 /// writes its answer's bytes as it likes, so an effect among them would be a write or a call no
 /// leaf of the flow asked for; the whole answer is refused. Shared with the eager oracle
 /// (`eager.rs`).
-pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> (Vec<Option<Value>>, Option<String>) {
+///
+/// The call's fuel is its own budget or what `observer` has left of the round's, the less
+/// ([`Observer::take_fuel`]), and what it didn't burn goes back. A call that runs out on the
+/// round's fuel gives nothing, with no reason of its own: the round fails, and says why.
+pub(crate) fn run_module_outputs(
+    bytes: &[u8],
+    unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    observer: &mut impl Observer,
+) -> (Vec<Option<Value>>, Option<String>) {
     let n = unit.outputs.len();
     if inputs.len() != unit.inputs.len() || inputs.iter().any(Option::is_none) {
         return (vec![None; n], None);
@@ -731,7 +784,15 @@ pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Val
         Ok(l) => l,
         Err(e) => return (vec![None; n], Some(e.to_string())),
     };
-    match resolver.run_module(bytes, &limits, inputs) {
+    let fuel = observer.take_fuel(limits.fuel);
+    if fuel == 0 {
+        return (vec![None; n], None);
+    }
+    let ran = resolver.run_module(bytes, &crate::ModuleLimits { fuel, ..limits }, inputs);
+    let short = ran.out_of_fuel && fuel < limits.fuel;
+    observer.give_back_fuel(fuel.saturating_sub(ran.burned), short);
+    match ran.outputs {
+        _ if short => (vec![None; n], None),
         Ok(outs) if outs.iter().flatten().any(crate::primitives::contains_effect) => {
             (vec![None; n], Some("its answer holds an effect: a module computes values, and only a leaf builds an effect".into()))
         }
@@ -2684,11 +2745,11 @@ fn at_item(k: usize, asks: &mut Asks, path: &mut Vec<u32>, eval: impl FnOnce(&mu
 }
 
 /// The observer inside a `map`/`fold` application: it passes on what is asked (requests, reads,
-/// waiting points) and the steps, and nothing else of the evaluation. One type however deep the
-/// nesting, so a function that maps again evaluates under the same observer type. The steps it
-/// takes from the observer outside a batch at a time ([`Observer::take_steps`]), so each is a
-/// count down here, not a `dyn` call, and it gives back what it didn't use when it is done: the
-/// count stays exact.
+/// waiting points), the steps and the modules' fuel, and nothing else of the evaluation. One type
+/// however deep the nesting, so a function that maps again evaluates under the same observer
+/// type. The steps it takes from the observer outside a batch at a time
+/// ([`Observer::take_steps`]), so each is a count down here, not a `dyn` call, and it gives back
+/// what it didn't use when it is done: the count stays exact.
 struct Asks<'a> {
     outside: &'a mut dyn Observer,
     /// Steps taken from `outside` and not used yet.
@@ -2737,6 +2798,12 @@ impl Observer for Asks<'_> {
     }
     fn give_back(&mut self, steps: u32) {
         self.taken += steps;
+    }
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        self.outside.take_fuel(want)
+    }
+    fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+        self.outside.give_back_fuel(unburned, short);
     }
     fn reads_produced(&self) -> bool {
         false
@@ -3782,6 +3849,123 @@ mod tests {
             eval_observed(&unit, &inputs, &r, &mut none);
             assert!(none.exhausted, "{name} applied its function with no step left");
         }
+    }
+
+    /// A resolver whose modules answer their first input and burn `cost` instructions a call, or
+    /// all they are given when that is less (then they ran out). It counts its calls.
+    struct Burning {
+        units: MapResolver,
+        cost: u64,
+        calls: std::cell::Cell<u64>,
+    }
+    impl Resolver for Burning {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.units.resolve(hash)
+        }
+        fn run_module(&self, _bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> crate::ModuleRun {
+            self.calls.set(self.calls.get() + 1);
+            if limits.fuel < self.cost {
+                return crate::ModuleRun { outputs: Err(format!("out of fuel ({} instructions)", limits.fuel)), burned: limits.fuel, out_of_fuel: true };
+            }
+            crate::ModuleRun { outputs: Ok(vec![inputs[0].clone()]), burned: self.cost, out_of_fuel: false }
+        }
+    }
+
+    /// A module unit of `inputs` inputs and one output, with its own budget of `fuel`.
+    fn burner(inputs: usize, fuel: u64) -> Unit {
+        let minimal = r#"(module (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 0)
+            (func (export "run") (param i32 i32) (result i64) i64.const 0))"#;
+        Unit {
+            body: UnitBody::Module { bytes: wat::parse_str(minimal).unwrap() },
+            params: vec![Param::frozen("fuel", fuel.to_string())],
+            inputs: (0..inputs).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(),
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        }
+    }
+
+    /// The round's fuel ([`Budgeted`]), and how many modules said why they gave nothing.
+    struct Pooled {
+        budget: Budgeted,
+        reasons: usize,
+    }
+    impl Observer for Pooled {
+        fn take_fuel(&mut self, want: u64) -> u64 {
+            self.budget.take_fuel(want)
+        }
+        fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+            self.budget.give_back_fuel(unburned, short);
+        }
+        fn failed(&mut self, _path: &[u32], _reason: &str) {
+            self.reasons += 1;
+        }
+    }
+
+    /// Guards: every module call a round makes, wherever it sits (the unit itself, a composite's
+    /// child, the function each leaf in `PASSES_EXTRA` applies to each item), runs on its own
+    /// budget or what is left of the round's fuel, the less, and the round is charged what it
+    /// burned. Fuel of exactly what the calls burn gives what unbounded fuel gives; one
+    /// instruction less runs out, with no reason of the call's own; none left makes no call. A
+    /// call that runs out of its own budget leaves the round standing, and says why.
+    /// Why: `module_fuel` bounds one call. Without a pool, a `js()` function applied to each of
+    /// 10000 items, each call within its own 200M, computes for minutes in one request; a call
+    /// charged less than it burned is one the pool never stops.
+    /// If it fails: the named place runs its module some way other than `run_module_outputs`, or
+    /// an observer between it and the round's (`Asks`) doesn't pass `take_fuel` and
+    /// `give_back_fuel` on.
+    #[test]
+    fn every_module_call_runs_on_the_rounds_fuel_and_is_charged_what_it_burned() {
+        const COST: u64 = 7;
+        let mut units = MapResolver::new();
+        let one = units.insert(burner(1, 100)).unwrap();
+        let two = units.insert(burner(2, 100)).unwrap();
+        let items = list((0..8).map(|i| num(i as f64)).collect());
+        let x = || vec![Port { name: "x".into(), ty: Type::Any }];
+        let through = vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }];
+        let mut cases: Vec<(&str, Unit, Vec<Option<Value>>)> =
+            vec![("the unit itself", burner(1, 100), vec![Some(num(1.0))]), ("a composite's child", composite(x(), Type::Any, vec![one], through), vec![Some(num(1.0))])];
+        for &name in crate::PASSES_EXTRA {
+            let f = if crate::catalog::function_takes(name) == 2 { &two } else { &one };
+            let (unit, inputs) = match name {
+                "fold" => (
+                    Unit {
+                        body: UnitBody::Primitive { name: "fold".into() },
+                        params: vec![Param::frozen("fn", hex(f))],
+                        inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }],
+                        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+                    },
+                    vec![Some(num(0.0)), Some(items.clone())],
+                ),
+                "json_parse" => (json_leaf(name, f, 0, &[]), vec![Some(txt("[0,1,2,3,4,5,6,7]"))]),
+                "json_stringify" => (json_leaf(name, f, 0, &[]), vec![Some(items.clone())]),
+                _ => (over(name, f, 0), vec![Some(items.clone())]),
+            };
+            cases.push((name, unit, inputs));
+        }
+        let r = Burning { units, cost: COST, calls: std::cell::Cell::new(0) };
+        let run = |unit: &Unit, inputs: &[Option<Value>], fuel: u64| {
+            r.calls.set(0);
+            let mut pooled = Pooled { budget: Budgeted::new(u64::MAX).with_fuel(fuel), reasons: 0 };
+            let outs = eval_observed(unit, inputs, &r, &mut pooled).into_vec();
+            (outs, pooled, r.calls.get())
+        };
+        for (place, unit, inputs) in &cases {
+            let (free, unbounded, calls) = run(unit, inputs, u64::MAX);
+            assert!(calls >= 1, "{place} made no call");
+            let burned = u64::MAX - unbounded.budget.fuel;
+            assert_eq!(burned, COST * calls, "{place}: the round was charged other than its calls burned");
+            let (outs, exact, _) = run(unit, inputs, burned);
+            assert_eq!((outs, exact.budget.fuel, exact.budget.out_of_fuel), (free, 0, false), "{place}, with exactly the fuel it burns");
+            let (_, short, _) = run(unit, inputs, burned - 1);
+            assert!(short.budget.out_of_fuel, "{place} burned past the round's fuel");
+            assert_eq!(short.reasons, 0, "{place}: a call cut short by the round's fuel gave a reason of its own");
+            let (_, none, made) = run(unit, inputs, 0);
+            assert!(none.budget.out_of_fuel && made == 0, "{place} ran a module with no fuel left");
+        }
+        // Out of its own budget: the call's failure, not the round's. It gives nothing and says
+        // why, and the round goes on, charged what the call burned.
+        let (outs, starved, calls) = run(&burner(1, COST - 1), &[Some(num(1.0))], 1000);
+        assert_eq!((outs, starved.budget.out_of_fuel, starved.budget.fuel, starved.reasons, calls), (vec![None], false, 1000 - (COST - 1), 1, 1));
     }
 
     /// The leaves that test each item read their function's answer as JavaScript's ToBoolean,

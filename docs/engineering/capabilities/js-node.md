@@ -100,6 +100,17 @@ for up to N instructions per call, reaching nothing outside" (`describe_item`). 
 budget is refused, since a module's budget is its own. `chess`'s `rules` asks
 `{ fuel: 1000000000 }`, the ceiling.
 
+A call's fuel bounds one call; a round is bounded by `max_fuel`, a limit like `max_steps`. A
+round's module calls, wherever they sit (a node, the function a `map` applies to each item), draw
+on one pool of it (`Limits::max_fuel`, held by the round's `Budgeted` with its steps;
+`DEFAULT_MAX_FUEL`, 4G: two to five seconds natively, by what the code does, as chess's rules
+run 2G a second and a `js()` loop 1G; chess's first move of a game burns 0.93G).
+Each call runs on its own budget or what is left, the less (`Observer::take_fuel`), and the pool
+is charged what it burned, answered or not (`Engine::run_metered`); a call that runs out on the
+pool's fuel, not its own, fails the round (`RunError::FuelBudget`), and the run performs nothing.
+Fuel is counted, so a round burns the same wherever it runs: `holon verify` runs a round again
+with `MAX_FUEL_CEILING` (20G), and a policy may lower that ceiling, not raise it.
+
 ### `check` and the editor
 
 `holon check` compiles each body once through the engine's compile-only call (`compile_js`: the

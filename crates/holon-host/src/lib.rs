@@ -369,7 +369,7 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
             .map(|(_, value, _)| *value)
     }
 
-    fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
+    fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> holon_core::ModuleRun {
         self.real.run_module(bytes, limits, inputs)
     }
 }

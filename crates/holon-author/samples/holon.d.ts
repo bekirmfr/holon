@@ -479,6 +479,7 @@ declare module "holon" {
     max_header_bytes?: number
     max_redirects?: number
     max_steps?: number
+    max_fuel?: number
     max_await_seconds?: number | Duration
     max_waiting_runs?: number
     max_call_depth?: number
