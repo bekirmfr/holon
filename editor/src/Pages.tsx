@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { getActivity, type ActivityEntry } from "./server";
+import { shortIds } from "./shortIds";
 import { flowAddressable, type Route } from "./routes";
 
 /** Which top-level view is showing. The canvas is never unmounted (React Flow's own state —
@@ -102,9 +103,13 @@ export function ActivityList({ version, bare = false }: { version: string; bare?
     <div style={{ marginTop: bare ? 0 : 20 }}>
       {!bare && <h2 className="hl-host-page__head">Activity</h2>}
       {entries.map((e, i) => (
-        <div key={i} style={{ color: "var(--muted)", fontSize: "var(--fs-sm)", padding: "3px 0" }}>
+        // A long id (a run's hash) is said by its first eight, whole in the title; anything else
+        // too long for the column wraps rather than widening the page.
+        <div key={i} style={{ color: "var(--muted)", fontSize: "var(--fs-sm)", padding: "3px 0", overflowWrap: "anywhere" }}>
           <span style={{ color: "var(--faint)" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
-          <span style={{ color: "var(--accent)" }}>{e.target}</span>
+          <span style={{ color: "var(--accent)" }} title={shortIds(e.target) === e.target ? undefined : e.target}>
+            {shortIds(e.target)}
+          </span>
           {e.by && <span style={{ color: "var(--faint)" }}> · by {e.by}</span>}
           {e.note && <span style={{ color: "var(--body)" }}>: “{e.note}”</span>}
         </div>
