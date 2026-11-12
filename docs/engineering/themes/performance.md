@@ -435,16 +435,20 @@ changes only if it holds `‹`, which in UTF-8 is always the three bytes `E2 80 
 continuation byte, so each occurrence of the three decodes as `‹`. Records come in key order from
 `SValue::from_core`, the shortcut's standing assumption.
 
-**Fix 1, proposed: the shortcut's test made exact.** Refuse the shortcut for a line holding a `‹`
+**Fix 1, made: the shortcut's test made exact.** Refuse the shortcut for a line holding a `‹`
 (as now) or for an entry holding a Bytes value with `E2 80 B9` in it, read from the entry's
-values, not parsed from the line.
+values, not parsed from the line (`Made::may_hold_a_mark(entry)`, `LogEntry::bytes_hold_a_mark`,
+the same `values_mut` walk `Redactor::entry` makes; list, record, effect and sum payloads alike).
 
 - *Regression:* the line it writes is the redacted line byte for byte, so the log's format, its
   hash chain, `holon verify`, exports and the golden records don't change. `redacted_line`'s
   `debug_assertions` block already compares the shortcut's line and entry with the walked ones on
-  every run of every test; `a_line_with_nothing_to_redact_is_the_redacted_line` gains Bytes cases
-  (without the three bytes, with them, beside invalid UTF-8, holding an encoded `‹token:paid›`,
-  and each with a redactor that has something to mark).
+  every run of every test; `a_line_with_nothing_to_redact_is_the_redacted_line` gained Bytes cases
+  (a run's random bytes, `0xFF`s, none, the three bytes alone, beside invalid UTF-8, `E2 80` cut
+  short, an encoded `‹token:paid›` and `‹‹secret:x›`, bytes holding a token; each body by each
+  with an empty redactor and one that has something to mark), and
+  `a_run_whose_bytes_hold_no_mark_makes_its_line_once` asks the test itself, nested values
+  included. A mutation that never sees the three bytes fails both.
 - *Security:* it acts only where the redactor is empty, after the taint scan, as the shortcut does
   now; a run with anything to mark is walked as before. The test reads values, never the line, so
   nothing a caller sent is parsed by it.
@@ -455,12 +459,40 @@ values, not parsed from the line.
 changes the entry `holon verify` runs again from, and a run that read randomness (`pgp_encrypt`)
 must still replay exactly; old exports and the goldens would change. More risk for the same gain.
 
-**Fix 3, proposed: the `and`/`or` arm out of `eval_as`'s line,** into an `#[inline(never)]`
-function, as `eval_as`'s other rare arms are already (`eval.rs`). A move of code: no value, port,
-unit or hash changes; the eager oracle's differential tests
-(`giving_and_lending_agree_with_eager_on_generated_graphs`, `crates/holon-core/tests/differential.rs`)
-and the goldens hold it. Callgrind on `crunch` says whether the
-leaf arm's collect inlines again.
+**Fix 3, tried and not kept: the `and`/`or` arm out of `eval_as`'s line,** into an
+`#[inline(never)]` function, as `eval_as`'s other rare arms are already (`eval.rs`). Every core
+test held, but callgrind found `crunch` at 25.02 M a run against 25.07 M: `eval_as` itself 60 K
+less, the leaf arm's collect still out of line at the same cost (`SmallVec::from_iter` 0.75 M,
+`push` 0.39 M). The arm was not what pushed it out; `e35b108` also gave `choose` (generic, inlined
+wherever a choice is read, `eval_as`'s other arms included) a loop and a length, the feature
+itself. Getting the collect back would mean steering LLVM's inlining in the evaluator by hand,
+for about 3.6% of one route: not worth the fragility, so the code stays as it was.
+
+**Measured, fix 1 alone against rc.35 (2026-11-12).** Callgrind, per run as in §2 of
+[measuring](../measuring.md) (`profile_one_route` at two counts):
+
+| route | rc.35 | fix 1 | |
+|---|---|---|---|
+| `hello` | 94.5 K | 94.2 K | −0.3% |
+| `notes` | 493.1 K | 380.5 K | **−22.8%** |
+| `crunch` | 25.07 M | 25.02 M | −0.2% (fix 3 then; the same code without it) |
+
+Live, `holon load`, 3 alternating rounds, 5 s a route, 16 connections, release builds on this
+4-core container; median req/s and server CPU per request:
+
+| route | rc.35 | fix 1 | ×req/s | ×CPU less | rounds |
+|---|---|---|---|---|---|
+| strict | 7,460 | 8,291 | 1.11 | 1.11 | 1.01, 1.16, 1.03 |
+| lazy | 17,360 | 17,715 | 1.02 | 1.04 | 0.97, 1.12, 0.98 |
+| unrecorded | 55,767 | 56,217 | 1.01 | 0.99 | 1.01, 1.12, 0.98 |
+| `hello` | 54,450 | 55,815 | 1.03 | 1.02 | 0.99, 1.05, 1.02 |
+| `calc` | 45,805 | 48,174 | 1.05 | 1.05 | 0.95, 1.04, 1.05 |
+| `crunch` 1000 | 1,671 | 1,590 | 0.95 | 0.95 | 0.95, 1.01, 0.92 |
+| `filter` 5000 | 832 | 879 | 1.06 | 1.05 | 1.01, 1.06, 1.18 |
+
+`crunch` runs the same evaluator in both builds and still moved 5%: on this machine a live race
+is ±5% a round, and callgrind is the measure; fix 1's instructions saved are per recorded run,
+the same whatever the flow computes, so they show most where a run is small.
 
 **Kept as they are:** the taint scan (`1c094ab`, `ALWAYS_TAINTED`'s keys on every recorded run,
 about 14 K: security's); `run_attempt` and the random bytes' making (rc.35's run record that holds
@@ -511,10 +543,12 @@ through a crash, 1.1 K for `hello`, and `pgp_encrypt`'s randomness, 0.3 K).
 - **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
   copied ([above](#small-values-are-copied-2026-11-07)), and ×1.06 to ×1.09 ahead of it in time
   through a server; folds that build a list gained ×5 to ×21.
-- **A recorded run makes its line twice since rc.35**: every line holds the run's random bytes,
-  so redaction's shortcut never holds; lazy ×0.85 and `notes` +40% in instructions against
-  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)). The evaluator's leaf arm compiles worse
-  since `e35b108`, `crunch` +0.9 M; both fixes audited, not made.
+- **A recorded run made its line twice in rc.35**: every line holds the run's random bytes,
+  so redaction's shortcut never held; lazy ×0.85 and `notes` +40% in instructions against
+  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)); fixed after rc.35, `notes` −22.8%
+  ([above](#grounded-in-the-code-and-the-fixes-audited-2026-11-12)). The evaluator's leaf arm
+  compiles worse since `e35b108`, `crunch` +0.9 M; the and/or arm moved out didn't recover it,
+  and nothing short of steering the inliner by hand would.
 - **A ternary costs three nodes more since `befee65`** (a guard on each side, as JavaScript
   chooses): a filter by fold ×0.85 through a server against `78f8f81`, still ×18 the filter before
   #43 ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).

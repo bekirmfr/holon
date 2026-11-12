@@ -1219,7 +1219,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
 fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
     if redactor.is_empty() {
         let made = recorder::Made::of(entry);
-        if !made.may_hold_a_mark() {
+        if !made.may_hold_a_mark(entry) {
             // In a debug build (every test), checked against redacting first: the line and the
             // entry the same, or what the shortcut assumes stopped holding (D3).
             #[cfg(debug_assertions)]
@@ -1559,24 +1559,60 @@ mod commit_checks {
                 ("body".to_string(), text(body)),
             ]))
         };
-        let entry = |body: &str| {
-            let mut e = run_entry("request", (0, std::time::Instant::now()), &[(Capability::Clock, Value::Number(1.0))], &FiredRun::nothing());
+        let entry_with = |body: &str, random: &[u8]| {
+            let sourced = [(Capability::Clock, Value::Number(1.0)), (Capability::Random, Value::Bytes(random.to_vec()))];
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &sourced, &FiredRun::nothing());
             e.request = Some(SValue::from_core(&request(body)));
             e.response_body = Some(body.to_string());
             e.duration_ms = 0.0;
             e
         };
         let tokens = |pairs: &[(&str, &str)]| Redactor::tokens(&pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        // A run's random bytes as every run has them (none of `‹`), then bytes that hold a `‹`
+        // where redaction would escape it: alone, as a mark, beside bytes that aren't UTF-8, and
+        // `E2 80` cut short of one; and bytes holding a token, which only a filled redactor masks.
+        let mut randoms: Vec<Vec<u8>> = vec![(0..32).collect(), vec![0xFF; 32], vec![], "tok-1".into()];
+        randoms.extend(["‹", "‹token:paid›", "‹‹secret:x›"].map(|s| s.as_bytes().to_vec()));
+        randoms.extend([vec![0xFF, 0xE2, 0x80, 0xB9, 0xC3], vec![0xE2, 0x80, 0xE2, 0x80, 0xB9], vec![0xE2, 0x80, 0xBA, 0xE2, 0x80]]);
         for body in ["plain", "with ‹ in it", "‹token:paid›", "‹‹secret:x›", "a {\"‹k\": 1}", ""] {
-            for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
-                let (mut fast, mut walked) = (entry(body), entry(body));
-                let line = redacted_line(&redactor, &mut fast);
-                redactor.entry(&mut walked);
-                let line_walked = recorder::Made::of(&walked);
-                assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}");
-                // The entry the log keeps in memory too: as redaction leaves it.
-                assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}");
+            for random in &randoms {
+                for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
+                    let (mut fast, mut walked) = (entry_with(body, random), entry_with(body, random));
+                    let line = redacted_line(&redactor, &mut fast);
+                    redactor.entry(&mut walked);
+                    let line_walked = recorder::Made::of(&walked);
+                    assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}, bytes {random:?}");
+                    // The entry the log keeps in memory too: as redaction leaves it.
+                    assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}, bytes {random:?}");
+                }
             }
+        }
+    }
+
+    #[test]
+    fn a_run_whose_bytes_hold_no_mark_makes_its_line_once() {
+        // Every run's entry holds its random bytes; with nothing to mark, those alone don't make
+        // the line twice: the shortcut takes it when no byte run holds `‹`, and only then.
+        let entry = |random: &[u8], payload: Option<SValue>| {
+            let sourced = [(Capability::Random, Value::Bytes(random.to_vec()))];
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &sourced, &FiredRun::nothing());
+            e.request = payload;
+            e
+        };
+        let nested = |b: &[u8]| SValue::List(vec![SValue::Record(vec![("k".into(), SValue::Bytes(b.to_vec()))])]);
+        for (random, payload, holds) in [
+            (&[1u8, 2, 3][..], None, false),
+            (&[0xE2, 0x80][..], None, false),
+            (&[0xE2, 0x80, 0xBA][..], None, false),
+            ("‹".as_bytes(), None, true),
+            (&[0xFF, 0xE2, 0x80, 0xB9][..], None, true),
+            (&[1u8][..], Some(nested(b"plain")), false),
+            (&[1u8][..], Some(nested("a‹b".as_bytes())), true),
+        ] {
+            let mut e = entry(random, payload);
+            let made = recorder::Made::of(&e);
+            assert_eq!(e.bytes_hold_a_mark(), holds, "{random:?}");
+            assert_eq!(made.may_hold_a_mark(&mut e), holds, "{random:?}");
         }
     }
 

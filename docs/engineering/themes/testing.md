@@ -100,7 +100,8 @@ Each faster path is tested against the one it stands in for, on many inputs.
   `a_store_failing_at_the_commit_check_fails_only_a_run_whose_collection_moved` (step 2's one
   change of behaviour, `1c562de`).
 - `a_line_with_nothing_to_redact_is_the_redacted_line`, and inside `redacted_line` a debug-build
-  check that the shortcut's line equals the redacted one on every logged run (D3);
+  check that the shortcut's line equals the redacted one on every logged run (D3), bytes holding
+  `‹` or not; `a_run_whose_bytes_hold_no_mark_makes_its_line_once` (the bytes' own test);
   `with_nothing_to_mark_a_text_without_a_mark_sign_stays_as_it_is`: 5,000 awkward texts.
 - The timer's size bound: `the_bound_holds_over_random_values_of_every_kind` (20,000 values, D4),
   `the_bound_is_never_below_the_json`, `outputs_are_kept_exactly_when_their_json_fits`.

@@ -241,7 +241,30 @@ impl LogEntry {
     pub(crate) fn texts_mut(&mut self) -> impl Iterator<Item = &mut String> {
         [&mut self.response_body, &mut self.error, &mut self.url].into_iter().flatten()
     }
+
+    /// Whether a Bytes value among those a redactor goes over ([`LogEntry::values_mut`], the same
+    /// walk) holds a `‹` in its UTF-8. A redactor walks bytes as their valid UTF-8 runs
+    /// (`secrets::bytes_texts_mut`), and `‹` is always the three bytes `E2 80 B9`, which always
+    /// decode as it (`E2` is never a continuation byte): with nothing to mark, bytes without them
+    /// come out of redaction as they went in.
+    pub(crate) fn bytes_hold_a_mark(&mut self) -> bool {
+        fn holds(v: &SValue) -> bool {
+            match v {
+                SValue::Bytes(b) => b.windows(MARK_UTF8.len()).any(|w| w == MARK_UTF8),
+                SValue::List(xs) => xs.iter().any(holds),
+                SValue::Record(fields) => fields.iter().any(|(_, x)| holds(x)),
+                SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => holds(payload),
+                SValue::Text(_) | SValue::Number(_) | SValue::Boolean(_) => false,
+            }
+        }
+        let mut held = false;
+        self.values_mut(&mut |v| held = held || holds(v));
+        held
+    }
 }
+
+/// `‹` in UTF-8, the first character of every mark the log writes.
+const MARK_UTF8: [u8; 3] = [0xE2, 0x80, 0xB9];
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
 /// keeps them out of the log (`secrets::answered_tokens`): never serialized, never printed.
@@ -877,10 +900,17 @@ impl Made {
         Made(String::from_utf8(buf).ok().filter(|t| t.starts_with(Made::START)))
     }
 
-    /// Whether its line may hold a `‹`, which redaction would escape where it reads as a mark:
-    /// true for a line that couldn't be made, and for one holding bytes, whose base64 hides it.
-    pub fn may_hold_a_mark(&self) -> bool {
-        self.0.as_deref().is_none_or(|line| line.contains('‹') || line.contains("{\"type\":\"Bytes\""))
+    /// Whether `entry`, of which this is the line, may hold a `‹` that redaction would escape
+    /// where it reads as a mark: in one of its texts, which the line shows as it is; or in a Bytes
+    /// value's UTF-8, which the line shows only in base64, so the entry's bytes are asked
+    /// ([`LogEntry::bytes_hold_a_mark`]) when the line holds any. True for a line that couldn't be
+    /// made. Every run's entry holds bytes (its random source), so asking the bytes, not refusing
+    /// any line that holds them, is what lets a run with nothing to mark make its line once.
+    pub fn may_hold_a_mark(&self, entry: &mut LogEntry) -> bool {
+        match self.0.as_deref() {
+            None => true,
+            Some(line) => line.contains('‹') || (line.contains("{\"type\":\"Bytes\"") && entry.bytes_hold_a_mark()),
+        }
     }
 
     /// The line numbered `seq`, after the line hashed `prev` (hex, or empty for none).
