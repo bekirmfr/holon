@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Evaluator, WValue } from "./holon";
-import type { FlowSettings } from "./DeployBar";
+import type { FlowSettings } from "./DeploySettings";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { TextLinked, TextNote } from "./TextPane";
 import { valueChip } from "./diagnostics";

@@ -72,7 +72,7 @@ export function hintsAt(r: Route): [string, string][] {
     case "editor":
       return r.view
         ? [["j k", "step"], [", .", "runs"], ["e", "edit"], ["[ ]", "tabs"]]
-        : [["ctrl+s", "save"], ["ctrl+d", "deploy"], ["c x i", "panes"], ["l", "level"], ["[ ]", "tabs"]];
+        : [["ctrl+s", "save"], ["ctrl+d", "deploy"], ["c x i b", "panes"], ["l", "level"], ["[ ]", "tabs"]];
     case "review":
       return [["[ ]", "the queue"], ["d", "the diff"], ["w", "whole"], ["esc", "back"]];
     case "flows":

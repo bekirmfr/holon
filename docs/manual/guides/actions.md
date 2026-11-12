@@ -44,7 +44,7 @@ The **ticker** sample (`holon new --sample ticker`) has one beside a clock and t
 
 Deploy the flow first: an action runs on a running deployment, the version deployed.
 
-**In the editor**, the [tools panel](editor.md#the-tools-panel) lists the flow's actions under
+**In the editor**, the bottom pane's [Try a request](editor.md#the-bottom-pane) lists the flow's actions under
 its routes. Each has a box for what to send, as JSON (empty is `{}`), and **run**. The answer
 shows under it with the run's number, and **view run** opens it in view mode. When the canvas has
 changes not deployed, the panel says the run runs the deployed version.
@@ -89,7 +89,7 @@ On a server with accounts, an editor or an admin may run an action; a viewer see
 not **run**. Each run's log entry says who ran it and what they sent, under the action's label
 (`action reset`), and view mode replays it like any run ([The web editor](editor.md)).
 
-An agent may run an action only when a person has let it. In the deploy settings (**⚙**), **agents
+An agent may run an action only when a person has let it. In the deploy settings (the editor's **Settings**), **agents
 may run** lists the flow's actions; ticking one asks for `AgentRuns("reset")`, which a person
 approves as they do any permission, at the next deploy. It is optional: without it the flow runs
 the same, and an agent that tries is refused ("agents may not run …"). Revoking it on the deployed

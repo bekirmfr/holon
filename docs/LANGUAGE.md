@@ -1013,7 +1013,7 @@ messages run one at a time, in the order they came, and `close` runs once, after
 The host holds the connections, never a run: each run is over in milliseconds, and what outlives
 it is in the collection and the channel. A page from another site can't open one: its `Origin`
 must be the flow's own host or one `browsers` names. The limits `max_websockets`,
-`max_message_bytes` and `messages_per_second` (under ⚙) bound what the flow holds and what each
+`max_message_bytes` and `messages_per_second` (in its deploy settings) bound what the flow holds and what each
 connection sends; one past them is closed with the code that says why, and its `close` runs all
 the same. A websocket is a permission, `WebSocket("/room/:name")`, as the channel and the
 collection are.
@@ -1415,7 +1415,7 @@ flow's, one for every handler: the clock counts, and `GET /count` reads the coun
 `export const reset = action((input) => { … })` is run by hand, by its name, and the network never
 reaches it: the port answers only the routes. It is exported because it is what reaches the flow
 from outside; an `action(…)` that isn't exported is refused, as nothing could reach it. A person
-runs it from the editor's server panel or the deployed page, or a script with `POST
+runs it from the editor's Try a request or the deployed page, or a script with `POST
 /trigger/ticker/reset` on the holon server (as an editor or an admin); `input` is the JSON they
 sent, `{}` for nothing, so `{"to": 0}` and nothing both set the count back to 0. What it returns is
 the answer to whoever ran it: `state.ticks` on the right is the count at the start of the run

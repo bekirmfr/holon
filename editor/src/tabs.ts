@@ -6,8 +6,8 @@
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { FlowDocument, LogEntry } from "./server";
-import type { FlowSettings } from "./DeployBar";
-import { DEFAULT_SETTINGS } from "./DeployBar";
+import type { FlowSettings } from "./DeploySettings";
+import { DEFAULT_SETTINGS } from "./DeploySettings";
 import { documentKey, structuralKey } from "./flowDoc";
 import { restoreDocument } from "./docUnits";
 import { sourceOf } from "./holonText";

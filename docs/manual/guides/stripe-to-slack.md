@@ -80,7 +80,7 @@ and says neither secret is set yet. Press **Approve and deploy**.
 
 ## 3. Set the Slack secret
 
-Press **⚙**, and under **secrets**, set `slack_webhook_path` to the path from step 1 (source
+Open **Settings** in the bottom pane, and under **secrets**, set `slack_webhook_path` to the path from step 1 (source
 **value**). It is sealed on the server and never shown again; in the run log it appears as
 `‹secret:slack_webhook_path›`.
 
@@ -144,7 +144,7 @@ inspector, on a dimmed node, says why it didn't run.
 
 A wrong Slack path fails differently: the post is sent, Slack answers with an error status, and
 the route answers Stripe with that status, so Stripe retries the delivery later. The run's details show Slack's answer. Fix the
-secret under **⚙ → secrets**, and the next delivery goes through.
+secret under **Settings → secrets**, and the next delivery goes through.
 
 An agent sees the same through `holon mcp`: `runs` lists the deliveries, and `explain` shows a
 run as the flow's text with each statement's value.

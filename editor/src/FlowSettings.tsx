@@ -4,7 +4,7 @@
 // and removing it. Each control follows `can` on the flow (FlowPage.tsx asks it for them all).
 
 import { useEffect, useRef, useState } from "react";
-import { SecretRow } from "./DeployBar";
+import { SecretRow } from "./DeploySettings";
 import { approvalSaid, isApproval } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { describeItem, permissionKind } from "./holon";
@@ -295,7 +295,7 @@ function DeploySettings({ manifest }: { manifest: ManifestReply | null }) {
           ))}
         </dl>
       )}
-      <p className="hl-flow__note">Changed in the editor (⚙), by deploying it again.</p>
+      <p className="hl-flow__note">Changed in the editor's Settings (its bottom pane), by deploying it again.</p>
     </section>
   );
 }

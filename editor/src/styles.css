@@ -628,26 +628,6 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-palette__name { font-size: 13px; }
 
-/* ── Deployment panel: right of the canvas, mirrors the palette's fold pattern ─ */
-.hl-deploy {
-  flex: 0 0 280px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  min-height: 0;
-}
-.hl-deploy--closed {
-  flex: 0 0 28px;
-  overflow: hidden;
-}
-.hl-deploy__fold {
-  writing-mode: vertical-rl; font: inherit; font-size: 11px; letter-spacing: 0.06em;
-  background: transparent; border: none; color: var(--faint); cursor: pointer;
-  padding: 10px 0; width: 100%;
-}
-.hl-deploy__fold:hover { color: var(--ink); }
-
 /* ── Tabs: the editor's Home, then one per open flow, above the canvas ──── */
 .hl-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* Under the tabs: the palette (a flow tab's, in edit mode) beside the canvas. */
@@ -691,7 +671,27 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-edhome__keys { list-style: none; margin: 6px 0 10px; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--body); }
 .hl-edhome__keys .hl-kbd { margin-right: 3px; }
 
-/* The editor's bar (CanvasPanels.tsx's FlowToolbar): the panes it shows or hides. */
+/* The editor's bar (CanvasPanels.tsx's FlowToolbar, web-console-L4.md §5.1): the mode, the file
+   and its state, the panes it shows or hides, then the mode's buttons and the status chip. */
+.hl-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.hl-bar__file { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; min-width: 0; }
+.hl-bar__name { color: var(--ink); letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-bar__state { color: var(--faint); font-size: 11px; }
+.hl-bar__state::before { content: "· "; content: "· " / ""; }
+.hl-bar__state--changed { color: var(--warn); }
+.hl-bar__button {
+  font: inherit; font-size: 11px; padding: 3px 8px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.hl-bar__button:hover { color: var(--ink); }
+.hl-bar__link { font-size: 11px; color: var(--accent); text-decoration: none; padding: 3px 4px; }
+.hl-bar__link:hover { text-decoration: underline; }
+.hl-bar__status {
+  font-size: 11px; color: var(--faint); text-decoration: none; padding: 1px 8px;
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.hl-bar__status:hover { border-color: var(--border-strong); }
+/* The panes it shows or hides. */
 .hl-panes { display: inline-flex; gap: 2px; }
 .hl-panes__toggle {
   font: inherit; font-size: 11px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 4px;
@@ -713,8 +713,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) 28px; }
 .hl-canvas__flow { position: relative; min-width: 0; min-height: 0; grid-column: 1; grid-row: 2; }
-.hl-canvas--viewing { grid-template-rows: auto minmax(0, 1fr) var(--view-height, 34%); }
-.hl-canvas--viewing.hl-canvas--no-bottom { grid-template-rows: auto minmax(0, 1fr); }
+.hl-canvas--bottom { grid-template-rows: auto minmax(0, 1fr) var(--view-height, 34%); }
 .hl-inspector { grid-column: 2; grid-row: 2; border-left: 1px solid var(--border-strong); }
 .hl-panel-header {
   display: flex; align-items: center; padding: 0 4px 0 14px;
@@ -733,7 +732,52 @@ code, kbd, pre, samp { font-family: var(--mono); }
   font: inherit; background: transparent; border: none; color: var(--faint); cursor: pointer;
 }
 .hl-inspector__fold:hover { color: var(--ink); }
-.hl-view__bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+.hl-view__bottom, .hl-bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+/* The bottom pane in Edit (BottomPane.tsx): its tabs, then the one shown. Hidden (b), it keeps
+   what was typed into it. */
+.hl-bottom { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); font-size: 11px; color: var(--muted); }
+.hl-bottom[hidden] { display: none; }
+.hl-bottom__head { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); flex-shrink: 0; }
+.hl-bottom__tabs { display: flex; gap: 2px; overflow-x: auto; }
+.hl-bottom__tab {
+  font: inherit; font-size: 11px; letter-spacing: 0.04em; padding: 6px 10px; white-space: nowrap;
+  color: var(--faint); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
+}
+.hl-bottom__tab:hover { color: var(--ink); }
+.hl-bottom__tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.hl-bottom__count { margin-left: 6px; padding: 0 5px; border-radius: 8px; font-size: 10px; color: var(--faint); background: var(--surface); }
+.hl-bottom__count--bad { color: var(--bad-ink); background: var(--bad-bg); }
+.hl-bottom__panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px; }
+.hl-bottom__panel[hidden] { display: none; }
+.hl-bottom__none { margin: 4px 0; color: var(--faint); font-size: 12px; }
+.hl-bottom__button {
+  font: inherit; font-size: 11px; padding: 2px 8px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.hl-bottom__button:disabled { opacity: 0.5; cursor: default; }
+/* Problems: a row per mistake, a click goes to its line. */
+.hl-problems__checked { margin-bottom: 6px; color: var(--body); font-size: 12px; }
+.hl-problems__list { list-style: none; margin: 0; padding: 0; }
+.hl-problems__list button {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 12px; padding: 3px 6px;
+  color: var(--body); background: transparent; border: 0; border-radius: 3px; cursor: pointer;
+}
+.hl-problems__list button:hover { background: var(--row); }
+.hl-problems__line { color: var(--bad); margin-right: 6px; font-family: var(--mono); }
+/* Try a request: what starts it beside the request tester. */
+.hl-try { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+.hl-try__starts, .hl-try__request { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+@media (max-width: 880px) { .hl-try { grid-template-columns: minmax(0, 1fr); } }
+/* Settings: the deploy settings' groups. */
+.hl-settings { display: flex; flex-direction: column; gap: 6px; }
+.hl-settings__defaults { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--faint); cursor: pointer; user-select: none; }
+/* Replay the draft: a row per run replayed. */
+.hl-replay-draft { display: flex; flex-direction: column; gap: 8px; }
+.hl-replay-draft__head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--body); }
+.hl-replay-draft__table td { vertical-align: top; }
+.hl-replay-draft__row--same .hl-replay-draft__outcome { color: var(--ok); }
+.hl-replay-draft__row--differs .hl-replay-draft__outcome { color: var(--bad); }
+.hl-replay-draft__row--cant_tell .hl-replay-draft__outcome { color: var(--warn); }
 .hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
 .hl-view__edge:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .hl-view__edge::after {
@@ -1168,14 +1212,6 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-may__chip--gone { color: var(--faint); text-decoration: line-through; }
 .hl-may__tag { font-size: 10px; color: var(--warn); }
 .hl-may__chip--gone .hl-may__tag { color: var(--faint); text-decoration: none; }
-/* The text's mistakes, listed under it (TextPane.tsx): a click goes to one. */
-.hl-text__problems { list-style: none; margin: 0; padding: 2px 0; max-height: 25%; overflow-y: auto; border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
-.hl-text__problems button {
-  display: block; width: 100%; text-align: left; font: inherit; font-size: 11.5px; padding: 2px 10px;
-  color: var(--body); background: transparent; border: 0; cursor: pointer;
-}
-.hl-text__problems button:hover { background: var(--row); }
-.hl-text__problem-line { color: var(--bad); margin-right: 6px; }
 
 /* ── The name at the text's cursor, in the Inspector (ViewPanes.tsx WordSection) ── */
 /* The Inspector at the Statements level (InspectorText.tsx): an import, a statement, this flow. */
@@ -1582,7 +1618,11 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   .hl-canvas__bar > :first-child { min-width: 0; flex: 1 1 100%; }
   .hl-panes { display: none; }
   .hl-canvas, .hl-canvas.hl-canvas--text, .hl-canvas.hl-canvas--inspector-closed, .hl-canvas.hl-canvas--no-canvas.hl-canvas--text { grid-template-columns: minmax(0, 1fr); }
-  .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector { grid-column: 1; grid-row: 2; border-left: 0; }
+  .hl-canvas.hl-canvas--bottom { grid-template-rows: auto minmax(0, 1fr); }
+  .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector, .hl-canvas > .hl-bottom, .hl-canvas > .hl-view__bottom { grid-column: 1; grid-row: 2; border-left: 0; }
+  .hl-canvas:not([data-pane="bottom"]) > .hl-bottom, .hl-canvas:not([data-pane="bottom"]) > .hl-view__bottom,
+  .hl-canvas[data-pane="bottom"] > .hl-canvas__flow, .hl-canvas[data-pane="bottom"] > .hl-text, .hl-canvas[data-pane="bottom"] > .hl-inspector { display: none !important; }
+  .hl-view__edge { display: none; }
   .hl-text__edge { display: none; }
   .hl-canvas[data-pane="canvas"] > .hl-text, .hl-canvas[data-pane="canvas"] > .hl-inspector,
   .hl-canvas[data-pane="text"] > .hl-canvas__flow, .hl-canvas[data-pane="text"] > .hl-inspector,
@@ -1595,8 +1635,6 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   /* The palette, open, lies over the canvas's left; a node is dragged from it as before. */
   .hl-work { position: relative; }
   .hl-palette:not(.hl-palette--closed) { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(240px, 75vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
-  /* So do the tools and the deployment settings, over its right. */
-  .hl-deploy:not(.hl-deploy--closed) { position: absolute; inset: 0 0 0 auto; z-index: 20; width: min(320px, 85vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
 }
 
 /* A deployment's log lines (LogsPane.tsx, docs/L4s/logs-L4.md §5): a terminal beside its runs. */

@@ -138,3 +138,35 @@ test("the bar's panes: c, x and i show or hide the canvas, the text and the Insp
   await expect(page.getByRole("complementary", { name: "Inspector" })).toBeVisible();
   await saved(request, adminToken, (p) => p.includes('"hidden":[]'));
 });
+
+test("closing a changed tab asks: Save and close saves it, then closes it", async ({ page, request, adminToken }) => {
+  await openSample(page, "Hello API");
+  const tabs = page.getByRole("tablist", { name: "open tabs" });
+  // A route of its own, typed in the text: once the canvas shows it, the text stands for the flow
+  // and is what a save keeps.
+  const path = `/saved-on-close-${Date.now()}/:name`;
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const line = page.getByRole("region", { name: "Text" }).locator(".cm-line", { hasText: 'route.get("/hello/:name"' });
+  await line.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.insertText(`route.get("${path}", (req) => \`Hello, \${req.params.name}\`)`);
+  await expect(page.locator(".hl-canvas__flow")).toContainText(path);
+  await expect(page.locator(".hl-bar__state--changed")).toHaveText("changed");
+  await tabs.getByRole("button", { name: "close hello-api" }).click();
+  const dialog = page.locator('[aria-modal="true"]');
+  await expect(dialog).toContainText('"hello-api" has unsaved changes.');
+  await expect(dialog.getByRole("button")).toHaveText(["kKeep it open", "dDiscard", "sSave and close"]);
+  // Keep it open (k): nothing changes.
+  await page.keyboard.press("k");
+  await expect(dialog).toHaveCount(0);
+  await expect(tabs.getByRole("tab")).toHaveText([/^Home/, /^hello-api/]);
+  // Save and close: saved on the server with the change, closed, and reopened as saved.
+  await tabs.getByRole("button", { name: "close hello-api" }).click();
+  await dialog.getByRole("button", { name: "Save and close" }).click();
+  await expect(tabs.getByRole("tab")).toHaveText([/^Home/]);
+  const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  expect(((await saved.json()) as { document: { source?: string } }).document.source).toContain(path);
+  const closed = page.getByRole("region", { name: "recently closed" });
+  await expect(closed).not.toContainText("with its unsaved changes");
+});

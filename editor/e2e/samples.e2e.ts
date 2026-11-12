@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -31,7 +31,7 @@ test("the library lists every sample", async ({ page }) => {
 test("shared-key reads the server's secret, which may go only where an admin said: sent elsewhere, the deploy is refused", async ({ page }) => {
   await openSample(page, "One key for every flow, capped");
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
   // The text changed to send it elsewhere: the deploy is refused, saying why.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
@@ -120,6 +120,32 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toBeVisible();
+});
+
+test("Replay the draft on a deployed sample: its newest runs, run again on the text as it is now, each same or differs", async ({ page, request }) => {
+  await openSample(page, "Hello API");
+  const port = await deploy(page);
+  for (const name of ["Ada", "Bo"]) expect((await request.get(`http://127.0.0.1:${port}/hello/${name}`)).status()).toBe(200);
+  // Changed in the text, not deployed: the draft answers "Hi", where the runs were answered "Hello".
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/hello-api.holon.ts", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("`Hello, ", "`Hi, ").replace("port: 8101", `port: ${port}`));
+  const bottom = page.getByRole("region", { name: "bottom" });
+  await bottom.getByRole("tab", { name: "Replay the draft" }).click();
+  const replay = bottom.getByRole("tabpanel", { name: "Replay the draft" });
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^\d+ replayed · 0 same · \d+ differs?$/, { timeout: 15_000 });
+  const rows = replay.getByRole("table", { name: "replayed runs" }).locator("tbody tr");
+  await expect(rows.first()).toContainText("GET /hello/:name");
+  await expect(rows.first()).toContainText("differs");
+  // A run's number goes to it in view mode.
+  await expect(rows.first().getByRole("link")).toHaveText(/^#\d+$/);
+  // Back as deployed, every run is the same again.
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port: 8101", `port: ${port}`));
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^(\d+) replayed · \1 same$/, { timeout: 15_000 });
 });
 
 test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
@@ -453,7 +479,7 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await viewNewestRun(page);
   await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
-  // Its action, run by hand from the server panel with what to send, sets the count: the clock
+  // Its action, run by hand from Try a request with what to send, sets the count: the clock
   // goes on from there.
   await page.getByLabel("what to send reset").fill('{"to": 1000}');
   await page.getByRole("button", { name: "run", exact: true }).click();
@@ -515,7 +541,7 @@ test("drop-board's file handlers run beside its routes: a file dropped in, and o
   const { join } = await import("node:path");
   await openSample(page, "Drop board (files on a live page)");
   const port = await deploy(page);
-  // The server panel lists its file handlers beside its routes.
+  // Try a request lists its file handlers beside its routes.
   await expect(page.getByText("board deleted", { exact: true })).toBeVisible();
   const board = await browser.newPage();
   const subscribed = board.waitForResponse((r) => new URL(r.url()).pathname === "/live");
@@ -951,7 +977,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
     route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
   );
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
   // The variable the secret's name suggests is chosen; the one just added is there too.
   const names = settings.locator("select", { has: page.locator("option", { hasText: "another name…" }) });
@@ -1048,7 +1074,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
   // which asks nobody.
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   const runs = settings.getByLabel("runs the log keeps");
   await expect(runs).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
@@ -1161,7 +1187,7 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
 
   await openSample(page, "Token-guarded API");
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await settings.getByTitle("versions and changes; roll back to an older version").first().click();
   const rollBack = settings.getByTitle(`make version ${before} current again`);
   // The dry run: what it would do, never the value; cancelled, nothing changed.

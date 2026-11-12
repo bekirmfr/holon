@@ -1,11 +1,11 @@
-// View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
-// live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons, a capability-badge column and ↺ (go back to the run; the rest of its
-// history is its page's, FlowPage.tsx). Right side: two tabs — Details (what the run
-// read and produced) and Timeline (one row per node, timed by the server). The width of the
-// split is draggable and remembered. The side pane shows the selected run's flow state as of the
-// current step, and the selected node: its params, and the inputs and outputs it had in that run
-// (replayed, replay.ts).
+// View mode's panes around the canvas of a deployed flow. The bottom pane (`b`, its frame
+// BottomPane.tsx's) shows the flow log live (every request, trigger and tick). Left side, the
+// runs: a sortable, filterable run list with copy and export buttons, a capability-badge column
+// and ↺ (go back to the run; the rest of its history is its page's, FlowPage.tsx). Right side,
+// the run: two tabs — Details (what the run read and produced) and Timeline (one row per node,
+// timed by the server), with Errors when it failed. The width of the split is draggable and
+// remembered. The side pane shows the selected run's flow state as of the current step, and the
+// selected node: its params, and the inputs and outputs it had in that run (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
@@ -23,6 +23,7 @@ import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, t
 import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
+import { useBottomHeight } from "./BottomPane";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
 import { WordSection } from "./InspectorText";
@@ -119,21 +120,6 @@ const paneStyle: CSSProperties = {
   position: "relative",
 };
 
-const HEIGHT_KEY = "holon.viewHeight";
-
-/** The bottom pane's height, remembered per browser (styles.css `--view-height`; a third of the
- *  canvas when never dragged). */
-function rememberedHeight(): number | null {
-  try {
-    const h = Number(localStorage.getItem(HEIGHT_KEY));
-    return Number.isFinite(h) && h > 0 ? h : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Where the pane's height may go: never so small the tabs vanish, never most of the window. */
-const clampHeight = (h: number) => Math.max(120, Math.min(window.innerHeight * 0.75, h));
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
 const SPLIT_KEY = "holon.logRightWidth";
@@ -240,40 +226,8 @@ export function BottomPane({
   onFitToNodes: (ids: string[]) => void;
 }) {
   const { entries, chain, tallies, error } = useFlowLog(slug);
-  // The pane's height, dragged by its top edge: set on the canvas grid it is a row of
-  // (`--view-height`, styles.css), so the canvas above takes the rest.
-  const pane = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | null>(rememberedHeight);
-  useEffect(() => {
-    const grid = pane.current?.parentElement;
-    if (!grid) return;
-    if (height === null) grid.style.removeProperty("--view-height");
-    else grid.style.setProperty("--view-height", `${Math.round(height)}px`);
-    return () => {
-      grid.style.removeProperty("--view-height");
-    };
-  }, [height]);
-  const onEdge = (e: ReactPointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = pane.current?.getBoundingClientRect().height ?? height ?? 240;
-    let last = startH;
-    const move = (m: PointerEvent) => {
-      last = clampHeight(startH + startY - m.clientY);
-      setHeight(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try {
-        localStorage.setItem(HEIGHT_KEY, String(Math.round(last)));
-      } catch {
-        // Not remembered, then.
-      }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
+  // The pane's height, dragged by its top edge (BottomPane.tsx), the same as in Edit.
+  const { pane, onEdge } = useBottomHeight();
   // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
   // step) instead: live starts only when nothing is selected.
   const [live, setLive] = useState(() => selected === null);

@@ -119,15 +119,26 @@ The panel on the right shows the selected node: what it does, its kind, its line
 its parameters, inputs and outputs. **Unit** shows what the node's unit is made of. **›** folds
 the panel.
 
-### The tools panel
+### The bottom pane
 
-The **tools** panel on the right lists what starts the flow's runs: its clocks (`every 2s`),
-its file handlers (`on file inbox`), its actions and its routes, with a count when it is folded.
-**tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
+The pane under the canvas (**b** shows or hides it) has four tabs in edit mode:
+
+- **Problems**: the text's mistakes as you type, as `holon check` finds them, its count on the
+  tab. A row goes to its line. **check** in the toolbar reads the text again and opens it.
+- **Try a request**: what starts the flow's runs, and a request tester (below).
+- **Replay the draft**: the flow as it is now, run offline on the deployed version's newest runs
+  (20 at most): a row each, with what came in, what it was answered then and what it would be
+  answered now, **same** or **differs**. A call the deployed version never made has no recorded
+  answer, and its row says so. A flow not deployed has no runs to replay.
+- **Settings**: the deploy settings ([Deploying and permissions](deploying.md)), deployed with the
+  version.
+
+**Try a request** lists its clocks (`every 2s`), its file handlers (`on file inbox`), its actions
+and its routes. **tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
 send it, as JSON, and **run**: the answer shows under it with the run's number, and **view run**
 opens that run. A viewer sees the actions and can't run them
 ([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
-and the panel says so.
+and the tab says so.
 
 **test** opens a request
 tester: pick a method, a path (`/todos/1?full=1`), headers and a body, then **send local** or
@@ -146,7 +157,7 @@ window). It is the same flow:
 - the cursor in the text selects the node under it, and a node selected on the canvas marks its
   text;
 - hover shows what a name is, and completion offers what may follow (after `req.`, say);
-- **Format** (**Shift+Alt+F**) writes the text as `holon fmt` would.
+- **format** in the toolbar (**Shift+Alt+F**) writes the text as `holon fmt` would.
 
 Saving keeps the text as you typed it, comments included. A canvas change that rewrites the text
 can drop a comment; the editor says so, and undo brings it back.
@@ -154,12 +165,15 @@ can drop a comment; the editor says so, and undo brings it back.
 ## Saving and deploying
 
 **save** keeps the flow on the server under its name. The first save asks for one: letters,
-digits, `-` and `_`.
+digits, `-` and `_`. Closing a tab with unsaved changes asks: **Keep it open**, **Discard** or
+**Save and close**.
 
-The deploy bar (edit mode, in the toolbar) has **deploy** (or **update**, with **•** when the
-canvas differs from what is deployed), the deployment's state and port, **pause**, **resume**,
-**stop** and **run**, and **⚙** for its settings: port, limits, secrets, optional
-permissions and which actions agents may run. Deploying shows what the flow may do and asks you
+The toolbar names the file and its state (`v3 live`, `saved`, `draft`, and `changed` while it has
+unsaved changes). In edit mode it has **format**, **check**, **save** and **deploy** (or
+**update**, with **•** when the canvas differs from what is deployed); in view mode, **All runs**
+and **History**, on the flow's page. A deployed flow's status and port is a chip that goes to its
+page, where it is paused, resumed, stopped and run. Its settings (port, limits, secrets, optional
+permissions and which actions agents may run) are the bottom pane's **Settings**. Deploying shows what the flow may do and asks you
 to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
 
 A flow with no route, clock, file handler or action starts nothing, so **deploy** is greyed and

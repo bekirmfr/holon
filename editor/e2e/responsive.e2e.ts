@@ -103,6 +103,10 @@ test.describe("at 390 px", () => {
       await expect(page.getByRole("complementary", { name: "Inspector" })).toBeVisible();
       await expect(page.getByRole("region", { name: "Text" })).toBeHidden();
       await fitsAcross(page);
+      await panes.getByRole("button", { name: "bottom" }).click();
+      await expect(page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Try a request" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "Inspector" })).toBeHidden();
+      await fitsAcross(page);
 
       // A flow's history: its timeline, a table that scrolls inside itself if it must.
       await page.goto(`/#${live}.history`);

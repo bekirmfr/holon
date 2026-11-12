@@ -77,21 +77,28 @@ export async function still(locator: Locator) {
     .toBe(true);
 }
 
-/** Open the deployment settings panel if it is closed. */
+/** The deployment settings: the bottom pane's Settings tab, in Edit. */
+export function deploySettings(page: Page): Locator {
+  return page.getByRole("tabpanel", { name: "Deployment settings" });
+}
+
+/** Show the deployment settings: the bottom pane (shown if hidden), on its Settings tab. */
 export async function openDeployPanel(page: Page) {
-  const panel = page.getByRole("complementary", { name: "Deployment settings" });
+  const panel = deploySettings(page);
   if (!(await panel.isVisible())) {
-    await page.getByRole("button", { name: "open deployment settings" }).click();
+    const off = page.locator(".hl-canvas").getByRole("button", { name: "bottom off" });
+    if (await off.isVisible()) await off.dispatchEvent("click");
+    await page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Settings" }).dispatchEvent("click");
     await panel.waitFor({ state: "visible", timeout: 5_000 });
   }
 }
 
-/** Deploy the open flow through the deployment settings panel and the consent screen; its port
+/** Deploy the open flow through its deployment settings and the consent screen; its port
  *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
  *  panel. Answers the port it serves on (null for a flow without routes). */
 export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
@@ -110,11 +117,11 @@ export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Loc
   return port;
 }
 
-/** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
- *  its port. */
+/** Wait until text typed into the Text pane has compiled: its deployment settings then say its
+ *  port. */
 export async function settingsSayPort(page: Page, port: string) {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
 

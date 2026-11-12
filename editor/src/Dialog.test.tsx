@@ -111,4 +111,18 @@ describe("dialog keys", () => {
     press("Enter", {}, field);
     await expect(name).resolves.toBe("shout");
   });
+  it("gives each of a choice's answers its letter, the last answered by Enter too, Esc none", async () => {
+    const d = mount();
+    const three = ["Keep it open", "Discard", "Save and close"];
+    const { answer: kept } = await ask(() => d.choose("Close it?", three));
+    expect(buttons().map((b) => b.querySelector("kbd")?.textContent)).toEqual(["k", "d", "s"]);
+    press("k");
+    await expect(kept).resolves.toBe(0);
+    const { answer: saved } = await ask(() => d.choose("Close it?", three));
+    press("Enter");
+    await expect(saved).resolves.toBe(2);
+    const { answer: none } = await ask(() => d.choose("Close it?", three));
+    press("Escape");
+    await expect(none).resolves.toBeNull();
+  });
 });

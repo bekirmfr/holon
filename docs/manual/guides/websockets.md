@@ -74,7 +74,7 @@ reference](../language/reference.md#the-outside-world).
 ## What the host holds
 
 The host answers a connection's pings, pings it every 15 seconds, and closes it when it hears
-nothing for 30. It holds each within the deployment's limits (under **⚙** in the editor, or the
+nothing for 30. It holds each within the deployment's limits (in the editor's **Settings**, or the
 flow's `limits`; [Permissions](../reference/permissions.md#limits)):
 
 | Limit | Is | Default | Ceiling |

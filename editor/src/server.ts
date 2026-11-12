@@ -9,7 +9,7 @@
 // (VITE_HOLON_SERVER names another). Everyone signs in (crates/holon/src/access.rs): every request
 // carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
-import { browsersOf } from "./DeployBar";
+import { browsersOf } from "./DeploySettings";
 import { signedIn, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
@@ -571,7 +571,7 @@ export async function deployUnit(
       ...(requirements !== undefined ? { requirements } : {}),
       // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
-      // The web pages from other sites it answers (⚙), when it says any.
+      // The web pages from other sites it answers (its Settings), when it says any.
       ...(document?.server ? { browsers: browsersOf(document.server) } : {}),
       ...(note?.trim() ? { note: note.trim() } : {}),
     }),
@@ -1425,7 +1425,7 @@ export type FlowDocument = {
   /** What its composites are called, by hash (docUnits.ts): a unit keeps no name, so a holon
    *  inside another would otherwise show as its hash once reopened. Absent in older flows. */
   names?: Record<string, string>;
-  /** The flow's deploy settings (DeployBar): the port for a flow with routes. Absent in older
+  /** The flow's deploy settings (DeploySettings.tsx): the port for a flow with routes. Absent in older
    *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
   server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[] };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow

@@ -1,8 +1,9 @@
 // The open flows, one tab each (tabs.ts): the canvas shows the active tab; the others are kept
 // whole in `stash` and put back when picked. A flow is open in one tab at most: opening it again
 // goes to its tab. A closed tab is kept whole too, the last few (`closed`, newest first), so
-// the editor's Home can open it again as it was left. Leaving the page asks first while any tab
-// has unsaved changes.
+// the editor's Home can open it again as it was left. Closing a tab with unsaved changes asks
+// three ways: keep it open, discard them, or save and close. Leaving the page asks first while
+// any tab has unsaved changes.
 
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
@@ -14,6 +15,9 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 /** How many closed tabs are kept to open again. */
 const RECENTLY_CLOSED = 8;
+
+/** What closing a tab with unsaved changes offers, Save and close highlighted. */
+export const CLOSE_ANSWERS = ["Keep it open", "Discard", "Save and close"];
 
 export function useTabs({
   flow,
@@ -32,7 +36,8 @@ export function useTabs({
   setEdges,
   resetProjectionView,
   showCanvas,
-  confirm,
+  choose,
+  save,
 }: {
   /** The active tab's flow (FlowMeta), and setting it whole. */
   flow: FlowMeta;
@@ -54,7 +59,11 @@ export function useTabs({
   resetProjectionView: () => void;
   /** Bring the canvas page to the front. */
   showCanvas: () => void;
-  confirm: (message: string, action?: string) => Promise<boolean>;
+  /** Ask a question with several answers (Dialog.tsx's choose). */
+  choose: (message: string, answers: string[]) => Promise<number | null>;
+  /** Save the active tab's flow (naming it first if it has no name): its name and what it was
+   *  saved as (tabs.ts's savedKey), or null when it wasn't saved. */
+  save: () => Promise<{ name: string; key: string } | null>;
 }) {
   const flowName = flow.name;
   const viewing = flow.viewing;
@@ -138,11 +147,9 @@ export function useTabs({
     [flowName, activeId],
   );
 
-  const closeTab = useCallback(
-    async (id: number) => {
-      const t = id === activeId ? captureTab() : stash.current.get(id);
-      if (!t) return;
-      if (t.dirty && !(await confirm(`Close "${t.meta.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
+  /** Close tab `id`, whose state is `t`, without asking. */
+  const closeNow = useCallback(
+    (id: number, t: TabState) => {
       keepClosed(t);
       if (id !== activeId) {
         stash.current.delete(id);
@@ -162,7 +169,42 @@ export function useTabs({
       applyTab(nt);
       setActiveId(next);
     },
-    [activeId, captureTab, confirm, tabIds, applyTab, keepClosed],
+    [activeId, tabIds, applyTab, keepClosed],
+  );
+
+  /** Save the active tab, then close it: kept among the recently closed as saved. */
+  const saveAndClose = useCallback(async () => {
+    const id = activeId;
+    const t = captureTab();
+    const saved = await save();
+    if (saved === null) return;
+    closeNow(id, { ...t, dirty: false, meta: { ...t.meta, name: saved.name, saved: true, savedKey: saved.key } });
+  }, [activeId, captureTab, save, closeNow]);
+
+  // A tab saved and closed while another was shown is shown first, and saved once it is.
+  const savingTab = useRef<number | null>(null);
+  useEffect(() => {
+    if (savingTab.current !== activeId) return;
+    savingTab.current = null;
+    void saveAndClose();
+  }, [activeId, saveAndClose]);
+
+  const closeTab = useCallback(
+    async (id: number) => {
+      const t = id === activeId ? captureTab() : stash.current.get(id);
+      if (!t) return;
+      if (t.dirty) {
+        const answer = await choose(`"${t.meta.name ?? "untitled"}" has unsaved changes.`, CLOSE_ANSWERS);
+        if (answer === null || CLOSE_ANSWERS[answer] === "Keep it open") return;
+        if (CLOSE_ANSWERS[answer] === "Save and close") {
+          if (id === activeId) return void (await saveAndClose());
+          savingTab.current = id;
+          return switchTab(id);
+        }
+      }
+      closeNow(id, t);
+    },
+    [activeId, captureTab, choose, saveAndClose, switchTab, closeNow],
   );
 
   /** Open the recently closed tab `at` again, as it was left (in its tab, if its flow is open

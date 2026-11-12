@@ -15,12 +15,12 @@ export const START_STEPS: Step[] = [
   {
     title: "Deploy it",
     doneWhen: "deployed",
-    body: "Press deploy. Holon shows what the flow may do (receive requests, read a secret, write a collection…) and asks you to approve it; then it runs, on the port set under ⚙.",
+    body: "Press deploy. Holon shows what the flow may do (receive requests, read a secret, write a collection…) and asks you to approve it; then it runs, on the port its Settings say (the bottom pane, b).",
   },
   {
     title: "Send it a request",
     doneWhen: "ran",
-    body: "Use the request tester in the editor's Tools panel, on the right (send local, send live; :call in the palette opens it), or curl, as each sample's \"try\" line says. Every run is kept.",
+    body: "Use Try a request, in the editor's bottom pane (send local, send live; :call in the palette opens it), or curl, as each sample's \"try\" line says. Every run is kept.",
   },
   {
     title: "Look at the run",
@@ -48,8 +48,8 @@ export const TOPICS: Topic[] = [
   {
     title: "Routes and servers",
     paragraphs: [
-      "A request node (a method and a path, like GET /hello/:name) wired to a respond node makes a route; a flow with routes is a server, answering on the port set under ⚙. The editor's Tools panel lists its routes and lets you send it requests.",
-      "\"Web pages from\" under ⚙ lets pages on other sites call it.",
+      "A request node (a method and a path, like GET /hello/:name) wired to a respond node makes a route; a flow with routes is a server, answering on the port its Settings say. The editor's bottom pane lists its routes under Try a request, and sends it requests.",
+      "\"Web pages from\" in its Settings lets pages on other sites call it.",
     ],
   },
   {
@@ -89,7 +89,7 @@ export const TOPICS: Topic[] = [
   {
     title: "Secrets",
     paragraphs: [
-      "A secret node reads a secret by name; set its value under ⚙ → secrets, per deployment. Values are sealed on the server, versioned, can be rolled back (a dry run says what it would do first), and are never shown again or logged.",
+      "A secret node reads a secret by name; set its value in the editor's Settings → secrets, per deployment. Values are sealed on the server, versioned, can be rolled back (a dry run says what it would do first), and are never shown again or logged.",
     ],
   },
   {

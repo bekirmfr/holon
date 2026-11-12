@@ -88,7 +88,7 @@ import { bindingSaid, hostRoleOf, otherBindings, rolesFor, roleTitle } from "./a
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
 import { useDryRun } from "./DryRun";
-import { secretRollbackReport, sourceLabel } from "./DeployBar";
+import { secretRollbackReport, sourceLabel } from "./DeploySettings";
 
 // The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
 // a row (a card of its own), what a section is about, and a quiet note. A section's heading is
@@ -1443,7 +1443,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
         <>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
-            under its ⚙, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
+            in its Settings in the editor, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
             refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
           </div>
           {serverSecrets.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
@@ -1944,7 +1944,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
 }
 
 /** A server secret's versions and changes, folded under its row; an older version is made
- *  current again after a dry run, as a deployment's is (DeployBar.tsx's SecretRow). Never a
+ *  current again after a dry run, as a deployment's is (DeploySettings.tsx's SecretRow). Never a
  *  value: versions are told apart by their fingerprints. */
 function ServerSecretHistory({ name, onChanged, may = true }: { name: string; onChanged: () => void; may?: Answer }) {
   const [history, setHistory] = useState<SecretHistory | null>(null);
