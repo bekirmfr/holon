@@ -136,6 +136,7 @@ const SCOPE_TITLE: Record<KeyScope, string> = {
   list: "In a list",
   tabs: "With tabs",
   run: "A run's page",
+  approvals: "On Approvals",
   editor: "Editing a flow",
   view: "Viewing runs",
   review: "Reviewing a version",

@@ -4920,6 +4920,37 @@ fn what_was_done_to_a_deployment_is_its_events() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A deploy's note is kept with the grant it makes: on its event, read back across a restart and
+/// exported, and in the activity. A deploy without one, or with only spaces, keeps none.
+#[test]
+fn a_deploys_note_is_kept_on_the_grants_event() {
+    let mut state = test_state();
+    let path = unique_temp_path("deploy-note");
+    state.deployments_path = path.clone().into();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "note": "  checked the key it writes with Ada  " });
+    assert_eq!(deploy_json(&state, "noted", writer, ack).status_code, 200);
+    assert_eq!(deploy_json(&state, "noted", writer, serde_json::json!({ "note": "   " })).status_code, 200);
+
+    let events = body_json(route(&state, &req("GET", "/deployments/noted/events", vec![])))["events"].as_array().unwrap().clone();
+    assert_eq!(events.len(), 2, "{events:#?}");
+    assert_eq!((events[0]["kind"].as_str(), events[0]["note"].as_str()), (Some("deploy"), Some("checked the key it writes with Ada")));
+    assert!(events[1].get("note").is_none(), "{:?}", events[1]);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/noted/export", vec![])))).unwrap();
+    assert!(export.events[0].contains("checked the key it writes with Ada"));
+    assert!(verify::check(&export, None, &BTreeMap::new()).ok());
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
+    assert_eq!(reloaded["noted"].events.entries()[0].note.as_deref(), Some("checked the key it writes with Ada"));
+
+    let activity = body_json(route(&state, &req("GET", "/activity?limit=50", vec![])))["entries"].as_array().unwrap().clone();
+    let deployed: Vec<_> = activity.iter().filter(|e| e["action"] == "deployed" && e["target"] == "noted").collect();
+    assert_eq!(deployed.len(), 2, "{activity:#?}");
+    assert_eq!((deployed[0].get("note"), deployed[1]["note"].as_str()), (None, Some("checked the key it writes with Ada")), "newest first");
+    route(&state, &req("POST", "/deployments/noted/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/noted", vec![])).status_code, 200);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A deployments file from before rc.30 kept the last 10 earlier versions' documents only: they
 /// are numbered and their documents moved into the store at load, the current version added. They
 /// open on their canvas but don't restore, having no record of what their deploys asked.

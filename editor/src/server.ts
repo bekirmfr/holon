@@ -557,6 +557,8 @@ export async function deployUnit(
   document?: FlowDocument,
   /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
   requirements?: Requirements,
+  /** What the person deploying it says: kept with the grant, on its event (events.rs). */
+  note?: string,
 ): Promise<DeployResult> {
   const res = await api(`${BASE}/deploy`, {
     method: "POST",
@@ -571,6 +573,7 @@ export async function deployUnit(
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
       // The web pages from other sites it answers (⚙), when it says any.
       ...(document?.server ? { browsers: browsersOf(document.server) } : {}),
+      ...(note?.trim() ? { note: note.trim() } : {}),
     }),
   });
   return asJson<DeployResult>(res);
@@ -686,7 +689,8 @@ export async function getAuthConfig(): Promise<AuthConfig | null> {
 }
 
 /** One thing done on the server: a save, deploy, run, pause, stop, grant or delete, and by whom. */
-export type ActivityEntry = { at: number; action: string; target: string; by?: string };
+/** One thing done; a deploy's with its note, when one was kept with its grant. */
+export type ActivityEntry = { at: number; action: string; target: string; by?: string; note?: string };
 
 /** `GET /activity`: what was done, newest first. */
 export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
@@ -1239,6 +1243,8 @@ export type DeploymentEvent = {
   from?: string;
   /** What an ask (an agent's restore, saved for a person to approve) would restore of its point. */
   restores?: ("code" | "state")[];
+  /** A deploy's: what the person who deployed it said, kept with the grant it made. */
+  note?: string;
 };
 
 /** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before

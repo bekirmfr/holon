@@ -375,6 +375,7 @@ function HistoryRow({ item, active, onClick, back }: { item: TimelineItem; activ
       <span style={{ flex: 1, minWidth: 0, color: ink, overflowWrap: "anywhere" }}>
         {e.what}
         {item.version?.current ? <span style={{ color: good }}> (now)</span> : null}
+        {e.note && <span className="hl-history__note">: “{e.note}”</span>}
       </span>
       {by(e.by)}
       {end}
@@ -455,6 +456,7 @@ export function itemDetails(item: TimelineItem, target: Target): [string, string
   if (item.kind === "event") {
     const e = item.event;
     fields.push(["what", e.what], ["kind", e.kind], ["when", when(e.at_ms)], ["by", e.by ?? "the host"], ["before run", `#${e.run_seq}`]);
+    if (e.note) fields.push(["note", e.note]);
     if (e.session !== undefined) fields.push(["session", String(e.session)]);
     if (e.name) fields.push(["about", e.name]);
     if (e.kind === "ask" && e.from) fields.push(["asks", `${e.from}'s ${(e.restores ?? []).join(" and ")}, for a person to restore`]);

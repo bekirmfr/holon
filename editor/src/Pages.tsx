@@ -106,6 +106,7 @@ export function ActivityList({ version, bare = false }: { version: string; bare?
           <span style={{ color: "var(--faint)" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
           <span style={{ color: "var(--accent)" }}>{e.target}</span>
           {e.by && <span style={{ color: "var(--faint)" }}> · by {e.by}</span>}
+          {e.note && <span style={{ color: "var(--body)" }}>: “{e.note}”</span>}
         </div>
       ))}
     </div>

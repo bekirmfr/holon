@@ -36,6 +36,16 @@ export function approvalSaid(w: WaitingPoint): string {
   return by.length === 0 ? `${needs} "${w.name}"` : `${needs} "${w.name}" · ${by.length} of ${people}: ${and(by)} approved`;
 }
 
+/** Who an approval waits for, as Runs waiting's column says it: how many people, and who has
+ *  approved so far (k of n). An event waits for its event. */
+export function waitsFor(w: WaitingPoint): string {
+  if (!isApproval(w)) return "its event";
+  const people = w.people ?? 0;
+  const by = (w.approved ?? []).map((a) => a.by);
+  const needs = people === 1 ? "a person" : `${people} people`;
+  return by.length === 0 ? needs : `${needs} · ${by.length} of ${people}: ${and(by)} approved`;
+}
+
 /** How many approvals `me` can still decide, over these runs, `decides` saying which points are
  *  theirs (`pointKey`): what the nav adds to its count. */
 export const toDecide = (runs: { slug: string; run: WaitingRun }[], me: Me, decides: ReadonlyMap<string, boolean | string>) =>

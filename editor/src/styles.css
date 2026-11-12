@@ -280,6 +280,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__filter { font: inherit; font-size: 12px; padding: 3px 8px; color: var(--ink); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; width: 220px; }
 .hl-flow__split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 .hl-flow__history .hl-history { border: 1px solid var(--border); border-radius: 5px; }
+.hl-history__note { color: var(--muted); }
 .hl-history__details { display: flex; flex-direction: column; gap: 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 10px; position: sticky; top: 0; }
 .hl-history__details dl { margin: 0; display: grid; gap: 4px; }
 .hl-history__details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
@@ -388,6 +389,30 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__why b { color: var(--ink); }
 .hl-review-page__note { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border-strong); color: var(--muted); white-space: pre-wrap; }
 .hl-review-page__if { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--body); }
+.hl-review-page__policy { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; color: var(--body); }
+.hl-review-page__policy span { color: var(--ok); }
+.hl-review-page__policy--no, .hl-review-page__policy--no span { color: var(--bad); }
+.hl-review-page__note-field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.hl-review-page__note-field textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 4px 6px; resize: vertical; }
+/* A proposal's card on Approvals (ApprovalsPage.tsx): its versions, place, why, and the rows that
+   change, + new in amber, − no longer struck through. */
+.hl-approval-cards { display: grid; gap: 10px; margin-bottom: 14px; }
+.hl-approval-card { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.hl-approval-card[data-at] { box-shadow: inset 3px 0 0 var(--accent); background: var(--row); }
+.hl-approval-card__head { display: flex; align-items: baseline; gap: 10px; }
+.hl-approval-card__versions { font-family: var(--mono); color: var(--body); }
+.hl-approval-card__place { color: var(--faint); }
+.hl-approval-card__by { color: var(--muted); }
+.hl-approval-card__why { margin: 0; color: var(--ink); }
+.hl-approval-card__rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.hl-approval-card__row { display: flex; gap: 6px; align-items: baseline; }
+.hl-approval-card__row--new { color: var(--warn); }
+.hl-approval-card__row--gone { color: var(--faint); }
+.hl-approval-card__row--gone > span:nth-child(2) { text-decoration: line-through; }
+.hl-approval-card__sign { font-family: var(--mono); width: 10px; }
+.hl-approval-card__line { margin-left: auto; color: var(--faint); font-size: 11px; }
+.hl-approval-card__same { margin: 0; color: var(--faint); }
+.hl-approval-card__do { display: flex; gap: 6px; justify-content: flex-end; }
 /* A version replayed on recent runs (ReplayRuns.tsx): the count, then each run that differs. */
 .hl-replay__summary { margin: 0 0 6px; font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
 .hl-replay__runs { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; font-size: 12px; }

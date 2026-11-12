@@ -1370,6 +1370,7 @@ function Canvas({
               decides={approvals.decides}
               me={me}
               navigate={navigate}
+              textOf={(slug, doc) => documentText(slug, doc)}
               onDeclined={approvals.refresh}
               onDecided={() => {
                 approvals.refresh();

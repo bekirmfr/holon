@@ -78,7 +78,7 @@ export function hintsAt(r: Route): [string, string][] {
     case "flows":
       return [["j k", "select"], ["enter", "open"], ["1–8", "pages"]];
     case "approvals":
-      return [["j k", "select"], ["enter", "open"], ["[ ]", "tabs"]];
+      return [["j k", "select"], ["a", "approve"], ["d", "decline"], ["[ ]", "tabs"]];
     case "flow":
       return r.tab === "runs" ? [["j k", "select"], ["enter", "open"], ["[ ]", "tabs"], ["esc", "up"]] : [["[ ]", "tabs"], ["esc", "up"], ["F6", "panes"]];
     case "run":

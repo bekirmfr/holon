@@ -26,6 +26,9 @@ pub(crate) struct ActivityEntry {
     /// Who did it (access.rs's caller); absent on an open loopback server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) by: Option<String>,
+    /// What they said of it: a deploy's note, kept with its grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
 }
 
 pub(crate) struct Activity {
@@ -49,7 +52,12 @@ impl Activity {
     }
 
     pub(crate) fn record(&self, action: &str, target: &str, by: Option<&str>) {
-        let entry = ActivityEntry { at: crate::deploy::epoch_now(), action: action.into(), target: target.into(), by: by.map(String::from) };
+        self.record_noted(action, target, by, None);
+    }
+
+    /// Record it with what its doer said of it.
+    pub(crate) fn record_noted(&self, action: &str, target: &str, by: Option<&str>, note: Option<&str>) {
+        let entry = ActivityEntry { at: crate::deploy::epoch_now(), action: action.into(), target: target.into(), by: by.map(String::from), note: note.map(String::from) };
         let Some(path) = &self.path else {
             self.kept.lock().unwrap().push(entry);
             return;

@@ -330,6 +330,8 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         },
         None => None,
     };
+    // What the person deploying it says, kept with the grant on its event and in the activity.
+    let note = body.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
     let version;
 
     {
@@ -402,7 +404,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             Some(n) => format!("restored version {n}'s code, as version {version}"),
             None => format!("deployed version {version}"),
         };
-        events.push("deploy", what, by, log.next_seq(), crate::events::Detail { version: Some(version), ..Default::default() });
+        events.push("deploy", what, by, log.next_seq(), crate::events::Detail { version: Some(version), note: note.clone(), ..Default::default() });
         let document = body.document.clone().or(old_document);
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
@@ -460,7 +462,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     if let Some(accounts) = state.access.accounts() {
         accounts.set_tags(&body.slug, &tags);
     }
-    activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
+    activity.record_noted(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by, note.as_deref());
     // A person's deploy of a version proposed approves the proposal.
     if approves {
         state.proposals.approved(&body.slug, &to_hex(&unit_hash), by);

@@ -7,6 +7,9 @@
 // or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
 // A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
 // saved since. A version of a deployed flow is replayed on its recent runs (G11, ReplayRuns.tsx).
+// Under what it may do (web-console-L4.md §7.3): while it runs (its port, run budget, the runs it
+// keeps, what it holds between runs), and the lines of the host's policy it relies on, each
+// checked. A note the approver writes is kept with the grant, on the deploy's event (events.rs).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
@@ -14,10 +17,25 @@ import { useDecline } from "./ApprovalsPage";
 import { codeHunk, touchHunks } from "./hunks";
 import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
-import { mayGroups, textLines } from "./reviewMay";
+import { mayGroups, policyRows, textLines, whileItRuns } from "./reviewMay";
 import { touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
-import { deployUnit, getDeployedDocument, getFlow, getProposal, getVersions, previewDeploy, type DeployPreview, type DeploymentEntry, type FlowDocument, type FlowRecord, type Proposal, type VersionEntry } from "./server";
+import {
+  deployUnit,
+  getDeployedDocument,
+  getFlow,
+  getPermissions,
+  getProposal,
+  getVersions,
+  previewDeploy,
+  type DeployPreview,
+  type DeploymentEntry,
+  type FlowDocument,
+  type FlowRecord,
+  type HostPolicy,
+  type Proposal,
+  type VersionEntry,
+} from "./server";
 import { useKeys } from "./ui/Keys";
 import { useCan } from "./useCan";
 
@@ -77,6 +95,12 @@ export function ReviewPage({
   const [line, setLine] = useState<number | null>(null);
   const [read, setRead] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  // The host's policy, for the lines this version relies on: null while unread, or why it can't be.
+  const [policy, setPolicy] = useState<HostPolicy | string | null>(null);
+  useEffect(() => {
+    getPermissions().then(setPolicy, (e: unknown) => setPolicy(e instanceof Error ? e.message : String(e)));
+  }, []);
   // Deploying it asks flow.deploy of the flow, and flow.approve-deploy for what it newly asks for;
   // declining a proposal, flow.approve-deploy (can.rs, deploy.rs).
   const can = useCan(["flow.deploy", "flow.approve-deploy"], { flow: slug });
@@ -157,7 +181,7 @@ export function ReviewPage({
     setBusy(true);
     setError("");
     try {
-      await deployUnit(slug, data.hash, data.preview.needs_approval, data.document, data.saved.document.server?.requirements);
+      await deployUnit(slug, data.hash, data.preview.needs_approval, data.document, data.saved.document.server?.requirements, note);
       onDeployed(slug, data.version);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -180,6 +204,28 @@ export function ReviewPage({
     next();
   });
   const gone = groups.find((g) => g.key === "gone")?.rows ?? [];
+  const requirements = data?.saved.document.server?.requirements;
+  const hostPolicy = typeof policy === "object" ? policy : null;
+  const running = useMemo(
+    () =>
+      data
+        ? whileItRuns({ port: data.saved.document.server?.port ?? entry?.port?.toString() ?? null, touches: data.preview.touches, limits: requirements?.limits, defaults: hostPolicy?.defaults })
+        : [],
+    [data, entry, requirements, hostPolicy],
+  );
+  const relies = data
+    ? policyRows({
+        touches: data.preview.touches,
+        items: data.preview.items,
+        limits: requirements?.limits,
+        privateAddresses: requirements?.private_addresses,
+        policy: hostPolicy,
+        agent: data.proposal?.agent ?? false,
+        may: can.may(asked > 0 ? "flow.approve-deploy" : "flow.deploy"),
+        approving: asked > 0,
+      })
+    : [];
+  const editor: Route = { kind: "editor", slug, view: false, seq: null };
 
   return (
     <div className="hl-flow hl-review-page">
@@ -189,6 +235,9 @@ export function ReviewPage({
         </h1>
         <span className="hl-flow__status">{entry ? "a new version" : "its first deploy"}</span>
         <span className="hl-flow__spacer" />
+        <a className="hl-flow__button" href={format(editor)} onClick={follow(editor, navigate)} title="its saved version, in the editor">
+          Open in the editor
+        </a>
         {queue.length > 0 && (
           <span className="hl-review-page__queue" aria-label="queue">
             <button className="hl-flow__button" onClick={() => step(-1)} aria-label="the review before" title="[">
@@ -236,6 +285,28 @@ export function ReviewPage({
             ))}
             {data.preview.missing_secrets.length > 0 && <p className="hl-flow__note">Not set yet: {data.preview.missing_secrets.join(", ")}. Until they are, those nodes stay empty.</p>}
             {data.preview.withheld && data.preview.withheld.length > 0 && <p className="hl-flow__note">Left out, for a person to grant back: {data.preview.withheld.join(", ")}.</p>}
+            <div className="hl-review-page__group" role="group" aria-label="while it runs">
+              <h3>While it runs</h3>
+              <dl className="hl-flow__facts">
+                {running.map(([k, v]) => (
+                  <div key={k}>
+                    <dt>{k}</dt>
+                    <dd>{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <div className="hl-review-page__group" role="group" aria-label="host policy">
+              <h3>Host policy</h3>
+              {typeof policy === "string" && <p className="hl-flow__note">The host&apos;s policy couldn&apos;t be read: {policy}</p>}
+              <ul className="hl-review-page__policy">
+                {relies.map((r, i) => (
+                  <li key={i} className={r.ok ? undefined : "hl-review-page__policy--no"}>
+                    <span aria-hidden="true">{r.ok ? "✓" : "✗"}</span> {r.text}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </section>
 
           <section className="hl-review-page__body" aria-label="review">
@@ -305,6 +376,10 @@ export function ReviewPage({
               <div className="hl-flow__banner">This host can't grant it: {data.preview.refused}</div>
             ) : (
               <>
+                <label className="hl-review-page__note-field">
+                  A note, kept with the grant
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="why you approve it, what you checked" />
+                </label>
                 <label className="hl-flow__check">
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}

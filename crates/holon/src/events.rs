@@ -60,6 +60,10 @@ pub(crate) struct Event {
     /// off between its commit and its line may have (persist.rs, `note_cut_off_runs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) loaded: Option<String>,
+    /// What the person who deployed it said, kept with the grant it made: why they approved it,
+    /// what they checked (a deploy's `note`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
 }
 
 /// What an event says beyond its kind and words.
@@ -71,6 +75,7 @@ pub(crate) struct Detail {
     pub(crate) from: Option<String>,
     pub(crate) restores: Vec<String>,
     pub(crate) loaded: Option<String>,
+    pub(crate) note: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -141,6 +146,7 @@ impl Events {
             from: detail.from,
             restores: detail.restores,
             loaded: detail.loaded,
+            note: detail.note,
         };
         let line = match serde_json::to_string(&event) {
             Ok(line) => line,

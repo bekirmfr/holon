@@ -77,7 +77,7 @@ export function itemText(item: TimelineItem): string {
   const by = (who: string | null | undefined) => (who ? `by ${who}` : "by the host");
   if (item.kind === "run") return `run #${item.run.seq} ${item.run.route ?? item.run.kind} s${item.run.session}`;
   if (item.kind === "version") return `deploy ${versionWhat(item.version)} ${by(item.version.by)}`;
-  return `${item.event.kind} ${item.event.what} ${by(item.event.by)}`;
+  return `${item.event.kind} ${item.event.what} ${by(item.event.by)}${item.event.note ? ` ${item.event.note}` : ""}`;
 }
 
 /** A point's name, as a restore says it: `version 2`, `run 41`. */

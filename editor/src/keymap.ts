@@ -4,9 +4,10 @@
 // is bound somewhere). Browsers keep Ctrl+T, Ctrl+W, Ctrl+N and Ctrl+Tab; the editor takes Ctrl+S
 // and Ctrl+D only where it has a flow to save or deploy.
 //
-// A page's keys come before the anywhere keys: `d` is the docs anywhere, the diff in a review.
+// A page's keys come before the anywhere keys: `d` is the docs anywhere, the diff in a review,
+// decline on Approvals.
 
-export type KeyScope = "anywhere" | "list" | "tabs" | "run" | "editor" | "view" | "review" | "dialog";
+export type KeyScope = "anywhere" | "list" | "tabs" | "run" | "approvals" | "editor" | "view" | "review" | "dialog";
 
 export type Binding = {
   /** The keys, as keyOf names them, shown in this order (a run of digits as "1 to 8"). */
@@ -35,6 +36,8 @@ export const KEYMAP = [
   { keys: ["Enter"], scope: "list", does: "open the one selected" },
   { keys: ["[", "]"], scope: "tabs", does: "the tab before, or after: a flow's, the editor's, Approvals'" },
   { keys: [",", "."], scope: "run", does: "on a run's page: the run before, or after" },
+  { keys: ["a"], scope: "approvals", does: "approve the one selected: a version opens its review first, a run's approval asks first" },
+  { keys: ["d"], scope: "approvals", does: "decline the one selected, with a reason (Approvals' d, not the docs)" },
   { keys: ["ctrl+s"], scope: "editor", does: "save the flow" },
   { keys: ["ctrl+d"], scope: "editor", does: "deploy it" },
   { keys: ["e"], scope: "editor", does: "edit the flow, or view its runs" },
