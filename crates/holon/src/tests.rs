@@ -11138,9 +11138,15 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
 
     let entries = log_entries(&state, &slug);
     assert!(entries.iter().any(|e| e["route"] == "GET /live" && e["status"] == 200), "a subscription is logged as a request");
+    // What the console counts (Resources › Collections and channels): the packs kept, the
+    // subscribers now, none of the packs.
+    let counted = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/channels"), vec![])));
+    assert_eq!(counted(), serde_json::json!({ "channels": [{ "name": "updates", "kept": 2, "subscribers": 3 }] }));
 
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
     assert_eq!(next_event(&mut live), ["event: closed", "data: {}"]);
+    assert_eq!(counted()["channels"][0], serde_json::json!({ "name": "updates", "kept": 2, "subscribers": 0 }), "the kept packs stay");
+    assert_eq!(route(&state, &req("GET", "/deployments/nope/channels", vec![])).status_code, 404);
 }
 
 /// A durable run's progress (`docs/L4s/channels-L4.md` §8, slice 3): the pack that doesn't wait

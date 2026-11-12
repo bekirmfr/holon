@@ -5,7 +5,7 @@
 // A secret's value is never shown: its mark (set · v3), where it comes from, and its history.
 
 import { Fragment, useEffect, useState } from "react";
-import { getCollectionItems, getDeploymentState, getSecretHistory, previewSecretRollback, rollbackSecret, type DeploymentEntry, type HeldGrant, type Proposal, type SecretHistory as History, type SecretInfo } from "./server";
+import { channelCounts, getCollectionItems, getDeploymentState, getSecretHistory, previewSecretRollback, rollbackSecret, type ChannelCount, type DeploymentEntry, type HeldGrant, type Proposal, type SecretHistory as History, type SecretInfo } from "./server";
 import { gateOf, type Answer } from "./useCan";
 import { itemParts, secretReaders, usesText, type Holder, type Matrix, type Waiting } from "./holdings";
 import { useDryRun } from "./DryRun";
@@ -95,17 +95,24 @@ export function DatabaseMatrix({ name, matrix, known = true }: { name: string; m
 }
 
 /** One collection or channel a flow keeps, and how many items it holds (a collection's, counted to
- *  `COUNTED` at most; a channel's kept packs aren't counted by the server). */
-type Kept = { slug: string; name: string; kind: "collection" | "channel"; items: number | null; more: boolean };
+ *  `COUNTED` at most; a channel's, the packs it keeps for subscribers, with how many subscribe). */
+type Kept = { slug: string; name: string; kind: "collection" | "channel"; items: number | null; more: boolean; subscribers?: number };
 const COUNTED = 1000;
 const named = (items: string[], kinds: string[]) => items.flatMap((i) => {
   const { kind, arg } = itemParts(i);
   return kinds.includes(kind) && arg !== null ? [arg] : [];
 });
 
-/** Each flow's collections and channels: from its state (a collection that holds anything) and its
- *  grant (one it names, empty so far, and its channels), each with how many items it holds and a
- *  link to the flow's State. A flow whose state the caller may not view is left out. */
+/** What an items cell says on hover: a channel's are the packs it keeps for whoever subscribes. */
+function keptSaid(k: Kept): string | undefined {
+  if (k.kind === "collection") return k.more ? `counted to ${COUNTED}` : undefined;
+  if (k.items === null) return "its state isn't yours to view";
+  return `the newest packs it keeps for whoever subscribes; ${k.subscribers ?? 0} subscriber${k.subscribers === 1 ? "" : "s"} now`;
+}
+
+/** Each flow's collections and channels: from its state (a collection that holds anything), its
+ *  channels' counts and its grant (one it names, empty so far), each with how many items it holds
+ *  and a link to the flow's State. What the caller may not view of a flow's state isn't counted. */
 export function CollectionsTab({ deployments, grants }: { deployments: DeploymentEntry[]; grants: HeldGrant[] }) {
   const [kept, setKept] = useState<Kept[] | null>(null);
   const [said, setSaid] = useState("");
@@ -139,7 +146,16 @@ export function CollectionsTab({ deployments, grants }: { deployments: Deploymen
           }
           all.push({ slug: d.slug, name, kind: "collection", items: n, more });
         }
-        for (const name of [...new Set(named(items, ["ChannelSend", "ChannelRead"]))].sort()) all.push({ slug: d.slug, name, kind: "channel", items: null, more: false });
+        let counts: ChannelCount[] | null = null;
+        try {
+          counts = await channelCounts(d.slug);
+        } catch {
+          // Not the caller's to view.
+        }
+        for (const name of [...new Set([...(counts ?? []).map((c) => c.name), ...named(items, ["ChannelSend", "ChannelRead"])])].sort()) {
+          const c = counts?.find((c) => c.name === name);
+          all.push({ slug: d.slug, name, kind: "channel", items: counts === null ? null : (c?.kept ?? 0), more: false, subscribers: c?.subscribers ?? 0 });
+        }
       }
       if (live) setKept(all);
     })().catch((e: unknown) => live && setSaid(messageOf(e)));
@@ -167,7 +183,7 @@ export function CollectionsTab({ deployments, grants }: { deployments: Deploymen
             <tr key={`${k.slug}/${k.kind}/${k.name}`} aria-label={`${k.kind} ${k.name} of ${k.slug}`}>
               <td>{k.name}</td>
               <td>{k.kind}</td>
-              <td className="hl-table__num" title={k.kind === "channel" ? "the packs a channel keeps aren't counted by the server" : k.more ? `counted to ${COUNTED}` : undefined}>
+              <td className="hl-table__num" title={keptSaid(k)}>
                 {k.items === null ? <span className="hl-table__dim">—</span> : `${k.items}${k.more ? "+" : ""}`}
               </td>
               <td>

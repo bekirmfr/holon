@@ -294,6 +294,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return queues::handle_get_queues(state, slug);
         }
+        if let Some(slug) = rest.strip_suffix("/channels")
+            && method == "GET"
+        {
+            return channels::handle_get_channels(state, slug);
+        }
         if let Some((slug, run_id)) = rest.strip_suffix("/decide").and_then(|r| r.split_once("/runs/"))
             && method == "POST"
         {

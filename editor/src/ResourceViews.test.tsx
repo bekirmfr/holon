@@ -10,12 +10,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
 import { PolicyCheck, PolicyText } from "./PolicyViews";
-import { SecretsTable, UsedBy } from "./ResourceViews";
+import { CollectionsTab, SecretsTable, UsedBy } from "./ResourceViews";
 import type { DeploymentEntry, HostPolicy, Proposal, SecretInfo } from "./server";
 
 vi.mock("./server", async (original) => ({
   ...(await original<typeof import("./server")>()),
   getSecretHistory: vi.fn(async () => ({ versions: [], events: [{ at: 1, name: "stripe_key", action: "set", version: 2, by: "mira" }] })),
+  channelCounts: vi.fn(async (slug: string) => {
+    if (slug === "hidden") throw new Error("hidden may not do that");
+    return [{ name: "updates", kept: 7, subscribers: 1 }];
+  }),
 }));
 
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
@@ -56,6 +60,20 @@ describe("Resources' views", () => {
     // Without the grants (the host's to view), it says who may see, not that nobody uses it.
     await act(async () => root!.render(<UsedBy holders={[]} waiting={[]} known={false} />));
     expect(el.textContent).toBe("who uses it is shown to those who may view the host");
+  });
+
+  it("counts each channel's kept packs, a dash where the caller may not view the flow's state", async () => {
+    const deployment = (slug: string) => ({ slug, unit: "u", has_state: false }) as unknown as DeploymentEntry;
+    const grant = (slug: string, items: string[]) => ({ slug, status: "running" as const, attention: null, items, revoked: [] });
+    const el = await render(
+      <CollectionsTab deployments={[deployment("board"), deployment("hidden")]} grants={[grant("board", ['ChannelSend("updates")', 'ChannelSend("quiet")']), grant("hidden", ['ChannelSend("feed")'])]} />,
+    );
+    await act(async () => {});
+    const items = (label: string) => el.querySelector(`tr[aria-label="${label}"] .hl-table__num`)!;
+    expect(items("channel updates of board").textContent).toBe("7");
+    expect(items("channel updates of board").getAttribute("title")).toContain("1 subscriber now");
+    expect(items("channel quiet of board").textContent).toBe("0");
+    expect(items("channel feed of hidden").textContent).toBe("—");
   });
 
   it("shows a server secret's mark, never a value, and its buttons follow can", async () => {

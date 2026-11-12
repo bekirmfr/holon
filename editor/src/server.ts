@@ -396,6 +396,12 @@ export type QueueSending = { queue: string; address?: string; sent: number; gave
 export async function queueStates(slug: string): Promise<{ listening: QueueListening[]; sending: QueueSending[] }> {
   return asJson(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/queues`));
 }
+/** A deployment's channels (`GET /deployments/<slug>/channels`, channels.rs): each one it has
+ *  sent on or been subscribed to, with how many packs it keeps and how many subscribe now. */
+export type ChannelCount = { name: string; kept: number; subscribers: number };
+export async function channelCounts(slug: string): Promise<ChannelCount[]> {
+  return (await asJson<{ channels: ChannelCount[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/channels`))).channels;
+}
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
 /** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry
