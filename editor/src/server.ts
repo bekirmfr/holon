@@ -187,10 +187,11 @@ export async function revokeToken(principal: string, id: string): Promise<void> 
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
  *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may
- *  hold in all, in bytes (`cap`, null: uncapped). */
+ *  hold in all, in bytes (`cap`, null: uncapped). Its `path` only to whoever may bind resources
+ *  (web-console-L4.md §12 Q4). */
 export type FolderEntry = {
   name: string;
-  path: string;
+  path?: string;
   access: "read" | "read-write";
   keep: "bytes" | "hash" | `bytes for ${string}`;
   cap: number | null;
@@ -201,7 +202,7 @@ export type FolderEntry = {
   deployment: string | null;
 };
 /** A folder to bind: its cap as bytes or a size (`10M`). */
-export type FolderBinding = Omit<FolderEntry, "cap"> & { cap: number | string | null };
+export type FolderBinding = Omit<FolderEntry, "cap" | "path"> & { path: string; cap: number | string | null };
 export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
 export const bindFolder = async (f: FolderBinding) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
 /** A folder on the server's machine, as its admin page's "browse…" lists it (pick.rs). */
@@ -219,7 +220,8 @@ export async function unbindFolder(name: string, deployment: string | null): Pro
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
 /** A database an admin bound (holon-server's databases.rs): a name flows use (`database shop`),
- *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only. */
+ *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only.
+ *  Where it is (`path`, `connection`, `address`) only to whoever may bind resources (Q4). */
 export type DatabaseEntry = {
   name: string;
   engine: "sqlite" | "postgres" | "mysql" | "mongodb";

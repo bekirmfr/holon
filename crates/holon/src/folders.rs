@@ -1240,9 +1240,14 @@ fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> 
 }
 
 /// A binding as the admin panel and `holon folder list` show it: `deployment` is the slug it is
-/// bound for, or null for the whole server.
-fn shown(name: &str, deployment: Option<&str>, f: &Folder) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap, "shared": f.shared, "lock": f.lock })
+/// bound for, or null for the whole server. Its path only for `sees_where`: whoever may bind (web
+/// console L4, Q4).
+fn shown(name: &str, deployment: Option<&str>, f: &Folder, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "access": f.access, "keep": f.keep, "cap": f.cap, "shared": f.shared, "lock": f.lock });
+    if sees_where {
+        shown["path"] = serde_json::json!(f.path.display().to_string());
+    }
+    shown
 }
 
 /// What a binding is called in the activity log: its name, and the deployment it is for.
@@ -1252,16 +1257,17 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 
 /// `/admin/folders` (list, bind), `/admin/folders/<name>` (unbind; `?deployment=<slug>` for a
 /// deployment's own), and the admin page's browse and pick (pick.rs), or None for any other path.
-/// Only an admin gets this far (can.rs); what they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// The gate (can.rs) let the caller this far; `sees_where` says whether they may bind, and so see
+/// each folder's path. What they do goes in the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     if url == "/admin/folders" {
         return Some(match method {
             "GET" => {
                 let all = state.folders.all();
-                let server = all.server.iter().map(|(n, f)| shown(n, None, f));
-                let own = all.deployments.iter().flat_map(|(d, folders)| folders.iter().map(move |(n, f)| shown(n, Some(d), f)));
+                let server = all.server.iter().map(|(n, f)| shown(n, None, f, sees_where));
+                let own = all.deployments.iter().flat_map(|(d, folders)| folders.iter().map(move |(n, f)| shown(n, Some(d), f, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -1310,7 +1316,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the folder {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &folder))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &folder, sees_where))
                     }
                     Err(e) => e,
                 }

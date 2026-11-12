@@ -98,8 +98,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if !url.starts_with("/auth/") && !url.starts_with("/admin/") && url != "/people" && !url.starts_with("/people/") {
         return None;
     }
+    // Where a folder or a database is, only to whoever may bind one (web console L4, Q4).
+    let sees_where = crate::can::can(caller, crate::can::Action::ResourceBind, &crate::can::Resource::Host).is_ok();
     // The folders an admin binds (folders.rs): a server without accounts has them too.
-    if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // What the host stores, and how often it sweeps (storage.rs); the content store's sweep (sweep.rs).
@@ -110,7 +112,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         return Some(response);
     }
     // And the databases (databases.rs).
-    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // And the mail resources (mails.rs).

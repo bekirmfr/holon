@@ -724,7 +724,8 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
   const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
   const [bind, unbind, operate] = [can.may("resource.bind"), can.may("resource.unbind"), can.may("host.operate")];
   // Where a database or a folder is (its path, where its connection is kept) is shown to whoever
-  // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer).
+  // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer):
+  // the server leaves it out of their lists.
   const seesWhere = can.holds("resource.bind");
   const whereHidden = <span style={quiet} title="where it is is shown to those who may bind resources">where it is: shown to those who may bind</span>;
   const secretValue = useRef<HTMLInputElement>(null);
