@@ -186,7 +186,8 @@ export function FlowToolbar({
   /** Edit's buttons: format and check the text, save it (`maySave`: `flow.edit`, or why not),
    *  and deploy it (`mayDeploy`: `flow.propose`, as `POST /deploy` asks; an agent's version that
    *  needs a person waits as a proposal). `outOfDate`: the flow no longer matches what is
-   *  deployed; `startsNothing`: nothing would start a run, so it doesn't deploy. */
+   *  deployed; `waiting`: the version it is, when it is proposed already and waits for a person;
+   *  `startsNothing`: nothing would start a run, so it doesn't deploy. */
   edit: {
     onFormat: () => void;
     onCheck: () => void;
@@ -196,6 +197,7 @@ export function FlowToolbar({
     mayDeploy?: Answer;
     busy: boolean;
     outOfDate: boolean | null;
+    waiting?: number | null;
     startsNothing: boolean;
   };
   error: string;
@@ -258,8 +260,10 @@ export function FlowToolbar({
             style={{ ...primaryBtn, opacity: deployOff ? 0.5 : 1, cursor: deployOff ? "default" : "pointer" }}
           >
             {edit.busy ? "deploying…" : entry ? "update" : "deploy"}
-            {edit.outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
+            {edit.outOfDate && (edit.waiting ?? null) === null && <span title="the canvas has changed since it was deployed"> •</span>}
           </button>
+          {edit.waiting != null &&
+            link({ kind: "review", slug, version: edit.waiting }, `v${edit.waiting} waits`, `as it is now, it is v${edit.waiting}, proposed and waiting for a person to approve it: its review`)}
           {edit.startsNothing && (
             <span style={{ color: "var(--warn)", fontSize: 11 }} title={nothing}>
               nothing would start a run

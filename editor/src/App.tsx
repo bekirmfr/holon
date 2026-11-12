@@ -647,7 +647,7 @@ function Canvas({
   const deciding = useMemo(() => toDecide(approvals.runs ?? [], me, approvals.decides), [approvals.runs, approvals.decides, me]);
   useEffect(() => onWaiting({ changes: approvals.approvals.length, runs: deciding }), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it (useDeployFlow.ts); running, pausing or stopping it is its page's.
-  const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow } = useDeployFlow({
+  const { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow } = useDeployFlow({
     flowName,
     setFlowName,
     nodes,
@@ -1315,6 +1315,7 @@ function Canvas({
             mayDeploy: canSave.may("flow.propose"),
             busy: deployBusy,
             outOfDate,
+            waiting: waitingVersion,
             startsNothing,
           }}
           error={page === "canvas" ? deployError || listError : ""}

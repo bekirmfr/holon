@@ -4,7 +4,7 @@
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
 // Running, pausing or stopping it once deployed is its page's (FlowPage.tsx).
 
-import { createElement, useCallback, useMemo, useState, type MutableRefObject } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
@@ -12,7 +12,7 @@ import { bindingsOf, documentText, printHolon } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
-import { deployUnit, getDeployedDocument, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
+import { deployUnit, getDeployedDocument, listProposals, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeploySettings";
 import { touchLines } from "./touches";
 import type { useDialog } from "./Dialog";
@@ -63,6 +63,23 @@ export function useDeployFlow({
   const [deployBusy, setDeployBusy] = useState(false);
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
   const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
+  // The version the flow as it is now waits as, when it is proposed already (a proposal of the same
+  // unit, waiting for a person): not a change to deploy, but one to approve. Read again after a deploy.
+  const waitKey = outOfDate && flowName && derived.serverHash ? `${flowName} ${derived.serverHash}` : null;
+  const [waits, setWaits] = useState<{ key: string; version: number | null } | null>(null);
+  useEffect(() => {
+    if (!waitKey || deployBusy) return;
+    const [slug, unit] = waitKey.split(" ");
+    let live = true;
+    listProposals().then(
+      (ps) => live && setWaits({ key: waitKey, version: ps.find((p) => p.state === "waiting" && p.slug === slug && p.unit === unit)?.version ?? null }),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [waitKey, deployBusy]);
+  const waitingVersion = waits && waits.key === waitKey ? waits.version : null;
 
   // The secrets the flow reads, by name: what Settings lets you set. From its derived manifest, so a
   // secret inside a placed holon counts; plus its own `secret` nodes, for while it doesn't derive.
@@ -192,5 +209,5 @@ export function useDeployFlow({
     }
   }
 
-  return { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow };
+  return { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow };
 }
