@@ -52,7 +52,7 @@ function refusal(line: string, commands: Set<string>, shapes: Map<string, string
   if (!commands.has(cmd)) return `${line}: holon has no command ${cmd}`;
   for (const flag of args.filter((a) => a.startsWith("-"))) if (!SOURCE.includes(`"${flag}"`)) return `${line}: holon ${cmd} parses no ${flag}`;
   const forms = shapes.get(cmd);
-  // A command the usage doesn't list (`runs`) is held to its dispatch and its options alone.
+  // A command the usage doesn't list (`pick-folder`) is held to its dispatch and its options alone.
   if (!forms) return null;
   // The words before the first option, each the form's word in its place: a placeholder
   // (`<file>`, `METHOD`, `HOST…` and every word after it) takes any, a subcommand only its own.
@@ -81,6 +81,9 @@ describe("Getting started's commands", () => {
   it("read the binary's commands and usage", () => {
     for (const c of ["serve", "new", "check", "deploy", "call", "runs", "mcp"]) expect(commands).toContain(c);
     expect(shapes.get("new")).toEqual([["<file>", "[--sample", "<name>]"]]);
+    expect(shapes.get("runs")).toEqual([["<slug>", "[--last", "N]"]]);
+    // Every command main() takes has its line, but the one only the server runs.
+    expect([...commands].filter((c) => !shapes.has(c) && c !== "pick-folder")).toEqual([]);
     expect(shapes.get("mcp")).toContainEqual(["setup", "[HOST…|--all]"]);
     expect(shapes.get("policy")).toBeDefined();
   });
