@@ -6,7 +6,8 @@
 // from outside its band is a label. Against another version, the rows whose text is new are dashed
 // amber; over a run, the rows it didn't run are dimmed, the step it is at has a thick border, and a
 // row shows the value it made. Drawn from holonGraph (holonText.ts), the terminal's own graph; it
-// fetches nothing, and picking a row is the caller's to act on (put the cursor on its mark).
+// fetches nothing, and picking a row is the caller's to act on (put the cursor on its mark), as is
+// opening one (Enter, or a double click: the editor shows its nodes).
 
 import { useEffect, useMemo, useRef } from "react";
 import type { FlowGraph, GraphRow, RowKind } from "./holonText";
@@ -22,6 +23,16 @@ export const KIND_WORD: Record<RowKind, string> = {
 
 /** A row's key in a graph: its band and its place in the band. */
 export const rowKey = (band: number, row: number) => `${band}.${row}`;
+
+/** The row a line is in: a statement's lines, else its trigger's line. */
+export function rowAtLine(graph: FlowGraph, line: number): { band: number; index: number } | null {
+  const at = (head: boolean) => {
+    for (const [b, band] of graph.bands.entries())
+      for (const [i, r] of band.rows.entries()) if (r.head === head && r.line <= line && line <= r.last) return { band: b, index: i };
+    return null;
+  };
+  return at(false) ?? at(true);
+}
 
 /** A run over the graph (View runs): what it ran, the step it is at, and the value each row made,
  *  by rowKey. */
@@ -82,7 +93,9 @@ export function StatementGraph({
   against = null,
   cursor = null,
   onPick,
+  onOpen,
   run = null,
+  pane = false,
 }: {
   graph: FlowGraph;
   /** Another version (the one deployed): the rows new since it are dashed amber. */
@@ -91,18 +104,17 @@ export function StatementGraph({
   cursor?: number | null;
   /** A row was clicked: the caller puts the cursor on its mark. */
   onPick?: (row: GraphRow, band: number, index: number) => void;
+  /** A row was opened (Enter, or a double click): the caller shows its nodes. */
+  onOpen?: (row: GraphRow, band: number, index: number) => void;
   run?: GraphRun | null;
+  /** Drawn as the editor's canvas: filling its pane, not a box on a page. */
+  pane?: boolean;
 }) {
   const fresh = useMemo(() => (against ? newRows(graph, against) : new Set<string>()), [graph, against]);
   // The row the cursor is in: a statement's lines, else its trigger's line.
   const selected = useMemo(() => {
-    if (cursor === null) return null;
-    const at = (head: boolean) => {
-      for (const [b, band] of graph.bands.entries())
-        for (const [i, r] of band.rows.entries()) if (r.head === head && r.line <= cursor && cursor <= r.last) return rowKey(b, i);
-      return null;
-    };
-    return at(false) ?? at(true);
+    const at = cursor === null ? null : rowAtLine(graph, cursor);
+    return at && rowKey(at.band, at.index);
   }, [graph, cursor]);
   const picked = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -111,7 +123,7 @@ export function StatementGraph({
 
   const used = new Set(graph.bands.flatMap((b) => b.rows.filter((r) => !r.head).map((r) => r.kind)));
   return (
-    <div className="hl-sg" role="region" aria-label="statement graph">
+    <div className={pane ? "hl-sg hl-sg--pane" : "hl-sg"} role="region" aria-label="statement graph">
       <div className="hl-sg__key" aria-label="key">
         {(Object.keys(KIND_WORD) as RowKind[])
           .filter((k) => used.has(k))
@@ -172,6 +184,16 @@ export function StatementGraph({
                         data-new={fresh.has(key) ? "true" : undefined}
                         title={[r.text, r.does && `is ${r.does}`, r.outside.length > 0 && `takes ${r.outside.join(", ")} from outside`, value !== undefined && `= ${value}`].filter(Boolean).join("\n")}
                         onClick={() => onPick?.(r, b, i)}
+                        onDoubleClick={onOpen && (() => onOpen(r, b, i))}
+                        onKeyDown={
+                          onOpen &&
+                          ((e) => {
+                            if (e.key !== "Enter" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onOpen(r, b, i);
+                          })
+                        }
                       >
                         <span className="hl-sg__said">
                           <span className="hl-sg__kind">{r.head ? "on" : KIND_WORD[r.kind]}</span>

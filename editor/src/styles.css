@@ -813,6 +813,27 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-tok-escape, .hl-tok-interpolation, .hl-tok-operator { color: var(--op); }
 .hl-tok-number { color: var(--num); }
 .hl-tok-boolean { color: var(--bool); }
+/* The canvas pane's head (CanvasHead): its level, Statements or Nodes, and at the Nodes level its
+   own controls. Under the Statements level the nodes stay laid out, hidden, so a row opened frames
+   them at once. */
+.hl-canvas__flow { display: flex; flex-direction: column; }
+.hl-canvas__flow > .react-flow { flex: 1 1 0; height: auto; min-height: 0; }
+.hl-canvas__flow--statements > .react-flow { visibility: hidden; }
+.hl-canvas__head {
+  display: flex; align-items: center; gap: 8px; height: 32px; flex-shrink: 0; padding: 0 8px; min-width: 0; overflow: hidden;
+  background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12px; position: relative; z-index: 4;
+}
+.hl-canvas__title { color: var(--ink); letter-spacing: 0.04em; }
+.hl-levels { display: inline-flex; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+.hl-levels__seg { font: inherit; font-size: 11px; padding: 2px 10px; border: none; color: var(--muted); background: transparent; cursor: pointer; }
+.hl-levels__seg:hover { color: var(--ink); }
+.hl-levels__seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); cursor: default; }
+.hl-levels__seg:disabled { opacity: 0.4; cursor: not-allowed; }
+.hl-canvas__controls { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.hl-canvas__statements { position: absolute; left: 0; right: 0; bottom: 0; top: 32px; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; z-index: 3; }
+.hl-canvas__parse { padding: 5px 10px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn-bg) 53%, transparent); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.hl-canvas__none { margin: auto; max-width: 420px; padding: 16px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }
+.hl-sg.hl-sg--pane { flex: 1 1 auto; min-height: 0; max-height: none; border: 0; border-radius: 0; background: var(--bg); padding: 12px 14px; }
 .hl-canvas__empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1157,6 +1178,20 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-text__problem-line { color: var(--bad); margin-right: 6px; }
 
 /* ── The name at the text's cursor, in the Inspector (ViewPanes.tsx WordSection) ── */
+/* The Inspector at the Statements level (InspectorText.tsx): an import, a statement, this flow. */
+.hl-itext { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.hl-itext:last-child { border-bottom: 0; }
+.hl-itext__head { color: var(--muted); white-space: normal; }
+.hl-itext__head code { color: var(--ink); font-weight: 600; }
+.hl-itext__kind { color: var(--k); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; }
+.hl-itext__code { font-family: var(--font-mono); font-size: 11.5px; color: var(--body); white-space: pre-wrap; word-break: break-word; }
+.hl-itext__body { color: var(--body); white-space: normal; word-break: break-word; }
+.hl-itext__body code, .hl-itext__starts code { color: var(--ink); }
+.hl-itext__dim { color: var(--faint); white-space: normal; }
+.hl-itext__section { display: flex; flex-direction: column; gap: 3px; }
+.hl-itext__title { color: var(--faint); letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
+.hl-itext__may, .hl-itext__starts { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; color: var(--body); white-space: normal; }
+.hl-itext__new { color: var(--warn); }
 .hl-word { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .hl-word__head { color: var(--muted); }
 .hl-word__head code { color: var(--ink); font-weight: 600; }
@@ -1449,7 +1484,7 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 [data-ui="b"] .hl-chip--agent { color: var(--accent); }
 /* Tables, tabs, panes: small caps headers, the selection a rule. */
 [data-ui="b"] .hl-table th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
-[data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
+[data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title, [data-ui="b"] .hl-canvas__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
 [data-ui="b"] .hl-pane-key { display: inline; margin: 0 8px 0 -4px; font: inherit; font-size: 10.5px; color: var(--accent); }
 [data-ui="b"] .hl-pane-key::before { content: "["; content: "[" / ""; color: var(--faint); }
 [data-ui="b"] .hl-pane-key::after { content: "]"; content: "]" / ""; color: var(--faint); }
@@ -1551,7 +1586,9 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   .hl-canvas[data-pane="canvas"] > .hl-text, .hl-canvas[data-pane="canvas"] > .hl-inspector,
   .hl-canvas[data-pane="text"] > .hl-canvas__flow, .hl-canvas[data-pane="text"] > .hl-inspector,
   .hl-canvas[data-pane="inspector"] > .hl-canvas__flow, .hl-canvas[data-pane="inspector"] > .hl-text { display: none !important; }
-  .hl-canvas[data-pane="canvas"].hl-canvas--no-canvas > .hl-canvas__flow { display: block; }
+  .hl-canvas[data-pane="canvas"].hl-canvas--no-canvas > .hl-canvas__flow { display: flex; }
+  .hl-canvas__head { gap: 6px; padding: 0 6px; }
+  .hl-canvas__head > .hl-canvas__title, .hl-canvas__head > .hl-pane-key, .hl-canvas__head > .hl-kbd { display: none; }
 }
 @media (max-width: 560px) {
   /* The palette, open, lies over the canvas's left; a node is dragged from it as before. */

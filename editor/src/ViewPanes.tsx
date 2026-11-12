@@ -25,6 +25,7 @@ import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
+import { WordSection } from "./InspectorText";
 import { fieldMarks, type MayHere } from "./mayHere";
 
 const small: CSSProperties = {
@@ -1235,6 +1236,7 @@ export function Inspector({
   onManual,
   onSample,
   may = null,
+  statements = null,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
@@ -1249,6 +1251,9 @@ export function Inspector({
   onSample?: (name: string) => void;
   /** The node's line in the flow as text (holonText.ts), when the flow prints. */
   source?: { line: number; text: string } | null;
+  /** At the Statements level, what the cursor is on (InspectorText.tsx), in place of the node's
+   *  sections. */
+  statements?: ReactNode;
   open: boolean;
   onOpen: (open: boolean) => void;
 }) {
@@ -1256,7 +1261,7 @@ export function Inspector({
   const tab = picked !== "node" && !run ? "node" : picked;
   // View mode: the state as of the step shown, and the run as the log keeps it.
   const tabs: [InspectorTab, string][] = [
-    ["node", "Node"],
+    ["node", statements ? "At the cursor" : "Node"],
     ...(run
       ? ([
           ["state", run.step === null ? "State after the run" : `State at step ${run.step + 1}`],
@@ -1289,56 +1294,16 @@ export function Inspector({
         ) : tab === "record" && run ? (
           <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
         ) : (
+          statements ?? (
           <>
             {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
             <ComponentTab node={node} run={run} source={source ?? null} may={run ? null : may} />
             {node && unit && <Section title="unit">{unit}</Section>}
           </>
+          )
         )}
       </div>
     </div>
-  );
-}
-
-/** The name at the text's cursor, as `holon editor`'s inspector says it: its hover, the forms it
- *  is written in (from the language reference) and a sample's lines that use it. */
-function WordSection({ word, onManual, onSample }: { word: Inspected; onManual?: () => void; onSample?: (name: string) => void }) {
-  const { forms = [], example = null } = word.usage ?? {};
-  return (
-    <section className="hl-word" aria-label={`the name ${word.word}`}>
-      <div className="hl-word__head">
-        Inspector: <code>{word.word}</code>
-      </div>
-      {/* The hover writes code between backticks. */}
-      <div className="hl-word__hover">{word.hover.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}</div>
-      {forms.length > 0 && (
-        <Section title="forms">
-          <ul className="hl-word__forms">
-            {forms.map(([form, meaning]) => (
-              <li key={form}>
-                <code>{form}</code>
-                {meaning && <span className="hl-word__meaning"> {meaning}</span>}
-              </li>
-            ))}
-          </ul>
-          {onManual && (
-            <button className="hl-word__link" onClick={onManual}>
-              the language reference
-            </button>
-          )}
-        </Section>
-      )}
-      {example && (
-        <Section title={`example · ${example.sample}`}>
-          <pre className="hl-word__example">{example.lines.join("\n")}</pre>
-          {onSample && (
-            <button className="hl-word__link" onClick={() => onSample(example.sample)}>
-              open the sample
-            </button>
-          )}
-        </Section>
-      )}
-    </section>
   );
 }
 

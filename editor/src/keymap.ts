@@ -42,6 +42,7 @@ export const KEYMAP = [
   { keys: ["ctrl+d"], scope: "editor", does: "deploy it" },
   { keys: ["e"], scope: "editor", does: "edit the flow, or view its runs" },
   { keys: ["c", "x", "i"], scope: "editor", does: "show or hide the canvas, the text, the Inspector" },
+  { keys: ["l"], scope: "editor", does: "the canvas's level: its statements, or its nodes" },
   { keys: ["j", "ArrowRight"], scope: "view", does: "step forward one node" },
   { keys: ["k", "ArrowLeft"], scope: "view", does: "step back one node" },
   { keys: ["Home", "End"], scope: "view", does: "the first node, or the whole run" },

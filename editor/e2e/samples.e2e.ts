@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -116,6 +116,9 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   // View mode is read only: no palette.
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // The palette is the Nodes level's.
+  await expect(page.locator(".hl-palette")).toHaveCount(0);
+  await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toBeVisible();
 });
 
@@ -144,6 +147,7 @@ test("a deployment whose port another program holds says, in view mode, it isn't
 
 test("the Inspector shows the selected node in edit mode: its ports, and its unit inside", async ({ page }) => {
   await openSample(page, "Hello API");
+  await nodesLevel(page);
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   await expect(inspector).toContainText("select a node on the canvas");
   // Selected by its click event, as every other node in the suite is: a pointer click waits for
@@ -190,6 +194,7 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
 
 test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -209,6 +214,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
 
 test("an edited holon applies as a new version of itself, and the flow runs it", async ({ page, request }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -237,6 +243,7 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
 
 test("a port added inside a holon takes its first wire's type, and the flow's node gains it", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -282,6 +289,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   const saveWith = async (name: string, entry: string) => {
     await gotoPage(page, "new");
     await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+    await nodesLevel(page);
     await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -294,6 +302,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await saveWith(user, `flow:${shout}`);
   // A draft named on save as a flow saved already asks before replacing it; cancelled, it stays untitled.
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await ask.locator("input").fill(shout);
@@ -341,6 +350,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
     await page.keyboard.press("Enter");
   };
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await dropFromPalette(page, "uppercase");
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -363,6 +373,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
 
   // In another flow, from the palette's marketplace: seen what it may do, placed.
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toContainText(shout);
   await dropFromPalette(page, `market:${listed.id}`);
   await expect(ask).toContainText("It only computes");

@@ -7,6 +7,7 @@ import { boundaryLabels, formatValue } from "./diagnostics";
 import { BoundaryField } from "./BoundaryField";
 import type { Projection } from "./canvasOps";
 import type { Mode } from "./tabs";
+import type { CanvasLevel } from "./canvasLevel";
 import { Kbd } from "./ui/Kbd";
 import { gateOf, type Answer } from "./useCan";
 
@@ -143,9 +144,9 @@ function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; o
 export type PaneToggle = { key: string; name: string; on: boolean; toggle: () => void };
 
 /** The editor's bar, above the canvas: the flow's name and mode, the panes, then in edit mode
- *  save, undo/redo and the deploy bar (passed in as `deployBar`). `error` shows in both. */
+ *  save and the deploy bar (passed in as `deployBar`). `error` shows in both. The canvas's own
+ *  controls are its head's (CanvasHead). */
 export function FlowToolbar({
-  histVersion,
   mode,
   canView,
   onMode,
@@ -154,16 +155,9 @@ export function FlowToolbar({
   dirty,
   onSave,
   maySave = true,
-  canUndo,
-  canRedo,
-  onUndo,
-  onRedo,
   deployBar,
   error,
-  onTidy,
-  onFit,
 }: {
-  histVersion: number;
   mode: Mode;
   /** Whether it has a deployment to view. */
   canView: boolean;
@@ -174,21 +168,11 @@ export function FlowToolbar({
   onSave: () => void;
   /** Whether whoever is signed in may save it (`flow.edit`), or why not. */
   maySave?: Answer;
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
   deployBar: ReactNode;
   error: string;
-  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
-  onTidy: () => void;
-  /** Fits the whole flow in the view. */
-  onFit: () => void;
 }) {
   return (
-    // histVersion is what makes the undo/redo disabled state live — history itself is a ref
-    // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
-    <div data-hist={histVersion} style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
       <span style={{ color: mode === "view" ? "var(--ink)" : "var(--muted)", fontSize: 12, letterSpacing: "0.04em" }}>
         {flowName ?? "untitled"}
         {dirty && <span title="modified: unsaved changes"> ●</span>}
@@ -209,9 +193,6 @@ export function FlowToolbar({
           </button>
         ))}
       </span>
-      <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
-        ⤢
-      </button>
       {mode === "view" ? (
         <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
       ) : (
@@ -219,19 +200,92 @@ export function FlowToolbar({
           <button onClick={onSave} style={primaryBtn} {...gateOf(maySave)}>
             save
           </button>
-          <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
-            ⟲
-          </button>
-          <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
-            ⟳
-          </button>
-          <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
-            ▤
-          </button>
           {deployBar}
         </>
       )}
       {error && <span style={{ color: "var(--bad)", fontSize: 11, maxWidth: 420 }}>{error}</span>}
+    </div>
+  );
+}
+
+/** The canvas pane's head: its level, Statements or Nodes (`l`), and at the Nodes level the
+ *  canvas's own controls: fit, and while it is edited undo, redo and tidy. */
+export function CanvasHead({
+  level,
+  onLevel,
+  switchable,
+  editing,
+  histVersion,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onTidy,
+  onFit,
+}: {
+  level: CanvasLevel;
+  onLevel: (l: CanvasLevel) => void;
+  /** Whether the level may be switched (View runs draws its nodes). */
+  switchable: boolean;
+  /** In edit mode: undo, redo and tidy are offered. */
+  editing: boolean;
+  histVersion: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
+  onTidy: () => void;
+  /** Fits the whole flow in the view. */
+  onFit: () => void;
+}) {
+  const seg = (l: CanvasLevel, label: string, title: string) => (
+    <button
+      className="hl-levels__seg"
+      onClick={() => l !== level && onLevel(l)}
+      disabled={!switchable && l !== level}
+      aria-label={label}
+      aria-pressed={l === level}
+      aria-keyshortcuts="l"
+      title={switchable ? `${title} (l)` : "View runs draws the nodes, with their values"}
+    >
+      {label}
+    </button>
+  );
+  return (
+    // histVersion is what makes the undo/redo disabled state live — history itself is a ref
+    // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
+    <div className="hl-canvas__head" data-hist={histVersion}>
+      <span className="hl-canvas__title">Canvas</span>
+      <kbd className="hl-pane-key" aria-hidden="true">
+        c
+      </kbd>
+      <span className="hl-levels" role="group" aria-label="canvas level">
+        {seg("statements", "Statements", "the flow by its statements, as the text says it: read only, edited through the text")}
+        {seg("nodes", "Nodes", "the nodes the flow runs: place, wire, group")}
+      </span>
+      <Kbd k="l" />
+      <span style={{ flex: 1 }} />
+      {level === "nodes" && (
+        <span className="hl-canvas__controls">
+          <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
+            ⤢
+          </button>
+          {editing && (
+            <>
+              <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
+                ⟲
+              </button>
+              <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
+                ⟳
+              </button>
+              <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
+                ▤
+              </button>
+            </>
+          )}
+        </span>
+      )}
     </div>
   );
 }

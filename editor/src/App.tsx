@@ -69,7 +69,10 @@ import {
   type Projection,
 } from "./canvasOps";
 import { expandComposite } from "./composites";
-import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { CanvasHead, FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { StatementGraph } from "./StatementGraph";
+import { InspectorText } from "./InspectorText";
+import { useCanvasLevel } from "./useCanvasLevel";
 import { tidyPositions } from "./canvasTidy";
 import { FlowPage } from "./FlowPage";
 import { pageOf, routeOfPage, shownAt, type AppPage } from "./Pages";
@@ -680,6 +683,8 @@ function Canvas({
     if (draftItems === null) return null;
     return mayDiff(draftItems, deployedUnit && deployedItems?.unit === deployedUnit ? deployedItems.items : null);
   }, [draftItems, deployedUnit, deployedItems]);
+  // What this version would ask for that the deployed one doesn't: the Inspector marks it.
+  const freshItems = useMemo(() => new Set((mayItems ?? []).filter((m) => m.change === "new").map((m) => m.item)), [mayItems]);
 
 
   // ── Modes: view a deployment, edit the flow (useModeSwitch.ts) ───────────────────────────
@@ -1127,6 +1132,36 @@ function Canvas({
   const textRun = useMemo(() => (replayed ? { order: replayed.order, traces: replayed.traces, step: flow.step } : null), [replayed, flow.step]);
   const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode });
 
+  // The canvas's level, Statements or Nodes (useCanvasLevel.ts): a row picked puts the text's
+  // cursor on it (opening the text when it is shut); a row opened selects its nodes and frames
+  // them at the Nodes level.
+  const askTextNow = useRef(askTextOpening);
+  askTextNow.current = askTextOpening;
+  const showText = useCallback((ask: TextAsk) => askTextNow.current(ask), []);
+  const frameNodes = useCallback(
+    (ids: string[]) => {
+      const want = new Set(ids);
+      if (ids.length > 0) setNodes((ns) => ns.map((n) => (Boolean(n.selected) === want.has(n.id) ? n : { ...n, selected: want.has(n.id) })));
+      // After the palette comes in beside it, and the canvas has its new width.
+      setTimeout(() => void fitView(ids.length > 0 ? { nodes: ids.map((id) => ({ id })), padding: 0.3, duration: 200, maxZoom: 1.25 } : { padding: 0.1, duration: 200 }), 120);
+    },
+    [setNodes, fitView],
+  );
+  const canvasLevel = useCanvasLevel({
+    flow,
+    setFlow,
+    nodes,
+    edges,
+    canvasKey,
+    ev,
+    tab: activeId,
+    enabled: shown === "canvas",
+    inspecting: inspectorOpen,
+    showText,
+    onOpened: frameNodes,
+  });
+  const atStatements = canvasLevel.level === "statements";
+
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
   // (P4.3.1). Cheap enough over a canvas-sized node list not to need memoizing.
@@ -1175,8 +1210,9 @@ function Canvas({
       />
     )}
     <div className="hl-work">
-    {/* The palette is the flow tab's: edit mode places nodes from it; view mode is read only. */}
-    {!viewing && shown === "canvas" && (
+    {/* The palette is the flow tab's, at the Nodes level: edit mode places nodes from it; view
+        mode is read only. */}
+    {!viewing && shown === "canvas" && !atStatements && (
       // A flow isn't offered inside itself.
       <Palette
         catalog={catalog}
@@ -1209,7 +1245,6 @@ function Canvas({
       {/* The editor's bar (gaps-web.md G17): the flow, its mode, the panes, save and deploy. */}
       <div className="hl-canvas__bar">
         <FlowToolbar
-          histVersion={histVersion}
           mode={viewing ? "view" : "edit"}
           canView={canView}
           onMode={onMode}
@@ -1228,12 +1263,6 @@ function Canvas({
           dirty={dirty}
           onSave={onSave}
           maySave={canSave.may("flow.edit")}
-          canUndo={history.current.past.length > 0}
-          canRedo={history.current.future.length > 0}
-          onUndo={undo}
-          onRedo={redo}
-          onTidy={tidyCanvas}
-          onFit={fitCanvas}
           deployBar={
             <DeployBar
               entry={deployedEntry}
@@ -1256,7 +1285,20 @@ function Canvas({
           ))}
         </span>
       </div>
-      <div className="hl-canvas__flow">
+      <div className={atStatements ? "hl-canvas__flow hl-canvas__flow--statements" : "hl-canvas__flow"}>
+        <CanvasHead
+          level={canvasLevel.level}
+          onLevel={canvasLevel.setLevel}
+          switchable={canvasLevel.switchable}
+          editing={!viewing}
+          histVersion={histVersion}
+          canUndo={history.current.past.length > 0}
+          canRedo={history.current.future.length > 0}
+          onUndo={undo}
+          onRedo={redo}
+          onTidy={tidyCanvas}
+          onFit={fitCanvas}
+        />
         <ReactFlow<PrimitiveNodeType>
           colorMode={dark ? "dark" : "light"}
           nodes={decoratedNodes}
@@ -1302,12 +1344,31 @@ function Canvas({
             </Panel>
           )}
         </ReactFlow>
-        {nodes.length === 0 && page === "canvas" && (
+        {nodes.length === 0 && page === "canvas" && !atStatements && (
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
+        )}
+        {/* The Statements level: over the nodes, which stay laid out beneath it (hidden), so
+            opening a row frames them at once. */}
+        {atStatements && (
+          <div className="hl-canvas__statements">
+            {canvasLevel.error && (
+              <div className="hl-canvas__parse" role="status">
+                The text doesn't parse: {canvasLevel.error}.{canvasLevel.graph ? " The statements are as it last did." : ""}
+              </div>
+            )}
+            {canvasLevel.graph && canvasLevel.graph.bands.length > 0 && (
+              <StatementGraph pane graph={canvasLevel.graph} cursor={canvasLevel.cursorLine} onPick={canvasLevel.onPick} onOpen={canvasLevel.onOpen} />
+            )}
+            {canvasLevel.graph && canvasLevel.graph.bands.length === 0 && (
+              <div className="hl-canvas__none">
+                Nothing starts a run yet: write a route, a clock or an action in the text, or place nodes at the Nodes level (l).
+              </div>
+            )}
+          </div>
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
-      {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} />}
+      {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
       <Inspector
         node={inspected && secretMarks[inspected.id] ? { ...inspected, data: { ...inspected.data, secretSinks: secretMarks[inspected.id] } } : inspected}
         unit={inspectedUnit}
@@ -1322,6 +1383,24 @@ function Canvas({
           const s = samples().find((x) => x.name === name);
           if (s) void onOpenSample(s);
         }}
+        statements={
+          atStatements ? (
+            <InspectorText
+              text={canvasLevel.paneText}
+              caret={canvasLevel.caret}
+              graph={canvasLevel.graph}
+              picked={canvasLevel.picked}
+              may={canvasLevel.may}
+              fresh={freshItems}
+              flow={{ name: flowName, port: settings.port, deployed: deployedEntry !== undefined }}
+              onManual={() => navigate({ kind: "docs", page: "language/reference.md", anchor: null })}
+              onSample={(name) => {
+                const s = samples().find((x) => x.name === name);
+                if (s) void onOpenSample(s);
+              }}
+            />
+          ) : undefined
+        }
       />
       {paneShown("bottom") && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} />}
       {/* The pages are overlays ON TOP of the always-mounted canvas — React

@@ -5,7 +5,7 @@
 
 import type { APIRequestContext } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, openSample } from "./helpers";
+import { gotoPage, navLink, nodesLevel, openSample } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -78,10 +78,12 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await expect(tabs.getByRole("tab", { name: "Home" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "open a flow" })).toBeVisible();
   await expect(page.getByRole("region", { name: "recently closed" })).toContainText("no tab closed yet");
-  // + starts a draft, with the palette; New asks nothing: an untitled draft, named on save.
+  // + starts a draft, with the palette at its Nodes level; New asks nothing: an untitled draft,
+  // named on save.
   await tabs.getByRole("button", { name: "new tab" }).click();
   await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+  await nodesLevel(page);
   await expect(page.locator(".hl-work .hl-palette")).toBeVisible();
   // A sample takes the empty draft's tab.
   await openSample(page, "Hello API", false);
@@ -102,6 +104,7 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await expect(closed).toContainText("with its unsaved changes");
   await closed.getByRole("button", { name: "reopen hello-api" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("hello-api");
+  await nodesLevel(page);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node").first()).toBeVisible();
   // The editor's tabs are the editor's: a page has none.
   await gotoPage(page, "resources");

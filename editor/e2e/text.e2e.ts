@@ -6,7 +6,7 @@
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
-import { deploy, openSample } from "./helpers";
+import { deploy, nodesLevel, openSample } from "./helpers";
 
 /** Replace the whole text, as typing it would. */
 async function typeText(editor: Locator, page: Page, text: string) {
@@ -33,6 +33,7 @@ test("a wide window opens a flow with its text beside the canvas", async ({ page
 
 test("the flow's text drives its canvas, and the canvas its text", async ({ page, request, adminToken }) => {
   await openSample(page, "Hello API");
+  await nodesLevel(page);
   // Below 1600px wide (the tests' 1280) the text opens on asking (docs/L4s/text-graph-link-L4.md).
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   const pane = page.getByRole("region", { name: "Text" });
@@ -164,6 +165,6 @@ test("the Inspector says the name at the text's cursor: its forms and a sample's
   await expect(word).toContainText("Inspector: route");
   await expect(word.locator(".hl-word__forms")).toContainText("route.");
   await expect(word.locator(".hl-word__example")).toContainText("route.");
-  await word.getByRole("button", { name: "the language reference" }).click();
+  await word.getByRole("button", { name: "In the manual →" }).click();
   await expect(page).toHaveURL(/#docs\.language\/reference\.md$/);
 });

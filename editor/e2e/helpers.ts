@@ -44,6 +44,15 @@ export async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): a flow
+ *  opens at its Statements. Pressed as such: beside the text and the Inspector at the tests'
+ *  width, the canvas's head can lie under another pane's edge. */
+export async function nodesLevel(page: Page) {
+  const nodes = page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name: "Nodes", exact: true });
+  await nodes.dispatchEvent("click");
+  await expect(nodes).toHaveAttribute("aria-pressed", "true");
+}
+
 /** The Flows page's row of the flow `name`, saved or deployed. */
 export function flowRow(page: Page, name: string): Locator {
   return page.getByRole("region", { name: "flows" }).getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
