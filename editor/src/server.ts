@@ -151,6 +151,8 @@ export type Principal = {
   owner: string | null;
   owner_disabled: boolean;
   invited: boolean;
+  /** When it was last seen (epoch seconds): its last request let in; absent or null, never. */
+  last_seen?: number | null;
   tokens?: TokenEntry[];
 };
 /** Where a binding holds (bindings.rs): the host, one flow, or one approval point of one. */
@@ -161,7 +163,8 @@ export type HeldBinding = { id: number; role: string; allows: string[]; scope: S
 export type RoleEntry = { name: string; about: string | null; allows: string[]; kinds: Kind[]; builtin: boolean; bound: number };
 export const listRoles = async () => (await asJson<{ roles: RoleEntry[] }>(await api(`${BASE}/roles`))).roles;
 /** An agent's or a service's token: what it is for, never its value. */
-export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string };
+/** An agent's or a service's token, never its value: `last_used` (epoch seconds), absent until a request came with it. */
+export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string; last_used?: number };
 export type OidcSettings = { issuer: string; client_id: string };
 const principalAt = (name: string) => `${BASE}/people/${encodeURIComponent(name)}`;
 const patch = (url: string, body: unknown) => api(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

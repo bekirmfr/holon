@@ -1472,6 +1472,8 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-used-by__waiting { color: var(--warn-ink); }
 .hl-used-by__waiting a { color: inherit; text-decoration: underline dotted; }
 .hl-used-by__revoked { text-decoration: line-through; color: var(--bad); }
+/* People's Last seen and a token's Last used, a column of its row (HostPages.tsx's Seen). */
+.hl-seen { flex: 0 0 auto; min-width: 118px; color: var(--faint); font-size: 11px; white-space: nowrap; }
 /* A tab of bindings as a table: the resource, its details, Used by (its own cell, so no padding of
    its own), the buttons; a database's tables and matrix on a row under its own. */
 .hl-resources td { vertical-align: top; }

@@ -84,6 +84,7 @@ import { describeItem } from "./holon";
 import { databaseMatrix, holdersOf, kindsHeld, othersHeld, usesText, waitingFor, type Holder } from "./holdings";
 import { CollectionsTab, DatabaseMatrix, ResourceTable, SecretsTable } from "./ResourceViews";
 import { databaseLine, feedLine, folderLine, mailLine, queueLine } from "./resourceRows";
+import { seenSaid } from "./lastSeen";
 import { PolicyCheck, PolicyText } from "./PolicyViews";
 import { limitMeaning } from "./policyMeans";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
@@ -338,7 +339,19 @@ function MadeTokenBox({ made, onDone }: { made: MadeToken; onDone: () => void })
   );
 }
 
-/** `p`'s tokens, each revoked from its row (when `may`); or that it has none, so it can't sign in yet. */
+/** When a principal was last seen or a token last used (`what`), as a column of its row: how long
+ *  ago, the exact time as its title (lastSeen.ts). */
+function Seen({ what, at }: { what: "last seen" | "last used"; at: number | null | undefined }) {
+  const said = seenSaid(at, Date.now());
+  return (
+    <span className="hl-seen" title={said.title}>
+      {what} {said.text}
+    </span>
+  );
+}
+
+/** `p`'s tokens, each revoked from its row (when `may`), with when each was last used; or that it
+ *  has none, so it can't sign in yet. */
 function TokenRows({ p, dialog, act, may = true }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void>; may?: Answer }) {
   const tokens = p.tokens ?? [];
   if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
@@ -350,6 +363,7 @@ function TokenRows({ p, dialog, act, may = true }: { p: Principal; dialog: Retur
           <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
             a token of {p.name}, made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
           </span>
+          <Seen what="last used" at={t.last_used} />
           <button
             style={small}
             aria-label={`revoke ${p.name}'s token ${t.label}`}
@@ -531,6 +545,7 @@ export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: str
               {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
             </span>
+            <Seen what="last seen" at={p.last_seen} />
             <button
               style={small}
               {...gateOf(manage, { title: "the email they sign in with through the identity provider" })}
@@ -623,6 +638,7 @@ export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: str
               {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
+            <Seen what="last seen" at={p.last_seen} />
             <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(tokensOf(p), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, dialog, act, setSecret)}>
               make token
             </button>

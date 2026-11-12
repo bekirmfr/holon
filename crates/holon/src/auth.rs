@@ -50,14 +50,15 @@ fn bindings(name: &str, accounts: &Accounts) -> serde_json::Value {
     accounts.reaching(name).iter().map(each).collect()
 }
 
-/// A principal as the People page shows it: what is bound to it, and its role on the host; never
-/// its password hash; an agent's or a service's tokens with it, never their hashes.
+/// A principal as the People page shows it: what is bound to it, its role on the host, and when it
+/// was last seen; never its password hash; an agent's or a service's tokens with it, each with when
+/// it was last used, never their hashes.
 fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     let owner_disabled = p.owner.as_deref().and_then(|o| accounts.principal(o)).is_some_and(|o| o.disabled);
     let mut v = serde_json::json!({
         "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name), "bindings": bindings(&p.name, accounts),
         "display": p.display, "email": p.email,
-        "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by,
+        "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by, "last_seen": p.last_seen,
         "owner": p.owner, "owner_disabled": owner_disabled,
         "invited": accounts.invited(&p.name),
     });

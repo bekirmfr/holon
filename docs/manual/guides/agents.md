@@ -32,8 +32,8 @@ was. Restart the agent to pick it up.
 to proposing, and what it does is under the agent's name. On the same machine it finds the server
 you run, and the first time, makes your agent there: *you*-agent (`bma-agent`), owned by you, with
 the **agent** role. Its token is kept in `~/.holon/tokens.json`, readable only by you; the
-server's **People and access** lists it with its tokens. `setup` makes it at once when the server
-is running, and says so:
+server's **People and access** lists it with its tokens, when it was last seen and when each
+token was last used. `setup` makes it at once when the server is running, and says so:
 
 ```
 holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.

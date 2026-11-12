@@ -5630,9 +5630,17 @@ fn accounts_through_the_routes() {
     assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 400);
     assert_eq!(body_json(call("PATCH", "/people/claude", serde_json::json!({ "owner": "ada" }), Some(&ada)))["owner"], "ada");
     assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 204);
+    call("POST", "/people/ci/tokens", serde_json::json!({ "label": "never used" }), Some(&ada));
     let listed = body_json(call("GET", "/people", null.clone(), Some(&ada)));
     let kinds: Vec<_> = listed.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["kind"].as_str().unwrap())).collect();
     assert_eq!(kinds, [("ada", "person"), ("ci", "service"), ("claude", "agent")]);
+    // When each was last seen, and each token last used (web-console-L4.md §9.2): ci's first
+    // token signed its requests in; the one made since, none.
+    let of = |name: &str| listed.as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone();
+    assert!(of("ada")["last_seen"].as_u64().is_some_and(|t| t > 0), "{listed}");
+    let tokens = of("ci")["tokens"].clone();
+    assert!(tokens[0]["last_used"].as_u64().is_some_and(|t| t > 0) && tokens[1].get("last_used").is_none(), "{tokens}");
+    assert_eq!(body_json(call("GET", "/people/ci/tokens", null.clone(), Some(&ada))), tokens, "its tokens' own route says the same");
 }
 
 /// The local token (local.rs) is the OS user's admin, before setup and after, named in the
