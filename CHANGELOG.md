@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **What a run throws with a secret in it no longer reaches the log.** Why a node gave nothing (a
+  `throw`'s message, a module's error) was the one text of a log entry the redactor never went
+  over: `throw new Error("key is " + k)` wrote the secret into the log and the export in the
+  clear, and `explain` printed it. Now it is redacted with the rest of the entry, and withheld
+  (`‹withheld: computed from a secret›`) where the node computes with a secret, as its outputs
+  are. So are a request's method, the keys a run claimed and an effect's sink, and the bytes of a
+  file kept around a part of it a run read: when they hold a secret, the part isn't kept, and
+  `holon verify` asks for the file.
+- **A true or false computed from a secret is no longer clean.** A Boolean was clean whatever
+  computed it, so `route.get("/b", req => k.startsWith(req.query.p))` answered anyone with no
+  approval asked, and a secret could be read off a character at a time. Now it is derived from the
+  secret, as what a secret chooses is: the value `c ? a : b`, `list[i]` or `rec[k]` gives when
+  `c`, `i` or `k` comes from one. The log withholds it, as anything computed from a secret,
+  answering it asks a person to approve "answer its callers with the secret" before the flow
+  deploys, and a write it chooses is refused as a write of the secret is. The one-way leaves
+  (`sha256`, `hmac_sha256`, `secure_equals`) are still clean: check a key with
+  `secure_equals(given, key)`, not `given === key`.
+- **`holon verify` no longer takes a line that says its run failed as one it can't check.** Any
+  error on an entry made every difference from what its run does again "not run again" (exit 3,
+  INCOMPLETE): a line given an error could change its outputs, what it did or its run id and pass
+  as unchecked, not as changed. Now a failed run's entry may say less than the run does again
+  (a limit stopped it), never other: the same run id, each output it keeps as computed, what it
+  did and sent the start of what it does again, and the status it answered either that or a
+  failure's. One that says other differs (exit 1). A panicked run's entry must say it did
+  nothing, and the state check no longer takes the empty state it records as where it began.
+
 ## 0.1.0-rc.35
 
 - **Tags: a binding on a tag holds on every flow deployed with it.** A flow's text tags it,

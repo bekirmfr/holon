@@ -1279,11 +1279,16 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
 }
 
 /// The timeline, with the outputs of each node that may produce something computed from a secret
-/// left out: redaction finds a secret's value, not what is computed from it (taint.rs).
+/// left out, and why it gave nothing (a thrown message, a module's error: as much the node's as
+/// its outputs) withheld: redaction finds a secret's value, not what is computed from it
+/// (taint.rs).
 fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed) -> Vec<recorder::NodeTiming> {
     if !fed.is_empty() {
         for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
             node.outputs = None;
+            if node.reason.is_some() {
+                node.reason = Some(taint::WITHHELD.into());
+            }
         }
     }
     timeline
