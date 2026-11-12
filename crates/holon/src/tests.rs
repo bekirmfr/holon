@@ -1929,7 +1929,9 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
 fn a_secret_reaches_its_runs_and_nothing_else() {
     let state = test_state();
     // Its action checks what it is sent against the secret, and would keep the secret in state.
-    let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\nimport api_key from \"secret:api_key\"\n\nflow(\"s\")\n\nexport const check = action((value) => {\n  state.k = api_key\n  return value === api_key\n})\n";
+    // (In constant time, which answers nothing of the secret: `value === api_key` is computed
+    // from it, and answering that asks for the secret's approval.)
+    let text = "import { action, flow, secure_equals } from \"holon\"\nimport state from \"state\"\nimport api_key from \"secret:api_key\"\n\nflow(\"s\")\n\nexport const check = action((value) => {\n  state.k = api_key\n  return secure_equals(value, api_key)\n})\n";
     let flow_hash = stage_text(&state, text);
     let value = "sk_test_123456";
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "s", "unit": to_hex(&flow_hash) })).unwrap())));
@@ -1983,7 +1985,7 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(fire("something else").contains(r#""answer":false"#));
 
     // The log keeps what each node produced, so a replay can show a node it can't recompute:
-    // `equals` said true, and the secret node's own output is its placeholder.
+    // `secure_equals` said true, and the secret node's own output is its placeholder.
     let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
     let produced: Vec<serde_json::Value> = log["entries"][0]["timeline"].as_array().unwrap().iter().filter_map(|t| t.get("outputs").cloned()).collect();
     assert!(produced.contains(&serde_json::json!([{ "type": "Boolean", "value": true }])), "{produced:?}");

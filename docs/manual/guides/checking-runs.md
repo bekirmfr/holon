@@ -183,10 +183,11 @@ the run id and every node are checked. A channel's subscribers get it as it was 
 logged before this was escaped read every look-alike as a placeholder, as they did then.
 
 The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
-(`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean answer gives nothing of it away. A value
-that holds the secret as it is gets the placeholder. But a value computed from the secret (base64
-of it for a Basic auth header, a field of a JSON secret, a slice) no longer holds it literally,
-so the log keeps no outputs for that node. An outbound request built from one is logged with
+(`sha256`, `hmac_sha256`, `secure_equals`) gives nothing of it away. A value that holds the
+secret as it is gets the placeholder. But a value computed from the secret (base64 of it for a
+Basic auth header, a field of a JSON secret, a slice) no longer holds it literally, and a true or
+false computed from it (`key.startsWith(p)`, `key === v`), or what it chose (`rec[key]`,
+`key ? a : b`), says something of it: the log keeps no outputs for that node. An outbound request built from one is logged with
 those parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
 response body and any other effect built from one. Such a value is never kept: a state,
 collection, database, channel or file write of it is refused, as a write of the secret itself is.

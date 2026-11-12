@@ -14,9 +14,12 @@
 //!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
 //! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), `jwt_verify`
-//! for its key (the token's payload comes out, nothing of the key), a Boolean answer, and an outbound request's response or a database read's rows (what the far side said,
-//! not what was sent). A
-//! leaf that isn't known to pass its inputs through as they are makes anything tainted derived.
+//! for its key (the token's payload comes out, nothing of the key), and an outbound request's
+//! response or a database read's rows (what the far side said, not what was sent). Nothing else
+//! does: a Boolean computed from a secret (`k.startsWith(p)`) says something of it, so it is
+//! derived, as is whatever it chooses (`c ? a : b`, a write under `if (c)`). A leaf that isn't
+//! known to pass its inputs through as they are makes anything tainted derived, and so does one
+//! that is, for an input that only chooses what comes out ([`selects`]).
 //!
 //! The same walk, one secret at a time, finds what a route may answer its caller with
 //! ([`answered_secrets`]): each such secret is a permission of its own, `SecretAnswer("name")`,
@@ -48,9 +51,11 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 /// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
 /// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
 /// isn't the secret. So are the record leaves that move values between records and lists
-/// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which cuts it.
+/// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which is derived.
 /// `add` joins texts as `concat` does (a number it adds is no secret's text); the other text
-/// leaves (`trim`, `replace`, `pad`, …) make a text from part of theirs, which is derived.
+/// leaves (`trim`, `replace`, `pad`, …) make a text from part of theirs, which is derived. An
+/// input of one of these that only chooses ([`selects`]) isn't passed on: what it chose is
+/// derived.
 const PASSES_LITERALLY: &[&str] = &[
     "const", "select", "cons", "head", "tail", "concat", "add", "list", "get", "append", "extend", "join", "pair", "some",
     "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
@@ -59,6 +64,19 @@ const PASSES_LITERALLY: &[&str] = &[
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
     "channel_send", "mail_send", "queue_send", "egress",
 ];
+
+/// Whether `port`, an input of `leaf` (one of [`PASSES_LITERALLY`]), only chooses what comes out
+/// and is never part of it: a condition (`select`, `guard`, any Boolean), a position in a list, a
+/// key to look up or leave out, what starts a sink. A secret there isn't in the output, where
+/// redaction would find it, but what was chosen says something of it: derived.
+fn selects(leaf: &str, port: &crate::Port) -> bool {
+    port.ty == Type::Boolean
+        || port.name == crate::TRIGGER
+        || matches!(
+            (leaf, port.name.as_str()),
+            ("get" | "with_item", "index") | ("to_spliced", "start" | "count") | ("fill", "start" | "end") | ("copy_within", "target" | "start" | "end") | ("lookup" | "remove", "key")
+        )
+}
 
 /// Leaves whose output is what the far side answered: an outbound request's response, a
 /// database read's rows. (One that echoes a secret back holds its value, where the host finds it.)
@@ -254,19 +272,26 @@ impl<R: Resolver> Walk<'_, R> {
         let answering = asked || self.answers.is_some() && most > Taint::Clean;
         let outputs = match &unit.body {
             UnitBody::Primitive { name } => {
+                // What a leaf that passes its inputs on gives: the most of what it holds of them,
+                // and derived if what only chooses is tainted at all.
+                let passed = || {
+                    let (held, chose) = inputs.iter().zip(&unit.inputs).fold((Taint::Clean, Taint::Clean), |(held, chose), (t, port)| {
+                        if selects(name, port) { (held, chose.max(*t)) } else { (held.max(*t), chose) }
+                    });
+                    if chose > Taint::Clean { Taint::Derived } else { held }
+                };
                 let outputs: Vec<Taint> = unit
                     .outputs
                     .iter()
-                    .map(|port| match name.as_str() {
+                    .map(|_| match name.as_str() {
                         "secret" if reads => Taint::Literal,
-                        _ if port.ty == Type::Boolean => Taint::Clean,
                         n if ANSWERED.contains(&n) && answering => Taint::Literal,
                         n if ONE_WAY.contains(&n) || ANSWERED.contains(&n) => Taint::Clean,
                         // The token's payload comes out, nothing of the key: a shared secret's
                         // taint stops here, as at hmac_sha256; the token's goes on, decoded.
                         "jwt_verify" if inputs.first().is_some_and(|t| *t > Taint::Clean) => Taint::Derived,
                         "jwt_verify" => Taint::Clean,
-                        n if PASSES_LITERALLY.contains(&n) => most,
+                        n if PASSES_LITERALLY.contains(&n) => passed(),
                         _ if most == Taint::Clean => Taint::Clean,
                         _ => Taint::Derived,
                     })
@@ -408,7 +433,7 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
 /// Where each secret `root` reads is sent: the hosts of the outbound requests (`http.get`, an
 /// upload, a stream…) its value, or something computed from it, may reach, in their path, headers
 /// or body, and the databases of the reads whose parameters it may reach (`db:shop`,
-/// [`destination_of`]). A one-way leaf, a Boolean and a call's answer cut it, as for [`answered_secrets`]; a
+/// [`destination_of`]). A one-way leaf and a call's answer cut it, as for [`answered_secrets`]; a
 /// secret sent nowhere isn't listed. Every pair is known before the flow runs (a request's host is
 /// a frozen param), so the approval says it beside the secret: "read the secret "k", and send it
 /// to https://api.example.com".
@@ -559,10 +584,10 @@ mod tests {
     }
 
     /// A number computed from a secret (`to_number`, then `math {fn: "abs"}`, then written back
-    /// with `number_format`) is derived from it; whether the secret reads as a number
-    /// (`number_test`) is a Boolean, and cuts it.
+    /// with `number_format`) is derived from it, and so is whether the secret reads as a number
+    /// (`number_test`): a Boolean says something of it too.
     #[test]
-    fn the_number_leaves_derive_and_a_number_test_cuts() {
+    fn the_number_leaves_and_a_number_test_derive() {
         let mut r = MapResolver::new();
         let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "pin")]);
         let read = leaf(&mut r, "to_number", vec![Param::frozen("grammar", "int")]);
@@ -583,11 +608,11 @@ mod tests {
         for (node, what) in [(1, "to_number"), (2, "math"), (3, "number_format")] {
             assert!(fed.derives(&[node]), "{what} of a secret is derived");
         }
-        assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+        assert!(fed.derives(&[4]), "a number_test of it is derived");
     }
 
     /// `"Bearer " + secret` holds it as it is, as a template literal's `concat` does; a trimmed
-    /// secret is derived from it; whether it begins with a text is a Boolean, which cuts it.
+    /// secret is derived from it, and so is whether it begins with a text.
     #[test]
     fn a_secret_joined_by_add_stays_literal_and_a_trimmed_one_is_derived() {
         let mut r = MapResolver::new();
@@ -618,14 +643,14 @@ mod tests {
         let fed = SecretFed::of(&root, &r);
         assert_eq!(fed.output(&[2], 0), Taint::Literal, "the header holds it as it is");
         assert!(fed.derives(&[3]), "a trimmed secret is derived");
-        assert!(!fed.derives(&[4]), "startsWith answers a Boolean");
+        assert!(fed.derives(&[4]), "whether it starts with a text is derived");
     }
 
     /// A record holding a secret, merged into another, still holds it as it is, and so do its
-    /// values; whether it has a key is a Boolean, which cuts it; and a `group_by` applies a
-    /// function, which isn't followed.
+    /// values; whether it has a key is derived from it; and a `group_by` applies a function,
+    /// which isn't followed.
     #[test]
-    fn the_record_leaves_keep_a_secret_literal_and_has_cuts_it() {
+    fn the_record_leaves_keep_a_secret_literal_and_has_derives() {
         let mut r = MapResolver::new();
         let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
         let insert = leaf(&mut r, "insert", vec![]);
@@ -661,15 +686,15 @@ mod tests {
         let fed = SecretFed::of(&root, &r);
         assert_eq!(fed.output(&[2], 0), Taint::Literal, "the merged record holds it as it is");
         assert_eq!(fed.output(&[3], 0), Taint::Literal, "and so do its values");
-        assert!(!fed.derives(&[4]), "has answers a Boolean");
+        assert!(fed.derives(&[4]), "whether it has a key is derived");
         assert!(fed.derives(&[5]), "a group_by's function isn't followed");
     }
 
-    /// A list holding a secret, reversed, still holds it as it is; whether it holds an item is a
-    /// Boolean, which cuts it; a position in it is derived from it; and a `filter` over it applies
-    /// a function, which isn't followed.
+    /// A list holding a secret, reversed, still holds it as it is; whether it holds an item is
+    /// derived from it, as a position in it is; and a `filter` over it applies a function, which
+    /// isn't followed.
     #[test]
-    fn the_list_leaves_keep_a_secret_literal_and_a_search_cuts_it() {
+    fn the_list_leaves_keep_a_secret_literal_and_a_search_derives() {
         let mut r = MapResolver::new();
         let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
         let list = leaf(&mut r, "list", vec![]);
@@ -704,7 +729,7 @@ mod tests {
         let fed = SecretFed::of(&root, &r);
         assert_eq!(fed.output(&[1], 0), Taint::Literal, "the list holds it as it is");
         assert_eq!(fed.output(&[2], 0), Taint::Literal, "and so does the list reversed");
-        assert!(!fed.derives(&[3]), "includes answers a Boolean");
+        assert!(fed.derives(&[3]), "whether it includes an item is derived");
         assert!(fed.derives(&[4]), "a position in it is derived");
         assert!(fed.derives(&[5]), "a filter's function isn't followed");
     }
@@ -923,5 +948,148 @@ mod tests {
         assert!(answered_secrets(&root, &r).is_empty(), "the rows are what the database said");
         assert!(!SecretFed::of(&root, &r).derives_output(0));
         assert_eq!(destination_of(&Capability::DbWrite("shop/orders".into())), None, "a write isn't where a secret goes: the host refuses it");
+    }
+
+    /// `unit` alone under a root, a secret feeding its input `port` and the root's inputs the
+    /// rest, its outputs the root's: what each of its outputs carries of the secret.
+    fn fed_on(unit: &Unit, port: usize) -> Vec<Taint> {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let node = r.insert(unit.clone()).unwrap();
+        let mut edges: Vec<Edge> = (0..unit.inputs.len() as u32).map(|i| if i as usize == port { e(0, 0, 1, i) } else { e(BOUNDARY, i, 1, i) }).collect();
+        edges.extend((0..unit.outputs.len() as u32).map(|o| e(1, o, BOUNDARY, o)));
+        let root = Unit { body: UnitBody::Composite { children: vec![secret, node], edges }, params: vec![], inputs: unit.inputs.clone(), outputs: unit.outputs.clone() };
+        let fed = SecretFed::of(&root, &r);
+        (0..unit.outputs.len()).map(|o| fed.output(&[1], o)).collect()
+    }
+
+    /// Guards: whatever a leaf is fed of a secret, on any of its inputs, comes out of it as
+    /// something of the secret (literal or derived), but at the leaves named here, whose answer
+    /// gives nothing of it back: a one-way hash or comparison, the key and clock `jwt_verify`
+    /// checks a token with, what a call's far side answers.
+    /// Why: a Boolean was clean whatever computed it, so `k.startsWith(req.query.p)` answered
+    /// anyone true or false with no approval asked, and the secret could be read off a character
+    /// at a time; the approval said only that the flow read it.
+    /// If it fails: a leaf hands on something of a secret as clean: answered to callers with no
+    /// approval, logged in the clear, written where a secret's value may not be. Follow it there,
+    /// or name it here with why nothing of the secret comes out.
+    #[test]
+    fn no_output_fed_a_secret_is_clean_but_where_nothing_of_it_comes_out() {
+        let mut clean: BTreeSet<String> = BTreeSet::new();
+        for &name in crate::GENESIS {
+            let Some(unit) = interface_of(name) else { continue };
+            for port in 0..unit.inputs.len() {
+                if fed_on(&unit, port).contains(&Taint::Clean) {
+                    clean.insert(format!("{name}.{}", unit.inputs[port].name));
+                }
+            }
+        }
+        let named: BTreeSet<String> = [
+            // One way: a hash, a keyed hash, a comparison in constant time.
+            "sha256.text", "hmac_sha256.key", "hmac_sha256.message", "secure_equals.a", "secure_equals.b",
+            // The token's payload comes out, nothing of the key it is checked with, nor the clock.
+            "jwt_verify.key", "jwt_verify.now",
+        ]
+        .into_iter()
+        .map(String::from)
+        // What the far side answered (the host finds a credential it answers with by its value).
+        .chain(ANSWERED.iter().flat_map(|&n| interface_of(n).unwrap().inputs.into_iter().map(move |p| format!("{n}.{}", p.name))))
+        .collect();
+        assert_eq!(clean, named);
+
+        // A `default` typed Boolean (`x ?? false`, a condition's own) passes what it is given:
+        // a Boolean, which is derived.
+        let mut default = interface_of("default").unwrap();
+        default.params = vec![Param::frozen("value", "false"), Param::frozen("type", "Boolean")];
+        default.inputs[0].ty = Type::Boolean;
+        default.outputs[0].ty = Type::Boolean;
+        assert_eq!(fed_on(&default, 0), vec![Taint::Derived]);
+    }
+
+    /// Guards: a leaf that passes its inputs on as they are ([`PASSES_LITERALLY`]) says of each
+    /// input either that its output may hold it (literal: redaction finds a secret there) or, for
+    /// one that only chooses what comes out ([`selects`]: a condition, a position, a key to look
+    /// up or leave out, what starts a sink), that the output is derived. Running each leaf over
+    /// its inputs shows which of them ever come out in what it gives.
+    /// Why: an input that only chooses was taken as passed on as it is, so a secret used to choose
+    /// (`rec[k]`, `list[i]`, `c ? a : b` with `c` a secret's text) left what it chose in the log in
+    /// the clear, and that says something of the secret.
+    /// If it fails: [`selects`] names an input a leaf holds in its output, or misses one it only
+    /// chooses with. Correct it there.
+    #[test]
+    fn what_a_passing_leaf_holds_of_an_input_is_literal_and_what_only_chooses_is_derived() {
+        use crate::Value;
+        const MARK: &str = "MARK";
+        const AT: f64 = 4242.25;
+        fn holds(v: &Value) -> bool {
+            match v {
+                Value::Text(s) => s.contains(MARK),
+                Value::Number(n) => *n == AT,
+                Value::List(xs) => xs.iter().any(holds),
+                Value::Record(r) => r.iter().any(|(k, x)| k.contains(MARK) || holds(x)),
+                Value::Effect { payload, .. } | Value::Sum { payload, .. } => holds(payload),
+                Value::Boolean(_) | Value::Bytes(_) => false,
+            }
+        }
+        let t = |s: &str| Value::Text(s.into());
+        let rec = |fs: &[(&str, Value)]| Value::Record(fs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        // What an input of each type is given beside the one marked, and what marks it.
+        let given = |ty: &Type| match ty {
+            Type::Number => vec![Value::Number(0.0), Value::Number(1.0), Value::Number(2.0)],
+            Type::Text => vec![t(""), t("id"), t("a")],
+            Type::Boolean => vec![Value::Boolean(true), Value::Boolean(false)],
+            Type::Record => vec![rec(&[]), rec(&[("id", Value::Number(1.0)), ("a", t("x"))])],
+            Type::List(_) => vec![Value::List(vec![]), Value::List(vec![t("a"), t("b")]), Value::List(vec![Value::Number(1.0), Value::Number(2.0)])],
+            _ => vec![t("id"), Value::Number(1.0), rec(&[("id", Value::Number(1.0))]), Value::List(vec![t("a")])],
+        };
+        let marked = |ty: &Type| {
+            let record = rec(&[("id", t(MARK)), (MARK, t(MARK)), ("a", t(MARK))]);
+            let list = Value::List(vec![t(MARK), t(MARK)]);
+            let entries = Value::List(vec![Value::List(vec![t(MARK), t(MARK)])]);
+            match ty {
+                Type::Number => vec![Value::Number(AT)],
+                Type::Text => vec![t(MARK)],
+                Type::Record => vec![record],
+                Type::List(_) => vec![list, entries],
+                _ => vec![t(MARK), record, list, entries, Value::Number(AT)],
+            }
+        };
+        let mut wrong = Vec::new();
+        let mut not_computed = BTreeSet::new();
+        for &name in PASSES_LITERALLY {
+            let unit = interface_of(name).unwrap();
+            let mut computed = false;
+            for (i, port) in unit.inputs.iter().enumerate() {
+                // A Boolean or a trigger is never part of what a leaf gives: it chooses.
+                if port.ty == Type::Boolean || port.name == crate::TRIGGER {
+                    assert!(selects(name, port), "{name}.{}", port.name);
+                    continue;
+                }
+                // Every combination of the other inputs, the marked one at `i`.
+                let mut sets: Vec<Vec<Value>> = vec![vec![]];
+                for (j, p) in unit.inputs.iter().enumerate() {
+                    let choices = if j == i { marked(&p.ty) } else { given(&p.ty) };
+                    sets = sets.into_iter().flat_map(|s| choices.iter().map(move |c| [s.clone(), vec![c.clone()]].concat())).collect();
+                }
+                // What it gives, of the sets it gives anything for (a position or key not there
+                // gives nothing: nothing of it is held).
+                let outs: Vec<Value> = sets.iter().filter_map(|set| crate::primitives::compute(name, &set.iter().collect::<Vec<_>>(), &unit.params)).collect();
+                computed |= !outs.is_empty();
+                if outs.iter().any(holds) == selects(name, port) {
+                    let says = if selects(name, port) { "held in what it gives, but taken as only choosing" } else { "never in what it gives, but taken as passed on" };
+                    wrong.push(format!("{name}.{}: {says}", port.name));
+                }
+            }
+            if !computed && !unit.inputs.is_empty() {
+                not_computed.insert(name);
+                wrong.retain(|w| !w.starts_with(&format!("{name}.")));
+            }
+        }
+        // `coalesce` gives `b` when `a` is absent, which `compute` is never handed (eval decides
+        // what is absent): it passes `b` on as it is.
+        assert_eq!(wrong, vec!["coalesce.b: never in what it gives, but taken as passed on"]);
+        // The sinks: eval builds their effect from what they are given, every input in it but
+        // the trigger, which only starts it (`selects` says so by the port's name).
+        assert_eq!(not_computed, BTreeSet::from(["collection_put", "file_create", "file_write", "mail_send", "queue_send"]));
     }
 }

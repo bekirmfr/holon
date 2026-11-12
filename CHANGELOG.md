@@ -10,6 +10,15 @@
   are. So are a request's method, the keys a run claimed and an effect's sink, and the bytes of a
   file kept around a part of it a run read: when they hold a secret, the part isn't kept, and
   `holon verify` asks for the file.
+- **A true or false computed from a secret is no longer clean.** A Boolean was clean whatever
+  computed it, so `route.get("/b", req => k.startsWith(req.query.p))` answered anyone with no
+  approval asked, and a secret could be read off a character at a time. Now it is derived from the
+  secret, as what a secret chooses is: the value `c ? a : b`, `list[i]` or `rec[k]` gives when
+  `c`, `i` or `k` comes from one. The log withholds it, as anything computed from a secret,
+  answering it asks a person to approve "answer its callers with the secret" before the flow
+  deploys, and a write it chooses is refused as a write of the secret is. The one-way leaves
+  (`sha256`, `hmac_sha256`, `secure_equals`) are still clean: check a key with
+  `secure_equals(given, key)`, not `given === key`.
 
 ## 0.1.0-rc.35
 

@@ -341,11 +341,13 @@ What is not defended, or only partly:
   another key logs it; a waiting run's sealed request holds it, to resume with; and the flow's
   state, collections, databases and files hold what it writes. Unlike a secret's, a tainted
   value's write isn't refused: it is the caller's, and the flow decides what to keep.
-- **A Boolean computed from a secret is clean** (taint.rs: any Boolean output), so a guard on a
-  secret's presence doesn't taint all that follows it. A flow can therefore learn a secret a bit
-  at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
-  the log shows it. The approval shows where the secret's value goes, not what its Booleans
-  choose.
+- **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
+  `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
+  b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
+  never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
+  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
+  they compute from it as clean. What a run's timing says isn't covered: a flow that does more
+  work when a secret's first character is `a` answers later.
 - **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
   route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,
   and about 470 in a debug build. Reading a log line back has a thread of its own (8 MiB): about
