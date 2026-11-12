@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **An agent decides its step.** `holon mcp` has a `decide` tool: an agent approves, or declines
+  with a reason, a step of an approval written for an agent, bound to its role where the flow is,
+  with a `note` the run is given. For a person's step it decides nothing, and says who decides it
+  and where. `runs` and `holon decide <slug>` list the steps yours to take, and `holon decide`
+  takes `--slot N` and `--note JSON`, with an agent's token too. A caller bound to no role that
+  decides there is told so ("no role claude holds on "payouts" holds run.decide").
 - **The host's approval settings.** The access document keeps `approvals: { exclude_deployer,
   agents }`, `false` and `true` by default, set with `PUT /access/approvals` (`people.assign`) or
   `holon access approvals --exclude-deployer on|off --agents on|off --why …`, each change a

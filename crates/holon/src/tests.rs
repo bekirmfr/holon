@@ -2528,9 +2528,9 @@ fn who_may_decide_an_approval() {
     assert_eq!(decider(caller(Some("ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()));
     assert_eq!(decider(caller(Some("local:ada"), Some(Kind::Person), Some(access::Role::Admin))), Ok("ada".to_string()), "the same person as the account");
     let refused = [
-        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude may not do that: an agent proposes"),
+        (Some("claude"), Some(Kind::Agent), Some(access::Role::Agent), "claude may not do that: no role claude holds for \"d\"'s approval \"ok\" holds run.decide"),
         (Some("ci"), Some(Kind::Service), Some(access::Role::Editor), "ci is a service"),
-        (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "a viewer only reads"),
+        (Some("cy"), Some(Kind::Person), Some(access::Role::Viewer), "cy may not do that: no role cy holds for \"d\"'s approval \"ok\" holds run.decide"),
         (None, None, None, "no accounts"),
     ];
     for (name, kind, role, why) in refused {

@@ -401,7 +401,8 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
         }
         _ => {}
     }
-    if roles.is_empty() || roles.iter().any(|r| r.builtin.is_none()) {
+    // Deciding takes a role bound where the approval is, whatever else the caller holds there.
+    if roles.is_empty() || roles.iter().any(|r| r.builtin.is_none()) || action == RunDecide {
         let place = match on {
             Resource::Host | Resource::Principal { .. } => "on this host".to_string(),
             Resource::Flows => "on any flow".to_string(),

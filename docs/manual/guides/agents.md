@@ -74,7 +74,8 @@ The tools `holon mcp` offers:
 | `whoami` | who it is signed in as, its owner, and what it may do: each role bound to it or to a group it is in, where (this host, a flow, an approval point), until when, and the actions it allows |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
 | `flows` | the saved flows; with a name, its text |
-| `runs` | a deployment's latest runs, one line each; then the runs waiting now, at an approval with who has approved it so far, or at an event |
+| `runs` | a deployment's latest runs, one line each; then the runs waiting now, at an approval with who has approved each step so far and the steps the agent may take, or at an event |
+| `decide` | approve, or decline with a reason, a step of an approval written for an agent, as the agent, bound to its role there, with a `note` the run is given; never a person's step: for one it says who decides it, and where |
 | `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
@@ -109,10 +110,15 @@ answers that agents may not read them, and so it does once you revoke it.
 
 A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
 `runs` shows which run waits and who has approved each step so far, and the agent tells you. You
-decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide);
-no tool decides one. An approval in steps may have a step written for an agent
-(`{ role: "classifier", kind: "agent" }`), which an agent bound to that role takes, never a
-person's step ([`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8).
+decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide).
+An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
+}`): bind a role of your own to the agent where the flow is (`holon roles define classifier
+--allow run.view,run.decide --kinds agent`, then `holon bind classifier --to bma-agent --flow
+payout`), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
+confidence) the run is given. A person's step it never takes: it says who decides it and where,
+for the agent to tell you. Turning agents off for the host (`holon access approvals --agents
+off`, [Who decides an approval](people.md#who-decides-an-approval)) keeps them out of every
+approval.
 
 ## Approving what an agent proposes
 

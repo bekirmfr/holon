@@ -469,7 +469,9 @@ by default. A change makes a version, with who, when and why, as a binding does.
   agent signs in. It fills an agent's slot when the agent holds its role. For a person's slot it
   decides nothing, and says who decides it and where (the editor's Approvals, `holon decide`).
   The instructions (`mcp.rs:59`) and `runs` (`:265`, `:908`) say an agent decides only a slot
-  written for an agent.
+  written for an agent. `runs` and `holon decide <slug>` list the caller's open steps, with the
+  number `--slot` takes (`decidecmd::yours_lines`). A caller bound to no role holding
+  `run.decide` where the approval is is told so (`can.rs`), not that deciding is a person's.
 - Tests: `mcp.rs`, one table of agent and person slots, open or not, through the tool.
 
 ### Step 5d. The evidence, and the sample

@@ -429,8 +429,8 @@ its `logs` tool answers, and otherwise is refused.
 
 ```
 holon decide <slug> [--json]
-holon decide <slug> <run> <name> --approve [--reason TEXT]
-holon decide <slug> <run> <name> --decline --reason TEXT
+holon decide <slug> <run> <name> --approve [--reason TEXT] [--slot N] [--note JSON]
+holon decide <slug> <run> <name> --decline --reason TEXT [--slot N] [--note JSON]
 ```
 
 Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
@@ -442,15 +442,22 @@ event, and until when:
 ```
 run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout" (2 people): 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
 run 0c2e81f4a9d3 (action pay, since 2026-11-09T14:50:12) waits at approval "release" (an agent holding classifier, then a person holding reviewer): classifier scout approved; reviewer open, until 2026-11-09T15:50:12
+
+Yours to decide:
+  run 0c2e81f4a9d3, "release": reviewer (slot 1)
 ```
 
 Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
 reason optional, or `--decline`, which needs one. You take the open step you may fill: of your
-kind, bound to its role where the flow is. It says what the decision did: the step it took, what
-the approval still waits for, approved by whom, or declined; the run goes on with the decision
-once it is made. Each decides one step, once, and not of a run they started; one decline ends
-it. A person decides a person's step, signed in, as you are on your own machine. An API token
-for a service (`HOLON_TOKEN`) is refused, and `holon mcp`'s agent decides no person's step.
+kind, bound to its role where the flow is; when you may fill several, `--slot N` names one (from
+0, as the steps are written, and as *Yours to decide* numbers them). `--note` sends any JSON with
+the decision, up to 16 KiB, which the run is given with it. It says what the decision did: the
+step it took, what the approval still waits for, approved by whom, or declined; the run goes on
+with the decision once it is made. Each decides one step, once, and not of a run they started;
+one decline ends it, and the host's [approval settings](#holon-access) may keep out whoever
+deployed the version, and agents. A person decides a person's step, signed in, as you are on
+your own machine. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
+(or `holon mcp`'s `decide`), never a person's; a service's token is refused.
 
 ### `holon wait`
 

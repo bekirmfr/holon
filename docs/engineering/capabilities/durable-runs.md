@@ -120,8 +120,11 @@ replay read, hold who decided. Each decision is in the activity log too (`approv
 People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
 --approve|--decline --reason …` (decidecmd.rs), signed in as the OS user's local admin; `holon
 decide <slug>` and `holon deployments <slug>` list what runs wait at, with who has approved so far
-(`decidecmd::waiting_lines`). `holon mcp`'s `runs` adds the same lines for an agent to tell the user;
-no tool decides, and the access layer refuses an agent's POST before the route.
+(`decidecmd::waiting_lines`), and the steps the caller may take (`yours_lines`). `holon mcp`'s `runs`
+adds the same lines for an agent to tell the user, and its `decide` takes a step written for an
+agent through the same route, as the agent; for a person's step it posts nothing, and says who
+decides it and where. An agent bound to no role that holds `run.decide` there is refused before
+the route.
 
 ### Expire
 

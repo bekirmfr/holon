@@ -1,8 +1,8 @@
 //! `holon decide`: someone signed in at a terminal approves, or declines with a reason, a step
 //! of an approval a run waits at (`await approval(…)`, durable.rs's decide route); with a slug
 //! alone, the approvals its runs wait at. And how a waiting run reads, a line a point, for it and
-//! `holon mcp`'s `runs`. A person decides a person's step and an agent an agent's; the server
-//! refuses an API token.
+//! `holon mcp`'s `runs`. A person decides a person's step and an agent an agent's (with its
+//! token, or `holon mcp`'s `decide`); the server refuses a service's token.
 
 use serde_json::{json, Value};
 
@@ -15,28 +15,34 @@ const USAGE: &str = "usage: holon decide <slug> [<run> <name> --approve|--declin
   the open step you may fill, of your kind (a person's or an agent's) and holding its role where
   the flow is. A step of several people waits until that many approve it; one decline ends the
   approval. Each decides one step, once, and not of a run they started. With the slug alone, it
-  lists what the deployment's runs wait at, and who has approved each step so far.
+  lists what the deployment's runs wait at, who has approved each step so far, and which steps
+  are yours to take.
 
   <run>                    the run, by its id or the first characters of it, as listed
   <name>                   the approval's name, as the flow writes it
   --approve                approve it (a reason is optional)
   --decline                decline it (a reason is needed)
   --reason TEXT            why, kept with the run
+  --slot N                 the step, from 0 as the steps are written: when you may take several
+  --note JSON              any JSON, given to the run with the decision (up to 16 KiB)
   --json                   print the server's answer as JSON
   --server PORT|URL        which holon server to ask (see below)
 
-  A person decides a person's step, an agent an agent's; an API token is refused.
+  A person decides a person's step, an agent an agent's, with its token in HOLON_TOKEN; a
+  service's token is refused.
 
 examples:
   holon decide payouts
   holon decide payouts 7b379ca1dd65 payout --approve
+  holon decide payouts 7b379ca1dd65 payout --approve --slot 2
   holon decide payouts 7b379ca1dd65 payout --decline --reason \"not this vendor\"
+  HOLON_TOKEN=… holon decide payouts 7b379ca1dd65 payout --approve --note '{\"label\": \"invoice\"}'
 ";
 
 pub(crate) fn run(args: &[String]) -> i32 {
     const WHO: &str = "holon decide";
     let usage = format!("{USAGE}\n{SIGN_IN}");
-    let args = match cmdline::parse(WHO, &usage, args, &["--reason"], &["--approve", "--decline", "--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--reason", "--slot", "--note"], &["--approve", "--decline", "--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -65,6 +71,11 @@ pub(crate) fn run(args: &[String]) -> i32 {
         for line in lines {
             println!("{line}");
         }
+        let yours = yours_lines(&runs);
+        if !yours.is_empty() {
+            println!("\nYours to decide:");
+            yours.iter().for_each(|l| println!("  {l}"));
+        }
         return 0;
     };
     let approve = match (args.flag("--approve"), args.flag("--decline")) {
@@ -80,6 +91,22 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{WHO}: a decline says why: give --reason");
         return 2;
     }
+    let slot = match args.value("--slot").map(str::parse::<u8>) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => {
+            eprintln!("{WHO}: --slot is a step's number, from 0 as the steps are written, not {:?}", args.value("--slot").unwrap_or_default());
+            return 2;
+        }
+    };
+    let note = match args.value("--note").map(serde_json::from_str::<Value>) {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => {
+            eprintln!("{WHO}: --note is JSON ('{{\"label\": \"invoice\"}}', '\"a text\"'): {e}");
+            return 2;
+        }
+    };
     let run_id = match pick(&runs, run) {
         Ok(id) => id,
         Err(why) => {
@@ -87,7 +114,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let body = json!({ "name": name, "approve": approve, "reason": reason });
+    let body = json!({ "name": name, "approve": approve, "reason": reason, "slot": slot, "note": note });
     let d = match cmdline::json(WHO, &args, "POST", &format!("/deployments/{}/runs/{}/decide", seg(slug), seg(&run_id)), Some(&body)) {
         Ok(v) => v,
         Err(code) => return code,
@@ -104,7 +131,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
 }
 
 /// The run of `runs` whose id is, or starts with, `given`; or why there is none to decide.
-fn pick(runs: &[Value], given: &str) -> Result<String, String> {
+pub(crate) fn pick(runs: &[Value], given: &str) -> Result<String, String> {
     let ids: Vec<&str> = runs.iter().filter_map(|r| r["run_id"].as_str()).filter(|id| id.starts_with(given)).collect();
     match ids.as_slice() {
         [id] => Ok(id.to_string()),
@@ -115,7 +142,7 @@ fn pick(runs: &[Value], given: &str) -> Result<String, String> {
 
 /// What a decision did, from the route's answer: the step it took, and what the approval waits
 /// for now, or that it is decided.
-fn decided_said(slug: &str, run_id: &str, d: &Value) -> String {
+pub(crate) fn decided_said(slug: &str, run_id: &str, d: &Value) -> String {
     let name = d["name"].as_str().unwrap_or("?");
     let slots = d["slots"].as_array().cloned().unwrap_or_default();
     let run = format!("run {} of {slug}", short(run_id));
@@ -156,6 +183,14 @@ fn step_name(s: &Value) -> String {
     s["role"].as_str().map_or_else(|| format!("slot {}", s["slot"]), String::from)
 }
 
+/// A step as `--slot` takes it: its role and number, or its number.
+pub(crate) fn step_numbered(s: &Value) -> String {
+    match s["role"].as_str() {
+        Some(role) => format!("{role} (slot {})", s["slot"]),
+        None => format!("slot {}", s["slot"]),
+    }
+}
+
 /// `a`, `a and b`, `a, b and c`.
 fn and_list(items: &[String]) -> String {
     match items {
@@ -166,7 +201,7 @@ fn and_list(items: &[String]) -> String {
 }
 
 /// A run's id as it is listed: its first 12 characters, enough to pick it.
-fn short(run_id: &str) -> &str {
+pub(crate) fn short(run_id: &str) -> &str {
     &run_id[..run_id.len().min(12)]
 }
 
@@ -187,6 +222,23 @@ pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
                 Some(steps) => format!("approval {name:?} ({}): {}", w["said"].as_str().unwrap_or(steps), steps_said(w)),
             };
             lines.push(format!("run {id} ({what}, since {since}) waits at {point}, until {until}"));
+        }
+    }
+    lines
+}
+
+/// The steps whoever asked may take now, a line a point (its `yours`): the run, the approval, and
+/// each step with the number `--slot` takes.
+pub(crate) fn yours_lines(runs: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for r in runs {
+        let id = short(r["run_id"].as_str().unwrap_or("?"));
+        for w in r["waiting"].as_array().into_iter().flatten() {
+            let slots = w["slots"].as_array().cloned().unwrap_or_default();
+            let yours: Vec<String> = w["yours"].as_array().into_iter().flatten().filter_map(|n| slots.get(n.as_u64()? as usize)).map(step_numbered).collect();
+            if !yours.is_empty() {
+                lines.push(format!("run {id}, {:?}: {}", w["name"].as_str().unwrap_or("?"), yours.join(" or ")));
+            }
         }
     }
     lines
@@ -261,6 +313,18 @@ mod tests {
                 "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at event \"paid\", until 1970-01-01T00:01:00",
             ]
         );
+    }
+
+    /// The steps whoever asked may take, a point a line, as `--slot` numbers them; none, no line.
+    #[test]
+    fn the_steps_yours_to_take_are_listed_with_their_numbers() {
+        let slots = json!([{ "slot": 0, "role": "classifier", "kind": "agent" }, { "slot": 1, "role": "reviewer", "kind": "person" }, { "slot": 2, "kind": "person" }]);
+        let runs = [
+            json!({ "run_id": "7b379ca1dd65e735", "waiting": [{ "name": "payout", "slots": slots, "yours": [1, 2] }, { "name": "paid" }] }),
+            json!({ "run_id": "0c2e81f4a9d3aa", "waiting": [{ "name": "payout", "slots": slots, "yours": [0] }] }),
+            json!({ "run_id": "ffff00001111", "waiting": [{ "name": "payout", "slots": slots, "yours": [] }] }),
+        ];
+        assert_eq!(yours_lines(&runs), ["run 7b379ca1dd65, \"payout\": reviewer (slot 1) or slot 2", "run 0c2e81f4a9d3, \"payout\": classifier (slot 0)"]);
     }
 
     #[test]
