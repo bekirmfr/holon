@@ -11075,6 +11075,84 @@ allow_private_addresses = true").unwrap());
     assert_eq!(again, both);
 }
 
+/// A run's sends are held to the grant and the secrets on every path that sends them: a table of
+/// each path (a run that finishes sends what it performed, checked as it commits; a run that
+/// parks sends what it settled before it waits, `progress`, by a second copy of the rule in
+/// `firing.rs`) by each pack (one the grant covers carrying nothing of a secret, the secret
+/// itself, a value computed from it, a send to a channel the grant has lost under the running
+/// deployment). On each path only the first goes out; the rest aren't sent, kept, or logged as
+/// sent, and the secret's value is nowhere in the log.
+/// - Guards: security.md §2.4 (the grant is the boundary at run time) and §2.6 (a secret or what
+///   is computed from it is never stored or sent); the test-suite review's classes 2 and 4b.
+/// - Why: the rule is written twice, and the parking copy had no test sending it anything it
+///   must refuse.
+/// - If it fails: a credential goes out to a channel's subscribers, or a send the grant no longer
+///   allows goes out, as a run parks.
+/// Mutations it was checked against: the parking copy without its secret checks, without its
+/// grant check; the finishing path without its literal-secret check.
+#[test]
+fn a_runs_sends_are_held_to_the_grant_and_the_secrets_whether_it_finishes_or_parks() {
+    let rows = ["clean", "raw", "derived", "narrowed"];
+    let sends = r#"clean.send({ item: order.item })
+  raw.send({ key: api_key })
+  derived.send({ t: base64(api_key) })
+  narrowed.send({ item: order.item })"#;
+    let head = |name: &str, port: u16| {
+        format!(
+            "import {{ action, base64, event, flow, route }} from \"holon\"\nimport api_key from \"secret:api_key\"\n{}\n\nflow(\"{name}\", {{ port: {port} }})\n",
+            rows.map(|r| format!("import {r} from \"channel:{r}\"")).join("\n")
+        )
+    };
+    let paths = [
+        ("finishes", format!("{}\nroute.post(\"/go\", (req) => {{\n  const order = req.json\n  {sends}\n  return \"sent\"\n}})\n", head("finishes", 18190))),
+        (
+            "parks",
+            format!(
+                "{}\nroute.post(\"/go\", (req) => {{\n  const started = payment(req.json)\n  return `/paid/${{started.waiting.paid}}`\n}})\n\nexport const payment = action(async (order) => {{\n  {sends}\n  const paid = await event(\"paid\", {{ expires: \"1d\" }})\n  clean.send({{ item: order.item, via: paid.method }})\n}})\n\nroute.get(\"/paid/:token\", () => \"thanks\", {{ resumes: \"paid\" }})\n",
+                head("parks", 18191)
+            ),
+        ),
+    ];
+    let value = "sk_live_sends_secret_value";
+    for (path, text) in &paths {
+        let state = claims_state("");
+        let slug = deploy_text(&state, text, "x");
+        let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        {
+            // The grant loses one channel under the running deployment, as a change of grant would.
+            let mut table = state.deployments.lock().unwrap();
+            let dep = table.get_mut(&slug).unwrap();
+            let mut narrowed = dep.grant.clone();
+            assert!(narrowed.items.remove("ChannelSend(\"narrowed\")"), "{path}: {:?}", narrowed.items);
+            dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
+        }
+        let (status, body, _) = data_call(&state, &slug, "POST", "/go", r#"{"item":"book"}"#);
+        assert_eq!(status, 200, "{path}: {body}");
+        assert!(body.contains(if *path == "parks" { "/paid/" } else { "sent" }), "{path}: {body}");
+
+        let kept: Vec<(&str, Vec<String>)> = {
+            let table = state.deployments.lock().unwrap();
+            rows.iter().map(|r| (*r, table[&slug].channels.kept(r, true).iter().map(|p| p.json.clone()).collect())).collect()
+        };
+        for (row, packs) in &kept {
+            let expected: &[&str] = if *row == "clean" { &[r#"{"item":"book"}"#] } else { &[] };
+            assert_eq!(packs, expected, "{path}, {row}");
+        }
+        // What every entry says was sent, as it finished or as it parked: the clean pack, once.
+        let entries = log_entries(&state, &slug);
+        let sent: Vec<String> = entries
+            .iter()
+            .flat_map(|e| ["performed", "progress"].map(|f| e[f].as_array().cloned().unwrap_or_default()))
+            .flatten()
+            .map(|p| p["capability"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(sent, [r#"ChannelSend("clean")"#], "{path}: {entries:?}");
+        let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+        assert!(!log.contains(value) && !log.contains("c2tfbGl2ZV9zZW5kc19zZWNyZXRfdmFsdWU"), "{path}: the secret, or its base64, in the log: {log}");
+    }
+}
+
 /// A streamed reply through a real socket (`docs/L4s/channels-L4.md` §4): the caller gets the
 /// upstream's first piece while the upstream is still answering (it sends the second only once
 /// the caller has the first), with its content type; the flow still gets the whole answer, which

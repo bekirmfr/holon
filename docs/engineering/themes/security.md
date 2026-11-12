@@ -399,7 +399,10 @@ What is not defended, or only partly:
   value, their folders, one made above them, a file readable by others written again `0o600`),
   `the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt`.
 - **Grants**: `deploy_asks_for_what_policy_doesnt_grant_and_only_once`,
-  `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`.
+  `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`,
+  `a_runs_sends_are_held_to_the_grant_and_the_secrets_whether_it_finishes_or_parks` (a table: a
+  run that finishes and one that parks, each sending a clean pack, the secret, a value computed
+  from it and a send the grant has lost; only the clean one goes out on either path).
 - **Outbound**: `every_rule_is_enforced_at_perform_time` (an ungranted host, plain HTTP, a private
   address, five headers the host sets, credentials in a URL),
   `a_redirect_to_another_host_leaves_the_credentials_behind`, `private_addresses_are_recognised`.
@@ -455,8 +458,6 @@ What is not defended, or only partly:
 
 Gaps, found by grounding every claim above in a test (2026-11-12):
 
-- a parking run's settled sends go through a second copy of the secret and grant filter
-  (`firing.rs`), and no test sends it a secret or an ungranted send;
 - a secret, a value derived from one or an answered token written to a database, a file, mail or
   a queue (state, collections and channels are held);
 - sessions and invites past their time;
