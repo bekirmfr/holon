@@ -564,9 +564,10 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // The token that delivers an event to the waiting point named `await` (a callback URL's
         // part, say). The same token for the whole run, however often it is evaluated.
         "resume_token" => prim(vec![], vec![Param::frozen("await", "event")], Text),
-        // A waiting point people decide: `people` different people approve (1 to 5), or one
-        // declines. Its value is the decision ({approved, by, …}); it has no token.
-        "approval" => prim(vec![], vec![Param::frozen("name", "approval"), Param::frozen("expires", "604800"), Param::frozen("people", "1")], Type::Record),
+        // A waiting point people decide: as its steps say (`person*2`: 2 different people, the
+        // canonical text of `approval::Steps`), or one declines. Its value is the decision
+        // ({approved, by, …}); it has no token.
+        "approval" => prim(vec![], vec![Param::frozen("name", "approval"), Param::frozen("expires", "604800"), Param::frozen("steps", "person")], Type::Record),
 
         // ── state cell ── `"key"` (frozen) names which slot this leaf touches — see the
         // keyed-state-capability L4. `capabilities_of` now fails closed without one, the

@@ -721,6 +721,9 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   const d = await approval("payout", { people: 2 })   in an action: park the run until 2
                                            different people approve it in Holon (or one
                                            declines): d is {approved, by}; no route resumes it
+  approval("payout", { steps: [{ role: "reviewer" }, { role: "approver" }] })   each step in
+                                           turn, by those holding its role (order: "any" for
+                                           any order; kind: "agent" for an agent's step)
   ops.send({ to, subject, text })          mails through the mail ops an admin bound (cc, html
                                            and attachments too), once the run is over: quoted
                                            recipients are granted by name, computed ones within

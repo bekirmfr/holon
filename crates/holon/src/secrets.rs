@@ -1116,12 +1116,21 @@ impl Redactor {
         let mut escaped = false;
         e.values_mut(&mut |v: &mut SValue| escaped |= self.logged_svalue(v));
         for read in &mut e.reads {
-            // A part of a file is kept as read, proved by its hashes: one holding a secret isn't
-            // kept at all (a mark would no longer prove), so verify asks for the file instead.
-            if let Some(range) = read.file.as_mut().and_then(|f| f.range.as_mut())
-                && range.text.as_deref().is_some_and(|t| self.holds(t))
+            // A part of a file is kept as read, proved by its hashes and the bytes around it to
+            // whole chunks: one whose text or bytes around hold a secret isn't kept at all (a mark
+            // would no longer prove), so verify asks for the file instead.
+            if let Some(file) = read.file.as_mut()
+                && let Some(range) = file.range.as_mut()
             {
-                range.text = None;
+                let around = |hex: &str| crate::ranges::unhex(hex).unwrap_or_default();
+                let bytes = [around(&range.before), range.text.clone().unwrap_or_default().into_bytes(), around(&range.after)].concat();
+                if bytes_hold(&bytes, &|s: &str| self.holds(s)) {
+                    range.text = None;
+                    range.before.clear();
+                    range.after.clear();
+                    range.proof.clear();
+                    file.blob = None;
+                }
             }
         }
         for s in e.texts_mut() {
@@ -1150,7 +1159,11 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
                 fields.sort_by(|a, b| a.0.cmp(&b.0));
             }
         }
-        SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
+        SValue::Effect { sink, payload } => {
+            f(sink);
+            texts_mut(payload, f)
+        }
+        SValue::Sum { payload, .. } => texts_mut(payload, f),
         SValue::Bytes(b) => bytes_texts_mut(b, f),
         SValue::Number(_) | SValue::Boolean(_) => {}
     }
@@ -1619,5 +1632,155 @@ mod tests {
         let mut e = LogEntry { request: Some(SValue::Text("sk_123456".into())), ..LogEntry::default() };
         r.entry(&mut e);
         assert!(!e.escaped, "nothing to escape: the line is as it was");
+    }
+
+    /// Guards: every text a log entry holds goes through the redactor ([`Redactor::entry`]), or is
+    /// named below as one that holds no run data: an id or a hash the host makes, a word it
+    /// writes, a name the flow's text gives.
+    /// Why: what the redactor goes over is a list kept by hand (`LogEntry::values_mut`,
+    /// `texts_mut`), and a field left off it kept what a run had in the log as it was: a node's
+    /// `reason` let `throw new Error("key is " + k)` write the secret `k` into the log, the
+    /// export and `explain`, in the clear.
+    /// If it fails: a field the log writes carries what a run had past the redactor. Walk it in
+    /// `values_mut` or `texts_mut`, or name it here with why it never holds run data. A new
+    /// field of the entry, or of anything in it, doesn't compile here until it is given a value.
+    #[test]
+    fn every_text_a_log_entry_holds_is_redacted_or_named_as_no_run_data() {
+        use crate::recorder::{AnswerTokens, Commit, LoggedClaim, LoggedExchange, LoggedFile, LoggedRange, LoggedRead, LoggedRound, NodeTiming};
+        use crate::wire::PerformedEntry;
+        const S: &str = "sk_sentinel_4242";
+        let vault: Vault = Arc::new(Mutex::new(Resolved {
+            current: BTreeMap::from([("key".to_string(), Zeroizing::new(S.to_string()))]),
+            ..Resolved::default()
+        }));
+        let t = || S.to_string();
+        // A value holding it everywhere a value can: a record's key and field, a list, bytes, an
+        // effect's sink and payload, a sum's payload.
+        let v = || {
+            SValue::Record(vec![(
+                t(),
+                SValue::List(vec![
+                    SValue::Text(t()),
+                    SValue::Bytes(t().into_bytes()),
+                    SValue::Effect { sink: t(), payload: Box::new(SValue::Text(t())) },
+                    SValue::Sum { arm: 0, payload: Box::new(SValue::Text(t())) },
+                ]),
+            )])
+        };
+        let performed = || PerformedEntry { capability: t(), payload: v() };
+        // A read of part of a file, its text `text` and the file's bytes around it `near`: one
+        // whose text or bytes around hold it isn't kept (verify asks for the file), the hashes of
+        // one whose don't are.
+        let read = |text: &str, near: &str| LoggedRead {
+            path: vec![0],
+            request: v(),
+            answer: Some(v()),
+            file: Some(LoggedFile {
+                hash: t(),
+                size: 1,
+                blob: Some(t()),
+                range: Some(LoggedRange {
+                    start: 0,
+                    end: 1,
+                    text: Some(text.to_string()),
+                    before: crate::ranges::hex(near.as_bytes()),
+                    after: crate::ranges::hex(near.as_bytes()),
+                    proof: vec![t()],
+                }),
+            }),
+        };
+        let mut e = LogEntry {
+            seq: 1,
+            prev: t(),
+            lost_since: Some(1),
+            session: 1,
+            at_ms: 1,
+            duration_ms: 1.0,
+            kind: t(),
+            route: Some(t()),
+            method: Some(t()),
+            url: Some(t()),
+            status: Some(200),
+            request: Some(v()),
+            sourced: vec![(t(), v())],
+            state_before: BTreeMap::from([(t(), v())]),
+            state_after: Some(t()),
+            commit: Some(Commit { cell: t(), after: Some(1), n: Some(2) }),
+            outputs: vec![Some(v())],
+            performed: vec![performed()],
+            response_body: Some(t()),
+            error: Some(t()),
+            timeline: vec![NodeTiming { path: vec![0], start_us: 0.0, end_us: 1.0, round: 0, outputs: Some(vec![Some(v())]), reason: Some(t()) }],
+            rounds: vec![LoggedRound { exchanges: vec![LoggedExchange { path: vec![0], request: v(), response: v(), start_us: 0.0, end_us: 1.0 }] }],
+            run_id: t(),
+            unit: t(),
+            nonce: t(),
+            grant: t(),
+            parked: vec![t()],
+            progress: vec![performed()],
+            events: BTreeMap::from([(t(), v())]),
+            reads: vec![read(S, "plain"), read("plain", S), read("plain", "plain")],
+            retries: 1,
+            claims: vec![LoggedClaim { key: t(), waited_ms: 1.0, overtaken: false, held_ms: Some(1.0) }],
+            by: Some(t()),
+            secrets: BTreeMap::from([(t(), t())]),
+            escaped: false,
+            // Never written with the line: each goes its own way, redacted there (firing.rs's
+            // `push_run`, mails.rs, queues.rs).
+            answered: AnswerTokens(vec![(t(), t())]),
+            mails: vec![(t(), holon_core::Value::Text(t()))],
+            queued: vec![(t(), holon_core::Value::Text(t()))],
+            lines: vec![(t(), holon_core::Value::Text(t()))],
+        };
+        Redactor::of(&vault).entry(&mut e);
+        // A part of a file whose text or bytes around hold it isn't kept at all, so verify asks
+        // for the file.
+        for read in &e.reads[..2] {
+            let kept = read.file.as_ref().unwrap();
+            assert!(kept.blob.is_none(), "{kept:?}");
+            assert_eq!(kept.range.as_ref().map(|r| (&r.text, r.before.as_str(), r.after.as_str(), r.proof.len())), Some((&None, "", "", 0)), "{kept:?}");
+        }
+        let line = serde_json::to_value(&e).unwrap();
+
+        // Where it is still there, as text, hex or base64: each place by its fields, `[]` for any
+        // item and `{}` for any key.
+        let forms = [S.to_string(), crate::ranges::hex(S.as_bytes()), holon_core::bytes_text(S.as_bytes(), "base64").unwrap()];
+        fn left(v: &serde_json::Value, at: &str, forms: &[String], out: &mut BTreeSet<String>) {
+            let holds = |s: &str| forms.iter().any(|f| s.contains(f.as_str()));
+            match v {
+                serde_json::Value::String(s) if holds(s) => {
+                    out.insert(at.to_string());
+                }
+                serde_json::Value::Array(xs) => xs.iter().for_each(|x| left(x, &format!("{at}[]"), forms, out)),
+                serde_json::Value::Object(fields) => {
+                    for (k, x) in fields {
+                        let at = if holds(k) { format!("{at}.{{}}") } else { format!("{at}.{k}") };
+                        if holds(k) {
+                            out.insert(at.clone());
+                        }
+                        left(x, &at, forms, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = BTreeSet::new();
+        left(&line, "", &forms, &mut found);
+        let named: BTreeSet<String> = [
+            // The chain, the run's id and what it ran under: hashes and ids the host makes.
+            ".prev", ".run_id", ".unit", ".nonce", ".grant", ".state_after", ".commit.cell",
+            // Words the host writes and names the flow's text gives: the kind of run, the route as
+            // the flow names it, each capability, waiting point and state.
+            ".kind", ".route", ".sourced[][]", ".performed[].capability", ".progress[].capability", ".parked[]", ".state_before.{}", ".events.{}",
+            // Who sent it (a principal's name), and the secrets it was given, by name, version and
+            // fingerprint.
+            ".by", ".secrets.{}",
+            // A file read's hashes: the file's, its text's in the blob store, the proof's.
+            ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(found, named, "left in the line: {line}");
     }
 }

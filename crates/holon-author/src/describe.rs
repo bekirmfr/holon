@@ -62,9 +62,8 @@ pub fn describe_item(item: &str) -> String {
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),
-        ("Approval", |a| match a.split_once('/') {
-            Some((name, "1")) => format!("wait for a person's approval \"{name}\" and continue later"),
-            Some((name, people)) => format!("wait for {people} people's approval \"{name}\" and continue later"),
+        ("Approval", |a| match a.split_once('/').and_then(|(name, steps)| Some((name, holon_core::approval::Steps::parse(steps)?))) {
+            Some((name, steps)) => format!("wait for approval \"{name}\" by {}, and continue later", steps.said()),
             None => format!("wait for an approval \"{a}\""),
         }),
         ("Limit", |a| format!("raise {}", a.replacen('=', " to ", 1))),
@@ -232,6 +231,12 @@ mod tests {
         assert_eq!(describe_item(r#"QueueMessage("payouts")"#), r#"run on each message from the queue "payouts", and delete it once its run is over"#);
         assert_eq!(describe_item(r#"WebSocket("/room/:name")"#), "hold WebSocket connections on /room/:name, and run on each message");
         assert_eq!(describe_item(r#"QueueSend("retries")"#), r#"send messages to the queue "retries""#);
+        assert_eq!(describe_item(r#"Approval("payout/person*2")"#), r#"wait for approval "payout" by 2 people, and continue later"#);
+        assert_eq!(describe_item(r#"Approval("payout/person")"#), r#"wait for approval "payout" by a person, and continue later"#);
+        assert_eq!(
+            describe_item(r#"Approval("payout/person:a+person:b>person:c")"#),
+            r#"wait for approval "payout" by a person holding a and a person holding b, in any order, then a person holding c, and continue later"#
+        );
         // A module's budgets read as what the code may consume, not as a limit raised.
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");

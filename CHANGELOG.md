@@ -21,6 +21,116 @@
   the next card's number was recorded. In the editor, a key added to the list and removed with its
   × rewrote the `flow(...)` line, one typed in the text joined the list, and `NUMBER` beside
   `number` was refused as listed already.
+- **The run file is the account that set the server up.** Commands on the server's machine
+  (`holon decide`, `holon deploy`…) sign in through its run file as the person who set the server
+  up, holding what is bound to them and admin on the host, so that person is one principal
+  whichever way they sign in: they take a step bound to them with `holon decide`, count once in
+  `people: 2`, and a run they start or a version they deploy from the command line is theirs,
+  which the starter rule and `exclude_deployer` refuse them in the editor too. The access document
+  keeps the tie (`local`), set at setup, which `holon access local --as NAME` (or
+  `PUT /access/local`, `people.assign`) moves to another person, as a version; `holon access local`
+  (`GET /access/local`) says it and whether it holds now, and `holon access show` prints it. Removing that account clears it; while it is disabled, the run file is the OS user's
+  admin, `local:<user>`, and decides no approval. Each activity entry made through the run file
+  says `via: "local:<user>"`, `/auth/me` answers `local`, and an agent the OS user made before
+  setup (`holon mcp`'s) is the account's. A decision's `binding` is always an id: `"local"` goes.
+  The `approved-payout` sample's approver is you, approving with `holon decide`.
+- **Each decision keeps what let it.** A decision on an approval is kept, and given to the run,
+  with `binding`, the id of the binding its decider took the step through (the step's role, or
+  for a step with none what holds `run.decide` there), and `access`, the version of the access
+  document it was read in. So the
+  resumed part's log entry, the run's export and `holon verify` carry them, for an auditor to
+  check offline against `holon access show N`. `holon.d.ts` types them on `Decided`. The
+  `approved-payout` sample pays in three steps: an agent bound to `classifier` on the `payments`
+  tag classifies the payout with a note, sent with it, then a person bound to `reviewer`, then one
+  bound to `approver`. `holon roles --help` and the docs say the fixed rule as it stands (an agent
+  takes only a step written for an agent), and the VS Code sidebar says a waiting approval's steps
+  taken, which it had stopped saying when `people` left the listing.
+- **An agent decides its step.** `holon mcp` has a `decide` tool: an agent approves, or declines
+  with a reason, a step of an approval written for an agent, bound to its role where the flow is,
+  with a `note` the run is given. For a person's step it decides nothing, and says who decides it
+  and where. `runs` and `holon decide <slug>` list the steps yours to take, and `holon decide`
+  takes `--slot N` and `--note JSON`, with an agent's token too. A caller bound to no role that
+  decides there is told so ("no role claude holds on "payouts" holds run.decide").
+- **The host's approval settings.** The access document keeps `approvals: { exclude_deployer,
+  agents }`, `false` and `true` by default, set with `PUT /access/approvals` (`people.assign`) or
+  `holon access approvals --exclude-deployer on|off --agents on|off --why …`, each change a
+  version with who and why. With `exclude_deployer`, whoever deployed the version a run is on
+  decides none of its approvals; with `agents` off, no agent decides one, a run already waiting
+  included, and a deploy (and its preview, `refused`) whose approval has a step for an agent is
+  refused. `holon access approvals` alone shows them, `holon access show` too, and a waiting
+  run's `yours` follows them.
+- **The server decides an approval by its steps.** Each step opens once every stage before it is
+  filled, and takes a principal of its kind bound to its role where the approval is (on the host,
+  the flow or the point; an admin holding everything doesn't hold `reviewer`); each principal
+  decides one step, once, and never one of a run they started; one decline ends it. A decision
+  names its step (`slot`), or takes the one open step its decider may fill: none is 403 saying
+  what each open step needs, several is 409 asking which. It may carry a `note`, any JSON up to
+  16 KiB, given to the run with it. An agent decides an agent's step through a role that allows
+  `run.decide`. A deploy with steps is no longer refused. The decide route answers
+  `{name, slot, slots, outcome}` and a waiting run's point lists `steps`, `said`, `slots` (each
+  step: its role, kind, people, who approved it, whether it is open), `decisions` and `yours`,
+  the open steps whoever asks may take, in place of `people` and `approved_by`. `holon decide`,
+  the `runs` tool and the editor's Runs waiting say each step as it stands; the editor offers the
+  steps that are yours, named when there are several, and says "you approved as reviewer".
+- **An approval's permission names its steps.** The `approval` leaf keeps who decides it as one
+  canonical text, its `steps` param (`person*2`: two people), in place of `people`, and its
+  permission names them: `Approval("payout/person*2")`, which was `Approval("payout/2")`, so a
+  deployment granted the old item asks for the new one. The language is unchanged:
+  `{ people: 2 }` lowers to `person*2`, and prints back as it was written. The review says
+  "approved by 2 people", the permission "wait for approval "payout" by 2 people, and continue
+  later", and a waiting run's point lists its `steps`. This host decides an approval by people
+  alone for now, and a deploy refuses any other steps, which only a hand-edited canvas can write
+  so far. Approvals in steps are `docs/L4s/approval-steps-plan.md`. Run live: approved-payout was
+  reviewed and deployed with `Approval("payout/person*2")`, and its payout was decided by two people.
+- **An approval in steps, in the language.** `await approval("payout", { steps: [{ role:
+  "classifier", kind: "agent" }, { role: "reviewer" }, { role: "approver", people: 2 }] })` names
+  who takes each step by the role they hold where the approval is, each in turn; `order: "any"`
+  takes them in any order, and a list inside `steps` is a stage taken in any order. A step with
+  no role is anyone holding `run.decide`, a person; an agent's step names its role; a service
+  never takes one; up to 5 steps. They lower to the canonical text the permission names,
+  `Approval("payout/agent:classifier>person:reviewer>person:approver*2")`, so a version that
+  changes them asks anew, and `holon fmt` writes one form for each. `holon.d.ts` types them
+  (`ApprovalOptions`, `Step`), the editor's hover says each option, and a role an admin defines
+  is held to the same name rule (letters, digits, `-` and `_`, up to 64), so every role can be
+  named in one. This host doesn't decide one yet: a deploy with steps is refused, saying so.
+  Run live: a flow in steps checked, and left as written by `holon fmt`; a one-line
+  `order: "any"` written over lines; a service's step refused; the steps flow's review and deploy
+  refused, saying why; the people form deployed; a role named `ops.lead` refused.
+- **A run is given every decision on its approval.** The decision an approval delivers has
+  `decisions` in place of `approvals`: every decision taken, a decline included, in the order they
+  came, each `{slot, who, kind, role, at, approved, reason}`, the step it took (0, and no role,
+  for `people`), who took it and as what. `by`, `declined_by` and `reason` stay. A waiting run's
+  point lists the same records (`decisions`, which was `approved`), and the editor, `holon decide`
+  and the `runs` tool count its approvals from them. `holon.d.ts` types it (`Decision.decisions`,
+  `Decided`). Run live: approved-payout deployed; a payout's waiting point listed ada's approval
+  with its slot and kind; approved by ada and bob, it paid, and its run was given both decisions,
+  each with its slot and kind; a second, declined by bob with a reason, was given the decline
+  among its decisions, and paid nothing.
+- **What a run throws with a secret in it no longer reaches the log.** Why a node gave nothing (a
+  `throw`'s message, a module's error) was the one text of a log entry the redactor never went
+  over: `throw new Error("key is " + k)` wrote the secret into the log and the export in the
+  clear, and `explain` printed it. Now it is redacted with the rest of the entry, and withheld
+  (`‹withheld: computed from a secret›`) where the node computes with a secret, as its outputs
+  are. So are a request's method, the keys a run claimed and an effect's sink, and the bytes of a
+  file kept around a part of it a run read: when they hold a secret, the part isn't kept, and
+  `holon verify` asks for the file.
+- **A true or false computed from a secret is no longer clean.** A Boolean was clean whatever
+  computed it, so `route.get("/b", req => k.startsWith(req.query.p))` answered anyone with no
+  approval asked, and a secret could be read off a character at a time. Now it is derived from the
+  secret, as what a secret chooses is: the value `c ? a : b`, `list[i]` or `rec[k]` gives when
+  `c`, `i` or `k` comes from one. The log withholds it, as anything computed from a secret,
+  answering it asks a person to approve "answer its callers with the secret" before the flow
+  deploys, and a write it chooses is refused as a write of the secret is. The one-way leaves
+  (`sha256`, `hmac_sha256`, `secure_equals`) are still clean: check a key with
+  `secure_equals(given, key)`, not `given === key`.
+- **`holon verify` no longer takes a line that says its run failed as one it can't check.** Any
+  error on an entry made every difference from what its run does again "not run again" (exit 3,
+  INCOMPLETE): a line given an error could change its outputs, what it did or its run id and pass
+  as unchecked, not as changed. Now a failed run's entry may say less than the run does again
+  (a limit stopped it), never other: the same run id, each output it keeps as computed, what it
+  did and sent the start of what it does again, and the status it answered either that or a
+  failure's. One that says other differs (exit 1). A panicked run's entry must say it did
+  nothing, and the state check no longer takes the empty state it records as where it began.
 
 ## 0.1.0-rc.35
 

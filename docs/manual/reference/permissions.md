@@ -37,7 +37,7 @@ the editor show).
 | `QueueSend("q")` | send messages to the queue "q" | `q.send({ data, group })` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
-| `Approval("a/2")` | wait for 2 people's approval "a" and continue later | `await approval("a", { people: 2 })` |
+| `Approval("a/person*2")` | wait for approval "a" by 2 people, and continue later | `await approval("a", { people: 2 })` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes,
 `WebSocket("/path")` for each websocket, `Clock` for an `every`, `FileArrival` for each folder a

@@ -86,6 +86,8 @@ pub mod mail;
 mod pgp;
 
 pub mod primitives;
+/// An approval's steps: who decides it, and in what order (docs/L4s/approval-steps-plan.md).
+pub mod approval;
 /// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).
 pub mod sql;
 /// What a document database leaf's templates say (docs/L4s/databases-L4.md §3, slice 7).

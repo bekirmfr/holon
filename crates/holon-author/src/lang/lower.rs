@@ -2081,7 +2081,7 @@ impl<'a> Lowerer<'a> {
                 self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
-            ExprKind::Await { name, expires, people } => {
+            ExprKind::Await { name, expires, approval } => {
                 if self.socket {
                     return err(e.span, SOCKET_WAITS);
                 }
@@ -2092,9 +2092,9 @@ impl<'a> Lowerer<'a> {
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
                 }
-                match people {
-                    Some(n) => {
-                        params.push(("people".into(), n.to_string()));
+                match approval {
+                    Some(steps) => {
+                        params.push(("steps".into(), steps.text()));
                         self.node("approval", &params, e.span)
                     }
                     None => self.node("await", &params, e.span),
@@ -4615,8 +4615,8 @@ route.post("/hook", async (req) => {
         assert_eq!(s.endpoints.len(), 1);
     }
 
-    /// `await approval(…)` is an `approval` node, how many people it waits for a frozen param (1
-    /// when left out); it waits in an action, never a route, and no route resumes it.
+    /// `await approval(…)` is an `approval` node, who decides it a frozen param, its steps (one
+    /// person when left out); it waits in an action, never a route, and no route resumes it.
     #[test]
     fn an_approval_waits_for_people_in_an_action() {
         let src = |body: &str, route: &str| {
@@ -4627,15 +4627,15 @@ route.post("/hook", async (req) => {
         let node = |body: &str| {
             let doc = compiled(&src(body, "")).doc;
             let n = doc.nodes.iter().find(|n| n.data.name == "approval").expect("an approval").clone();
-            (n.param("name").to_string(), n.param("expires").to_string(), n.param("people").to_string())
+            (n.param("name").to_string(), n.param("expires").to_string(), n.param("steps").to_string())
         };
-        assert_eq!(node("  const d = await approval(\"payout\", { expires: \"1d\", people: 2 })"), ("payout".into(), "86400".into(), "2".into()));
-        assert_eq!(node("  const d = await approval(\"payout\")"), ("payout".into(), "604800".into(), "1".into()));
+        assert_eq!(node("  const d = await approval(\"payout\", { expires: \"1d\", people: 2 })"), ("payout".into(), "86400".into(), "person*2".into()));
+        assert_eq!(node("  const d = await approval(\"payout\")"), ("payout".into(), "604800".into(), "person".into()));
         let refused = |body: &str| ts::compile(&src(body, "")).unwrap_err().message;
         for people in ["0", "6", "1.5", "\"2\""] {
             assert!(refused(&format!("  const d = await approval(\"payout\", {{ people: {people} }})")).starts_with("people is how many different people approve"), "{people}");
         }
-        assert!(refused("  const d = await approval(\"payout\", { who: \"ada\" })").contains("approval's options are expires and people, not \"who\""));
+        assert!(refused("  const d = await approval(\"payout\", { who: \"ada\" })").contains("approval's options are expires, people, steps and order, not \"who\""));
         let event = src("  const d = await event(\"paid\", { people: 2 })", "").replace("approval, flow", "approval, event, flow");
         assert!(ts::compile(&event).unwrap_err().message.contains("event's options are expires, not \"people\""));
         assert!(refused("  const d = approval(\"payout\")").starts_with("an approval is waited for"));
@@ -4651,6 +4651,60 @@ route.post("/hook", async (req) => {
         let d = compiled(&token).doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.unit_settings());
         assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
+    }
+
+    /// **Guards:** an approval's options make the steps the canonical text says, each way of
+    /// writing them (`people`, a flat `steps`, `order: "any"`, stages); and every way that isn't
+    /// steps is refused, in one sentence saying what to write.
+    /// **Why:** the canonical text is the permission a person approves: options read otherwise
+    /// would ask people other than the ones written.
+    #[test]
+    fn an_approval_s_options_are_its_steps_or_say_why_not() {
+        let src = |options: &str| {
+            format!(
+                "import {{ action, approval, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n\nexport const pay = action(async (order) => {{\n  const d = await approval(\"payout\", {options})\n  return d.approved\n}})\n"
+            )
+        };
+        let steps = |options: &str| {
+            let doc = compiled(&src(options)).doc;
+            doc.nodes.iter().find(|n| n.data.name == "approval").expect("an approval").param("steps").to_string()
+        };
+        for (options, canonical) in [
+            ("{}", "person"),
+            ("{ people: 3 }", "person*3"),
+            ("{ steps: [{ people: 2 }] }", "person*2"),
+            ("{ steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"reviewer\" }, { role: \"approver\" }] }", "agent:classifier>person:reviewer>person:approver"),
+            ("{ steps: [{ role: \"reviewer\" }, { role: \"approver\" }], order: \"any\" }", "person:reviewer+person:approver"),
+            ("{ steps: [{ role: \"reviewer\" }, { role: \"approver\" }], order: \"sequence\" }", "person:reviewer>person:approver"),
+            ("{ steps: [[{ role: \"a\" }, { role: \"b\" }], { role: \"c\", people: 2 }] }", "person:a+person:b>person:c*2"),
+            ("{ steps: [{ role: \"x-1\", kind: \"person\" }, {}], expires: \"1d\" }", "person:x-1>person"),
+        ] {
+            assert_eq!(steps(options), canonical, "{options}");
+        }
+        let six = format!("{{ steps: [{}] }}", ["{ role: \"a\" }"; 6].join(", "));
+        let long = format!("{{ steps: [{{ role: \"{}\" }}] }}", "r".repeat(65));
+        for (options, said) in [
+            ("{ people: 2, steps: [{ role: \"approver\" }] }", "people is the short form of one step: write people in the step, { role: \"approver\", people: 2 }"),
+            ("{ order: \"any\" }", "order says how the steps are taken: steps: [{ role: \"a\" }, { role: \"b\" }], order: \"any\""),
+            ("{ steps: [[{ role: \"a\" }, { role: \"b\" }]], order: \"any\" }", "order goes with a flat list of steps: a stage's steps are taken in any order, and the stages in turn"),
+            ("{ steps: [{ role: \"a\" }], order: \"all\" }", "order is \"sequence\" (when left out), each step after the one before, or \"any\": order: \"any\""),
+            ("{ steps: [] }", "an approval has at least one step: steps: [{ role: \"approver\" }]"),
+            ("{ steps: { role: \"a\" } }", "steps is a list of steps: steps: [{ role: \"reviewer\" }, { role: \"approver\" }]"),
+            ("{ steps: [\"approver\"] }", "a step is an object: { role: \"reviewer\" }, { role: \"classifier\", kind: \"agent\" }"),
+            ("{ steps: [[{ role: \"a\" }]] }", "a stage of one step is that step: write { role: \"a\" }, not [{ role: \"a\" }]"),
+            ("{ steps: [[], { role: \"a\" }] }", "a stage has two or more steps, taken in any order: [{ role: \"a\" }, { role: \"b\" }]"),
+            ("{ steps: [[{ role: \"a\" }, [{ role: \"b\" }, { role: \"c\" }]]] }", "a stage is a list of steps, not of stages: steps: [[{ role: \"a\" }, { role: \"b\" }], { role: \"c\" }]"),
+            ("{ steps: [{ kind: \"agent\" }] }", "an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }"),
+            ("{ steps: [{ role: \"ci\", kind: \"service\" }] }", "a step's kind is \"person\" (when left out) or \"agent\": a service never decides an approval"),
+            ("{ steps: [{ role: \"a\", people: 6 }] }", "a step's people is how many different principals take it, a number from 1 to 5: { role: \"approver\", people: 2 }"),
+            ("{ steps: [{ role: \"a b\" }] }", "\"a b\" isn't a role's name: letters, digits, - and _, at most 64"),
+            ("{ steps: [{ role: approver }] }", "a step's role is a name in quotes: { role: \"reviewer\" }"),
+            ("{ steps: [{ role: \"a\", who: \"ada\" }] }", "a step's fields are role, kind and people, not \"who\""),
+            (six.as_str(), "an approval has at most 5 steps, not 6"),
+            (long.as_str(), &format!("\"{}\" isn't a role's name: letters, digits, - and _, at most 64", "r".repeat(65))),
+        ] {
+            assert_eq!(ts::compile(&src(options)).map(|_| ()).unwrap_err().message, said, "{options}");
+        }
     }
 
     /// A route answers and is done: what waits is an action it starts, `pay(x)` without `await`,
