@@ -362,6 +362,26 @@ rounds, requests a second, with the server's CPU a request; no errors:
 - **`hello` and `calc` within noise.** The kept children made one call of a 25-node function ×0.58
   in process (`5f29d1d`); whole requests at this load are bound by the HTTP and the host.
 
+### The step budget (2026-11-12)
+
+A round asks for a step before each node and each application of a `map`'s or `fold`'s function,
+against `max_steps` (B5, [permissions](../../manual/reference/permissions.md)). Inside a function
+the observer is `Asks`, a `dyn Observer`, so each step was a virtual call through it: about 25
+instructions a step, `crunch` ×1.025. `Asks` now takes 256 steps at a time from the round's
+budget (`Observer::take_steps`), counts them down itself and gives back what it didn't use, so the
+count stays exact and the call is made once a batch. Callgrind in WSL as
+[above](#small-values-are-copied-2026-11-07), `0650d3d` against the change; instructions, so
+WSL's slower sync ([below](#limits)) doesn't enter them. Instructions a run:
+
+| Route | before | a call a step | a batch at a time |
+|---|---:|---:|---:|
+| `crunch`, 1,000 items | 25.00 M | 25.63 M (×1.025) | 25.13 M (×1.005) |
+| `hello` | 94.2 K | 93.8 K | 94.5 K (×1.00) |
+
+In time, a release build took 10 to 20 million plain steps a second (a nested `range` loop, three
+steps an item) and about 3 million that each build a record, so the default of 10 million is a
+second or a few of computing.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping

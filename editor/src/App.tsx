@@ -1016,7 +1016,14 @@ function Canvas({
       setProjection((p) => {
         if (!p) return p;
         const values = p.values.map((v, i) => (i === index ? value : v));
-        return { ...p, values, results: ev.eval(p.pre, values) as (WValue | null)[] };
+        let results: (WValue | null)[];
+        try {
+          results = ev.eval(p.pre, values) as (WValue | null)[];
+        } catch {
+          // Past its step budget: nothing comes out, as on the server.
+          results = p.outputs.map(() => null);
+        }
+        return { ...p, values, results };
       });
     },
     [ev],

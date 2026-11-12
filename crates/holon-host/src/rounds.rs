@@ -8,9 +8,11 @@
 //! outputs and effects were computed with answers missing and are discarded.
 //!
 //! The run is bounded by its [`Limits`]: an outbound-request budget (which also bounds the
-//! rounds, since every round after the first needs a request) and a wall-clock budget. Past
-//! either, the run fails and nothing is performed. A single request that breaks a limit does not
-//! fail the run: its node gets an error response and the flow decides.
+//! rounds, since every round after the first needs a request), a wall-clock budget, checked
+//! between rounds, and a budget of steps each round may take (`max_steps`: every node evaluated,
+//! every item a function is applied to, `Observer::step`), which bounds what a round computes
+//! whatever its graph. Past any, the run fails and nothing is performed. A single request that
+//! breaks a limit does not fail the run: its node gets an error response and the flow decides.
 //!
 //! Every exchange (the node, its request, its response, and when) is recorded per round, so a run
 //! can be replayed offline by answering from the record instead of the network.
@@ -24,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use holon_core::{eval_observed, hash_value, Answer, Capability, Hash, Observer, Resolver, Slot, Unit, Value};
+use holon_core::{eval_observed, hash_value, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_STEPS, MAX_STEPS_CEILING};
 
 use crate::{perform_effects, Host, SourcedResolver};
 
@@ -49,6 +51,9 @@ pub struct Limits {
     /// How long a run's commit may wait for the commit locks on the shared resources it read or
     /// writes, which other runs' commits hold for milliseconds.
     pub commit_wait: Duration,
+    /// Steps each round may take (`Observer::step`): counted, so the same round takes the same
+    /// number wherever it runs, and a round past it fails the run however fast the machine.
+    pub max_steps: u64,
 }
 
 impl Limits {
@@ -72,6 +77,7 @@ impl Limits {
             max_redirects: 10,
             claim_wait: Duration::from_secs(10),
             commit_wait: Duration::from_secs(2),
+            max_steps: DEFAULT_MAX_STEPS,
         }
     }
 
@@ -89,6 +95,7 @@ impl Limits {
             max_redirects: 20,
             claim_wait: Duration::from_secs(60),
             commit_wait: Duration::from_secs(30),
+            max_steps: MAX_STEPS_CEILING,
         }
     }
 }
@@ -137,6 +144,8 @@ pub enum RunError {
     Overtaken,
     /// A key it read is held by another run for longer than it may wait.
     Busy { key: String },
+    /// A round took more steps than its limit (`max_steps`).
+    StepBudget { max: u64 },
 }
 
 impl RunError {
@@ -146,9 +155,13 @@ impl RunError {
             RunError::TimeBudget { budget } => format!("the run took longer than {budget:?}"),
             RunError::Overtaken => "what the run read changed before it could call out; it ran again".to_string(),
             RunError::Busy { key } => format!("busy: {key} is held by another run"),
+            RunError::StepBudget { max } => format!("{STEP_BUDGET}{max} steps in one round (max_steps)"),
         }
     }
 }
+
+/// What the error of a run whose round took more steps than its limit starts with.
+pub const STEP_BUDGET: &str = "the run took more than ";
 
 /// What a run produced: its outputs (all absent if it failed), the requests each round made,
 /// why it failed, if it did, and the waiting points it is waiting at, if any. Effects were
@@ -254,9 +267,18 @@ pub fn run_rounds(
     };
     loop {
         observer.round(rounds.len());
-        let mut asking =
-            Asking { inner: &mut *observer, answers: &answers, pending: Vec::new(), waits: &mut *waits, waiting: Vec::new() };
+        let mut asking = Asking {
+            inner: &mut *observer,
+            answers: &answers,
+            pending: Vec::new(),
+            waits: &mut *waits,
+            waiting: Vec::new(),
+            steps: Budget::new(limits.max_steps),
+        };
         let outputs = eval_observed(root, inputs, &resolver, &mut asking).into_vec();
+        if asking.steps.exhausted {
+            return fail(rounds, RunError::StepBudget { max: limits.max_steps });
+        }
         let (pending, waiting) = (asking.pending, asking.waiting);
         if pending.is_empty() {
             // A run still waiting performs nothing yet: what it does is decided when it finishes.
@@ -332,6 +354,8 @@ struct Asking<'a, O: Observer, W: Waits> {
     pending: Vec<(Vec<u32>, Value)>,
     waits: &'a mut W,
     waiting: Vec<Waiting>,
+    /// The round's steps, counted afresh each round.
+    steps: Budget,
 }
 
 /// A text field of a request record.
@@ -346,6 +370,15 @@ fn text_field<'v>(request: &'v Value, key: &str) -> Option<&'v str> {
 }
 
 impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
+    fn step(&mut self) -> bool {
+        self.steps.step()
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        self.steps.take_steps(want)
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.steps.give_back(steps);
+    }
     fn enter(&mut self, path: &[u32]) {
         self.inner.enter(path);
     }
@@ -621,6 +654,33 @@ mod tests {
         let resumed = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &first.rounds);
         assert!(resumed.waiting.is_empty());
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("tok-paid")), (Capability::NetworkEgress, txt("ok"))]);
+    }
+
+    /// Guards: every node a round evaluates is a step, counted afresh each round: the least
+    /// `max_steps` the two-round flow finishes with is its last round's 8 nodes, not the two
+    /// rounds' sum; one fewer fails it with `StepBudget`, performing nothing.
+    /// Why: a node outside any function is a step too. Composites can share a child, so a unit
+    /// of few nodes can evaluate a great many; and a round only grows, so counting per round is
+    /// what `holon verify`, evaluating once with every answer, counts again.
+    /// If it fails: `Asking::step` (or `take_steps`) isn't the round's budget, the budget isn't
+    /// made afresh each round, or `run_rounds` doesn't read `exhausted` after the round.
+    #[test]
+    fn every_node_a_round_evaluates_is_a_step_counted_per_round() {
+        let mut r = MapResolver::new();
+        let flow = chained(&mut r);
+        let run = |max_steps: u64| {
+            let (echo, mut host) = (Echo::default(), Performed::default());
+            let limits = Limits { max_steps, ..Limits::request_run() };
+            let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            (out, host.0)
+        };
+        let least = (1..100).find(|&m| run(m).0.error.is_none()).expect("it finishes");
+        assert_eq!(least, 8, "the last round's nodes, each a step");
+        let (out, performed) = run(least - 1);
+        assert_eq!(out.error, Some(RunError::StepBudget { max: least - 1 }));
+        assert_eq!(out.outputs, vec![None]);
+        assert!(performed.is_empty(), "nothing performed");
+        assert!(out.error.unwrap().message().starts_with(STEP_BUDGET));
     }
 
     #[test]

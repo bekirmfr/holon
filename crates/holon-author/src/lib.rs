@@ -53,7 +53,7 @@ mod golden;
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry. A flow's text sets the others
 /// with `limit` lines, and `keep_runs` and `keep_run_days` with its `keep` line (docs/LANGUAGE.md).
-pub const LIMIT_NAMES: [&str; 36] = [
+pub const LIMIT_NAMES: [&str; 37] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
@@ -66,6 +66,7 @@ pub const LIMIT_NAMES: [&str; 36] = [
     "max_response_bytes",
     "max_header_bytes",
     "max_redirects",
+    "max_steps",
     "max_await_seconds",
     "max_waiting_runs",
     "max_call_depth",

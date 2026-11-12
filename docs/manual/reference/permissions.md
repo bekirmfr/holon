@@ -99,6 +99,7 @@ can change both columns
 | `max_response_bytes` | an outbound response's size | 10485760 (10 MiB) | 104857600 |
 | `max_header_bytes` | an outbound response's headers | 65536 | 262144 |
 | `max_redirects` | redirects followed | 10 | 20 |
+| `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to) | 10000000 | 200000000 |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
@@ -124,7 +125,13 @@ can change both columns
 | `keep_runs` | runs the deployment's log keeps, the newest | 500 (`--keep-runs`) | 20000 |
 | `keep_run_days` | days the deployment's log keeps a run | 3650 (any age) | 3650 |
 
-A run past its time budget fails and performs nothing. An outbound call past a limit doesn't
+A run fails and performs nothing when it takes more than `max_steps` steps between two of its
+outbound calls (or before the first, or after the last), or when it is past its time budget at the
+end of one of those stretches: the time is read between them, the steps are counted within them.
+A run takes the same steps on any machine, and `holon verify` runs it again with up to the
+ceiling's steps, so it finishes every run that finished (for that, a policy may lower `max_steps`'s
+ceiling but not raise it); a run stopped short of the ceiling it reports as not run again to its
+end, as it can't know the host's default. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,
 `dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_secret` (it holds a secret's value bound for a
 host the flow's approval doesn't show it going to), `blocked_redirect` (a redirect to

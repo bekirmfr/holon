@@ -7259,6 +7259,89 @@ fn every_run_an_entry_can_say_it_was_comes_to_a_verdict_and_the_exit_says_the_wo
     judge(&export, &values, rows);
 }
 
+/// Guards: a round that takes more steps than its grant's `max_steps` fails, answers 500 and
+/// performs nothing; a flow that asks for more steps (`limits: { max_steps }`) waits for a person
+/// to approve them and then gets them; and `holon verify` reads the failed run as not run again
+/// to its end (exit 3), the runs either side of it as matched.
+/// Why: without the budget one request (`range(10000).map(.. range(10000) ..)`) holds a worker
+/// for as long as it computes, and enough of them stall the server. The budget is the server's
+/// only bound on a round's work, and verify must not read a run it stopped as one forged.
+/// If it fails: on the 200, the step check (`Asking::step` in rounds.rs, `told`/`at_item` in
+/// eval.rs) isn't counting or isn't read after the round; on the write, the failure comes after
+/// the effects; on the verdict, verify's limits (verify.rs `rerun`) aren't the ceiling's steps,
+/// or a StepBudget line isn't one that says less.
+#[test]
+fn a_round_past_its_steps_fails_performs_nothing_and_a_flow_may_ask_for_more() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000").unwrap());
+    let text = |limits: &str| {
+        format!(
+            "import {{ flow, range, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"steps\", {{ port: 8307{limits} }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  state.total = total\n  return `total ${{total}}`\n}})\n"
+        )
+    };
+    // As the command line deploys a text: the limits it asks for beside its unit.
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "steps", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"total\")"]);
+    let deployed = deploy(&text(""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    let total = || body_json(route(&state, &req("GET", "/deployments/steps/state", vec![])))["state"]["total"]["value"].clone();
+    let loop_of = |n: u32| data_call(&state, "steps", "POST", "/loop", &format!("{{\"n\":{n}}}"));
+
+    // Within its steps (10 × 10 items, a few hundred): answered and written.
+    assert_eq!(loop_of(10).0, 200);
+    assert_eq!(total(), serde_json::json!(2025.0));
+    // Past them (100 × 100 items): failed, as a stopped run, with nothing written.
+    let (status, _, _) = loop_of(100);
+    assert_eq!(status, 500);
+    assert_eq!(total(), serde_json::json!(2025.0), "a run past its steps wrote");
+    let entries = log_entries(&state, "steps");
+    let error = entries.last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with(holon_host::STEP_BUDGET) && error.contains("5000"), "{error}");
+    assert_eq!(entries.last().unwrap()["performed"], serde_json::json!([]), "{error}");
+
+    // A flow that asks for more steps waits for them to be approved, then has them.
+    let more = text(", limits: { max_steps: 100000 }");
+    let asked = deploy(&more, &ack);
+    assert_eq!(asked.status_code, 400);
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(max_steps=100000)"));
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().push("Limit(max_steps=100000)".into());
+    assert_eq!(deploy(&more, &approved).status_code, 200);
+    assert_eq!(loop_of(100).0, 200);
+    assert_eq!(total(), serde_json::json!(24502500.0));
+
+    // Verify runs each run again: the stopped one is skipped, not called forged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/steps/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    let came: Vec<&str> = report
+        .reruns
+        .iter()
+        .map(|(_, r)| match r {
+            verify::Rerun::Matched => "matched",
+            verify::Rerun::Differs(_) => "differs",
+            verify::Rerun::Skipped(_) => "skipped",
+            verify::Rerun::NothingRan(_) => "nothing ran",
+        })
+        .collect();
+    assert_eq!(came, ["matched", "skipped", "matched"], "{text}");
+    let file = unique_temp_path("steps-export");
+    std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
+    assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
+    let _ = std::fs::remove_file(&file);
+}
+
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]

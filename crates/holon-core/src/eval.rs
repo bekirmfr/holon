@@ -165,11 +165,84 @@ pub trait Observer {
     fn reads_produced(&self) -> bool {
         true
     }
+    /// One step of the evaluation: a node about to be evaluated (fired, decided, held or stood
+    /// in for), or a `map`'s or `fold`'s function about to be applied to an item. `false` stops
+    /// it there: that node or item gives absent, as does every one after it that is asked, so
+    /// what a host allows a round (`max_steps`) bounds its work, whatever the graph computes.
+    /// Asked before a node is held or stood in for, so a run again that stands in for a node
+    /// counts no more than the run it checks did. Yes (the default) counts nothing.
+    fn step(&mut self) -> bool {
+        true
+    }
+    /// Up to `want` steps taken at once, asked when the first of them is wanted, by an evaluation
+    /// that takes them one at a time and gives back what it doesn't use
+    /// ([`give_back`](Observer::give_back)): how a `map`'s or `fold`'s applications count without
+    /// a `dyn` call each. Fewer when fewer are left; none is that first step refused, as a
+    /// [`step`](Observer::step) answering `false`. The default takes one, as a step.
+    fn take_steps(&mut self, _want: u32) -> u32 {
+        u32::from(self.step())
+    }
+    /// Steps taken ([`take_steps`](Observer::take_steps)) and not used, given back.
+    fn give_back(&mut self, _steps: u32) {}
+}
+
+/// The steps ([`Observer::step`]) a round may take when its host says nothing else: a second or a
+/// few of computing (a release build took 10 to 20 million plain steps a second, and 3 million
+/// that each build a record). The host's `max_steps` limit; a flow may ask for more, to
+/// [`MAX_STEPS_CEILING`].
+pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
+/// The most steps any grant gives a round. `holon verify` runs a run again held to it, so a run
+/// within any grant's steps is run again in full.
+pub const MAX_STEPS_CEILING: u64 = 200_000_000;
+
+/// Observes nothing but the steps, against a budget: plain [`eval`] held to `left` steps.
+pub struct Budgeted {
+    pub left: u64,
+    /// Whether it ran out: what it computed is then absent where it stopped.
+    pub exhausted: bool,
+}
+
+impl Budgeted {
+    pub fn new(steps: u64) -> Budgeted {
+        Budgeted { left: steps, exhausted: false }
+    }
+}
+
+impl Observer for Budgeted {
+    fn step(&mut self) -> bool {
+        match self.left.checked_sub(1) {
+            Some(left) => {
+                self.left = left;
+                true
+            }
+            None => {
+                self.exhausted = true;
+                false
+            }
+        }
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        if self.left == 0 && want > 0 {
+            self.exhausted = true;
+        }
+        let taken = self.left.min(u64::from(want));
+        self.left -= taken;
+        taken as u32
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.left += u64::from(steps);
+    }
+    fn reads_produced(&self) -> bool {
+        false
+    }
 }
 
 /// Observes nothing: what plain [`eval`] uses.
 pub struct NoObserver;
 impl Observer for NoObserver {
+    fn take_steps(&mut self, want: u32) -> u32 {
+        want
+    }
     fn reads_produced(&self) -> bool {
         false
     }
@@ -1788,6 +1861,9 @@ impl<'r> Prepared<'r> {
     /// its path. Inlined, so it adds no frame to the recursion through `fire`.
     #[inline(always)]
     fn told<O: Observer>(&self, ci: usize, observer: &mut O, path: &mut Vec<u32>, eval: impl FnOnce(&mut O, &mut Vec<u32>) -> Slots) -> Slots {
+        if !observer.step() {
+            return smallvec![Slot::Absent; self.resolved[ci].outputs.len()];
+        }
         path.push(ci as u32);
         observer.enter(path);
         let outs = eval(observer, path);
@@ -2255,7 +2331,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
 
     let mut out = Vec::with_capacity(len);
     let (mut pending, mut absent) = (false, false);
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // Every item is applied, even after one comes out absent, so each item's requests are asked
     // in the same round rather than one round per item. A result goes a level down, into the
     // list: one already as deep as a value may nest makes the map give nothing
@@ -2277,7 +2353,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
             refs.extend(extra.iter().map(|v| v.as_deref()));
             for (k, x) in xs.iter().enumerate() {
                 refs[0] = Some(x);
-                tally(at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path)));
+                tally(at_item(k, &mut asks, path, |asks, path| eval_as(leaf, kind, &refs, resolver, asks, path)));
             }
         }
         // A composite over items lent: run, each item put in place.
@@ -2287,7 +2363,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
             args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
             for (k, x) in xs.iter().enumerate() {
                 args[0] = Some(Cow::Borrowed(x));
-                tally(at_item(k, path, |path| prepared.run(unit.outputs.len(), &mut args, resolver, &mut asks, path)));
+                tally(at_item(k, &mut asks, path, |asks, path| prepared.run(unit.outputs.len(), &mut args, resolver, asks, path)));
             }
         }
         _ => {
@@ -2331,7 +2407,7 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // Item `k`'s answer: true or false, or the slot that stops the leaf.
     let mut answer = |k: usize, item: &Value| {
         let mut args: Args = SmallVec::with_capacity(1 + extra.len());
@@ -2409,7 +2485,7 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let list = take_given(&mut list[0]).expect("checked present");
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let order = {
         let Value::List(xs) = list.as_ref() else { unreachable!("checked to be a list") };
         let mut compared = 0;
@@ -2458,7 +2534,7 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let (mut groups, mut pending, mut absent) = (std::collections::BTreeMap::<String, Vec<Value>>::new(), false, false);
     for (k, item) in items.enumerate() {
         let key = {
@@ -2505,7 +2581,7 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
     let (first, extra) = inputs.split_at_mut(1);
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let mut applied = 0;
     let mut answer = |key: &str, value: &Value| -> Result<Option<Value>, Slot> {
         let key = Value::Text(key.to_string());
@@ -2580,7 +2656,7 @@ impl<'r> Ready<'r> {
 /// `k`, its one output (or absent, as [`eval_one`]). A composite runs as `eval_at` would run it.
 /// What `args` gives (a `fold`'s accumulator), the function may build on.
 fn apply<'r>(unit: &Ready<'r>, args: &mut Args<'_>, resolver: &'r impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
-    at_item(k, path, |path| match unit {
+    at_item(k, asks, path, |asks, path| match unit {
         Ready::Other(unit, kind) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => eval_given(unit, kind, args, resolver, asks, path),
         Ready::Other(unit, kind) => eval_as(unit, kind, &refs(args), resolver, asks, path),
         Ready::Composite(unit, prepared) => {
@@ -2595,23 +2671,72 @@ fn apply<'r>(unit: &Ready<'r>, args: &mut Args<'_>, resolver: &'r impl Resolver,
 }
 
 /// What `eval` makes of item `k`'s application: evaluated at the node's path then `k`, its one
-/// output (or absent, as [`eval_one`]).
-fn at_item(k: usize, path: &mut Vec<u32>, eval: impl FnOnce(&mut Vec<u32>) -> Slots) -> Slot {
+/// output (or absent, as [`eval_one`]). A step ([`Observer::step`]), as a node is.
+fn at_item(k: usize, asks: &mut Asks, path: &mut Vec<u32>, eval: impl FnOnce(&mut Asks, &mut Vec<u32>) -> Slots) -> Slot {
     let Ok(k) = u32::try_from(k) else { return Slot::Absent };
+    if !asks.step() {
+        return Slot::Absent;
+    }
     path.push(k);
-    let mut outs = eval(path);
+    let mut outs = eval(asks, path);
     path.pop();
     if outs.len() == 1 { outs.pop().unwrap() } else { Slot::Absent }
 }
 
 /// The observer inside a `map`/`fold` application: it passes on what is asked (requests, reads,
-/// waiting points) and nothing of the steps. One type however deep the nesting, so a function
-/// that maps again evaluates under the same observer type.
-struct Asks<'a>(&'a mut dyn Observer);
+/// waiting points) and the steps, and nothing else of the evaluation. One type however deep the
+/// nesting, so a function that maps again evaluates under the same observer type. The steps it
+/// takes from the observer outside a batch at a time ([`Observer::take_steps`]), so each is a
+/// count down here, not a `dyn` call, and it gives back what it didn't use when it is done: the
+/// count stays exact.
+struct Asks<'a> {
+    outside: &'a mut dyn Observer,
+    /// Steps taken from `outside` and not used yet.
+    taken: u32,
+}
+
+/// The steps [`Asks`] takes from the observer outside at a time.
+const STEPS_TAKEN: u32 = 256;
+
+impl<'a> Asks<'a> {
+    fn new(outside: &'a mut dyn Observer) -> Asks<'a> {
+        Asks { outside, taken: 0 }
+    }
+}
+
+impl Drop for Asks<'_> {
+    fn drop(&mut self) {
+        if self.taken > 0 {
+            self.outside.give_back(self.taken);
+        }
+    }
+}
 
 impl Observer for Asks<'_> {
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
-        self.0.answer(path, request)
+        self.outside.answer(path, request)
+    }
+    #[inline]
+    fn step(&mut self) -> bool {
+        if self.taken == 0 {
+            self.taken = self.outside.take_steps(STEPS_TAKEN);
+            if self.taken == 0 {
+                return false;
+            }
+        }
+        self.taken -= 1;
+        true
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        if self.taken == 0 {
+            return self.outside.take_steps(want);
+        }
+        let taken = self.taken.min(want);
+        self.taken -= taken;
+        taken
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.taken += steps;
     }
     fn reads_produced(&self) -> bool {
         false
@@ -2650,7 +2775,7 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
 
     let (head, extra) = inputs.split_at_mut(2);
     let mut acc = take_given(&mut head[0]).map(Cow::into_owned).expect("checked present");
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // A list given to the fold gives each item to its application too.
     let Some(items) = Items::of(take_given(&mut head[1])) else { return Slot::Absent };
     for (k, elem) in items.enumerate() {
@@ -2663,7 +2788,7 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
                 refs.push(Some(&acc));
                 refs.push(Some(&*elem));
                 refs.extend(extra.iter().map(|v| v.as_deref()));
-                at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path))
+                at_item(k, &mut asks, path, |asks, path| eval_as(leaf, kind, &refs, resolver, asks, path))
             }
             _ => {
                 let mut args: Args = SmallVec::with_capacity(2 + extra.len());
@@ -3617,6 +3742,45 @@ mod tests {
             params: vec![Param::frozen("fn", hex(fn_hash))],
             inputs,
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        }
+    }
+
+    /// Guards: each application of a higher-order leaf's function is a step even when the function
+    /// is a leaf itself (or a module), with no node of its own to count: for every leaf in
+    /// `PASSES_EXTRA`, a budget of no steps runs out at its first item.
+    /// Why: the steps of a function that is a composite come from its nodes as well, so only this
+    /// case shows the application itself counted. Without it a `js()` function, or a leaf, applied
+    /// to each of 10000 items, nested, would run past `max_steps` with nothing counted.
+    /// If it fails: the named leaf applies its function without going through `at_item`, which
+    /// asks for the step; route it through `at_item` or `apply`.
+    #[test]
+    fn an_application_of_a_function_with_no_nodes_is_a_step_still() {
+        let mut r = MapResolver::new();
+        let same = r.insert(Unit { params: vec![Param::frozen("type", "Number"), Param::frozen("value", "0")], ..prim("default", 1, Type::Any) }).unwrap();
+        let add = r.insert(prim("add", 2, Type::Any)).unwrap();
+        let items = list((0..8).map(|i| num(i as f64)).collect());
+        for &name in crate::PASSES_EXTRA {
+            let f = if crate::catalog::function_takes(name) == 2 { &add } else { &same };
+            let (unit, inputs) = match name {
+                "fold" => (
+                    Unit {
+                        body: UnitBody::Primitive { name: "fold".into() },
+                        params: vec![Param::frozen("fn", hex(f))],
+                        inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }],
+                        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+                    },
+                    vec![Some(num(0.0)), Some(items.clone())],
+                ),
+                "json_parse" => (json_leaf(name, f, 0, &[]), vec![Some(txt("[0,1,2,3,4,5,6,7]"))]),
+                "json_stringify" => (json_leaf(name, f, 0, &[]), vec![Some(items.clone())]),
+                _ => (over(name, f, 0), vec![Some(items.clone())]),
+            };
+            let mut counted = Budgeted::new(u64::MAX);
+            eval_observed(&unit, &inputs, &r, &mut counted);
+            assert!(u64::MAX - counted.left >= 1, "{name} took no step");
+            let mut none = Budgeted::new(0);
+            eval_observed(&unit, &inputs, &r, &mut none);
+            assert!(none.exhausted, "{name} applied its function with no step left");
         }
     }
 

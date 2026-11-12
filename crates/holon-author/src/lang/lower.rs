@@ -5714,6 +5714,97 @@ route.get("/x", () => {
         holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
     }
 
+    /// Guards: every application of a higher-order leaf's function (each leaf in `PASSES_EXTRA`) is
+    /// a step, as each node of a composite is, so the steps a round takes grow with the items it
+    /// goes over; a budget of exactly the steps a function takes gives what plain `eval` gives,
+    /// and one fewer runs out; and the budget, which a function's applications take a batch at a
+    /// time and give back what they don't use, counts what an observer asked one step at a time
+    /// does.
+    /// Why: the step budget (`max_steps`) is what bounds a round's work. A leaf that applied its
+    /// function without asking for a step would let `range(10000).map(..range(10000).map(..))`
+    /// run past the budget, holding a worker as long as it liked, with no step counted.
+    /// If it fails: the named leaf applies its function off `at_item` (eval.rs); route it through
+    /// `at_item`, or `apply`, which asks for the step. A new higher-order leaf with no case here
+    /// fails too: add its spelling to `CASES`.
+    #[test]
+    fn every_function_a_higher_order_leaf_applies_is_a_step_and_the_budget_holds_it() {
+        use holon_core::{eval_observed, Budgeted, Observer, Value};
+        /// Each step asked one at a time: the default `take_steps`.
+        struct OneByOne(u64);
+        impl Observer for OneByOne {
+            fn step(&mut self) -> bool {
+                self.0 += 1;
+                true
+            }
+        }
+        let numbers = |n: usize| Value::List((0..n).map(|i| Value::Number(i as f64)).collect());
+        let json = |n: usize| Value::Text(format!("[{}]", (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(",")));
+        // Each higher-order leaf, written so its function goes over every item.
+        type Given<'a> = &'a dyn Fn(usize) -> Value;
+        let cases: [(&str, &str, Given); 14] = [
+            ("map", "return xs.map((x) => x + 1)", &numbers),
+            ("map", "return xs.map((x) => (x + 1) * 2 - 3)", &numbers),
+            ("fold", "return xs.reduce((a, x) => a + x, 0)", &numbers),
+            ("any", "return xs.some((x) => x < 0)", &numbers),
+            ("all", "return xs.every((x) => x >= 0)", &numbers),
+            ("filter", "return xs.filter((x) => x > 1)", &numbers),
+            ("find", "return xs.find((x) => x < 0)", &numbers),
+            ("find_index", "return xs.findIndex((x) => x < 0)", &numbers),
+            ("find_last", "return xs.findLast((x) => x < 0)", &numbers),
+            ("find_last_index", "return xs.findLastIndex((x) => x < 0)", &numbers),
+            ("sort_by", "return xs.toSorted((a, b) => b - a)", &numbers),
+            ("group_by", "return Object.groupBy(xs, (x) => `${x % 3}`)", &numbers),
+            ("json_parse", "return JSON.parse(xs, (k, v) => (k === \"x\" ? 0 : v))", &json),
+            ("json_stringify", "return JSON.stringify(xs, (k, v) => (k === \"x\" ? 0 : v))", &numbers),
+        ];
+        let named: std::collections::BTreeSet<&str> = cases.iter().map(|c| c.0).collect();
+        assert_eq!(named, PASSES_EXTRA.iter().copied().collect(), "a case for each higher-order leaf");
+        let mut per_item = Vec::new();
+        for (leaf, body, given) in cases {
+            let doc = compiled(&with_f("xs", body)).doc;
+            let mut store = MapResolver::new();
+            text::restore(&doc, &mut store, &Names::new());
+            let hash = doc.nodes.iter().find_map(|n| match &n.data.body {
+                crate::canvas::PlacedBody::Composite { hash } => Some(hash.clone()),
+                _ => None,
+            });
+            let (_, unit) = crate::composites::resolve(&store, &hash.expect("f is placed")).unwrap();
+            assert!(store.units().any(|u| matches!(&u.body, holon_core::UnitBody::Primitive { name } if name == leaf)), "{body} uses {leaf}");
+            let steps = |n: usize| {
+                let mut b = Budgeted::new(u64::MAX);
+                eval_observed(unit, &[Some(given(n))], &store, &mut b);
+                u64::MAX - b.left
+            };
+            let (few, many) = (steps(20), steps(40));
+            let mut one_by_one = OneByOne(0);
+            eval_observed(unit, &[Some(given(40))], &store, &mut one_by_one);
+            assert_eq!(one_by_one.0, many, "{body}: the budget, taken a batch at a time, counts other steps than one at a time");
+            assert!(many - few >= 20, "{body}: {few} steps over 20 items, {many} over 40: an application isn't a step");
+            per_item.push((many - few) / 20);
+            // Exactly its steps: what plain eval gives. One fewer: it runs out.
+            let plain = holon_core::eval(unit, &[Some(given(40))], &store).into_vec();
+            let mut enough = Budgeted::new(many);
+            assert_eq!(eval_observed(unit, &[Some(given(40))], &store, &mut enough).into_vec(), plain, "{body}");
+            assert!(!enough.exhausted && enough.left == 0, "{body}");
+            let mut short = Budgeted::new(many - 1);
+            let gave = eval_observed(unit, &[Some(given(40))], &store, &mut short).into_vec();
+            assert!(short.exhausted, "{body}: one step short of its {many} and it didn't run out");
+            // And none at all: its first node, outside any function, refused.
+            let mut none = Budgeted::new(0);
+            eval_observed(unit, &[Some(given(40))], &store, &mut none);
+            assert!(none.exhausted, "{body}: no steps and it didn't run out");
+            // Where an application that gives nothing makes the leaf give nothing, one step short
+            // gives nothing: it stopped there, not went on. (`group_by`, `json_parse` and
+            // `json_stringify` read nothing as a value: an item left out, a `null`; the round
+            // fails all the same, on `exhausted`.)
+            if !["group_by", "json_parse", "json_stringify"].contains(&leaf) {
+                assert!(gave.iter().all(Option::is_none), "{body}: one step short, it still gave {gave:?}: it went on past the budget");
+            }
+        }
+        // Each node of the function is a step too: three more nodes, three more steps an item.
+        assert!(per_item[1] >= per_item[0] + 3, "a function's nodes aren't steps: {per_item:?}");
+    }
+
     /// A flow whose function `f(params)` is `body`, called with as many of the action's values.
     fn with_f(params: &str, body: &str) -> String {
         let args = ["x.a", "x.b"][..params.split(',').count()].join(", ");

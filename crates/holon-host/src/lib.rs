@@ -29,7 +29,7 @@ pub mod collection;
 pub mod packs;
 mod rounds;
 mod state;
-pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
+pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits, STEP_BUDGET};
 pub use state::{InsertError, LoadError, State};
 
 use holon_core::{

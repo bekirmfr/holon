@@ -199,6 +199,7 @@ fn limits_to_numbers(
         ("max_response_bytes".into(), request.max_response_bytes as u64),
         ("max_header_bytes".into(), request.max_header_bytes as u64),
         ("max_redirects".into(), request.max_redirects as u64),
+        ("max_steps".into(), request.max_steps),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
         ("max_call_depth".into(), durable.max_call_depth),
@@ -284,6 +285,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
             "max_response_bytes" => l.max_response_bytes = n as usize,
             "max_header_bytes" => l.max_header_bytes = n as usize,
             "max_redirects" => l.max_redirects = n as u32,
+            "max_steps" => l.max_steps = n,
             _ => {}
         }
     }
@@ -728,6 +730,11 @@ impl Policy {
             }
         }
         policy.ceilings.extend(file.ceilings);
+        // `holon verify` runs a run again held to the built-in ceiling, not this host's: a run
+        // granted more steps than that would be read as failing where it finished.
+        if policy.ceilings["max_steps"] > holon_core::MAX_STEPS_CEILING {
+            return Err(format!("the ceiling max_steps = {} is above {}, the most steps holon verify runs a run again with", policy.ceilings["max_steps"], holon_core::MAX_STEPS_CEILING));
+        }
         let mut defaults = policy.defaults();
         defaults.extend(file.limits);
         for (name, n) in &defaults {
@@ -1310,6 +1317,13 @@ mod tests {
         assert_eq!((p.files.max_files_per_run, p.ceilings["inline_file_bytes"]), (50, 4 << 20));
         assert_eq!(Policy::default().files, FileLimits::defaults());
         assert!(Policy::parse("[limits]\nmax_file_read_bytes = 2147483648").unwrap_err().contains("above its ceiling"), "past a gigabyte");
+
+        // Steps per round: the host sets the default and may lower the ceiling, never raise it
+        // past what verify runs a run again with.
+        let p = Policy::parse("[limits]\nmax_steps = 1000\n[ceilings]\nmax_steps = 2000").unwrap();
+        assert_eq!((p.request.max_steps, p.ceilings["max_steps"]), (1000, 2000));
+        assert_eq!(Policy::default().ceilings["max_steps"], holon_core::MAX_STEPS_CEILING);
+        assert!(Policy::parse(&format!("[ceilings]\nmax_steps = {}", holon_core::MAX_STEPS_CEILING + 1)).unwrap_err().contains("holon verify"));
     }
 
     /// A flow that places a module asks for its budgets as limits, whether or not its author

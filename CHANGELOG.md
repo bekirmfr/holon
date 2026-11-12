@@ -27,6 +27,17 @@
   did and sent the start of what it does again, and the status it answered either that or a
   failure's. One that says other differs (exit 1). A panicked run's entry must say it did
   nothing, and the state check no longer takes the empty state it records as where it began.
+- **A run's computing is bounded: `max_steps`.** A run's time budget was read only between its
+  outbound calls, so one request whose handler computed and called nothing out
+  (`range(10000).map(i => range(10000).reduce(…))`) held a server worker for as long as it took.
+  Now each node a run evaluates, and each item a function is applied to, is a step, and a run
+  that takes more than `max_steps` between two outbound calls (10 million by default, about a
+  second or a few of computing) fails, answering 500 and performing nothing. It is a limit like
+  the others: a flow asks for more with `limits: { max_steps: n }`, which a person approves, up
+  to 200 million. Steps are counted, not timed, and `holon verify` runs a run again with up to
+  200 million, so it finishes every run that finished; a policy may lower that ceiling, not raise
+  it. The editor's design mode stops at the
+  default too, rather than hang the tab.
 
 ## 0.1.0-rc.35
 
