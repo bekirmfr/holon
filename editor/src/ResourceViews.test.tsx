@@ -10,7 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
 import { PolicyCheck, PolicyText } from "./PolicyViews";
-import { CollectionsTab, SecretsTable, UsedBy } from "./ResourceViews";
+import { CollectionsTab, ResourceTable, SecretsTable, UsedBy } from "./ResourceViews";
+import { folderLine } from "./resourceRows";
 import type { DeploymentEntry, HostPolicy, Proposal, SecretInfo } from "./server";
 
 vi.mock("./server", async (original) => ({
@@ -60,6 +61,38 @@ describe("Resources' views", () => {
     // Without the grants (the host's to view), it says who may see, not that nobody uses it.
     await act(async () => root!.render(<UsedBy holders={[]} waiting={[]} known={false} />));
     expect(el.textContent).toBe("who uses it is shown to those who may view the host");
+  });
+
+  it("draws each kind as one table: the resource, its details, Used by, a dash where it isn't shown", async () => {
+    const holder = { slug: "reports", status: "running" as const, attention: null, uses: [{ use: "read" as const, table: null, revoked: false, item: 'FileRead("inbox")' }] };
+    const el = await render(
+      <ResourceTable
+        kind="folder"
+        empty="no folders bound"
+        known
+        rows={[
+          { ...folderLine({ name: "inbox", path: "/srv/inbox", access: "read", keep: "bytes", cap: null, deployment: null }, true), holders: [holder], waiting: [] },
+          {
+            ...folderLine({ name: "drop", access: "read-write", keep: "hash", cap: null, deployment: "reports" }, true),
+            holders: [],
+            waiting: [{ slug: "stock-sheet", version: 2, uses: [{ use: "write", table: null, revoked: false, item: 'FileWrite("drop")' }] }],
+            actions: <button>×</button>,
+          },
+        ]}
+      />,
+    );
+    expect([...el.querySelectorAll("th")].map((t) => t.textContent)).toEqual(["folder", "details", "used by", ""]);
+    const inbox = el.querySelector('tr[aria-label="folder inbox"]')!;
+    expect(inbox.querySelector(".hl-resources__where")!.textContent).toBe("/srv/inbox");
+    expect(inbox.textContent).toContain("read only");
+    expect(inbox.querySelector('[aria-label="used by"]')!.textContent).toBe("reports reads");
+    const drop = el.querySelector('tr[aria-label="folder drop for reports"]')!;
+    expect(drop.textContent).toContain("for reports only");
+    expect(drop.textContent).not.toContain("undefined");
+    expect(drop.querySelector(".hl-resources__details")!.firstElementChild!.textContent).toBe("—");
+    expect(drop.querySelector(".hl-used-by__waiting")!.textContent).toBe("stock-sheet v2 would write");
+    await act(async () => root!.render(<ResourceTable kind="queue" empty="no queue bound" known rows={[]} />));
+    expect(el.textContent).toBe("no queue bound");
   });
 
   it("counts each channel's kept packs, a dash where the caller may not view the flow's state", async () => {

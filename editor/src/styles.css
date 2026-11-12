@@ -1468,6 +1468,17 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-used-by__waiting { color: var(--warn-ink); }
 .hl-used-by__waiting a { color: inherit; text-decoration: underline dotted; }
 .hl-used-by__revoked { text-decoration: line-through; color: var(--bad); }
+/* A tab of bindings as a table: the resource, its details, Used by (its own cell, so no padding of
+   its own), the buttons; a database's tables and matrix on a row under its own. */
+.hl-resources td { vertical-align: top; }
+.hl-resources td.hl-resources__name { white-space: nowrap; }
+.hl-resources__details { min-width: 220px; overflow-wrap: anywhere; }
+.hl-resources__where { color: var(--ink); }
+.hl-resources__used { min-width: 160px; }
+.hl-resources td .hl-used-by { padding: 0; margin: 0; }
+.hl-resources tr:has(+ .hl-resources__below) td { border-bottom: 0; }
+.hl-resources__below > td { padding-top: 0; }
+.hl-resources__below .hl-matrix-wrap { margin-bottom: 4px; }
 .hl-matrix-wrap { overflow-x: auto; margin: 0 0 12px; }
 .hl-matrix th { text-transform: none; letter-spacing: 0; }
 .hl-matrix th a { font-family: var(--mono); }

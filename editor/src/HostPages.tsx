@@ -81,8 +81,9 @@ import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 import { describeItem } from "./holon";
-import { databaseMatrix, holdersOf, kindsHeld, othersHeld, usesText, waitingFor, type Binding, type Holder, type Kind as HeldKind } from "./holdings";
-import { CollectionsTab, DatabaseMatrix, SecretsTable, UsedBy } from "./ResourceViews";
+import { databaseMatrix, holdersOf, kindsHeld, othersHeld, usesText, waitingFor, type Holder } from "./holdings";
+import { CollectionsTab, DatabaseMatrix, ResourceTable, SecretsTable } from "./ResourceViews";
+import { databaseLine, feedLine, folderLine, mailLine, queueLine } from "./resourceRows";
 import { PolicyCheck, PolicyText } from "./PolicyViews";
 import { limitMeaning } from "./policyMeans";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
@@ -261,10 +262,6 @@ function useHost(shown = false, tab: string | null = null) {
   const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
   const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
   const queueHolders = (q: QueueEntry) => holdersOf("queue", q, queues, grants);
-  /** Which deployments use it and how, and what a waiting version would add, said under its row. */
-  const usedBy = (kind: HeldKind, binding: Binding, bindings: Binding[], holders: Holder[]) => (
-    <UsedBy holders={holders} waiting={waitingFor(kind, binding, bindings, proposals)} known={grantsKnown} />
-  );
   /** What unbinding (or binding again) does to the deployments that use it, as the server does it now. */
   const unbindingSays = (holders: Holder[]) =>
     holders.length === 0 ? "No deployment uses it." : `${named(holders)} ${holders.length === 1 ? "uses" : "use"} it: they keep running, and their calls to it fail until it is bound again.`;
@@ -277,7 +274,7 @@ function useHost(shown = false, tab: string | null = null) {
     setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
     setReloaded, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
     fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, version, setVersion,
-    dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays,
+    dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, unbindingSays,
     mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft,
     setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders,
   };
@@ -727,9 +724,8 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
   // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer):
   // the server leaves it out of their lists.
   const seesWhere = can.holds("resource.bind");
-  const whereHidden = <span style={quiet} title="where it is is shown to those who may bind resources">where it is: shown to those who may bind</span>;
   const secretValue = useRef<HTMLInputElement>(null);
-  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
+  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
       <nav className="hl-flow__tabs" aria-label="resources tabs">
@@ -753,49 +749,54 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             away (503). For what a commit&apos;s check can&apos;t cover: a sequence&apos;s next value, a queue, or contention so high that running again costs
             more than waiting.
           </div>
-          {databases.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
-          {databases.map((d) => {
-            const read = tables[keyOf(d)];
-            return (
-              <Fragment key={keyOf(d)}>
-                <div style={row}>
-                  <span style={{ color: "var(--accent)", minWidth: 90 }}>database {d.name}</span>
-                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{!seesWhere ? whereHidden : d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
-                  <span style={{ color: "var(--faint)", fontSize: 11 }}>
-                    {d.engine} · {d.access === "read" ? "read only" : "read and write"}
-                    {d.lock === "run" ? " · held for whole runs" : ""}
-                    {d.deployment ? ` · for ${d.deployment} only` : ""}
-                  </span>
+          <ResourceTable
+            kind="database"
+            empty="no databases bound"
+            known={h.grantsKnown}
+            rows={databases.map((d) => {
+              const read = tables[keyOf(d)];
+              const holders = databaseHolders(d);
+              const waiting = waitingFor("database", d, databases, h.proposals);
+              return {
+                ...databaseLine(d, seesWhere),
+                holders,
+                waiting,
+                actions: (
                   <button
                     style={small}
+                    aria-label={`unbind ${d.name}`}
                     {...gateOf(unbind, { title: "unbind the name: the database stays where it is" })}
                     onClick={async () => {
                       const whose = d.deployment ? ` for ${d.deployment}` : "";
-                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(databaseHolders(d))}`, "Unbind"))
+                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(holders)}`, "Unbind"))
                         act(() => unbindDatabase(d.name, d.deployment));
                     }}
                   >
                     ×
                   </button>
-                </div>
-                <div aria-label={`${d.name}'s tables`} style={{ ...quiet, padding: "0 10px 2px", marginTop: -2, display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ flex: 1, overflowWrap: "anywhere" }}>
-                    {read === undefined
-                      ? "reading its tables…"
-                      : "error" in read
-                        ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
-                        : read.length === 0
-                          ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
-                          : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
-                  </span>
-                  <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
-                    read the schema again
-                  </button>
-                </div>
-                <DatabaseMatrix name={d.name} matrix={databaseMatrix(Array.isArray(read) ? read : [], databaseHolders(d), waitingFor("database", d, databases, h.proposals))} known={h.grantsKnown} />
-              </Fragment>
-            );
-          })}
+                ),
+                below: (
+                  <>
+                    <div aria-label={`${d.name}'s tables`} style={{ ...quiet, display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                      <span style={{ flex: 1, overflowWrap: "anywhere" }}>
+                        {read === undefined
+                          ? "reading its tables…"
+                          : "error" in read
+                            ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
+                            : read.length === 0
+                              ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
+                              : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
+                      </span>
+                      <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
+                        read the schema again
+                      </button>
+                    </div>
+                    <DatabaseMatrix name={d.name} matrix={databaseMatrix(Array.isArray(read) ? read : [], holders, waiting)} known={h.grantsKnown} />
+                  </>
+                ),
+              };
+            })}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -886,22 +887,18 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to
             it; one that waits past its claim_wait is turned away (503). For files a program expects one writer for.
           </div>
-          {folders.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
-          {folders.map((f) => (
-            <Fragment key={keyOf(f)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>folder {f.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{seesWhere ? f.path : whereHidden}</span>
-                <span style={{ color: "var(--faint)", fontSize: 11 }}>
-                  {f.access === "read" ? "read only" : "read and write"}
-                  {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
-                  {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
-                  {f.shared ? " · other servers bind it too" : ""}
-                  {f.lock === "run" ? " · held for whole runs" : ""}
-                  {f.deployment ? ` · for ${f.deployment} only` : ""}
-                </span>
+          <ResourceTable
+            kind="folder"
+            empty="no folders bound"
+            known={h.grantsKnown}
+            rows={folders.map((f) => ({
+              ...folderLine(f, seesWhere),
+              holders: folderHolders(f),
+              waiting: waitingFor("folder", f, folders, h.proposals),
+              actions: (
                 <button
                   style={small}
+                  aria-label={`unbind ${f.name}`}
                   {...gateOf(unbind, { title: "unbind the name: the files stay where they are" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
@@ -911,10 +908,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
                 >
                   ×
                 </button>
-              </div>
-              {usedBy("folder", f, folders, folderHolders(f))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -923,7 +919,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
               const name = folderDraft.name.trim();
               const deployment = folderDraft.deployment?.trim() || null;
               const there = folders.find((f) => f.name === name && f.deployment === deployment);
-              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces the binding to ${there.path}. ${unbindingSays(folderHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces the binding${there.path ? ` to ${there.path}` : ""}. ${unbindingSays(folderHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
                 return;
               act(async () => {
                 const keep = folderDraft.keep === "bytes for " ? `bytes for ${keepFor.trim()}` : folderDraft.keep;
@@ -1020,21 +1016,18 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             (without one, no message is authenticated). A server that takes no password (Microsoft 365, Google Workspace) logs in with a token: its URL names
             the user and no password, and the OAuth source keeps the token request (https://id:secret@host/…/token?scope=…), which the server sends to get one.
           </div>
-          {mails.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
-          {mails.map((m) => (
-            <Fragment key={keyOf(m)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>mail {m.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {m.smtp && `${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`}
-                  {m.smtp && m.mailbox && " · "}
-                  {m.mailbox &&
-                    `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
-                  {m.oauth && ` · logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`}
-                </span>
-                {m.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {m.deployment} only</span>}
+          <ResourceTable
+            kind="mail"
+            empty="no mail bound"
+            known={h.grantsKnown}
+            rows={mails.map((m) => ({
+              ...mailLine(m),
+              holders: mailHolders(m),
+              waiting: waitingFor("mail", m, mails, h.proposals),
+              actions: (
                 <button
                   style={small}
+                  aria-label={`unbind ${m.name}`}
                   {...gateOf(unbind, { title: "unbind the name: mail on its way through it is given up" })}
                   onClick={async () => {
                     const whose = m.deployment ? ` for ${m.deployment}` : "";
@@ -1044,10 +1037,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
                 >
                   ×
                 </button>
-              </div>
-              {usedBy("mail", m, mails, mailHolders(m))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -1154,27 +1146,18 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             listens on it (<code>LISTEN</code>) in a database bound here, the one each deployment sees by that name, and each notification
             (<code>pg_notify</code>, from a trigger) is an event; what is sent while it isn&apos;t listening is lost, for the flow to read from the table.
           </div>
-          {feeds.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
-          {feeds.map((f) => (
-            <Fragment key={keyOf(f)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>feed {f.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`}
-                  {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
-                  {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
-                  {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
-                  {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
-                  {f.id && ` · its id ${f.id.join("/")}`}
-                  {f.sequence && ` · numbered by ${f.sequence}${f.key ? `, each ${f.key} on its own` : ""}`}
-                  {f.resume?.query && ` · resumes from its position with ${f.resume.query}= in the URL`}
-                  {f.resume?.header && ` · resumes from its position with the header ${f.resume.header}`}
-                  {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
-                  {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
-                </span>
-                {f.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {f.deployment} only</span>}
+          <ResourceTable
+            kind="feed"
+            empty="no feed bound"
+            known={h.grantsKnown}
+            rows={feeds.map((f) => ({
+              ...feedLine(f),
+              holders: feedHolders(f),
+              waiting: waitingFor("feed", f, feeds, h.proposals),
+              actions: (
                 <button
                   style={small}
+                  aria-label={`unbind ${f.name}`}
                   {...gateOf(unbind, { title: "unbind the name: its connections close" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
@@ -1183,10 +1166,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
                 >
                   ×
                 </button>
-              </div>
-              {usedBy("feed", f, feeds, feedHolders(f))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -1356,20 +1338,18 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             received is kept out of sight at first (5m, kept so while it runs); and whether a failed run&apos;s message is left in the queue, for its redrive
             policy to move, rather than deleted.
           </div>
-          {queues.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
-          {queues.map((q) => (
-            <Fragment key={keyOf(q)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>queue {q.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {`${q.address} (from ${q.url})`}
-                  {q.fifo && " · FIFO"}
-                  {` · ${Math.round(q.largest / 1024)} KiB at most · out of sight for ${q.visibility}s`}
-                  {q.keep_failed && " · a failed run's message is left for the redrive"}
-                </span>
-                {q.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {q.deployment} only</span>}
+          <ResourceTable
+            kind="queue"
+            empty="no queue bound"
+            known={h.grantsKnown}
+            rows={queues.map((q) => ({
+              ...queueLine(q),
+              holders: queueHolders(q),
+              waiting: waitingFor("queue", q, queues, h.proposals),
+              actions: (
                 <button
                   style={small}
+                  aria-label={`unbind ${q.name}`}
                   {...gateOf(unbind, { title: "unbind the name: its listeners stop" })}
                   onClick={async () => {
                     const whose = q.deployment ? ` for ${q.deployment}` : "";
@@ -1379,10 +1359,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
                 >
                   ×
                 </button>
-              </div>
-              {usedBy("queue", q, queues, queueHolders(q))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}

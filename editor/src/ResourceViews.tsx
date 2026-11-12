@@ -1,10 +1,11 @@
 // Resources' views (web-console-L4.md §9.1), beside HostPages.tsx's tabs and their bind forms:
-// what uses a resource, each deployment and what it does with it, and in amber what a version
+// each kind bound by name as one table (the resource, its details, what uses it); what uses a
+// resource, each deployment and what it does with it, and in amber what a version
 // waiting for a person would add, read from what it asks to be approved; a database's matrix of
 // tables and flows; each flow's collections and channels; and the server's secrets as a table.
 // A secret's value is never shown: its mark (set · v3), where it comes from, and its history.
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { channelCounts, getCollectionItems, getDeploymentState, getSecretHistory, previewSecretRollback, rollbackSecret, type ChannelCount, type DeploymentEntry, type HeldGrant, type Proposal, type SecretHistory as History, type SecretInfo } from "./server";
 import { gateOf, type Answer } from "./useCan";
 import { itemParts, secretReaders, usesText, type Holder, type Matrix, type Waiting } from "./holdings";
@@ -13,6 +14,7 @@ import { secretRollbackReport, sourceLabel } from "./DeploySettings";
 import { format } from "./routes";
 import { versionName } from "./policyMeans";
 import { quiet, small } from "./hostStyles";
+import { lineLabel, type ResourceLine } from "./resourceRows";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
@@ -46,6 +48,62 @@ export function UsedBy({ holders, waiting, known = true }: { holders: Holder[]; 
           <a href={format({ kind: "approvals", tab: "deploys" })}>{versionName(w)}</a> would {usesText(w.uses).map((u) => u.text.replace(/^(\w+?)s\b/, "$1")).join(", ")}
         </span>
       ))}
+    </div>
+  );
+}
+
+/** One binding's row in its tab's table: what it says of itself, who uses it and what a waiting
+ *  version would add, its buttons, and what goes under it (a database's tables and matrix). */
+export type ResourceRow = ResourceLine & { holders: Holder[]; waiting: Waiting[]; actions?: ReactNode; below?: ReactNode };
+
+/** A tab of Resources as a table (§9.1), one for every kind bound by name: the resource (and the
+ *  deployment it is bound for), its details, and Used by. Where it is, when the caller isn't shown
+ *  it, is a dash. `known`: whether the grants could be read, as UsedBy takes it. */
+export function ResourceTable({ kind, rows, known, empty }: { kind: string; rows: ResourceRow[]; known: boolean; empty: string }) {
+  if (rows.length === 0) return <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>{empty}</div>;
+  return (
+    <div className="hl-matrix-wrap">
+      <table className="hl-table hl-resources" aria-label={`${kind} bound`}>
+        <thead>
+          <tr>
+            <th>{kind}</th>
+            <th>details</th>
+            <th>used by</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <Fragment key={lineLabel(r)}>
+              <tr aria-label={lineLabel(r)}>
+                <td className="hl-resources__name">
+                  {r.name}
+                  {r.deployment && <div className="hl-table__dim">for {r.deployment} only</div>}
+                </td>
+                <td className="hl-resources__details">
+                  {r.where !== null ? (
+                    <div className="hl-resources__where">{r.where}</div>
+                  ) : (
+                    <div className="hl-table__dim" title="where it is is shown to those who may bind resources">
+                      —
+                    </div>
+                  )}
+                  {r.notes.length > 0 && <div style={quiet}>{r.notes.join(" · ")}</div>}
+                </td>
+                <td className="hl-resources__used">
+                  <UsedBy holders={r.holders} waiting={r.waiting} known={known} />
+                </td>
+                <td className="hl-secrets__do">{r.actions}</td>
+              </tr>
+              {r.below && (
+                <tr className="hl-resources__below">
+                  <td colSpan={4}>{r.below}</td>
+                </tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
