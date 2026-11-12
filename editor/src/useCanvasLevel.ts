@@ -38,6 +38,7 @@ export function useCanvasLevel({
   inspecting,
   showText,
   onOpened,
+  onPicked,
   run = null,
 }: {
   flow: FlowMeta;
@@ -58,6 +59,8 @@ export function useCanvasLevel({
   /** A row opened: the canvas's nodes it stands for (none matched: the whole flow), to select
    *  and frame once the Nodes level shows. */
   onOpened: (ids: string[]) => void;
+  /** In View runs, a row picked: the canvas's nodes it stands for, for the Inspector. */
+  onPicked?: (ids: string[]) => void;
   /** In View runs, the run shown, as replayed on the canvas: drawn on the rows. */
   run?: RunOnCanvas | null;
 }) {
@@ -154,8 +157,9 @@ export function useCanvasLevel({
     (row: GraphRow, band: number, index: number) => {
       setPicked({ band, index, to: row.at.to });
       showText({ do: "select", from: row.at.from, to: row.at.to });
+      if (viewing && compiled) onPicked?.(rowOnCanvas(row, compiled, canvas.current));
     },
-    [showText],
+    [showText, viewing, compiled, onPicked],
   );
   const onOpen = useCallback(
     (row: GraphRow) => {

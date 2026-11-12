@@ -291,8 +291,8 @@ export function TextPane({
   onEdit: (text: string, formatted: boolean) => void;
   /** What the canvas links to the text: the ranges of what is picked there, and the run. */
   linked?: TextLinked;
-  /** Where the cursor moved to, by the person (an offset). */
-  onCursor: (offset: number) => void;
+  /** Where the cursor moved to, by the person (an offset), and where its selection starts. */
+  onCursor: (offset: number, anchor?: number) => void;
   /** The name at the cursor (its hover, forms and example), for the Inspector; null once the
    *  pane closes. */
   onInspect?: (said: Inspected | null) => void;
@@ -343,7 +343,7 @@ export function TextPane({
               handlers.current.onEdit(u.state.doc.toString(), u.transactions.some((t) => t.isUserEvent("format")));
             }
             const moved = u.view.hasFocus || u.transactions.some((t) => t.annotation(placed));
-            if (u.selectionSet && moved && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
+            if (u.selectionSet && moved && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head, u.state.selection.main.anchor);
             // The name at the cursor, for the Inspector; the last one stays while it is elsewhere.
             if ((u.selectionSet || u.docChanged) && moved) {
               handlers.current.onCaret?.(u.state.selection.main.head);

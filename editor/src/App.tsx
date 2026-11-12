@@ -42,6 +42,7 @@ import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
 import { RunStrip } from "./RunStrip";
+import { rowShows } from "./runRows";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -1167,19 +1168,24 @@ function Canvas({
   const askTextNow = useRef(askTextOpening);
   askTextNow.current = askTextOpening;
   const showText = useCallback((ask: TextAsk) => askTextNow.current(ask), []);
+  // In View runs a row picked or opened shows, in the Inspector, the last of its nodes the run ran:
+  // an answer's respond.
+  const inspectRow = useCallback(
+    (ids: string[]) => {
+      const id = viewing ? rowShows(ids, view.replayed?.order ?? []) : null;
+      if (id) view.pickNode(id);
+    },
+    [viewing, view.replayed, view.pickNode],
+  );
   const frameNodes = useCallback(
     (ids: string[]) => {
       const want = new Set(ids);
       if (ids.length > 0) setNodes((ns) => ns.map((n) => (Boolean(n.selected) === want.has(n.id) ? n : { ...n, selected: want.has(n.id) })));
-      // In View runs the Inspector shows the last of them the run ran.
-      if (viewing && ids.length > 0) {
-        const ran = ids.filter((id) => view.replayed?.order.includes(id));
-        view.pickNode(ran[ran.length - 1] ?? ids[ids.length - 1]);
-      }
+      inspectRow(ids);
       // After the palette comes in beside it, and the canvas has its new width.
       setTimeout(() => void fitView(ids.length > 0 ? { nodes: ids.map((id) => ({ id })), padding: 0.3, duration: 200, maxZoom: 1.25 } : { padding: 0.1, duration: 200 }), 120);
     },
-    [setNodes, fitView, viewing, view.replayed, view.pickNode],
+    [setNodes, fitView, inspectRow],
   );
   const canvasLevel = useCanvasLevel({
     flow,
@@ -1193,6 +1199,7 @@ function Canvas({
     inspecting: inspectorOpen,
     showText,
     onOpened: frameNodes,
+    onPicked: inspectRow,
     run: view.onCanvas,
   });
   const atStatements = canvasLevel.level === "statements";

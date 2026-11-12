@@ -80,3 +80,10 @@ export function graphRun(rows: Map<string, string[]>, run: RunOnCanvas): GraphRu
   const current = node === undefined ? null : (rowOfNode(rows).get(node) ?? null);
   return { ran, current, values, failed };
 }
+
+/** The node a row picked or opened shows in the Inspector: of its nodes, the last the run ran (an
+ *  answer's respond, not the text it answers with), else its last. */
+export function rowShows(ids: string[], order: string[]): string | null {
+  const ran = ids.filter((id) => order.includes(id)).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return ran.at(-1) ?? ids.at(-1) ?? null;
+}

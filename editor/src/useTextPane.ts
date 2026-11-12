@@ -278,10 +278,13 @@ export function useTextPane({
 
   // The cursor picks the node under it: selected on the canvas, or in view mode shown in the
   // side pane (of several written as one, the outermost that ran: lowering makes it last, as the
-  // `equals` of a match arm's `"add"` comes after its const).
+  // `equals` of a match arm's `"add"` comes after its const). In view mode a selection picks
+  // nothing: a row picked on the canvas selects its mark, and shows its own node (useCanvasLevel's
+  // onPicked), not the one the selection's end lands on.
   const onCursor = useCallback(
-    (offset: number) => {
+    (offset: number, anchor = offset) => {
       if (!link) return;
+      if (viewing && anchor !== offset) return;
       const ids = pickAt(link.spans, offset);
       if (ids.length === 0) return;
       if (viewing) {

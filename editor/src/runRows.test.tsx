@@ -16,7 +16,7 @@ import type { WValue } from "./holon";
 import { holonGraph, printHolon } from "./holonText";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { replay } from "./replay";
-import { graphRun, rowOfNode, rowsOnCanvas, rowValue } from "./runRows";
+import { graphRun, rowOfNode, rowShows, rowsOnCanvas, rowValue } from "./runRows";
 import { claimNotes } from "./runs";
 import { runStripFacts } from "./RunStrip";
 import { buildSample, samples } from "./samples";
@@ -129,6 +129,25 @@ describe("a run drawn on the graph", () => {
     expect(rowValue({ type: "Number", value: 5 })).toBe("5");
     expect(rowValue(null)).toBe("—");
     expect(rowValue({ type: "Record", value: [["status", { type: "Number", value: 404 }], ["body", { type: "Text", value: "" }]] })).toBe('404 ""');
+  });
+});
+
+describe("a row picked in a run", () => {
+  it("shows its own last node that ran: each of hello-api's answers, its respond", () => {
+    const { canvas, graph, rows } = viewed("hello-api");
+    const order = replayAll(canvas).order;
+    const answers = graph.bands.flatMap((b, i) => b.rows.map((r, j) => ({ r, key: rowKey(i, j) }))).filter(({ r }) => r.kind === "answer");
+    expect(answers.length).toBeGreaterThan(0);
+    for (const { key } of answers) {
+      const id = rowShows(rows.get(key) ?? [], order);
+      expect(canvas.nodes.find((n) => n.id === id)?.data.name, key).toBe("respond");
+    }
+  });
+
+  it("of nodes that didn't run, its last; of none, nothing", () => {
+    expect(rowShows(["a", "b"], ["b", "a"])).toBe("a");
+    expect(rowShows(["a", "b"], ["x"])).toBe("b");
+    expect(rowShows([], ["x"])).toBeNull();
   });
 });
 
