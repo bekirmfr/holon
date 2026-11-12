@@ -20,9 +20,12 @@ fn separator(name: &str) -> Option<char> {
 /// A text's rows, each its fields: CRLF or LF between them, a quoted field with `""` for a quote
 /// and the separator or a line break inside it, a leading byte-order mark and empty lines dropped.
 /// Nothing for a quote that never closes, text after a closing quote, or a quote inside a field
-/// that isn't quoted.
+/// that isn't quoted, or for more fields and rows than [`MAX_ITEMS`](crate::MAX_ITEMS), found as
+/// soon as they pass it: each is a value, and a line of commas is a field for each byte.
 fn rows(text: &str, sep: char) -> Option<Vec<Vec<String>>> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // The fields and rows made so far.
+    let mut made = 0usize;
     let mut out = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut field = String::new();
@@ -55,12 +58,15 @@ fn rows(text: &str, sep: char) -> Option<Vec<Vec<String>>> {
             c if c == sep => {
                 begun = true;
                 row.push(std::mem::take(&mut field));
+                made = counted(made, 1)?;
             }
             '\r' if chars.peek() == Some(&'\n') => {}
             '\n' => {
                 if begun {
                     row.push(std::mem::take(&mut field));
+                    made = counted(made, 1)?;
                     out.push(std::mem::take(&mut row));
+                    made = counted(made, 1)?;
                 }
                 begun = false;
             }
@@ -73,8 +79,14 @@ fn rows(text: &str, sep: char) -> Option<Vec<Vec<String>>> {
     if begun {
         row.push(field);
         out.push(row);
+        counted(made, 2)?;
     }
     Some(out)
+}
+
+/// `made` values and `more`, or nothing past [`MAX_ITEMS`](crate::MAX_ITEMS).
+fn counted(made: usize, more: usize) -> Option<usize> {
+    Some(made + more).filter(|&n| n <= crate::MAX_ITEMS)
 }
 
 /// `csv_parse`: with `header: "first_row"`, a list of records keyed by the first row's names (none

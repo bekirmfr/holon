@@ -145,6 +145,14 @@ impl Default for Engine {
 /// A call's outputs and what it cost, or why it gave none.
 pub type Measured = Result<(Vec<Option<Value>>, Cost), RunError>;
 
+/// A call's answer as the module wrote it, read: one output per element of the list it is.
+fn decoded(out: &[u8], cost: Cost) -> Measured {
+    match decode_value(out).map_err(|e| RunError::BadOutput(format!("{e:?}")))? {
+        Value::List(items) => Ok((items.into_iter().map(present).collect(), cost)),
+        other => Err(RunError::BadOutput(format!("a {:?}, not a list", other.ty()))),
+    }
+}
+
 impl Engine {
     pub fn new() -> Engine {
         let mut config = Config::default();
@@ -173,7 +181,18 @@ impl Engine {
     /// [`run_measured`](Self::run_measured), and the fuel the call burned whether it answered or
     /// not: what a round that pools its modules' fuel is charged (`Observer::take_fuel`). A
     /// module that never started (not admitted, not compiled) burned none.
+    ///
+    /// What the call holds (its store and memory, freed as it ends) and what the engine keeps of it
+    /// (the module compiled, each function translated as a call first reaches it: the process's,
+    /// whichever round first wanted it) isn't counted against a round's memory
+    /// (`holon_core::memory`); what it answers is, as it is read.
     pub fn run_metered(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> (Measured, u64) {
+        let (answered, burned) = holon_core::memory::uncounted(|| self.run_raw(bytes, limits, inputs), |(answered, _)| answered.as_ref().map_or(0, |(out, _)| out.capacity()));
+        (answered.and_then(|(out, cost)| decoded(&out, cost)), burned)
+    }
+
+    /// [`run_metered`](Self::run_metered), its answer the bytes the module wrote.
+    fn run_raw(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> (Result<(Vec<u8>, Cost), RunError>, u64) {
         let module = match validate_module(bytes).map_err(RunError::NotAModule).and_then(|()| self.compile(bytes)) {
             Ok(module) => module,
             Err(e) => return (Err(e), 0),
@@ -189,8 +208,8 @@ impl Engine {
     }
 
     /// One call of `module` in `store`, its fuel set: what [`run_metered`](Self::run_metered) does
-    /// once the module is compiled.
-    fn call(&self, module: &Module, store: &mut Store<Budget>, limits: &ModuleLimits, inputs: &[Option<Value>]) -> Measured {
+    /// once the module is compiled. Its answer as the module wrote it, and what it cost.
+    fn call(&self, module: &Module, store: &mut Store<Budget>, limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<(Vec<u8>, Cost), RunError> {
         let linker = Linker::<Budget>::new(&self.wasmi);
         let instance = linker.instantiate_and_start(&mut *store, module).map_err(|e| self.failed(e, &*store, limits, RunError::Instantiate))?;
         let memory = instance.get_memory(&*store, "memory").ok_or(RunError::NotAModule(ModuleError::MissingExport("memory")))?;
@@ -239,10 +258,7 @@ impl Engine {
             return Err(RunError::OutOfMemory { memory: limits.memory });
         }
         let cost = Cost { fuel: limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0)), memory: memory.size(&*store) * 65_536 };
-        match decode_value(&out).map_err(|e| RunError::BadOutput(format!("{e:?}")))? {
-            Value::List(items) => Ok((items.into_iter().map(present).collect(), cost)),
-            other => Err(RunError::BadOutput(format!("a {:?}, not a list", other.ty()))),
-        }
+        Ok((out, cost))
     }
 
     fn compile(&self, bytes: &[u8]) -> Result<Module, RunError> {

@@ -184,6 +184,13 @@ pub trait Observer {
     }
     /// Steps taken ([`take_steps`](Observer::take_steps)) and not used, given back.
     fn give_back(&mut self, _steps: u32) {}
+    /// The most this thread may hold ([`memory::held`](crate::memory::held)) for a step to be
+    /// taken: an evaluation that takes steps a batch at a time checks it at each of them, and
+    /// past it asks [`step`](Observer::step), which refuses. None (the default) holds a step to
+    /// nothing.
+    fn held_at_most(&self) -> i64 {
+        i64::MAX
+    }
     /// Fuel for a module call (instructions): up to `want`, its own budget, of what is left of
     /// the round's. A host that pools a round's fuel gives what it has left when that is less,
     /// and none once it has none, and the call is then not made. The default gives `want`: each
@@ -214,9 +221,16 @@ pub const DEFAULT_MAX_FUEL: u64 = 4_000_000_000;
 /// The most fuel any grant gives a round. `holon verify` runs a run again held to it, so a run
 /// within any grant's fuel is run again in full.
 pub const MAX_FUEL_CEILING: u64 = 20_000_000_000;
+/// The bytes a round may come to hold ([`memory::held`](crate::memory::held), what it made and
+/// kept: its values, what its host records of them) when its host says nothing else. The host's
+/// `max_memory` limit; a flow may ask for more, to [`MAX_MEMORY_CEILING`].
+pub const DEFAULT_MAX_MEMORY: u64 = 256 << 20;
+/// The most memory any grant gives a round.
+pub const MAX_MEMORY_CEILING: u64 = 4 << 30;
 
-/// Observes nothing but the steps and the modules' fuel, against budgets: plain [`eval`] held to
-/// `left` steps and `fuel` instructions of module calls.
+/// Observes nothing but the steps, the modules' fuel and the memory held, against budgets: plain
+/// [`eval`] held to `left` steps, `fuel` instructions of module calls, and what the thread may
+/// hold.
 pub struct Budgeted {
     pub left: u64,
     /// Whether it ran out: what it computed is then absent where it stopped.
@@ -225,22 +239,47 @@ pub struct Budgeted {
     pub fuel: u64,
     /// Whether a module call ran out of it: that call, and any after it, gave nothing.
     pub out_of_fuel: bool,
+    /// The most the thread may hold ([`memory::held`](crate::memory::held)) for a step to be
+    /// taken: what it held when the budget was made, and the bytes the evaluation may keep.
+    pub at_most: i64,
+    /// Whether a step found it held more: that step, and every one after it, was refused.
+    pub out_of_memory: bool,
 }
 
 impl Budgeted {
-    /// `steps` steps, and the fuel a round gets when its host says nothing else.
+    /// `steps` steps, and the fuel and the memory a round gets when its host says nothing else.
     pub fn new(steps: u64) -> Budgeted {
-        Budgeted { left: steps, exhausted: false, fuel: DEFAULT_MAX_FUEL, out_of_fuel: false }
+        Budgeted { left: steps, exhausted: false, fuel: DEFAULT_MAX_FUEL, out_of_fuel: false, at_most: i64::MAX, out_of_memory: false }
+            .with_memory(DEFAULT_MAX_MEMORY)
     }
 
     /// The same, its module calls held to `fuel` instructions all told.
     pub fn with_fuel(self, fuel: u64) -> Budgeted {
         Budgeted { fuel, ..self }
     }
+
+    /// The same, held to keeping `bytes` more than the thread holds now.
+    pub fn with_memory(self, bytes: u64) -> Budgeted {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        Budgeted { at_most: crate::memory::held().saturating_add(bytes), ..self }
+    }
+
+    /// Whether the thread holds more than it may: once it has, for good, so a round stopped for
+    /// its memory doesn't go on as what it drops frees some.
+    #[inline]
+    fn over_memory(&mut self) -> bool {
+        if !self.out_of_memory && crate::memory::held() > self.at_most {
+            self.out_of_memory = true;
+        }
+        self.out_of_memory
+    }
 }
 
 impl Observer for Budgeted {
     fn step(&mut self) -> bool {
+        if self.over_memory() {
+            return false;
+        }
         match self.left.checked_sub(1) {
             Some(left) => {
                 self.left = left;
@@ -253,6 +292,9 @@ impl Observer for Budgeted {
         }
     }
     fn take_steps(&mut self, want: u32) -> u32 {
+        if self.over_memory() {
+            return 0;
+        }
         if self.left == 0 && want > 0 {
             self.exhausted = true;
         }
@@ -274,6 +316,9 @@ impl Observer for Budgeted {
     fn give_back_fuel(&mut self, unburned: u64, short: bool) {
         self.fuel += unburned;
         self.out_of_fuel |= short;
+    }
+    fn held_at_most(&self) -> i64 {
+        self.at_most
     }
     fn reads_produced(&self) -> bool {
         false
@@ -2749,11 +2794,15 @@ fn at_item(k: usize, asks: &mut Asks, path: &mut Vec<u32>, eval: impl FnOnce(&mu
 /// however deep the nesting, so a function that maps again evaluates under the same observer
 /// type. The steps it takes from the observer outside a batch at a time
 /// ([`Observer::take_steps`]), so each is a count down here, not a `dyn` call, and it gives back
-/// what it didn't use when it is done: the count stays exact.
+/// what it didn't use when it is done: the count stays exact. What the thread holds it checks at
+/// each step against what `outside` allows ([`Observer::held_at_most`]), so a batch of steps
+/// can't keep a function making more than the round may hold.
 struct Asks<'a> {
     outside: &'a mut dyn Observer,
     /// Steps taken from `outside` and not used yet.
     taken: u32,
+    /// What `outside` allows the thread to hold for a step to be taken.
+    at_most: i64,
 }
 
 /// The steps [`Asks`] takes from the observer outside at a time.
@@ -2761,7 +2810,8 @@ const STEPS_TAKEN: u32 = 256;
 
 impl<'a> Asks<'a> {
     fn new(outside: &'a mut dyn Observer) -> Asks<'a> {
-        Asks { outside, taken: 0 }
+        let at_most = outside.held_at_most();
+        Asks { outside, taken: 0, at_most }
     }
 }
 
@@ -2779,6 +2829,10 @@ impl Observer for Asks<'_> {
     }
     #[inline]
     fn step(&mut self) -> bool {
+        if crate::memory::held() > self.at_most {
+            // Past what the round may hold: `outside` refuses the step, and says why.
+            return self.outside.step();
+        }
         if self.taken == 0 {
             self.taken = self.outside.take_steps(STEPS_TAKEN);
             if self.taken == 0 {
@@ -2804,6 +2858,9 @@ impl Observer for Asks<'_> {
     }
     fn give_back_fuel(&mut self, unburned: u64, short: bool) {
         self.outside.give_back_fuel(unburned, short);
+    }
+    fn held_at_most(&self) -> i64 {
+        self.at_most
     }
     fn reads_produced(&self) -> bool {
         false
@@ -3848,6 +3905,70 @@ mod tests {
             let mut none = Budgeted::new(0);
             eval_observed(&unit, &inputs, &r, &mut none);
             assert!(none.exhausted, "{name} applied its function with no step left");
+        }
+    }
+
+    /// Guards: what a round holds is checked at every step, a node's and each application of a
+    /// function's, against what its budget allows: a chain of nodes each doubling a text, a `map`
+    /// whose function keeps a copy of a large text for each item, and a `fold` whose accumulator
+    /// grows by one each item stop within a step or two of passing it, saying `out_of_memory`,
+    /// and every step after is refused, though what they made is freed; a budget that holds what
+    /// they make gives what no budget does.
+    /// Why: steps and fuel bound a round's time, not what it keeps. A request that grows a value
+    /// (`s = s + s`, a list of copies of a body) would hold the server's memory until the process
+    /// aborts, every deployment with it. `Asks` takes steps 256 at a time, so a function applied
+    /// to each item must be checked at each, not at each batch.
+    /// If it fails: `Budgeted::step` or `take_steps` doesn't read `memory::held` against
+    /// `at_most`, isn't refused for good once over, or `Asks::step` doesn't check it at each item.
+    #[test]
+    fn a_round_holds_no_more_than_its_memory_allows_at_any_step() {
+        const KB: usize = 1 << 10;
+        let mut r = MapResolver::new();
+        // Eight nodes, each joining what came before to itself: 64 KiB doubled to 16 MiB.
+        let concat2 = r.insert(prim("concat", 2, Type::Any)).unwrap();
+        let mut edges = vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 0, 0, 1)];
+        for i in 1..8 {
+            edges.extend([edge(i - 1, 0, i, 0), edge(i - 1, 0, i, 1)]);
+        }
+        edges.push(edge(7, 0, BOUNDARY, 0));
+        let doubling = composite(vec![Port { name: "x".into(), ty: Type::Any }], Type::Any, vec![concat2; 8], edges);
+        // A map keeping, for each of 32 items, a list of it and a copy of a 512 KiB text.
+        let list2 = r.insert(prim("list", 2, Type::Any)).unwrap();
+        let mut copies = over("map", &list2, 1);
+        copies.inputs[0].ty = Type::list_any();
+        // A fold adding the 512 KiB text to its accumulator at each of 32 items.
+        let concat3 = r.insert(prim("concat", 3, Type::Any)).unwrap();
+        let growing = Unit {
+            body: UnitBody::Primitive { name: "fold".into() },
+            params: vec![Param::frozen("fn", hex(&concat3))],
+            inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }, Port { name: "extra".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let half = txt(&"x".repeat(512 * KB));
+        let items = list(vec![txt(""); 32]);
+        // Each with the most steps it may take in 4 MiB: the nodes up to the one making 4 MiB and
+        // the next; the map's and the fold's a step of their own and eight items of 512 KiB.
+        let cases: [(&str, &Unit, Vec<Option<Value>>, u64); 3] = [
+            ("nodes", &doubling, vec![Some(txt(&"x".repeat(64 * KB)))], 7),
+            ("map", &copies, vec![Some(items.clone()), Some(half.clone())], 1 + 8 + 2),
+            ("fold", &growing, vec![Some(txt("")), Some(items), Some(half)], 1 + 8 + 2),
+        ];
+        for (what, unit, inputs, most) in cases {
+            // Within 64 MiB: what no budget gives, every step taken.
+            let mut b = Budgeted::new(u64::MAX).with_memory(64 << 20);
+            let out = eval_observed(unit, &inputs, &r, &mut b).into_vec();
+            let all = u64::MAX - b.left;
+            assert!(!b.out_of_memory, "{what}: within its memory");
+            assert_eq!(out, eval(unit, &inputs, &r).into_vec(), "{what}: the same as with no budget");
+            assert!(out[0].is_some() && all > most, "{what}: {all} steps");
+            // Within 4 MiB: a step or two past what fits, then nothing more.
+            let mut b = Budgeted::new(u64::MAX).with_memory(4 << 20);
+            let out = eval_observed(unit, &inputs, &r, &mut b).into_vec();
+            let steps = u64::MAX - b.left;
+            assert!(b.out_of_memory && !b.exhausted, "{what}: past its memory, said");
+            assert_eq!(out, vec![None], "{what}: nothing comes of a round stopped");
+            assert!(steps <= most, "{what}: {steps} of {all} steps taken");
+            assert!(!b.step() && b.take_steps(1) == 0, "{what}: once over, refused for good");
         }
     }
 

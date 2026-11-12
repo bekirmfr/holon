@@ -201,6 +201,7 @@ fn limits_to_numbers(
         ("max_redirects".into(), request.max_redirects as u64),
         ("max_steps".into(), request.max_steps),
         ("max_fuel".into(), request.max_fuel),
+        ("max_memory".into(), request.max_memory),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
         ("max_call_depth".into(), durable.max_call_depth),
@@ -288,6 +289,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
             "max_redirects" => l.max_redirects = n as u32,
             "max_steps" => l.max_steps = n,
             "max_fuel" => l.max_fuel = n,
+            "max_memory" => l.max_memory = n,
             _ => {}
         }
     }
@@ -733,8 +735,10 @@ impl Policy {
         }
         policy.ceilings.extend(file.ceilings);
         // `holon verify` runs a run again held to the built-in ceilings, not this host's: a run
-        // granted more steps or fuel than those would be read as failing where it finished.
-        for (name, most, what) in [("max_steps", holon_core::MAX_STEPS_CEILING, "steps"), ("max_fuel", holon_core::MAX_FUEL_CEILING, "fuel")] {
+        // granted more steps, fuel or memory than those would be read as failing where it
+        // finished.
+        let budgets = [("max_steps", holon_core::MAX_STEPS_CEILING, "steps"), ("max_fuel", holon_core::MAX_FUEL_CEILING, "fuel"), ("max_memory", holon_core::MAX_MEMORY_CEILING, "memory")];
+        for (name, most, what) in budgets {
             if policy.ceilings[name] > most {
                 return Err(format!("the ceiling {name} = {} is above {most}, the most {what} holon verify runs a run again with", policy.ceilings[name]));
             }
@@ -1332,6 +1336,10 @@ mod tests {
         let p = Policy::parse("[limits]\nmax_fuel = 1000\n[ceilings]\nmax_fuel = 2000").unwrap();
         assert_eq!((p.request.max_fuel, p.ceilings["max_fuel"]), (1000, 2000));
         assert_eq!((Policy::default().request.max_fuel, Policy::default().ceilings["max_fuel"]), (holon_core::DEFAULT_MAX_FUEL, holon_core::MAX_FUEL_CEILING));
+        // And memory per round, likewise.
+        let p = Policy::parse("[limits]\nmax_memory = 1000\n[ceilings]\nmax_memory = 2000").unwrap();
+        assert_eq!((p.request.max_memory, p.ceilings["max_memory"]), (1000, 2000));
+        assert_eq!((Policy::default().request.max_memory, Policy::default().ceilings["max_memory"]), (holon_core::DEFAULT_MAX_MEMORY, holon_core::MAX_MEMORY_CEILING));
     }
 
     /// A flow that places a module asks for its budgets as limits, whether or not its author
@@ -1376,7 +1384,7 @@ mod tests {
     }
 
     /// Guards: no round a host grants is more than `holon verify` runs it again with. For each
-    /// budget a round is held to (`max_steps`, `max_fuel`), a policy may raise its ceiling to
+    /// budget a round is held to (`max_steps`, `max_fuel`, `max_memory`), a policy may raise its ceiling to
     /// verify's and no further, and a flow granted that much gets a round of no more than
     /// verify's.
     /// Why: verify runs a run again under its own limits. A round the server ran to its end on
@@ -1387,7 +1395,11 @@ mod tests {
     fn no_round_a_host_grants_is_more_than_verify_runs_it_again_with() {
         let again = crate::verify::rerun_limits();
         type Budget = (&'static str, fn(&Limits) -> u64, u64);
-        let budgets: [Budget; 2] = [("max_steps", |l| l.max_steps, again.max_steps), ("max_fuel", |l| l.max_fuel, again.max_fuel)];
+        let budgets: [Budget; 3] = [
+            ("max_steps", |l| l.max_steps, again.max_steps),
+            ("max_fuel", |l| l.max_fuel, again.max_fuel),
+            ("max_memory", |l| l.max_memory, again.max_memory),
+        ];
         for (name, of, most) in budgets {
             let at = Policy::parse(&format!("[ceilings]\n{name} = {most}")).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(Policy::parse(&format!("[ceilings]\n{name} = {}", most + 1)).is_err(), "{name}: a host may give a round more than verify does");

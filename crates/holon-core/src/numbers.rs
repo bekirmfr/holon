@@ -333,13 +333,41 @@ fn js_space(c: char) -> bool {
 /// items joined with `,`, a record as `[object Object]`.
 pub(crate) fn js_string(v: &Value) -> String {
     match v {
-        Value::Number(x) => number_text(*x),
         Value::Text(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        Value::List(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
+        v => {
+            let mut out = String::new();
+            write_js_string(v, &mut out);
+            out
+        }
+    }
+}
+
+/// [`js_string`] written onto `out`: a list's items and bytes' numbers straight into the one
+/// text, not each made a text of its own first (a text for each byte was 30 times the bytes).
+fn write_js_string(v: &Value, out: &mut String) {
+    use std::fmt::Write;
+    match v {
+        Value::Number(x) => out.push_str(&number_text(*x)),
+        Value::Text(s) => out.push_str(s),
+        Value::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::List(items) => {
+            for (k, x) in items.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                write_js_string(x, out);
+            }
+        }
         // A `Uint8Array`'s, as an array's: its numbers joined with `,`.
-        Value::Bytes(b) => b.iter().map(u8::to_string).collect::<Vec<_>>().join(","),
-        Value::Record(_) | Value::Sum { .. } | Value::Effect { .. } => "[object Object]".into(),
+        Value::Bytes(b) => {
+            for (k, x) in b.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                let _ = write!(out, "{x}");
+            }
+        }
+        Value::Record(_) | Value::Sum { .. } | Value::Effect { .. } => out.push_str("[object Object]"),
     }
 }
 

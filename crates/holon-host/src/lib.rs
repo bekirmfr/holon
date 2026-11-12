@@ -25,6 +25,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Counts the bytes each thread holds in this crate's tests, as the server does, so a test of a
+/// round's memory budget sees what the round holds.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 pub mod collection;
 pub mod packs;
 mod rounds;

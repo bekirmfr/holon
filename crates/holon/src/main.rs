@@ -24,6 +24,11 @@
 //! with roles, API tokens, an identity provider, or this machine's own user through the run file
 //! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
+/// Counts the bytes each thread holds, so a round is held to the memory it is granted
+/// (`max_memory`, holon_core::memory).
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 mod access;
 mod accesscmd;
 mod accounts;

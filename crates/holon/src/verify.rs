@@ -1293,12 +1293,19 @@ fn rerun(
 }
 
 /// The limits a run is run again with, here and by `replay`: no clock or count of requests to
-/// stop it, and the most steps and fuel any grant gives a round (`max_steps`, `max_fuel`), so a
-/// run within its own runs again in full, and one stopped by its own gets further, as a run past
-/// its budget does.
+/// stop it, and the most steps, fuel and memory any grant gives a round (`max_steps`,
+/// `max_fuel`, `max_memory`), so a run within its own runs again in full, and one stopped by its
+/// own gets further, as a run past its budget does.
 pub(crate) fn rerun_limits() -> Limits {
     let ceilings = Limits::ceilings();
-    Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, max_steps: ceilings.max_steps, max_fuel: ceilings.max_fuel, ..Limits::clock_run() }
+    Limits {
+        run_budget: Duration::from_secs(3600),
+        max_requests: usize::MAX,
+        max_steps: ceilings.max_steps,
+        max_fuel: ceilings.max_fuel,
+        max_memory: ceilings.max_memory,
+        ..Limits::clock_run()
+    }
 }
 
 /// Whether an entry says its run did anything: computed, did, sent, called out, read or wrote.

@@ -57,6 +57,24 @@
   `max_steps` and `max_fuel`, not the higher ceilings `holon verify` runs a run again with; a
   version that asks for more has it once deployed, and replayed, a run that needs it says
   `it doesn't finish within what the deployment is granted`, with the limit it ran past.
+- **A run's memory is bounded: `max_memory`.** Steps and fuel bound what a run computes, not
+  what it keeps: a request copying a 64 KiB body into each of ten thousand items held gigabytes
+  within its steps, and `range(40).reduce((s) => s + s, "x")` doubled a text past what the
+  machine has. Either aborted the server, every deployment with it. Now the server counts the
+  bytes each run makes as it makes them, and a run that comes to hold more than `max_memory`
+  between two outbound calls (256 MiB by default) fails, answering 500 and performing nothing. It
+  is a limit like `max_steps`: a flow asks for more with `limits: { max_memory: n }`, which a
+  person approves, up to 4 GiB; a policy may lower that ceiling, not raise it. What a run holds
+  isn't counted alike on every build, so `holon verify` reads a run stopped for it as not run
+  again to its end (exit 3), not as changed. A `js()` call's own memory is still its `memory`.
+- **No leaf makes a value past the most one may be, before it makes it.** A run's memory is
+  looked at between steps, so one step must not make gigabytes: `+`, `concat` and `join` give
+  nothing past 16,777,216 UTF-16 units (`join` with a long separator between many items made
+  gigabytes from megabytes), `bytes_concat` past 64 MiB, `append`, `cons`, `extend`,
+  `to_spliced` and `flat` past 1,048,576 items, `fill` past 64 MiB of copies of its value, and
+  `split`, `json_parse`, `csv_parse`, `xml_parse` and `bytes_to_list` when they would read more
+  than 1,048,576 values out of one text or bytes. `pad`, `gunzip` and a number's text (`js_string`)
+  make what they make with less held on the way.
 
 ## 0.1.0-rc.35
 

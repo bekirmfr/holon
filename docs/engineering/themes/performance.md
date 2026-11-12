@@ -402,6 +402,26 @@ in wasm and about 1% natively: V8 makes the count down a step dearer than the na
 Unpinned, the scheduler moved the process between the laptop's performance and efficiency cores,
 and the same workload's time varied 1.6× from one run to the next.
 
+### The memory budget (2026-11-12)
+
+A round is held to the bytes it may come to hold (`max_memory`, B5): the server, the editor's wasm
+and the tests install `holon_core::memory::Counting` as their global allocator, which adds each
+allocation's size to a thread-local count and takes each free's off, and the round's `Budgeted`
+reads that count at every step (`Asks`, at every item). So each allocation and each free costs an
+add to a thread-local, and each step a read and a compare. Callgrind in WSL as
+[above](#the-step-budget-2026-11-12), `778096c` against the change; instructions a run:
+
+| Route | before | after |
+|---|---:|---:|
+| `crunch`, 1,000 items | 25.21 M | 26.03 M (×1.033) |
+| `hello` | 96.6 K | 95.6 K (×0.99) |
+
+`crunch` builds a record for each item, so it allocates for each, and pays most. In time, the
+native evaluator as above (`evalbench`, eval under `Budgeted`, before and after in turn, pinned,
+15 rounds, twice) came out ×1.02 to ×1.14 by the medians, but on a machine at 90% CPU from other
+work, each round's ratio ranging 0.81 to 1.78: not a measurement to a few percent. The editor's
+wasm wasn't timed.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping

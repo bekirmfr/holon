@@ -101,6 +101,7 @@ can change both columns
 | `max_redirects` | redirects followed | 10 | 20 |
 | `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to) | 10000000 | 200000000 |
 | `max_fuel` | instructions a run's `js()` functions may run in all between two of its outbound calls (each call runs on its own `module_fuel` or what is left of this, the less) | 4000000000 | 20000000000 |
+| `max_memory` | bytes a run may come to hold between two of its outbound calls: what it made since the last and keeps (a `js()` call's own memory is its `module_memory`, freed as it answers) | 268435456 (256 MiB) | 4294967296 (4 GiB) |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
@@ -128,13 +129,18 @@ can change both columns
 
 A run fails and performs nothing when it takes more than `max_steps` steps between two of its
 outbound calls (or before the first, or after the last), when its `js()` functions want more than
-`max_fuel` instructions in all within one of those stretches, or when it is past its time budget at
-the end of one of those stretches: the time is read between them, the steps and instructions are
-counted within them. A run takes the same steps and instructions on any machine, and `holon verify`
-runs it again with up to the ceilings' steps and instructions, so it finishes every run that
-finished (for that, a policy may lower the ceilings of `max_steps` and `max_fuel` but not raise
-them); a run stopped short of the ceilings it reports as not run again to its end, as it can't know
-the host's defaults. An outbound call past a limit doesn't
+`max_fuel` instructions in all within one of those stretches, when it comes to hold more than
+`max_memory` bytes within one, or when it is past its time budget at the end of one of those
+stretches: the time is read between them, the steps, instructions and bytes are counted within
+them. The bytes are counted as they are made and looked at every step, and no step joins a text
+past 16,777,216 UTF-16 units, a list past 1,048,576 items or bytes past 64 MiB (it gives nothing
+instead), so a run goes past its memory by no more than one step makes. A run takes the same steps
+and instructions on any machine, and `holon verify` runs it again with up to the ceilings' steps,
+instructions and bytes, so it finishes every run that finished (for that, a policy may lower the
+ceilings of `max_steps`, `max_fuel` and `max_memory` but not raise them); a run stopped short of
+the ceilings it reports as not run again to its end, as it can't know the host's defaults. The
+bytes a run holds aren't the same on every build (a 32-bit build's values are smaller), so a run
+stopped for its memory it reports so too. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,
 `dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_secret` (it holds a secret's value bound for a
 host the flow's approval doesn't show it going to), `blocked_redirect` (a redirect to

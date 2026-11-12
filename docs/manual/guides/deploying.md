@@ -289,7 +289,7 @@ where a node computes with a secret or a token, which the log never holds (a nod
 one along, or picks a field past it, computes the same and is told); one that failed then.
 
 A replay computes no more than the deployment is granted: each part of a run between two of its
-outbound calls within the deployment's `max_steps` and `max_fuel`, as its own runs are
+outbound calls within the deployment's `max_steps`, `max_fuel` and `max_memory`, as its own runs are
 ([Permissions](../reference/permissions.md)), since a replay needs no approval. A version that
 asks for more has it once deployed; replayed, a run that needs it differs, `it doesn't finish
 within what the deployment is granted`, with the limit it ran past.

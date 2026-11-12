@@ -104,9 +104,17 @@ fn unescape(raw: &str) -> Option<String> {
 struct Reader<'a> {
     text: &'a str,
     at: usize,
+    /// The values made so far: each element's list and name, each attribute, each text.
+    made: usize,
 }
 
 impl<'a> Reader<'a> {
+    /// Counts `more` values made: nothing past [`MAX_ITEMS`](crate::MAX_ITEMS).
+    fn made(&mut self, more: usize) -> Option<()> {
+        self.made += more;
+        (self.made <= crate::MAX_ITEMS).then_some(())
+    }
+
     fn rest(&self) -> &'a str {
         &self.text[self.at..]
     }
@@ -190,6 +198,7 @@ impl<'a> Reader<'a> {
 
     /// An element, from its `<`, `depth` elements inside the root.
     fn element(&mut self, depth: usize) -> Option<Value> {
+        self.made(2)?;
         if depth >= MAX_DEPTH || !self.eat("<") {
             return None;
         }
@@ -214,6 +223,7 @@ impl<'a> Reader<'a> {
             self.space();
             let quote = if self.eat("\"") { "\"" } else if self.eat("'") { "'" } else { return None };
             let value = self.attribute_value(quote)?;
+            self.made(1)?;
             if attributes.insert(key, Value::Text(value)).is_some() {
                 return None;
             }
@@ -229,7 +239,8 @@ impl<'a> Reader<'a> {
                 if end != name || !self.eat(">") {
                     return None;
                 }
-                flush(&mut text, &mut children);
+                let kept = flush(&mut text, &mut children);
+                self.made(kept)?;
                 return Some(element(name, attributes, children));
             } else if self.eat("<!--") {
                 self.comment()?;
@@ -238,7 +249,8 @@ impl<'a> Reader<'a> {
             } else if self.rest().starts_with("<?") {
                 self.instruction()?;
             } else if self.rest().starts_with('<') {
-                flush(&mut text, &mut children);
+                let kept = flush(&mut text, &mut children);
+                self.made(kept)?;
                 children.push(self.element(depth + 1)?);
             } else if self.rest().is_empty() {
                 return None;
@@ -265,12 +277,15 @@ fn element(name: String, attributes: BTreeMap<String, Value>, children: Vec<Valu
     Value::List(items)
 }
 
-/// Ends a text child: kept unless it is only white space, the indentation between elements.
-fn flush(text: &mut String, children: &mut Vec<Value>) {
+/// Ends a text child: kept unless it is only white space, the indentation between elements. How
+/// many it kept, none or one.
+fn flush(text: &mut String, children: &mut Vec<Value>) -> usize {
     let text = std::mem::take(text);
-    if !text.chars().all(is_space) {
-        children.push(Value::Text(text));
+    if text.chars().all(is_space) {
+        return 0;
     }
+    children.push(Value::Text(text));
+    1
 }
 
 /// `xml_parse`: the root element of an XML 1.0 document, or nothing for text that isn't well-formed
@@ -280,7 +295,7 @@ pub(crate) fn parse(text: &str) -> Option<Value> {
     if !text.chars().all(is_char) {
         return None;
     }
-    let mut reader = Reader { text: &text, at: 0 };
+    let mut reader = Reader { text: &text, at: 0, made: 0 };
     let declared = reader.rest().strip_prefix("<?xml").is_some_and(|rest| rest.starts_with(is_space));
     if declared && !reader.until("?>")?[5..].trim_start_matches(is_space).starts_with("version") {
         return None;

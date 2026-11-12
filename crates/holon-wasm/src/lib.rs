@@ -17,6 +17,11 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
+/// Counts the bytes each thread holds, so a round is held to the memory it is granted
+/// in design mode as on the server (`max_memory`, holon_core::memory).
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 use holon_author::builder::FlowDocument;
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
@@ -687,10 +692,12 @@ impl Evaluator {
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
         // With the engine: a module placed on the canvas runs for real, under its budget.
         let with_engine = holon_module::WithEngine::new(&self.resolver, holon_module::shared());
-        // Held to the steps a deployed run gets by default, and the fuel its js and module calls
-        // get all told, so a loop that doesn't end stops here as it would on the server, not
-        // hangs the tab.
-        let mut budget = holon_core::Budgeted::new(holon_core::DEFAULT_MAX_STEPS).with_fuel(holon_core::DEFAULT_MAX_FUEL);
+        // Held to the steps a deployed run gets by default, the fuel its js and module calls get
+        // all told, and the memory it may hold, so a loop that doesn't end, or a value that
+        // keeps growing, stops here as it would on the server, not hangs or crashes the tab.
+        let mut budget = holon_core::Budgeted::new(holon_core::DEFAULT_MAX_STEPS)
+            .with_fuel(holon_core::DEFAULT_MAX_FUEL)
+            .with_memory(holon_core::DEFAULT_MAX_MEMORY);
         let outputs = holon_core::eval_observed(&unit, &core_inputs, &with_engine, &mut budget);
         if budget.exhausted {
             return Err(JsError::new(&format!(
@@ -702,6 +709,12 @@ impl Evaluator {
             return Err(JsError::new(&format!(
                 "it took more than {} instructions of js and module code (max_fuel): a deployed run stops there too",
                 holon_core::DEFAULT_MAX_FUEL
+            )));
+        }
+        if budget.out_of_memory {
+            return Err(JsError::new(&format!(
+                "it took more than {} bytes of memory (max_memory): a deployed run stops there too",
+                holon_core::DEFAULT_MAX_MEMORY
             )));
         }
         let out: Vec<Option<WValue>> = outputs

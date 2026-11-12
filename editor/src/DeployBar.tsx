@@ -53,6 +53,7 @@ const LIMITS: [string, string][] = [
   ["max_redirects", "redirects"],
   ["max_steps", "steps between outbound calls"],
   ["max_fuel", "js instructions between outbound calls"],
+  ["max_memory", "memory held between outbound calls (bytes)"],
   ["max_await_seconds", "longest wait (s)"],
   ["max_waiting_runs", "runs waiting at once"],
   ["max_call_depth", "flows calling flows, deep"],
