@@ -5927,6 +5927,52 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// One run, exported alone (web console L4, Q3): its line as written, which names the hash of the
+/// line before it, and the unit it ran. Checked offline it runs again to its entry, its hash is
+/// the head, and the report says the line before it is only the log's. Its line changed and
+/// hashed again, it no longer runs to its entry; changed and not, its head doesn't match.
+#[test]
+fn one_run_exported_alone_verifies_and_a_changed_one_doesnt() {
+    let state = test_state();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "single", writer, ack).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(put(&state, "single", body).status_code, 200);
+    }
+    let whole: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/single/export", vec![])))).unwrap();
+    let answer = route(&state, &req("GET", "/deployments/single/export?run=1", vec![]));
+    assert!(answer.headers.iter().any(|(k, v)| k == "Content-Disposition" && v.contains("single-run-1.json")), "{:?}", answer.headers);
+    let one: verify::Export = serde_json::from_value(body_json(answer)).unwrap();
+    assert_eq!(one.lines, [whole.lines[1].clone()], "its line exactly as written");
+    assert_eq!(one.head, recorder::line_hash(&one.lines[0]));
+    assert!(one.lines[0].contains(&recorder::line_hash(&whole.lines[0])), "it names the hash of the line before it");
+    assert_eq!(one.units, whole.units, "the units it ran, one version's as all three ran");
+    let report = verify::check(&one, Some(&one.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!((report.runs, report.reruns[0].1 == verify::Rerun::Matched), (1, true));
+    let said = verify::describe(&report, Some(&one.head));
+    assert!(said.contains(&format!("run 1 alone: the line before it hashes to {}", &recorder::line_hash(&whole.lines[0])[..12])), "{said}");
+
+    // What it performed changed, and its line hashed again: it no longer runs to its entry.
+    let mut changed: verify::Export = serde_json::from_value(serde_json::to_value(&one).unwrap()).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&one.lines[0]).unwrap();
+    let performed = v["performed"].to_string().replace("there", "elsewhere");
+    assert_ne!(performed, v["performed"].to_string());
+    v["performed"] = serde_json::from_str(&performed).unwrap();
+    changed.lines = vec![serde_json::to_string(&v).unwrap()];
+    changed.head = recorder::line_hash(&changed.lines[0]);
+    let report = verify::check(&changed, None, &BTreeMap::new());
+    assert_eq!(report.reruns[0], (1, verify::Rerun::Differs("the effects it performed".into())));
+    assert!(!report.ok());
+    // Changed, its head left as it was: the head doesn't match.
+    changed.head = one.head.clone();
+    assert!(!verify::check(&changed, None, &BTreeMap::new()).ok());
+
+    assert_eq!(route(&state, &req("GET", "/deployments/single/export?run=9", vec![])).status_code, 404);
+    assert_eq!(route(&state, &req("GET", "/deployments/single/export?run=x", vec![])).status_code, 400);
+}
+
 /// Removing a deployment keeps its run records (web console L4 §8.4): its log and timeline are
 /// written first as an export `holon verify` checks, beside the logs, and the answer says where.
 /// Deployed again, the slug starts a new chain: its first run names no line before it, and the

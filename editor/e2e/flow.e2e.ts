@@ -2,6 +2,10 @@
 // an address of its own; Settings in one place, a limit lowered there at once and a raise sent to a
 // new version.
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "./fixtures";
 import { deploy, flowRow, gotoPage, openSample } from "./helpers";
 
@@ -47,8 +51,18 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await expect(record.getByRole("region", { name: "on record" })).toContainText("witnessed");
   await record.getByRole("button", { name: "Check offline…" }).click();
   const offline = page.getByRole("dialog");
+  await expect(offline).toContainText(`holon verify hello-api-run-${newest}.json`);
   await expect(offline).toContainText("holon verify hello-api-runs.json --head ");
-  await offline.getByRole("button", { name: "Cancel" }).click();
+  // This run alone, checked on the command line: the `holon` the e2e server was built as.
+  const download = page.waitForEvent("download");
+  await offline.getByRole("button", { name: "Export this run" }).click();
+  const file = join(mkdtempSync(join(tmpdir(), "holon-run-")), `hello-api-run-${newest}.json`);
+  await (await download).saveAs(file);
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const verified = execFileSync(holon, ["verify", file], { encoding: "utf8" });
+  expect(verified).toContain(`run ${newest} alone`);
+  expect(verified.trim().endsWith("ok")).toBe(true);
   await record.getByRole("button", { name: "Step through in the editor" }).click();
   await expect(page).toHaveURL(new RegExp(`#editor\\.hello-api\\.view\\.run-${newest}$`));
   await expect(page.locator(".hl-view__bottom")).toContainText(`#${newest}`);

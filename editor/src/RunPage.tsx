@@ -83,19 +83,23 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
   const o = runOutcome(run);
   const { sent, did } = outside(run);
   const span = Math.max(1, ...steps.map((s) => s.end_us));
+  // This run alone (web-console-L4.md Q3): its line names the hash of the one before it, so it is
+  // checked by itself; tying it to the newest head takes the whole log.
   const checkOffline = async () => {
     const yes = await dialog.confirm(
       `Check run #${seq} offline`,
-      "Export the runs",
+      "Export this run",
       <div className="hl-run__offline">
-        <p>The export holds its log exactly as written and every unit its runs ran. Anywhere, without this server:</p>
+        <p>The export holds this run&apos;s line exactly as written, which names the hash of the line before it, and the units it ran. Anywhere, without this server:</p>
+        <pre>holon verify {slug}-run-{seq}.json</pre>
+        <p>It runs the run again and compares what it produces with what its line says, and checks the line&apos;s hash.</p>
+        <p>To check it against the newest head as well, export the whole log (Runs, Export, or <code>holon export {slug}</code>):</p>
         <pre>
           holon verify {slug}-runs.json{head ? ` --head ${head}` : ""}
         </pre>
-        <p>It checks the chain up to that head, then runs each run again and compares what it produces with what the log says: run #{seq} among them.</p>
       </div>,
     );
-    if (yes) await downloadRuns(slug).catch(() => undefined);
+    if (yes) await downloadRuns(slug, seq).catch((e: unknown) => dialog.notice(e instanceof Error ? e.message : String(e)));
   };
   const exchanges = (run.rounds ?? []).flatMap((r) => r.exchanges);
   const secrets = secretUses(run);

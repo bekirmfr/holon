@@ -1147,9 +1147,10 @@ export async function replayVersion(slug: string, unit: string, runs = 20): Prom
 }
 
 /** `GET /deployments/<slug>/export` — the deployment's runs as one file (its log, exactly as
- *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`. */
-export async function downloadRuns(slug: string): Promise<void> {
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export`);
+ *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`; with `run`,
+ *  that run alone (its line, naming the hash of the one before it), as `<slug>-run-<n>.json`. */
+export async function downloadRuns(slug: string, run?: number): Promise<void> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export${run === undefined ? "" : `?run=${run}`}`);
   // A server from before exports answers the route with a bare 404 (a missing deployment's has a
   // reason): say which it is.
   if (res.status === 404 && !(await res.clone().text()).trim()) {
@@ -1159,7 +1160,7 @@ export async function downloadRuns(slug: string): Promise<void> {
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${slug}-runs.json`;
+  a.download = run === undefined ? `${slug}-runs.json` : `${slug}-run-${run}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }

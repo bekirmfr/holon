@@ -54,6 +54,12 @@ it needs nothing else to be checked. Options:
 | `--server PORT\|URL` | which server: with several running here, a port; a server elsewhere, its URL, with an API token in `HOLON_TOKEN` |
 | `--max-files-bytes N` | ship at most `N` (`64K`, `10M`, `2G`) of the file texts runs read, the oldest runs' first |
 | `--without-files` | ship none of them |
+| `--run N` | run N alone, to `<slug>-run-N.json` |
+
+**One run** (`--run N`, or **Check offline…** on a run's page): its line exactly as written, which
+names the hash of the line before it, and the units and files it ran and read. `holon verify` runs
+it again to its entry and checks its hash, and says the hash of the line before it, which only the
+log has. Whether that line is the one a witness holds a head after takes the whole export.
 
 ## Verifying
 

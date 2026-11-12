@@ -746,7 +746,7 @@ when and who made it. It holds no password or token, so it can be handed to an a
 
 ```
 holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
-                    [--max-files-bytes N | --without-files]
+                    [--run N] [--max-files-bytes N | --without-files]
 ```
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
@@ -755,7 +755,10 @@ verify`. From the server you run on this machine, signed in as you; with several
 token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
-read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.md).
+read; `--without-files` ships none. `--run N` writes run N alone, to `<slug>-run-N.json`: its line
+as written, which names the hash of the line before it, and what it ran and read. `holon verify`
+runs it again and checks its hash; tying it to a witnessed head newer than it takes the whole
+export. See [Checking runs](../guides/checking-runs.md).
 
 ### `holon verify`
 
