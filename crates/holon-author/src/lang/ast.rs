@@ -5,14 +5,14 @@
 //! `Respond`, a ternary and an `if` are both `If`, and a `let` given a new value is a new `Bind`.
 
 /// A place in the text: 1-based line and column, the column counted in characters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Pos {
     pub line: u32,
     pub col: u32,
 }
 
 /// From a start to an exclusive end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,

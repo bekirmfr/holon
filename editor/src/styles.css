@@ -426,11 +426,42 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__line { display: flex; gap: 10px; padding: 0 10px; color: var(--body); }
 .hl-review-page__line--at { background: var(--row); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
 .hl-review-page__n { flex: 0 0 32px; text-align: right; color: var(--faint); user-select: none; }
-.hl-review-page__canvas-box { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); }
-.hl-review-page__canvas { display: block; }
-.hl-review-page__node { fill: var(--bg); stroke: var(--border-strong); }
-.hl-review-page__wire { fill: none; stroke: var(--faint); stroke-width: 1.5; }
-.hl-review-page__label { font-size: 12px; fill: var(--ink); }
+/* The statement graph (StatementGraph.tsx): a column per trigger, a box per statement, its bar in
+   its kind's colour; new rows dashed amber, rows a run didn't reach dimmed, its step thick. */
+.hl-sg { display: flex; flex-direction: column; gap: 8px; overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); padding: 10px; }
+.hl-sg--compute { --k: var(--faint); }
+.hl-sg--data { --k: var(--db); }
+.hl-sg--outside { --k: var(--ext); }
+.hl-sg--answer { --k: var(--accent); }
+.hl-sg--waits { --k: var(--warn); }
+.hl-sg__key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-xs); color: var(--muted); }
+.hl-sg__swatch::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--k); vertical-align: -1px; }
+.hl-sg__swatch--new::before { background: none; border: 1.5px dashed var(--warn); width: 7px; height: 7px; }
+.hl-sg__count { margin-left: auto; color: var(--faint); }
+.hl-sg__bands { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px 22px; }
+.hl-sg__rows { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.hl-sg__wires { position: absolute; left: 0; top: 0; overflow: visible; }
+.hl-sg__wires path { fill: none; stroke: var(--faint); stroke-width: 1.25; }
+.hl-sg__wires circle { fill: var(--faint); }
+.hl-sg__slot { display: flex; align-items: center; gap: 6px; }
+.hl-sg__row { all: unset; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 2px; width: 250px; height: 100%; padding: 0 10px; cursor: pointer; background: var(--bg); border: 1px solid var(--border-strong); border-left: 4px solid var(--k); border-radius: 5px; }
+.hl-sg__row:hover { background: var(--row); }
+.hl-sg__row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hl-sg__row[aria-current="true"] { background: var(--sel); outline: 2px solid var(--accent); outline-offset: 1px; }
+.hl-sg__row.hl-sg__row--head { --k: var(--accent); background: var(--surface); }
+.hl-sg__row--head .hl-sg__name { color: var(--accent); }
+.hl-sg__row--new { border: 1.5px dashed var(--warn); border-left: 4px solid var(--k); background: var(--warn-panel); }
+.hl-sg__row--idle { opacity: 0.45; }
+.hl-sg__row--current { border-width: 3px 3px 3px 5px; border-top-color: var(--ink); border-right-color: var(--ink); border-bottom-color: var(--ink); }
+.hl-sg__said { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.hl-sg__kind { color: var(--k); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.hl-sg__line { color: var(--faint); }
+.hl-sg__outside { margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-family: var(--font-mono); }
+.hl-sg__name { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hl-sg__does { color: var(--faint); font-size: 11px; }
+.hl-sg__value { color: var(--ok-ink); }
+.hl-sg__side { width: 96px; }
+.hl-sg__fallback { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--body); padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); white-space: nowrap; }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
 .hl-table th.hl-table__num { text-align: right; }

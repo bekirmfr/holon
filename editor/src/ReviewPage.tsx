@@ -2,7 +2,7 @@
 // three columns. Left, what it may do, grouped as a person decides (needs your approval /
 // unchanged / no longer), each pointing at its line. Middle, the version itself: its changes
 // beside the version deployed (hunks, as a deploy's consent shows them), the whole flow, or its
-// canvas. Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
+// statement graph, the rows new since the version deployed dashed (StatementGraph.tsx). Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
 // note), what approving it does, the gate ("I read …"), Approve, keep it saved without deploying,
 // or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
 // A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
@@ -15,8 +15,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
 import { codeHunk, touchHunks } from "./hunks";
+import { holonGraph, type FlowGraph } from "./holonText";
 import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
+import { StatementGraph } from "./StatementGraph";
 import { mayGroups, policyRows, textLines, whileItRuns } from "./reviewMay";
 import { touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
@@ -331,7 +333,7 @@ export function ReviewPage({
             ) : view === "whole" ? (
               <Whole lines={lines} line={line} />
             ) : (
-              <Canvas doc={data.saved.document} />
+              <Canvas text={data.text} deployed={data.deployedText} version={data.current?.number ?? null} onLine={show} />
             )}
           </section>
 
@@ -423,41 +425,30 @@ function Whole({ lines, line }: { lines: string[]; line: number | null }) {
   );
 }
 
-/** Its canvas as saved, drawn plain: each node where it was placed, each wire between them. */
-function Canvas({ doc }: { doc: FlowDocument }) {
-  type N = { id: string; position?: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number; height?: number; parentId?: string; data?: { name?: string; label?: string } };
-  const nodes = (doc.nodes as N[]).filter((n) => n.position && !n.parentId);
-  const edges = doc.edges as { id: string; source: string; target: string }[];
-  if (nodes.length === 0) return <p className="hl-flow__none">No canvas was saved with it.</p>;
-  const size = (n: N) => ({ w: n.measured?.width ?? n.width ?? 170, h: n.measured?.height ?? n.height ?? 48 });
-  const box = new Map(nodes.map((n) => [n.id, { ...n.position!, ...size(n) }]));
-  const xs = nodes.flatMap((n) => [box.get(n.id)!.x, box.get(n.id)!.x + box.get(n.id)!.w]);
-  const ys = nodes.flatMap((n) => [box.get(n.id)!.y, box.get(n.id)!.y + box.get(n.id)!.h]);
-  const [x0, y0] = [Math.min(...xs) - 20, Math.min(...ys) - 20];
-  const [w, h] = [Math.max(...xs) - x0 + 20, Math.max(...ys) - y0 + 20];
+/** Its statement graph, the rows new since the version deployed dashed; a row picked shows its
+ *  line in the whole flow. */
+function Canvas({ text, deployed, version, onLine }: { text: string; deployed: string | null; version: number | null; onLine: (n: number) => void }) {
+  const drawn = useMemo((): { graph: FlowGraph; against: FlowGraph | null } | string => {
+    try {
+      const graph = holonGraph(text);
+      let against: FlowGraph | null = null;
+      try {
+        against = deployed === null ? null : holonGraph(deployed);
+      } catch {
+        // The version deployed has no graph: nothing is marked new.
+      }
+      return { graph, against };
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }, [text, deployed]);
+  if (typeof drawn === "string") return <p className="hl-flow__none">It has no statement graph: {drawn}</p>;
   return (
-    // Near the size it was drawn at (three quarters), scrolled when wider than the column.
-    <div className="hl-review-page__canvas-box">
-    <svg className="hl-review-page__canvas" viewBox={`${x0} ${y0} ${w} ${h}`} width={w * 0.75} height={h * 0.75} role="img" aria-label="canvas">
-      {edges.map((e) => {
-        const a = box.get(e.source);
-        const b = box.get(e.target);
-        if (!a || !b) return null;
-        const [sx, sy, tx, ty] = [a.x + a.w, a.y + a.h / 2, b.x, b.y + b.h / 2];
-        return <path key={e.id} d={`M${sx},${sy} C${sx + 60},${sy} ${tx - 60},${ty} ${tx},${ty}`} className="hl-review-page__wire" />;
-      })}
-      {nodes.map((n) => {
-        const b = box.get(n.id)!;
-        return (
-          <g key={n.id}>
-            <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={5} className="hl-review-page__node" />
-            <text x={b.x + 10} y={b.y + 20} className="hl-review-page__label">
-              {n.data?.label ?? n.data?.name ?? n.id}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-    </div>
+    <>
+      <p className="hl-flow__note">
+        {drawn.against ? `Dashed: new since v${version ?? "the one deployed"}.` : deployed === null ? "Its first deploy: all of it is new." : ""} Click a row for its line.
+      </p>
+      <StatementGraph graph={drawn.graph} against={drawn.against} onPick={(r) => onLine(r.line)} />
+    </>
   );
 }

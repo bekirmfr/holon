@@ -4,7 +4,7 @@
 // language (reading, lowering, printing) is holon-author's (crates/holon-author/src/lang/),
 // through the wasm bridge: the same code the command line runs.
 
-import { compile_holon, document_text, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_usage } from "../wasm/holon_wasm.js";
+import { compile_holon, document_text, holon_complete, holon_format, holon_graph, holon_highlight, holon_hover, holon_mistakes, holon_usage } from "../wasm/holon_wasm.js";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
@@ -165,3 +165,56 @@ export const textFormatted = (text: string): string => holon_format(text);
 
 /** The text's colours, in order: each stretch with what it is (editing.rs's `Class`, lowercase). */
 export const textColours = (text: string): (Stretch & { class: string })[] => holon_highlight(text);
+
+// ── A flow by its statements (holon-author's graph.rs, as `holon editor` draws it; web-console-L4.md
+// §4): one band per trigger, each a row per statement, with the wires between them. The terminal
+// and the web read the same function, so they can't draw a flow differently.
+
+/** What a statement does, as its colour says: computes, reads or writes the flow's data, calls
+ *  outside, answers, or waits (for people to approve it, or for an event). */
+export type RowKind = "compute" | "data" | "outside" | "answer" | "waits";
+
+/** A placed node, as a statement's detail: its name, its leaf, its params as set, and what feeds
+ *  each input (`account.out`). */
+export type GraphPart = { name: string; leaf: string; params: [string, string][]; inputs: [string, string][] };
+
+/** A place in the text: 1-based line and column (in characters). */
+export type TextPos = { line: number; col: number };
+
+/** A statement (or, with every node, a node), or its band's trigger. */
+export type GraphRow = {
+  /** Its first and last line, 1-based. */
+  line: number;
+  last: number;
+  /** Its binding, `state.n`, `return`, what it calls. */
+  name: string;
+  /** What its outermost nodes are (`db_one`), or the trigger's. */
+  does: string;
+  /** Its first line, trimmed. */
+  text: string;
+  /** Where the text says it, to put the cursor on when the row is picked; `at` is the same as
+   *  offsets. */
+  mark: { start: TextPos; end: TextPos };
+  at: Stretch;
+  /** The band's trigger: it heads the band. */
+  head: boolean;
+  /** It acts on the world, not only computes. */
+  effect: boolean;
+  kind: RowKind;
+  /** The status it answers when its value is absent, where the text says one (`?? status(404)`). */
+  fallback: string | null;
+  /** The rows of its band it takes from, by index (only earlier ones). */
+  from: number[];
+  /** What it takes from outside its band, by name. */
+  outside: string[];
+  parts: GraphPart[];
+};
+
+/** One trigger and the statements it runs. */
+export type GraphBand = { title: string; rows: GraphRow[] };
+
+/** A flow by its statements, and how many nodes it has in all. */
+export type FlowGraph = { bands: GraphBand[]; nodes: number };
+
+/** The text's statement graph (`every`: each node a row of its own); throws why it has none. */
+export const holonGraph = (text: string, every = false): FlowGraph => holon_graph(text, every);
