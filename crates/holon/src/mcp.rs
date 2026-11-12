@@ -1986,7 +1986,7 @@ mod tests {
         assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
         assert!(String::from_utf8_lossy(&body).contains("approving, granting, starting, stopping and deleting are a person's"), "{}", String::from_utf8_lossy(&body));
         let waiting = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap();
-        assert_eq!(waiting["runs"][0]["waiting"][0]["approved"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
+        assert_eq!(waiting["runs"][0]["waiting"][0]["decisions"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
     }
 
     fn tool_as(api: &(dyn Api + Sync), name: &str, args: Value) -> Result<String, String> {

@@ -4,7 +4,10 @@ import { approvalSaid, decisionSaid, deciderOf, mayDecide, pointKey, toDecide, t
 import type { WValue } from "./holon";
 import type { WaitingRun } from "./server";
 
-const point = (people: number, ...by: string[]): WaitingPoint => ({ name: "payout", expires_at: 0, people, approved: by.map((b) => ({ by: b, at: 0 })) });
+const took = (who: string, approved = true) => ({ slot: 0, who, kind: "person" as const, at: 0, approved });
+const point = (people: number, ...by: string[]): WaitingPoint => ({ name: "payout", expires_at: 0, people, decisions: by.map((b) => took(b)) });
+/** One a decline a run lock turned away is kept on (durable.rs): it counts no approval. */
+const declined = (people: number, ...by: string[]): WaitingPoint => ({ ...point(people, ...by), decisions: [took("bob", false), ...by.map((b) => took(b))] });
 const ada = { name: "ada", kind: "person" as const, role: "editor" as const };
 const t = (value: string): WValue => ({ type: "Text", value });
 const record = (fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
@@ -18,6 +21,8 @@ describe("who decides an approval", () => {
     expect(mayDecide(point(2), ada, true)).toBe("decide");
     expect(mayDecide(point(2, "ada"), ada, true)).toBe("approved");
     expect(mayDecide(point(2, "bob"), { name: "local:ada", kind: "person", role: "admin" }, true)).toBe("decide");
+    expect(mayDecide(declined(2, "ada"), ada, true)).toBe("approved");
+    expect(mayDecide(declined(2), { name: "bob", kind: "person", role: "editor" }, true)).toBe("decide");
     expect(mayDecide({ name: "paid", expires_at: 0 }, ada, true)).toBe("no");
     // Whatever their role on the host: a viewer bound at the point decides, an editor not bound there doesn't.
     expect(mayDecide(point(1), { name: "cy", kind: "person", role: "viewer" }, true)).toBe("decide");
@@ -40,6 +45,7 @@ describe("an approval, said", () => {
     expect(approvalSaid(point(1))).toBe(`a person's approval "payout"`);
     expect(approvalSaid(point(2))).toBe(`2 people's approval "payout"`);
     expect(approvalSaid(point(3, "ada", "bob"))).toBe(`3 people's approval "payout" · 2 of 3: ada and bob approved`);
+    expect(approvalSaid(declined(2, "ada"))).toBe(`2 people's approval "payout" · 1 of 2: ada approved`);
   });
   it("says the decision a run was given", () => {
     const by = (...names: string[]): WValue => ({ type: "List", value: names.map(t) });

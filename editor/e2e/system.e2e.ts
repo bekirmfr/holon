@@ -70,6 +70,19 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   };
   const decide = (token: string, run: string, choice: { approve: boolean; reason?: string }) =>
     control(token, `/deployments/approved-payout/runs/${run}/decide`, { name: "payout", ...choice });
+  /** A logged value as plain JSON (wire.rs `SValue`: `{type, value}`, a record's fields as pairs). */
+  type Logged = { type: string; value: unknown };
+  const plain = (v: Logged): unknown =>
+    v.type === "Record"
+      ? Object.fromEntries((v.value as [string, Logged][]).map(([k, x]) => [k, plain(x)]))
+      : v.type === "List"
+        ? (v.value as Logged[]).map(plain)
+        : v.value;
+  /** The decision each resumed part of `run` was given, as its log entry holds it. */
+  const given = async (run: string) =>
+    ((await (await control(adminToken, "/deployments/approved-payout/log")).json()) as { entries: { kind: string; run_id: string; events?: Record<string, Logged> }[] }).entries
+      .filter((e) => e.kind === "resume" && e.run_id === run && e.events?.payout !== undefined)
+      .map((e) => plain(e.events!.payout));
 
   // A second person: a viewer the admin invites, who joins by the link's token, and decides as an
   // editor on the tag payments, which the sample is deployed with.
@@ -105,6 +118,9 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   expect(both.outcome).toBe("approved");
   expect(both.approved_by).toEqual([ADMIN.name, name]);
   await expect.poll(balance).toBe(before + 50 - 30);
+  // The run was given every decision, each with its step (the short form's one, 0), who took it and as what.
+  const approval = (who: string) => expect.objectContaining({ slot: 0, who, kind: "person", approved: true });
+  await expect.poll(() => given(run)).toEqual([expect.objectContaining({ approved: true, by: [ADMIN.name, name], decisions: [approval(ADMIN.name), approval(name)] })]);
 
   // One decline, with a reason, ends a payout: nothing is paid.
   const meanwhile = await waiting();
@@ -114,4 +130,6 @@ test("approved-payout waits for two people's approval holding nothing, and pays 
   expect(no.outcome).toBe("declined");
   await expect.poll(async () => (await waiting()).includes(declined)).toBe(false);
   expect(await balance()).toBe(before + 50 - 30);
+  const declining = expect.objectContaining({ slot: 0, who: name, kind: "person", approved: false, reason: "not this week" });
+  await expect.poll(() => given(declined)).toEqual([expect.objectContaining({ approved: false, by: [], declined_by: name, reason: "not this week", decisions: [declining] })]);
 });

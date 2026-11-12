@@ -295,11 +295,27 @@ declare module "holon" {
   /** What people decided on an approval. */
   export interface Decision {
     approved: boolean
-    /** Who approved, by account. */
+    /** Who approved, by account, in the order they did. */
     by: string[]
+    /** Every decision taken on it, a decline included, in the order they came. */
+    decisions: Decided[]
     declined_by?: string
     reason?: string
     expired?: true
+  }
+  /** One decision on an approval: which step it took, who took it, and what they decided. */
+  export interface Decided {
+    /** The step's number, from 0 as the steps are written: 0 for `people`. */
+    slot: number
+    /** Who took it, by account. */
+    who: string
+    kind: "person" | "agent"
+    /** The step's role: none for `people`. */
+    role?: string
+    /** When, seconds since the epoch. */
+    at: number
+    approved: boolean
+    reason?: string
   }
 
   /** A host's answer. */

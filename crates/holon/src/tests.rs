@@ -2219,7 +2219,7 @@ export const pay = action(async (order) => {
     assert_eq!(code, 409);
     assert!(said.contains("ada already approved \\\"payout\\\": it needs 2 different people"), "{said}");
     let listed = runs(&state, Some(&ada)).into_iter().find(|r| r["run_id"] == ids[0].as_str()).unwrap();
-    assert_eq!(listed["waiting"][0]["approved"][0]["by"], "ada", "{listed}");
+    assert_eq!((&listed["waiting"][0]["decisions"][0]["who"], &listed["waiting"][0]["decisions"][0]["approved"]), (&serde_json::json!("ada"), &serde_json::json!(true)), "{listed}");
     assert_eq!(decide(&bob, &ids[0], serde_json::json!({ "name": "payout", "approve": false })).0, 400, "a decline says why");
     assert_eq!(decide(&bob, &ids[0], serde_json::json!({ "name": "paid", "approve": true })).0, 404);
     let (code, said) = decide(&bob, &ids[0], serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" }));
@@ -2227,7 +2227,24 @@ export const pay = action(async (order) => {
     assert!(said.contains(r#""outcome":"approved""#), "{said}");
     let d = decided();
     assert_eq!((&d["approved"], &d["by"]), (&serde_json::json!(true), &serde_json::json!(["ada", "bob"])), "{d}");
-    assert_eq!(d["approvals"][1]["reason"], "the invoice matches");
+    // Every decision, with its step (the short form's only one), the decider's kind and why; each
+    // is timed, and the times are left out here.
+    let decisions = |d: &serde_json::Value| -> Vec<serde_json::Value> {
+        let untimed = |x: &serde_json::Value| {
+            let mut x = x.clone();
+            assert!(x.as_object_mut().unwrap().remove("at").is_some_and(|at| at.as_u64().is_some()), "{x}");
+            x
+        };
+        d["decisions"].as_array().unwrap().iter().map(untimed).collect()
+    };
+    let took = |who: &str, approved: bool, reason: Option<&str>| {
+        let mut x = serde_json::json!({ "slot": 0, "who": who, "kind": "person", "approved": approved });
+        if let Some(why) = reason {
+            x["reason"] = why.into();
+        }
+        x
+    };
+    assert_eq!(decisions(&d), [took("ada", true, None), took("bob", true, Some("the invoice matches"))], "{d}");
     assert!(!runs(&state, Some(&ada)).iter().any(|r| r["run_id"] == ids[0].as_str()), "decided, it finished");
     assert_eq!(decide(&bob, &ids[0], approve.clone()).0, 404, "decided once");
 
@@ -2237,12 +2254,14 @@ export const pay = action(async (order) => {
     assert!(said.contains(r#""outcome":"declined""#), "{said}");
     let d = decided();
     assert_eq!((&d["approved"], &d["declined_by"], &d["reason"], &d["by"]), (&serde_json::json!(false), &serde_json::json!("bob"), &serde_json::json!("not this vendor"), &serde_json::json!([])), "{d}");
+    assert_eq!(decisions(&d), [took("bob", false, Some("not this vendor"))], "{d}");
 
     // Nobody else decides in time: it goes on as expired, with who approved.
     assert_eq!(decide(&ada, &ids[2], approve.clone()).0, 200);
     durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
     let d = decided();
     assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
+    assert_eq!(decisions(&d), [took("ada", true, None)], "{d}");
     assert!(runs(&state, Some(&ada)).is_empty());
 
     // Each resumed part's log entry holds the decision it was given; the activity log, who decided.

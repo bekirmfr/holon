@@ -466,8 +466,11 @@ order carries no meaning beyond names being defined before use. `{ ...order, pai
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
 `approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no
 token is handed out for it and no route resumes it. Two different people signed in to Holon approve
-it (or one declines), and the run gets `{approved, by}`. Its permission,
-`Approval("payout/person*2")`, names who decides it: its steps, one step of two people.
+it (or one declines), and the run gets `{approved, by, decisions}`: who approved, and every decision
+taken, a decline included, as `{slot, who, kind, role, at, approved, reason}` (`slot` 0 and no
+`role` for `people`), with `declined_by` and `reason` when declined, or `expired: true` when nobody
+decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
+one step of two people.
 
 An approval in steps names who takes each step, by the role they hold where the approval is (the
 target design, [`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8):

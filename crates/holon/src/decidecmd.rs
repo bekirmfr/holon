@@ -146,12 +146,13 @@ pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
             let point = if people == 0 {
                 format!("event {name:?}")
             } else {
-                let approved: Vec<String> = w["approved"]
+                let approved: Vec<String> = w["decisions"]
                     .as_array()
                     .into_iter()
                     .flatten()
+                    .filter(|d| d["approved"] == true)
                     .map(|a| {
-                        let by = a["by"].as_str().unwrap_or("?");
+                        let by = a["who"].as_str().unwrap_or("?");
                         match a["reason"].as_str() {
                             Some(why) => format!("{by} ({why:?})"),
                             None => by.to_string(),
@@ -180,7 +181,7 @@ mod tests {
             "route": "action pay",
             "parked_at": 0,
             "waiting": [
-                { "name": "payout", "expires_at": 86400, "people": 2, "approved": [{ "by": "dan", "at": 5, "reason": "matches the invoice" }] },
+                { "name": "payout", "expires_at": 86400, "people": 2, "decisions": [{ "slot": 0, "who": "dan", "kind": "person", "at": 5, "approved": true, "reason": "matches the invoice" }] },
                 { "name": "paid", "expires_at": 60 }
             ],
             "delivered": []

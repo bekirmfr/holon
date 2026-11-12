@@ -7,7 +7,7 @@
 
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, isApproval, mayDecide, pointKey, type WaitingPoint } from "./decisions";
+import { approvalSaid, approvalsOf, isApproval, mayDecide, pointKey, type WaitingPoint } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
@@ -163,7 +163,7 @@ function useDecide(onDecided: () => void) {
   const toast = useToast();
   return async (slug: string, runId: string, w: WaitingPoint, approve: boolean) => {
     const people = w.people ?? 1;
-    const left = people - (w.approved ?? []).length;
+    const left = people - approvalsOf(w).length;
     const reason = approve
       ? await dialog.prompt(
           `Approve "${w.name}" for this run of ${slug}?\n\n${left > 1 ? `It needs ${people} different people: ${left - 1} more after you.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,

@@ -64,6 +64,15 @@ impl Kind {
         crate::can::role(role).kinds.contains(&self)
     }
 
+    /// As the API writes it: "agent".
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Kind::Person => "person",
+            Kind::Agent => "agent",
+            Kind::Service => "service",
+        }
+    }
+
     /// As a sentence says it: "an agent".
     pub(crate) fn said(self) -> &'static str {
         match self {

@@ -26,6 +26,16 @@
   Run live: a flow in steps checked, and left as written by `holon fmt`; a one-line
   `order: "any"` written over lines; a service's step refused; the steps flow's review and deploy
   refused, saying why; the people form deployed; a role named `ops.lead` refused.
+- **A run is given every decision on its approval.** The decision an approval delivers has
+  `decisions` in place of `approvals`: every decision taken, a decline included, in the order they
+  came, each `{slot, who, kind, role, at, approved, reason}`, the step it took (0, and no role,
+  for `people`), who took it and as what. `by`, `declined_by` and `reason` stay. A waiting run's
+  point lists the same records (`decisions`, which was `approved`), and the editor, `holon decide`
+  and the `runs` tool count its approvals from them. `holon.d.ts` types it (`Decision.decisions`,
+  `Decided`). Run live: approved-payout deployed; a payout's waiting point listed ada's approval
+  with its slot and kind; approved by ada and bob, it paid, and its run was given both decisions,
+  each with its slot and kind; a second, declined by bob with a reason, was given the decline
+  among its decisions, and paid nothing.
 
 ## 0.1.0-rc.35
 

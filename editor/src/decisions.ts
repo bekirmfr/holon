@@ -11,6 +11,9 @@ export type WaitingPoint = WaitingRun["waiting"][number];
 /** Whether people decide it: an approval, not an event a route delivers. */
 export const isApproval = (w: WaitingPoint) => (w.people ?? 0) > 0;
 
+/** Who approved it so far, in the order they did: its decisions that are approvals. */
+export const approvalsOf = (w: WaitingPoint) => (w.decisions ?? []).filter((d) => d.approved);
+
 /** Who `me` decides as, as the server says (durable.rs `decider`): their name, the OS user's
  *  local admin by the name it runs as. */
 export const deciderOf = (me: Me) => me.name.replace(/^local:/, "");
@@ -23,7 +26,7 @@ export const pointKey = (slug: string, name: string) => `${slug}\n${name}`;
  *  person bound a role allowing it on the host, on the flow, or at that approval point). */
 export function mayDecide(w: WaitingPoint, me: Me, may: boolean): "decide" | "approved" | "no" {
   if (!isApproval(w) || !may) return "no";
-  return (w.approved ?? []).some((a) => a.by === deciderOf(me)) ? "approved" : "decide";
+  return approvalsOf(w).some((a) => a.who === deciderOf(me)) ? "approved" : "decide";
 }
 
 const and = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
@@ -31,7 +34,7 @@ const and = (names: string[]) => (names.length < 2 ? names.join("") : `${names.s
 /** An approval as Runs waiting says it: how many people it needs, and who approved so far. */
 export function approvalSaid(w: WaitingPoint): string {
   const people = w.people ?? 0;
-  const by = (w.approved ?? []).map((a) => a.by);
+  const by = approvalsOf(w).map((a) => a.who);
   const needs = people === 1 ? "a person's approval" : `${people} people's approval`;
   return by.length === 0 ? `${needs} "${w.name}"` : `${needs} "${w.name}" · ${by.length} of ${people}: ${and(by)} approved`;
 }

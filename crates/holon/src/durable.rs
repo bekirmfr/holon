@@ -14,10 +14,10 @@
 //!   It finishes (its effects are performed then, once) or waits again. A token is only accepted
 //!   by a resume route of the deployment that issued it, for the waiting point it was minted for.
 //! - **Decide.** An `approval` is a waiting point people decide, never a token: a person signed in
-//!   approves or declines it (`POST /deployments/<slug>/runs/<run_id>/decide`), each approval kept
+//!   approves or declines it (`POST /deployments/<slug>/runs/<run_id>/decide`), each decision kept
 //!   on the waiting point, and once as many different people as it asks have approved, or one
-//!   declines, the decision is delivered as its event, with who decided ([`decide`]). No token
-//!   resumes it, and a start hands none out for it.
+//!   declines, the decision is delivered as its event, with every decision, its step and who took
+//!   it ([`decide`]). No token resumes it, and a start hands none out for it.
 //! - **Expire.** Each waiting point has a deadline (the `await`'s `expires`); past it,
 //!   `{expired: true}` is delivered as its event, so the flow decides what timing out means.
 //! - **Limits.** How long a deployment's runs may wait (`max_await_seconds`) and how many may
@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use holon_core::approval::Steps;
 use holon_host::{Exchange, Waits, Waiting};
 
+use crate::accounts::Kind;
 use crate::*;
 
 /// Every `await` and `approval` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
@@ -261,20 +262,46 @@ pub(crate) struct StoredWaiting {
     /// An approval's steps, the canonical text (`person*2`): empty (not written) for an event.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) steps: String,
-    /// The approvals it has had so far, in the order they came.
+    /// The decisions taken on it so far, in the order they came.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) approved: Vec<Approved>,
+    pub(crate) decisions: Vec<Decided>,
 }
 
-/// One person's approval of a waiting point.
+/// One decision on an approval: which step it took, who took it, and what they decided. The run
+/// is given each as it is kept.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub(crate) struct Approved {
+pub(crate) struct Decided {
+    /// The step's number, from 0 as the steps are written: 0 for the short form.
+    pub(crate) slot: u8,
     /// Their account's name.
-    pub(crate) by: String,
+    pub(crate) who: String,
+    pub(crate) kind: Kind,
+    /// The step's role: none for the short form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) role: Option<String>,
     /// When, seconds since the epoch.
     pub(crate) at: u64,
+    pub(crate) approved: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+}
+
+impl Decided {
+    /// As the run is given it: `{slot, who, kind, role, at, approved, reason}`, the role and the
+    /// reason when there are.
+    fn value(&self) -> Value {
+        let text = |s: &str| Value::Text(s.to_string());
+        let mut r = BTreeMap::from([
+            ("slot".to_string(), Value::Number(f64::from(self.slot))),
+            ("who".to_string(), text(&self.who)),
+            ("kind".to_string(), text(self.kind.name())),
+            ("at".to_string(), Value::Number(self.at as f64)),
+            ("approved".to_string(), Value::Boolean(self.approved)),
+        ]);
+        r.extend(self.role.as_deref().map(|role| ("role".to_string(), text(role))));
+        r.extend(self.reason.as_deref().map(|why| ("reason".to_string(), text(why))));
+        Value::Record(r)
+    }
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -290,30 +317,49 @@ impl StoredWaiting {
             Some(steps) => steps.short().map_or_else(|| steps.slots().map(|(_, _, s)| u64::from(s.people)).sum(), u64::from),
             None => u64::from(holon_core::approval::MAX_PEOPLE),
         });
-        StoredWaiting { name: w.name.clone(), expires_at, people, steps: w.approval.clone().unwrap_or_default(), approved: Vec::new() }
+        StoredWaiting { name: w.name.clone(), expires_at, people, steps: w.approval.clone().unwrap_or_default(), decisions: Vec::new() }
     }
 
-    /// What an approval delivers: `{approved, by, approvals}`, who approved and when, with
-    /// `declined_by` and `reason` when `declined` says who, or `expired: true`.
-    fn decision(&self, approved: bool, declined: Option<(&str, &str)>, expired: bool) -> Value {
+    /// Its approvals so far, in the order they came.
+    fn approvals(&self) -> impl Iterator<Item = &Decided> {
+        self.decisions.iter().filter(|d| d.approved)
+    }
+
+    /// The decline it had, if it had one.
+    fn declined(&self) -> Option<&Decided> {
+        self.decisions.iter().find(|d| !d.approved)
+    }
+
+    /// Whether as many different people as it asks have approved it, and nobody declined.
+    fn approved(&self) -> bool {
+        self.declined().is_none() && self.approvals().count() as u64 >= self.people
+    }
+
+    /// Takes `d`, a decision on this approval: refused when its principal already approved it.
+    /// Once it is decided (declined, or approved by as many as it asks), the decision to deliver;
+    /// none while it waits for more. A decline a run lock turned away (firing.rs) is kept, so it
+    /// is still the decision when someone decides again.
+    fn take(&mut self, d: Decided) -> Result<Option<Value>, String> {
+        if d.approved && self.approvals().any(|a| a.who == d.who) {
+            return Err(format!("{} already approved {:?}: it needs {} different people", d.who, self.name, self.people));
+        }
+        self.decisions.push(d);
+        Ok((self.declined().is_some() || self.approved()).then(|| self.decision(false)))
+    }
+
+    /// What an approval delivers, from its decisions: `{approved, by, decisions}`, who approved
+    /// and every decision taken, with `declined_by` and `reason` when one declined, or
+    /// `expired: true` when it ran out first.
+    fn decision(&self, expired: bool) -> Value {
         let text = |s: &str| Value::Text(s.to_string());
-        let approvals = self
-            .approved
-            .iter()
-            .map(|a| {
-                let mut r = BTreeMap::from([("by".to_string(), text(&a.by)), ("at".to_string(), Value::Number(a.at as f64))]);
-                r.extend(a.reason.as_deref().map(|why| ("reason".to_string(), text(why))));
-                Value::Record(r)
-            })
-            .collect();
         let mut d = BTreeMap::from([
-            ("approved".to_string(), Value::Boolean(approved)),
-            ("by".to_string(), Value::List(self.approved.iter().map(|a| text(&a.by)).collect())),
-            ("approvals".to_string(), Value::List(approvals)),
+            ("approved".to_string(), Value::Boolean(!expired && self.approved())),
+            ("by".to_string(), Value::List(self.approvals().map(|a| text(&a.who)).collect())),
+            ("decisions".to_string(), Value::List(self.decisions.iter().map(Decided::value).collect())),
         ]);
-        if let Some((by, reason)) = declined {
-            d.insert("declined_by".into(), text(by));
-            d.insert("reason".into(), text(reason));
+        if let Some(no) = self.declined() {
+            d.insert("declined_by".into(), text(&no.who));
+            d.insert("reason".into(), text(no.reason.as_deref().unwrap_or_default()));
         }
         if expired {
             d.insert("expired".into(), Value::Boolean(true));
@@ -778,7 +824,7 @@ pub(crate) fn resume_parked(
                 let now = epoch_now();
                 kept.rounds.extend(store_rounds(&run.rounds));
                 kept.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
-                // A point it was already waiting at keeps its deadline, and the approvals it had.
+                // A point it was already waiting at keeps its deadline, and the decisions it had.
                 kept.waiting = run
                     .waiting
                     .iter()
@@ -804,7 +850,7 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
     for (slug, dep) in deployments.lock().unwrap().iter() {
         for p in dep.parked.values() {
             for w in p.waiting.iter().filter(|w| w.expires_at <= now) {
-                let event = if w.people == 0 { expired_event() } else { w.decision(false, None, true) };
+                let event = if w.people == 0 { expired_event() } else { w.decision(true) };
                 due.push((slug.clone(), p.run_id.clone(), w.name.clone(), event));
             }
         }
@@ -828,17 +874,18 @@ pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>,
     }
 }
 
-/// What a person's decision did: the approval still waits for more people, or it is decided, and
-/// the run is held to be given the decision.
-pub(crate) enum Decided<'a> {
+/// What a person's decision did: the approval still waits for more people, or it is decided,
+/// `approved` or not, and the run is held to be given the decision.
+pub(crate) enum Outcome<'a> {
     Waits { people: u64, approved_by: Vec<String> },
-    Decides { claimed: Claimed<'a>, people: u64, approved_by: Vec<String>, event: Value },
+    Decides { claimed: Claimed<'a>, people: u64, approved_by: Vec<String>, approved: bool, event: Value },
 }
 
-/// `by`'s decision on the approval `name` of the run `run_id` in `slug`, made under the
-/// deployments lock, so two people deciding at once decide it once. An approval counts each person
-/// once; when as many as it asks have approved, or `by` declines (with a `reason`), the run is
-/// claimed to be given the decision. The status and why when it can't be decided.
+/// `by`'s decision, as `kind`, on the approval `name` of the run `run_id` in `slug`, made under
+/// the deployments lock, so two people deciding at once decide it once. Each decision is kept on
+/// the waiting point, and an approval counts each person once; when as many as it asks have
+/// approved, or one declines (with a `reason`), the run is claimed to be given the decision. The
+/// status and why when it can't be decided.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide<'a>(
     deployments: &'a Mutex<BTreeMap<String, Deployment>>,
@@ -846,10 +893,11 @@ pub(crate) fn decide<'a>(
     run_id: &str,
     name: &str,
     by: &str,
+    kind: Kind,
     approve: bool,
     reason: Option<String>,
     now: u64,
-) -> Result<Decided<'a>, (u16, String)> {
+) -> Result<Outcome<'a>, (u16, String)> {
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or((404, format!("no deployment {slug:?}")))?;
     let run = dep.parked.get_mut(run_id).ok_or((404, format!("no run {run_id} of {slug:?} is waiting: it may have been decided, or finished")))?;
@@ -861,22 +909,16 @@ pub(crate) fn decide<'a>(
         return Err((409, format!("{name:?} is an event, which its route delivers: nobody decides it")));
     }
     let people = w.people;
-    if approve {
-        if w.approved.iter().any(|a| a.by == by) {
-            return Err((409, format!("{by} already approved {name:?}: it needs {people} different people")));
-        }
-        w.approved.push(Approved { by: by.to_string(), at: now, reason: reason.clone() });
-    }
-    let approved_by: Vec<String> = w.approved.iter().map(|a| a.by.clone()).collect();
-    let event = if !approve {
-        w.decision(false, Some((by, reason.as_deref().unwrap_or_default())), false)
-    } else if (w.approved.len() as u64) < people {
-        return Ok(Decided::Waits { people, approved_by });
-    } else {
-        w.decision(true, None, false)
+    // The short form's one step: slot 0, with no role. A deploy refuses any other steps until they
+    // are decided by their slots (permissions.rs).
+    let taken = w.take(Decided { slot: 0, who: by.to_string(), kind, role: None, at: now, approved: approve, reason }).map_err(|why| (409, why))?;
+    let approved_by: Vec<String> = w.approvals().map(|a| a.who.clone()).collect();
+    let Some(event) = taken else {
+        return Ok(Outcome::Waits { people, approved_by });
     };
+    let approved = w.approved();
     run.resuming = true;
-    Ok(Decided::Decides { claimed: Claimed { deployments, slug: slug.to_string(), run_id: run_id.to_string() }, people, approved_by, event })
+    Ok(Outcome::Decides { claimed: Claimed { deployments, slug: slug.to_string(), run_id: run_id.to_string() }, people, approved_by, approved, event })
 }
 
 /// What `POST /deployments/<slug>/runs/<run_id>/decide` takes.
@@ -920,6 +962,8 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
         Ok(by) => by,
         Err(refusal) => return refusal.response(),
     };
+    // A person: no other kind decides until an approval's steps are decided by their slots (can.rs).
+    let kind = caller.kind.unwrap_or_default();
     let reason = body.reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
     if reason.as_ref().is_some_and(|r| r.chars().count() > MAX_REASON_CHARS) {
         return err(400, format!("a reason is at most {MAX_REASON_CHARS} characters"));
@@ -931,16 +975,16 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     // In the activity log as what it was, by whom.
     let recorded = |state: &AppState| state.activity.record(if body.approve { "approved" } else { "declined" }, &format!("{slug} run {run_id} at {:?}", body.name), Some(&by));
     let reply = |people: u64, approved_by: &[String], outcome: &str| serde_json::json!({ "name": body.name, "people": people, "approved_by": approved_by, "outcome": outcome });
-    match decide(deployments, slug, run_id, &body.name, &by, body.approve, reason, epoch_now()) {
+    match decide(deployments, slug, run_id, &body.name, &by, kind, body.approve, reason, epoch_now()) {
         Err((code, why)) => err(code, why),
-        Ok(Decided::Waits { people, approved_by }) => {
+        Ok(Outcome::Waits { people, approved_by }) => {
             recorded(state);
             persist_deployments(path, deployments);
             Response::json(&reply(people, &approved_by, "waiting"))
         }
-        Ok(Decided::Decides { claimed, people, approved_by, event }) => {
+        Ok(Outcome::Decides { claimed, people, approved_by, approved, event }) => {
             recorded(state);
-            let mut answer = reply(people, &approved_by, if body.approve { "approved" } else { "declined" });
+            let mut answer = reply(people, &approved_by, if approved { "approved" } else { "declined" });
             if let Err(e) = resume_parked(&state.store, deployments, path, slug, claimed, &body.name, event) {
                 answer["run_error"] = e.into();
             }
@@ -969,5 +1013,100 @@ mod tests {
         assert!(a.starts_with("rt_") && a.len() == 3 + 32, "{a}");
         assert_ne!(waits("ab").token("paid"), a, "another run, another token");
         assert!(same_token(&a, &token_for("aa", "paid")) && !same_token(&a, &token_for("aa", "paid2")));
+    }
+
+    /// **T5** (docs/L4s/approval-steps-plan.md §5): what a run waiting at an approval for two
+    /// people is given, from the decisions taken on it, each row its decisions in turn, which of
+    /// them decides it (none: it runs out), and the value. Every decision is in `decisions`, with
+    /// its step, kind and when; a decline is the decision, whatever is taken after it.
+    #[test]
+    fn an_approval_gives_its_run_every_decision_taken() {
+        let point = || StoredWaiting { name: "payout".into(), expires_at: 100, people: 2, steps: "person*2".into(), decisions: Vec::new() };
+        let took = |who: &str, approved: bool, reason: Option<&str>, at: u64| Decided {
+            slot: 0,
+            who: who.into(),
+            kind: Kind::Person,
+            role: None,
+            at,
+            approved,
+            reason: reason.map(Into::into),
+        };
+        let ada = serde_json::json!({ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true });
+        let rows = [
+            (
+                "approved by two people",
+                vec![took("ada", true, None, 5), took("bob", true, Some("the invoice matches"), 9)],
+                Some(1),
+                serde_json::json!({
+                    "approved": true,
+                    "by": ["ada", "bob"],
+                    "decisions": [ada, { "slot": 0, "who": "bob", "kind": "person", "at": 9, "approved": true, "reason": "the invoice matches" }],
+                }),
+            ),
+            (
+                "declined by one",
+                vec![took("bob", false, Some("not this vendor"), 7)],
+                Some(0),
+                serde_json::json!({
+                    "approved": false,
+                    "by": [],
+                    "decisions": [{ "slot": 0, "who": "bob", "kind": "person", "at": 7, "approved": false, "reason": "not this vendor" }],
+                    "declined_by": "bob",
+                    "reason": "not this vendor",
+                }),
+            ),
+            (
+                "approved by one, then declined by them",
+                vec![took("ada", true, None, 5), took("ada", false, Some("wrong account"), 8)],
+                Some(1),
+                serde_json::json!({
+                    "approved": false,
+                    "by": ["ada"],
+                    "decisions": [ada, { "slot": 0, "who": "ada", "kind": "person", "at": 8, "approved": false, "reason": "wrong account" }],
+                    "declined_by": "ada",
+                    "reason": "wrong account",
+                }),
+            ),
+            (
+                "declined, a run lock turning it away, then approved by two",
+                vec![took("bob", false, Some("not this vendor"), 7), took("ada", true, None, 5), took("cy", true, None, 9)],
+                Some(0),
+                serde_json::json!({
+                    "approved": false,
+                    "by": ["ada", "cy"],
+                    "decisions": [
+                        { "slot": 0, "who": "bob", "kind": "person", "at": 7, "approved": false, "reason": "not this vendor" },
+                        ada,
+                        { "slot": 0, "who": "cy", "kind": "person", "at": 9, "approved": true },
+                    ],
+                    "declined_by": "bob",
+                    "reason": "not this vendor",
+                }),
+            ),
+            (
+                "approved by one, then run out",
+                vec![took("ada", true, None, 5)],
+                None,
+                serde_json::json!({ "approved": false, "by": ["ada"], "decisions": [ada], "expired": true }),
+            ),
+            ("run out undecided", vec![], None, serde_json::json!({ "approved": false, "by": [], "decisions": [], "expired": true })),
+        ];
+        for (what, decisions, decides_at, want) in rows {
+            let mut w = point();
+            let mut given = None;
+            for (i, d) in decisions.into_iter().enumerate() {
+                given = w.take(d).unwrap();
+                assert_eq!(given.is_some(), decides_at.is_some_and(|at| i >= at), "{what}: decision {i}");
+            }
+            let given = given.unwrap_or_else(|| w.decision(true));
+            let given: serde_json::Value = serde_json::from_str(&holon_core::stringify_json(&given).unwrap()).unwrap();
+            assert_eq!(given, want, "{what}");
+        }
+
+        // One person approves once, and it waits on for another.
+        let mut w = point();
+        assert_eq!(w.take(took("ada", true, None, 5)), Ok(None));
+        assert_eq!(w.take(took("ada", true, None, 6)), Err("ada already approved \"payout\": it needs 2 different people".into()));
+        assert_eq!(w.decisions.len(), 1, "the refused approval isn't kept");
     }
 }

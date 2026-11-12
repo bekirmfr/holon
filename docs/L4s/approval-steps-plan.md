@@ -338,6 +338,12 @@ interface Decided {
   change. Its run's answer, in the e2e and live, shows `decisions`.
 - `docs/LANGUAGE.md`, the manual's reference: the value.
 
+As built, the waiting point keeps the same records, `decisions` in place of `approved`, and the
+value is made from them (`StoredWaiting::take`), so a decline a run lock turned away is still the
+decision when someone decides again. The listing's readers (`decisions.ts`, `holon decide`, the
+`runs` tool) count the approvals among them. The decider's kind is the caller's, a person until
+step 5.
+
 ### Tests in 4c
 
 - **T5** (`durable.rs`): one table of approve, approve; decline; expire. Each row gives the value
@@ -347,9 +353,9 @@ interface Decided {
 
 ## 6. Where step 4 leaves step 5
 
-- `StoredWaiting` has `steps`, the canonical text, beside `people` and `approved`, which only the
-  short form uses. Step 5 replaces them with the slots, who filled each, and which are open
-  (§8.7), and lists them so.
+- `StoredWaiting` has `steps`, the canonical text, beside `people`, which only the short form
+  uses, and `decisions`, each with its slot (4c). Step 5 replaces `people` with the slots, which
+  `decisions` says who filled, and which are open (§8.7), and lists them so.
 - Deciding by slot, the slot's role at a scope covering the flow (bindings, step 3), the kind,
   `one principal, one slot`, `not the starter`, `exclude_deployer`, `approvals.agents` (§8.3,
   §8.4), `note` (16 KiB), `holon decide --slot --note`, and the MCP `decide` tool for agent

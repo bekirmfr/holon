@@ -108,12 +108,14 @@ when the flow compiles (flow.rs).
 who decides: a person signed in, an editor or an admin, by their name (the OS user's local
 admin by the name it runs as, so the same person counts once); never an agent, a service (a
 script, not a person), a viewer, or anyone on a server without accounts. `decide` runs under the
-deployments lock. An approval is kept on the waiting point (`approved`: who, when, why), once per
-person (the same person again is a 409). Once as many as it asks have approved, or anyone declines
-(a decline needs a reason), the run is claimed, as a token claims it, and `resume_parked` gives it
-the decision as its event: `{approved, by, approvals}`, with `declined_by` and `reason` for a
-decline. So the resumed part's log entry, and what `holon verify` and a replay read, hold who
-decided. Each decision is in the activity log too (`approved`, `declined`).
+deployments lock. Each decision is kept on the waiting point (`decisions`: its step, who, their
+kind, when, approved or not, and why), an approval once per person (the same person approving again
+is a 409). Once as many as it asks have approved, or anyone declines (a decline needs a reason),
+the run is claimed, as a token claims it, and `resume_parked` gives it the decision as its event:
+`{approved, by, decisions}`, with `declined_by` and `reason` for a decline. The event is made from
+the decisions kept (`StoredWaiting::take`), so a decline a run lock turned away is still the
+decision when someone decides again. So the resumed part's log entry, and what `holon verify` and a
+replay read, hold who decided. Each decision is in the activity log too (`approved`, `declined`).
 
 People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
 --approve|--decline --reason …` (decidecmd.rs), signed in as the OS user's local admin; `holon
@@ -220,7 +222,9 @@ In `crates/holon/src/tests.rs`:
 - `a_deployment_runs_pauses_stops_and_keeps_every_session`; in `lifecycle.rs`,
   `a_deployment_runs_pauses_resumes_and_stops_with_one_session`,
   `each_run_after_a_stop_is_a_new_session_from_the_chosen_state`.
-- In `durable.rs`, `a_runs_tokens_are_derived_stable_and_its_own`.
+- In `durable.rs`, `a_runs_tokens_are_derived_stable_and_its_own`, and
+  `an_approval_gives_its_run_every_decision_taken`: a table of the decisions taken on an approval
+  for two people, and the value its run is given, `decisions` and all.
 - `an_approval_is_decided_by_different_people_never_by_a_token`: no token is handed out for an
   approval or resumes it; a viewer, a service, an agent and the same person twice are refused;
   two people approve and the run goes on with who they were; one decline with a reason ends it; one

@@ -865,14 +865,19 @@ export type DeploymentEntry = {
   agents_propose?: boolean;
 };
 
+/** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
+ *  it, as what, and when. */
+export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string };
+
 /** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;
   route: string | null;
   parked_at: number;
-  /** Each point it waits at; an approval's with how many people it needs and who approved so far. */
-  waiting: { name: string; expires_at: number; people?: number; approved?: { by: string; at: number; reason?: string }[] }[];
+  /** Each point it waits at; an approval's with how many people it needs and the decisions taken
+   *  on it so far. */
+  waiting: { name: string; expires_at: number; people?: number; decisions?: WaitingDecision[] }[];
   delivered: string[];
 };
 
