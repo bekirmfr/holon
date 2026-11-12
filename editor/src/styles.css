@@ -829,14 +829,20 @@ code, kbd, pre, samp { font-family: var(--mono); }
   white-space: normal;
   pointer-events: none;
 }
+/* A node's params: one to a row, the names in one column and the fields lined up in the next. Beside
+   the outputs (a node with no inputs to show), they take the inputs' column. */
 .hl-node__params {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-items: center;
+  gap: 4px 8px;
   padding: 5px 12px 0;
   color: var(--faint);
   font-size: 10px;
 }
+.hl-node__param { display: contents; }
+.hl-node__col--in > .hl-node__params { padding: 0 0 0 12px; }
 .hl-node__body { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0 9px; }
 .hl-node__col { display: flex; flex-direction: column; gap: 7px; }
 .hl-node__col--out { align-items: flex-end; }
