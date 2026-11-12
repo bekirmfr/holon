@@ -57,6 +57,11 @@ so does a division by zero, so that `??` is reached; no setting tells TypeScript
 comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
 the same flow.
 
+**How deep.** A text nests at most 128 levels: each bracket, operator and block inside another is
+one, and a flow written to be read nests a few dozen. A deeper one is refused where it passes the
+bound, before anything reads it, and so is a handler whose answer is chosen among more than 128
+returns: name a part of it, with a `const` or a function.
+
 ## Imports and settings
 
 An import names something the flow uses from outside a run. Its source says what it is:
@@ -1055,3 +1060,4 @@ broken.holon.ts:5:23: unknown name "nope"
 | two routes share a value | the shared binding |
 | two routes clash; not a method; not a route path | the route |
 | this isn't wired to the route's request (or the handler's trigger) | the statement |
+| nests more than 128 levels deep; more than 128 returns, or conditions, one after another | where it passes the bound |
