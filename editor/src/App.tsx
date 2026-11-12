@@ -15,6 +15,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useNodesInitialized,
   addEdge,
   type NodeTypes,
   type Connection,
@@ -73,7 +74,7 @@ import { CanvasHead, FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPane
 import { StatementGraph } from "./StatementGraph";
 import { InspectorText } from "./InspectorText";
 import { useCanvasLevel } from "./useCanvasLevel";
-import { tidyPositions } from "./canvasTidy";
+import { compilerLaid, tidyPositions } from "./canvasTidy";
 import { FlowPage } from "./FlowPage";
 import { pageOf, routeOfPage, shownAt, type AppPage } from "./Pages";
 import { EditorHome } from "./EditorHome";
@@ -290,7 +291,7 @@ function Canvas({
   live.current = { nodes, edges };
   // Tidy: the shared layout (graphLayout.ts) lays the nodes out, as the VS Code graph does. It moves the
   // nodes only, not the view; the move is one undoable step. Fit is its own button.
-  const tidyCanvas = useCallback(() => {
+  const tidied = useCallback(() => {
     // The layout reads each node's drawn size: the page's own box for the node, which is what it occupies.
     const sized = live.current.nodes.map((n) => {
       const el = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(n.id)}"]`);
@@ -298,8 +299,9 @@ function Canvas({
       return measured ? { ...n, measured } : n;
     });
     const at = tidyPositions(sized, live.current.edges);
-    setNodes((ns) => ns.map((n) => ({ ...n, position: at.get(n.id) ?? n.position })));
-  }, [setNodes, getInternalNode]);
+    return live.current.nodes.map((n) => ({ ...n, position: at.get(n.id) ?? n.position }));
+  }, [getInternalNode]);
+  const tidyCanvas = useCallback(() => setNodes(tidied()), [setNodes, tidied]);
   const fitCanvas = useCallback(() => {
     fitView({ padding: 0.1, duration: 200 });
   }, [fitView]);
@@ -310,6 +312,22 @@ function Canvas({
     () => (viewing ? (beforeView.current?.dirty ?? false) : savedKeyOf(nodes, edges, settings, source) !== savedKey),
     [nodes, edges, settings, source, savedKey, viewing],
   );
+  // A canvas where the compiler laid it out (a sample, a text opened or deployed, the first text
+  // typed into an empty one: canvasTidy.compilerLaid) opens tidied, once its nodes are drawn and
+  // the tidy can read their sizes, and fitted. Not a step to undo, and not a change: a flow that
+  // was saved stays so.
+  const drawn = useNodesInitialized();
+  useEffect(() => {
+    if (!drawn || !compilerLaid(nodes)) return;
+    const ns = tidied();
+    const clean = !viewing && savedKey === savedKeyOf(nodes, edges, settings, source);
+    restoring.current = true;
+    setNodes(ns);
+    if (clean) setSavedKey(savedKeyOf(ns, edges, settings, source));
+    requestAnimationFrame(() => void fitView({ padding: 0.1 }));
+    // Only a newly drawn canvas is looked at; the rest is read as of then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawn, nodes]);
 
   // ── Tabs: one per open flow (useTabs.ts) ──────────────────────────────────────────────────
   const { tabIds, activeId, stash, captureTab, showTab, switchTab, tabOf, closeTab, closed, reopen } = useTabs({

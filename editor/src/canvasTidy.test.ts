@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateHeight, separateColumns, tidyPositions, type TidyNode } from "./canvasTidy";
+import { compilerLaid, estimateHeight, separateColumns, tidyPositions, type TidyNode } from "./canvasTidy";
 import { TIDY } from "./graphLayout";
 
 const node = (id: string, height = 46): TidyNode => ({ id, position: { x: 0, y: 0 }, measured: { width: 232, height } });
@@ -95,5 +95,21 @@ describe("separateColumns", () => {
     expect(out.get("c")!.y).toBe(1000);
     expect(out.get("d")!.y).toBe(50);
     expect(out.get("b")!.x).toBe(0);
+  });
+});
+
+describe("compilerLaid", () => {
+  const at = (x: number, y: number) => ({ position: { x, y } });
+
+  it("knows the compiler's grid, and that a tidied or moved canvas has left it", () => {
+    expect(compilerLaid([at(40, 40), at(300, 40), at(560, 200)])).toBe(true);
+    expect(compilerLaid([at(40, 40), at(312, 47)])).toBe(false);
+    const tidied = tidyPositions([node("a"), node("b")], [{ source: "a", target: "b" }]);
+    expect(compilerLaid([...tidied.values()].map((p) => ({ position: p })))).toBe(false);
+  });
+
+  it("leaves a lone node alone", () => {
+    expect(compilerLaid([at(40, 40)])).toBe(false);
+    expect(compilerLaid([])).toBe(false);
   });
 });

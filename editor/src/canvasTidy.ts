@@ -76,3 +76,14 @@ export function tidyPositions(nodes: TidyNode[], edges: Pick<Edge, "source" | "t
   const placed = new Map(nodes.map((n, i) => [n.id, layout.positions[i]]));
   return separateColumns(placed, heights, TIDY.rowGap);
 }
+
+// The grid the compiler lays a text's canvas out on (crates/holon-author/src/lang/layout.rs): a
+// column every 260 from 40, a row (and the room between bands) a multiple of 80 from 40.
+const COMPILED = { left: 40, top: 40, column: 260, row: 80 };
+const onGrid = (v: number, from: number, step: number) => Number.isInteger((v - from) / step);
+
+/** Whether every node is where the compiler put it, none moved or tidied since: such a canvas
+ *  opens tidied. One someone arranged leaves the grid, and keeps its places. */
+export function compilerLaid(nodes: Pick<TidyNode, "position">[]): boolean {
+  return nodes.length > 1 && nodes.every((n) => onGrid(n.position.x, COMPILED.left, COMPILED.column) && onGrid(n.position.y, COMPILED.top, COMPILED.row));
+}
