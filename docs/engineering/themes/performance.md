@@ -362,6 +362,65 @@ rounds, requests a second, with the server's CPU a request; no errors:
 - **`hello` and `calc` within noise.** The kept children made one call of a 25-node function ×0.58
   in process (`5f29d1d`); whole requests at this load are bound by the HTTP and the host.
 
+### Profiled again at rc.35 (2026-11-12)
+
+[Measuring](measuring.md#2-instructions)'s method on `490d03e` (after #48) and `main` at `d289e43`
+(rc.35): `profile_one_route`, the same in both, at two counts (1,000 and 2,000 runs; `crunch`,
+1,000 items, at 100 and 200), the difference over the difference in runs. `490d03e` gives what the
+sections above counted (88.5 K, 348.8 K, 23.39 M), so the method holds. Instructions a run:
+
+| Route | `490d03e` | rc.35 | change |
+|---|---:|---:|---:|
+| `hello` (unrecorded) | 88,902 | 94,815 | +6.7% |
+| `notes` (the lazy listing) | 352,925 | 495,473 | +40.4% |
+| `crunch`, 1,000 items | 23.78 M | 25.12 M | +5.6% |
+
+- **A recorded run makes its line twice.** A run's random source is 32 bytes since `a781416`
+  (`pgp_encrypt` reads it), kept in every entry's `sourced`, so every line holds
+  `{"type":"Bytes",…}`. `Made::may_hold_a_mark` says yes to any line holding bytes, since base64
+  could hide a `‹` (`40cfc0a`), so `redacted_line`'s shortcut (make the line, look at it, done)
+  never holds: each recorded run makes its line, walks the redactor over its entry and makes the
+  line again. `notes` calls `Made::of` twice a run; `format_escaped_str`, `serialize_entry`, each
+  value's and each node timing's serializing all doubled. About 100 K of `notes`' 142 K.
+- **A run's values are scanned for tainted keys** (`1c094ab`): `tainted` walks every value and text
+  of the entry for `ALWAYS_TAINTED`'s keys and the flow's own, on every recorded run, about 14 K for
+  `notes`. Security's, and kept.
+- **`hello`'s 5.9 K** is new steps a run spread thin: `run_attempt` (rc.35's run record that holds
+  through a crash) 1.1 K, `source` 1.2 K, the 32 random bytes made 0.3 K, `request_record` and
+  `serve_flow` a little more.
+- **`crunch`'s 1.34 M is the evaluator's walk.** `movable`, `at_item` and `builds` are gone;
+  `source` (what feeds a port, through the edge table: `starts`, `ports`, `far`), `apply`, `push`
+  and a `SmallVec` collected per node are new, the last about 0.75 M. Likely `bbbf6a3` (an edge to
+  a far port costs a unit's shape nothing), not bisected.
+
+Where a run's instructions go at rc.35: for `notes`, writing its line (`format_escaped_str` 19%,
+`serialize_entry` 6%, a float's text 2.5%) and allocation (`malloc`, `free` and their insides
+about 15%); for `hello`, allocation (about 25%), then the request's own steps.
+
+Live, the race of the last section with `490d03e` against rc.35, adding the `stress-test`
+sample's three routes; three rounds, 16 connections, 5 s a workload, `490d03e`'s client, no
+errors. A slower container again, so only the ratios compare. Medians, requests a second:
+
+| Workload | `490d03e` | rc.35 | ratio | CPU a request |
+|---|---:|---:|---:|---|
+| `hello` | 55,761 | 52,666 | 0.94 | 49 → 53 µs |
+| `calc` | 46,369 | 42,734 | 0.92 | 62 → 67 µs |
+| `crunch`, 100 / 1,000 / 5,000 | 11,732 / 1,642 / 354 | 11,351 / 1,524 / 339 | 0.97 / 0.93 / 0.96 | 2.38 → 2.54 ms at 1,000 |
+| a filter by fold, 1,000 / 5,000 | 3,821 / 871 | 3,812 / 809 | 1.00 / 0.93 | 4.52 → 4.80 ms at 5,000 |
+| `stress-test` strict | 8,243 | 7,684 | 0.93 | 230 → 263 µs |
+| `stress-test` lazy | 18,667 | 15,935 | 0.85 | 149 → 176 µs |
+| `stress-test` unrecorded | 54,746 | 54,908 | 1.00 | 50 → 50 µs |
+
+`calc`, `crunch` at 1,000 and the filter at 5,000 lost with the rounds' ranges apart; `hello`,
+strict and lazy by medians with ranges touching. The recorded routes lost most, as the profile
+says: lazy pays the second line in CPU, strict pays it beside its sync. An unrecorded route that
+makes no line held even.
+
+What would take it back, not tried: let `may_hold_a_mark` decode a line's bytes and look for the
+mark's own three bytes (`E2 80 B9`) instead of giving up on any, or keep the run's random bytes
+out of the line (by hash, as its other sourced values could be); either keeps a recorded run to
+one line. `crunch`'s walk wants `bbbf6a3` bisected first.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
@@ -407,6 +466,9 @@ rounds, requests a second, with the server's CPU a request; no errors:
 - **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
   copied ([above](#small-values-are-copied-2026-11-07)), and ×1.06 to ×1.09 ahead of it in time
   through a server; folds that build a list gained ×5 to ×21.
+- **A recorded run makes its line twice since rc.35**: every line holds the run's random bytes,
+  so redaction's shortcut never holds; lazy ×0.85 and `notes` +40% in instructions against
+  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)).
 - **A ternary costs three nodes more since `befee65`** (a guard on each side, as JavaScript
   chooses): a filter by fold ×0.85 through a server against `78f8f81`, still ×18 the filter before
   #43 ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).
