@@ -144,7 +144,7 @@ fn record(found: Option<&Cell<usize>>) -> String {
         let mut store = MapResolver::new();
         crate::text::restore(&lowered.doc, &mut store, &Names::new());
         let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+        let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
         let mut cases: Vec<Case> = Vec::new();
         for e in &server.endpoints {
             let inputs = bodies().iter().map(|b| vec![Some(request(&e.method, &e.path, b))]).collect();
@@ -224,7 +224,7 @@ fn the_compute_heavy_flows_functions_all_run_down_a_plan() {
     let mut store = MapResolver::new();
     crate::text::restore(&lowered.doc, &mut store, &Names::new());
     let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-    crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+    crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
     let mut functions = Vec::new();
     for unit in store.units() {
         if let holon_core::UnitBody::Primitive { name } = &unit.body

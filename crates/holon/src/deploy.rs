@@ -58,6 +58,8 @@ struct Previous {
     grant: Option<Grant>,
     unit: Option<Hash>,
     browsers: Vec<String>,
+    /// The keys its server taints.
+    taint: Vec<String>,
     /// Its server's handlers, by label: each one's unit.
     handlers: BTreeMap<String, Hash>,
 }
@@ -68,6 +70,7 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
             grant: Some(d.grant.clone()),
             unit: Some(d.unit),
             browsers: d.browsers.clone(),
+            taint: d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
             handlers: d.server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect(),
         },
         None => Previous::default(),
@@ -79,6 +82,13 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
 /// visitor's browser, then reads what the flow answers.
 fn browsers_added(browsers: &[String], previous: &[String]) -> Vec<String> {
     browsers.iter().filter(|o| !previous.iter().any(|p| p == "*" || p == *o)).map(|o| format!("Browser({o:?})")).collect()
+}
+
+/// The keys the slug's deployment taints that `taint`, a version's, doesn't, as items a person
+/// approves for an agent (`Untaint("number")`): its runs' values under them are recorded from then
+/// on, which an agent that reads the log would see.
+fn untainted(taint: &[String], previous: &[String]) -> Vec<String> {
+    previous.iter().filter(|k| !taint.contains(k)).map(|k| format!("Untaint({k:?})")).collect()
 }
 
 /// What deploying `unit` needs a person to approve (what policy and the previous grant don't
@@ -271,6 +281,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), unit_hash, !approves);
     if !approves {
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
+        needed.extend(untainted(&server.taint, &previous.taint));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
@@ -600,8 +611,10 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
     let previous = previous_of(deployments, &body.slug);
     let server = read_server(root_unit, &resolver).ok();
     let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, proposes);
+    let taint: Vec<String> = server.as_ref().map(|s| s.taint.clone()).unwrap_or_default();
     if proposes {
         needs.extend(browsers_added(&body.browsers, &previous.browsers));
+        needs.extend(untainted(&taint, &previous.taint));
     }
     let items = manifest.items();
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
@@ -621,7 +634,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
     let sent = holon_core::sent_secrets(root_unit, &resolver);
     let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent });
     let settings = match &asked_now {
-        Some(a) => touches::settings(&a.browsers, &body.browsers),
+        Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
         None => serde_json::json!([]),
     };
     Ok(serde_json::json!({

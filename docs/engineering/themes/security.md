@@ -141,7 +141,8 @@ exceptions are ever granted. At deploy (deploy.rs):
    needs approval; when an agent changes the code, every `SecretRead` needs a person again, or is
    withheld if optional (`approval_needed`), an `Unrecorded` whose handler's code changed is
    withheld (its runs logged) until a person grants it back, and a new `Browser(origin)` needs a
-   person too.
+   person too, as does a taint key the deployment has and the version drops (`Untaint(key)`,
+   `deploy::untainted`): the values under it would be recorded, where an agent may read them.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
 
@@ -199,8 +200,8 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
   never kept.
 - **What a flow taints is redacted like a secret, not refused**: the flow's `taint` keys (a
-  frozen param on each handler's trigger node, gathered onto the server unit's by
-  `routes::flow_taint`, so the unit's hash covers them: `Server.taint`) and every run's
+  deploy setting, `Settings.taint`, frozen on its server unit by `routes::server_unit`, so the
+  unit's hash covers them: `Server.taint`) and every run's
   `ALWAYS_TAINTED` (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`).
   `data::tainted` collects their values from all the run's entry holds (`LogEntry::values_mut`
   and `texts_mut`, the list `Redactor::entry` walks: the request or input, the outputs, the

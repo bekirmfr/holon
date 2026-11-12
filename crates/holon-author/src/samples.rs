@@ -151,7 +151,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "merchant_key", what: "the key merchants send in x-merchant-key, six characters or more", from: None }],
         optional: &[],
         browsers: None,
-        try_it: r#"curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}' http://127.0.0.1:8200/cards answers a token; open the run, and its request shows ‹taint:x-merchant-key› and ‹taint:number› where they were"#,
+        try_it: r#"curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}' http://127.0.0.1:8200/cards answers a token; open the run, and its request shows ‹taint:number› where the number was and the key as the secret it is (a run sent another key shows ‹taint:x-merchant-key›); the deployment settings list both keys under "keeps out of its records""#,
         text: include_str!("../samples/card-vault.holon.ts"),
     },
     Sample {
@@ -1212,7 +1212,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
             for e in &server.endpoints {
                 let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
                 let params: BTreeMap<String, Value> = e.path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(|k| (k.to_string(), text("tea"))).collect();
@@ -1244,7 +1244,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
             for unit in store.units() {
                 if let Err(errors) = holon_core::validate(unit, &store) {
                     panic!("{}: {:?} refused: {errors:?}", s.name, holon_core::hash_unit(unit).map(holon_core::hex));

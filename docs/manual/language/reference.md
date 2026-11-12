@@ -94,7 +94,7 @@ as; its options are the deploy settings:
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days; either alone works. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s", max_requests: 100 }` | Any other limit of the deploy settings, by its name there (see [Permissions](../reference/permissions.md#limits)). A `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. More than the host's default asks for approval. |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`. One origin may be written alone, `browsers: "*"`. |
-| `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs (see **Tainted keys**, below). |
+| `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs, each once (see **Tainted keys**, below). The editor's deployment settings list them under "keeps out of its records", where a key is added or removed. |
 | `tags: ["payments"]` | The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound on a tag acts on every flow deployed with it ([People and access](../guides/people.md)). A version that adds a tag asks for approval, and the review says who the tag lets in. |
 
 **Tainted keys.** The values of the keys a flow taints are kept out of everything the server keeps

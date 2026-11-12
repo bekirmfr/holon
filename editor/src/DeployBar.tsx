@@ -3,7 +3,7 @@
 // what it needs beyond its graph: limits and exceptions, which become part of its manifest). The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { describeItem, manifestTrigger } from "./holon";
+import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
 import {
   deleteSecret,
@@ -34,6 +34,9 @@ export type FlowSettings = {
   /** Its tags, sorted, as its text writes them (`tags: ["payments"]`): part of the unit it
    *  deploys as, so a binding on one covers it. */
   tags?: string[];
+  /** The keys whose values it keeps out of its records (`taint: ["x-api-key"]`), as added, beside
+   *  those every flow does: part of the unit it deploys as. */
+  taint?: string[];
 };
 
 /** A flow's `browsers` setting as the list the server takes. */
@@ -554,6 +557,77 @@ function AgentsMayReadLogs({ capabilities, settings, setSettings, readOnly = fal
   );
 }
 
+/**
+ * The keys whose values the flow keeps out of its records (`taint`), as a list across the panel:
+ * the ones every flow does, fixed, then its own, each removed with its ×, and a field that adds one
+ * once core's rule and the list take it. Editing it rewrites the text's `flow(...)` line, as the
+ * port does.
+ */
+function TaintKeys({ settings, setSettings, readOnly = false }: { settings: FlowSettings; setSettings: (s: FlowSettings) => void; readOnly?: boolean }) {
+  const [draft, setDraft] = useState("");
+  const keys = settings.taint ?? [];
+  const key = draft.trim();
+  const problem = key === "" ? null : taintKeyProblem(key, keys);
+  const set = (next: string[]) => {
+    const { taint: _, ...rest } = settings;
+    setSettings(next.length > 0 ? { ...rest, taint: next } : rest);
+  };
+  const add = () => {
+    if (key === "" || problem) return;
+    set([...keys, key]);
+    setDraft("");
+  };
+  const chip: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 2, padding: "0 4px", border: "1px solid var(--border)", borderRadius: 3 };
+  return (
+    <>
+      <span
+        style={{ gridColumn: "1 / -1", marginTop: 4 }}
+        title="keys whose values the host never keeps of any run: a header, a query or path parameter, a body field, a message. Its records show ‹taint:key› in their place"
+      >
+        keeps out of its records
+      </span>
+      <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} aria-label="taint keys">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {alwaysTainted().map((k) => (
+            <span key={k} style={{ ...chip, color: "var(--faint)", borderStyle: "dashed" }} title="every flow keeps it out">
+              {k}
+            </span>
+          ))}
+          {keys.map((k) => (
+            <span key={k} style={{ ...chip, color: "var(--ink)" }}>
+              {k}
+              {!readOnly && (
+                <button
+                  onClick={() => set(keys.filter((x) => x !== k))}
+                  aria-label={`stop keeping ${k} out`}
+                  title={`record the values of ${k} again`}
+                  style={{ border: "none", background: "none", color: "var(--faint)", cursor: "pointer", padding: 0, fontSize: 11, lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+        {!readOnly && (
+          <input
+            value={draft}
+            placeholder="add a key (x-api-key), Enter"
+            aria-label="add a taint key"
+            autoComplete="off"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") add();
+            }}
+            style={{ ...input, width: "100%", ...(problem ? { borderColor: "var(--bad)" } : {}) }}
+          />
+        )}
+        {problem && <span style={{ color: "var(--bad)" }}>{problem}</span>}
+      </div>
+    </>
+  );
+}
+
 function GroupHead({ label, open, onToggle, first = false }: {
   label: string; open: boolean; onToggle: () => void; first?: boolean;
 }) {
@@ -705,6 +779,7 @@ export function DeployPanel({
                 />
               </>
             )}
+            {(!hideDefaults || !!settings.taint?.length) && <TaintKeys settings={settings} setSettings={setSettings} readOnly={readOnly} />}
             {clocks.length > 0 && (
               <>
                 <span title="its every nodes: each runs its group on its own period">clocks</span>

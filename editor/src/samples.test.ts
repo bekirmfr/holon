@@ -28,7 +28,8 @@ import { describeItem, describeItemSending, manifestItems, manifestTrigger, perm
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
-import { settingsOf } from "./tabs";
+import { settingsOf, settingsSaid } from "./tabs";
+import { DEFAULT_SETTINGS } from "./DeployBar";
 import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
@@ -54,9 +55,8 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
   const ev = new Evaluator();
   restoreUnits(doc, ev);
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
-  const tags = doc.server?.tags ?? [];
-  const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080", tags);
-  const server = deriveServer(nodes, edges, ev, sample.port ?? "", tags);
+  const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080", doc.server ?? {});
+  const server = deriveServer(nodes, edges, ev, sample.port ?? "", doc.server ?? {});
   const endpoints = sample.port ? server.endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
   return { caps, endpoints, clocks: server.clocks.length, files: server.files.length };
@@ -107,10 +107,13 @@ describe("sample flows", () => {
         limits[name] = unit ? Number(n) * SECONDS[unit] * (name.endsWith("_ms") ? 1000 : 1) : Number(n);
       }
       expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
-      // Its `tags` open as the settings' tags, and are in its manifest.
-      const tags = [...(/tags: \[([^\]]*)\]/.exec(said)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-      expect(settingsOf(doc.server).tags ?? []).toEqual(tags);
-      expect(manifestItems(caps, { tags: settingsOf(doc.server).tags }).filter((i) => i.startsWith("Tag("))).toEqual(tags.map((t) => `Tag("${t}")`));
+      // Its `tags` and `taint` open as the settings' own, as written.
+      const listed = (name: string) => [...(new RegExp(`${name}: \\[([^\\]]*)\\]`).exec(said)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      for (const name of ["tags", "taint"] as const) expect(settingsOf(doc.server)[name] ?? [], name).toEqual(listed(name));
+      // Its tags are in its manifest.
+      expect(manifestItems(caps, { tags: settingsOf(doc.server).tags }).filter((i) => i.startsWith("Tag("))).toEqual(listed("tags").map((t) => `Tag("${t}")`));
+      // Typed in the text pane, every setting its text says is the flow's.
+      expect(settingsSaid(doc.server, DEFAULT_SETTINGS)).toEqual(settingsOf(doc.server));
     });
   }
 

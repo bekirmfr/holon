@@ -1490,7 +1490,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use crate::tests::{body_bytes, req_as, test_state, with_people, Signed};
-    use crate::{route, AppState};
+    use crate::{route, AppState, Deployment};
 
     /// `deploy`, with nothing said for the person who reviews it.
     fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, String> {
@@ -2005,32 +2005,83 @@ mod tests {
         call_tool(name, &args, &connect, &Ctx::default())
     }
 
-    /// Which sites' pages a flow answers (`browsers`) is a person's to widen: a page from a new one
-    /// reads what the flow answers, in its visitor's browser. An agent's version that keeps them,
-    /// or answers fewer, deploys; one that adds a site waits for a person.
+    /// What a flow lets out through its settings is a person's to widen: the sites whose pages read
+    /// what it answers (`browsers`), in their visitors' browsers, and the values its records keep (a
+    /// key it no longer taints is recorded, where an agent may read it). An agent's version that
+    /// keeps them, or narrows them, deploys; one that widens them waits for a person as a proposal,
+    /// and the deployment keeps them as the person left them. A person's review says the change.
     #[test]
-    fn an_agent_doesnt_open_a_flow_to_new_sites() {
+    fn an_agent_doesnt_widen_what_a_flow_lets_out() {
         let mut state = test_state();
         let p = with_people(&mut state);
         let (agent, person) = (Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &p.ada });
-        let text = "import { flow, route } from \"holon\"\n\nflow(\"sites\", { port: 8232, browsers: \"https://app.example\" })\n\nroute.get(\"/hi\", () => \"hi\")\n";
-        let plan = agent::plan(text).unwrap();
-        for unit in &plan.units {
-            json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        // Each row's flow on a port of its own: a stopped deployment keeps its port.
+        let text = |slug: &str, settings: &str, says: &str| {
+            let port = if slug == "sites" { 8232 } else { 8233 };
+            format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{slug}\", {{ port: {port}{settings} }})\n\nroute.get(\"/hi\", () => \"{says}\")\n")
+        };
+        // A person's deploy of `text`, approving what it needs; its preview.
+        let deployed_by_person = |text: &str, slug: &str| {
+            let plan = agent::plan(text).unwrap();
+            for unit in &plan.units {
+                json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+            }
+            let mut body = json!({ "slug": slug, "unit": plan.unit, "document": plan.document });
+            if let Some(b) = &plan.browsers {
+                body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
+            }
+            let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(body.clone()))).unwrap();
+            body["acknowledge"] = preview["needs_approval"].clone();
+            json_of(&person, "POST", "/deploy", Some(Body::Json(body))).unwrap();
+            preview
+        };
+        /// A setting as deployed (`base`), widened and narrowed; what the agent is told of the wider
+        /// one, the review's `(setting, now, then)`, and the setting as the deployment holds it.
+        struct Row {
+            slug: &'static str,
+            base: &'static str,
+            wider: &'static str,
+            narrower: &'static str,
+            words: &'static str,
+            review: (&'static str, &'static str, &'static str),
+            held: fn(&Deployment) -> Vec<String>,
         }
-        let ask = |browsers: Value, acknowledge: Value| Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document, "browsers": browsers })));
-        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", ask(json!(["https://app.example"]), preview["needs_approval"].clone())).unwrap();
-        assert!(deploy(&agent, &text.replace("\"hi\"", "\"hello\""), Some("sites")).unwrap().starts_with("Deployed \"sites\""), "the same sites");
-        let wider = deploy(&agent, &text.replace(r#"browsers: "https://app.example""#, r#"browsers: ["https://app.example", "https://other.example"]"#), Some("sites")).unwrap();
-        assert!(wider.starts_with("Not deployed yet") && wider.contains("answer web pages from https://other.example"), "{wider}");
-        let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap();
-        assert!(any["proposal"]["needs"].as_array().unwrap().contains(&json!("Browser(\"*\")")), "proposed: {any}");
-        let browsers = |state: &AppState| state.deployments.lock().unwrap().get("sites").map(|d| d.browsers.clone());
-        assert_eq!(browsers(&state), Some(vec!["https://app.example".to_string()]), "as the person left it");
-        json_of(&agent, "POST", "/deploy", ask(json!([]), json!([]))).unwrap();
-        assert_eq!(browsers(&state), Some(vec![]), "answering fewer is the agent's to do");
-        assert_eq!(person.send("POST", "/deployments/sites/stop", None).unwrap().0, 200);
+        let rows = [
+            Row {
+                slug: "sites",
+                base: r#", browsers: "https://app.example""#,
+                wider: r#", browsers: ["https://app.example", "https://other.example"]"#,
+                narrower: "",
+                words: "answer web pages from https://other.example",
+                review: ("answers pages from", "https://app.example", "https://app.example https://other.example"),
+                held: |d| d.browsers.clone(),
+            },
+            Row {
+                slug: "keys",
+                base: r#", taint: ["x-api-key", "number"]"#,
+                wider: r#", taint: ["x-api-key"]"#,
+                narrower: r#", taint: ["x-api-key", "number", "card"]"#,
+                words: "record the values of \"number\" again, which it keeps out of its records now",
+                review: ("keeps out of its records", "x-api-key number", "x-api-key"),
+                held: |d| d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
+            },
+        ];
+        for Row { slug, base, wider, narrower, words, review: (setting, now, then), held } in rows {
+            let held = |state: &AppState| state.deployments.lock().unwrap().get(slug).map(held).unwrap();
+            deployed_by_person(&text(slug, base, "hi"), slug);
+            let as_left = held(&state);
+            assert!(deploy(&agent, &text(slug, base, "hello"), Some(slug)).unwrap().starts_with(&format!("Deployed \"{slug}\"")), "{slug}: kept as it is");
+            let proposed = deploy(&agent, &text(slug, wider, "hello"), Some(slug)).unwrap();
+            assert!(proposed.starts_with("Not deployed yet") && proposed.contains(words), "{slug}: {proposed}");
+            assert_eq!(held(&state), as_left, "{slug}: as the person left it");
+            assert!(deploy(&agent, &text(slug, narrower, "hello"), Some(slug)).unwrap().starts_with(&format!("Deployed \"{slug}\"")), "{slug}: narrowed");
+            assert_ne!(held(&state), as_left, "{slug}: narrowing it is the agent's to do");
+            // A person widens it, and the review says how.
+            deployed_by_person(&text(slug, base, "hi"), slug);
+            let preview = deployed_by_person(&text(slug, wider, "hi"), slug);
+            assert_eq!(preview["settings"], json!([{ "name": setting, "now": now, "then": then }]), "{slug}");
+            assert_eq!(person.send("POST", &format!("/deployments/{slug}/stop"), None).unwrap().0, 200);
+        }
     }
 
     /// An agent's new code never inherits a secret a person let the old code read (redaction

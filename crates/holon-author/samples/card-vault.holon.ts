@@ -14,7 +14,8 @@
 // Try it: deploy it, then
 //   curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}'
 //     http://127.0.0.1:8200/cards
-//   open the run: its request shows ‹taint:x-merchant-key› and ‹taint:number› in their place
+//   open the run: its request shows ‹taint:number› where the number was, and the key as the secret
+//   it is; a run sent another key shows ‹taint:x-merchant-key› in its place
 import { flow, hmac_sha256, route, secure_equals, status } from "holon"
 import cards from "collection:cards"
 import merchant_key from "secret:merchant_key"

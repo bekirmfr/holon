@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 32] = [
+    let named: [(&str, Say); 33] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -70,6 +70,7 @@ pub fn describe_item(item: &str) -> String {
         ("Limit", |a| format!("raise {}", a.replacen('=', " to ", 1))),
         ("Browser", |a| if a == "*" { "answer web pages from any site".into() } else { format!("answer web pages from {a}") }),
         ("Tag", |a| format!("join the tag \"{a}\": whoever is bound on it acts on this flow")),
+        ("Untaint", |a| format!("record the values of \"{a}\" again, which it keeps out of its records now")),
     ];
     for (prefix, say) in named {
         if let Some(a) = arg(prefix) {

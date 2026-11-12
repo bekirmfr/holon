@@ -46,8 +46,27 @@ pub struct Settings {
     /// The flow's tags, sorted: part of its server unit (`routes::server_unit`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The keys whose values the host keeps of none of its runs, as written, once each: part of
+    /// its server unit too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taint: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Settings {
+    /// What its server unit holds of them.
+    pub fn unit(&self) -> UnitSettings<'_> {
+        UnitSettings { tags: &self.tags, taint: &self.taint }
+    }
+}
+
+/// What a flow's server unit holds of its settings beside its port: its tags and the keys it
+/// taints (`routes::server_unit`), so the unit's hash covers them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UnitSettings<'a> {
+    pub tags: &'a [String],
+    pub taint: &'a [String],
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -99,9 +118,10 @@ pub struct FlowDocument {
 }
 
 impl FlowDocument {
-    /// The flow's tags, as its settings hold them: none without settings.
-    pub fn tags(&self) -> &[String] {
-        self.server.as_ref().map(|s| s.tags.as_slice()).unwrap_or_default()
+    /// What its server unit holds of its settings: its tags and the keys it taints, none without
+    /// settings.
+    pub fn unit_settings(&self) -> UnitSettings<'_> {
+        self.server.as_ref().map(Settings::unit).unwrap_or_default()
     }
 }
 

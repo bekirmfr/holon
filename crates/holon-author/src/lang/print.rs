@@ -1098,8 +1098,7 @@ impl<'s> Printer<'s> {
         out
     }
 
-    /// `flow("name", { port, keep, limits, browsers, tags, taint })`, from the document's settings and
-    /// its handlers' triggers.
+    /// `flow("name", { port, keep, limits, browsers, tags, taint })`, from the document's settings.
     fn settings(&self, doc: &FlowDocument) -> Result<String, String> {
         let name = self.own.clone().unwrap_or_default();
         let mut fields = Vec::new();
@@ -1133,11 +1132,9 @@ impl<'s> Printer<'s> {
             if !s.tags.is_empty() {
                 fields.push(format!("tags: [{}]", s.tags.iter().map(|t| quote(t)).collect::<Vec<_>>().join(", ")));
             }
-        }
-        // The keys it taints, from its handlers' triggers: one taints a key for every run.
-        let taint = crate::routes::flow_taint(&doc.nodes);
-        if !taint.is_empty() {
-            fields.push(format!("taint: [{}]", taint.into_iter().map(quote).collect::<Vec<_>>().join(", ")));
+            if !s.taint.is_empty() {
+                fields.push(format!("taint: [{}]", s.taint.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ")));
+            }
         }
         Ok(if fields.is_empty() { format!("flow({})", quote(&name)) } else { format!("flow({}, {{ {} }})", quote(&name), fields.join(", ")) })
     }
@@ -4246,7 +4243,7 @@ mod tests {
         let mut store = MapResolver::new();
         restore(doc, &mut store, &Names::new());
         let port = doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or("");
-        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port, doc.tags()).unwrap_or_else(|e| panic!("{e}")))
+        to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port, doc.unit_settings()).unwrap_or_else(|e| panic!("{e}")))
     }
 
     fn printed(name: Option<&str>, doc: &FlowDocument, bindings: &BTreeMap<String, String>) -> String {
