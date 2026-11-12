@@ -19,6 +19,14 @@
   deploys, and a write it chooses is refused as a write of the secret is. The one-way leaves
   (`sha256`, `hmac_sha256`, `secure_equals`) are still clean: check a key with
   `secure_equals(given, key)`, not `given === key`.
+- **`holon verify` no longer takes a line that says its run failed as one it can't check.** Any
+  error on an entry made every difference from what its run does again "not run again" (exit 3,
+  INCOMPLETE): a line given an error could change its outputs, what it did or its run id and pass
+  as unchecked, not as changed. Now a failed run's entry may say less than the run does again
+  (a limit stopped it), never other: the same run id, each output it keeps as computed, what it
+  did and sent the start of what it does again, and the status it answered either that or a
+  failure's. One that says other differs (exit 1). A panicked run's entry must say it did
+  nothing, and the state check no longer takes the empty state it records as where it began.
 
 ## 0.1.0-rc.35
 

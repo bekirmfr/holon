@@ -88,8 +88,8 @@ ok
 2. every unit in the export is what its hash says;
 3. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, the same effects, the same status. Outbound calls are answered from the log,
-   so nothing is sent. A run that failed is run again too: what it computed is checked, and what
-   its writes made of its state, not its status, which is its failure's;
+   so nothing is sent. A run that failed is run again too: what it computed is checked, what its
+   writes made of its state, and its status, unless that is its failure's;
 4. each run's state follows from the one before: it began from the state the run before it left,
    and left what its writes make of the state it began with (see
    [The state, run to run](#the-state-run-to-run));
@@ -208,10 +208,14 @@ request that held no secret is an ordinary value. Only those field names are rec
 Some runs can't be run again at all, and are counted, not failed; an export with any exits 3: a
 run whose such node the log keeps no outputs for (computed from a secret, larger than 16 KiB, or
 deeper than the log's timeline records), a run that panicked (its record says what it did by then
-isn't in it), a run that failed and, run again, gets further than its entry says (a budget ran
-out, a claim waited too long, or the server dropped what it did past a limit of its own), a run
+isn't in it, and must say it did nothing), a run that failed and, run again, gets further than its
+entry says (a budget ran out, a claim waited too long, or the server dropped what it did past a
+limit of its own), a run
 that read a file whose text the export doesn't hold, and a run that wrote a secret's value (which
-the server refused). A request no route took, and a run turned away before it began (a resource
+the server refused). A failed run's entry may say less than the run does again, never other: the
+same run id, each output it keeps as computed, what it did and sent the start of what it does
+again, and the status it answered either that or a failure's (a 5xx, or 409 for an unmet
+`expect:`). One that says other differs, as a run that didn't fail would. A request no route took, and a run turned away before it began (a resource
 an admin set to `run` was held), ran nothing: their entries are checked to say they did nothing,
 and neither counts.
 
