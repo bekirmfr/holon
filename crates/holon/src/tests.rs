@@ -12,6 +12,8 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+/// No page of another site may frame the control plane.
+mod frames;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
