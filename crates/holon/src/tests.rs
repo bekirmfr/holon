@@ -1414,6 +1414,35 @@ fn an_admin_sets_how_often_the_server_sweeps_in_its_policy_file() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// `GET /permissions` answers the policy file's text as it was read, comments and all, for a
+/// person to read whole (web-console-L4.md §9.3): the file as in force, not as it is on disk since;
+/// read again, the new text. Without a file, none: the defaults are in force.
+#[test]
+fn the_policy_answers_its_file_as_read() {
+    let mut state = test_state();
+    let text_of = |state: &AppState| body_json(route(state, &req("GET", "/permissions", vec![])))["text"].clone();
+    assert_eq!(text_of(&state), serde_json::Value::Null, "no file: the defaults");
+    let path = std::path::PathBuf::from(unique_temp_path("policy-text")).with_extension("toml");
+    let first = "# the host's policy\n[limits]\nmax_requests = 40 # a quiet host\n";
+    std::fs::write(&path, first).unwrap();
+    state.policy_path = path.display().to_string().into();
+    let text = || text_of(&state);
+    assert_eq!(route(&state, &req("POST", "/permissions/reload", vec![])).status_code, 200);
+    assert_eq!(text(), first);
+    // Edited on disk, it is the text in force until read again.
+    let second = "[limits]\nmax_requests = 30\n";
+    std::fs::write(&path, second).unwrap();
+    assert_eq!(text(), first, "not read again yet");
+    let reloaded = body_json(route(&state, &req("POST", "/permissions/reload", vec![])));
+    assert_eq!(reloaded["text"], second, "the reload answers it too");
+    assert_eq!(text(), second);
+    // A file that doesn't parse changes nothing, its text neither.
+    std::fs::write(&path, "[limits]\nnot_a_limit = 1\n").unwrap();
+    assert_eq!(route(&state, &req("POST", "/permissions/reload", vec![])).status_code, 400);
+    assert_eq!(text(), second);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn an_in_memory_store_has_nothing_to_sweep() {
     let state = test_state();

@@ -11,6 +11,7 @@ import { useDialog } from "./Dialog";
 import { approvalSaid, isApproval } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { limitChange, limitRows, type LimitRow } from "./flowFacts";
+import { limitMeaning } from "./policyMeans";
 import { describeItem, permissionKind } from "./holon";
 import { KindBadge } from "./Manifest";
 import { holdsLines } from "./storage";
@@ -284,7 +285,7 @@ function Limits({ slug, title, group, rows, known, may, onChanged, onEdit }: { s
                 .join(" · ");
               return (
                 <tr key={r.name}>
-                  <td className="hl-flow__what" title={r.name}>
+                  <td className="hl-flow__what" title={limitMeaning(r.name) ? `${r.name}: ${limitMeaning(r.name)}` : r.name}>
                     {r.label}
                   </td>
                   <td className="hl-table__num">{valueSaid(r.now, r.unit)}</td>

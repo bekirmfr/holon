@@ -813,7 +813,7 @@ fn secrets_of(
 }
 
 /// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
-/// without asking, and which exceptions it ever grants.
+/// without asking, which exceptions it ever grants, and its file's text as read.
 pub(crate) fn handle_get_permissions(policy: &Policy) -> Response {
     Response::json(&permissions_view(policy))
 }
@@ -828,6 +828,7 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_unrecorded": policy.allow_unrecorded,
         "agents_propose": policy.agents_propose,
         "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
+        "text": policy.text,
     })
 }
 

@@ -831,11 +831,15 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** Whether a handler's runs may ever be kept out of its log (`Unrecorded(…)`). */
+  allow_unrecorded?: boolean;
   /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
    *  proposal (off: it is refused, and nothing is saved). */
   agents_propose?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
+  /** The policy file's text as it was read (null: there is none, and the defaults hold). */
+  text?: string | null;
 };
 
 export async function getPermissions(): Promise<HostPolicy> {

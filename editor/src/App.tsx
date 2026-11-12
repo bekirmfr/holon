@@ -1603,7 +1603,7 @@ function Canvas({
           {/* Someone who may not see everyone: the agents and services they own. */}
           {shown === "people" && pages.people === "owned" && <OwnedPage />}
           {shown === "resources" && route.kind === "resources" && pages.resources && (
-            <ResourcesPage tab={route.tab} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
+            <ResourcesPage tab={route.tab} deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}
           {shown === "people" && route.kind === "people" && pages.people === "everyone" && <PeoplePage me={me.name} kind={me.kind} tab={route.tab} />}
           {shown === "policy" && pages.policy && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}

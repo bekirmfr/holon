@@ -10,7 +10,7 @@
 // the address too (#people.agents). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
 // new one. The server refuses any change that would leave no admin. A grant changes only on its
 // deployment's page: who may touch what links there.
-import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   addPrincipal,
   changePrincipal,
@@ -36,6 +36,8 @@ import {
   type QueueEntry,
   listFolders,
   listGrants,
+  listProposals,
+  type Proposal,
   listServerSecrets,
   listTables,
   invitePerson,
@@ -70,11 +72,7 @@ import {
   type Principal,
   type RoleEntry,
   type SecretInfo,
-  getSecretHistory,
-  previewSecretRollback,
-  rollbackSecret,
   type DeploymentEntry,
-  type SecretHistory,
   ServerError,
 } from "./server";
 import { Gated, gateOf, useCan, type Answer } from "./useCan";
@@ -83,22 +81,15 @@ import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 import { describeItem } from "./holon";
-import { holdersOf, kindsHeld, othersHeld, usesText, type Holder } from "./holdings";
+import { databaseMatrix, holdersOf, kindsHeld, othersHeld, usesText, waitingFor, type Binding, type Holder, type Kind as HeldKind } from "./holdings";
+import { CollectionsTab, DatabaseMatrix, SecretsTable, UsedBy } from "./ResourceViews";
+import { PolicyCheck, PolicyText } from "./PolicyViews";
+import { limitMeaning } from "./policyMeans";
+import { about, input, primary, quiet, row, small } from "./hostStyles";
 import { bindingSaid, hostRoleOf, otherBindings, rolesFor, roleTitle } from "./access";
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
-import { useDryRun } from "./DryRun";
-import { secretRollbackReport, sourceLabel } from "./DeploySettings";
 
-// The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
-// a row (a card of its own), what a section is about, and a quiet note. A section's heading is
-// styles.css's hl-host-page__head.
-const small: CSSProperties = { font: "inherit", fontSize: "var(--fs-xs)", fontWeight: 500, minHeight: 26, padding: "2px 9px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)", cursor: "pointer", whiteSpace: "nowrap" };
-const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", borderColor: "var(--accent)" };
-const input: CSSProperties = { font: "inherit", fontSize: "var(--fs-sm)", minHeight: 30, padding: "4px 10px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)" };
-const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow)", fontSize: "var(--fs-sm)" };
-const about: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-sm)", marginBottom: 12, lineHeight: 1.55, maxWidth: "100ch" };
-const quiet: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-xs)" };
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
 
@@ -180,6 +171,11 @@ function useHost(shown = false) {
   // A server secret being bound: its name, its value or where that is kept, and where it may go.
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "", kind: "value" as SecretKind });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
+  // Whether the grants could be read: they are the host's to view (`host.view`), and who uses a
+  // resource is read from them.
+  const [grantsKnown, setGrantsKnown] = useState(true);
+  // The versions waiting for a person: what each would add to a resource (§9.1).
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   // What reading the policy again said: when, and the deployments it holds off.
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
@@ -205,7 +201,16 @@ function useHost(shown = false) {
     listFeeds().then(setFeeds).catch(said);
     listQueues().then(setQueues).catch(said);
     listServerSecrets().then(setServerSecrets).catch(said);
-    listGrants().then(setGrants).catch(said);
+    listGrants()
+      .then((g) => {
+        setGrants(g);
+        setGrantsKnown(true);
+      })
+      .catch((e: unknown) => {
+        if (refusedRead(e)) setGrantsKnown(false);
+        said(e);
+      });
+    listProposals().then(setProposals).catch(said);
     getPermissions().then(setPolicy).catch(said);
     getHost()
       .then((h) => {
@@ -255,21 +260,9 @@ function useHost(shown = false) {
   const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
   const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
   const queueHolders = (q: QueueEntry) => holdersOf("queue", q, queues, grants);
-  /** Which deployments use it, said under its row. */
-  const usedBy = (holders: Holder[]) => (
-    <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
-      {holders.length === 0 ? (
-        "no deployment uses it"
-      ) : (
-        <>
-          used by {named(holders)} (
-          <a href={format({ kind: "resources", tab: "who-may" })} style={{ color: "var(--accent)", textDecoration: "none" }}>
-            who may touch what
-          </a>{" "}
-          says how)
-        </>
-      )}
-    </div>
+  /** Which deployments use it and how, and what a waiting version would add, said under its row. */
+  const usedBy = (kind: HeldKind, binding: Binding, bindings: Binding[], holders: Holder[]) => (
+    <UsedBy holders={holders} waiting={waitingFor(kind, binding, bindings, proposals)} known={grantsKnown} />
   );
   /** What unbinding (or binding again) does to the deployments that use it, as the server does it now. */
   const unbindingSays = (holders: Holder[]) =>
@@ -277,7 +270,7 @@ function useHost(shown = false) {
 
   return {
     principals, setPrincipals, roles, oidc, setOidc, msg, setMsg, link, setLink, secret,
-    setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId,
+    setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, grantsKnown, proposals,
     folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
     databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
     setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
@@ -723,12 +716,17 @@ export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: str
   );
 }
 
-export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
+export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: ResourcesTab; deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
   const h = useHost(true);
   // Binding (and a server secret's where and roll back), unbinding, and the host's storage and
   // sweeps (can.rs's routes: resource.bind, resource.unbind, host.operate).
   const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
   const [bind, unbind, operate] = [can.may("resource.bind"), can.may("resource.unbind"), can.may("host.operate")];
+  // Where a database or a folder is (its path, where its connection is kept) is shown to whoever
+  // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer).
+  const seesWhere = can.holds("resource.bind");
+  const whereHidden = <span style={quiet} title="where it is is shown to those who may bind resources">where it is: shown to those who may bind</span>;
+  const secretValue = useRef<HTMLInputElement>(null);
   const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
@@ -760,7 +758,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               <Fragment key={keyOf(d)}>
                 <div style={row}>
                   <span style={{ color: "var(--accent)", minWidth: 90 }}>database {d.name}</span>
-                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
+                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{!seesWhere ? whereHidden : d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
                   <span style={{ color: "var(--faint)", fontSize: 11 }}>
                     {d.engine} · {d.access === "read" ? "read only" : "read and write"}
                     {d.lock === "run" ? " · held for whole runs" : ""}
@@ -792,7 +790,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                     read the schema again
                   </button>
                 </div>
-                {usedBy(databaseHolders(d))}
+                <DatabaseMatrix name={d.name} matrix={databaseMatrix(Array.isArray(read) ? read : [], databaseHolders(d), waitingFor("database", d, databases, h.proposals))} known={h.grantsKnown} />
               </Fragment>
             );
           })}
@@ -891,7 +889,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             <Fragment key={keyOf(f)}>
               <div style={row}>
                 <span style={{ color: "var(--accent)", minWidth: 90 }}>folder {f.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{seesWhere ? f.path : whereHidden}</span>
                 <span style={{ color: "var(--faint)", fontSize: 11 }}>
                   {f.access === "read" ? "read only" : "read and write"}
                   {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
@@ -912,7 +910,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   ×
                 </button>
               </div>
-              {usedBy(folderHolders(f))}
+              {usedBy("folder", f, folders, folderHolders(f))}
             </Fragment>
           ))}
           <Gated may={bind}>
@@ -1045,7 +1043,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   ×
                 </button>
               </div>
-              {usedBy(mailHolders(m))}
+              {usedBy("mail", m, mails, mailHolders(m))}
             </Fragment>
           ))}
           <Gated may={bind}>
@@ -1184,7 +1182,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   ×
                 </button>
               </div>
-              {usedBy(feedHolders(f))}
+              {usedBy("feed", f, feeds, feedHolders(f))}
             </Fragment>
           ))}
           <Gated may={bind}>
@@ -1380,7 +1378,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   ×
                 </button>
               </div>
-              {usedBy(queueHolders(q))}
+              {usedBy("queue", q, queues, queueHolders(q))}
             </Fragment>
           ))}
           <Gated may={bind}>
@@ -1439,6 +1437,17 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
         </>
       )}
 
+      {tab === "collections" && (
+        <>
+          <div style={about}>
+            What each flow keeps on this host by name, with nothing to bind: its collections (<code>import orders from &quot;collection:orders&quot;</code>), each
+            with how many items it holds now, and the channels it sends on (<code>import updates from &quot;channel:updates&quot;</code>), which keep their
+            newest packs for whoever subscribes. Each flow&apos;s State shows them item by item, with the runs that changed them.
+          </div>
+          <CollectionsTab deployments={deployments} grants={grants} />
+        </>
+      )}
+
       {tab === "secrets" && (
         <>
           <div style={about}>
@@ -1446,43 +1455,31 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             in its Settings in the editor, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
             refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
           </div>
-          {serverSecrets.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
-          {serverSecrets.map((s) => (
-            <Fragment key={s.name}>
-            <div style={row} aria-label={`server secret ${s.name}`}>
-              <span style={{ color: "var(--accent)", minWidth: 90 }}>secret {s.name}</span>
-              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
-                v{s.version} · {s.source === "local" ? "a value" : s.source}
-                {s.problem ? ` · can't be read: ${s.problem}` : ""}
-                {" · "}
-                {s.to ? (s.to.length ? `may go only to ${s.to.map((d) => (d.startsWith("db:") ? `the database "${d.slice(3)}"` : `https://${d}`)).join(", ")}` : "may go nowhere") : "may go wherever its flows' approvals show"}
-              </span>
-              <button
-                style={small}
-                {...gateOf(bind, { title: "change where it may go" })}
-                onClick={async () => {
-                  const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
-                  if (typed === null) return;
-                  const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
-                  act(() => capServerSecret(s.name, to.length ? to : null));
-                }}
-              >
-                where…
-              </button>
-              <button
-                style={small}
-                {...gateOf(unbind, { title: "remove the server's secret, every version" })}
-                onClick={async () => {
-                  if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
-                    act(() => unbindServerSecret(s.name));
-                }}
-              >
-                ×
-              </button>
-            </div>
-            <ServerSecretHistory name={s.name} onChanged={refresh} may={bind} />
-            </Fragment>
-          ))}
+          <SecretsTable
+            secrets={serverSecrets}
+            grants={grants}
+            known={h.grantsKnown}
+            proposals={h.proposals}
+            bind={bind}
+            unbind={unbind}
+            onSetNew={(s) => {
+              // The bind form below takes it, its value typed where it is never shown.
+              setSecretDraft({ ...secretDraft, name: s.name, value: "", kind: s.source === "local" ? "value" : s.source.startsWith("vault:") ? "vault" : "env" });
+              secretValue.current?.scrollIntoView({ block: "center" });
+              secretValue.current?.focus();
+            }}
+            onWhere={async (s) => {
+              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+              if (typed === null) return;
+              const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
+              act(() => capServerSecret(s.name, to.length ? to : null));
+            }}
+            onRemove={async (s) => {
+              if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
+                act(() => unbindServerSecret(s.name));
+            }}
+            onChanged={refresh}
+          />
           <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
@@ -1508,6 +1505,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               <option value="vault">a Vault field</option>
             </select>
             <input
+              ref={secretValue}
               aria-label="secret value"
               type={secretDraft.kind === "value" ? "password" : "text"}
               autoComplete={secretDraft.kind === "value" ? "new-password" : "off"}
@@ -1781,28 +1779,28 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
       {tab === "who-may" && (
         <>
           <div style={about}>
-            Each resource, and the deployments granted it, by table for a database, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
-            is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
+            Each resource, and the deployments granted it, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
+            is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens. A database&apos;s, table by table, is its matrix on{" "}
+            <a href={format({ kind: "resources", tab: "databases" })} style={{ color: "var(--accent)", textDecoration: "none" }}>
+              Databases
+            </a>
+            .
           </div>
           <label style={{ ...quiet, display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases, folders, mail, feeds and queues always: they're listed as resources, held or not. */}
-              {["databases", "folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
+              {/* Folders, mail, feeds and queues always: they're listed as resources, held or not. Databases are their matrix's. */}
+              {["folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
               ))}
             </select>
           </label>
-          {(kind === "everything" || kind === "databases") &&
-            databases.map((d) => (
-              <Resource key={`db:${keyOf(d)}`} title={`database ${d.name}`} detail={`${d.engine}${d.deployment ? ` · for ${d.deployment} only` : ""}`} holders={databaseHolders(d)} onOpen={onOpenDeployment} />
-            ))}
           {(kind === "everything" || kind === "folders") &&
             folders.map((f) => (
-              <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${f.path}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
+              <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${seesWhere ? f.path : ""}${f.deployment ? `${seesWhere ? " · " : ""}for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
             ))}
           {(kind === "everything" || kind === "mail") &&
             mails.map((m) => (
@@ -1852,6 +1850,8 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
   // Reading holon.toml again (`POST /permissions/reload`) is policy.edit's.
   const can = useCan(["policy.edit"]);
   const { policy, setPolicy, reloaded, setReloaded, act } = h;
+  // Check flows against it: shown once asked, read from the deployments and proposals as they are.
+  const [checking, setChecking] = useState(false);
   return (
     <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
       <div className="hl-host-page__head" data-section="policy">the policy</div>
@@ -1878,12 +1878,14 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
               "may propose: a version of theirs that needs a person waits in Approvals"
             )}
           </div>
+          <div className="hl-matrix-wrap">
           <table aria-label="limits" className="hl-table">
             <thead>
               <tr>
                 <th>limit</th>
                 <th>default</th>
                 <th>at most</th>
+                <th>what it means</th>
               </tr>
             </thead>
             <tbody>
@@ -1894,10 +1896,12 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
                     <td>{name}</td>
                     <td className="hl-table__num">{policy.defaults[name] ?? "—"}</td>
                     <td className="hl-table__num">{policy.ceilings[name] ?? "no ceiling"}</td>
+                    <td className="hl-policy__means">{limitMeaning(name) ?? ""}</td>
                   </tr>
                 ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
@@ -1914,6 +1918,9 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
         >
           read the policy again
         </button>
+        <button style={small} aria-pressed={checking} title="which deployments run within it, and each version waiting for a person against it" onClick={() => setChecking(!checking)}>
+          check flows against it
+        </button>
         {reloaded && (
           <span style={quiet}>
             read again at {new Date(reloaded.at).toLocaleTimeString()}:{" "}
@@ -1921,6 +1928,16 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
           </span>
         )}
       </div>
+
+      {checking && policy && <PolicyCheck policy={policy} deployments={deployments} proposals={h.proposals} />}
+
+      <div className="hl-host-page__head" data-section="policy-file">
+        the policy file
+      </div>
+      <div style={about}>
+        <code>holon.toml</code> as the server read it, at its start or when it was last read again: an edit on the server&apos;s machine holds once it is.
+      </div>
+      <PolicyText text={policy?.text} />
 
       <div className="hl-host-page__head" data-section="held-off">held off</div>
       <div style={about}>
@@ -1940,67 +1957,6 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
         ))}
       {!deployments.some((d) => d.attention) && <div style={quiet}>none: every deployment runs as granted</div>}
     </HostPage>
-  );
-}
-
-/** A server secret's versions and changes, folded under its row; an older version is made
- *  current again after a dry run, as a deployment's is (DeploySettings.tsx's SecretRow). Never a
- *  value: versions are told apart by their fingerprints. */
-function ServerSecretHistory({ name, onChanged, may = true }: { name: string; onChanged: () => void; may?: Answer }) {
-  const [history, setHistory] = useState<SecretHistory | null>(null);
-  const [said, setSaid] = useState("");
-  const dryRun = useDryRun();
-  const load = () => getSecretHistory(null, name).then(setHistory).catch((e: unknown) => setSaid(messageOf(e)));
-  const rollback = async (to: number) => {
-    try {
-      if (!(await dryRun.ask(secretRollbackReport(null, name, await previewSecretRollback(null, name, to))))) return;
-      const v = await rollbackSecret(null, name, to);
-      setSaid(`version ${to} is current again, as version ${v}`);
-      onChanged();
-      void load();
-    } catch (e) {
-      setSaid(messageOf(e));
-    }
-  };
-  const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-  return (
-    <div style={{ padding: "0 10px 6px", marginTop: -2, fontSize: 11 }}>
-      <button style={{ ...small, padding: "0 6px" }} aria-expanded={history !== null} aria-label={`versions of ${name}`} onClick={() => (history ? setHistory(null) : void load())}>
-        {history ? "▾" : "▸"} versions and changes
-      </button>
-      {said && <span style={{ ...quiet, marginLeft: 8 }}>{said}</span>}
-      {history && (
-        <div style={{ display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid var(--border)", marginTop: 4 }}>
-          {history.versions.map((v) => (
-            <div key={v.version} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ color: v.current ? "var(--ok)" : "var(--muted)", minWidth: 24 }}>v{v.version}</span>
-              <span style={{ flex: 1 }}>{sourceLabel(v.source)}</span>
-              <span style={quiet}>{when(v.set_at)}</span>
-              {v.current ? (
-                <span style={{ color: "var(--ok)", width: 64, textAlign: "right" }}>current</span>
-              ) : (
-                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} {...gateOf(may, { title: `make version ${v.version} current again` })}>
-                  roll back
-                </button>
-              )}
-            </div>
-          ))}
-          {history.events
-            .slice()
-            .reverse()
-            .map((e, i) => (
-              <div key={i} style={quiet}>
-                {when(e.at)} · {e.action}
-                {e.version ? ` v${e.version}` : ""}
-                {e.source ? ` · ${sourceLabel(e.source)}` : ""}
-                {e.detail ? ` · ${e.detail}` : ""}
-                {e.by ? ` · by ${e.by}` : ""}
-              </div>
-            ))}
-        </div>
-      )}
-      {dryRun.modal}
-    </div>
   );
 }
 

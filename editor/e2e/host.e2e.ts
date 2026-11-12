@@ -1,6 +1,7 @@
 // The host's pages (HostPages.tsx), each at an address of its own: Resources' tabs, each at its
-// own, and a server secret's versions under Secrets, rolled back after a dry run; the agents' line under People and access; and
-// Policy with what it holds off.
+// own, and a server secret's versions under Secrets, rolled back after a dry run; Collections and
+// channels; the agents' line under People and access; and Policy with what it holds off, what
+// each limit means, its file, and the check of flows against it.
 
 import { expect, test } from "./fixtures";
 import { gotoPage, navLink, resourcesTab } from "./helpers";
@@ -61,4 +62,20 @@ test("people and access says how an agent connects; policy says what it holds of
   await expect(page.getByLabel("limits")).toBeVisible();
   await expect(page.getByText("agents may propose: a version of theirs that needs a person waits in Approvals")).toBeVisible();
   await expect(page.locator('[data-section="held-off"]')).toBeVisible();
+  // What each limit means, beside it; and the file as the server read it (server.mjs writes one).
+  await expect(page.getByLabel("limits")).toContainText("The calls out one run may make.");
+  await expect(page.getByLabel("the policy file")).toContainText("allow_plain_http = true");
+  // Checking flows against it says which deployments run within it.
+  await page.getByRole("button", { name: "check flows against it" }).click();
+  await expect(page.getByRole("region", { name: "flows against the policy" })).toContainText(/\d+ of \d+ deployments? run within it/);
+});
+
+test("Collections and channels says what each flow keeps by name", async ({ page }) => {
+  await page.goto("/");
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Collections and channels");
+  await expect(page).toHaveURL(/#resources\.collections$/);
+  await expect(page.getByText("What each flow keeps on this host by name")).toBeVisible();
+  // Read from each flow's state: a table, or that none keeps one (whichever samples this server runs).
+  await expect(page.getByRole("table", { name: "collections and channels" }).or(page.getByText("no flow keeps a collection or sends on a channel"))).toBeVisible();
 });

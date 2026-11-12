@@ -455,6 +455,9 @@ pub(crate) struct Policy {
     pub(crate) agents_propose: bool,
     /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
     pub(crate) storage: Storage,
+    /// The file's text as it was read, for a person to read it whole (`GET /permissions`); none
+    /// without a file, when the defaults are in force.
+    pub(crate) text: Option<String>,
 }
 
 /// `[storage]`: how the host keeps what it stores (docs/L4s/storage-L4.md).
@@ -643,6 +646,7 @@ impl Default for Policy {
             allow_unrecorded: true,
             agents_propose: true,
             storage: Storage::default(),
+            text: None,
         }
     }
 }
@@ -711,7 +715,8 @@ impl Policy {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
             Err(e) => return Err(format!("could not read {path:?}: {e}")),
         };
-        Policy::parse(&text).map_err(|e| format!("{path:?}: {e}"))
+        let policy = Policy::parse(&text).map_err(|e| format!("{path:?}: {e}"))?;
+        Ok(Policy { text: Some(text), ..policy })
     }
 
     pub(crate) fn parse(text: &str) -> Result<Policy, String> {

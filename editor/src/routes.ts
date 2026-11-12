@@ -16,7 +16,7 @@ export type FlowTab = (typeof FLOW_TABS)[number];
 export const LIBRARY_TABS = ["tutorials", "samples", "market"] as const;
 export type LibraryTab = (typeof LIBRARY_TABS)[number];
 /** The Resources page's tabs, by what each is called: `#resources` is its databases. */
-export const RESOURCES_TABS = ["databases", "folders", "mail", "feeds", "queues", "secrets", "host", "who-may"] as const;
+export const RESOURCES_TABS = ["databases", "folders", "mail", "feeds", "queues", "collections", "secrets", "host", "who-may"] as const;
 export type ResourcesTab = (typeof RESOURCES_TABS)[number];
 export const RESOURCES_LABELS: Record<ResourcesTab, string> = {
   databases: "Databases",
@@ -24,6 +24,7 @@ export const RESOURCES_LABELS: Record<ResourcesTab, string> = {
   mail: "Mail",
   feeds: "Feeds",
   queues: "Queues",
+  collections: "Collections and channels",
   secrets: "Secrets",
   host: "Host and storage",
   "who-may": "Who may touch what",

@@ -1454,6 +1454,41 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 /* The host's pages: a heading per section, and the fields the rows don't style. */
 .hl-host-page__head { margin: 22px 0 10px; font-size: var(--fs-h2); font-weight: 600; color: var(--ink); }
 .hl-host-page__head::first-letter { text-transform: uppercase; }
+/* Resources (ResourceViews.tsx): who uses a resource under its row, amber what a waiting version
+   would add; a database's matrix; the secrets as a table, each with its mark, never its value. */
+.hl-used-by { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 0 10px 8px; margin-top: -2px; font-size: var(--fs-xs); color: var(--muted); }
+.hl-used-by a, .hl-matrix a, .hl-secrets a, .hl-policy-check a { color: var(--accent); text-decoration: none; }
+.hl-used-by__one a { font-family: var(--mono); }
+.hl-used-by__waiting { color: var(--warn-ink); }
+.hl-used-by__waiting a { color: inherit; text-decoration: underline dotted; }
+.hl-used-by__revoked { text-decoration: line-through; color: var(--bad); }
+.hl-matrix-wrap { overflow-x: auto; margin: 0 0 12px; }
+.hl-matrix th { text-transform: none; letter-spacing: 0; }
+.hl-matrix th a { font-family: var(--mono); }
+.hl-matrix td.hl-matrix__waiting, .hl-matrix th.hl-matrix__waiting { color: var(--warn-ink); background: var(--warn-panel); }
+.hl-matrix th.hl-matrix__waiting a { color: inherit; }
+.hl-matrix__version { font-size: var(--fs-xs); }
+.hl-secret-mark { font-family: var(--mono); font-size: var(--fs-xs); color: var(--warn-ink); background: var(--warn-bg); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.hl-secrets td { vertical-align: top; }
+.hl-secrets__from { min-width: 96px; font-family: var(--mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.hl-secrets__wrap { min-width: 140px; }
+.hl-secrets__do { white-space: nowrap; text-align: right; }
+.hl-secrets__do button { margin-left: 4px; }
+/* Policy (PolicyViews.tsx): the file with line numbers, what each limit means, and the check. */
+.hl-policy-text { margin: 0 0 8px; padding: 8px 0; overflow-x: auto; font: 12.5px/1.7 var(--mono); color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.hl-policy-text__line { display: flex; white-space: pre; min-width: max-content; }
+.hl-policy-text__n { flex: 0 0 44px; padding-right: 10px; text-align: right; color: var(--faint); user-select: none; }
+.hl-policy-text__comment { color: var(--faint); font-style: italic; }
+.hl-policy-text__section { color: var(--ink); font-weight: 600; }
+.hl-policy__means { color: var(--muted); font-size: var(--fs-xs); min-width: 160px; }
+.hl-policy-check { display: grid; gap: 8px; margin: 10px 0 4px; padding: 11px 14px; font-size: var(--fs-sm); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.hl-policy-check__version { display: grid; gap: 3px; }
+.hl-policy-check__version > div > a { font-family: var(--mono); }
+.hl-policy-check__item { display: flex; gap: 8px; align-items: baseline; padding-left: 4px; font-size: var(--fs-xs); color: var(--body); }
+.hl-policy-check__sign { flex: 0 0 12px; font-weight: 700; text-align: center; }
+.hl-policy-check__item--refused .hl-policy-check__sign { color: var(--bad); }
+.hl-policy-check__item--auto .hl-policy-check__sign { color: var(--ok); }
+.hl-policy-check__item--person .hl-policy-check__sign { color: var(--warn); }
 .hl-flow input:not([type="checkbox"]):not([type="radio"]):not([class]):not([style]), .hl-flow select:not([class]):not([style]) {
   font: inherit; font-size: var(--fs-sm); height: 32px; padding: 0 10px; color: var(--ink);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-sm);

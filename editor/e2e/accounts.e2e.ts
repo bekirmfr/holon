@@ -68,6 +68,11 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   const save = cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true });
   await expect(save).toBeDisabled();
   await expect(save).toHaveAttribute("title", /a viewer only reads/);
+  // Policy she reads (a viewer holds policy.view), and can't read the file again.
+  await gotoPage(cy, "policy");
+  await expect(cy.getByRole("heading", { level: 1, name: "Policy" })).toBeVisible();
+  await expect(cy.getByLabel("limits")).toContainText("The calls out one run may make.");
+  await expect(cy.getByRole("button", { name: "read the policy again" })).toBeDisabled();
   // The link is used up.
   const again = await someoneElse(browser);
   await again.goto(invite);
