@@ -11,6 +11,7 @@ import { approvalSaid, isApproval, mayDecide, pointKey, type WaitingPoint } from
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
+import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
 import type { WaitingRunOf } from "./useApprovals";
 
@@ -74,6 +75,9 @@ export function ApprovalsPage({
     ["deploys", "Deploys", approvals.length],
     ["runs", "Runs waiting", waitingRuns],
   ];
+  // [ and ]: the other tab (there are two).
+  const other = () => navigate({ kind: "approvals", tab: tab === "deploys" ? "runs" : "deploys" });
+  useKeys("tabs", { "[": other, "]": other });
   return (
     <div className="hl-flow hl-approvals">
       <header className="hl-flow__head">
@@ -100,8 +104,20 @@ export function ApprovalsPage({
   );
 }
 
+/** A row's key in Deploys' list: what it waits for, on which flow. */
+const deployKey = (a: Approval, i: number) => `${a.kind}:${a.slug}:${i}`;
+
 function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; navigate: (r: Route) => void; onDeclined: () => void }) {
   const decline = useDecline(onDeclined);
+  const list = useListKeys(
+    "approvals.deploys",
+    approvals.map(deployKey),
+    (key) => {
+      const i = approvals.findIndex((a, k) => deployKey(a, k) === key);
+      const to = i < 0 ? null : routeOf(approvals[i]);
+      if (to) navigate(to);
+    },
+  );
   if (approvals.length === 0) return <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
   return (
     <section aria-label="deploys">
@@ -120,7 +136,7 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
             const review = a.kind === "first" || a.kind === "update";
             const proposal = review ? a.proposal : undefined;
             return (
-              <tr key={`${a.kind}:${a.slug}:${i}`}>
+              <tr key={deployKey(a, i)} {...list.row(deployKey(a, i))}>
                 <td>
                   <span className="hl-flow__what">{a.slug}</span>
                   {review && a.version !== null && <span className="hl-flow__note"> v{a.version}</span>}
@@ -187,6 +203,7 @@ function useDecide(onDecided: () => void) {
             ? `Approved by ${d.approved_by.join(" and ")}: the run goes on.`
             : "Declined: the run goes on as declined.",
         "ok",
+        d.outcome === "waiting" ? undefined : { label: "Open its runs", to: { kind: "flow", slug, tab: "runs" } },
       );
       if (d.run_error) toast(`The run then failed: ${d.run_error}`, "bad");
       onDecided();
@@ -195,6 +212,11 @@ function useDecide(onDecided: () => void) {
     }
   };
 }
+
+/** Runs waiting's list, by its name (ui/Keys.tsx's `pick`: the palette goes to a row of it). */
+export const WAITING_LIST = "approvals.runs";
+/** A run's key in Runs waiting's list. */
+export const waitingKey = (slug: string, runId: string) => `${slug}:${runId}`;
 
 /** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
  *  decided here, by a person who may. */
@@ -214,6 +236,15 @@ function RunsWaiting({
   onDecided: () => void;
 }) {
   const decide = useDecide(onDecided);
+  // j and k move through the runs; Enter opens the flow the run is of.
+  const list = useListKeys(
+    WAITING_LIST,
+    (runs ?? []).map(({ slug, run }) => waitingKey(slug, run.run_id)),
+    (key) => {
+      const r = (runs ?? []).find(({ slug, run }) => waitingKey(slug, run.run_id) === key);
+      if (r) navigate({ kind: "flow", slug: r.slug, tab: "settings" });
+    },
+  );
   if (!any) return <p className="hl-flow__none">No run is waiting.</p>;
   return (
     <section aria-label="runs waiting">
@@ -235,7 +266,7 @@ function RunsWaiting({
           {(runs ?? []).map(({ slug, run }) => {
             const to: Route = { kind: "flow", slug, tab: "settings" };
             return (
-              <tr key={`${slug}:${run.run_id}`}>
+              <tr key={waitingKey(slug, run.run_id)} {...list.row(waitingKey(slug, run.run_id))}>
                 <td>
                   <a href={format(to)} onClick={follow(to, navigate)}>
                     {slug}

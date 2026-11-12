@@ -27,8 +27,9 @@ export type Role = "viewer" | "editor" | "admin" | "agent";
 /** What a principal is (accounts.rs): a person signs in with a password or a provider; an agent
  *  (an AI, through holon mcp) and a service (a script, CI) sign in with their own tokens. */
 export type Kind = "person" | "agent" | "service";
-/** Who this browser is signed in as: the session token the server gave, and who it is. */
-export type Session = { token: string; name: string; kind?: Kind; role: Role };
+/** Who this browser is signed in as: the session token the server gave, and who it is; `at`,
+ *  when this browser signed in (absent in a session kept from before it was noted). */
+export type Session = { token: string; name: string; kind?: Kind; role: Role; at?: number };
 const SESSION_KEY = "holon.session";
 let memorySession: Session | null = null;
 
@@ -93,7 +94,7 @@ export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig
 type SignedInAs = { token: string; name: string; kind: Kind; role: Role };
 const keep = async (res: Response) => {
   const s = await asJson<SignedInAs>(res);
-  setSession(s);
+  setSession({ ...s, at: Date.now() });
   return s;
 };
 /** The first admin, with the code the server printed; signed in. */

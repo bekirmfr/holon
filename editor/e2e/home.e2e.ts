@@ -18,7 +18,8 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await page.goto("/");
   await expect(page).toHaveURL(/#start$/);
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
-  await expect(page.getByText(/^Welcome to Holon, e2e$/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Getting started" })).toBeVisible();
+  await expect(page.getByText(/^Welcome to Holon, e2e\./)).toBeVisible();
   await page.getByRole("button", { name: "▸ Secrets" }).click();
   await expect(page.getByText(/Values are sealed on the server/)).toBeVisible();
 
@@ -31,9 +32,9 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await expect(page).not.toHaveURL(/#start$/);
   await expect(page.getByRole("region", { name: "at a glance" })).toBeVisible();
 
-  // The welcome is always one click away, under the account menu; its notes are kept there.
+  // Getting started is always one click away, in the account dialog; its notes are kept there.
   await page.getByRole("button", { name: "account: e2e" }).click();
-  await page.getByRole("menuitem", { name: "Welcome and docs" }).click();
+  await page.getByRole("dialog", { name: "account" }).getByRole("button", { name: "Getting started" }).click();
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
   const notes = page.getByLabel("notes", { exact: true });
   await notes.fill("deploy the shop on friday");

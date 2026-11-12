@@ -135,7 +135,8 @@ export function ReviewPage({
     const next = queue[(((at < 0 ? 0 : at + by) % queue.length) + queue.length) % queue.length];
     if (next.version !== null) navigate({ kind: "review", slug: next.slug, version: next.version });
   };
-  useKeys({ "]": () => step(1), "[": () => step(-1) });
+  // The queue, and the whole flow or the diff: the review's d, not the docs.
+  useKeys("review", { "]": () => step(1), "[": () => step(-1), w: () => setView("whole"), d: () => setView("changes") });
 
   const lines = useMemo(() => textLines(data?.text ?? ""), [data]);
   const groups = useMemo(() => (data ? mayGroups(data.preview.touches, data.preview.settings, lines) : []), [data, lines]);

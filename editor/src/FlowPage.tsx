@@ -15,6 +15,7 @@ import { follow, format, type FlowTab, type Route } from "./routes";
 import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type Role } from "./server";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
+import { useKeys, useListKeys } from "./ui/Keys";
 
 /** The tabs a flow's page has, in order, and what each is called. */
 const TABS: [FlowTab, string][] = [
@@ -65,6 +66,12 @@ export function FlowPage({
   };
 }) {
   const edit = () => navigate({ kind: "editor", slug, view: false, seq: null });
+  // [ and ]: the tab before or after, wrapping.
+  const tabBeside = (by: 1 | -1) => {
+    const at = TABS.findIndex(([t]) => t === tab);
+    navigate({ kind: "flow", slug, tab: TABS[(at + by + TABS.length) % TABS.length][0] });
+  };
+  useKeys("tabs", { "[": () => tabBeside(-1), "]": () => tabBeside(1) }, { enabled: entry !== undefined });
   const [failed, setFailed] = useState("");
   const act = (action: "run" | "pause" | "stop") => {
     setFailed("");
@@ -191,6 +198,11 @@ function RunsTab({ slug, navigate }: { slug: string; navigate: (r: Route) => voi
       (e: unknown) => setSaid(<span className="hl-flow__bad">{e instanceof Error ? e.message : String(e)}</span>),
     );
   const open = (e: LogEntry) => navigate({ kind: "run", slug, seq: e.seq });
+  const list = useListKeys(
+    `runs:${slug}`,
+    shown.map((e) => String(e.seq)),
+    (seq) => navigate({ kind: "run", slug, seq: Number(seq) }),
+  );
   return (
     <section className="hl-flow__runs" aria-label="runs">
       <div className="hl-flow__bar">
@@ -240,7 +252,7 @@ function RunsTab({ slug, navigate }: { slug: string; navigate: (r: Route) => voi
               const { sent, did } = outside(e);
               const to: Route = { kind: "run", slug, seq: e.seq };
               return (
-                <tr key={e.seq} className={`hl-table__row hl-table__row--${o}`} onClick={() => open(e)}>
+                <tr key={e.seq} {...list.row(String(e.seq))} className={`hl-table__row hl-table__row--${o}`} onClick={() => open(e)}>
                   <td>
                     <a href={format(to)} onClick={(ev) => ev.stopPropagation()}>
                       #{e.seq}

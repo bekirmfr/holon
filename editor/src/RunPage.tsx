@@ -11,24 +11,30 @@ import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
 import { field, outside, runLabel, runOutcome, text } from "./runs";
 import { downloadRuns, getDeployedDocument, getLog, type FlowDocument, type LogEntry } from "./server";
+import { useKeys } from "./ui/Keys";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)} ms` : `${t.toFixed(0)} µs`);
 
-/** The log's entry for run `seq`, and the canvas of the version it ran on (for its steps' names). */
+/** The log's entry for run `seq`, the canvas of the version it ran on (for its steps' names), and
+ *  the runs kept just before and after it (`,` and `.` go there). */
 function useRun(slug: string, seq: number) {
   const [run, setRun] = useState<LogEntry | null | undefined>(undefined);
   const [head, setHead] = useState("");
   const [doc, setDoc] = useState<FlowDocument | null>(null);
+  const [beside, setBeside] = useState<{ before: number | null; after: number | null }>({ before: null, after: null });
   useEffect(() => {
     let stale = false;
     setRun(undefined);
-    getLog(slug, seq > 0 ? seq - 1 : undefined)
+    setBeside({ before: null, after: null });
+    // From the run before it on: the log answers the runs after the seq it is given.
+    getLog(slug, seq > 1 ? seq - 2 : undefined)
       .then(({ entries, head: h }) => {
         if (stale) return;
         const found = entries.find((e) => e.seq === seq) ?? null;
         setRun(found);
         setHead(h);
+        setBeside({ before: entries.filter((e) => e.seq < seq).pop()?.seq ?? null, after: entries.find((e) => e.seq > seq)?.seq ?? null });
         if (found?.unit) getDeployedDocument(slug, found.unit).then((d) => !stale && setDoc(d), () => undefined);
       })
       .catch(() => !stale && setRun(null));
@@ -36,12 +42,14 @@ function useRun(slug: string, seq: number) {
       stale = true;
     };
   }, [slug, seq]);
-  return { run, head, doc };
+  return { run, head, doc, beside };
 }
 
 export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; navigate: (r: Route) => void }) {
-  const { run, head, doc } = useRun(slug, seq);
+  const { run, head, doc, beside } = useRun(slug, seq);
   const dialog = useDialog();
+  const go = (to: number | null) => (to === null ? false : navigate({ kind: "run", slug, seq: to }));
+  useKeys("run", { ",": () => go(beside.before), ".": () => go(beside.after) });
   const steps = useMemo(() => {
     if (!run) return [];
     const timings = nodeTimings(run, doc?.trace);

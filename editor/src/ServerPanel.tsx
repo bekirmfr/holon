@@ -379,6 +379,7 @@ export function ToolsPanel({
                   ))}
                 </select>
                 <input
+                  aria-label="request path"
                   value={req.url}
                   onChange={(e) => setReq({ ...req, url: e.target.value })}
                   placeholder="/todos/1?full=1"

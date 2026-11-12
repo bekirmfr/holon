@@ -249,9 +249,9 @@ const theme = (dark: boolean) => EditorView.theme(
 );
 
 /** What the command palette (`:12`, `:fmt`) asks of the text pane. */
-export type TextAsk = { do: "line"; line: number } | { do: "format" };
+export type TextAsk = { do: "line"; line: number } | { do: "format" } | { do: "check" };
 
-/** Ask the open text pane to go to a line or format; false when no pane is open to take it. */
+/** Ask the open text pane to go to a line, format or check; false when no pane is open to take it. */
 export function askText(ask: TextAsk): boolean {
   return !window.dispatchEvent(new CustomEvent<TextAsk>("holon:text", { detail: ask, cancelable: true }));
 }
@@ -302,6 +302,8 @@ export function TextPane({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+  // The check, as the palette asks for it (`:check`).
+  const checkNow = useRef<() => void>(() => undefined);
   const editable = useRef(new Compartment());
   const look = useRef(new Compartment());
   const dark = useDark();
@@ -380,7 +382,7 @@ export function TextPane({
     });
   }, [text]);
 
-  // Asked by the command palette (askText): a line gone to, or the text formatted.
+  // Asked by the command palette (askText): a line gone to, the text formatted, or checked.
   useEffect(() => {
     const onAsk = (e: Event) => {
       const v = view.current;
@@ -389,6 +391,10 @@ export function TextPane({
       const ask = (e as CustomEvent<TextAsk>).detail;
       if (ask.do === "format") {
         setFormatError(format(v) ? "" : "it has a mistake: fix it, then format");
+        return;
+      }
+      if (ask.do === "check") {
+        checkNow.current();
         return;
       }
       const line = v.state.doc.line(Math.min(ask.line, v.state.doc.lines));
@@ -450,6 +456,7 @@ export function TextPane({
     setChecked(found.length === 0 ? "no mistakes" : `${found.length} mistake${found.length === 1 ? "" : "s"}: listed under the text`);
     if (found.length > 0) goTo(found[0].from);
   };
+  checkNow.current = check;
   return (
     <div className="nodrag nowheel hl-text" role="region" aria-label="Text">
       <div className="hl-text__edge" onPointerDown={onEdge} title="drag to resize" />

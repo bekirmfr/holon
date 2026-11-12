@@ -2,12 +2,16 @@
 // asks for its admin, with the setup code it printed when it started; an invite link lets its
 // holder set their password; otherwise one signs in, with a name and password or, when the
 // server has one, through its identity provider (signin.ts). Signed in, the editor shows, with
-// an account menu in its header: change password and sign out.
+// the account in its header: who is signed in and what they may decide, change password,
+// Getting started and sign out.
 
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
-import { finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, mayI, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
+import { claimsOf, finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
+import { lettersOf } from "./keymap";
+import { Kbd } from "./ui/Kbd";
+import { keyOf } from "./ui/Keys";
 
 /** Who is signed in, for the editor: a person, or (signed in with its token) an agent or a service. */
 export type Me = { name: string; kind: Kind; role: Role };
@@ -214,13 +218,74 @@ export function initials(name: string): string {
   return two.toUpperCase();
 }
 
-/** The top bar's avatar, at its right: who is signed in; its menu opens the welcome and docs,
- *  changes the password, signs out. The look is the top bar's own. */
-export function AccountMenu({ me, onWelcome }: { me: Me; onWelcome: () => void }) {
-  const dialog = useDialog();
+/** The top bar's avatar, at its right: who is signed in. It opens the account dialog. */
+export function AccountButton({ me, onStart }: { me: Me; onStart: () => void }) {
   const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="hl-user" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open} aria-label={`account: ${me.name}`} title={`signed in as ${me.name}, ${me.role}`}>
+        {initials(me.name)}
+      </button>
+      {open && <AccountDialog me={me} onStart={onStart} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/** What the account dialog asks the host whether they may do, and how it says each. */
+const DECIDES: [string, string][] = [
+  ["flow.approve-deploy", "approve a version's deploy"],
+  ["run.decide", "decide a run's approval"],
+];
+
+/** How this browser signed in, and since when, as far as it knows: a session's (with the time
+ *  it was kept, when it was noted), or an identity provider's ID token (its issuer, issued at and
+ *  good until). */
+export function signInSaid(kind: Kind | undefined): string {
+  const at = (ms: number) => new Date(ms).toLocaleString();
+  const session = getSession();
+  if (session) return `${kind && kind !== "person" ? "with its token" : "with a name and password"}${session.at ? `, ${at(session.at)}` : ""}`;
+  const oidc = signedIn();
+  if (oidc) {
+    const claims = claimsOf(oidc.idToken);
+    const iss = typeof claims.iss === "string" ? hostOf(claims.iss) : "an identity provider";
+    const iat = typeof claims.iat === "number" ? `, ${at(claims.iat * 1000)}` : "";
+    return `through ${iss}${iat}, until ${at(oidc.exp * 1000)}`;
+  }
+  return "not known here";
+}
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+/** The account, in a dialog: who is signed in (their name, kind and role, an agent's owner), what
+ *  they may decide on the host, as `/auth/me/can` answers, how they signed in and since when; and
+ *  their password changed, Getting started, or signing out. Each button has a letter. */
+export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () => void; onClose: () => void }) {
+  const dialog = useDialog();
+  const [who, setWho] = useState<{ display?: string | null; email?: string | null; owner?: string | null; kind?: Kind } | null>(null);
+  const [may, setMay] = useState<Record<string, true | string> | string | null>(null);
+  useEffect(() => {
+    let on = true;
+    whoAmI().then(
+      (w) => on && setWho(w),
+      () => undefined,
+    );
+    mayI(DECIDES.map(([a]) => a)).then(
+      (m) => on && setMay(m),
+      (e: unknown) => on && setMay(messageOf(e)),
+    );
+    return () => {
+      on = false;
+    };
+  }, []);
+  const kind = who?.kind ?? me.kind;
   const change = async () => {
-    setOpen(false);
+    onClose();
     const current = await dialog.prompt("Your current password:");
     if (!current) return;
     const next = await dialog.prompt("A new password (at least 10 characters):");
@@ -232,33 +297,104 @@ export function AccountMenu({ me, onWelcome }: { me: Me; onWelcome: () => void }
       await dialog.confirm(`Not changed: ${messageOf(e)}`, "OK");
     }
   };
+  // s and d are Getting started and the docs elsewhere: not this dialog's letters.
+  const buttons: [string, () => void][] = [
+    ...(kind === undefined || kind === "person" ? ([["Change password", () => void change()]] as [string, () => void][]) : []),
+    [
+      "Getting started",
+      () => {
+        onClose();
+        onStart();
+      },
+    ],
+    ["Sign out", () => void signOutHere()],
+  ];
+  const letters = lettersOf(
+    buttons.map(([label]) => label),
+    ["s", "d"],
+  );
+  // Capturing, as the keys dialog does: its letters and Esc are its own while it is open.
+  const keys = useRef({ buttons, letters, onClose });
+  keys.current = { buttons, letters, onClose };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const k = keyOf(e);
+      const { buttons, letters, onClose } = keys.current;
+      const i = letters.indexOf(k);
+      const act = k === "Escape" ? onClose : i >= 0 && k !== "" ? buttons[i][1] : null;
+      if (!act || document.querySelectorAll('[role="dialog"]').length > 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      act();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  const name = who?.display || me.name;
   return (
-    <span className="hl-user__box">
-      <button className="hl-user" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label={`account: ${me.name}`} title={`signed in as ${me.name}, ${me.role}`}>
-        {initials(me.name)}
-      </button>
-      {open && (
-        <div role="menu" className="hl-user__menu">
-          <span className="hl-user__who">
-            <b>{me.name}</b> · {me.role}
-          </span>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onWelcome();
-            }}
-          >
-            Welcome and docs
-          </button>
-          <button role="menuitem" onClick={change}>
-            Change password
-          </button>
-          <button role="menuitem" onClick={() => signOutHere()}>
-            Sign out
+    <div className="hl-modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="hl-modal__box hl-account" role="dialog" aria-modal="true" aria-label="account">
+        <div className="hl-modal__head">
+          <span>Account</span>
+          <button className="hl-modal__close" aria-label="close" onClick={onClose}>
+            ×
           </button>
         </div>
-      )}
-    </span>
+        <dl className="hl-account__facts">
+          <div>
+            <dt>name</dt>
+            <dd>
+              <b>{name}</b>
+              {name !== me.name && <span className="hl-account__dim"> ({me.name})</span>}
+              {who?.email && <span className="hl-account__dim"> · {who.email}</span>}
+            </dd>
+          </div>
+          <div>
+            <dt>is</dt>
+            <dd>
+              {kind ?? "person"} · {me.role}
+              {kind === "agent" && who?.owner && <span className="hl-account__dim"> · owned by {who.owner}</span>}
+            </dd>
+          </div>
+          <div>
+            <dt>may</dt>
+            <dd>
+              {may === null ? (
+                "…"
+              ) : typeof may === "string" ? (
+                <span className="hl-account__dim">the host didn't say: {may}</span>
+              ) : (
+                <ul className="hl-account__may" aria-label="may decide">
+                  {DECIDES.map(([action, said]) => (
+                    <li key={action} title={action}>
+                      {may[action] === true ? (
+                        <>✓ {said}</>
+                      ) : (
+                        <span className="hl-account__dim">
+                          ✗ {said}
+                          {typeof may[action] === "string" ? `: ${may[action]}` : ""}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>signed in</dt>
+            <dd>{signInSaid(kind)}</dd>
+          </div>
+        </dl>
+        <div className="hl-account__do">
+          {buttons.map(([label, act], i) => (
+            <button key={label} className="hl-flow__button" onClick={act} aria-keyshortcuts={letters[i] ? letters[i].toUpperCase() : undefined}>
+              {letters[i] && <Kbd k={letters[i]} />}
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

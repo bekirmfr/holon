@@ -7,6 +7,7 @@
 // question also takes y and n (the workbench's Confirm), shown as chips on its buttons.
 
 import { Kbd } from "./ui/Kbd";
+import { keyOf, keysFor } from "./ui/Keys";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 type Ask =
@@ -65,21 +66,19 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     if (!ask) return;
     (ask.kind === "prompt" ? input.current : ok.current)?.focus();
     const yesNo = ask.kind === "confirm";
+    // Enter is handled here, so the same Enter can't also press the button of a dialog that opens
+    // next (a prompt's answer followed by a confirm would otherwise accept it unread). The letters
+    // keyOf names with a modifier held (ctrl+n) are the browser's, not an answer.
+    const keys = keysFor("dialog", {
+      Enter: () => close(true),
+      Escape: () => close(false),
+      ...(yesNo ? { y: () => close(true), n: () => close(false) } : {}),
+    });
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || (yesNo && e.key === "n" && !held(e))) {
-        e.preventDefault();
-        close(false);
-      }
-      if (yesNo && e.key === "y" && !held(e)) {
-        e.preventDefault();
-        close(true);
-      }
-      // Handled here, so the same Enter can't also press the button of a dialog that opens next
-      // (a prompt's answer followed by a confirm would otherwise accept it unread).
-      if (e.key === "Enter") {
-        e.preventDefault();
-        close(true);
-      }
+      const act = keys[keyOf(e)];
+      if (!act) return;
+      e.preventDefault();
+      act(e);
     };
     // Capturing, and kept from the page: a key that answers the question is not also one of the
     // page's keys beneath it. Typing in the prompt's own field still reaches the field, and a part
@@ -181,9 +180,4 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       )}
     </DialogContext.Provider>
   );
-}
-
-/** Whether a modifier is held: Ctrl+N and the like stay the browser's, not an answer. */
-function held(e: KeyboardEvent): boolean {
-  return e.ctrlKey || e.metaKey || e.altKey;
 }

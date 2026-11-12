@@ -404,6 +404,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
 .hl-table__row { cursor: pointer; }
 .hl-table__row:hover td { background: var(--row); }
+/* The row selected from the keys (ui/Keys.tsx's useListKeys: j, k, Enter). */
+.hl-table tr[data-at] td { background: var(--row); }
+.hl-table tr[data-at] td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .hl-table__dim { color: var(--faint) !important; }
 .hl-table a { color: var(--accent); text-decoration: none; }
 
@@ -489,22 +492,28 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-top__find span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .hl-top__find kbd { font-size: 10.5px; color: var(--muted); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 5px; }
 .hl-top__right { display: flex; align-items: center; gap: 8px; flex: none; }
-/* The account: an avatar with the initials, and its menu. */
-.hl-user__box { position: relative; display: inline-flex; }
+/* The keys (?) beside the account. */
+.hl-top__keys {
+  width: 30px; height: 30px; display: grid; place-items: center; flex: none;
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--r); cursor: pointer;
+}
+.hl-top__keys:hover { color: var(--ink); border-color: var(--border-strong); }
+/* The account: an avatar with the initials, and its dialog (AuthGate.tsx's AccountDialog). */
+.hl-account { width: min(440px, calc(100vw - 32px)); }
+.hl-account__facts { margin: 0; padding: 12px; display: grid; gap: 8px; }
+.hl-account__facts > div { display: flex; gap: 12px; }
+.hl-account__facts dt { flex: 0 0 72px; color: var(--faint); }
+.hl-account__facts dd { margin: 0; color: var(--body); min-width: 0; overflow-wrap: anywhere; }
+.hl-account__facts b { color: var(--ink); font-weight: 600; }
+.hl-account__dim { color: var(--muted); }
+.hl-account__may { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.hl-account__do { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .hl-user {
   width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
   font: inherit; font-size: 12px; font-weight: 600; color: var(--sel-ink); background: var(--sel); border: 0; cursor: pointer;
 }
 .hl-user:hover { box-shadow: 0 0 0 2px var(--border-strong); }
-.hl-user__menu {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 200px;
-  display: grid; gap: 2px; padding: 6px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: 0 8px 24px rgba(17, 24, 39, 0.14);
-}
-.hl-user__who { padding: 4px 8px 6px; margin-bottom: 2px; font-size: var(--fs-xs); color: var(--muted); border-bottom: 1px solid var(--row); }
-.hl-user__who b { color: var(--ink); font-weight: 600; }
-.hl-user__menu [role="menuitem"] { font: inherit; font-size: var(--fs-sm); text-align: left; padding: 6px 8px; color: var(--body); background: none; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.hl-user__menu [role="menuitem"]:hover { color: var(--ink); background: var(--row); }
 
 .hl-body { display: flex; flex: 1 1 auto; min-height: 0; }
 .hl-error { color: var(--bad); padding: 16px; white-space: pre-wrap; }
@@ -947,6 +956,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
   color: var(--faint); background: transparent; border: none;
 }
 .hl-toast__close:hover { color: var(--ink); }
+.hl-toast__link { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.hl-toast__link:hover { text-decoration: underline; }
 .hl-kbd {
   display: inline-block; min-width: 1.4em; margin-right: 6px; padding: 0 4px;
   font: inherit; font-size: 10px; line-height: 1.5; text-align: center;

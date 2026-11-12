@@ -10,6 +10,7 @@ import { deleteFlow, getFlow, getManifest, listDeployments, listFlows, type Depl
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
+import { useListKeys } from "./ui/Keys";
 
 type Show = "all" | "live" | "waiting" | "paused";
 const SHOWS: [Show, string, string][] = [
@@ -21,6 +22,9 @@ const SHOWS: [Show, string, string][] = [
 
 /** One flow: its saved copy, its deployment, or both. */
 type Row = { name: string; saved?: FlowListEntry; deployed?: DeploymentEntry };
+
+/** Where a flow's row goes: its page when deployed, else the editor on it. */
+const placeOf = (r: Row): Route => (r.deployed ? { kind: "flow", slug: r.name, tab: "status" } : { kind: "editor", slug: r.name, view: false, seq: null });
 
 const STATE_SAID: Record<DeploymentEntry["status"], string> = { running: "live", paused: "paused", stopped: "stopped" };
 
@@ -108,6 +112,16 @@ export function FlowsPage({
   const counts = useMemo(() => Object.fromEntries(SHOWS.map(([s]) => [s, rows.filter((r) => shows(r, s)).length])) as Record<Show, number>, [rows]);
   const q = search.trim().toLowerCase();
   const shown = rows.filter((r) => shows(r, show) && (q === "" || r.name.toLowerCase().includes(q)));
+
+  // j and k move through the rows shown, Enter opens one as its link does.
+  const list = useListKeys(
+    "flows",
+    shown.map((r) => r.name),
+    (name) => {
+      const r = shown.find((x) => x.name === name);
+      if (r) navigate(placeOf(r));
+    },
+  );
 
   const tabOf = (name: string) => openTabs.find((t) => t.name === name);
   const load = (name: string, reload: boolean) => {
@@ -198,6 +212,7 @@ export function FlowsPage({
                 <FlowRow
                   key={r.name}
                   row={r}
+                  at={list.row(r.name)}
                   dirty={tabOf(r.name)?.dirty === true}
                   uses={uses.get(r.name) ?? []}
                   navigate={navigate}
@@ -231,6 +246,7 @@ export function FlowsPage({
 
 function FlowRow({
   row,
+  at,
   dirty,
   uses,
   navigate,
@@ -243,6 +259,8 @@ function FlowRow({
   publishTo,
 }: {
   row: Row;
+  /** What marks it selected from the keys (useListKeys). */
+  at: ReturnType<ReturnType<typeof useListKeys>["row"]>;
   dirty: boolean;
   uses: HolonUse[];
   navigate: (r: Route) => void;
@@ -255,10 +273,10 @@ function FlowRow({
   publishTo: string;
 }) {
   const { name, saved, deployed } = row;
-  const to: Route = deployed ? { kind: "flow", slug: name, tab: "status" } : { kind: "editor", slug: name, view: false, seq: null };
+  const to = placeOf(row);
   const may = useMay(row, manifestOf);
   return (
-    <tr>
+    <tr {...at}>
       <td>
         <a href={format(to)} onClick={follow(to, navigate)}>
           {name}

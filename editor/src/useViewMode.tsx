@@ -386,7 +386,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
 
 /** View mode's bottom pane: the log, the history and the timeline (the Inspector, on the right,
  *  is App's). `onRestored`: a restore from the history changed the deployment. */
-export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[]; onRestored?: () => void }) {
+export function ViewModePanes({ view, flow, nodes, onRestored, keys = true }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[]; onRestored?: () => void; keys?: boolean }) {
   const { viewing, selectedRun, step } = flow;
   if (!viewing) return null;
   const { replayed } = view;
@@ -411,6 +411,7 @@ export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMod
         onFitToNodes={view.fitToNodes}
         onRestored={onRestored}
         codeText={view.codeText}
+        keys={keys}
       />
     </>
   );

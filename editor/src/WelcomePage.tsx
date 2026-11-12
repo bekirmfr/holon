@@ -1,7 +1,7 @@
 // Getting started (`#start`): how to start, step by step, each ticked off once done (guide.ts),
 // the person's own notes, and the docs, one topic each. It opens on start until "show this on
-// start" is unticked (kept with the account, home.ts, as the notes are); the account menu opens it
-// again.
+// start" is unticked (kept with the account, home.ts, as the notes are); `s`, the nav and the
+// account dialog open it again.
 
 import { useState, type CSSProperties } from "react";
 import { START_STEPS, TOPICS, type Done, type Step } from "./guide";
@@ -36,9 +36,9 @@ export function WelcomePage({
   const label = { samples: "open the samples", new: "new flow", flows: "the flows page" };
   return (
     <div style={{ maxWidth: 760, color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>
-      <div style={{ color: "var(--ink)", fontSize: 18, marginBottom: 4 }}>Welcome to Holon, {name}</div>
+      <h1 style={{ color: "var(--ink)", fontSize: 18, fontWeight: 400, margin: "0 0 4px" }}>Getting started</h1>
       <div>
-        Build services by wiring small, pure parts together, deploy them with exactly the permissions they need, and see every run as it
+        Welcome to Holon, {name}. Build services by wiring small, pure parts together, deploy them with exactly the permissions they need, and see every run as it
         happened.
       </div>
 

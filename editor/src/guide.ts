@@ -1,4 +1,4 @@
-// What the welcome tab teaches: the first steps, and the docs, one topic each, in the words the
+// What Getting started teaches: the first steps, and the docs, one topic each, in the words the
 // editor itself uses. Kept here as content, apart from how it is shown (WelcomePage.tsx).
 
 /** A first step: what to do, a button for it, and what shows it done (`Done`: a flow saved, one
@@ -20,7 +20,7 @@ export const START_STEPS: Step[] = [
   {
     title: "Send it a request",
     doneWhen: "ran",
-    body: "Use the server panel at the bottom left (send local, send live), or curl, as each sample's \"try\" line says. Every run is kept.",
+    body: "Use the request tester in the editor's Tools panel, on the right (send local, send live; :call in the palette opens it), or curl, as each sample's \"try\" line says. Every run is kept.",
   },
   {
     title: "Look at the run",
@@ -48,7 +48,7 @@ export const TOPICS: Topic[] = [
   {
     title: "Routes and servers",
     paragraphs: [
-      "A request node (a method and a path, like GET /hello/:name) wired to a respond node makes a route; a flow with routes is a server, answering on the port set under ⚙. The server panel lists its routes and lets you send it requests.",
+      "A request node (a method and a path, like GET /hello/:name) wired to a respond node makes a route; a flow with routes is a server, answering on the port set under ⚙. The editor's Tools panel lists its routes and lets you send it requests.",
       "\"Web pages from\" under ⚙ lets pages on other sites call it.",
     ],
   },
@@ -95,7 +95,7 @@ export const TOPICS: Topic[] = [
   {
     title: "The marketplace",
     paragraphs: [
-      "A marketplace is itself a Holon flow (the Marketplace sample). Set one on the flows page to publish saved flows to it and place its holons from the palette. Placing one shows what it may do, and checks every part against its hash.",
+      "A marketplace is itself a Holon flow (the Marketplace sample). Set one in the Library's Marketplace tab to publish saved flows to it (from the flows page) and place its holons from the palette. Placing one shows what it may do, and checks every part against its hash.",
     ],
   },
   {

@@ -13,11 +13,29 @@ import { chainSaid, failedShare, greeting, hostLine, liveSaid } from "./overview
 import { follow, format, type Route } from "./routes";
 import { ActivityList } from "./Pages";
 import { Spark } from "./ui/Spark";
-import { useToast } from "./ui/Toast";
+import { useToast, type Notify } from "./ui/Toast";
 
 const STATE_SAID: Record<DeploymentEntry["status"], string> = { running: "live", paused: "paused", stopped: "stopped" };
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const short = (hash: string) => (hash ? `${hash.slice(0, 4)}…${hash.slice(-4)}` : "–");
+
+/** Check every run log's lines again (POST /summary/check) and say what it found: each line naming
+ *  the one before, or where the chain breaks, with a link to the first run it breaks at. The
+ *  Overview's Check now, and the palette's Check the run log. */
+export async function checkRunLog(notify: Notify): Promise<void> {
+  try {
+    const c = await checkChains();
+    const first = c.breaks[0];
+    if (!first) notify(`Checked ${c.runs.toLocaleString()} runs: every line names the one before it.`, "ok");
+    else
+      notify(`Checked ${c.runs.toLocaleString()} runs: the chain breaks at ${c.breaks.map((b) => `${b.slug} run ${b.seq}`).join(", ")}.`, "bad", {
+        label: "Open the run",
+        to: { kind: "run", slug: first.slug, seq: first.seq },
+      });
+  } catch (e) {
+    notify(e instanceof Error ? e.message : String(e), "bad");
+  }
+}
 
 export function OverviewPage({
   name,
@@ -66,16 +84,9 @@ export function OverviewPage({
 
   const check = async () => {
     setChecking(true);
-    try {
-      const c = await checkChains();
-      if (c.breaks.length === 0) notify(`Checked ${c.runs.toLocaleString()} runs: every line names the one before it.`, "ok");
-      else notify(`Checked ${c.runs.toLocaleString()} runs: the chain breaks at ${c.breaks.map((b) => `${b.slug} run ${b.seq}`).join(", ")}.`, "bad");
-      read();
-    } catch (e) {
-      notify(e instanceof Error ? e.message : String(e), "bad");
-    } finally {
-      setChecking(false);
-    }
+    await checkRunLog(notify);
+    read();
+    setChecking(false);
   };
 
   const waiting = deployments.reduce((n, d) => n + (d.waiting ?? 0), 0);

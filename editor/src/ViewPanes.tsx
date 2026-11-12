@@ -203,9 +203,12 @@ export function BottomPane({
   onFitToNodes,
   onRestored,
   codeText,
+  keys = true,
 }: {
   slug: string;
   selected: LogEntry | null;
+  /** Whether its keys are on: off while a page covers the canvas. */
+  keys?: boolean;
   onSelect: (e: LogEntry | null) => void;
   /** A version's flow as text (its unit's), for a restore's diff. */
   codeText?: CodeText;
@@ -302,7 +305,9 @@ export function BottomPane({
     pick(there);
   };
   const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
-  useKeys({
+  useKeys(
+    "view",
+    {
     j: () => stepBy(1),
     ArrowRight: () => stepBy(1),
     k: () => stepBy(-1),
@@ -311,7 +316,9 @@ export function BottomPane({
     End: () => (order.length === 0 ? false : onStep(null)),
     ",": () => runBeside(-1),
     ".": () => runBeside(1),
-  });
+    },
+    { enabled: keys },
+  );
 
   const [chainNote, setChainNote] = useState("");
   const copyHead = () =>

@@ -58,7 +58,7 @@ export function useDeployFlow({
   deployments: DeploymentEntry[];
   refreshDeployments: () => void;
   setError: (msg: string) => void;
-  onDeployed?: () => void;
+  onDeployed?: (name: string) => void;
 }) {
   const [deployBusy, setDeployBusy] = useState(false);
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
@@ -170,7 +170,7 @@ export function useDeployFlow({
       };
       await deployUnit(name, hash, ask, document, requirements);
       refreshDeployments();
-      onDeployed?.();
+      onDeployed?.(name);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

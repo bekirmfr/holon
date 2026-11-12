@@ -35,8 +35,8 @@ import {
   manifestTrigger,
   describeItem,
 } from "./holon";
-import { toDecide } from "./decisions";
-import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
+import { mayDecide, pointKey, toDecide } from "./decisions";
+import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
@@ -75,13 +75,13 @@ import { FlowPage } from "./FlowPage";
 import { pageOf, routeOfPage, shownAt, type AppPage } from "./Pages";
 import { EditorHome } from "./EditorHome";
 import { FlowsPage } from "./FlowsPage";
-import { ApprovalsPage } from "./ApprovalsPage";
+import { ApprovalsPage, WAITING_LIST, waitingKey } from "./ApprovalsPage";
 import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
 import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
-import { PAGE_KEYS } from "./keymap";
-import { KeysDialog, useKeys } from "./ui/Keys";
+import { KeysDialog, pick, useKeys } from "./ui/Keys";
+import { usePaletteRuns } from "./usePaletteRuns";
 import { CommandPalette } from "./ui/CommandPalette";
 import type { ColonCommand, Command } from "./commands";
 import { useHashRoute, type Navigate } from "./useHashRoute";
@@ -92,9 +92,9 @@ import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
-import { Shell } from "./ui/Shell";
+import { Shell, type Waiting } from "./ui/Shell";
 import { OwnedPage, PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
-import { OverviewPage } from "./OverviewPage";
+import { checkRunLog, OverviewPage } from "./OverviewPage";
 import { compileHolon, documentText, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
 import type { Inspected } from "./holonText";
@@ -144,7 +144,7 @@ function Canvas({
     finding: boolean;
     onFinding: (open: boolean) => void;
     /** How many things wait for a person, told when it changes (the nav's count). */
-    onWaiting: (n: number) => void;
+    onWaiting: (w: Waiting) => void;
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
@@ -620,7 +620,7 @@ function Canvas({
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
   const deciding = useMemo(() => toDecide(approvals.runs ?? [], me, approvals.decides), [approvals.runs, approvals.decides, me]);
-  useEffect(() => onWaiting(approvals.approvals.length + deciding), [approvals.approvals.length, deciding, onWaiting]);
+  useEffect(() => onWaiting({ changes: approvals.approvals.length, runs: deciding }), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
     flowName,
@@ -637,7 +637,10 @@ function Canvas({
     deployments,
     refreshDeployments,
     setError: setDeployError,
-    onDeployed: () => onDeployPanelOpen(true),
+    onDeployed: (name) => {
+      onDeployPanelOpen(true);
+      toast(`Deployed ${name}.`, "ok", { label: "Open the flow", to: { kind: "flow", slug: name, tab: "status" } });
+    },
   });
 
   // The It may strip (MayStrip.tsx): the draft's manifest, as the server will read it, beside the
@@ -777,28 +780,56 @@ function Canvas({
   // mode and panes; its values and runs shown or hidden while viewed. Stepping is the bottom
   // pane's (ViewPanes.tsx).
   useKeys(
+    "editor",
     {
       "ctrl+s": () => void onSave(),
       "ctrl+d": () => void onDeployFlow(),
     },
     { enabled: shown === "canvas" && !viewing, whileTyping: ["ctrl+s", "ctrl+d"] },
   );
+  // The tab before or after, wrapping.
+  const tabBeside = (by: 1 | -1) => {
+    if (tabIds.length < 2) return false;
+    const at = tabIds.indexOf(activeId);
+    switchTab(tabIds[(at + by + tabIds.length) % tabIds.length]);
+  };
+  useKeys("tabs", { "[": () => tabBeside(-1), "]": () => tabBeside(1) }, { enabled: shown === "canvas" });
   useKeys(
+    "editor",
     {
       e: () => (viewing ? onMode("edit") : canView ? onMode("view") : false),
       c: toggleCanvas,
       x: toggleText,
       i: () => onInspectorOpen(!inspectorOpen),
-      v: () => (viewing ? showPane("values", !paneShown("values")) : false),
-      b: () => (viewing ? showPane("bottom", !paneShown("bottom")) : false),
     },
     { enabled: shown === "canvas" },
+  );
+  useKeys(
+    "view",
+    {
+      v: () => showPane("values", !paneShown("values")),
+      b: () => showPane("bottom", !paneShown("bottom")),
+    },
+    { enabled: shown === "canvas" && viewing !== null },
   );
 
   // ── The command palette (ui/CommandPalette.tsx): Ctrl+K or / ─────────────────────────────
   // Its entries are what there is now: the pages, every deployed or saved flow and its tabs, the
-  // flow edited's actions, the samples, the looks.
+  // flow edited's actions, the newest runs and the runs waiting for this person, the samples, the
+  // looks, the host's actions; a number typed, that run of each deployed flow.
   const { finding, onFinding: setFinding } = start;
+  const decidable = useMemo(
+    () =>
+      (approvals.runs ?? []).flatMap(({ slug, run }) =>
+        run.waiting.some((w) => mayDecide(w, me, approvals.decides.get(pointKey(slug, w.name)) === true) === "decide") ? [{ slug, runId: run.run_id }] : [],
+      ),
+    [approvals.runs, approvals.decides, me],
+  );
+  const paletteRuns = usePaletteRuns(finding, decidable);
+  const byNumber = useCallback(
+    (seq: number): Command[] => deployments.map(({ slug }) => ({ label: `run #${seq} of ${slug}`, kind: "run", run: () => navigate({ kind: "run", slug, seq }) })),
+    [deployments, navigate],
+  );
   // The name at the text's cursor, for the Inspector (TextPane's onInspect).
   const [word, setWord] = useState<Inspected | null>(null);
   const editing = shown === "canvas" && !viewing;
@@ -828,27 +859,42 @@ function Canvas({
           ? ([["Your agents and services", { kind: "people", tab: null }]] as [string, Route][])
           : []),
       ["Docs", { kind: "docs", page: null, anchor: null }],
-      ["Welcome", { kind: "start" }],
+      ["Getting started", { kind: "start" }],
     ];
     for (const [label, to] of pages) out.push({ label, kind: "page", run: go(to) });
     const deployed = new Set(deployments.map((d) => d.slug));
     for (const { slug } of deployments) {
       out.push({ label: slug, kind: "flow", run: go({ kind: "flow", slug, tab: "status" }) });
-      for (const tab of ["runs", "history", "state", "settings"] as const) out.push({ label: `${slug} ${tab}`, kind: "flow", run: go({ kind: "flow", slug, tab }) });
+      for (const tab of ["runs", "logs", "history", "state", "settings"] as const) out.push({ label: `${slug} ${tab}`, kind: "flow", run: go({ kind: "flow", slug, tab }) });
       out.push({ label: `Edit ${slug}`, kind: "flow", run: go({ kind: "editor", slug, view: false, seq: null }) });
       out.push({ label: `View ${slug}`, kind: "flow", run: go({ kind: "editor", slug, view: true, seq: null }) });
     }
     for (const f of savedFlows) if (!deployed.has(f)) out.push({ label: `Edit ${f}`, kind: "saved", run: go({ kind: "editor", slug: f, view: false, seq: null }) });
     out.push({ label: "New draft", kind: "editor", run: start.onNew });
     for (const q of approvals.queue) if (q.version !== null) out.push({ label: `Approve ${q.slug} v${q.version}`, kind: "review", run: go({ kind: "review", slug: q.slug, version: q.version }) });
+    // A run waiting for this person goes to its row on Approvals.
+    for (const w of paletteRuns.deciding) {
+      out.push({
+        label: w.seq === null ? `approve a run of ${w.slug}` : `approve run #${w.seq} of ${w.slug}`,
+        kind: "waits for you",
+        run: () => {
+          pick(WAITING_LIST, waitingKey(w.slug, w.runId));
+          navigate({ kind: "approvals", tab: "runs" });
+        },
+      });
+    }
+    for (const l of paletteRuns.latest)
+      out.push({ label: `run #${l.seq} of ${l.slug}`, kind: l.failed ? "run, failed" : l.waited ? "run, waited" : "run", run: go({ kind: "run", slug: l.slug, seq: l.seq }) });
     for (const s of samples()) out.push({ label: `New from ${s.title}`, kind: "sample", run: () => void onOpenSample(s) });
     for (const theme of ["auto", "light", "dark"] as const) out.push({ label: `Theme: ${theme}`, kind: "look", run: () => start.onPrefs({ ...start.prefs, theme }) });
     out.push({ label: "Interface: Clean", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "clean" }) });
     out.push({ label: "Interface: Terminal", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "terminal" }) });
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
+    out.push({ label: "Check the run log", kind: "action", run: () => void checkRunLog(toast) });
+    out.push({ label: "Sign out", kind: "action", run: () => void signOutHere() });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue]);
+  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue, paletteRuns]);
   // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
   const askTextOpening = (ask: TextAsk) => {
     if (askText(ask)) return;
@@ -863,8 +909,15 @@ function Canvas({
     switch (c.kind) {
       case "line":
       case "fmt":
+      case "check":
         if (shown !== "canvas") return "open a flow in the editor first";
-        askTextOpening(c.kind === "line" ? { do: "line", line: c.line } : { do: "format" });
+        askTextOpening(c.kind === "line" ? { do: "line", line: c.line } : { do: c.kind === "fmt" ? "format" : "check" });
+        return null;
+      case "call":
+        // The request tester, in the Tools panel for now (web-console-L4.md §5.4 moves it).
+        if (shown !== "canvas") return "open a flow in the editor first";
+        onToolsPanelOpen(true);
+        setTimeout(() => document.querySelector<HTMLInputElement>('[aria-label="request path"]')?.focus(), 0);
         return null;
       case "save":
       case "deploy":
@@ -1098,7 +1151,7 @@ function Canvas({
     <NodeDocs.Provider value={describeNode}>
     <NodeActions.Provider value={nodeActions}>
     <div className="hl-main">
-    {finding && <CommandPalette commands={commands} onColon={onColon} onClose={() => setFinding(false)} />}
+    {finding && <CommandPalette commands={commands} byNumber={byNumber} onColon={onColon} onClose={() => setFinding(false)} />}
     {/* The editor's tabs: its Home, then the open flows, each closing; + starts a draft. With
         no flow open (or the last one closed) the editor shows its Home. */}
     {(shown === "canvas" || shown === "editor-home") && (
@@ -1259,7 +1312,7 @@ function Canvas({
           if (s) void onOpenSample(s);
         }}
       />
-      {paneShown("bottom") && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} />}
+      {paneShown("bottom") && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} />}
       {/* The pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
@@ -1458,7 +1511,7 @@ function Editor({ me }: { me: Me }) {
   const page = pageOf(route);
   const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
   const toast = useToast();
-  const [waiting, setWaiting] = useState(0);
+  const [waiting, setWaiting] = useState<Waiting>({ changes: 0, runs: 0 });
   const routeKey = format(route);
   useEffect(() => {
     const as = shownAt(route);
@@ -1487,8 +1540,17 @@ function Editor({ me }: { me: Me }) {
     ];
     navigate(to[i]);
   };
-  useKeys({
-    ...Object.fromEntries(PAGE_KEYS.map((_, i) => [String(i + 1), toPage(i)])),
+  useKeys("anywhere", {
+    "1": toPage(0),
+    "2": toPage(1),
+    "3": toPage(2),
+    "4": toPage(3),
+    "5": toPage(4),
+    "6": toPage(5),
+    "7": toPage(6),
+    "8": toPage(7),
+    s: () => navigate({ kind: "start" }),
+    d: () => navigate({ kind: "docs", page: null, anchor: null }),
     "?": () => setKeysShown(true),
     Escape: () => {
       if (route.kind === "editor") return false;
@@ -1502,7 +1564,7 @@ function Editor({ me }: { me: Me }) {
   });
   // The command palette (ui/CommandPalette.tsx, its entries the canvas's): Ctrl+K, /, or the top bar.
   const [finding, setFinding] = useState(false);
-  useKeys({ "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
+  useKeys("anywhere", { "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
@@ -1564,7 +1626,8 @@ function Editor({ me }: { me: Me }) {
       me={me}
       onNew={onNew}
       onFind={() => setFinding(true)}
-      onWelcome={() => setPage("welcome")}
+      onStart={() => setPage("welcome")}
+      onKeys={() => setKeysShown(true)}
       theme={prefs.theme ?? storedTheme()}
       onTheme={(theme) => onPrefs({ ...prefs, theme })}
       ui={ui}
