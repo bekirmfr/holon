@@ -795,6 +795,10 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-bottom__count--bad { color: var(--bad-ink); background: var(--bad-bg); }
 .hl-bottom__panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px; }
 .hl-bottom__panel[hidden] { display: none; }
+/* View runs' tabs, Runs and Run, under the same head as Edit's; the run picked said beside them. */
+.hl-view__panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.hl-view__panel[hidden] { display: none; }
+.hl-view__said { flex: 1; display: flex; gap: 10px; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; }
 .hl-bottom__none { margin: 4px 0; color: var(--faint); font-size: 12px; }
 .hl-bottom__button {
   font: inherit; font-size: 11px; padding: 2px 8px; color: var(--muted); background: var(--surface-2);

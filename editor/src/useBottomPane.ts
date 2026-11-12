@@ -9,14 +9,32 @@ const TAB_KEY = "holon.bottomTab";
 /** How long typing pauses before the mistakes are worked out again, as the lint waits. */
 const PAUSE_MS = 250;
 
-function rememberedTab(): EditTab {
-  try {
-    const t = localStorage.getItem(TAB_KEY);
-    return EDIT_TABS.some(([k]) => k === t) ? (t as EditTab) : "try";
-  } catch {
-    return "try";
-  }
+/** A pane's tab, remembered in this browser under `key`: one of `tabs`, else `fallback`. The
+ *  bottom pane's in Edit is one, and in View runs another (ViewPanes.tsx's, Runs or Run). */
+export function useRememberedTab<T extends string>(key: string, tabs: readonly T[], fallback: T): [T, (t: T) => void] {
+  const [tab, setTabState] = useState<T>(() => {
+    try {
+      const t = localStorage.getItem(key);
+      return tabs.includes(t as T) ? (t as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const setTab = useCallback(
+    (t: T) => {
+      setTabState(t);
+      try {
+        localStorage.setItem(key, t);
+      } catch {
+        // Not remembered, then.
+      }
+    },
+    [key],
+  );
+  return [tab, setTab];
 }
+
+const EDIT_TAB_NAMES = EDIT_TABS.map(([k]) => k);
 
 export function useBottomPane({ text, shown, onShown }: {
   /** The flow's text as the pane holds it (null before it is first written). */
@@ -25,15 +43,7 @@ export function useBottomPane({ text, shown, onShown }: {
   shown: boolean;
   onShown: (shown: boolean) => void;
 }) {
-  const [tab, setTabState] = useState<EditTab>(rememberedTab);
-  const setTab = useCallback((t: EditTab) => {
-    setTabState(t);
-    try {
-      localStorage.setItem(TAB_KEY, t);
-    } catch {
-      // Not remembered, then.
-    }
-  }, []);
+  const [tab, setTab] = useRememberedTab<EditTab>(TAB_KEY, EDIT_TAB_NAMES, "try");
   const [problems, setProblems] = useState<Problem[]>(() => problemsOf(text));
   // What the last Check said, until the text changes.
   const [checked, setChecked] = useState("");

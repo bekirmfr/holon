@@ -205,7 +205,7 @@ function Canvas({
     setPaletteOpen(open);
     try { localStorage.setItem("holon.palette", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
-  // The bottom pane (`b`): in Edit its tabs (useBottomPane.ts), in View runs the runs.
+  // The bottom pane (`b`): in Edit its tabs (useBottomPane.ts), in View runs Runs and Run (ViewPanes.tsx).
   const bottomShown = paneShown("bottom");
   const onBottomShown = useCallback((shown: boolean) => showPane("bottom", shown), [showPane]);
 

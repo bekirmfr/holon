@@ -1,13 +1,14 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane (`b`, its frame
-// BottomPane.tsx's) shows the flow log live (every request, trigger and tick). Left side, the
-// runs: a sortable, filterable run list with copy and export buttons, a capability-badge column
-// and ↺ (go back to the run; the rest of its history is its page's, FlowPage.tsx). Right side,
-// the run: two tabs — Details (what the run read and produced) and Timeline (one row per node,
-// timed by the server), with Errors when it failed. The width of the split is draggable and
-// remembered. The side pane shows the selected run's flow state as of the current step, and the
-// selected node: its params, and the inputs and outputs it had in that run (replayed, replay.ts).
+// BottomPane.tsx's) has two tabs (web-console-L4.md §5.4). Runs: the flow log live (every request,
+// trigger and tick), a sortable, filterable run list with copy, export and compare, a
+// capability-badge column, ↺ (go back to the run; the rest of its history is its page's,
+// FlowPage.tsx), the chain's head and ● live. Run: the run picked, in three tabs — Details (what
+// the run read and produced), Errors when it failed, and Timeline (one row per node, timed by the
+// server) with the stepper. Picking a run in Runs shows Run. The side pane shows the selected run's
+// flow state as of the current step, and the selected node: its params, and the inputs and
+// outputs it had in that run (replayed, replay.ts).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { decisionSaid } from "./decisions";
 import { claimNotes, field, runActions, runLabel, text } from "./runs";
@@ -24,6 +25,7 @@ import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
 import { useBottomHeight } from "./BottomPane";
+import { useRememberedTab } from "./useBottomPane";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
 import { WordSection } from "./InspectorText";
@@ -122,16 +124,14 @@ const paneStyle: CSSProperties = {
 
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
-const SPLIT_KEY = "holon.logRightWidth";
-function rememberedSplit(): number | null {
-  try {
-    const w = Number(localStorage.getItem(SPLIT_KEY));
-    return Number.isFinite(w) && w > 0 ? w : null;
-  } catch {
-    return null;
-  }
-}
-const clampSplit = (w: number, total: number) => Math.max(180, Math.min(total - 200, w));
+/** The bottom pane's tabs in View runs (web-console-L4.md §5.4): the runs, and the run picked. */
+export const VIEW_TABS = [
+  ["runs", "Runs"],
+  ["run", "Run"],
+] as const;
+export type ViewTab = (typeof VIEW_TABS)[number][0];
+const VIEW_TAB_NAMES = VIEW_TABS.map(([t]) => t);
+const VIEW_TAB_KEY = "holon.viewTab";
 
 /** The step controls: back, forward, or the whole run. */
 function Stepper({ step, steps, onStep }: { step: number | null; steps: number; onStep: (s: number | null) => void }) {
@@ -248,8 +248,21 @@ export function BottomPane({
     }
   }, [live, newest, selected, onSelect]);
 
+  // Runs or Run (web-console-L4.md §5.4), remembered as Edit's tab is. A run picked (in the list,
+  // or from elsewhere: its address, a cell's history) shows Run; one live follows, or `,` and `.`
+  // move to, leaves the tab as it is.
+  const [tab, setTab] = useRememberedTab<ViewTab>(VIEW_TAB_KEY, VIEW_TAB_NAMES, "runs");
+  const quiet = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selected || selected.seq === followed.current || selected.seq === quiet.current) return;
+    setTab("run");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.seq]);
+
   const pick = (e: LogEntry) => {
     setLive(false);
+    // Live no longer follows: a run picked after this, even the one it followed, is a person's.
+    followed.current = null;
     onSelect(e);
   };
   // Stepping through the run, and the runs before and after it, from the keys (keymap.ts).
@@ -257,6 +270,7 @@ export function BottomPane({
     if (!selected) return false;
     const there = by < 0 ? entries.filter((e) => e.seq < selected.seq).pop() : entries.find((e) => e.seq > selected.seq);
     if (!there) return false;
+    quiet.current = there.seq;
     pick(there);
   };
   const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
@@ -290,41 +304,31 @@ export function BottomPane({
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid var(--border)", padding: "4px 8px" }}>
-        {selected && (
-          <span style={{ color: ink }}>
-            #{selected.seq} · {runLabel(selected)} · session {selected.session}
-          </span>
-        )}
-        {verdict !== null && (
-          <span style={{ color: verdict ? good : bad }}>
-            {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
-          </span>
-        )}
-        {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
-        {chain.head && (
-          <div className="hl-view__chain" style={{ display: "contents" }}>
-            {chain.breaks.length > 0 ? (
-              <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
-                ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
-              </span>
-            ) : (
-              <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
-            )}
-            <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
-            <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
-            <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
-            {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
-          </div>
-        )}
-        <div style={{ flex: 1 }} />
-        <button
-          style={{ ...small, color: live ? "var(--accent-ink)" : "var(--muted)", background: live ? good : "transparent" }}
-          onClick={() => setLive(!live)}
-          title="follow the newest run as it happens"
-        >
-          ● live
-        </button>
+      <div className="hl-bottom__head">
+        <div className="hl-bottom__tabs" role="tablist" aria-label="bottom tabs">
+          {VIEW_TABS.map(([t, label]) => (
+            <button key={t} role="tab" aria-selected={t === tab} className="hl-bottom__tab" onClick={() => setTab(t)}>
+              {label}
+              {t === "runs" && <span className="hl-bottom__count">{entries.length}</span>}
+            </button>
+          ))}
+        </div>
+        <div className="hl-view__said">
+          {selected && (
+            <span style={{ color: ink }}>
+              #{selected.seq} · {runLabel(selected)} · session {selected.session}
+            </span>
+          )}
+          {verdict !== null && (
+            <span style={{ color: verdict ? good : bad }}>
+              {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
+            </span>
+          )}
+          {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
+        </div>
+        <kbd className="hl-pane-key" aria-hidden="true">
+          b
+        </kbd>
       </div>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
       {listenError && (
@@ -334,10 +338,14 @@ export function BottomPane({
         </div>
       )}
       <LogTab
+        tab={tab}
+        open={(e) => {
+          pick(e);
+          setTab("run");
+        }}
         entries={entries}
         tallies={tallies}
         selected={selected}
-        pick={pick}
         slug={slug}
         order={order}
         nodes={nodes}
@@ -352,6 +360,32 @@ export function BottomPane({
         onFitToNodes={onFitToNodes}
         onRestored={onRestored}
         codeText={codeText}
+        tools={
+          <>
+            {chain.head && (
+              <div className="hl-view__chain" style={{ display: "contents" }}>
+                {chain.breaks.length > 0 ? (
+                  <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
+                    ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
+                  </span>
+                ) : (
+                  <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
+                )}
+                <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
+                <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
+                <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
+                {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
+              </div>
+            )}
+            <button
+              style={{ ...small, color: live ? "var(--accent-ink)" : "var(--muted)", background: live ? good : "transparent" }}
+              onClick={() => setLive(!live)}
+              title="follow the newest run as it happens"
+            >
+              ● live
+            </button>
+          </>
+        }
       />
     </div>
   );
@@ -361,10 +395,12 @@ type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
 function LogTab({
+  tab,
+  open,
+  tools,
   entries,
   tallies,
   selected,
-  pick,
   slug,
   order,
   nodes,
@@ -380,13 +416,18 @@ function LogTab({
   onRestored,
   codeText,
 }: {
+  /** Which tab shows: the runs, or the run picked. Both stay mounted, so a filter typed stays. */
+  tab: ViewTab;
+  /** A run picked in the list: it is shown, on the Run tab. */
+  open: (e: LogEntry) => void;
+  /** The list's own buttons, at the end of its bar: the chain, and ● live. */
+  tools: ReactNode;
   onRestored?: () => void;
   codeText?: CodeText;
   entries: LogEntry[];
   /** Its unrecorded handlers' runs, counted: a row each above the runs. */
   tallies: Record<string, Tally>;
   selected: LogEntry | null;
-  pick: (e: LogEntry) => void;
   slug: string;
   order: string[];
   nodes: ViewNode[];
@@ -404,7 +445,6 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
-  const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
@@ -437,8 +477,7 @@ function LogTab({
 
   const [colFilter, setColFilter] = useState<Partial<Record<FilterableCol, Set<string>>>>({});
   const [openFilter, setOpenFilter] = useState<FilterableCol | null>(null);
-  const container = useRef<HTMLDivElement>(null);
-
+  
   const allColValues = useMemo<Record<FilterableCol, string[]>>(() => ({
     session: [...new Set(entries.map((e) => `s${e.session}`))].sort(),
     label: [...new Set(entries.map((e) => runLabel(e)))].sort(),
@@ -514,25 +553,6 @@ function LogTab({
     const runA = entries.find((e) => e.seq === seqs[0]);
     const runB = entries.find((e) => e.seq === seqs[1]);
     if (runA && runB) setCompareRuns([runA, runB]);
-  };
-
-  const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
-    ev.preventDefault();
-    const total = container.current?.getBoundingClientRect().width ?? 600;
-    const startX = ev.clientX;
-    const startW = rightWidth ?? total * 0.45;
-    let last = startW;
-    const move = (m: PointerEvent) => {
-      last = clampSplit(startW + startX - m.clientX, total);
-      setRightWidth(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try { localStorage.setItem(SPLIT_KEY, String(Math.round(last))); } catch {}
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   };
 
   useEffect(() => {
@@ -613,16 +633,11 @@ function LogTab({
     );
   };
 
-  const rightStyle: CSSProperties = rightWidth !== null
-    ? { width: rightWidth, flexShrink: 0 }
-    : { flex: "1 1 45%" };
-
   return (
     <>
-    <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-      {/* Left column: filter bar + runs */}
-      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+      {/* Runs: the filter bar, its tools, and the runs. */}
+      <div role="tabpanel" aria-label="Runs" className="hl-view__panel" hidden={tab !== "runs"}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <input
             placeholder="filter runs…"
             value={filter}
@@ -642,6 +657,7 @@ function LogTab({
               <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
             </>
           )}
+          {tools}
         </div>
         {restorer.modal}
         {restorer.note && (
@@ -684,7 +700,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pick(e)}
+                  onClick={() => open(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -738,15 +754,8 @@ function LogTab({
           </div>
         </div>
       </div>
-        {/* Draggable divider */}
-        <div
-          className="hl-divider"
-          style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0 }}
-          onPointerDown={onDivider}
-          title="drag to resize"
-        />
-        {/* Right pane: Details | Errors | Timeline tabs */}
-        <div style={{ ...rightStyle, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      {/* Run: Details | Errors | Timeline, and the stepper. */}
+      <div role="tabpanel" aria-label="Run" className="hl-view__panel" hidden={tab !== "run"}>
           <Tabs
             tabs={[
               ["details", "Details"],
@@ -835,8 +844,7 @@ function LogTab({
               issues={issues}
             />
           )}
-        </div>
-    </div>
+      </div>
     {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
     </>
   );

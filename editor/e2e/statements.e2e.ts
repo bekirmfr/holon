@@ -7,7 +7,7 @@
 
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { deploy, openSample, viewNewestRun } from "./helpers";
+import { deploy, openSample, viewNewestRun, viewTab } from "./helpers";
 
 const level = (page: Page, name: "Statements" | "Nodes") =>
   page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name, exact: true });
@@ -68,6 +68,7 @@ test("View runs draws the run on the statements, stepped through", async ({ page
   await expect(answer).toContainText('= 200 "Hello, Ada"');
   await expect(graph.locator('.hl-sg__row[data-run="idle"]')).toHaveCount(0);
   // Stepping marks the step's row.
+  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.keyboard.press("j");
   await expect(graph.locator(".hl-sg__row--current")).toHaveCount(1);

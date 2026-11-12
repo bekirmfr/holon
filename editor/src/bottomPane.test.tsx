@@ -123,6 +123,53 @@ describe("the bottom pane's tabs", () => {
     expect(pane.textContent).toContain("/hello/run2");
   });
 
+  it("in View runs: Runs and Run; live leaves the tab, a run picked in Runs or from elsewhere shows Run", () => {
+    let pickFromElsewhere: (e: LogEntry) => void = () => undefined;
+    function Pane() {
+      const [selected, setSelected] = useState<LogEntry | null>(null);
+      pickFromElsewhere = setSelected;
+      return (
+        <RunPane
+          slug="hello-api"
+          selected={selected}
+          onSelect={setSelected}
+          step={null}
+          onStep={() => undefined}
+          order={[]}
+          nodes={[]}
+          timings={new Map()}
+          exchanges={[]}
+          verdict={null}
+          onPickNode={() => undefined}
+          diagnosis={null}
+          onShowNode={() => undefined}
+          onFitToNodes={() => undefined}
+          keys={false}
+        />
+      );
+    }
+    const c = mount(<Pane />);
+    expect(tabs(c).map((t) => t.textContent)).toEqual(["Runs2", "Run"]);
+    // Live picked the newest run, and the list stays: its tools are the list's.
+    expect(c.textContent).toContain("#2 · GET /hello/:name");
+    expect(shownPanels(c)).toEqual(["Runs"]);
+    const runs = c.querySelector<HTMLElement>("[role=tabpanel][aria-label=Runs]")!;
+    expect([...runs.querySelectorAll("button")].map((b) => b.textContent)).toContain("● live");
+    // A run picked in the list shows Run, with Details, Errors' place and Timeline.
+    const row = [...runs.querySelectorAll<HTMLElement>("div")].find((d) => d.firstElementChild?.nextElementSibling?.textContent === "#1")!;
+    act(() => row.click());
+    expect(shownPanels(c)).toEqual(["Run"]);
+    const run = c.querySelector<HTMLElement>("[role=tabpanel][aria-label=Run]")!;
+    expect([...run.querySelectorAll("button")].map((b) => b.textContent)).toEqual(expect.arrayContaining(["Details", "Timeline"]));
+    expect(run.textContent).toContain("/hello/run1");
+    expect(localStorage.getItem("holon.viewTab")).toBe("run");
+    // Back to Runs by its tab; a run picked elsewhere (its address, a cell's history) shows Run.
+    act(() => tabs(c)[0].click());
+    expect(shownPanels(c)).toEqual(["Runs"]);
+    act(() => pickFromElsewhere(RUNS[1]));
+    expect(shownPanels(c)).toEqual(["Run"]);
+  });
+
   it("is b in both modes, beside c, x and i", () => {
     const editor = KEYMAP.filter((b) => b.scope === "editor").flatMap((b) => b.keys);
     const view = KEYMAP.filter((b) => b.scope === "view").flatMap((b) => b.keys);

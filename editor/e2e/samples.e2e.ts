@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, viewTab } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -1244,6 +1244,7 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   const values = text.locator(".hl-text__value");
   await expect(values.first()).toHaveText("1");
   await expect(values.nth(1)).toHaveText("0");
+  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);

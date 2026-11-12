@@ -148,6 +148,12 @@ export async function viewNewestRun(page: Page) {
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
+/** View runs' bottom pane's tab (ViewPanes.tsx): Runs, the list (its name carries how many), or
+ *  Run, the run picked, with Details, Errors and Timeline. */
+export async function viewTab(page: Page, name: "Runs" | "Run") {
+  await page.locator(".hl-view__bottom").getByRole("tab", { name: name === "Run" ? "Run" : /^Runs/, exact: name === "Run" }).click();
+}
+
 /** What the editor says once, in the corner (ui/Toast.tsx): saved, updated, not saved. */
 export function notices(page: Page): Locator {
   return page.getByRole("region", { name: "notices" });
