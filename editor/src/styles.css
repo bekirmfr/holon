@@ -250,7 +250,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__head > .hl-flow__status[class*="--"] { align-self: center; font-size: var(--fs-sm); }
 /* A flow is named in mono, as the text names it. */
 .hl-flow[aria-label^="flow "] > .hl-flow__head .hl-flow__name { font-family: var(--mono); font-size: 20px; letter-spacing: 0; }
-.hl-table td:first-child, .hl-overview__runs .hl-table__dim, .hl-overview__runs .hl-flow__what { font-family: var(--mono); font-size: 12px; }
+.hl-table td:first-child { font-family: var(--mono); font-size: 12px; }
 .hl-flow__port { color: var(--faint); }
 .hl-flow__spacer { flex: 1; }
 .hl-flow__button {
@@ -345,6 +345,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flows__used { font-size: 11px; color: var(--faint); margin-top: 2px; }
 .hl-flows__user { color: var(--body); }
 .hl-flows__changed { font-size: 11px; color: var(--faint); }
+/* Under a flow's name: when it changed and who places it, in the page's font. */
+.hl-table td .hl-flows__changed, .hl-table td .hl-flows__used { font-family: var(--font-ui); min-width: 150px; }
 .hl-flows__do { white-space: nowrap; text-align: right; }
 .hl-flows__do .hl-flow__button { font-size: 11px; padding: 1px 7px; margin-left: 4px; }
 .hl-library__pages { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
@@ -406,6 +408,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__label { font-size: 12px; fill: var(--ink); }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
+.hl-table th.hl-table__num { text-align: right; }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
 .hl-table__row { cursor: pointer; }
 .hl-table__row:hover td { background: var(--row); }
@@ -1108,20 +1111,21 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-overview__head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .hl-overview__head p { margin: 4px 0 0; }
 .hl-overview__cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
-.hl-overview__side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.hl-overview__runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12px; }
-.hl-overview__runs a { display: grid; grid-template-columns: 44px minmax(0, auto) minmax(0, 1fr) auto; gap: 8px; padding: 4px 6px; border-radius: 4px; color: var(--body); text-decoration: none; }
-.hl-overview__runs a:hover { background: var(--surface-2); }
-.hl-overview__route { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-overview__main, .hl-overview__side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.hl-overview__route { color: var(--muted); font-family: var(--mono); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hl-overview__check { margin-left: auto; float: right; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .hl-needs { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-bg, var(--surface-2)); color: var(--warn-ink, var(--warn)); font-size: 12px; }
 .hl-needs__row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .hl-needs__said { color: var(--body); flex: 1; min-width: 200px; }
-.hl-table__num { text-align: right; font-variant-numeric: tabular-nums; }
+.hl-needs__versions { font-family: var(--mono); color: var(--body); }
+.hl-table__num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hl-overview .hl-table td:first-child { white-space: nowrap; }
 .hl-spark { display: block; }
 .hl-spark rect { fill: var(--accent); opacity: 0.55; }
 .hl-spark rect.hl-spark__bad { fill: var(--bad); opacity: 0.9; }
-@media (max-width: 880px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }
+/* The tables want the width: the run log and what was done go below them on a narrower screen. */
+.hl-overview__main .hl-flow__section { overflow-x: auto; }
+@media (max-width: 1100px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }
 
 /* ── The pages over the canvas (App.tsx): the room a page has ── */
 .hl-pagebox { position: absolute; inset: 0; z-index: 10; background: var(--bg); overflow: auto; padding: 24px; }
@@ -1215,6 +1219,10 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-chip--paused, .hl-chip--waits { color: var(--warn-ink); background: var(--warn-bg); border-color: transparent; }
 .hl-chip--stopped { color: var(--muted); }
 .hl-chip--bad { color: var(--bad-ink); background: var(--bad-bg); border-color: transparent; }
+/* Who proposed a change: an agent in the accent, a person outlined; a call outside, teal. */
+.hl-chip--agent { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+.hl-chip--person { color: var(--body); background: none; border-color: var(--border-strong); }
+.hl-chip--ext { color: var(--ext); background: var(--ext-bg); border-color: transparent; }
 .hl-chip--pick { background: none; border-color: var(--border-strong); cursor: pointer; }
 .hl-chip--pick:hover { color: var(--ink); border-color: var(--border-strong); }
 .hl-chip--pick[aria-pressed="true"] { color: var(--sel-ink); background: var(--sel); border-color: var(--accent); }
@@ -1234,6 +1242,8 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .hl-tile { display: grid; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .hl-tile__value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.hl-tile__value.hl-flow__bad { color: var(--bad); }
+.hl-tile__value.hl-flow__waiting { color: var(--warn); }
 .hl-tile__label { font-size: var(--fs-sm); color: var(--muted); }
 /* Tabs: the current one underlined in the accent. */
 .hl-flow__tabs { overflow-x: auto; }
@@ -1262,10 +1272,6 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) th:first-child { border-top-left-radius: var(--r-lg); }
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) th:last-child { border-top-right-radius: var(--r-lg); }
-/* The overview's latest runs. */
-.hl-overview__runs { font-size: var(--fs-sm); }
-.hl-overview__runs a { padding: 6px 8px; border-radius: var(--r-sm); }
-.hl-overview__runs a:hover { background: var(--row); }
 
 /* ── The Terminal interface (look.ts's data-ui="b", gaps-web.md G33): one dark look, mono,
    square corners, [ ] buttons, ~/ titles, keys on show and a status bar. ── */
@@ -1378,6 +1384,7 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 [data-ui="b"] .hl-chip::before { content: "‹"; content: "‹" / ""; color: var(--faint); width: auto; height: auto; background: none; border-radius: 0; }
 [data-ui="b"] .hl-chip::after { content: "›"; content: "›" / ""; color: var(--faint); }
 [data-ui="b"] .hl-chip--pick[aria-pressed="true"] { color: var(--accent); background: var(--sel); }
+[data-ui="b"] .hl-chip--agent { color: var(--accent); }
 /* Tables, tabs, panes: small caps headers, the selection a rule. */
 [data-ui="b"] .hl-table th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
 [data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }

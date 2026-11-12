@@ -658,6 +658,8 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
     }
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "glance", "unit": plan.unit })).unwrap())));
     assert_eq!(deploy_json(&state, "glance", parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    let quiet = body_json(route(&state, &req("GET", "/summary", vec![])));
+    assert_eq!(quiet["deployments"][0]["p50_ms"], serde_json::Value::Null, "no runs, no median: {quiet}");
     for _ in 0..3 {
         assert_eq!(route(&state, &req("POST", "/trigger/glance/bump", b"{}".to_vec())).status_code, 200);
     }
@@ -673,6 +675,10 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
     let latest = summary["latest"].as_array().unwrap();
     assert_eq!(latest.iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [2, 1, 0], "the newest first");
     assert!(latest.iter().all(|r| r.get("request").is_none() && r["failed"] == false), "{latest:?}");
+    // Its median run time: the middle of the three it ran.
+    let mut took: Vec<f64> = latest.iter().map(|r| r["duration_ms"].as_f64().unwrap()).collect();
+    took.sort_by(f64::total_cmp);
+    assert_eq!(flow["p50_ms"].as_f64(), Some(took[1]), "{flow}");
     assert_eq!(summary["chain"]["checked"], serde_json::Value::Null, "no check yet");
     // Checked: every line follows the one before, and the summary says so until the next.
     let check = body_json(route(&state, &req("POST", "/summary/check", vec![])));

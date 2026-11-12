@@ -709,6 +709,8 @@ export type Summary = {
     status: "running" | "paused" | "stopped";
     runs: number[];
     failed: number[];
+    /** How long its runs in the window took, the middle of them: null with none. */
+    p50_ms: number | null;
     /** Its unrecorded handlers' runs, all told: never logged, so in no hour. */
     unrecorded: { runs: number; failed: number };
     on_record: number;
@@ -870,6 +872,8 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** The number of the version deployed now (`v3`), as its versions count them. */
+  version?: number | null;
 };
 
 /** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */

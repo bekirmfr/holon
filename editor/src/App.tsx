@@ -1348,6 +1348,7 @@ function Canvas({
           {shown === "flows" && (
             <FlowsPage
               deployments={deployments}
+              approvals={approvals.approvals}
               error={deployError || listError}
               openTabs={tabList}
               onOpen={onOpenFlow}
@@ -1442,7 +1443,7 @@ function Canvas({
               onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
+          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} runs={approvals.runs} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}

@@ -521,9 +521,11 @@ impl holon_core::Observer for Timer {
 pub struct Log {
     next_seq: u64,
     entries: VecDeque<LogEntry>,
-    /// Every run it keeps, oldest first, by its seq and when it ran: in memory are only the newest
-    /// `IN_MEMORY` of them (`entries`) when it has a file; the rest are read from it when asked.
-    kept: VecDeque<(u64, u64)>,
+    /// Every run it keeps, oldest first, by its seq, when it ran and how long it took: in memory
+    /// are only the newest `IN_MEMORY` of them (`entries`) when it has a file; the rest are read
+    /// from it when asked. A run kept again from its index (`retain`, keeping more) took NaN, not
+    /// known until it opens again.
+    kept: VecDeque<(u64, u64, f64)>,
     /// The seqs of the runs it keeps that failed (`ran_failed`), noted as each is written or read
     /// as it opens: what a summary counts failures by without reading a line (summary.rs). Runs
     /// kept again from its index (`retain`, keeping more) aren't in it until it opens again.
@@ -1412,7 +1414,7 @@ impl Log {
                 }
                 log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
-                log.kept.push_back((entry.seq, entry.at_ms));
+                log.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
                 log.note_failed(&entry);
                 log.entries.push_back(entry);
                 log.entry_lines.push_back(line.len());
@@ -1458,7 +1460,7 @@ impl Log {
         }
         self.head = line_hash(line);
         self.next_seq = self.next_seq.max(entry.seq + 1);
-        self.kept.push_back((entry.seq, entry.at_ms));
+        self.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
         self.note_failed(&entry);
         self.entries.push_back(entry);
         self.entry_lines.push_back(line.len());
@@ -1543,13 +1545,14 @@ impl Log {
         };
         if (keep > self.keep || older) && self.file.is_some() {
             // Keeping more: the runs its segments and file still hold, kept again, from the index
-            // it has of them (each run's seq and when it ran), with the file and every flag as
-            // they are: nothing read, and nothing it was doing forgotten (whether its newest lines
-            // are synced, those that couldn't be written, its backup).
-            let mut runs: BTreeMap<u64, u64> = self.sealed.iter().flat_map(|s| s.runs.iter().copied()).collect();
-            runs.extend(self.lines.iter().map(|l| (l.seq, l.at_ms)));
-            runs.extend(self.kept.iter().copied());
-            self.kept = runs.into_iter().collect();
+            // it has of them (each run's seq and when it ran; how long it took is known only of
+            // those it kept already), with the file and every flag as they are: nothing read, and
+            // nothing it was doing forgotten (whether its newest lines are synced, those that
+            // couldn't be written, its backup).
+            let mut runs: BTreeMap<u64, (u64, f64)> = self.sealed.iter().flat_map(|s| s.runs.iter().map(|(seq, at)| (*seq, (*at, f64::NAN)))).collect();
+            runs.extend(self.lines.iter().map(|l| (l.seq, (l.at_ms, f64::NAN))));
+            runs.extend(self.kept.iter().map(|(seq, at, took)| (*seq, (*at, *took))));
+            self.kept = runs.into_iter().map(|(seq, (at, took))| (seq, at, took)).collect();
         }
         (self.keep, self.max_age_ms) = (keep, max_age_ms);
         self.prune(now_ms());
@@ -1560,11 +1563,11 @@ impl Log {
     /// Only the entries kept count for breaks (the oldest has nothing before it to check).
     fn prune(&mut self, now_ms: u64) {
         let cutoff = self.max_age_ms.map(|age| now_ms.saturating_sub(age));
-        while self.kept.len() > self.keep || self.kept.front().is_some_and(|(_, at)| cutoff.is_some_and(|c| *at < c)) {
+        while self.kept.len() > self.keep || self.kept.front().is_some_and(|(_, at, _)| cutoff.is_some_and(|c| *at < c)) {
             self.kept.pop_front();
         }
         // In memory: what it keeps, and with a file only the newest few of it.
-        let oldest = self.kept.front().map_or(u64::MAX, |(seq, _)| *seq);
+        let oldest = self.kept.front().map_or(u64::MAX, |(seq, ..)| *seq);
         self.failed = self.failed.split_off(&oldest);
         let most = if self.file.is_some() { IN_MEMORY } else { usize::MAX };
         while self.entries.front().is_some_and(|e| e.seq < oldest) || self.entries.len() > most {
@@ -1627,7 +1630,7 @@ impl Log {
             }
         };
         let (at, at_ms) = (LineAt { offset: 0, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
-        self.kept.push_back((entry.seq, entry.at_ms));
+        self.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
         self.note_failed(&entry);
         self.entries.push_back(entry);
         self.entry_lines.push_back(line.len());
@@ -1980,7 +1983,7 @@ impl Log {
     /// The seqs of the entries kept that don't follow the line before them: the log was changed
     /// outside holon there.
     pub fn breaks(&self) -> &[u64] {
-        let oldest = self.kept.front().map_or(u64::MAX, |(seq, _)| *seq);
+        let oldest = self.kept.front().map_or(u64::MAX, |(seq, ..)| *seq);
         &self.breaks[self.breaks.partition_point(|seq| *seq < oldest)..]
     }
 
@@ -2007,12 +2010,12 @@ impl Log {
 
     /// What reading the runs it keeps after `after`, the newest `limit` of them, needs (`Wanted`).
     pub fn plan(&self, after: Option<u64>, limit: usize) -> Wanted {
-        let newer = self.kept.iter().filter(|(seq, _)| after.is_none_or(|a| *seq > a));
+        let newer = self.kept.iter().filter(|(seq, ..)| after.is_none_or(|a| *seq > a));
         let n = newer.clone().count();
-        let from = newer.clone().nth(n.saturating_sub(limit)).map_or(u64::MAX, |(seq, _)| *seq);
+        let from = newer.clone().nth(n.saturating_sub(limit)).map_or(u64::MAX, |(seq, ..)| *seq);
         let memory: Vec<LogEntry> = self.entries.iter().filter(|e| e.seq >= from && after.is_none_or(|a| e.seq > a)).cloned().collect();
         let in_memory_from = self.entries.front().map_or(u64::MAX, |e| e.seq);
-        let mut older: Vec<u64> = newer.map(|(seq, _)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
+        let mut older: Vec<u64> = newer.map(|(seq, ..)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
         // Those sealed, by segment: each its place in it.
         let mut sealed: Vec<(PathBuf, Vec<(usize, u64)>)> = Vec::new();
         older.retain(|seq| {
@@ -2064,7 +2067,7 @@ impl Log {
         let from_ms = to_ms.saturating_sub(hours as u64 * HOUR_MS);
         let (mut runs, mut failed) = (vec![0; hours], vec![0; hours]);
         // Newest first, so a log keeping a year stops at the window's start.
-        for (seq, at) in self.kept.iter().rev().take_while(|(_, at)| *at >= from_ms) {
+        for (seq, at, _) in self.kept.iter().rev().take_while(|(_, at, _)| *at >= from_ms) {
             if *at > to_ms {
                 continue;
             }
@@ -2076,6 +2079,26 @@ impl Log {
             }
         }
         (runs, failed)
+    }
+
+    /// How long the runs it keeps that started in the `hours` hours ending at `to_ms` took, the
+    /// middle of them (the lower of two), in milliseconds: none if none did. Counted from what it
+    /// keeps of each run, no line read; a run whose time isn't known is left out.
+    pub fn median_ms(&self, to_ms: u64, hours: usize) -> Option<f64> {
+        let from_ms = to_ms.saturating_sub(hours as u64 * 3600 * 1000);
+        let mut took: Vec<f64> = self
+            .kept
+            .iter()
+            .rev()
+            .take_while(|(_, at, _)| *at >= from_ms)
+            .filter(|(_, at, took)| *at <= to_ms && !took.is_nan())
+            .map(|(.., took)| *took)
+            .collect();
+        if took.is_empty() {
+            return None;
+        }
+        let middle = (took.len() - 1) / 2;
+        Some(*took.select_nth_unstable_by(middle, f64::total_cmp).1)
     }
 
     /// How many runs it keeps.

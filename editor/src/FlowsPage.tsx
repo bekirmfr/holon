@@ -1,12 +1,15 @@
-// The Flows page (gaps-web.md G14, C2): every flow in one table, saved and deployed alike, each
-// with its state (a draft not deployed yet; live, paused or stopped; waiting runs), what it may
-// do, its runs and when it last changed. A deployed flow's row opens its page; a draft's opens it
-// in the editor. A saved flow is also opened, published, written as text and deleted from here.
+// The Flows page (gaps-web.md G14, C2): every flow in one table, saved and deployed alike, in the
+// Overview's columns (FlowCells.tsx, web-console-L4.md §7.1): its version and when it last
+// changed, its state (a draft not deployed yet; live, paused or stopped; a version that waits;
+// waiting runs), what starts it, its last 24 hours, its p50, what it may do and its last run. A
+// deployed flow's row opens its page; a draft's opens it in the editor. A saved flow is also
+// opened, published, written as text and deleted from here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { describeItem } from "./holon";
+import type { Approval } from "./approvals";
+import { MayCount, StateChips, startsOn, SummaryCells, useSummary, versionWaiting } from "./FlowCells";
 import { holonIndex, type HolonUse } from "./holonUsage";
-import { deleteFlow, getFlow, getManifest, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord } from "./server";
+import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type Summary } from "./server";
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
@@ -27,8 +30,6 @@ type Row = { name: string; saved?: FlowListEntry; deployed?: DeploymentEntry };
 /** Where a flow's row goes: its page when deployed, else the editor on it. */
 const placeOf = (r: Row): Route => (r.deployed ? { kind: "flow", slug: r.name, tab: "status" } : { kind: "editor", slug: r.name, view: false, seq: null });
 
-const STATE_SAID: Record<DeploymentEntry["status"], string> = { running: "live", paused: "paused", stopped: "stopped" };
-
 function shows(r: Row, show: Show): boolean {
   const d = r.deployed;
   switch (show) {
@@ -47,6 +48,7 @@ const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
 export function FlowsPage({
   deployments,
+  approvals,
   error,
   openTabs,
   onOpen,
@@ -60,6 +62,8 @@ export function FlowsPage({
 }: {
   /** The server's table (useDeployments), kept fresh by App. */
   deployments: DeploymentEntry[];
+  /** What waits for a person (useApprovals): a version that waits shows in its row's state. */
+  approvals: Approval[];
   error: string;
   /** The open tabs: a flow open in one is gone back to, not opened again. */
   openTabs: { id: number; name: string | null; dirty: boolean }[];
@@ -89,6 +93,8 @@ export function FlowsPage({
   const [show, setShow] = useState<Show>("all");
   // Which saved flows place which as a node (holonUsage.ts).
   const [uses, setUses] = useState<Map<string, HolonUse[]>>(new Map());
+  // Each deployed flow's last 24 hours, p50 and last run.
+  const { summary } = useSummary(deployments.length);
   const say = (e: unknown) => setMsg(e instanceof Error ? e.message : String(e));
 
   const refresh = useCallback(() => {
@@ -204,9 +210,11 @@ export function FlowsPage({
               <tr>
                 <th>Flow</th>
                 <th>State</th>
-                <th title="what deploying it asks for, or its deployment was granted">It may</th>
-                <th>Runs</th>
-                <th>Changed</th>
+                <th>Starts on</th>
+                <th>Last 24 h</th>
+                <th className="hl-table__num">p50</th>
+                <th className="hl-table__num" title="what deploying it asks for, or its deployment was granted">It may</th>
+                <th>Last run</th>
                 <th />
               </tr>
             </thead>
@@ -218,6 +226,8 @@ export function FlowsPage({
                   at={list.row(r.name)}
                   dirty={tabOf(r.name)?.dirty === true}
                   uses={uses.get(r.name) ?? []}
+                  waits={versionWaiting(approvals, r.name)}
+                  summary={summary}
                   navigate={navigate}
                   manifestOf={manifestOf}
                   onOpen={() => open(r)}
@@ -235,7 +245,7 @@ export function FlowsPage({
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="hl-table__dim">
+                  <td colSpan={8} className="hl-table__dim">
                     no flow {q ? `matches "${search.trim()}"` : `is ${SHOWS.find(([s]) => s === show)![1].toLowerCase()}`}
                   </td>
                 </tr>
@@ -253,6 +263,8 @@ function FlowRow({
   at,
   dirty,
   uses,
+  waits,
+  summary,
   navigate,
   manifestOf,
   onOpen,
@@ -268,6 +280,9 @@ function FlowRow({
   at: ReturnType<ReturnType<typeof useListKeys>["row"]>;
   dirty: boolean;
   uses: HolonUse[];
+  /** The version of it that waits for a person, if one does. */
+  waits: number | null;
+  summary: Summary | null;
   navigate: (r: Route) => void;
   manifestOf: (doc: FlowDocument) => { items: string[] };
   onOpen: () => void;
@@ -281,20 +296,24 @@ function FlowRow({
 }) {
   const { name, saved, deployed } = row;
   const to = placeOf(row);
-  const may = useMay(row, manifestOf);
   return (
     <tr {...at}>
       <td>
         <a href={format(to)} onClick={follow(to, navigate)}>
           {name}
         </a>
+        {deployed?.version != null && <span className="hl-table__dim"> v{deployed.version}</span>}
+        <div className="hl-flows__changed">
+          {saved && <div>saved {when(saved.saved_at_epoch_seconds)}{saved.saved_by ? ` by ${saved.saved_by}` : ""}</div>}
+          {deployed && <div>deployed {when(deployed.deployed_at_epoch_seconds)}{deployed.deployed_by ? ` by ${deployed.deployed_by}` : ""}</div>}
+        </div>
         <UsedBy uses={uses.filter((u) => u.kind === "flow")} lead="placed in" title="saved flows that place this one as a node; each keeps the version it placed until updated (↻ on the node)" />
         <UsedBy uses={uses.filter((u) => u.kind === "deployment")} lead="deployed in" title="deployments whose version places this one as a node; a redeploy takes the version its flow places" />
       </td>
       <td>
         <span className="hl-chips">
           {!deployed && <span className="hl-chip">draft</span>}
-          {deployed && <span className={`hl-chip hl-chip--${deployed.status}`}>{STATE_SAID[deployed.status]}</span>}
+          {deployed && <StateChips deployed={deployed} waits={waits} />}
           {(deployed?.waiting ?? 0) > 0 && <span className="hl-chip hl-chip--waits">waits {deployed!.waiting}</span>}
           {deployed?.attention && (
             <span className="hl-chip hl-chip--bad" title={deployed.attention}>
@@ -304,21 +323,8 @@ function FlowRow({
           {dirty && <span className="hl-flow__waiting">unsaved changes</span>}
         </span>
       </td>
-      <td title={may && "items" in may ? may.items.map(describeItem).join("\n") : may?.error}>{may === null ? "…" : "error" in may ? <span className="hl-table__dim">?</span> : may.items.length}</td>
-      <td>
-        {deployed ? (
-          <>
-            {deployed.trigger_count}
-            {deployed.error_count > 0 && <span className="hl-flow__failed"> · {deployed.error_count} failed</span>}
-          </>
-        ) : (
-          <span className="hl-table__dim">—</span>
-        )}
-      </td>
-      <td className="hl-flows__changed">
-        {saved && <div>saved {when(saved.saved_at_epoch_seconds)}{saved.saved_by ? ` by ${saved.saved_by}` : ""}</div>}
-        {deployed && <div>deployed {when(deployed.deployed_at_epoch_seconds)}{deployed.deployed_by ? ` by ${deployed.deployed_by}` : ""}</div>}
-      </td>
+      <td className="hl-table__dim">{deployed ? startsOn(deployed) : "–"}</td>
+      <SummaryCells slug={name} summary={deployed ? summary : undefined} may={<MayCount name={name} deployed={deployed} savedAt={saved?.saved_at_epoch_seconds} manifestOf={manifestOf} />} />
       <td className="hl-flows__do">
         <button className="hl-flow__button" onClick={onOpen} title={dirty ? "go to its tab, changes kept" : "open it in the editor"}>
           open
@@ -344,26 +350,6 @@ function FlowRow({
       </td>
     </tr>
   );
-}
-
-/** What a flow may do: its deployment's manifest when deployed, else what deploying its saved
- *  copy would ask for. Read again when either changes. */
-function useMay(row: Row, manifestOf: (doc: FlowDocument) => { items: string[] }): { items: string[] } | { error: string } | null {
-  const key = row.deployed ? `d:${row.deployed.unit}` : `s:${row.saved?.saved_at_epoch_seconds}`;
-  const [may, setMay] = useState<{ key: string; value: { items: string[] } | { error: string } } | null>(null);
-  useEffect(() => {
-    let fresh = true;
-    const read = row.deployed ? getManifest(row.name) : getFlow(row.name).then((rec) => manifestOf(rec.document));
-    read.then(
-      (m) => fresh && setMay({ key, value: { items: m.items } }),
-      (e: unknown) => fresh && setMay({ key, value: { error: e instanceof Error ? e.message : String(e) } }),
-    );
-    return () => {
-      fresh = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return may?.key === key ? may.value : null;
 }
 
 /** Who places a holon, of one kind (saved flows or deployments), and whether from an older save. */

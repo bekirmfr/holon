@@ -98,7 +98,7 @@ test("Flows: saved and deployed in one table, each with its state, filtered and 
   await gotoPage(page, "flows");
   const row = flowRow(page, "hello-api");
   await expect(row).toContainText("live");
-  await expect(row.getByRole("cell").nth(2)).toHaveText(/^\d+$/);
+  await expect(row.getByRole("cell").nth(5)).toHaveText(/^\d+$/);
   const show = page.getByRole("group", { name: "show" });
   await show.getByRole("button", { name: /^Paused/ }).click();
   await expect(row).toHaveCount(0);
