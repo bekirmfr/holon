@@ -487,6 +487,16 @@ fn new_setup_code() -> String {
     format!("{}-{}", &code[..4], &code[4..])
 }
 
+/// A setup code as it is compared: trimmed, and in capitals, the way a person may not type it.
+fn setup_form(code: &str) -> String {
+    code.trim().to_uppercase()
+}
+
+/// The setup code: `HOLON_SETUP_CODE`'s value (`given`) when there is one, else a new one.
+fn setup_code_from(given: Option<String>) -> String {
+    given.map(|c| setup_form(&c)).filter(|c| !c.is_empty()).unwrap_or_else(new_setup_code)
+}
+
 impl Accounts {
     /// The accounts at `path` (none yet if it doesn't exist), and the access document beside them.
     pub(crate) fn open(path: &str) -> Result<Accounts, String> {
@@ -522,7 +532,7 @@ impl Accounts {
     }
 
     fn with(path: Option<PathBuf>, book: Book, access: Bindings) -> Accounts {
-        let code = no_person(&book).then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
+        let code = no_person(&book).then(|| setup_code_from(std::env::var("HOLON_SETUP_CODE").ok()));
         Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
@@ -601,7 +611,7 @@ impl Accounts {
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong setup codes: wait a minute, then try again".into());
             }
-            if !same(&code.trim().to_uppercase(), &expected) {
+            if !same(&setup_form(code), &expected) {
                 tries.wrong += 1;
                 if tries.wrong >= MAX_FAILURES {
                     (tries.wrong, tries.locked) = (0, Some(Instant::now()));
@@ -1275,6 +1285,23 @@ mod tests {
         let code = b.setup_code().unwrap();
         assert!(b.setup("WRNG-CODE", "ada", PW).is_err());
         assert!(b.setup(&code, "ada", PW).is_ok());
+    }
+
+    /// A setup code is the same however it is given (`HOLON_SETUP_CODE`) and however it is typed:
+    /// in any case, with spaces around. An empty one is no code: a new one is made.
+    #[test]
+    fn a_setup_code_matches_in_any_case_and_spacing() {
+        let forms = ["abcd-2345", "ABCD-2345", "AbCd-2345", " abcd-2345\n"];
+        for given in forms {
+            for typed in forms {
+                let a = Accounts::memory();
+                *a.setup_code.lock().unwrap() = Some(setup_code_from(Some(given.into())));
+                assert!(a.setup(typed, "ada", PW).is_ok(), "given {given:?}, typed {typed:?}");
+            }
+        }
+        for empty in [None, Some(String::new()), Some("  ".into())] {
+            assert_eq!(setup_code_from(empty).len(), "XXXX-XXXX".len());
+        }
     }
 
     #[test]
