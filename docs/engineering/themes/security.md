@@ -668,7 +668,17 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: none named here beyond the limits above.
+Gaps, found by grounding every claim above in a test (2026-11-12):
+
+- a parking run's settled sends go through a second copy of the secret and grant filter
+  (`firing.rs`), and no test sends it a secret or an ungranted send;
+- a secret, a value derived from one or an answered token written to a database, a file, mail or
+  a queue (state, collections and channels are held);
+- sessions and invites past their time;
+- every file the server writes owner-only, swept (helpers are held one by one);
+- a name that resolves to a private address, and an answer mixing public and private ones (only
+  literal addresses are tested); a packed value changed on disk; two deployments' state kept
+  apart; constant-time comparing (`same`).
 
 ## 6. History
 
