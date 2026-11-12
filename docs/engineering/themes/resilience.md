@@ -31,6 +31,9 @@ synced first; `lost`, read without the log's lock, keeps the usual case as cheap
   log remembers the last 1,024 entries whose line was lost (`unkept`): one asked for after as many
   more were lost would be told it is kept, which no load reaches (a run asks as soon as it wrote).
 - **Tests.** `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`,
+  `a_run_whose_record_isnt_on_disk_is_never_answered_as_done_and_its_sends_wait` (a table: a
+  request and an action, strict and lazy, every sync failing; strict is a 500, lazy a 200, no
+  pack goes out until a sync puts its record on disk, then each goes out once),
   `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model: entries
   written, some writes failing, asked for in drawn orders between the syncer's ticks, some syncs
   failing, and by runs side by side; the cell syncs what the model says, a failed sync leaving
