@@ -7,7 +7,7 @@
 
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, isApproval, mayDecide, pointKey, type WaitingPoint } from "./decisions";
+import { approvalSaid, decidedSaid, isApproval, stepName, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
@@ -48,7 +48,6 @@ export function ApprovalsPage({
   approvals,
   deployments,
   runs,
-  decides,
   me,
   navigate,
   onDeclined,
@@ -59,8 +58,6 @@ export function ApprovalsPage({
   deployments: DeploymentEntry[];
   /** The runs waiting in them (useApprovals), null until first read. */
   runs: WaitingRunOf[] | null;
-  /** Whether `me` decides each approval point among them (decisions.ts `pointKey`). */
-  decides: ReadonlyMap<string, boolean>;
   me: Me;
   navigate: (r: Route) => void;
   /** A proposal was declined: what waits is read again. */
@@ -94,7 +91,7 @@ export function ApprovalsPage({
       {tab === "deploys" ? (
         <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} />
       ) : (
-        <RunsWaiting any={waiting.length > 0} runs={runs} decides={decides} me={me} navigate={navigate} onDecided={onDecided} />
+        <RunsWaiting any={waiting.length > 0} runs={runs} me={me} navigate={navigate} onDecided={onDecided} />
       )}
     </div>
   );
@@ -156,38 +153,30 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
   );
 }
 
-/** Approve, or decline with a reason, an approval a run waits at, asked first: what the decision
- *  did is said, and `onDecided` once it is made. */
+/** Approve, or decline with a reason, a step of an approval a run waits at, asked first: what
+ *  the decision did is said, and `onDecided` once it is made. */
 function useDecide(onDecided: () => void) {
   const dialog = useDialog();
   const toast = useToast();
-  return async (slug: string, runId: string, w: WaitingPoint, approve: boolean) => {
-    const people = w.people ?? 1;
-    const left = people - (w.approved ?? []).length;
+  return async (slug: string, runId: string, w: WaitingPoint, step: WaitingStep, approve: boolean) => {
+    const as = step.role ? ` as ${step.role}` : "";
+    const after = waitsAfter(w, step);
     const reason = approve
       ? await dialog.prompt(
-          `Approve "${w.name}" for this run of ${slug}?\n\n${left > 1 ? `It needs ${people} different people: ${left - 1} more after you.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
+          `Approve "${w.name}"${as} for this run of ${slug}?\n\n${after ? `It then waits for ${after}.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
           "",
           "Approve",
           true,
         )
-      : await dialog.prompt(`Decline "${w.name}" for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", true);
+      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", true);
     if (reason === null) return;
     if (!approve && reason.trim() === "") {
       toast("A decline says why: give a reason.", "bad");
       return;
     }
     try {
-      const d = await decideRun(slug, runId, w.name, approve, reason);
-      const more = d.people - d.approved_by.length;
-      toast(
-        d.outcome === "waiting"
-          ? `Approved: ${d.approved_by.length} of ${d.people}. It waits for ${more} more ${more === 1 ? "person" : "people"}.`
-          : d.outcome === "approved"
-            ? `Approved by ${d.approved_by.join(" and ")}: the run goes on.`
-            : "Declined: the run goes on as declined.",
-        "ok",
-      );
+      const d = await decideRun(slug, runId, w.name, step.slot, approve, reason);
+      toast(decidedSaid(d), "ok");
       if (d.run_error) toast(`The run then failed: ${d.run_error}`, "bad");
       onDecided();
     } catch (e) {
@@ -197,18 +186,16 @@ function useDecide(onDecided: () => void) {
 }
 
 /** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
- *  decided here, by a person who may. */
+ *  decided here a step at a time, each step by whoever the server says may take it. */
 function RunsWaiting({
   any,
   runs,
-  decides,
   me,
   navigate,
   onDecided,
 }: {
   any: boolean;
   runs: WaitingRunOf[] | null;
-  decides: ReadonlyMap<string, boolean>;
   me: Me;
   navigate: (r: Route) => void;
   onDecided: () => void;
@@ -218,8 +205,9 @@ function RunsWaiting({
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
-        An approval waits for people here: each person who may decide it approves or declines it, and counts once. An event goes on when its
-        flow is sent it, through the flow&apos;s own route (each sample&apos;s &quot;try it&quot; says how).
+        An approval waits here a step at a time, in its order: each step is approved or declined by someone bound to its role, who decides
+        one step, once. An event goes on when its flow is sent it, through the flow&apos;s own route (each sample&apos;s &quot;try it&quot;
+        says how).
       </p>
       <table className="hl-table">
         <thead>
@@ -249,20 +237,24 @@ function RunsWaiting({
                 <td>{when(run.parked_at)}</td>
                 <td className="hl-flows__do">
                   {run.waiting.filter(isApproval).map((w) => {
-                    const may = mayDecide(w, me, decides.get(pointKey(slug, w.name)) === true);
-                    if (may === "approved") return <span key={w.name} className="hl-chip">you approved</span>;
-                    if (may === "no") return null;
-                    const label = `"${w.name}" of ${slug} (${run.route ?? run.kind})`;
-                    return (
-                      <span key={w.name}>
-                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, false)} aria-label={`decline ${label}`}>
-                          Decline…
-                        </button>
-                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, true)} aria-label={`approve ${label}`}>
-                          Approve…
-                        </button>
-                      </span>
-                    );
+                    const done = yourDecision(w, me);
+                    if (done) return <span key={w.name} className="hl-chip">{done}</span>;
+                    // Each step theirs to take, a line each; named on its buttons when there are several.
+                    const steps = yourSteps(w);
+                    return steps.map((step) => {
+                      const as = steps.length > 1 ? ` as ${stepName(step)}` : "";
+                      const label = `"${w.name}"${as} of ${slug} (${run.route ?? run.kind})`;
+                      return (
+                        <div key={`${w.name}:${step.slot}`} className="hl-flows__step">
+                          <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, step, false)} aria-label={`decline ${label}`}>
+                            Decline{as}…
+                          </button>
+                          <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, step, true)} aria-label={`approve ${label}`}>
+                            Approve{as}…
+                          </button>
+                        </div>
+                      );
+                    });
                   })}
                 </td>
               </tr>

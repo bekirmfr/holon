@@ -86,6 +86,39 @@ fn family_param(leaf: &str) -> &'static str {
     }
 }
 
+/// An approval's options for its steps, as the language writes them, one form for each (D32):
+/// nothing for one person, `people: N` for more; otherwise `steps`, flat where every stage is one
+/// step, flat with `order: "any"` for one stage, and nested, a stage of one step unwrapped, for the
+/// rest. A step writes its role, `kind: "agent"` for an agent's, and `people` from 2.
+fn approval_options(steps: &holon_core::approval::Steps) -> Vec<String> {
+    use holon_core::approval::{Slot, SlotKind};
+    match steps.short() {
+        Some(1) => return vec![],
+        Some(n) => return vec![format!("people: {n}")],
+        None => {}
+    }
+    let slot = |s: &Slot| {
+        let mut fields = Vec::new();
+        fields.extend(s.role.as_deref().map(|role| format!("role: {}", quote(role))));
+        if s.kind == SlotKind::Agent {
+            fields.push("kind: \"agent\"".to_string());
+        }
+        if s.people > 1 {
+            fields.push(format!("people: {}", s.people));
+        }
+        if fields.is_empty() { "{}".to_string() } else { format!("{{ {} }}", fields.join(", ")) }
+    };
+    let list = |slots: &[Slot]| slots.iter().map(slot).collect::<Vec<_>>().join(", ");
+    match steps.stages.as_slice() {
+        [stage] if stage.len() > 1 => vec![format!("steps: [{}]", list(stage)), "order: \"any\"".to_string()],
+        stages if stages.iter().all(|s| s.len() == 1) => vec![format!("steps: [{}]", list(&stages.concat()))],
+        stages => {
+            let stages: Vec<String> = stages.iter().map(|s| if let [one] = s.as_slice() { slot(one) } else { format!("[{}]", list(s)) }).collect();
+            vec![format!("steps: [{}]", stages.join(", "))]
+        }
+    }
+}
+
 /// `text` in parentheses when it binds less tightly than `min`.
 fn wrap((text, power): (String, u8), min: u8) -> String {
     if power < min { format!("({text})") } else { text }
@@ -3357,11 +3390,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     Ok(s) if s > 0 => options.push(format!("expires: {}", quote(&duration(s)))),
                     _ => return Err(format!("an approval's expiry of {expires} seconds has no TypeScript form")),
                 }
-                match node.param("people") {
-                    "1" => {}
-                    n if n.parse::<u32>().is_ok_and(|n| (2..=5).contains(&n)) => options.push(format!("people: {n}")),
-                    n => return Err(format!("an approval by {n} people has no TypeScript form: 1 to 5")),
-                }
+                let steps = node.param("steps");
+                let Some(steps) = holon_core::approval::Steps::parse(steps) else {
+                    return Err(format!("an approval's steps {steps:?} aren't steps: person, or person*2 for 2 people"));
+                };
+                options.extend(approval_options(&steps));
                 let options = if options.is_empty() { String::new() } else { format!(", {{ {} }}", options.join(", ")) };
                 self.awaits = true;
                 Ok((format!("await approval({}{options})", quote(node.param("name"))), UNARY))
@@ -4791,10 +4824,39 @@ export const t = action((input) => {
         );
     }
 
+    /// **Guards:** every approval's steps print as the language writes them and read back as
+    /// themselves: for each steps of the universe (`holon_core::approval::universe`), the printed
+    /// text compiles to the same canonical steps, prints back as written, and fmt of it is itself.
+    /// **Why:** the canonical text is the permission a person approves: a printed form that read
+    /// back otherwise would change what a flow asks for at a fmt.
+    #[test]
+    fn every_approval_s_steps_print_and_read_back_as_themselves() {
+        for steps in holon_core::approval::universe() {
+            let options = approval_options(&steps);
+            let options = if options.is_empty() { String::new() } else { format!(", {{ {} }}", options.join(", ")) };
+            let src = format!(
+                "import {{ action, approval, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n\nexport const pay = action(async (order) => {{\n  const payout = await approval(\"payout\"{options})\n  return payout.approved\n}})\n"
+            );
+            let l = compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"));
+            let node = l.doc.nodes.iter().find(|n| n.data.name == "approval").expect("an approval");
+            assert_eq!(node.param("steps"), steps.text(), "{src}");
+            // Printed as fmt writes it (a long one over lines), it lowers to the same unit.
+            round_trips(l.name.as_deref().unwrap_or_default(), &l.doc, &l.names);
+        }
+    }
+
     /// An approval prints as it is written, its options only where they aren't the defaults.
     #[test]
     fn approvals_print_back() {
-        for options in ["", ", { people: 2 }", ", { expires: \"1d\" }", ", { expires: \"1h\", people: 3 }"] {
+        for options in [
+            "",
+            ", { people: 2 }",
+            ", { expires: \"1d\" }",
+            ", { expires: \"1h\", people: 3 }",
+            ", {\n    expires: \"1d\",\n    steps: [\n      { role: \"classifier\", kind: \"agent\" },\n      { role: \"reviewer\" },\n      { role: \"approver\", people: 2 },\n    ],\n  }",
+            ", {\n    steps: [{ role: \"reviewer\" }, { role: \"approver\" }],\n    order: \"any\",\n  }",
+            ", { steps: [[{ role: \"a\" }, {}], { role: \"c\" }] }",
+        ] {
             prints_back(&format!(
                 "import {{ action, approval, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n\nexport const pay = action(async (order) => {{\n  const payout = await approval(\"payout\"{options})\n  return payout.approved\n}})\n"
             ));

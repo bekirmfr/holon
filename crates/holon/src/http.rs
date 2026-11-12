@@ -160,6 +160,8 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         Err(rejection) => return rejection,
     };
     let by = caller.name.as_deref();
+    // What it records says it came through the run file, when it did (D45).
+    let _via = crate::activity::Via::set(caller.local.as_deref());
 
     // Preflight — answered before touching any endpoint logic.
     if method == "OPTIONS" {
@@ -277,7 +279,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {
-            return durable::handle_get_runs(&state.deployments, slug);
+            return durable::handle_get_runs(&state.deployments, slug, &caller, &crate::bindings::approval_settings(state));
         }
         if let Some(slug) = rest.strip_suffix("/logs")
             && method == "GET"

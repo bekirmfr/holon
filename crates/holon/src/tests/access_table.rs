@@ -79,6 +79,8 @@ fn expected(today: Today, c: &Caller) -> Option<(u16, String)> {
         Today::Owners(_) if kind == Kind::Person => refused(OWNERS),
         Today::Owners(_) => refused(ADMINS),
         Today::EditorsAndAgents if role == Role::Agent => None,
+        // Deciding takes a role bound where the approval is that holds run.decide, and says so.
+        Today::Deciders if matches!(role, Role::Agent | Role::Viewer) => refused(&format!("no role {} holds on \"none\" holds run.decide", c.name)),
         _ if role == Role::Agent => refused(AGENTS),
         _ if role == Role::Viewer => refused(VIEWERS),
         Today::Deciders if kind == Kind::Service => Some((403, format!("{} is a service, a script, not a person: sign in to decide an approval", c.name))),

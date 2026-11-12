@@ -22,6 +22,8 @@ test("the library lists every sample", async ({ page }) => {
   await page.goto("/");
   await gotoPage(page, "library");
   const samples = page.getByRole("region", { name: "samples" });
+  // The list comes from the wasm bridge once it has loaded: wait for it, as allInnerTexts doesn't.
+  await expect(samples.getByRole("article")).toHaveCount(SAMPLE_TITLES.length);
   const listed = await samples.getByRole("article").getByRole("heading").allInnerTexts();
   // Every sample samples.rs has, and nothing else.
   expect(SAMPLE_TITLES.length).toBeGreaterThan(5);

@@ -166,5 +166,6 @@ does is kept under its own name: "deployed by ana", "saved by bma-agent". Each h
 
 A person may hold any role but agent; an agent, agent or viewer; a service, viewer or editor. An
 agent writes flows, checks them, saves them and deploys them, but a deploy that needs approval
-stops at a person, and only a person decides an approval a run waits at. See
+stops at a person, and of an approval a run waits at it takes only a step written for an
+agent. See
 [People, agents and services](guides/people.md) and [Working with agents](guides/agents.md).

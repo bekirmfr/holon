@@ -170,7 +170,7 @@ fn serve_flow(
     let mut answer_derived = false;
     // A secret its answer carries that it wasn't approved to answer with: the caller gets a 500.
     let mut unapproved: Option<String> = None;
-    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), slug: Some(slug.to_string()), started_by: request.by.clone(), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());

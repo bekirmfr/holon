@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use holon_core::approval;
 use holon_core::{family_values, interface_of, is_tag, is_taint_key, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
@@ -3749,7 +3750,8 @@ impl<'s, 't> Reader<'s, 't> {
 
     /// `await event("paid", { expires: "1d" })`: the run waits for the event, as `await paid,
     /// expires: 1d` does. With `approval`, `await approval("payout", { expires: "1d", people: 2 })`:
-    /// it waits for people to decide.
+    /// it waits for people to decide; with `steps`, for each step in turn
+    /// (`docs/L4s/approval-steps-plan.md` §4).
     fn event(&mut self, c: &js::CallExpression, span: Span, approval: bool) -> R<Expr> {
         let (word, shape) = if approval {
             ("approval", "await approval(\"payout\", { expires: \"1d\", people: 2 })")
@@ -3772,23 +3774,39 @@ impl<'s, 't> Reader<'s, 't> {
         let js::Expression::StringLiteral(name) = self.unwrap(args[0]) else {
             return fail(self.span(args[0].span()), format!("an {word}'s name is written in quotes: {shape}"));
         };
-        let (mut expires, mut people) = (None, approval.then_some(1));
+        let (mut expires, mut people, mut steps, mut order) = (None, None, None, None);
         if let Some(o) = args.get(1) {
             let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
                 return fail(self.span(o.span()), format!("{word}'s options are an object: {shape}"));
             };
             for (key, value, at) in self.fields(o)? {
-                if approval && key == "people" {
-                    let n = match self.unwrap(value) {
-                        js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=5.0).contains(&n.value) => n.value as u32,
-                        _ => return fail(self.span(value.span()), "people is how many different people approve, a number from 1 to 5: { people: 2 }"),
-                    };
-                    people = Some(n);
-                    continue;
-                }
-                if key != "expires" {
-                    let options = if approval { "expires and people" } else { "expires" };
-                    return fail(at, format!("{word}'s options are {options}, not \"{key}\""));
+                match key.as_str() {
+                    "people" if approval => {
+                        let n = match self.unwrap(value) {
+                            js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=5.0).contains(&n.value) => n.value as u8,
+                            _ => return fail(self.span(value.span()), "people is how many different people approve, a number from 1 to 5: { people: 2 }"),
+                        };
+                        people = Some((n, at));
+                        continue;
+                    }
+                    "steps" if approval => {
+                        steps = Some((self.approval_steps(value)?, self.span(value.span())));
+                        continue;
+                    }
+                    "order" if approval => {
+                        let any = match self.unwrap(value) {
+                            js::Expression::StringLiteral(s) if s.value == "sequence" => false,
+                            js::Expression::StringLiteral(s) if s.value == "any" => true,
+                            _ => return fail(self.span(value.span()), "order is \"sequence\" (when left out), each step after the one before, or \"any\": order: \"any\""),
+                        };
+                        order = Some((any, at));
+                        continue;
+                    }
+                    "expires" => {}
+                    _ => {
+                        let options = if approval { "expires, people, steps and order" } else { "expires" };
+                        return fail(at, format!("{word}'s options are {options}, not \"{key}\""));
+                    }
                 }
                 let js::Expression::StringLiteral(s) = self.unwrap(value) else {
                     return fail(self.span(value.span()), format!("expires is a duration in quotes: {shape}"));
@@ -3799,7 +3817,86 @@ impl<'s, 't> Reader<'s, 't> {
                 expires = Some(Box::new(Expr { kind: ExprKind::Duration { seconds, text: s.value.to_string() }, span: self.span(s.span) }));
             }
         }
-        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, people }, span })
+        let approval = if approval { Some(approval_of(people, steps, order)?) } else { None };
+        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, approval }, span })
+    }
+
+    /// An approval's `steps`: a list, each item a step (`{ role: "reviewer" }`) or a stage of two
+    /// or more steps taken in any order (`[{ role: "a" }, { role: "b" }]`). Its stages, one step
+    /// each where it has none, and whether it has one: `order` goes only with a flat list.
+    fn approval_steps(&self, value: &js::Expression) -> R<WrittenSteps> {
+        const SHAPE: &str = "steps is a list of steps: steps: [{ role: \"reviewer\" }, { role: \"approver\" }]";
+        let js::Expression::ArrayExpression(list) = self.unwrap(value) else {
+            return fail(self.span(value.span()), SHAPE);
+        };
+        if list.elements.is_empty() {
+            return fail(self.span(list.span), "an approval has at least one step: steps: [{ role: \"approver\" }]");
+        }
+        let (mut stages, mut nested) = (Vec::new(), false);
+        for item in &list.elements {
+            let Some(e) = item.as_expression().map(|e| self.unwrap(e)) else {
+                return fail(self.span(item.span()), SHAPE);
+            };
+            let js::Expression::ArrayExpression(stage) = e else {
+                stages.push(vec![self.approval_slot(e)?]);
+                continue;
+            };
+            nested = true;
+            match stage.elements.len() {
+                0 => return fail(self.span(stage.span), "a stage has two or more steps, taken in any order: [{ role: \"a\" }, { role: \"b\" }]"),
+                1 => return fail(self.span(stage.span), "a stage of one step is that step: write { role: \"a\" }, not [{ role: \"a\" }]"),
+                _ => {}
+            }
+            let mut slots = Vec::new();
+            for item in &stage.elements {
+                match item.as_expression().map(|e| self.unwrap(e)) {
+                    Some(js::Expression::ArrayExpression(inner)) => {
+                        return fail(self.span(inner.span), "a stage is a list of steps, not of stages: steps: [[{ role: \"a\" }, { role: \"b\" }], { role: \"c\" }]");
+                    }
+                    Some(e) => slots.push(self.approval_slot(e)?),
+                    None => return fail(self.span(item.span()), SHAPE),
+                }
+            }
+            stages.push(slots);
+        }
+        Ok((stages, nested))
+    }
+
+    /// One step of an approval: `{ role: "reviewer" }`, with `kind: "agent"` when an agent takes it
+    /// and `people: 2` when more than one does. With no role, anyone holding `run.decide` takes it,
+    /// a person.
+    fn approval_slot(&self, e: &js::Expression) -> R<approval::Slot> {
+        let js::Expression::ObjectExpression(o) = e else {
+            return fail(self.span(e.span()), "a step is an object: { role: \"reviewer\" }, { role: \"classifier\", kind: \"agent\" }");
+        };
+        let mut slot = approval::Slot { kind: approval::SlotKind::Person, role: None, people: 1 };
+        for (key, value, at) in self.fields(o)? {
+            match key.as_str() {
+                "role" => match self.unwrap(value) {
+                    js::Expression::StringLiteral(s) if approval::is_role(&s.value) => slot.role = Some(s.value.to_string()),
+                    js::Expression::StringLiteral(s) => return fail(self.span(s.span), format!("\"{}\" isn't a role's name: letters, digits, - and _, at most 64", s.value)),
+                    _ => return fail(self.span(value.span()), "a step's role is a name in quotes: { role: \"reviewer\" }"),
+                },
+                "kind" => {
+                    slot.kind = match self.unwrap(value) {
+                        js::Expression::StringLiteral(s) if s.value == "person" => approval::SlotKind::Person,
+                        js::Expression::StringLiteral(s) if s.value == "agent" => approval::SlotKind::Agent,
+                        _ => return fail(self.span(value.span()), "a step's kind is \"person\" (when left out) or \"agent\": a service never decides an approval"),
+                    }
+                }
+                "people" => {
+                    slot.people = match self.unwrap(value) {
+                        js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=f64::from(approval::MAX_PEOPLE)).contains(&n.value) => n.value as u8,
+                        _ => return fail(self.span(value.span()), "a step's people is how many different principals take it, a number from 1 to 5: { role: \"approver\", people: 2 }"),
+                    }
+                }
+                other => return fail(at, format!("a step's fields are role, kind and people, not \"{other}\"")),
+            }
+        }
+        if slot.kind == approval::SlotKind::Agent && slot.role.is_none() {
+            return fail(self.span(o.span), "an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }");
+        }
+        Ok(slot)
     }
 
     /// `console.log("paid", order.id)`, as the standard library has it: a line for the deployment's
@@ -5259,6 +5356,32 @@ fn number_text(n: &js::NumericLiteral) -> String {
 fn decimal(text: &str) -> Option<f64> {
     let ok = !text.is_empty() && text.starts_with(|c: char| c.is_ascii_digit()) && text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
     ok.then(|| text.parse().ok()).flatten()
+}
+
+/// An approval's `steps` as written: its stages, and whether any is written as a list of its own.
+type WrittenSteps = (Vec<Vec<approval::Slot>>, bool);
+
+/// The steps an approval's options make: `people: N` (the short form, one person when left out),
+/// or `steps`, `order: "any"` making one stage of a flat list (D32).
+fn approval_of(people: Option<(u8, Span)>, steps: Option<(WrittenSteps, Span)>, order: Option<(bool, Span)>) -> R<approval::Steps> {
+    let Some(((stages, nested), at)) = steps else {
+        if let Some((_, at)) = order {
+            return fail(at, "order says how the steps are taken: steps: [{ role: \"a\" }, { role: \"b\" }], order: \"any\"");
+        }
+        return Ok(approval::Steps::people(people.map_or(1, |(n, _)| n)));
+    };
+    if let Some((_, at)) = people {
+        return fail(at, "people is the short form of one step: write people in the step, { role: \"approver\", people: 2 }");
+    }
+    let steps = match order {
+        Some((_, at)) if nested => return fail(at, "order goes with a flat list of steps: a stage's steps are taken in any order, and the stages in turn"),
+        Some((true, _)) => approval::Steps { stages: vec![stages.into_iter().flatten().collect()] },
+        _ => approval::Steps { stages },
+    };
+    match steps.problem() {
+        Some(problem) => fail(at, problem),
+        None => Ok(steps),
+    }
 }
 
 /// `"10s"`, `"5m"`, `"2h"`, `"1d"` in seconds.
