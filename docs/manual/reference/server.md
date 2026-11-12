@@ -315,8 +315,9 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
   `Authorization: Bearer <token>`, and act as themselves, by their name. Each has an **owner**, a
   person, who makes and revokes its tokens, as an admin may (an owner who isn't an admin, in the
   editor's *Your agents and services*). Tokens are shown once and kept only
-  as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
-  decides an approval. A person who still owns an agent or a service can't be removed until it has
+  as hashes; revoking one, or disabling its agent or service, stops it at once. A service never
+  decides an approval, and an agent takes only a step written for an agent. A person who still owns
+  an agent or a service can't be removed until it has
   another owner. An accounts file from before `access.json` keeps its principals but not their
   roles: each holds none until the run file's admin gives it one (`holon people set NAME --role
   ROLE`), and the server names them when it starts. Its API tokens from before principals, which

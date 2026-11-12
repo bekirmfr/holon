@@ -84,7 +84,8 @@ The tools `holon mcp` offers:
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
-secret, restores one, decides an [approval](../language/leaves.md#approval) a run waits at, or
+secret, restores one, takes a person's step of an [approval](../language/leaves.md#approval) a
+run waits at, or
 replaces a flow someone else saved. The server enforces this, not the tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
 (`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
 41 left", by *bma-agent*; in the editor's history, pick that row and restore what it asks, after

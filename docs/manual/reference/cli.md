@@ -691,9 +691,9 @@ admin defined, each with who may hold it, how many bindings hold it, and what it
 makes a role of your own, or a new version of one, which changes each binding of it: `--allow`
 names actions from the catalogue (`run.view,run.decide`; a mistake lists them), `--kinds` who may
 hold it (`person`, the default; `agent`, `service`). Whatever role it holds, an agent never
-approves a deploy, starts, stops, deletes or restores a flow, writes a secret, decides an approval,
-operates the host, or reads or changes people, roles or resources; a service never decides an
-approval. `remove` takes a role nothing binds any more.
+approves a deploy, starts, stops, deletes or restores a flow, writes a secret, takes a person's
+step of an approval, operates the host, or reads or changes people, roles or resources; a service
+never decides an approval. `remove` takes a role nothing binds any more.
 
 ```sh
 holon roles define payout-approver --allow run.view,run.decide --about "decides payouts"

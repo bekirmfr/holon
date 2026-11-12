@@ -266,11 +266,21 @@ pub(crate) struct Held {
     /// The flows its scope's tag selects, as they were deployed when it was read
     /// (`Bindings::held`); none for a scope by slug, or the host.
     pub(crate) tagged: Arc<BTreeSet<String>>,
+    /// The binding it is, and the document's version it was read in: what a decision keeps as
+    /// what let it (the plan's D43). None for what no document holds (the OS user's admin).
+    pub(crate) from: Option<Bound>,
+}
+
+/// A binding by its id, in the access document's version `access`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Bound {
+    pub(crate) binding: u64,
+    pub(crate) access: u64,
 }
 
 impl Held {
     pub(crate) fn new(role: Arc<RoleDef>, scope: Scope) -> Held {
-        Held { role, scope, tagged: Arc::default() }
+        Held { role, scope, tagged: Arc::default(), from: None }
     }
 
     /// What the OS user's run file holds (local.rs): admin, on the host, while the server runs.
@@ -444,7 +454,8 @@ impl Document {
                 Subject::Group(group) => self.group(group).map(|g| g.members.as_slice()).unwrap_or_default(),
             };
             for name in names {
-                held.entry(name.clone()).or_default().push((Held::new(Arc::clone(role), b.scope.clone()), b.expires_at));
+                let from = Some(Bound { binding: b.id, access: self.version });
+                held.entry(name.clone()).or_default().push((Held { from, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
             }
         }
         held
@@ -1048,6 +1059,11 @@ mod tests {
         at(role, Scope::Host)
     }
 
+    /// `held` through the binding `id` of the version `access`.
+    fn via(held: Held, id: u64, access: u64) -> Held {
+        Held { from: Some(Bound { binding: id, access }), ..held }
+    }
+
     /// Each version is kept with who made it, when and what it changed; the newest is read back,
     /// and every one is in the history as it was.
     #[test]
@@ -1061,7 +1077,7 @@ mod tests {
         access.keep(two.clone()).unwrap();
         let three = next(&access.document(), "ada", "bound viewer to bob on this host", |d| d.set_host_role("bob", "viewer", "ada", 3));
         access.keep(three.clone()).unwrap();
-        assert_eq!(&*access.held("bob", 4), [at_host(Role::Viewer)], "in place of editor");
+        assert_eq!(&*access.held("bob", 4), [via(at_host(Role::Viewer), 2, 3)], "in place of editor, through binding 2 of version 3");
         assert_eq!(three.bindings.iter().map(|b| b.id).collect::<Vec<_>>(), [0, 2], "ids aren't reused");
         let mut same = three.clone();
         same.set_host_role("bob", "viewer", "ada", 4);
@@ -1075,7 +1091,7 @@ mod tests {
             (2, "bound editor to bob on this host"),
             (1, "bound admin to ada on this host"),
         ]);
-        assert_eq!(&*again.held("ada", 4), [at_host(Role::Admin)]);
+        assert_eq!(&*again.held("ada", 4), [via(at_host(Role::Admin), 0, 3)]);
         assert!(again.held("cy", 4).is_empty());
     }
 
@@ -1112,8 +1128,8 @@ mod tests {
         d.bind(Subject::Principal("bob".into()), "editor", flow.clone(), Some(100), "ada", 1);
         d.bind(Subject::Principal("bob".into()), "viewer", Scope::Host, None, "ada", 1);
         access.keep(d.after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        assert_eq!(&*access.held("bob", 99), [at(Role::Editor, flow), at_host(Role::Viewer)]);
-        assert_eq!(&*access.held("bob", 100), [at_host(Role::Viewer)], "expired at 100");
+        assert_eq!(&*access.held("bob", 99), [via(at(Role::Editor, flow), 0, 1), via(at_host(Role::Viewer), 1, 1)]);
+        assert_eq!(&*access.held("bob", 100), [via(at_host(Role::Viewer), 1, 1)], "expired at 100");
         assert_eq!(access.document().bindings.len(), 2, "kept until unbound");
     }
 
@@ -1130,7 +1146,7 @@ mod tests {
         access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
         let approver = Arc::new(RoleDef::custom("payout-approver", &[Action::RunView, Action::RunDecide], &[Kind::Person]));
         for name in ["bob", "cy"] {
-            assert_eq!(&*access.held(name, 2), [Held::new(Arc::clone(&approver), flow.clone())], "{name}");
+            assert_eq!(&*access.held(name, 2), [via(Held::new(Arc::clone(&approver), flow.clone()), 0, 1)], "{name}: through the group's binding");
         }
         assert_eq!(access.document().reaching("bob").map(|(b, g)| (b.id, g)).collect::<Vec<_>>(), [(0, Some("payments"))]);
         d.forget("cy");

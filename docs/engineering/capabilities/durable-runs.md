@@ -104,13 +104,17 @@ event). `waiting_point_of` matches no approval, so no token resumes one; a start
 it (deploy.rs, `waiting_at`); and a route `{ resumes }` or a `resume_token` naming one is refused
 when the flow compiles (flow.rs).
 
-`POST /deployments/<slug>/runs/<run_id>/decide` takes `{name, approve, reason?}`. `decider` says
-who decides: a person signed in, an editor or an admin, by their name (the OS user's local
-admin by the name it runs as, so the same person counts once); never an agent, a service (a
-script, not a person), a viewer, or anyone on a server without accounts. `decide` runs under the
+`POST /deployments/<slug>/runs/<run_id>/decide` takes `{name, approve, reason?, slot?, note?}`.
+`decider` says who may decide at all: a principal signed in, by their name (the OS user's local
+admin by the name it runs as, so the same person counts once), holding `run.decide` at the
+approval point; never a service (a script, not a person), or anyone on a server without
+accounts. A `Decider` (who, kind, and `holds`: what they hold a role through there,
+`can::holding`) then takes a step: the one named, or the one open step they may fill, of their
+kind, bound to its role, never of a run they started, once per principal. `decide` runs under the
 deployments lock. Each decision is kept on the waiting point (`decisions`: its step, who, their
-kind, when, approved or not, and why), an approval once per person (the same person approving again
-is a 409). Once as many as it asks have approved, or anyone declines (a decline needs a reason),
+kind and role, when, approved or not, why, the note, and what let them: `binding`, the binding's
+id, or `"local"` for the run file's admin, and `access`, the access document's version it was
+read in, D43). Once as many as it asks have approved, or anyone declines (a decline needs a reason),
 the run is claimed, as a token claims it, and `resume_parked` gives it the decision as its event:
 `{approved, by, decisions}`, with `declined_by` and `reason` for a decline. The event is made from
 the decisions kept (`StoredWaiting::take`), so a decline a run lock turned away is still the

@@ -8642,8 +8642,8 @@
   [0, 9] ·
   [0, 10] ·
   [0, 11] Record({})
-  [0, 12] Text("two people's approval")
-  [0, 13] Record({"waiting": Text("two people's approval")})
+  [0, 12] Text("classifier, then reviewer, then approver")
+  [0, 13] Record({"waiting": Text("classifier, then reviewer, then approver")})
   [0, 14] ·
   [0, 15] ·
   [0, 16, 0] Record({})
@@ -8672,8 +8672,8 @@
   [0, 9] ·
   [0, 10] ·
   [0, 11] Record({})
-  [0, 12] Text("two people's approval")
-  [0, 13] Record({"waiting": Text("two people's approval")})
+  [0, 12] Text("classifier, then reviewer, then approver")
+  [0, 13] Record({"waiting": Text("classifier, then reviewer, then approver")})
   [0, 14] ·
   [0, 15] ·
   [0, 16, 0] Record({})
@@ -8702,8 +8702,8 @@
   [0, 9] ·
   [0, 10] ·
   [0, 11] Record({})
-  [0, 12] Text("two people's approval")
-  [0, 13] Record({"waiting": Text("two people's approval")})
+  [0, 12] Text("classifier, then reviewer, then approver")
+  [0, 13] Record({"waiting": Text("classifier, then reviewer, then approver")})
   [0, 14] ·
   [0, 15] ·
   [0, 16, 0] Record({})
@@ -8880,40 +8880,45 @@
   [0, 18] ·
   [0, 19] ·
   [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 25] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 23] ·
-  [0, 24] ·
-  [0, 21] ·
-  [0, 25] ·
-  [0, 26] ·
-  [0, 27] ·
   [0, 28] ·
   [0, 29] ·
+  [0, 26] ·
+  [0, 30] ·
+  [0, 31] ·
   [0, 32] ·
   [0, 33] ·
-  [0, 30] ·
   [0, 34] ·
-  [0, 35] ·
-  [0, 36] ·
   [0, 37] ·
+  [0, 38] ·
+  [0, 35] ·
+  [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 38] ·
+  [0, 42] ·
+  [0, 45] ·
   [0, 46] ·
-  [0, 47] Boolean(false)
-  [0, 48] Boolean(true)
-  [0, 54] ·
-  [0, 55] ·
-  [0, 56] ·
-  [0, 57] ·
-  [0, 58, 0] Record({})
-  [0, 58, 1] Number(200.0)
-  [0, 58, 2] Record({"status": Number(200.0)})
-  [0, 58, 3] ·
-  [0, 58, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 58] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] ·
+  [0, 51] ·
+  [0, 52] Boolean(false)
+  [0, 53] Boolean(true)
+  [0, 59] ·
+  [0, 60] ·
+  [0, 61] ·
+  [0, 62] ·
+  [0, 63, 0] Record({})
+  [0, 63, 1] Number(200.0)
+  [0, 63, 2] Record({"status": Number(200.0)})
+  [0, 63, 3] ·
+  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 1
@@ -8935,40 +8940,45 @@
   [0, 18] ·
   [0, 19] ·
   [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 25] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 23] ·
-  [0, 24] ·
-  [0, 21] ·
-  [0, 25] ·
-  [0, 26] Number(5.0)
-  [0, 27] ·
   [0, 28] ·
   [0, 29] ·
+  [0, 26] ·
+  [0, 30] ·
+  [0, 31] Number(5.0)
   [0, 32] ·
   [0, 33] ·
-  [0, 30] ·
   [0, 34] ·
-  [0, 35] Number(5.0)
-  [0, 36] ·
   [0, 37] ·
-  [0, 40] ·
-  [0, 41] ·
   [0, 38] ·
+  [0, 35] ·
+  [0, 39] ·
+  [0, 40] Number(5.0)
+  [0, 41] ·
+  [0, 42] ·
+  [0, 45] ·
   [0, 46] ·
-  [0, 47] Boolean(false)
-  [0, 48] Boolean(true)
-  [0, 54] ·
-  [0, 55] ·
-  [0, 56] ·
-  [0, 57] ·
-  [0, 58, 0] Record({})
-  [0, 58, 1] Number(200.0)
-  [0, 58, 2] Record({"status": Number(200.0)})
-  [0, 58, 3] ·
-  [0, 58, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 58] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] ·
+  [0, 51] ·
+  [0, 52] Boolean(false)
+  [0, 53] Boolean(true)
+  [0, 59] ·
+  [0, 60] ·
+  [0, 61] ·
+  [0, 62] ·
+  [0, 63, 0] Record({})
+  [0, 63, 1] Number(200.0)
+  [0, 63, 2] Record({"status": Number(200.0)})
+  [0, 63, 3] ·
+  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 2
@@ -8990,40 +9000,45 @@
   [0, 18] ·
   [0, 19] ·
   [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 25] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 23] ·
-  [0, 24] ·
-  [0, 21] ·
-  [0, 25] ·
-  [0, 26] ·
-  [0, 27] ·
   [0, 28] ·
   [0, 29] ·
+  [0, 26] ·
+  [0, 30] ·
+  [0, 31] ·
   [0, 32] ·
   [0, 33] ·
-  [0, 30] ·
   [0, 34] ·
-  [0, 35] ·
-  [0, 36] ·
   [0, 37] ·
+  [0, 38] ·
+  [0, 35] ·
+  [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 38] ·
+  [0, 42] ·
+  [0, 45] ·
   [0, 46] ·
-  [0, 47] Boolean(false)
-  [0, 48] Boolean(true)
-  [0, 54] ·
-  [0, 55] ·
-  [0, 56] ·
-  [0, 57] ·
-  [0, 58, 0] Record({})
-  [0, 58, 1] Number(200.0)
-  [0, 58, 2] Record({"status": Number(200.0)})
-  [0, 58, 3] ·
-  [0, 58, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 58] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] ·
+  [0, 51] ·
+  [0, 52] Boolean(false)
+  [0, 53] Boolean(true)
+  [0, 59] ·
+  [0, 60] ·
+  [0, 61] ·
+  [0, 62] ·
+  [0, 63, 0] Record({})
+  [0, 63, 1] Number(200.0)
+  [0, 63, 2] Record({"status": Number(200.0)})
+  [0, 63, 3] ·
+  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == atlas-notes · POST /notes/:owner · input 0

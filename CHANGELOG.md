@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Each decision keeps what let it.** A decision on an approval is kept, and given to the run,
+  with `binding`, the id of the binding its decider took the step through (the step's role, or
+  for a step with none what holds `run.decide` there), or `"local"` for the OS user's admin, whom
+  no binding holds, and `access`, the version of the access document it was read in. So the
+  resumed part's log entry, the run's export and `holon verify` carry them, for an auditor to
+  check offline against `holon access show N`. `holon.d.ts` types them on `Decided`. The
+  `approved-payout` sample pays in three steps: an agent bound to `classifier` on the `payments`
+  tag classifies the payout with a note, sent with it, then a person bound to `reviewer`, then one
+  bound to `approver`. `holon roles --help` and the docs say the fixed rule as it stands (an agent
+  takes only a step written for an agent), and the VS Code sidebar says a waiting approval's steps
+  taken, which it had stopped saying when `people` left the listing.
 - **An agent decides its step.** `holon mcp` has a `decide` tool: an agent approves, or declines
   with a reason, a step of an approval written for an agent, bound to its role where the flow is,
   with a `note` the run is given. For a person's step it decides nothing, and says who decides it

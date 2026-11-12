@@ -80,8 +80,10 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   decides: an agent replaces only a flow it saved (flows.rs asks it with the saved flow), runs an
   action and reads log lines only where the flow's grant lets agents (`AgentRuns`,
   `AgentReadsLogs`: deploy.rs and logs.rs ask), and never approves or starts what it deploys
-  (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); only a person decides an approval
-  (durable.rs's `decider`); a person manages the tokens of an agent or a service they own.
+  (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); a service never decides an
+  approval, and an agent takes only a step written for an agent (durable.rs's `Decider`), each
+  decision kept with the binding that let it; a person manages the tokens of an agent or a service
+  they own.
 
 ### 2.2 The request gate (http.rs)
 

@@ -23,7 +23,8 @@ host; a role can also hold on one flow only, and an admin can define roles of th
 ([below](#a-role-on-one-flow-and-roles-of-your-own)).
 
 An agent or a service has an **owner**, a person, answerable for it: they make and revoke its
-tokens, as an admin may. Only a person decides an approval a run waits at.
+tokens, as an admin may. A service never decides an approval a run waits at, and an agent
+takes only a step written for an agent ([Who decides an approval](#who-decides-an-approval)).
 
 ## The first admin
 
@@ -170,6 +171,13 @@ holon access approvals --agents off --why "no agent decides money yet"
   doesn't deploy, and an agent takes no step of a run already waiting. On by default.
 
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
+
+Each decision is kept with what let it: the binding its principal took the step through, by its
+id, and the version of the access document it was read in, or `local` for the OS user's admin,
+whom no binding holds. The run is given them with the decision, so its log and its export carry
+them: an auditor checks who took each step, in which order and through what, offline, against
+`holon access show N`. The `approved-payout` sample binds an agent and two people on its tag, one
+to each of its three steps.
 
 ## Taking access away
 

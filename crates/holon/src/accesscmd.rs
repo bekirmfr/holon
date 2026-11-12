@@ -27,9 +27,9 @@ const ROLES_USAGE: &str = "usage: holon roles [list]
   --server PORT|URL        which holon server to ask (see below)
 
   You define a role with only what you hold on this host. Whatever role it holds, an agent never
-  approves a deploy, starts, stops, deletes or restores a flow, writes a secret, decides an
-  approval, operates the host, or reads or changes people, roles or resources; a service never
-  decides an approval.
+  approves a deploy, starts, stops, deletes or restores a flow, writes a secret, takes a person's
+  step of an approval, operates the host, or reads or changes people, roles or resources; a
+  service never decides an approval.
 
 examples:
   holon roles define payout-approver --allow run.view,run.decide --about \"decides payouts\"

@@ -2227,8 +2227,9 @@ export const pay = action(async (order) => {
     assert!(said.contains(r#""outcome":"approved""#), "{said}");
     let d = decided();
     assert_eq!((&d["approved"], &d["by"]), (&serde_json::json!(true), &serde_json::json!(["ada", "bob"])), "{d}");
-    // Every decision, with its step (the short form's only one), the decider's kind and why; each
-    // is timed, and the times are left out here.
+    // Every decision, with its step (the short form's only one), the decider's kind and why, and
+    // what let them: the binding of their role and the access document's version it was read in,
+    // as `GET /bindings` lists them (the plan's D43). Each is timed; the times are left out here.
     let decisions = |d: &serde_json::Value| -> Vec<serde_json::Value> {
         let untimed = |x: &serde_json::Value| {
             let mut x = x.clone();
@@ -2237,8 +2238,14 @@ export const pay = action(async (order) => {
         };
         d["decisions"].as_array().unwrap().iter().map(untimed).collect()
     };
+    let bound = |who: &str| {
+        let listed = body_json(route(&state, &req_as(&ada, "GET", &format!("/bindings?who={who}"), vec![])));
+        assert_eq!(listed["bindings"].as_array().map(Vec::len), Some(1), "{listed}");
+        (listed["bindings"][0]["id"].clone(), listed["version"].clone())
+    };
     let took = |who: &str, approved: bool, reason: Option<&str>| {
-        let mut x = serde_json::json!({ "slot": 0, "who": who, "kind": "person", "approved": approved });
+        let (binding, access) = bound(who);
+        let mut x = serde_json::json!({ "slot": 0, "who": who, "kind": "person", "approved": approved, "binding": binding, "access": access });
         if let Some(why) = reason {
             x["reason"] = why.into();
         }
@@ -2411,6 +2418,14 @@ export const pay = action(async (order) => {
     let took: Vec<(Value, Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["role"].clone(), x["kind"].clone())).collect();
     assert_eq!(took, [(json!("scout"), json!("classifier"), json!("agent")), (json!("dee"), json!("reviewer"), json!("person")), (json!("cy"), json!("approver"), json!("person"))], "{d}");
     assert_eq!(d["decisions"][0]["note"], note, "{d}");
+    // Each kept through the binding of its step's role where the approval is, not another the
+    // decider holds (scout's agent, dee's approver), in the access version it was read in (D43).
+    let through = |who: &str, role: &str| {
+        let listed = ask(&ada, "GET", &format!("/bindings?who={who}&role={role}"), Value::Null).1;
+        (listed["bindings"][0]["id"].clone(), listed["version"].clone())
+    };
+    let kept: Vec<(Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["binding"].clone(), x["access"].clone())).collect();
+    assert_eq!(kept, [through("scout", "classifier"), through("dee", "reviewer"), through("cy", "approver")], "{d}");
     // The activity log says each decision with its step.
     let activity = ask(&ada, "GET", "/activity", Value::Null).1["entries"].as_array().unwrap().clone();
     let at = |who: &str| activity.iter().find(|e| e["action"] == "approved" && e["by"] == who).and_then(|e| e["target"].as_str()).unwrap_or_default().to_string();
@@ -9704,11 +9719,13 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The approved-payout sample: a deposit while the payout waits for two people's approval goes
-/// ahead (the waiting run holds nothing), and once two people approve it the run pays from the
-/// balance as it then is; a deposit while the payout is in flight waits for the row the run holds,
-/// and runs again after it. The payout went out once; no deposit is written over. A second payout,
-/// declined, pays nothing.
+/// The approved-payout sample: a deposit while the payout waits at its steps goes ahead (the
+/// waiting run holds nothing); an agent bound to classifier on the tag classifies it, with a note,
+/// a person bound to reviewer reviews it, and one bound to approver approves it, each only in turn,
+/// and the run pays from the balance as it then is, with the classifier's note; a deposit while
+/// the payout is in flight waits for the row the run holds, and runs again after it. The payout
+/// went out once; no deposit is written over; the resumed part's log entry holds each decision
+/// with the binding that let it. A second payout, declined by the reviewer, pays nothing.
 #[test]
 fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let (host, hits) = counting_server();
@@ -9720,10 +9737,21 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
-    // From here on, people sign in: two of them decide.
+    // From here on, people sign in, as the sample's comment sets them up: three roles, each bound on
+    // the tag, to an agent and two people; ada, the admin, holds none of them.
     let accounts = Arc::new(crate::accounts::Accounts::memory());
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
-    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let viewer = |name: &str| accounts.accept(&accounts.invite(name, "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy) = (viewer("bob"), viewer("cy"));
+    accounts.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    let payments = crate::bindings::Scope::Flows(crate::bindings::Selector::Tag("payments".into()));
+    for (role, kind, who) in [("classifier", crate::accounts::Kind::Agent, "scout"), ("reviewer", crate::accounts::Kind::Person, "bob"), ("approver", crate::accounts::Kind::Person, "cy")] {
+        accounts.define_role(crate::bindings::RoleText { name: role.into(), about: None, allows: vec!["run.decide".into()], kinds: vec![kind] }, "ada", None).unwrap();
+        accounts.bind(crate::bindings::Subject::Principal(who.into()), role, payments.clone(), None, "ada", None).unwrap();
+    }
+    // As the server does when it starts: the deployed flows' tags.
+    accounts.set_tags(&slug, &["payments".into()]);
     state.access = access::Access::new(accounts, vec![], vec![]);
     let state = state;
     let as_person = |token: &str, method: &str, url: &str, body: serde_json::Value| {
@@ -9735,18 +9763,28 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     };
     let waiting = || as_person(&ada, "GET", &format!("/deployments/{slug}/runs"), serde_json::Value::Null).1["runs"].as_array().unwrap().clone();
     let decide = |token: &str, run: &str, approve: bool, reason: Option<&str>| as_person(token, "POST", &format!("/deployments/{slug}/runs/{run}/decide"), serde_json::json!({ "name": "payout", "approve": approve, "reason": reason }));
+    let note = serde_json::json!({ "label": "invoice", "confidence": 0.93 });
+    let classify = |run: &str| as_person(&scout, "POST", &format!("/deployments/{slug}/runs/{run}/decide"), serde_json::json!({ "name": "payout", "approve": true, "note": note }));
     let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
 
     let (status, asked, _) = data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":30}"#);
     assert_eq!(status, 202, "{asked}");
-    assert!(asked.contains("two people's approval"), "{asked}");
+    assert!(asked.contains("classifier, then reviewer, then approver"), "{asked}");
     assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
     let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
-    let (code, said) = decide(&ada, &run, true, None);
+    // Only in turn, and only whoever is bound to the step's role: not the admin, not the approver
+    // before the review, not the reviewer before the classifier.
+    for (who, token) in [("ada", &ada), ("cy", &cy), ("bob", &bob)] {
+        let (code, said) = decide(token, &run, true, None);
+        assert!(code >= 400, "{who}: {said}");
+    }
+    let (code, said) = classify(&run);
     assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
-    assert_eq!(hits_of(&hits, "/slow"), 0, "one approval of two pays nothing");
+    let (code, said) = decide(&bob, &run, true, None);
+    assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
+    assert_eq!(hits_of(&hits, "/slow"), 0, "two steps of three pay nothing");
     let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| decide(&bob, &run, true, Some("the invoice matches")));
+        let approved = s.spawn(|| decide(&cy, &run, true, Some("the invoice matches")));
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
         approved.join().unwrap()
@@ -9760,12 +9798,18 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     // meanwhile waited for it, found the balance changed, and ran again on it.
     let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
-    assert!(resumed["outputs"].to_string().contains(r#"{"type":"Text","value":"bob"}"#), "who approved it: {resumed}");
+    let outputs = resumed["outputs"].to_string();
+    assert!(outputs.contains(r#"{"type":"Text","value":"scout"},{"type":"Text","value":"bob"},{"type":"Text","value":"cy"}"#), "who approved it: {resumed}");
+    assert!(resumed.to_string().contains(r#"\"by\":[\"scout\",\"bob\",\"cy\"],\"class\":{\"confidence\":0.93,\"label\":\"invoice\"}"#), "the payout sent, with the classifier's note: {resumed}");
+    // Each decision as the run was given it, with the binding that let it and the access version.
+    let events = resumed["events"]["payout"].to_string();
+    assert_eq!((events.matches(r#""binding""#).count(), events.matches(r#""access""#).count()), (3, 3), "{events}");
     assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
 
     // A second payout, declined: nothing is sent or written.
     assert_eq!(data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":10}"#).0, 202);
     let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(classify(&run).0, 200);
     let (code, said) = decide(&bob, &run, false, Some("not this vendor"));
     assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("declined")), "{said}");
     assert!(said["run_error"].is_null(), "{said}");

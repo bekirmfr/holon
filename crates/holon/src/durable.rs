@@ -289,11 +289,54 @@ pub(crate) struct Decided {
     /// What they noted with it, any JSON (an agent's label and confidence): given to the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<serde_json::Value>,
+    /// What let them (the plan's D43): the binding they took it through, and the access
+    /// document's version that binding was read in, which `holon access show` prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) binding: Option<Through>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) access: Option<u64>,
+}
+
+/// What a decision was taken through: a binding of the access document, by its id, or the OS
+/// user's local admin, which no document holds (`"local"`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Through {
+    Binding(u64),
+    Local,
+}
+
+impl Serialize for Through {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Through::Binding(id) => s.serialize_u64(*id),
+            Through::Local => s.serialize_str("local"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Through {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) if s == "local" => Ok(Through::Local),
+            v => v.as_u64().map(Through::Binding).ok_or_else(|| serde::de::Error::custom(format!("a binding is its id or \"local\", not {v}"))),
+        }
+    }
+}
+
+impl Through {
+    /// What `held` is, as a decision keeps it: its binding and the version it was read in, or the
+    /// OS user's admin.
+    fn of(held: &crate::bindings::Held) -> Let {
+        match held.from {
+            Some(b) => (Through::Binding(b.binding), Some(b.access)),
+            None => (Through::Local, None),
+        }
+    }
 }
 
 impl Decided {
-    /// As the run is given it: `{slot, who, kind, role, at, approved, reason, note}`, the role,
-    /// the reason and the note when there are.
+    /// As the run is given it: `{slot, who, kind, role, at, approved, reason, note, binding,
+    /// access}`, the role, the reason, the note and what let it when there are.
     fn value(&self) -> Value {
         let text = |s: &str| Value::Text(s.to_string());
         let mut r = BTreeMap::from([
@@ -306,6 +349,8 @@ impl Decided {
         r.extend(self.role.as_deref().map(|role| ("role".to_string(), text(role))));
         r.extend(self.reason.as_deref().map(|why| ("reason".to_string(), text(why))));
         r.extend(self.note.as_ref().and_then(|n| holon_core::parse_json(&n.to_string())).map(|n| ("note".to_string(), n)));
+        r.extend(self.binding.map(|b| ("binding".to_string(), if let Through::Binding(id) = b { Value::Number(id as f64) } else { text("local") })));
+        r.extend(self.access.map(|v| ("access".to_string(), Value::Number(v as f64))));
         Value::Record(r)
     }
 }
@@ -1064,7 +1109,7 @@ pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>,
 fn yours(caller: &access::Caller, slug: &str, excluded: &Excluded, w: &StoredWaiting) -> Vec<u8> {
     let Ok(by) = decider(caller, slug, &w.name) else { return Vec::new() };
     let point = crate::can::Resource::Approval { slug, name: Some(&w.name) };
-    let holds = |role: &str| crate::can::holds_role(caller, role, &point);
+    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).map(Through::of);
     w.yours(excluded, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds })
 }
 
@@ -1076,13 +1121,18 @@ pub(crate) enum Outcome<'a> {
     Decides { claimed: Claimed<'a>, slot: u8, slots: Vec<SlotState>, approved: bool, event: Value },
 }
 
-/// Who decides, as the decide route found them: their name, their kind, and whether they are
-/// bound to a role, by its name, where the approval is (`can::holds_role`).
+/// Who decides, as the decide route found them: their name, their kind, and what they hold a
+/// role through where the approval is, by its name (`can::holding`; none named, run.decide): the
+/// binding and its version, none when they don't hold it.
 pub(crate) struct Decider<'a> {
     pub(crate) who: &'a str,
     pub(crate) kind: Kind,
-    pub(crate) holds: &'a dyn Fn(&str) -> bool,
+    pub(crate) holds: &'a dyn Fn(Option<&str>) -> Option<Let>,
 }
+
+/// What let a decider take a step: the binding, and the access version it was read in (none for
+/// the OS user's admin).
+pub(crate) type Let = (Through, Option<u64>);
 
 impl Decider<'_> {
     /// Whether they may fill `slot`, `named` as a refusal says it: a person's step takes a person,
@@ -1093,7 +1143,7 @@ impl Decider<'_> {
             return Err(format!("{} is {}, and {named} is {}'s", self.who, self.kind.said(), if slot.kind == SlotKind::Person { "a person" } else { "an agent" }));
         }
         match &slot.role {
-            Some(role) if !(self.holds)(role) => Err(format!("{named} takes someone bound to {role} here, and {} isn't", self.who)),
+            Some(role) if (self.holds)(Some(role)).is_none() => Err(format!("{named} takes someone bound to {role} here, and {} isn't", self.who)),
             _ => Ok(()),
         }
     }
@@ -1127,7 +1177,9 @@ impl StoredWaiting {
         }
         let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
-        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note };
+        // What let them: the binding of the step's role, or of run.decide for a step without one.
+        let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |(b, v)| (Some(b), v));
+        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note, binding, access };
         self.take(d).map(|taken| (slot, taken)).map_err(|why| (409, why))
     }
 
@@ -1223,7 +1275,7 @@ pub(crate) fn decider(caller: &access::Caller, slug: &str, point: &str) -> Resul
 /// `POST /deployments/<slug>/runs/<run_id>/decide` — a principal approves, or declines with a
 /// reason, a step of the approval `name` the run waits at (`slot`, or the one open step they may
 /// fill), with a `note` if they like. A step with a role takes someone bound to that role where the
-/// approval is (`can::holds_role`); a person's step a person, an agent's an agent. Answered
+/// approval is (`can::holding`); a person's step a person, an agent's an agent. Answered
 /// `{name, slot, slots, outcome}`, `slots` each step as it stands, `outcome` `waiting` while it
 /// waits for more, else `approved` or `declined`, the run having been given the decision
 /// (`run_error` when its part then failed).
@@ -1252,9 +1304,9 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     if body.note.as_ref().is_some_and(|n| n.to_string().len() > MAX_NOTE_BYTES) {
         return err(400, format!("a note is at most {} KiB of JSON", MAX_NOTE_BYTES / 1024));
     }
-    // A step with a role takes someone bound to it where the approval is.
+    // A step with a role takes someone bound to it where the approval is, and keeps the binding.
     let point = crate::can::Resource::Approval { slug, name: Some(&body.name) };
-    let holds = |role: &str| crate::can::holds_role(caller, role, &point);
+    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).map(Through::of);
     let decider = Decider { who: &by, kind, holds: &holds };
     let (deployments, path) = (&state.deployments, &state.deployments_path);
     // In the activity log as what it was, by whom, at which step.
@@ -1304,7 +1356,7 @@ mod tests {
     /// **T5** (docs/L4s/approval-steps-plan.md §5): what a run waiting at an approval for two
     /// people is given, from the decisions taken on it, each row its decisions in turn, which of
     /// them decides it (none: it runs out), and the value. Every decision is in `decisions`, with
-    /// its step, kind, when and note; a decline is the decision, and stands.
+    /// its step, kind, when, note and what let it; a decline is the decision, and stands.
     #[test]
     fn an_approval_gives_its_run_every_decision_taken() {
         let point = || StoredWaiting { name: "payout".into(), expires_at: 100, steps: "person*2".into(), decisions: Vec::new() };
@@ -1317,20 +1369,26 @@ mod tests {
             approved,
             reason: reason.map(Into::into),
             note: None,
+            binding: None,
+            access: None,
         };
         let noted = |d: Decided| Decided { note: Some(serde_json::json!({ "checked": ["invoice", "po"], "score": 0.93 })), ..d };
+        let through = |d: Decided, binding: Through, access: Option<u64>| Decided { binding: Some(binding), access, ..d };
         let ada = serde_json::json!({ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true });
         let rows = [
             (
-                "approved by two people, one with a note",
-                vec![took("ada", true, None, 5), noted(took("bob", true, Some("the invoice matches"), 9))],
+                "approved by two people, one with a note, each through what let them",
+                vec![
+                    through(took("ada", true, None, 5), Through::Binding(3), Some(7)),
+                    through(noted(took("bob", true, Some("the invoice matches"), 9)), Through::Local, None),
+                ],
                 Some(1),
                 serde_json::json!({
                     "approved": true,
                     "by": ["ada", "bob"],
-                    "decisions": [ada, {
+                    "decisions": [{ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true, "binding": 3, "access": 7 }, {
                         "slot": 0, "who": "bob", "kind": "person", "at": 9, "approved": true, "reason": "the invoice matches",
-                        "note": { "checked": ["invoice", "po"], "score": 0.93 },
+                        "note": { "checked": ["invoice", "po"], "score": 0.93 }, "binding": "local",
                     }],
                 }),
             ),
@@ -1506,7 +1564,7 @@ mod tests {
             let mut decided = false;
             for (i, (who, slot, approve, then)) in decisions.into_iter().enumerate() {
                 let (_, kind, roles) = cast.iter().find(|(name, ..)| *name == who).unwrap();
-                let holds = |role: &str| roles.contains(&role);
+                let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some((Through::Local, None));
                 let by = Decider { who, kind: *kind, holds: &holds };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
                 let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };

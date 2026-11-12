@@ -467,8 +467,9 @@ order carries no meaning beyond names being defined before use. `{ ...order, pai
 `approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no
 token is handed out for it and no route resumes it. Two different people signed in to Holon approve
 it (or one declines), and the run gets `{approved, by, decisions}`: who approved, and every decision
-taken, a decline included, as `{slot, who, kind, role, at, approved, reason, note}` (`slot` 0
-and no `role` for `people`; `note` any JSON the decider sent with it), with `declined_by` and
+taken, a decline included, as `{slot, who, kind, role, at, approved, reason, note, binding,
+access}` (`slot` 0 and no `role` for `people`; `note` any JSON the decider sent with it; `binding`
+and `access` what let them, below), with `declined_by` and
 `reason` when declined, or `expired: true` when nobody decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
 one step of two people.
 
@@ -512,6 +513,15 @@ its step (`slot`), or takes the one open step its decider may fill. The host's a
 say two things more, for every flow (§8.4, `holon access approvals`): with `exclude_deployer`,
 whoever deployed the version a run is on decides none of its steps; with `agents` off, no agent
 decides one, and a flow whose approval has an agent's step doesn't deploy.
+
+Each decision keeps what let its decider (§8.6): `binding`, the id of the binding they took the
+step through (`holon access show` lists it), or `"local"` for the OS user's admin, whom no binding
+holds, and `access`, the version of the access document it was read in. The run is given them, so
+the resumed part's log entry, the run's export and `holon verify` carry them: an auditor checks
+the order, the kinds, the different principals and their bindings offline, against `holon access
+show N`. The approved-payout sample pays in three steps: an agent bound to `classifier` takes the
+first with a note (`holon decide --note`, or `holon mcp`'s `decide`), a person bound to
+`reviewer` the second, another bound to `approver` the third, each bound on its tag.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its

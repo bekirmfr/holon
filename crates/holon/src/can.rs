@@ -31,8 +31,9 @@
 //! A viewer is anyone; an agent is an agent; an editor a person or a service; an admin a person.
 //! An admin defines roles of their own (bindings.rs's `RoleText`), of the same shape: what they
 //! allow, from the catalogue, and which kinds may hold them. Past the roles, the host's fixed
-//! rules, which no role overrides: only a person decides an approval; an agent never does what is
-//! a person's (approving a deploy, starting, stopping, deleting or restoring a flow, writing a
+//! rules, which no role overrides: a service never decides an approval, and an agent takes only
+//! a step written for an agent; an agent never does what is a person's (a person's step of an
+//! approval, approving a deploy, starting, stopping, deleting or restoring a flow, writing a
 //! secret, the host's people, roles, resources and operations), runs a flow's action, and reads
 //! its log lines, only where the flow lets agents; and a person manages the tokens of an agent or
 //! a service they own, as an admin may for any.
@@ -325,11 +326,16 @@ pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Ref
     fixed(who, action, on)
 }
 
-/// Whether `who` is bound to the role named `role`, directly or through a group, where `on` is,
-/// for its kind: what an approval's step with a role asks of whoever fills it (the design's §8.3,
-/// the plan's D37). By name: an admin holding everything doesn't hold `reviewer`.
-pub(crate) fn holds_role(who: &Caller, role: &str, on: &Resource) -> bool {
-    who.holds.as_ref().is_some_and(|held| held.iter().any(|h| h.role.name == role && who.kind.is_some_and(|k| h.role.kinds.contains(&k)) && h.covers(on)))
+/// What `who` is bound to the role named `role` through, directly or through a group, where `on`
+/// is, for its kind: what an approval's step with a role asks of whoever fills it (the design's
+/// §8.3, the plan's D37). By name: an admin holding everything doesn't hold `reviewer`. No role
+/// named, a role that holds run.decide there. A decision keeps it as what let it (the plan's D43).
+pub(crate) fn holding<'a>(who: &'a Caller, role: Option<&str>, on: &Resource) -> Option<&'a Held> {
+    let kind = who.kind?;
+    who.holds.as_deref()?.iter().filter(|h| h.role.kinds.contains(&kind) && h.covers(on)).find(|h| match role {
+        Some(role) => h.role.name == role,
+        None => h.role.holds(RunDecide, on, who),
+    })
 }
 
 /// Whether `who` may do `action` to every flow, those no one has named yet included: as a binding
@@ -887,7 +893,7 @@ mod tests {
                         if matches!(on, Resource::Approval { .. }) {
                             for role in &roles {
                                 let bound = set.iter().any(|(at, h)| letters.contains(*at) && h.role.name == role.name && h.role.kinds.contains(&kind));
-                                assert_eq!(holds_role(&who, &role.name, on), bound, "{}", case(&format!("bound to {} on {on:?}", role.name)));
+                                assert_eq!(holding(&who, Some(&role.name), on).is_some(), bound, "{}", case(&format!("bound to {} on {on:?}", role.name)));
                             }
                         }
                     }
