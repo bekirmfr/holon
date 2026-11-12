@@ -388,10 +388,15 @@ sections above counted (88.5 K, 348.8 K, 23.39 M), so the method holds. Instruct
 - **`hello`'s 5.9 K** is new steps a run spread thin: `run_attempt` (rc.35's run record that holds
   through a crash) 1.1 K, `source` 1.2 K, the 32 random bytes made 0.3 K, `request_record` and
   `serve_flow` a little more.
-- **`crunch`'s 1.34 M is the evaluator's walk.** `movable`, `at_item` and `builds` are gone;
-  `source` (what feeds a port, through the edge table: `starts`, `ports`, `far`), `apply`, `push`
-  and a `SmallVec` collected per node are new, the last about 0.75 M. Likely `bbbf6a3` (an edge to
-  a far port costs a unit's shape nothing), not bisected.
+- **`crunch`'s 1.34 M is the evaluator's walk, two commits.** Bisected under callgrind
+  (`profile_one_route`, 50 and 100 runs a step): `bbbf6a3` (an edge to a far port costs a unit's
+  shape nothing) 23.91 → 24.24 M, its reads of a port through the edge table (`source`:
+  `starts`, `ports`, `far`); and `e35b108` (`&&` and `||` stop at the operand that decides) 24.16
+  → 25.09 M, the rest. `crunch` has no `&&` or `||`: `e35b108` added an arm for them to
+  `eval_as`, the evaluator's hottest function, and the leaf arm's existing collect of its present
+  inputs (`SmallVec<[&Value; 4]>`, `eval.rs`'s `eval_as`) stopped being inlined: `from_iter`
+  +0.75 M and `push` +0.39 M a run, `builds` folded away (−0.27 M). No new work; the same code
+  compiled worse.
 
 Where a run's instructions go at rc.35: for `notes`, writing its line (`format_escaped_str` 19%,
 `serialize_entry` 6%, a float's text 2.5%) and allocation (`malloc`, `free` and their insides
@@ -416,10 +421,50 @@ strict and lazy by medians with ranges touching. The recorded routes lost most, 
 says: lazy pays the second line in CPU, strict pays it beside its sync. An unrecorded route that
 makes no line held even.
 
-What would take it back, not tried: let `may_hold_a_mark` decode a line's bytes and look for the
-mark's own three bytes (`E2 80 B9`) instead of giving up on any, or keep the run's random bytes
-out of the line (by hash, as its other sourced values could be); either keeps a recorded run to
-one line. `crunch`'s walk wants `bbbf6a3` bisected first.
+#### Grounded in the code, and the fixes audited (2026-11-12)
+
+**The second line.** Every request's run is sourced with `Random` (`listeners.rs`; `websockets.rs`
+and `/trigger` in `deploy.rs` alike), and the entry keeps it whether the flow reads it or not: on
+a live rc.35 server, every line of a flow that reads no randomness held it. `redacted_line`
+(`firing.rs`) takes its shortcut only when `!made.may_hold_a_mark()`, and `may_hold_a_mark`
+(`recorder.rs`) says yes to any line holding `{"type":"Bytes"`. With nothing to mark (the
+redactor empty: no secret, token or tainted value found), what redacting can change is exactly
+this: a text holding a `‹` is escaped (`Redactor::logged` returns nothing for a text without one),
+and a Bytes value's valid UTF-8 runs are walked as texts (`bytes_texts_mut`), so a Bytes value
+changes only if it holds `‹`, which in UTF-8 is always the three bytes `E2 80 B9`; `E2` is never a
+continuation byte, so each occurrence of the three decodes as `‹`. Records come in key order from
+`SValue::from_core`, the shortcut's standing assumption.
+
+**Fix 1, proposed: the shortcut's test made exact.** Refuse the shortcut for a line holding a `‹`
+(as now) or for an entry holding a Bytes value with `E2 80 B9` in it, read from the entry's
+values, not parsed from the line.
+
+- *Regression:* the line it writes is the redacted line byte for byte, so the log's format, its
+  hash chain, `holon verify`, exports and the golden records don't change. `redacted_line`'s
+  `debug_assertions` block already compares the shortcut's line and entry with the walked ones on
+  every run of every test; `a_line_with_nothing_to_redact_is_the_redacted_line` gains Bytes cases
+  (without the three bytes, with them, beside invalid UTF-8, holding an encoded `‹token:paid›`,
+  and each with a redactor that has something to mark).
+- *Security:* it acts only where the redactor is empty, after the taint scan, as the shortcut does
+  now; a run with anything to mark is walked as before. The test reads values, never the line, so
+  nothing a caller sent is parsed by it.
+- *Resilience:* nothing on the crash path (`run_attempt`) or in group commit changes; a doubt
+  falls back to the walk, which costs time and is never wrong.
+
+**Fix 2, not advised now: the random bytes out of the line** (by hash, or only when read). It
+changes the entry `holon verify` runs again from, and a run that read randomness (`pgp_encrypt`)
+must still replay exactly; old exports and the goldens would change. More risk for the same gain.
+
+**Fix 3, proposed: the `and`/`or` arm out of `eval_as`'s line,** into an `#[inline(never)]`
+function, as `eval_as`'s other rare arms are already (`eval.rs`). A move of code: no value, port,
+unit or hash changes; the eager oracle's differential tests
+(`giving_and_lending_agree_with_eager_on_generated_graphs`, `crates/holon-core/tests/differential.rs`)
+and the goldens hold it. Callgrind on `crunch` says whether the
+leaf arm's collect inlines again.
+
+**Kept as they are:** the taint scan (`1c094ab`, `ALWAYS_TAINTED`'s keys on every recorded run,
+about 14 K: security's); `run_attempt` and the random bytes' making (rc.35's run record that holds
+through a crash, 1.1 K for `hello`, and `pgp_encrypt`'s randomness, 0.3 K).
 
 ### Limits
 
@@ -468,7 +513,8 @@ one line. `crunch`'s walk wants `bbbf6a3` bisected first.
   through a server; folds that build a list gained ×5 to ×21.
 - **A recorded run makes its line twice since rc.35**: every line holds the run's random bytes,
   so redaction's shortcut never holds; lazy ×0.85 and `notes` +40% in instructions against
-  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)).
+  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)). The evaluator's leaf arm compiles worse
+  since `e35b108`, `crunch` +0.9 M; both fixes audited, not made.
 - **A ternary costs three nodes more since `befee65`** (a guard on each side, as JavaScript
   chooses): a filter by fold ×0.85 through a server against `78f8f81`, still ×18 the filter before
   #43 ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).
