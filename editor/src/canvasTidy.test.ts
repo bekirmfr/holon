@@ -34,6 +34,17 @@ describe("tidyPositions", () => {
     expect(at.get("b")!.x - at.get("a")!.x).toBe(300 + TIDY.columnGap);
   });
 
+  it("spaces each column by its own widest node, not the widest on the canvas", () => {
+    // request (wide) → field (narrow) → respond: the gap after field is field's width, not request's.
+    const sized = (id: string, width: number) => ({ id, position: { x: 0, y: 0 }, measured: { width, height: 60 } });
+    const at = tidyPositions(
+      [sized("request", 370), sized("field", 70), sized("respond", 300)],
+      [{ source: "request", target: "field" }, { source: "field", target: "respond" }],
+    );
+    expect(at.get("field")!.x - at.get("request")!.x).toBe(370 + TIDY.columnGap);
+    expect(at.get("respond")!.x - at.get("field")!.x).toBe(70 + TIDY.columnGap);
+  });
+
   it("ignores edges to nodes that are not on the canvas", () => {
     const at = tidyPositions([node("a")], [{ source: "a", target: "gone" }]);
     expect(at.has("a")).toBe(true);
