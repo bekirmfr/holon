@@ -1462,6 +1462,48 @@ fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     assert!(message.contains("it keeps the newest 3 runs"), "{message}");
 }
 
+/// A flow's settings change in place where they narrow it (web-console-L4.md §8.4): a limit
+/// lowered, fewer runs kept, at once and noted on its grant. One raised widens what it may do, so
+/// it is refused, saying it takes a new version, and nothing in the same change applies.
+#[test]
+fn settings_lower_in_place_and_a_raise_takes_a_new_version() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nkeep_runs = 5\n[ceilings]\nkeep_runs = 50").unwrap());
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+    for _ in 0..5 {
+        assert_eq!(put(&state, "w", "x").status_code, 200);
+    }
+    let settings = |body: serde_json::Value| route(&state, &req("POST", "/deployments/w/settings", serde_json::to_vec(&body).unwrap()));
+    let grant = || body_json(route(&state, &req("GET", "/deployments/w/grant", vec![])))["grant"].clone();
+    let kept = || log_entries(&state, "w").len();
+
+    // Lowered, with agents kept from proposing, in one change: the log keeps that many at once.
+    let lowered = settings(serde_json::json!({ "lower": { "keep_runs": 2, "run_budget_ms": 1000 }, "agents_propose": false }));
+    assert_eq!(lowered.status_code, 200);
+    let entry = body_json(lowered);
+    assert_eq!(entry["agents_propose"], false, "{entry}");
+    assert_eq!(grant()["lowered"], serde_json::json!({ "keep_runs": 2, "run_budget_ms": 1000 }));
+    assert_eq!(kept(), 2);
+    let changes: Vec<String> = grant()["changes"].as_array().unwrap().iter().map(|c| c["change"].as_str().unwrap().to_string()).collect();
+    assert_eq!(changes, ["lowered keep_runs to 2", "lowered run_budget_ms to 1000"]);
+
+    // Raised: refused whole, the agents' setting with it.
+    let raised = settings(serde_json::json!({ "lower": { "keep_runs": 4 }, "agents_propose": true }));
+    assert_eq!(raised.status_code, 400);
+    let said = body_json(raised)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("keep_runs is 2") && said.contains("a new version, which a person approves"), "{said}");
+    assert_eq!(grant()["lowered"]["keep_runs"], 2);
+    assert!(state.deployments.lock().unwrap()["w"].agents_propose_off, "nothing in the change applied");
+
+    // What isn't a setting, or is nothing, is refused.
+    for bad in [serde_json::json!({}), serde_json::json!({ "lower": { "no_such_limit": 1 } }), serde_json::json!({ "raise": { "keep_runs": 9 } })] {
+        assert_eq!(settings(bad.clone()).status_code, 400, "{bad}");
+    }
+    assert_eq!(route(&state, &req("POST", "/deployments/none/settings", serde_json::to_vec(&serde_json::json!({ "agents_propose": true })).unwrap())).status_code, 404);
+}
+
 /// With the exceptions granted (a host whose policy allows them, a deployment that asks), an
 /// outbound request reaches a server on this machine over plain HTTP and its answer flows on.
 #[test]

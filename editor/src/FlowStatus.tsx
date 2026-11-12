@@ -1,9 +1,11 @@
 // A flow's Status tab (FlowPage.tsx): its last day (its runs hour by hour from the host's summary,
 // its timings from the runs its log holds here), where it runs, what it may do (since which
-// version, approved by whom), its latest runs, its versions, and its actions to run.
+// version, approved by whom; changed in Settings), its latest runs, its versions (one that waits
+// for a person first, with its review), and its actions to run.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActionRows } from "./ActionRows";
+import type { Approval } from "./approvals";
 import { lastDay, sinceOf, type VersionItems } from "./statusFacts";
 import { describeItem } from "./holon";
 import { follow, format, type Route } from "./routes";
@@ -26,6 +28,7 @@ export function StatusTab({
   navigate,
   mayCall = true,
   manifestOf,
+  waiting = [],
 }: {
   slug: string;
   entry: DeploymentEntry;
@@ -34,6 +37,8 @@ export function StatusTab({
   mayCall?: Answer;
   /** What a version's canvas may do, derived as deploying it would. */
   manifestOf: (doc: FlowDocument) => { items: string[] };
+  /** What of it waits for a person (approvals.ts): a version saved since, or proposed. */
+  waiting?: Approval[];
 }) {
   const { entries } = useFlowLog(slug);
   const day = useMemo(() => lastDay(entries, Date.now()), [entries]);
@@ -129,7 +134,12 @@ export function StatusTab({
         </section>
 
         <section className="hl-flow__section" aria-label="it may">
-          <h2>It may</h2>
+          <h2>
+            It may{" "}
+            <a className="hl-flow__more" href={format({ kind: "flow", slug, tab: "settings" })} onClick={follow({ kind: "flow", slug, tab: "settings" }, navigate)} title="what it may do, its limits and its network, in its Settings">
+              Change…
+            </a>
+          </h2>
           {may === null ? (
             <p className="hl-flow__note">…</p>
           ) : may.items.length === 0 ? (
@@ -197,6 +207,22 @@ export function StatusTab({
       <section className="hl-flow__section" aria-label="versions">
         <h2>Versions</h2>
         <ul className="hl-flow__versions">
+          {waiting.map((a) =>
+            (a.kind === "update" || a.kind === "first") && a.version !== null ? (
+              <li key="waits" className="hl-flow__waits">
+                <span className="hl-flow__what">v{a.version}</span>
+                <span className="hl-flow__waiting"> · waits for a person</span>
+                <span className="hl-table__dim">
+                  {" "}
+                  · {a.proposal ? `proposed by ${a.by ?? "someone"}` : `saved by ${a.by ?? "someone"}`} · {when(a.at)}
+                  {a.proposal?.why ? ` · ${a.proposal.why}` : ""}
+                </span>{" "}
+                <a className="hl-flow__more" href={format({ kind: "review", slug, version: a.version })} onClick={follow({ kind: "review", slug, version: a.version }, navigate)}>
+                  Review →
+                </a>
+              </li>
+            ) : null,
+          )}
           {versions.map((v) => (
             <li key={v.number}>
               <span className="hl-flow__what">v{v.number}</span>

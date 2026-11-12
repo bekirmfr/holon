@@ -5,10 +5,13 @@
 // after. A row picked shows what can be restored to it: its code, its state, or both; ↺ on a row
 // restores what it can. Each restore is a dry run first, its result shown in the dry-run window
 // (DryRun.tsx): what it changes, and what the code needs that today's grant doesn't cover, to
-// approve as a deploy's is; nothing changes until it is approved.
+// approve as a deploy's is; nothing changes until it is approved. Beside a row picked, a cell of
+// its state picked shows its value over time, the point going back puts back marked.
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
+import { CellLine, useCellHistory } from "./CellHistory";
+import { isCollectionCell } from "./replay";
+import { getDeploymentState, getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
 import { runLabel } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import {
@@ -130,9 +133,55 @@ export function HistoryTab({
               ))}
             </dl>
           )}
+          {picked && <CellOverTime slug={slug} mark={markOf(targetFor(picked), history.versions)} />}
         </div>
       </div>
     </section>
+  );
+}
+
+/** The run a target's state comes from, to mark on a cell's line: a run's own, or the first run a
+ *  version ran; null when it has none. */
+function markOf(target: Target, versions: VersionEntry[]): number | null {
+  const p = target.why.state === null ? target.state : null;
+  if (!p) return null;
+  if ("run" in p) return p.run;
+  return versions.find((v) => v.number === p.version)?.first_seq ?? null;
+}
+
+/** A cell of its state, picked, as a line over time from its changes (CellHistory.tsx), the point
+ *  going back puts back marked. */
+function CellOverTime({ slug, mark }: { slug: string; mark: number | null }) {
+  const [cells, setCells] = useState<string[]>([]);
+  const [cell, setCell] = useState("");
+  useEffect(() => {
+    let live = true;
+    getDeploymentState(slug).then(
+      (s) => live && setCells(Object.keys(s).filter((k) => !isCollectionCell(k)).sort()),
+      () => live && setCells([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [slug]);
+  const { history, error } = useCellHistory(slug, cell, undefined, cell !== "");
+  if (cells.length === 0) return null;
+  return (
+    <div className="hl-history__cell" aria-label="a cell over time">
+      <label>
+        a cell over time{" "}
+        <select className="hl-flow__filter" value={cell} onChange={(e) => setCell(e.target.value)} aria-label="cell">
+          <option value="">pick one…</option>
+          {cells.map((c) => (
+            <option key={c} value={c}>
+              state.{c}
+            </option>
+          ))}
+        </select>
+      </label>
+      {cell !== "" && (error ? <span style={{ color: bad }}>{error}</span> : history ? <CellLine history={history} mark={mark} /> : <span style={{ color: dim }}>reading the log…</span>)}
+      {cell !== "" && mark !== null && <span style={{ color: dim, fontSize: 11 }}>marked: run #{mark}, the state going back puts back</span>}
+    </div>
   );
 }
 

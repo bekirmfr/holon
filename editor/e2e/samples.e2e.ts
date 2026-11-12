@@ -529,9 +529,10 @@ test("shop runs billing's actions: an order calls billing and stores what it ans
   await expect(page.getByRole("region", { name: "it may" })).toContainText("run the action charge of the flow billing");
   // A billing that isn't running can't be called: the call answers why, and the order isn't stored.
   await page.goto("/#billing");
-  const head = page.getByLabel("flow billing");
-  await head.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(head.locator(".hl-flow__status")).toContainText("stopped");
+  await page.goto("/#billing.settings");
+  await page.getByRole("region", { name: "lifecycle" }).getByRole("button", { name: "Stop…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Stop" }).click();
+  await expect(page.getByLabel("flow billing").locator(".hl-flow__head .hl-chip").first()).toHaveText("stopped");
   const lost = `${id}-lost`;
   expect((await request.post(at(shop, "/orders"), { data: { id: lost, amount: 1 } })).status()).toBe(502);
   expect((await request.get(at(shop, `/orders/${lost}`))).status()).toBe(404);

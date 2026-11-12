@@ -1,16 +1,18 @@
-// One run's record, at `#<slug>.run-<n>` (gaps-web.md G15c): how it ended, its steps timed by the
-// server, what came in and went out, what it read, what it did outside the flow and what the log
-// holds of it; checked offline with `holon verify`, or stepped through in the editor.
+// One run's record, at `#<slug>.run-<n>` (gaps-web.md G15c, web-console-L4.md §8.2): how it ended,
+// its steps timed by the server, what came in and went out, what it read, the secrets it read and
+// where they went, what it did outside the flow and what the log holds of it, witnessed or not;
+// checked offline with `holon verify`, or stepped through in the editor.
 
 import { LogsPane } from "./LogsPane";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useDialog } from "./Dialog";
 import { formatValue } from "./diagnostics";
 import type { WValue } from "./holon";
+import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
 import { field, outside, runLabel, runOutcome, text } from "./runs";
-import { downloadRuns, getDeployedDocument, getLog, type FlowDocument, type LogEntry } from "./server";
+import { downloadRuns, getDeployedDocument, getLog, getSummary, type FlowDocument, type LogEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
@@ -45,8 +47,25 @@ function useRun(slug: string, seq: number) {
   return { run, head, doc, beside };
 }
 
+/** The witness the host's heads go to, read once (`/summary`'s `witness`); undefined until read. */
+function useWitness(): Witness | undefined {
+  const [witness, setWitness] = useState<Witness | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    getSummary(1).then(
+      (s) => live && setWitness(s.chain.witness ?? null),
+      () => live && setWitness(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return witness;
+}
+
 export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; navigate: (r: Route) => void }) {
   const { run, head, doc, beside } = useRun(slug, seq);
+  const witness = useWitness();
   const dialog = useDialog();
   const go = (to: number | null) => (to === null ? false : navigate({ kind: "run", slug, seq: to }));
   useKeys("run", { ",": () => go(beside.before), ".": () => go(beside.after) });
@@ -79,6 +98,8 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
     if (yes) await downloadRuns(slug).catch(() => undefined);
   };
   const exchanges = (run.rounds ?? []).flatMap((r) => r.exchanges);
+  const secrets = secretUses(run);
+  const seen = witnessed(run.at_ms + run.duration_ms, witness ?? null);
   return (
     <article className="hl-run" aria-label={`run ${seq}`}>
       <header className="hl-run__head">
@@ -145,12 +166,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
               {r.file ? `${r.file.hash.slice(0, 12)} · ${r.file.size} bytes` : `${show(r.request)} → ${show(r.answer)}`}
             </Line>
           ))}
-          {Object.entries(run.secrets ?? {}).map(([name, mark]) => (
-            <Line key={name} name={`secret ${name}`}>
-              {mark}
-            </Line>
-          ))}
-          {run.sourced.length === 0 && (run.reads ?? []).length === 0 && Object.keys(run.secrets ?? {}).length === 0 && <p className="hl-flow__note">nothing from outside</p>}
+          {run.sourced.length === 0 && (run.reads ?? []).length === 0 && <p className="hl-flow__note">nothing from outside</p>}
         </Section>
         <Section title="Did outside">
           {exchanges.map((x, i) => (
@@ -167,6 +183,32 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         </Section>
       </div>
 
+      {secrets.length > 0 && (
+        <Section title="Secrets it read">
+          <table className="hl-table" aria-label="secrets it read">
+            <thead>
+              <tr>
+                <th>Secret</th>
+                <th>Version</th>
+                <th>Where it went</th>
+              </tr>
+            </thead>
+            <tbody>
+              {secrets.map((s) => (
+                <tr key={s.name}>
+                  <td className="hl-flow__what">{s.name}</td>
+                  <td title="its version and fingerprint: which value it had, never the value">
+                    {[s.version, s.fingerprint].filter(Boolean).join(" ") || "—"}
+                  </td>
+                  <td>{s.to.length > 0 ? s.to.join(", ") : <span className="hl-table__dim">nowhere outside: no request it sent held it</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hl-flow__note">The log keeps which value it had, by its version and fingerprint, never the value.</p>
+        </Section>
+      )}
+
       <Section title="Log lines">
         <LogsPane slug={slug} run={seq} navigate={navigate} />
       </Section>
@@ -179,6 +221,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
           {run.unit && <Fact name="unit">{run.unit}</Fact>}
           {(run.parked ?? []).length > 0 && <Fact name="waits at">{(run.parked ?? []).join(", ")}</Fact>}
           {head && <Fact name="log head">{head}</Fact>}
+          <Fact name="witnessed">{witness === undefined ? "…" : seen.said}</Fact>
         </dl>
       </Section>
     </article>

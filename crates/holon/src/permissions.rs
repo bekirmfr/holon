@@ -969,7 +969,7 @@ impl Grant {
             };
             if n > current {
                 return Err(format!(
-                    "{name} is {current} for this deployment; raising it takes a deploy, which asks for approval"
+                    "{name} is {current} for this deployment; raising it takes a new version, which a person approves"
                 ));
             }
             // A raised limit it asked for above the new value isn't granted any more.

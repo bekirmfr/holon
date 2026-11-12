@@ -80,7 +80,7 @@ export function hintsAt(r: Route): [string, string][] {
     case "approvals":
       return [["j k", "select"], ["a", "approve"], ["d", "decline"], ["[ ]", "tabs"]];
     case "flow":
-      return r.tab === "runs" ? [["j k", "select"], ["enter", "open"], ["[ ]", "tabs"], ["esc", "up"]] : [["[ ]", "tabs"], ["esc", "up"], ["F6", "panes"]];
+      return r.tab === "runs" ? [["j k", "select"], ["enter", "open"], ["e", "edit"], ["[ ]", "tabs"], ["esc", "up"]] : [["e", "edit"], ["[ ]", "tabs"], ["esc", "up"], ["F6", "panes"]];
     case "run":
       return [[", .", "runs"], ["[ ]", "tabs"], ["esc", "up"]];
     default:

@@ -1,4 +1,6 @@
-// A deployed flow's own page (FlowPage.tsx): its tabs, each at an address of its own.
+// A deployed flow's own page (FlowPage.tsx, web-console-L4.md §8): its header and its tabs, each at
+// an address of its own; Settings in one place, a limit lowered there at once and a raise sent to a
+// new version.
 
 import { expect, test } from "./fixtures";
 import { deploy, flowRow, gotoPage, openSample } from "./helpers";
@@ -24,8 +26,13 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await expect(runs).toContainText("no failed runs");
   await runs.getByRole("button", { name: /^All/ }).click();
 
-  await runs.getByRole("button", { name: "Check the chain" }).click();
-  await expect(runs.getByRole("status")).toContainText("the chain is unbroken");
+  // What went out: its answer.
+  await expect(rows.nth(1).locator(".hl-flow__out")).toContainText("Hello, Grace");
+  await runs.getByRole("button", { name: "Check the chain…" }).click();
+  const chain = page.getByRole("dialog");
+  await expect(chain).toContainText("The chain is unbroken");
+  await expect(chain).toContainText("holon verify hello-api-runs.json --head ");
+  await chain.getByRole("button", { name: "Close" }).click();
 
   // A run opens its record: how it ended, its steps timed, what came in and went out; checked
   // offline with holon verify, or stepped through in the editor.
@@ -35,6 +42,7 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await expect(record).toContainText("GET /hello/:name");
   await expect(record.getByRole("list", { name: "steps" }).getByRole("listitem").first()).toBeVisible();
   await expect(record.getByRole("region", { name: "in", exact: true })).toContainText("/hello/Grace");
+  await expect(record.getByRole("region", { name: "on record" })).toContainText("witnessed");
   await record.getByRole("button", { name: "Check offline…" }).click();
   const offline = page.getByRole("dialog");
   await expect(offline).toContainText("holon verify hello-api-runs.json --head ");
@@ -44,7 +52,7 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await expect(page.locator(".hl-view__bottom")).toContainText(`#${newest}`);
 });
 
-test("a flow's status: its last day, what it may since when and by whom, its runs and versions; paused and resumed", async ({ page, request }) => {
+test("a flow's header and status: what starts it, its last day, what it may since when and by whom, its runs and versions; paused and resumed", async ({ page, request }) => {
   await openSample(page, "Hello API");
   const port = await deploy(page);
   expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
@@ -59,34 +67,53 @@ test("a flow's status: its last day, what it may since when and by whom, its run
   await expect(page.getByRole("region", { name: "versions" })).toContainText("deployed now");
 
   const head = page.getByLabel("flow hello-api");
+  await expect(head.locator(".hl-flow__starts")).toHaveText(new RegExp(`^\\d+ routes? · :${port}$`));
+  const state = head.locator(".hl-flow__head .hl-chip").first();
   await head.getByRole("button", { name: "Pause", exact: true }).click();
-  await expect(head.locator(".hl-flow__status")).toContainText("paused");
+  await expect(state).toHaveText("paused");
   await head.getByRole("button", { name: "Resume", exact: true }).click();
-  await expect(head.locator(".hl-flow__status")).toContainText("running");
+  await expect(state).toHaveText("live");
+  // It may: Change… goes to Settings.
+  await may.getByRole("link", { name: "Change…" }).click();
+  await expect(page).toHaveURL(/#hello-api\.settings$/);
 });
 
-test("a flow's settings: a permission revoked pauses it and granted back runs it, and it is removed by typing its name", async ({ page, request }) => {
+test("a flow's settings: a permission revoked pauses it and granted back runs it, a limit lowered in place and a raise sent to a new version, stopped and removed", async ({ page, request }) => {
   await openSample(page, "Hello API");
   const port = await deploy(page);
   await page.goto("/#hello-api.settings");
   const head = page.getByLabel("flow hello-api");
+  const state = head.locator(".hl-flow__head .hl-chip").first();
   const permissions = page.getByRole("region", { name: "permissions" });
   const ingress = permissions.getByRole("listitem").filter({ hasText: "receive requests" });
   await ingress.getByRole("button", { name: "Revoke" }).click();
   await expect(permissions.locator(".hl-flow__revoked")).toContainText("receive requests");
-  await expect(head.locator(".hl-flow__status")).toContainText("paused");
+  await expect(state).toHaveText("paused");
   await permissions.getByRole("button", { name: "Grant back" }).click();
   await expect(permissions.getByRole("listitem").filter({ hasText: "receive requests" }).getByRole("button", { name: "Revoke" })).toBeVisible();
   // Granted back, it runs again by itself.
-  await expect(head.locator(".hl-flow__status")).toContainText("running");
+  await expect(state).toHaveText("live");
   expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
   await expect(page.getByRole("region", { name: "sessions" }).getByRole("row").first()).toBeVisible();
+
+  // Its run budget: lowered here at once; a higher one is a new version, in the editor.
+  const limits = page.getByRole("region", { name: "limits" });
+  const budget = limits.getByRole("row").filter({ hasText: "run budget" });
+  const now = Number((await budget.getByRole("cell").nth(1).textContent())!.replace(/[^\d]/g, ""));
+  await budget.getByRole("textbox").fill(String(now + 1000));
+  await expect(budget.getByRole("button", { name: "Raise in a new version…" })).toBeVisible();
+  await budget.getByRole("textbox").fill(String(now - 1000));
+  await budget.getByRole("button", { name: "Lower" }).click();
+  await expect(limits.getByRole("status")).toContainText(`run budget lowered to ${(now - 1000).toLocaleString()} ms`);
+  await expect(budget).toContainText(`lowered from ${now.toLocaleString()} ms`);
+  await expect(permissions.locator(".hl-flow__changes")).toContainText(`lowered run_budget_ms to ${now - 1000}`);
 
   // Removed: once stopped, by typing its name.
   const remove = page.getByRole("region", { name: "remove" });
   await expect(remove.getByRole("button", { name: "Remove hello-api" })).toBeDisabled();
-  await head.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(head.locator(".hl-flow__status")).toContainText("stopped");
+  await page.getByRole("region", { name: "lifecycle" }).getByRole("button", { name: "Stop…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Stop" }).click();
+  await expect(state).toHaveText("stopped");
   await remove.getByRole("textbox").fill("hello-api");
   await remove.getByRole("button", { name: "Remove hello-api" }).click();
   await expect(page).toHaveURL(/#flows$/);
@@ -134,7 +161,7 @@ test("the Library: samples found by what they do, one's details with its command
   await expect(page).toHaveURL(/#docs\.getting-started\.md$/);
 });
 
-test("a flow's state: its collection's items now, and the runs that changed one", async ({ page, request }) => {
+test("a flow's state: its collection's items now, and the runs that changed one, inline", async ({ page, request }) => {
   await openSample(page, "Notes API");
   const port = await deploy(page);
   // A key that sorts first: on the first page, whatever other tests kept.
@@ -146,6 +173,7 @@ test("a flow's state: its collection's items now, and the runs that changed one"
   const row = notes.getByRole("row").filter({ hasText: id });
   await expect(row).toContainText("buy milk");
   await row.getByRole("button", { name: /^history of / }).click();
-  const history = page.getByRole("dialog", { name: "cell history" });
+  const history = notes.getByRole("group", { name: `the changes to notes["${id}"]` });
   await expect(history).toContainText("buy milk");
+  await expect(history).toContainText("PUT /notes/");
 });

@@ -641,7 +641,7 @@ function Canvas({
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const { deployments, listError, refresh: refreshDeployments } = useDeployments(page);
   // What waits for a person (approvals.ts): Approvals lists it, the nav counts it.
-  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home", asks: page === "approvals" });
+  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals" });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
   const deciding = useMemo(() => toDecide(approvals.runs ?? [], me, approvals.decides), [approvals.runs, approvals.decides, me]);
@@ -1630,6 +1630,7 @@ function Canvas({
               tab={route.kind === "flow" ? route.tab : "runs"}
               run={route.kind === "run" ? route.seq : null}
               entry={deployments.find((d) => d.slug === route.slug)}
+              waiting={approvals.approvals.filter((a) => a.slug === route.slug)}
               navigate={navigate}
               codeText={async (unit) => {
                 const doc = await getDeployedDocument(route.slug, unit);

@@ -7,7 +7,7 @@
 // A page's keys come before the anywhere keys: `d` is the docs anywhere, the diff in a review,
 // decline on Approvals.
 
-export type KeyScope = "anywhere" | "list" | "tabs" | "run" | "approvals" | "editor" | "view" | "review" | "dialog";
+export type KeyScope = "anywhere" | "list" | "tabs" | "flow" | "run" | "approvals" | "editor" | "view" | "review" | "dialog";
 
 export type Binding = {
   /** The keys, as keyOf names them, shown in this order (a run of digits as "1 to 8"). */
@@ -35,6 +35,7 @@ export const KEYMAP = [
   { keys: ["j", "k"], scope: "list", does: "move the selection down or up (each page keeps its own): Flows, a flow's runs, Approvals" },
   { keys: ["Enter"], scope: "list", does: "open the one selected" },
   { keys: ["[", "]"], scope: "tabs", does: "the tab before, or after: a flow's, the editor's, Approvals'" },
+  { keys: ["e"], scope: "flow", does: "on a flow's page: open it in the editor" },
   { keys: [",", "."], scope: "run", does: "on a run's page: the run before, or after" },
   { keys: ["a"], scope: "approvals", does: "approve the one selected: a version opens its review first, a run's approval asks first" },
   { keys: ["d"], scope: "approvals", does: "decline the one selected, with a reason (Approvals' d, not the docs)" },

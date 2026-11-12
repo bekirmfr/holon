@@ -2,6 +2,7 @@
 // with, and what was done to it (events.rs), merged as `holon history` merges them; the points it
 // can go back to, and what a restore's dry run says, worded as `holon restore` words it.
 
+import { formatValue } from "./diagnostics";
 import { describeItem, type WValue } from "./holon";
 import type { Diff, DryRunReport } from "./DryRun";
 import { diffCounts, keyLines, lineDiff, setDiff } from "./diff";
@@ -286,11 +287,58 @@ export function restoreReport(
   }
   return {
     title: `Restore "${slug}" to ${target.label}: its ${which}?`,
+    summary: restoreSummary(parts, versions, describe),
+    banner: notPutBack(parts),
     changes: restoreChanges(parts, versions),
     sections,
     approvals,
     action: approvals.length > 0 ? "Approve and restore" : "Restore",
   };
+}
+
+/** A restore in four tagged lines (web-console-L4.md §8.3), before its hunks: its code, its grant
+ *  beside today's, its state, and the runs since. The code's line gains the lines it changes once
+ *  the diff is worked out (DryRun.tsx). */
+export function restoreSummary(parts: (RestorePart & { preview: RestorePreview })[], versions: VersionEntry[], describe: (item: string) => string = describeItem): { tag: "code" | "grant" | "state" | "since"; line: string }[] {
+  const next = versions.reduce((n, v) => Math.max(n, v.number), 0) + 1;
+  const code = parts.find((p) => p.what.code && p.preview.code !== null && p.preview.code !== undefined)?.preview;
+  const needs = parts.flatMap((p) => (p.what.code ? (p.preview.needs_approval ?? []) : []));
+  const items = code?.items;
+  const dropped = code?.granted_now && items ? code.granted_now.filter((i) => !items.includes(i)).length : 0;
+  const state = parts.find((p) => p.what.state && p.preview.state)?.preview.state;
+  const said = (v: WValue | null) => (v === null ? "(none)" : formatValue(v).replace(/\s+/g, " "));
+  const values = state
+    ? [
+        ...Object.entries(state.values ?? {}).map(([k, v]) => `${k}: ${said(v.now)} → ${said(v.then)}`),
+        ...Object.entries(state.collections ?? {}).flatMap(([name, c]) => Object.entries(c.items).map(([k, v]) => `${name}[${JSON.stringify(k)}]: ${said(v.now)} → ${said(v.then)}`)),
+      ]
+    : [];
+  const touched = state ? state.changed.length + state.added.length + state.removed.length : 0;
+  const shown = values.slice(0, 2).join(", ") + (touched > 2 ? `, and ${touched - 2} more` : "");
+  const runs = state?.runs_since;
+  return [
+    { tag: "code", line: code ? `v${code.code}'s, deployed again as v${next}` : "the same" },
+    { tag: "grant", line: !code ? "the same" : needs.length > 0 ? `asks for more than today's (${needs.map(describe).join(", ")}), so a person approves` : dropped > 0 ? `nothing new beside today's, ${dropped} thing${dropped === 1 ? "" : "s"} it may do no longer` : "nothing new beside today's" },
+    { tag: "state", line: !state || touched === 0 ? "the same" : `${shown || `${touched} key${touched === 1 ? "" : "s"}`}, in a new session` },
+    { tag: "since", line: runs === undefined ? "the runs since stay on record" : `${runs} run${runs === 1 ? "" : "s"} since; their records stay` },
+  ];
+}
+
+/** What a restore leaves as it is, by design (history-L4.md §5): the calls the runs since made and
+ *  the files they wrote. */
+export function notPutBack(parts: (RestorePart & { preview: RestorePreview })[]): string[] {
+  const state = parts.find((p) => p.what.state && p.preview.state)?.preview.state;
+  if (!state) return ["The calls its runs made and the files they wrote stay as they are: a restore puts back code and state, not the world."];
+  const calls = state.effects_since.HttpRequest ?? 0;
+  const files = state.files ?? [];
+  const lines = [
+    calls > 0 ? `${calls} call${calls === 1 ? "" : "s"} out made since stay made.` : "",
+    files.length > 0 ? `${files.length}${state.files_more ? "+" : ""} file${files.length === 1 ? "" : "s"} written since stay as they are: ${files.slice(0, 3).map((f) => `${f.folder}/${f.name}`).join(", ")}${files.length > 3 ? ", …" : ""}.` : "",
+    ...Object.entries(state.effects_since)
+      .filter(([name, n]) => name !== "HttpRequest" && name !== "FileWrite" && n > 0)
+      .map(([name, n]) => `${n} ${effectWord(name)} since stay done.`),
+  ].filter(Boolean);
+  return lines.length > 0 ? lines : ["Nothing the runs since did outside its state: nothing is left as it was."];
 }
 
 /** What a restore changes, a line each: the code deployed, the grant, the state. */

@@ -765,8 +765,12 @@ export const getProposal = async (id: number) => asJson<Proposal>(await api(`${B
 /** Decline a waiting proposal, with a reason its author reads. */
 export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
 /** Whether agents may propose a deployment's versions. */
-export const setAgentsPropose = async (slug: string, on: boolean) =>
-  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, { agents_propose: on }));
+export const setAgentsPropose = async (slug: string, on: boolean) => changeSettings(slug, { agents_propose: on });
+/** `POST /deployments/<slug>/settings`: what a deployer changes in place, none of it widening what
+ *  it may do: whether agents may propose its versions, and limits lowered (fewer runs kept among
+ *  them). A limit raised is refused: that is a new version, which a person approves. */
+export const changeSettings = async (slug: string, change: { agents_propose?: boolean; lower?: Record<string, number> }) =>
+  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, change));
 
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
 export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
