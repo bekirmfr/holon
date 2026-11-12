@@ -1,6 +1,7 @@
 // Getting started and the overview (WelcomePage.tsx, OverviewPage.tsx), kept with the account (home.ts,
 // holon-server's /auth/prefs): the welcome opens on start until told not to, and the notes written
-// there come back after a reload. And the editor's tabs (CanvasPanels.tsx,
+// there come back after a reload; its commands copy, and the Library's tutorials open their
+// samples (guide.ts, tutorials.ts). And the editor's tabs (CanvasPanels.tsx,
 // EditorHome.tsx): its Home, a tab per flow, + and ×, and the panes its bar shows or hides.
 
 import type { APIRequestContext } from "@playwright/test";
@@ -46,6 +47,24 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await expect(page.getByRole("listitem", { name: "Deploy it, done" })).toBeVisible();
   await page.getByLabel("show this on start").check();
   await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
+});
+
+test("Help: a step's command copies as typed, and a tutorial opens the samples it uses as unsaved copies", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/#start");
+  const line = "holon new hello-api.holon.ts --sample hello-api";
+  const commands = page.getByRole("list", { name: "Open a sample, from a terminal" });
+  await expect(commands).toContainText(line);
+  await commands.getByRole("button", { name: `copy ${line}` }).click();
+  await expect(commands.getByRole("button", { name: `copy ${line}` })).toHaveText("copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(line);
+
+  // A tutorial: its page's first paragraph, its samples, and a link to it in Docs.
+  await page.goto("/#library.tutorials");
+  const card = page.getByRole("region", { name: "tutorials" }).getByRole("article", { name: "Stripe to Slack" });
+  await expect(card).toContainText("This guide runs a real webhook end to end");
+  await card.getByRole("button", { name: "open Stripe → Slack" }).click();
+  await expect(page.locator(".hl-tab--active")).toContainText("stripe-to-slack");
 });
 
 test("a welcome that loads late doesn't take you from a page you opened", async ({ page }) => {

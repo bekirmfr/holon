@@ -10,7 +10,8 @@ port, beside its routes.
 
 ## A chat in one flow
 
-The `room` sample (`holon new --sample room`, or **flows** in the editor) without its page:
+The `room` sample (`holon new room.holon.ts --sample room`, or the **Library** in the editor)
+without its page:
 
 ```ts
 import { flow, route } from "holon"

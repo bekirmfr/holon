@@ -38,7 +38,8 @@ to 5, and nothing sets it to 0.
   before the write, so `was` is the old count.
 - **Its writes** are tied to it, as a route's are to its request, and land when the run ends.
 
-The **ticker** sample (`holon new --sample ticker`) has one beside a clock and three routes.
+The **ticker** sample (`holon new ticker.holon.ts --sample ticker`) has one beside a clock and
+three routes.
 
 ## Running one
 
@@ -143,8 +144,8 @@ A flow isn't called back: `shop` calls `billing`, which can't call `shop` (or `b
 because the call would wait for the run that made it. Calls to one flow in a round go one at a
 time, in the order they are written.
 
-The **billing** and **shop** samples (`holon new --sample shop`) are this pair: deploy billing
-first.
+The **billing** and **shop** samples (`holon new shop.holon.ts --sample shop`) are this pair:
+deploy billing first.
 
 ## Flows nothing starts
 

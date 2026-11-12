@@ -597,7 +597,7 @@ Kept as it is (`HostPages.tsx:1811`), plus:
 **Getting started:**
 
 - Its steps tick themselves, as today (`guide.ts:9`), and each shows the command that does it
-  from a terminal (`holon new --sample hello-api`, `holon mcp setup …`).
+  from a terminal (`holon new hello-api.holon.ts --sample hello-api`, `holon mcp setup …`).
 - One name everywhere: nav, palette, account dialog and title. Today: "Getting started",
   "Welcome", "Welcome and docs".
 - The stale copy goes: "the server panel at the bottom left" (`guide.ts:23`), and the Marketplace

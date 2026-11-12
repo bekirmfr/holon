@@ -150,7 +150,7 @@ test("the Library: samples found by what they do, one's details with its command
   await expect(samples.getByRole("article")).toHaveCount(1);
   await samples.getByRole("article").getByRole("heading").getByRole("button").click();
   const details = page.getByRole("dialog");
-  await expect(details).toContainText("holon new --sample refund-once");
+  await expect(details).toContainText("holon new refund-once.holon.ts --sample refund-once");
   await details.getByRole("button", { name: "Open an unsaved copy" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("refund-once");
 

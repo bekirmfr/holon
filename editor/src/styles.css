@@ -388,8 +388,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-table td .hl-flows__changed, .hl-table td .hl-flows__used { font-family: var(--font-ui); min-width: 150px; }
 .hl-flows__do { white-space: nowrap; text-align: right; }
 .hl-flows__do .hl-flow__button { font-size: 11px; padding: 1px 7px; margin-left: 4px; }
-.hl-library__pages { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
-.hl-library__pages a, .hl-library a { color: var(--accent); text-decoration: none; }
+/* A tutorial's samples, under its first paragraph: each opens an unsaved copy. */
+.hl-library__uses { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.hl-library a { color: var(--accent); text-decoration: none; }
 .hl-library__samples { display: flex; flex-direction: column; gap: 10px; }
 .hl-library__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .hl-library__card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); }

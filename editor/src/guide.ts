@@ -1,37 +1,65 @@
-// What Getting started teaches: the first steps, and the docs, one topic each, in the words the
-// editor itself uses. Kept here as content, apart from how it is shown (WelcomePage.tsx).
+// What Getting started teaches: the first steps, each with the commands that do it from a
+// terminal, and the docs, one topic each, in the words the editor itself uses. Kept here as
+// content, apart from how it is shown (WelcomePage.tsx).
 
-/** A first step: what to do, a button for it, and what shows it done (`Done`: a flow saved, one
- *  deployed, one that ran). */
-export type Step = { title: string; body: string; action?: "samples" | "new" | "flows"; doneWhen?: keyof Done };
+/** A first step: what to do, a button for it, what shows it done (`Done`: a flow saved, one
+ *  deployed, one that ran), and the commands that do it from a terminal. */
+export type Step = { title: string; body: string; action?: "samples" | "new" | "flows"; doneWhen?: keyof Done; commands: Command[] };
 export type Done = { saved: boolean; deployed: boolean; ran: boolean };
+
+/** A command a step shows, as typed (the `holon` the installer puts on the PATH), and what it
+ *  does. guide.test.ts checks each is one the `holon` command takes. */
+export type Command = { line: string; does: string };
 
 export const START_STEPS: Step[] = [
   {
     title: "Open a sample",
     body: "The Library lists samples, one per feature: Hello API is the smallest. Opening one gives you an unsaved copy in a tab of its own.",
     action: "samples",
+    commands: [{ line: "holon new hello-api.holon.ts --sample hello-api", does: "writes the sample to a file of your own, with holon.d.ts beside it for an editor's TypeScript" }],
   },
   {
     title: "Deploy it",
     doneWhen: "deployed",
     body: "Press deploy. Holon shows what the flow may do (receive requests, read a secret, write a collection…) and asks you to approve it; then it runs, on the port its Settings say (the bottom pane, b).",
+    commands: [
+      {
+        line: "holon deploy hello-api.holon.ts",
+        does: "deploys the file to the server on this machine, as you; what it needs that isn't granted yet it prints, to approve here or with --approve",
+      },
+    ],
   },
   {
     title: "Send it a request",
     doneWhen: "ran",
     body: "Use Try a request, in the editor's bottom pane (send local, send live; :call in the palette opens it), or curl, as each sample's \"try\" line says. Every run is kept.",
+    commands: [{ line: "holon call hello-api GET /hello/Ada", does: "sends the deployed flow one request and prints its answer" }],
   },
   {
     title: "Look at the run",
     body: "Open the flow from Flows: its Runs tab lists every run, and a run shows what came in, each step and what went out. Step through it in the editor, and a replay checks the run reproduces exactly.",
     action: "flows",
+    commands: [
+      { line: "holon runs hello-api", does: "its runs: what started each, its answer, how long it took, and why one failed" },
+      { line: "holon runs hello-api --run 1", does: "one run's steps: the flow's text, each statement's value under it" },
+    ],
   },
   {
     title: "Build your own",
     doneWhen: "saved",
     body: "Press new, drag nodes from the palette on the left and wire an output to an input of the same type. Save it, deploy it, and it runs the same way.",
     action: "new",
+    commands: [
+      { line: "holon new my-flow.holon.ts", does: "writes a starter flow, in the language" },
+      { line: "holon check my-flow.holon.ts", does: "compiles it: its routes and what it may do, or each mistake by its line" },
+    ],
+  },
+  {
+    title: "Let an agent write one",
+    body: "An agent reads the language, checks its flow and deploys it, over MCP. It never approves what a flow may do: its first deploy waits under Approvals for a person.",
+    commands: [
+      { line: "holon mcp setup claude-code", does: "adds Holon's tools to Claude Code's settings; holon mcp setup alone lists the other hosts" },
+    ],
   },
 ];
 
