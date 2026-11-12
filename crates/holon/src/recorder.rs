@@ -237,9 +237,17 @@ impl LogEntry {
         }
     }
 
-    /// Its texts of what its run had: its answer's body, its error, its URL.
+    /// Its texts of what its run had: its answer's body, its error, its method and URL, why a node
+    /// gave nothing (a thrown message, a module's error), and the keys it claimed (an item's, a
+    /// row's, a file's name). With [`LogEntry::values_mut`], every text of the entry a run could
+    /// have put a secret into: the rest hold none (`secrets.rs`,
+    /// `every_text_a_log_entry_holds_is_redacted_or_named_as_no_run_data`).
     pub(crate) fn texts_mut(&mut self) -> impl Iterator<Item = &mut String> {
-        [&mut self.response_body, &mut self.error, &mut self.url].into_iter().flatten()
+        [&mut self.response_body, &mut self.error, &mut self.method, &mut self.url]
+            .into_iter()
+            .flatten()
+            .chain(self.timeline.iter_mut().filter_map(|t| t.reason.as_mut()))
+            .chain(self.claims.iter_mut().map(|c| &mut c.key))
     }
 }
 
@@ -370,7 +378,9 @@ pub struct NodeTiming {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<Option<SValue>>>,
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
-    /// body's exception), when it did: what `explain` says beside the statement.
+    /// body's exception), or what a `throw` here said, when it did: what `explain` says beside the
+    /// statement. Redacted like the rest of the entry, and withheld at a node that may compute
+    /// with a secret, as its outputs are (`firing::without_secret_derived`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
