@@ -131,7 +131,8 @@ fn short(run_id: &str) -> &str {
     &run_id[..run_id.len().min(12)]
 }
 
-/// What runs wait at, a line a point: the run, what started it and since when, then an approval
+/// What runs wait at, a line a point: the run, what started it, who (when someone did) and since
+/// when, then an approval
 /// with how many people it asks and who has approved it (and why), or an event, and until when.
 pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
     let mut lines = Vec::new();
@@ -139,6 +140,7 @@ pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
         let id = short(r["run_id"].as_str().unwrap_or("?"));
         let what = r["route"].as_str().or(r["kind"].as_str()).unwrap_or("?");
         let since = cmdline::when(r["parked_at"].as_u64());
+        let by = r["by"].as_str().map(|b| format!(", started by {b}")).unwrap_or_default();
         for w in r["waiting"].as_array().into_iter().flatten() {
             let name = w["name"].as_str().unwrap_or("?");
             let until = cmdline::when(w["expires_at"].as_u64());
@@ -162,7 +164,7 @@ pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
                 let so_far = if approved.is_empty() { "none approved yet".to_string() } else { format!("{} of {people}: {} approved", approved.len(), approved.join(", ")) };
                 format!("approval {name:?}, {asks}, {so_far}")
             };
-            lines.push(format!("run {id} ({what}, since {since}) waits at {point}, until {until}"));
+            lines.push(format!("run {id} ({what}{by}, since {since}) waits at {point}, until {until}"));
         }
     }
     lines
@@ -178,6 +180,7 @@ mod tests {
             "run_id": "7b379ca1dd65e73579a1f00aa88cf5497be604fd06f3b60a12a5f86fa80c7791",
             "kind": "action",
             "route": "action pay",
+            "by": "ada",
             "parked_at": 0,
             "waiting": [
                 { "name": "payout", "expires_at": 86400, "people": 2, "approved": [{ "by": "dan", "at": 5, "reason": "matches the invoice" }] },
@@ -188,8 +191,8 @@ mod tests {
         assert_eq!(
             waiting_lines(&runs),
             [
-                "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until 1970-01-02T00:00:00",
-                "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at event \"paid\", until 1970-01-01T00:01:00",
+                "run 7b379ca1dd65 (action pay, started by ada, since 1970-01-01T00:00:00) waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until 1970-01-02T00:00:00",
+                "run 7b379ca1dd65 (action pay, started by ada, since 1970-01-01T00:00:00) waits at event \"paid\", until 1970-01-01T00:01:00",
             ]
         );
     }

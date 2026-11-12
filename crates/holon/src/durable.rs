@@ -330,6 +330,11 @@ pub(crate) struct ParkedRun {
     /// request).
     pub(crate) kind: String,
     pub(crate) route: Option<String>,
+    /// Who started it: the person or agent who ran its action, or sent its request through the
+    /// control plane (its log entry's `by`). None for a clock's, a file's, a mail's, a feed's, a
+    /// queue's, and a request on the deployment's own port, which name nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) by: Option<String>,
     /// Its handler's level, as declared (`lazy`, `unrecorded`; empty for strict): each later part
     /// is recorded as the first was. What it waits with is kept here whatever the level.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -463,6 +468,7 @@ impl ParkedRun {
             unit: to_hex(unit),
             kind: kind.to_string(),
             route,
+            by: None,
             log: String::new(),
             inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
             sourced: sourced
@@ -592,6 +598,7 @@ impl ParkedRun {
             "run_id": self.run_id,
             "kind": self.kind,
             "route": self.route,
+            "by": self.by,
             "parked_at": self.parked_at,
             "waiting": self.waiting,
             "delivered": self.events.keys().collect::<Vec<_>>(),
@@ -600,7 +607,7 @@ impl ParkedRun {
 }
 
 /// After a fresh run: keep it as a parked run if it settled waiting (and didn't fail), whatever
-/// its handler's level `log`: a parked run is its own record. The names it waits on, for its log
+/// its handler's level `log`: a parked run is its own record, with who started it (`by`). The names it waits on, for its log
 /// entry; an error when the deployment already has as many runs waiting as it may
 /// (`max_waiting_runs`). Each deadline is held to its `max_await_seconds`.
 #[allow(clippy::too_many_arguments)]
@@ -611,6 +618,7 @@ pub(crate) fn park_if_waiting(
     unit: &Hash,
     kind: &str,
     route: Option<String>,
+    by: Option<&str>,
     log: holon_core::LogLevel,
     inputs: &[Option<Value>],
     sourced: &[(Capability, Value)],
@@ -636,6 +644,7 @@ pub(crate) fn park_if_waiting(
         store,
     )?;
     record.version = run.unit.clone();
+    record.by = by.map(str::to_string);
     if log != holon_core::LogLevel::Strict {
         record.log = log.word().to_string();
     }

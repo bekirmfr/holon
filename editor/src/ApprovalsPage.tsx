@@ -14,6 +14,7 @@ import { isApproval, mayDecide, pointKey, waitsFor, type WaitingPoint } from "./
 import { useDialog } from "./Dialog";
 import { cardRows, mayGroups, textLines, type CardRows } from "./reviewMay";
 import { follow, format, type Route } from "./routes";
+import { startedBy } from "./runs";
 import { decideRun, declineProposal, getProposal, previewDeploy, type DeploymentEntry, type FlowDocument, type Proposal } from "./server";
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
@@ -492,6 +493,7 @@ function RunsWaiting({
           <tr>
             <th>Flow</th>
             <th>What it is</th>
+            <th>Started by</th>
             <th>Waits for</th>
             <th>Expires</th>
             <th>Since</th>
@@ -517,6 +519,7 @@ function RunsWaiting({
                   ))}
                   {run.delivered.length > 0 && <div className="hl-flow__note">has {run.delivered.join(", ")}</div>}
                 </td>
+                <td className={run.by ? undefined : "hl-table__dim"}>{startedBy(run.kind, run.by)}</td>
                 <td>
                   {run.waiting.map((w) => (
                     <div key={w.name}>{waitsFor(w)}</div>
@@ -554,7 +557,7 @@ function RunsWaiting({
           })}
           {runs === null && (
             <tr>
-              <td colSpan={6} className="hl-table__dim">
+              <td colSpan={7} className="hl-table__dim">
                 reading…
               </td>
             </tr>

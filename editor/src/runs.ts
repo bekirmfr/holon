@@ -45,6 +45,31 @@ export const runLabel = (e: LogEntry) =>
                 ? `${queueRun(e.sourced.find(([cap]) => cap.startsWith("QueueMessage(")))}${e.route ? ` (${e.route})` : ""}`
                 : (e.route ?? "trigger");
 
+/** Who or what started a run, from its kind and its `by` (a waiting run's, or a log entry's):
+ *  the person or agent who ran its action or sent its request through the server, else what does
+ *  on its own (its clock, its port, a file, a mail, a feed, a queue). */
+export function startedBy(kind: string, by: string | null | undefined): string {
+  if (by) return by;
+  switch (kind) {
+    case "request":
+      return "a request on its port";
+    case "tick":
+      return "its clock";
+    case "file":
+      return "a file in its folder";
+    case "mail":
+      return "a mail";
+    case "feed":
+      return "a feed's event";
+    case "queue":
+      return "a queue's message";
+    case "resume":
+      return "what it waited for";
+    default:
+      return "its action (who ran it isn't on record)";
+  }
+}
+
 /** Compact capability badges derived from a run's log entry. */
 export function runActions(e: LogEntry): { label: string; title: string; color: string }[] {
   const acts: { label: string; title: string; color: string }[] = [];

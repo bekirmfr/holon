@@ -1977,7 +1977,7 @@ mod tests {
         json_of(&other, "POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true, "reason": "matches the invoice" })))).unwrap();
 
         let listed = tool_as(&agent, "runs", json!({ "slug": "payouts" })).unwrap();
-        assert!(listed.contains(&format!("run {} (action pay, since ", &run_id[..12])), "{listed}");
+        assert!(listed.contains(&format!("run {} (action pay, started by ada, since ", &run_id[..12])), "{listed}");
         assert!(listed.contains("waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
         assert!(listed.contains("no tool decides it") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
         assert!(tool_as(&agent, "deployments", json!({})).unwrap().contains("1 waiting (`runs` says for what)"));

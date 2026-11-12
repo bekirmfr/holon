@@ -11,7 +11,7 @@ import type { WValue } from "./holon";
 import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
-import { field, outside, runLabel, runOutcome, text } from "./runs";
+import { field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
 import { downloadRuns, getDeployedDocument, getLog, getSummary, type FlowDocument, type LogEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
@@ -150,7 +150,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         <Section title="In">
           {run.url && <Line name="request">{`${run.method ?? ""} ${run.url}`}</Line>}
           {run.request && <Value v={run.request} />}
-          {!run.url && !run.request && <p className="hl-flow__note">started by {run.kind}</p>}
+          <Line name="started by">{startedBy(run.kind, run.by)}</Line>
         </Section>
         <Section title="Out">
           {run.response_body !== null ? <Line name={`answered ${run.status ?? ""}`}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}

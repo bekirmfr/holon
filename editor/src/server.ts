@@ -903,6 +903,9 @@ export type WaitingRun = {
   run_id: string;
   kind: string;
   route: string | null;
+  /** Who started it: the person or agent who ran its action or sent its request through the
+   *  server; absent for a clock's, a file's, a request on its own port. */
+  by?: string | null;
   parked_at: number;
   /** Each point it waits at; an approval's with how many people it needs and who approved so far. */
   waiting: { name: string; expires_at: number; people?: number; approved?: { by: string; at: number; reason?: string }[] }[];
@@ -1043,6 +1046,9 @@ export type LogEntry = {
   at_ms: number;
   duration_ms: number;
   kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed" | "queue" | "websocket";
+  /** Who ran its action, or sent its request through the server (the editor's, an agent's call);
+   *  absent for a request on its own port, a clock's, a file's. */
+  by?: string;
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

@@ -397,7 +397,7 @@ fn fire_one_arrival(
     let run = fire_with_state(root_unit, &[], &resolver, store, state, &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("file", started, &extra_sourced, &run);
     entry.route = label.clone();
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), declared, &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), None, declared, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }

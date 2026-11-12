@@ -2337,6 +2337,41 @@ export const pay = action(async (order) => {
     assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
 }
 
+/// A run waiting at an approval keeps who started it, as its log entry names them: bob, who ran
+/// its action, and nobody for one started on a server without accounts. GET …/runs says it,
+/// and so do holon decide's lines.
+#[test]
+fn a_waiting_run_says_who_started_it() {
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h" })
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/1\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    assert!(run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": 1 })).is_success());
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let started = route(&state, &req_as(&bob, "POST", "/trigger/payouts/pay", serde_json::to_vec(&serde_json::json!({ "amount": 2 })).unwrap()));
+    assert!(started.is_success(), "{}", String::from_utf8_lossy(&body_bytes(started)));
+
+    let runs = body_json(route(&state, &req_as(&ada, "GET", "/deployments/payouts/runs", vec![])))["runs"].as_array().unwrap().clone();
+    let mut by: Vec<serde_json::Value> = runs.iter().map(|r| r["by"].clone()).collect();
+    by.sort_by_key(|b| b.to_string());
+    assert_eq!(by, [serde_json::json!("bob"), serde_json::Value::Null], "{runs:?}");
+    let entries = body_json(route(&state, &req_as(&ada, "GET", "/deployments/payouts/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.iter().filter(|e| e["by"] == "bob").count(), 1, "its log entry names the same: {entries:?}");
+    let lines = crate::decidecmd::waiting_lines(&runs);
+    assert_eq!(lines.iter().filter(|l| l.contains("(action pay, started by bob, since ")).count(), 1, "{lines:?}");
+}
+
 /// Who may decide an approval: a person by their name, the OS user's local admin by the name it
 /// runs as; not an agent, a service, a viewer, or anyone on a server without accounts.
 #[test]
