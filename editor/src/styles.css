@@ -1310,7 +1310,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-needs__versions { font-family: var(--mono); color: var(--body); }
 .hl-table__num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hl-overview .hl-table td:first-child { white-space: nowrap; }
-.hl-spark { display: block; }
+/* No wider than where it is (the Status page on a phone): its bars narrow, its height stays. */
+.hl-spark { display: block; max-width: 100%; }
 .hl-spark rect { fill: var(--accent); opacity: 0.55; }
 .hl-spark rect.hl-spark__bad { fill: var(--bad); opacity: 0.9; }
 /* The tables want the width: the run log and what was done go below them on a narrower screen. */
