@@ -2010,6 +2010,43 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(state.secrets.names("s").is_empty());
 }
 
+/// Guards: why a run gave nothing (a `throw`'s message, a module's error) is kept as the rest of
+/// its entry is: one computed from a secret is withheld, in the log and in what `explain` says of
+/// it, and one that isn't still says why.
+/// Why: a node's reason was the one text of an entry nothing went over: a flow throwing
+/// `new Error("key is " + k)` wrote the secret into the log and the export in the clear, and
+/// `explain`, which an agent may call, printed it.
+/// If it fails: a flow that throws with a secret in its message hands the secret to whoever reads
+/// its runs.
+#[test]
+fn what_a_run_throws_computed_from_a_secret_never_reaches_the_log() {
+    let state = test_state();
+    let text = "import { action, flow } from \"holon\"\nimport api_key from \"secret:api_key\"\n\nflow(\"s\")\n\nexport const leak = action((value) => {\n  throw new Error(\"key is \" + api_key)\n})\n\nexport const plain = action((value) => {\n  throw new Error(\"no \" + value)\n})\n";
+    let flow_hash = stage_text(&state, text);
+    let value = "sk_thrown_123456";
+    assert_eq!(route(&state, &req("POST", "/deployments/s/secrets/api_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap())).status_code, 200);
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "s", "unit": to_hex(&flow_hash) })).unwrap())));
+    assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    run_action_named(&state, "s", "leak", serde_json::json!("x"));
+    run_action_named(&state, "s", "plain", serde_json::json!("pears"));
+
+    let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{log}");
+    assert!(!log.to_string().contains(value), "the log leaks it: {log}");
+    let reasons = |e: &serde_json::Value| e["timeline"].as_array().unwrap().iter().filter_map(|t| t["reason"].as_str().map(String::from)).collect::<Vec<_>>();
+    assert_eq!(reasons(&entries[0]), vec![crate::taint::WITHHELD.to_string()], "{}", entries[0]);
+    assert!(reasons(&entries[1]).iter().any(|r| r.contains("no pears")), "a reason not computed from a secret still says why: {}", entries[1]);
+
+    // What `explain` says beside the statement that threw, from the flow's own text.
+    let document = holon_author::agent::plan(text).unwrap().document;
+    let leak = holon_author::agent::explain("s", &document, &entries[0]).unwrap();
+    assert!(!leak.contains(value), "{leak}");
+    assert!(leak.contains(&format!("fail gave nothing: {}", crate::taint::WITHHELD)), "{leak}");
+    let plain = holon_author::agent::explain("s", &document, &entries[1]).unwrap();
+    assert!(plain.contains("fail gave nothing: no pears"), "{plain}");
+}
+
 /// A durable run end to end. \`POST /orders\` answers with a resume token and waits at \`paid\`; its
 /// state write depends on the event, so nothing is written yet. \`GET /paid/:token\`, declared
 /// \`resume = paid\`, answers its caller and delivers its request to the run, which finishes: the

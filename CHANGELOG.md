@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **What a run throws with a secret in it no longer reaches the log.** Why a node gave nothing (a
+  `throw`'s message, a module's error) was the one text of a log entry the redactor never went
+  over: `throw new Error("key is " + k)` wrote the secret into the log and the export in the
+  clear, and `explain` printed it. Now it is redacted with the rest of the entry, and withheld
+  (`‹withheld: computed from a secret›`) where the node computes with a secret, as its outputs
+  are. So are a request's method, the keys a run claimed and an effect's sink, and the bytes of a
+  file kept around a part of it a run read: when they hold a secret, the part isn't kept, and
+  `holon verify` asks for the file.
+
 ## 0.1.0-rc.35
 
 - **Tags: a binding on a tag holds on every flow deployed with it.** A flow's text tags it,
