@@ -496,6 +496,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-sg__row--idle { opacity: 0.45; }
 .hl-sg__row--failed { border-color: var(--bad); border-left-color: var(--bad); background: var(--bad-bg); }
 .hl-sg__failed { color: var(--bad); font-weight: 600; }
+.hl-sg__new { color: var(--warn-ink); font-weight: 600; }
 .hl-sg__wire--idle { opacity: 0.3; }
 .hl-sg__row--current { border-width: 3px 3px 3px 5px; border-top-color: var(--ink); border-right-color: var(--ink); border-bottom-color: var(--ink); }
 .hl-sg__said { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }

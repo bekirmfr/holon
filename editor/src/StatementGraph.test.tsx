@@ -87,7 +87,9 @@ describe("the statement graph", () => {
     const c = draw(<StatementGraph graph={changed} against={g} />);
     const dashed = rowsOf(c).filter((b) => b.classList.contains("hl-sg__row--new"));
     expect(dashed.map(nameOf)).toEqual(["extra"]);
-    expect(c.textContent).toContain("new in this version");
+    expect(dashed[0].querySelector(".hl-sg__new")?.textContent).toBe("new");
+    expect(c.querySelectorAll(".hl-sg__new")).toHaveLength(1);
+    expect(c.textContent).toContain("new since the version deployed");
   });
 
   it("hands a clicked row to the caller, with its mark, and selects the row the cursor is in", () => {

@@ -1206,6 +1206,7 @@ function Canvas({
     onOpened: frameNodes,
     onPicked: inspectRow,
     run: view.onCanvas,
+    deployed: flowName && deployedEntry ? { slug: flowName, unit: deployedEntry.unit } : null,
   });
   const atStatements = canvasLevel.level === "statements";
 
@@ -1401,7 +1402,7 @@ function Canvas({
               </div>
             )}
             {canvasLevel.graph && canvasLevel.graph.bands.length > 0 && (
-              <StatementGraph pane graph={canvasLevel.graph} cursor={canvasLevel.cursorLine} onPick={canvasLevel.onPick} onOpen={canvasLevel.onOpen} run={canvasLevel.run} />
+              <StatementGraph pane graph={canvasLevel.graph} against={canvasLevel.against} cursor={canvasLevel.cursorLine} onPick={canvasLevel.onPick} onOpen={canvasLevel.onOpen} run={canvasLevel.run} />
             )}
             {canvasLevel.graph && canvasLevel.graph.bands.length === 0 && (
               <div className="hl-canvas__none">

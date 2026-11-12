@@ -4,8 +4,8 @@
 // Terminal, whose accent is teal, answers are plain ink). A
 // fallback answer (`?? status(404)`) is a side box on its row. Wires are the rows a row takes from
 // in its band, drawn as lanes in the column's gutter, as `holon editor` draws them; what it takes
-// from outside its band is a label. Against another version, the rows whose text is new are dashed
-// amber; over a run, the rows it didn't run are dimmed with the wires out of them, the step it is
+// from outside its band is a label. Against another version (the one deployed: the Review's, and
+// Edit's), the rows whose text is new are dashed amber and say "new"; over a run, the rows it didn't run are dimmed with the wires out of them, the step it is
 // at has a thick border, a row shows the value it made, and the row a failure began at is red.
 // Drawn from holonGraph (holonText.ts), the terminal's own graph; it fetches nothing, and picking
 // a row is the caller's to act on (put the cursor on its mark), as is opening one (Enter, or a
@@ -134,7 +134,7 @@ export function StatementGraph({
               {KIND_WORD[k]}
             </span>
           ))}
-        {against && fresh.size > 0 && <span className="hl-sg__swatch hl-sg__swatch--new">new in this version</span>}
+        {against && fresh.size > 0 && <span className="hl-sg__swatch hl-sg__swatch--new">new since the version deployed</span>}
         <span className="hl-sg__count">
           {graph.bands.reduce((n, b) => n + b.rows.length - 1, 0)} statements, {graph.nodes} nodes
         </span>
@@ -203,6 +203,7 @@ export function StatementGraph({
                         <span className="hl-sg__said">
                           <span className="hl-sg__kind">{r.head ? "on" : KIND_WORD[r.kind]}</span>
                           <span className="hl-sg__line">line {r.line}</span>
+                          {fresh.has(key) && <span className="hl-sg__new">new</span>}
                           {failed !== undefined && <span className="hl-sg__failed">failed here</span>}
                           {r.outside.length > 0 && <span className="hl-sg__outside">← {r.outside.join(", ")}</span>}
                         </span>

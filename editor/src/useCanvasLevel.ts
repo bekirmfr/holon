@@ -4,12 +4,15 @@
 // line selecting its row, a row picked putting the cursor on its mark, and a row opened showing its
 // nodes on the Nodes level, framed. `l` switches. In View runs the graph is the text of the version
 // the run ran on (printed from its canvas, as the text pane shows it), with the run drawn on it
-// (runRows.ts); its Nodes level is the node canvas with values.
+// (runRows.ts); its Nodes level is the node canvas with values. In Edit, a flow that is deployed
+// has its rows new against the version deployed marked (StatementGraph's `against`): that
+// version's text, as its document says it (holonText.ts documentText, as the Review reads it).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Evaluator } from "./holon";
-import { holonGraph, printHolon, type FlowGraph, type GraphRow } from "./holonText";
+import { documentText, holonGraph, printHolon, type FlowGraph, type GraphRow } from "./holonText";
+import { getDeployedDocument } from "./server";
 import { compileRows, keepLevel, lineAt, rowOnCanvas, rowsMay, type CanvasLevel, type RowMay } from "./canvasLevel";
 import { graphRun, rowsOnCanvas, type RunOnCanvas } from "./runRows";
 import type { GraphRun } from "./StatementGraph";
@@ -40,6 +43,7 @@ export function useCanvasLevel({
   onOpened,
   onPicked,
   run = null,
+  deployed = null,
 }: {
   flow: FlowMeta;
   setFlow: (update: (m: FlowMeta) => FlowMeta) => void;
@@ -63,6 +67,8 @@ export function useCanvasLevel({
   onPicked?: (ids: string[]) => void;
   /** In View runs, the run shown, as replayed on the canvas: drawn on the rows. */
   run?: RunOnCanvas | null;
+  /** In Edit, the flow's deployment and the version it runs: the rows new against it are marked. */
+  deployed?: { slug: string; unit: string } | null;
 }) {
   const viewing = flow.viewing !== null;
   const level: CanvasLevel = flow.level;
@@ -151,6 +157,43 @@ export function useCanvasLevel({
     [viewing, graph, compiled, canvasKey],
   );
   const drawnRun = useMemo((): GraphRun | null => (rows && run ? graphRun(rows, run) : null), [rows, run]);
+
+  // The version deployed, as text, read once per version while its statements are shown in Edit.
+  const against = statements && !viewing ? deployed : null;
+  const againstKey = against ? `${against.slug} ${against.unit}` : null;
+  const [deployedText, setDeployedText] = useState<{ key: string; text: string | null } | null>(null);
+  const deployedNow = useRef(deployedText);
+  deployedNow.current = deployedText;
+  useEffect(() => {
+    if (!against || deployedNow.current?.key === againstKey) return;
+    let live = true;
+    const said = (text: string | null) => live && setDeployedText({ key: againstKey!, text });
+    getDeployedDocument(against.slug, against.unit).then(
+      (doc) => {
+        try {
+          said(documentText(against.slug, doc));
+        } catch {
+          said(null);
+        }
+      },
+      // Not read (gone, or not this caller's to read): nothing is marked new.
+      () => said(null),
+    );
+    return () => {
+      live = false;
+    };
+    // The key says the deployment and its version.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [againstKey]);
+  const againstGraph = useMemo((): FlowGraph | null => {
+    if (againstKey === null || deployedText?.key !== againstKey || deployedText.text === null) return null;
+    try {
+      return holonGraph(deployedText.text);
+    } catch {
+      // The version deployed has no graph: nothing is marked new.
+      return null;
+    }
+  }, [againstKey, deployedText]);
   // The row picked last: the Inspector shows it while the cursor is where picking it put it.
   const [picked, setPicked] = useState<PickedRow | null>(null);
   const onPick = useCallback(
@@ -174,6 +217,8 @@ export function useCanvasLevel({
     level,
     setLevel,
     graph,
+    /** In Edit, the version deployed's graph: the rows new against it are marked. */
+    against: againstGraph,
     /** In View runs, the run as the rows show it. */
     run: drawnRun,
     /** Why the text drawn has no graph now (it doesn't parse): the last one stays. */

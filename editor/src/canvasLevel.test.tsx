@@ -2,18 +2,20 @@
 // (useCanvasLevel.ts with StatementGraph and TextPane, as App.tsx passes them): a sample opens at
 // Statements; a row's click puts the text's cursor on its mark, and the cursor's line selects the
 // row; `l` switches the level; a row opened (Enter) goes to Nodes with the canvas's nodes it
-// stands for. And every row of every sample stands for nodes of its text.
+// stands for. In Edit, a flow that is deployed has the rows new against the version deployed
+// marked. And every row of every sample stands for nodes of its text.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, useCallback, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 import { Evaluator, initSync } from "../wasm/holon_wasm.js";
 import { compileRows, DEFAULT_LEVEL, keepLevel, levelOf, rowNodes } from "./canvasLevel";
 import { structuralKey } from "./flowDoc";
-import { holonGraph } from "./holonText";
+import { compileHolon, holonGraph } from "./holonText";
+import { getDeployedDocument } from "./server";
 import { buildSample, samples } from "./samples";
 import { StatementGraph } from "./StatementGraph";
 import { askText, TextPane, type TextAsk } from "./TextPane";
@@ -21,6 +23,8 @@ import { tabFromDocument, type FlowMeta, type TabState } from "./tabs";
 import { useCanvasLevel } from "./useCanvasLevel";
 
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
+
+vi.mock("./server", async (original) => ({ ...(await original<typeof import("./server")>()), getDeployedDocument: vi.fn() }));
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -40,7 +44,7 @@ afterEach(() => {
 });
 
 /** The editor's canvas and text for one tab, wired as App.tsx wires them. */
-function Editor({ tab, ev, opened }: { tab: TabState; ev: Evaluator; opened: string[][] }) {
+function Editor({ tab, ev, opened, deployed = null }: { tab: TabState; ev: Evaluator; opened: string[][]; deployed?: { slug: string; unit: string } | null }) {
   const [flow, setFlowState] = useState<FlowMeta>(tab.meta);
   const setFlow = useCallback((u: (m: FlowMeta) => FlowMeta) => setFlowState(u), []);
   const showText = useCallback((ask: TextAsk) => void askText(ask), []);
@@ -57,24 +61,27 @@ function Editor({ tab, ev, opened }: { tab: TabState; ev: Evaluator; opened: str
     inspecting: true,
     showText,
     onOpened,
+    deployed,
   });
   return (
     <div data-level={level.level}>
-      {level.level === "statements" && level.graph && <StatementGraph pane graph={level.graph} cursor={level.cursorLine} onPick={level.onPick} onOpen={level.onOpen} />}
+      {level.level === "statements" && level.graph && <StatementGraph pane graph={level.graph} against={level.against} cursor={level.cursorLine} onPick={level.onPick} onOpen={level.onOpen} />}
       <TextPane text={flow.text.value ?? ""} readOnly={false} onEdit={() => undefined} onCursor={() => undefined} onCaret={level.setCaret} status="" width={400} onWidth={() => undefined} onClose={() => undefined} />
     </div>
   );
 }
 
-function open(name: string) {
+function open(name: string, text?: string, deployed: { slug: string; unit: string } | null = null) {
   const ev = new Evaluator();
-  const tab = tabFromDocument(name, buildSample(samples().find((s) => s.name === name)!, ev), false, ev);
+  // A text given is kept with its document, as a save keeps it: the tab shows it as written.
+  const doc = text === undefined ? buildSample(samples().find((s) => s.name === name)!, ev) : { ...compileHolon(text, ev).doc, source: text };
+  const tab = tabFromDocument(name, doc, false, ev);
   tab.meta.text = { ...tab.meta.text, open: true };
   const opened: string[][] = [];
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root!.render(<Editor tab={tab} ev={ev} opened={opened} />));
+  act(() => root!.render(<Editor tab={tab} ev={ev} opened={opened} deployed={deployed} />));
   const c = container;
   const view = () => EditorView.findFromDOM(c.querySelector<HTMLElement>(".cm-editor")!)!;
   return { c, tab, opened, view, level: () => c.firstElementChild!.getAttribute("data-level") };
@@ -123,6 +130,25 @@ describe("the canvas's level", () => {
     expect(opened[0].length).toBeGreaterThan(0);
     expect(opened[0].every((id) => ids.has(id))).toBe(true);
     expect(opened[0].some((id) => tab.nodes.find((n) => n.id === id)!.data.name === "respond")).toBe(true);
+  });
+
+  it("in Edit, marks the rows new against the version deployed, read once for it", async () => {
+    const sample = samples().find((s) => s.name === "hello-api")!;
+    vi.mocked(getDeployedDocument).mockReset().mockResolvedValue(buildSample(sample, new Evaluator()));
+    // The draft: a statement more than the version deployed, in a route of its own.
+    const draft = `${sample.text}
+route.get("/bye/:name", (req) => {
+  const who = req.params.name
+  return \`Bye, \${who}\`
+})
+`;
+    const { c } = open("hello-api", draft, { slug: "hello-api", unit: "ab".repeat(32) });
+    await act(async () => {});
+    expect(getDeployedDocument).toHaveBeenCalledTimes(1);
+    expect(getDeployedDocument).toHaveBeenCalledWith("hello-api", "ab".repeat(32));
+    const fresh = rows(c).filter((r) => r.getAttribute("data-new") === "true");
+    expect(fresh.map((r) => r.querySelector(".hl-sg__name")!.firstChild!.textContent)).toEqual(["GET /bye/:name", "who", "return"]);
+    expect(rows(c).length).toBeGreaterThan(fresh.length);
   });
 
   it("is typed past: a key typed in the text is the text's", () => {
