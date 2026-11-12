@@ -515,13 +515,14 @@ whoever deployed the version a run is on decides none of its steps; with `agents
 decides one, and a flow whose approval has an agent's step doesn't deploy.
 
 Each decision keeps what let its decider (§8.6): `binding`, the id of the binding they took the
-step through (`holon access show` lists it), or `"local"` for the OS user's admin, whom no binding
-holds, and `access`, the version of the access document it was read in. The run is given them, so
-the resumed part's log entry, the run's export and `holon verify` carry them: an auditor checks
-the order, the kinds, the different principals and their bindings offline, against `holon access
-show N`. The approved-payout sample pays in three steps: an agent bound to `classifier` takes the
-first with a note (`holon decide --note`, or `holon mcp`'s `decide`), a person bound to
-`reviewer` the second, another bound to `approver` the third, each bound on its tag.
+step through (`holon access show` lists it), and `access`, the version of the access document it
+was read in. The run is given them, so the resumed part's log entry, the run's export and `holon
+verify` carry them: an auditor checks the order, the kinds, the different principals and their
+bindings offline, against `holon access show N`. On the server's machine, `holon decide` signs in
+as the account that set the server up, one principal with its session. The approved-payout
+sample pays in three steps: an agent bound to `classifier` takes the first with a note (`holon
+decide --note`, or `holon mcp`'s `decide`), a person bound to `reviewer` the second, and you,
+bound to `approver`, the third, each bound on its tag.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its

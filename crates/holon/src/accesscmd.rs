@@ -96,6 +96,7 @@ examples:
 const ACCESS_USAGE: &str = "usage: holon access [versions]
        holon access show [--version N]
        holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT]
+       holon access local [--as NAME] [--why TEXT]
        (each with [--json] [--server PORT|URL])
 
   Who may do what on this server, as kept: every change is a version, with who made it, when, what
@@ -111,6 +112,10 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
     --agents off           no agent decides an approval, and a flow whose approval has a step
                            for one doesn't deploy (on by default)
     --why TEXT             why, kept with the version
+  local                    the account this machine's run file signs in as: the person who set
+                           the server up, until an admin ties it to another
+    --as NAME              tie it to NAME, a person here who isn't disabled, as a new version
+    --why TEXT             why, kept with the version
   --json                   print what the server answers, as JSON
   --server PORT|URL        which holon server to ask (see below)
 
@@ -118,6 +123,7 @@ examples:
   holon access
   holon access show --version 3
   holon access approvals --exclude-deployer on --why \"four eyes on payouts\"
+  holon access local --as bob --why \"bob runs this machine now\"
 ";
 
 /// The usage, with where the server is, and how to sign in.
@@ -346,7 +352,7 @@ pub(crate) fn unbind(args: &[String]) -> i32 {
 pub(crate) fn access(args: &[String]) -> i32 {
     const WHO: &str = "holon access";
     let usage = usage(ACCESS_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--why"], &["--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--as", "--why"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -380,6 +386,25 @@ pub(crate) fn access(args: &[String]) -> i32 {
                     if !as_json(&args, &v) {
                         approval_lines(&v["approvals"]).iter().for_each(|l| println!("{l}"));
                         println!("(version {})", v["version"]);
+                    }
+                    0
+                }
+                Err(code) => code,
+            }
+        }
+        (Some("local"), None) => {
+            let answer = match args.value("--as") {
+                Some(account) => cmdline::json(WHO, &args, "PUT", "/access/local", Some(&json!({ "account": account, "why": args.value("--why") }))),
+                None if args.value("--why").is_some() => {
+                    eprintln!("{WHO}: --why says why the run file's account changes: give --as NAME too");
+                    return 2;
+                }
+                None => cmdline::json(WHO, &args, "GET", "/access/local", None),
+            };
+            match answer {
+                Ok(v) => {
+                    if !as_json(&args, &v) {
+                        println!("{} (version {})", tie_line(&v), v["version"]);
                     }
                     0
                 }
@@ -605,10 +630,28 @@ fn approval_lines(v: &Value) -> Vec<String> {
     table(&settings.each().map(|(name, on, said)| vec![name.replace('_', "-"), if on { "on" } else { "off" }.into(), said.into()]))
 }
 
+/// Who this machine's run file signs in as, in a version's `local` (the plan's D45).
+fn local_line(local: &Value) -> String {
+    match local.as_str() {
+        Some(name) => format!("this machine's run file signs in as {name}"),
+        None => "this machine's run file is tied to no account: it operates the host, and decides no approval".into(),
+    }
+}
+
+/// Who the run file signs in as now, as `GET /access/local` says it: tied to someone disabled,
+/// no one.
+fn tie_line(v: &Value) -> String {
+    match (v["local"].as_str(), v["tied"].as_str()) {
+        (Some(name), None) => format!("this machine's run file is tied to {name}, who is disabled: it operates the host, and decides no approval"),
+        _ => local_line(&v["local"]),
+    }
+}
+
 fn document_lines(v: &Value, now: u64) -> Vec<String> {
     let why = v["why"].as_str().map(|w| format!(" (why: {w})")).unwrap_or_default();
     let mut lines = vec![format!("version {}, {} by {}: {}{why}", v["version"], when(v["at"].as_u64()), v["by"].as_str().unwrap_or("-"), v["what"].as_str().unwrap_or_default())];
     lines.push(String::new());
+    lines.push(local_line(&v["local"]));
     lines.extend(approval_lines(&v["approvals"]));
     let roles = v["roles"].as_array().into_iter().flatten();
     let mut rows = vec![["role", "held by", "allows"].map(String::from).to_vec()];
@@ -706,11 +749,12 @@ mod tests {
         ]);
         assert_eq!(bindings_said(&held), "viewer, editor on d via payments, editor at d:ok until 1970-01-01T00:01:00 (expired)");
         assert_eq!(bindings_said(&json!([])), "-");
-        let document = json!({ "version": 4, "at": 0, "by": "ada", "what": "bound editor to the group payments on \"d\"", "roles": [], "groups": [{ "name": "payments", "members": ["bob"] }],
+        let document = json!({ "version": 4, "at": 0, "by": "ada", "what": "bound editor to the group payments on \"d\"", "roles": [], "groups": [{ "name": "payments", "members": ["bob"] }], "local": "ada",
             "bindings": [{ "id": 0, "who": { "principal": "ada" }, "role": "admin", "scope": "host", "by": "ada", "at": 0 }, { "id": 3, "who": { "group": "payments" }, "role": "editor", "scope": { "flows": { "slug": "d" } }, "by": "ada", "at": 0, "expires_at": 30 }] });
         assert_eq!(document_lines(&document, 60), [
             "version 4, 1970-01-01T00:00:00 by ada: bound editor to the group payments on \"d\"",
             "",
+            "this machine's run file signs in as ada",
             "exclude-deployer  off  whoever deployed the version a run is on may decide its approvals",
             "agents            on   agents take the steps written for them",
             "",
@@ -721,6 +765,9 @@ mod tests {
             "0   admin   ada                 on this host  -                              ada",
             "3   editor  the group payments  on \"d\"        1970-01-01T00:00:30 (expired)  ada",
         ]);
+        assert_eq!(local_line(&Value::Null), "this machine's run file is tied to no account: it operates the host, and decides no approval");
+        assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
+        assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
         assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false })), [
             "exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals",
             "agents            off  no agent decides an approval",

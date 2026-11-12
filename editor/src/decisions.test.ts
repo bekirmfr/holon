@@ -1,7 +1,7 @@
 // An approval a run waits at, as the editor says it and which steps whoever is signed in takes
 // (decisions.ts).
 import { describe, expect, it } from "vitest";
-import { approvalSaid, decidedSaid, decisionSaid, deciderOf, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, decidedSaid, decisionSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import type { WValue } from "./holon";
 import type { Decided, WaitingRun } from "./server";
 
@@ -36,10 +36,6 @@ const t = (value: string): WValue => ({ type: "Text", value });
 const record = (fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
 
 describe("who decides an approval", () => {
-  it("decides by their name, the local admin by the name it runs as", () => {
-    expect(deciderOf(ada)).toBe("ada");
-    expect(deciderOf({ name: "local:ada", kind: "person", role: "admin" })).toBe("ada");
-  });
   it("takes the steps the server says are theirs, and says the one they decided", () => {
     expect(yourSteps(alone(2, [], [0])).map((s) => s.slot)).toEqual([0]);
     expect(yourSteps(chain(["scout"], [], [1])).map((s) => s.role)).toEqual(["reviewer"]);
@@ -47,7 +43,7 @@ describe("who decides an approval", () => {
     expect(yourSteps({ name: "paid", expires_at: 0 })).toEqual([]);
     expect(yourDecision(alone(2, ["ada"]), ada)).toBe("you approved");
     expect(yourDecision(chain(["scout"], ["ada"]), ada)).toBe("you approved as reviewer");
-    expect(yourDecision(alone(2, [], [0]), { name: "local:ada", kind: "person", role: "admin" })).toBeNull();
+    expect(yourDecision(alone(2, ["ada"]), { name: "bob", kind: "person", role: "admin" })).toBeNull();
     expect(yourDecision({ ...alone(2), decisions: [took("ada", 0, undefined, false)] }, ada)).toBe("you declined");
   });
   it("counts the approvals with a step still theirs", () => {

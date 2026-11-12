@@ -454,7 +454,9 @@ only the editor.
     added there with a role and an owner, and get tokens of their own, shown once, revoked any time. Only hashes of tokens are kept. The OS user
     running the server needs none on that machine (`local.rs`): `holon serve` writes a run file
     readable only by that user (`~/.holon/run/<port>.json`, or `HOLON_RUN_DIR`) with its address
-    and a token made for this run, an admin's, named `local:<user>` in the activity log; `holon
+    and a token made for this run: the account that set the server up, holding its bindings and
+    admin on the host (before setup, `local:<user>`, an admin), each entry it makes in the activity
+    log saying `via: "local:<user>"`; `holon
     export` finds the one server running and signs in with it. The server
     answers as loopback, and as the hosts and editor origins named with `--allow-host` /
     `--allow-origin`. Who did what is kept: the secrets audit (`by`), each saved flow

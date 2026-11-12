@@ -326,13 +326,14 @@ pub(crate) fn can(who: &Caller, action: Action, on: &Resource) -> Result<(), Ref
     fixed(who, action, on)
 }
 
-/// What `who` is bound to the role named `role` through, directly or through a group, where `on`
-/// is, for its kind: what an approval's step with a role asks of whoever fills it (the design's
-/// §8.3, the plan's D37). By name: an admin holding everything doesn't hold `reviewer`. No role
-/// named, a role that holds run.decide there. A decision keeps it as what let it (the plan's D43).
+/// The binding `who` is bound to the role named `role` through, directly or through a group,
+/// where `on` is, for its kind: what an approval's step with a role asks of whoever fills it (the
+/// design's §8.3, the plan's D37). By name: an admin holding everything doesn't hold `reviewer`.
+/// No role named, a role that holds run.decide there. Only a binding of the document: the run
+/// file's admin, which none holds, never decides (D45). A decision keeps it as what let it (D43).
 pub(crate) fn holding<'a>(who: &'a Caller, role: Option<&str>, on: &Resource) -> Option<&'a Held> {
     let kind = who.kind?;
-    who.holds.as_deref()?.iter().filter(|h| h.role.kinds.contains(&kind) && h.covers(on)).find(|h| match role {
+    who.holds.as_deref()?.iter().filter(|h| h.from.is_some() && h.role.kinds.contains(&kind) && h.covers(on)).find(|h| match role {
         Some(role) => h.role.name == role,
         None => h.role.holds(RunDecide, on, who),
     })
@@ -547,6 +548,8 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
     asks("PUT", "/access/approvals", PeopleAssign, On::Host),
+    asks("GET", "/access/local", PeopleView, On::Host),
+    asks("PUT", "/access/local", PeopleAssign, On::Host),
     asks("GET", "/roles", RoleView, On::Host),
     asks("PUT", "/roles/{name}", RoleDefine, On::Host),
     asks("DELETE", "/roles/{name}", RoleDefine, On::Host),
@@ -787,7 +790,7 @@ mod tests {
     fn a_caller_may_do_what_any_role_it_holds_holds() {
         let holding = |roles: &[Role]| {
             let holds = roles.iter().map(|&r| Held::new(Arc::clone(role(r)), crate::bindings::Scope::Host)).collect();
-            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds) }
+            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds), local: None }
         };
         let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
         for action in Action::ALL {
@@ -871,7 +874,7 @@ mod tests {
                     }
                     let access = Bindings::memory();
                     access.keep(d).unwrap();
-                    let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(access.held("eve", now)) };
+                    let who = Caller { name: Some("eve".into()), kind: Some(kind), holds: Some(access.held("eve", now)), local: None };
                     let case = |what: &str| {
                         let held: Vec<String> = set.iter().map(|(at, h)| format!("{} at {at}", h.role.name)).collect();
                         format!("{what}, {kind:?} holding {held:?}{}", group.map(|g| format!(" through {g}")).unwrap_or_default())
@@ -911,7 +914,7 @@ mod tests {
     #[test]
     fn no_role_gives_an_agent_what_is_a_persons() {
         let all = Arc::new(RoleDef::custom("everything", &Action::ALL, ANYONE));
-        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held::new(Arc::clone(&all), crate::bindings::Scope::Host)])) };
+        let held = |kind: Kind| Caller { name: Some("scout".into()), kind: Some(kind), holds: Some(Arc::from([Held::new(Arc::clone(&all), crate::bindings::Scope::Host)])), local: None };
         let (agent, service) = (held(Kind::Agent), held(Kind::Service));
         let persons = ["flow.approve-deploy", "flow.lifecycle", "flow.delete", "flow.restore", "secret.set", "secret.roll-back", "host.operate"];
         for action in Action::ALL {

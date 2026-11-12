@@ -105,16 +105,16 @@ it (deploy.rs, `waiting_at`); and a route `{ resumes }` or a `resume_token` nami
 when the flow compiles (flow.rs).
 
 `POST /deployments/<slug>/runs/<run_id>/decide` takes `{name, approve, reason?, slot?, note?}`.
-`decider` says who may decide at all: a principal signed in, by their name (the OS user's local
-admin by the name it runs as, so the same person counts once), holding `run.decide` at the
-approval point; never a service (a script, not a person), or anyone on a server without
-accounts. A `Decider` (who, kind, and `holds`: what they hold a role through there,
+`decider` says who may decide at all: a principal signed in, by their name (the run file as the
+account that set the server up, so the same person counts once, D45), holding `run.decide` at the
+approval point; never a service (a script, not a person), the run file tied to no account, or
+anyone on a server without accounts. A `Decider` (who, kind, and `holds`: what they hold a role through there,
 `can::holding`) then takes a step: the one named, or the one open step they may fill, of their
 kind, bound to its role, never of a run they started, once per principal. `decide` runs under the
 deployments lock. Each decision is kept on the waiting point (`decisions`: its step, who, their
 kind and role, when, approved or not, why, the note, and what let them: `binding`, the binding's
-id, or `"local"` for the run file's admin, and `access`, the access document's version it was
-read in, D43). Once as many as it asks have approved, or anyone declines (a decline needs a reason),
+id, and `access`, the access document's version it was read in, D43: every decision has them,
+as `can::holding` finds only what a binding of the document holds). Once as many as it asks have approved, or anyone declines (a decline needs a reason),
 the run is claimed, as a token claims it, and `resume_parked` gives it the decision as its event:
 `{approved, by, decisions}`, with `declined_by` and `reason` for a decline. The event is made from
 the decisions kept (`StoredWaiting::take`), so a decline a run lock turned away is still the
@@ -122,7 +122,8 @@ decision when someone decides again. So the resumed part's log entry, and what `
 replay read, hold who decided. Each decision is in the activity log too (`approved`, `declined`).
 
 People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
---approve|--decline --reason …` (decidecmd.rs), signed in as the OS user's local admin; `holon
+--approve|--decline --reason …` (decidecmd.rs), signed in through the run file as the account
+that set the server up; `holon
 decide <slug>` and `holon deployments <slug>` list what runs wait at, with who has approved so far
 (`decidecmd::waiting_lines`), and the steps the caller may take (`yours_lines`). `holon mcp`'s `runs`
 adds the same lines for an agent to tell the user, and its `decide` takes a step written for an

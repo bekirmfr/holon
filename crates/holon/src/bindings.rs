@@ -62,6 +62,10 @@ pub(crate) struct Document {
     /// How this host decides approvals beyond each step's role and kind (§8.4).
     #[serde(default)]
     pub(crate) approvals: ApprovalSettings,
+    /// The account this machine's run file signs in as (local.rs, the plan's D45): the person who
+    /// set the server up, until an admin moves it or the account is removed; none before setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) local: Option<String>,
     /// The next binding's id: ids are never reused, so an old version's ids name what they named.
     #[serde(default)]
     next_id: u64,
@@ -407,6 +411,10 @@ impl Document {
         self.bindings.retain(|b| !matches!(&b.who, Subject::Principal(n) if n == name));
         for g in &mut self.groups {
             g.members.retain(|m| m != name);
+        }
+        // The run file is tied to no one then, not to whoever is next given the name.
+        if self.local.as_deref() == Some(name) {
+            self.local = None;
         }
     }
 
@@ -792,6 +800,10 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `GET /access` (`?version=n`): that version, whole; the newest without;
 /// - `PUT /access/approvals` (`{exclude_deployer?, agents?, why?}`): how this host decides
 ///   approvals (`ApprovalSettings`), each one given changed, as a new version;
+/// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
+///   and whether it does now (`tied`: none while they are disabled), with the version;
+/// - `PUT /access/local` (`{account, why?}`): ties it to that person, as a new version: a
+///   handover; answered as the GET is;
 /// - `GET /roles`: every role, the built-in ones first, with how many bindings hold it;
 /// - `PUT /roles/<name>` (`{about?, allows, kinds, why?}`): an admin's role, defined or changed;
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
@@ -804,7 +816,7 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
     if url == "/auth/me/can" && method == "GET" {
         return Some(me_can(request, caller));
     }
-    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
+    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/access/local", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
     if !ours {
         return None;
     }
@@ -814,6 +826,11 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
     let now = crate::deploy::epoch_now();
     let document = accounts.access_document();
     let recorded = |what: &str, target: &str| state.activity.record(what, target, Some(by));
+    // The run file's tie (D45): whom the document names, whether it holds now, and the version.
+    let tie = || {
+        let d = accounts.access_document();
+        serde_json::json!({ "local": d.local, "tied": accounts.tied(), "version": d.version })
+    };
     Some(match (method, url.as_str()) {
         ("GET", "/bindings") => {
             let (who, role, flow) = (request.get_param("who"), request.get_param("role"), request.get_param("flow"));
@@ -902,6 +919,29 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Err(e) => err(400, e),
             }
         }
+        ("PUT", "/access/local") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Change {
+                account: String,
+                #[serde(default)]
+                why: Option<String>,
+            }
+            let change: Change = match body(request, "the run file's account is {\"account\": \"bob\", \"why\": \"…\"}") {
+                Ok(c) => c,
+                Err(r) => return Some(r),
+            };
+            match accounts.set_local(&change.account, by, change.why.as_deref()) {
+                Ok(changed) => {
+                    if changed {
+                        recorded("tied the run file", &change.account);
+                    }
+                    Response::json(&tie())
+                }
+                Err(e) => err(400, e),
+            }
+        }
+        ("GET", "/access/local") => Response::json(&tie()),
         ("GET", "/roles") => {
             let builtin = crate::can::BUILTIN.iter().map(|d| role_listed(d, d.builtin.map(about), document.bound(Some(&d.name), None)));
             let custom = document.roles.iter().filter_map(|r| Some(role_listed(&r.def().ok()?, r.about.as_deref(), document.bound(Some(&r.name), None))));
@@ -1205,7 +1245,7 @@ mod tests {
     /// one flow binds at that flow only.
     #[test]
     fn a_binding_gives_only_what_its_author_holds_there() {
-        let by = |held: Vec<Held>| Caller { name: Some("ada".into()), kind: Some(Kind::Person), holds: Some(held.into()) };
+        let by = |held: Vec<Held>| Caller { name: Some("ada".into()), kind: Some(Kind::Person), holds: Some(held.into()), local: None };
         let status = |r: Result<(), Response>| r.err().map(|r| r.status_code);
         let (d, e) = (Scope::Flows(Selector::Slug("d".into())), Scope::Flows(Selector::Slug("e".into())));
         let ok = Scope::Approval { flow: Selector::Slug("d".into()), name: "ok".into() };

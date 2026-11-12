@@ -313,11 +313,8 @@ declare module "holon" {
     reason?: string
     /** What they noted with it, any JSON (an agent's label and confidence, say). */
     note?: unknown
-    /**
-     * What let them: the binding they took it through, by its id (`holon access show` lists it),
-     * or `"local"` for the admin of the machine the server runs on, which no binding holds.
-     */
-    binding?: number | "local"
+    /** What let them: the binding they took it through, by its id (`holon access show` lists it). */
+    binding?: number
     /** The version of the access document that binding was read in (`holon access show N`). */
     access?: number
   }

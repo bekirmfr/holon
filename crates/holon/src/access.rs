@@ -56,18 +56,27 @@ impl Role {
     }
 }
 
-/// Who a request comes from, once let through: a principal's name (or the OS user's,
-/// `local:<user>`), its kind and what it holds (bindings.rs); no one for what is open (signing
-/// in, the health check), and on a server without accounts (the tests), who holds nothing at all
-/// and is let do everything (`holds` none).
+/// Who a request comes from, once let through: a principal's name (the run file's account, or
+/// the OS user's `local:<user>` while it is tied to none), its kind and what it holds
+/// (bindings.rs); no one for what is open (signing in, the health check), and on a server without
+/// accounts (the tests), who holds nothing at all and is let do everything (`holds` none).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
     pub(crate) kind: Option<Kind>,
     pub(crate) holds: Option<Arc<[Held]>>,
+    /// Signed in through this machine's run file (local.rs): the OS user, `local:<user>`, which
+    /// what it does is recorded as coming through (activity.rs's `via`).
+    pub(crate) local: Option<String>,
 }
 
 impl Caller {
+    /// Whether it is the run file tied to no account (before setup, or the account disabled): admin
+    /// on the host, by the OS user's name, bound nowhere, so it decides no approval (D45).
+    pub(crate) fn untied(&self) -> bool {
+        self.local.is_some() && self.local == self.name
+    }
+
     /// The widest built-in role it holds on the host: what the editor shows it as.
     pub(crate) fn host_role(&self) -> Option<Role> {
         crate::bindings::host_role(self.holds.as_deref().unwrap_or_default(), self.kind?)
@@ -77,7 +86,7 @@ impl Caller {
     #[cfg(test)]
     pub(crate) fn holding(name: &str, kind: Kind, role: Role) -> Caller {
         let held = Held::new(Arc::clone(crate::can::role(role)), crate::bindings::Scope::Host);
-        Caller { name: Some(name.into()), kind: Some(kind), holds: Some(Arc::from([held])) }
+        Caller { name: Some(name.into()), kind: Some(kind), holds: Some(Arc::from([held])), local: None }
     }
 }
 
@@ -116,20 +125,26 @@ impl Access {
 
     /// Who `request` comes from, and what they hold, or why they aren't let in: with no accounts
     /// (the tests' servers), no one, whoever asks; the OS user who runs the server, through its
-    /// run file (local.rs), admin on the host whether it is set up or not; or whoever its session
-    /// or token is, holding what is bound to them.
+    /// run file (local.rs), as the account it is tied to (the one that set the server up, D45),
+    /// holding what is bound to it and then admin on the host, or, tied to none, by its own name
+    /// with admin alone, so it operates the host whatever the account holds; or whoever its
+    /// session or token is, holding what is bound to them.
     fn authenticate(&self, request: &Request) -> Result<Caller, Response> {
         let Some(accounts) = &self.accounts else { return Ok(Caller::default()) };
         let presented = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
-        let (who, holds) = match accounts.local(presented) {
-            Some(who) => (who, Held::admin()),
-            None => {
-                let who = self.signed_in(accounts, presented)?;
-                let holds = accounts.holding(&who.name);
-                (who, holds)
-            }
-        };
-        Ok(Caller { name: Some(who.name), kind: Some(who.kind), holds: Some(holds) })
+        if let Some(os) = accounts.local(presented) {
+            let local = Some(os.name.clone());
+            return Ok(match accounts.tied() {
+                Some(name) => {
+                    let holds: Arc<[Held]> = accounts.holding(&name).iter().chain(Held::admin().iter()).cloned().collect();
+                    Caller { name: Some(name), kind: Some(Kind::Person), holds: Some(holds), local }
+                }
+                None => Caller { name: Some(os.name), kind: Some(os.kind), holds: Some(Held::admin()), local },
+            });
+        }
+        let who = self.signed_in(accounts, presented)?;
+        let holds = accounts.holding(&who.name);
+        Ok(Caller { name: Some(who.name), kind: Some(who.kind), holds: Some(holds), local: None })
     }
 
     /// Who a session, API token or provider's sign-in is, or why it isn't let in.

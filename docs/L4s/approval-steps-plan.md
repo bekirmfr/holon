@@ -367,7 +367,7 @@ step 5.
 ## 7. Step 5. The server decides by slot
 
 What a flow can write since 4b, the host now decides: each slot by a principal of its kind holding
-its role, in its order, under the design's fixed rules (§8.3, §8.4). Four commits, each passing
+its role, in its order, under the design's fixed rules (§8.3, §8.4). Five commits, each passing
 every check. Lines are at `661b9a16` (4c).
 
 | Sub-step | Change | Where | Decisions |
@@ -376,6 +376,7 @@ every check. Lines are at `661b9a16` (4c).
 | 5b | The host's approval settings, `exclude_deployer` and `agents` | `holon` (`bindings.rs`, `permissions.rs`, `accesscmd.rs`) | D41 |
 | 5c | `holon decide --slot --note`, with an agent's token too; the MCP `decide` tool for agent slots | `holon` (`decidecmd.rs`, `mcp.rs`) | D42 |
 | 5d | The evidence: each decision with the binding and access version that let it; `approved-payout` on the chain, run live with three principals | `holon` (`durable.rs`), the sample, docs | D43 |
+| 5e | The run file signs in as the account that set the server up: one principal, its bindings, on the record | `holon` (`access.rs`, `accounts.rs`, `bindings.rs`, `can.rs`, `durable.rs`, `activity.rs`, `auth.rs`, `accesscmd.rs`, `mcphosts.rs`), the sample, docs | D45 |
 
 ### Step 5a. Deciding by slot
 
@@ -496,6 +497,50 @@ by default. A change makes a version, with who, when and why, as a binding does.
   rules, the note); `holon.d.ts` (`Decided.note`, `binding`, `access`); the server reference (the
   route's body and answer, the listing); the MCP instructions; the CHANGELOG.
 
+### Step 5e. The run file is the account that set the server up
+
+Found running 5d live: the run file (local.rs) signs in as `local:<OS user>`, holding admin on
+the host and nothing bound. So it takes no step with a role, even when the human at the keyboard
+is bound to it; beside that human's own account it counts as a second person (`people: 2` was
+approved "by BMA and ada"); and a run it starts, or a version it deploys, is recorded under the
+OS user's name, which the starter rule and `exclude_deployer` don't match to the account.
+
+- **The tie** (D45). The access document keeps `local`, the account the run file signs in as.
+  Setup sets it to the account it makes, in the same version: whoever entered the setup code saw
+  what the server printed to the OS user who runs it, as the run file is that user's. Removing
+  that account clears it, in the same version. `PUT /access/local` (`{account, why}`,
+  `people.assign` on the host) or `holon access local --as NAME` moves it to an enabled person,
+  for a handover; `holon access show` says it.
+- **The gate** (`access.rs` `authenticate`). The run file's token, tied to an enabled person, is
+  that person: their name, holding what is bound to them, then admin on the host, so the run file
+  still operates the host whatever the account holds. `Caller.local` keeps the OS user. Untied
+  (before setup, or its account disabled) it is `local:<user>`, admin alone, as before.
+- **Deciding.** Only through a binding of the document: `can::holding` skips what no document
+  holds, so every decision names a binding, and `"local"` goes from `binding` (`Through` goes;
+  `binding` is the id). The run file tied to no account decides nothing (`durable::decider`),
+  saying so. The `local:` stripping that made the OS user and an account of its name one person
+  goes (`as_decider`, `decider`).
+- **One name everywhere.** The run's starter, the version's deployer, `created_by` and an owner
+  are the account. Agents the OS user owns before setup (`holon mcp`'s `<user>-agent`) move to
+  the account at setup. `/auth/me` answers the account, with `local`, the OS user, and
+  `holon mcp setup` names the agent from it.
+- **The channel.** An activity entry made through the run file says so, `via: "local:<user>"`
+  (`activity.rs`, from the request being served): on a host where someone other than the setup
+  person has the run file's shell, the record says how the name signed in.
+- **`approved-payout`**: the approver is you, `holon bind approver --to <you> --tag payments`,
+  approving with `holon decide` on the server's machine.
+- **Tests**: one table, the run file and a session against a role step bound to the account,
+  `people: 2` by the same human, the starter, the deployer under `exclude_deployer`, and the run
+  file untied; accounts.rs: the tie set at setup, cleared at removal, moved; the access table's
+  run-file row; `holon mcp setup`.
+- **Run live**: set up as ada; `holon decide` through the run file takes the approver's step,
+  its binding ada's; `people: 2`, the run file then ada's session: once; a run ada starts from
+  the CLI refused to her in the editor; a version she deploys from the CLI under
+  `exclude_deployer`; the activity entry's `via`; `holon access local --as bob`; ada disabled:
+  the run file decides nothing.
+- **Docs**: the people guide, the cli and server references, `docs/LANGUAGE.md` and the manual
+  (`binding` an id), `holon.d.ts`, the CHANGELOG.
+
 ### Checks for step 5
 
 | Sub-step | cargo test, clippy | wasm-pack | tsc, vitest | `npm run e2e` (slot 3) | Run live |
@@ -504,6 +549,7 @@ by default. A change makes a version, with who, when and why, as a binding does.
 | 5b | yes | | | yes | each setting against a deploy and a decision |
 | 5c | yes | | | yes | an agent's slot through `holon decide` and the tool |
 | 5d | yes | yes (the sample) | yes | yes | §13's run, and its export |
+| 5e | yes | yes (the sample) | yes | yes | the run file and a session, one principal; the tie moved and broken |
 
 ## T. The universe of steps
 
@@ -612,6 +658,12 @@ Settled 2026-11-12, each as recommended: D29 to D35, and step 5's, D36 to D44.
     (`{slot, stage, role, kind, people, by, open}`), `said` and `decisions`, and every reader
     follows in 5a.
   - Otherwise keep `people` and `approved_by` beside `slots`, for the short form.
+- **D45. The run file's account.**
+  - **Chosen**: tied to the account that set the server up, at setup; moved by an admin
+    (`holon access local --as`), cleared when the account is removed; each entry it makes says
+    `via` the run file.
+  - Otherwise an explicit link an admin makes (friction for a one-person server), or a run file
+    that decides no approval (a person then has no command line to decide from).
 
 The design's §15 Q2 (the short form) and Q4 (editors keep `run.decide`) were settled in step 3's
 plan, and step 4 builds on them. Q5 (deciding from a signed link) is later.

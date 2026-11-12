@@ -22,18 +22,18 @@
 // the tag, and on no other. A version that adds or drops a tag is approved like anything a flow
 // asks for, and the review says who the tag lets in.
 //
-// Before it works, an admin says who takes each step: the three roles, an agent and two people
-// (each person is printed the link they join with), each bound on the tag:
+// Before it works, an admin says who takes each step: the three roles, an agent, a person (who is
+// printed the link they join with) and you, each bound on the tag. On the server's machine holon
+// signs in as you, the account that set the server up:
 //   holon roles define classifier --allow run.decide --kinds agent
 //   holon roles define reviewer --allow run.decide
 //   holon roles define approver --allow run.decide
 //   holon people add scout --agent
 //   holon people token scout                                         its token, printed once
 //   holon people add bob --person --role viewer
-//   holon people add cy --person --role viewer
 //   holon bind classifier --to scout --tag payments
 //   holon bind reviewer --to bob --tag payments
-//   holon bind approver --to cy --tag payments
+//   holon bind approver --to <you> --tag payments
 // And binds the database, with its tables and one account holding 100:
 //   holon database add bank ~/holon-bank.db --schema "create table if not exists accounts
 //     (id integer primary key, balance integer not null);
@@ -47,8 +47,9 @@
 //   holon decide approved-payout                                      the run, its steps, whose
 // scout classifies it, with its token in HOLON_TOKEN, and a note:
 //   holon decide approved-payout <run> payout --approve --note '{"label":"invoice","confidence":0.93}'
-// then bob reviews it and cy approves it, each signed in to the editor, in Approvals: each only
-// their own step, and in turn. It pays it:
+// then bob reviews it, signed in to the editor, in Approvals, and you approve it on the server's
+// machine, with HOLON_TOKEN unset: each only your own step, and in turn. It pays it:
+//   holon decide approved-payout <run> payout --approve
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
 import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"

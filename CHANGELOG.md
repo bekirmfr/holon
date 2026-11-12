@@ -2,10 +2,23 @@
 
 ## Unreleased
 
+- **The run file is the account that set the server up.** Commands on the server's machine
+  (`holon decide`, `holon deploy`…) sign in through its run file as the person who set the server
+  up, holding what is bound to them and admin on the host, so that person is one principal
+  whichever way they sign in: they take a step bound to them with `holon decide`, count once in
+  `people: 2`, and a run they start or a version they deploy from the command line is theirs,
+  which the starter rule and `exclude_deployer` refuse them in the editor too. The access document
+  keeps the tie (`local`), set at setup, which `holon access local --as NAME` (or
+  `PUT /access/local`, `people.assign`) moves to another person, as a version; `holon access local`
+  (`GET /access/local`) says it and whether it holds now, and `holon access show` prints it. Removing that account clears it; while it is disabled, the run file is the OS user's
+  admin, `local:<user>`, and decides no approval. Each activity entry made through the run file
+  says `via: "local:<user>"`, `/auth/me` answers `local`, and an agent the OS user made before
+  setup (`holon mcp`'s) is the account's. A decision's `binding` is always an id: `"local"` goes.
+  The `approved-payout` sample's approver is you, approving with `holon decide`.
 - **Each decision keeps what let it.** A decision on an approval is kept, and given to the run,
   with `binding`, the id of the binding its decider took the step through (the step's role, or
-  for a step with none what holds `run.decide` there), or `"local"` for the OS user's admin, whom
-  no binding holds, and `access`, the version of the access document it was read in. So the
+  for a step with none what holds `run.decide` there), and `access`, the version of the access
+  document it was read in. So the
   resumed part's log entry, the run's export and `holon verify` carry them, for an auditor to
   check offline against `holon access show N`. `holon.d.ts` types them on `Decided`. The
   `approved-payout` sample pays in three steps: an agent bound to `classifier` on the `payments`

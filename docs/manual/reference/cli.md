@@ -742,6 +742,7 @@ holon unbind 12 --why "back from leave"
 holon access [versions] [--json]
 holon access show [--version N] [--json]
 holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT] [--json]
+holon access local [--as NAME] [--why TEXT] [--json]
 ```
 
 Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
@@ -764,6 +765,17 @@ approvals, whatever they hold (off by default). `--agents off` lets no agent dec
 whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
 already waiting (on by default). Who started a run never decides its approvals, whatever these
 say.
+
+`local` says who this machine's run file signs in as: the person who set the server up, so the
+commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to
+another person here who isn't disabled, as a new version (holding `people.assign` on the host):
+
+```
+this machine's run file signs in as bob (version 9)
+```
+
+Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
+`local:<user>`, and decides no approval.
 
 ## Runs
 

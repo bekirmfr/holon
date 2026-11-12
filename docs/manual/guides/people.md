@@ -38,8 +38,16 @@ Open the editor, enter the code, your name and a password: you are its admin. Un
 does, nobody signs in, and the code can't be guessed: five wrong in a row refuse setting up for a
 minute.
 
-Commands you run on the server's machine (`holon deploy`, `holon people`…) need no sign-in: they
-reach it through its run file, as `local:<your user>`, an admin, while that server runs.
+Commands you run on the server's machine (`holon deploy`, `holon people`, `holon decide`…) need
+no sign-in: they reach it through its run file, while that server runs, as you, the person who set
+it up: holding what is bound to you, and admin on the host. So you are one person whichever way
+you sign in: a step bound to you, you take with `holon decide` or in the editor, once; a run you
+start, or a version you deploy, from either is yours. The activity log says which entries came
+through the run file (`via: local:<your user>`). Before anyone sets the server up they act as
+`local:<your user>`, an admin. Someone else running the machine now? `holon access local --as
+NAME` ties the run file to them, as a new version of the access document; removing your account
+unties it, and while it is disabled, or tied to no one, the run file is the machine's admin and
+decides no approval.
 
 ## A teammate
 
@@ -173,11 +181,10 @@ holon access approvals --agents off --why "no agent decides money yet"
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
 
 Each decision is kept with what let it: the binding its principal took the step through, by its
-id, and the version of the access document it was read in, or `local` for the OS user's admin,
-whom no binding holds. The run is given them with the decision, so its log and its export carry
-them: an auditor checks who took each step, in which order and through what, offline, against
-`holon access show N`. The `approved-payout` sample binds an agent and two people on its tag, one
-to each of its three steps.
+id, and the version of the access document it was read in. The run is given them with the
+decision, so its log and its export carry them: an auditor checks who took each step, in which
+order and through what, offline, against `holon access show N`. The `approved-payout` sample
+binds an agent, a person and you on its tag, one to each of its three steps.
 
 ## Taking access away
 

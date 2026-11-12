@@ -13,18 +13,14 @@ export type WaitingStep = NonNullable<WaitingPoint["slots"]>[number];
 /** Whether it is an approval, decided by its steps, not an event a route delivers. */
 export const isApproval = (w: WaitingPoint) => typeof w.steps === "string";
 
-/** Who `me` decides as, as the server says (durable.rs `decider`): their name, the OS user's
- *  local admin by the name it runs as. */
-export const deciderOf = (me: Me) => me.name.replace(/^local:/, "");
-
 /** The open steps whoever asked may take now, as the server listed them (`yours`): of their kind,
  *  bound to the step's role where the approval is, and not of a run they started. */
 export const yourSteps = (w: WaitingPoint) => (w.slots ?? []).filter((s) => (w.yours ?? []).includes(s.slot));
 
 /** What `me` decided of it, for the row: "you approved as reviewer", "you approved". Null when
- *  they decided no step of it. */
+ *  they decided no step of it. A decision names its principal as `me` does (durable.rs `decider`). */
 export function yourDecision(w: WaitingPoint, me: Me): string | null {
-  const d = (w.decisions ?? []).find((x) => x.who === deciderOf(me));
+  const d = (w.decisions ?? []).find((x) => x.who === me.name);
   if (!d) return null;
   const did = d.approved ? "you approved" : "you declined";
   return d.role ? `${did} as ${d.role}` : did;

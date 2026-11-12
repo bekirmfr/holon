@@ -97,7 +97,8 @@ pub(crate) fn held(kind: Kind, role: Role) -> Result<(), String> {
 }
 
 /// Why `owner` may not own an agent or a service, if it may not: it must be a person here who can
-/// sign in, or the OS user who runs the server (`local`, local.rs).
+/// sign in, or the OS user who runs the server while its run file is tied to no account (`local`,
+/// local.rs; tied, the account owns what it makes).
 fn may_own(book: &Book, owner: &str, local: Option<&str>) -> Result<(), String> {
     if local == Some(owner) {
         return Ok(());
@@ -623,7 +624,9 @@ impl Accounts {
         valid_name(name)?;
         check_password(password)?;
         let hash = hash_password(password)?;
-        let out = self.change_access(name, &format!("set up the server: {}", bound("admin", name)), None, |book, access| {
+        let os = self.local_user();
+        let what = format!("set up the server: {}; this machine's run file signs in as {name}", bound("admin", name));
+        let out = self.change_access(name, &what, None, |book, access| {
             if !no_person(book) {
                 return Err("this server is set up already".to_string());
             }
@@ -633,6 +636,13 @@ impl Accounts {
             let account = Principal { password: Some(hash), ..Principal::new(name, Kind::Person, None) };
             book.users.push(account.clone());
             access.set_host_role(name, "admin", name, epoch_now());
+            // The run file is the account set up here (D45): whoever entered the code saw what the
+            // server printed to the OS user who runs it. What the OS user owned before (holon mcp's
+            // agent) is the account's.
+            access.local = Some(name.to_string());
+            for p in book.users.iter_mut().filter(|p| os.is_some() && p.owner == os) {
+                p.owner = Some(name.to_string());
+            }
             Ok((Self::start_session(book, name), account))
         })?;
         *hold(&self.setup_code) = None;
@@ -864,6 +874,35 @@ impl Accounts {
     }
 
     /// Set how this host decides approvals (§8.4), by `by`, saying why: whether they changed.
+    /// The OS user who runs the server, while its run file is tied to no account: who may own an
+    /// agent or a service by that name (`may_own`).
+    fn untied_user(&self) -> Option<String> {
+        self.local_user().filter(|_| self.tied().is_none())
+    }
+
+    /// The account this machine's run file signs in as (D45): the access document's `local`, while
+    /// it is a person here who isn't disabled.
+    pub(crate) fn tied(&self) -> Option<String> {
+        let name = self.access.document().local.clone()?;
+        hold(&self.book).users.iter().any(|u| u.name == name && u.kind == Kind::Person && !u.disabled).then_some(name)
+    }
+
+    /// Tie this machine's run file to `account`, a person here who isn't disabled, by `by`, saying
+    /// why: a handover, as a new version. Whether it changed.
+    pub(crate) fn set_local(&self, account: &str, by: &str, why: Option<&str>) -> Result<bool, String> {
+        let changed = self.access.document().local.as_deref() != Some(account);
+        self.change_access(by, &format!("tied this machine's run file to {account}"), why, |book, access| {
+            match book.users.iter().find(|u| u.name == account) {
+                None => return Err(format!("there is no person {account:?} here")),
+                Some(p) if p.kind != Kind::Person => return Err(format!("{account} is {}: the run file signs in as a person", p.kind.said())),
+                Some(p) if p.disabled => return Err(format!("{account} is disabled: the run file signs in as someone who can")),
+                Some(_) => {}
+            }
+            access.local = Some(account.to_string());
+            Ok(changed)
+        })
+    }
+
     pub(crate) fn set_approvals(&self, settings: bindings::ApprovalSettings, by: &str, why: Option<&str>) -> Result<bool, String> {
         let changed = self.access.document().approvals != settings;
         let what = format!("set the approvals: {}", settings.said());
@@ -966,7 +1005,7 @@ impl Accounts {
         if kind == Kind::Person {
             return Err("a person is invited, to set their own password".into());
         }
-        let local = self.local_user();
+        let local = self.untied_user();
         self.change_access(by, &format!("added {name}, {}: {}", kind.said(), bound(role, name)), None, |book, access| {
             if book.users.iter().any(|u| u.name == name) {
                 return Err(format!("there is a principal {name:?} already"));
@@ -1034,7 +1073,7 @@ impl Accounts {
 
     /// Give the agent or service `name` another owner, a person.
     pub(crate) fn set_owner(&self, name: &str, owner: &str) -> Result<(), String> {
-        let local = self.local_user();
+        let local = self.untied_user();
         self.change(|book| {
             may_own(book, owner, local.as_deref())?;
             let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
@@ -1438,7 +1477,7 @@ mod tests {
         };
         let started = epoch_now();
         let (a, _) = set_up();
-        assert_eq!(last(&a), (1, "ada".into(), "set up the server: bound admin to ada on this host".into()));
+        assert_eq!(last(&a), (1, "ada".into(), "set up the server: bound admin to ada on this host; this machine's run file signs in as ada".into()));
         a.invite("bob", "editor", None, "ada").unwrap();
         assert_eq!(last(&a), (2, "ada".into(), "invited bob: bound editor to bob on this host".into()));
         a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
@@ -1509,8 +1548,9 @@ mod tests {
         assert_eq!(a.local(&a.new_local("bma")).map(|w| w.kind), Some(Kind::Person), "the OS user is a person");
     }
 
-    /// An agent's or a service's owner is a person here who can sign in, or the OS user running the
-    /// server; a person who owns one stays until it has another owner.
+    /// An agent's or a service's owner is a person here who can sign in (or the OS user, while the
+    /// run file is tied to no account: below); a person who owns one stays until it has another
+    /// owner.
     #[test]
     fn an_owner_is_a_person() {
         let (a, _) = set_up();
@@ -1523,10 +1563,6 @@ mod tests {
         a.set_disabled("bob", false).unwrap();
         a.add("ci", Kind::Service, "editor", "bob", "ada").unwrap();
         assert!(a.set_owner("bob", "ada").unwrap_err().contains("only an agent or a service"));
-        // The OS user owns one before it has an account here (`bma`, not `local:bma`).
-        assert!(a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").is_err(), "not before the server runs as bma");
-        a.new_local("bma");
-        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
         assert!(a.remove("bob", "ada").unwrap_err().contains("bob owns ci: give it another owner first"));
         a.set_owner("ci", "ada").unwrap();
         a.remove("bob", "ada").unwrap();
@@ -1536,6 +1572,52 @@ mod tests {
         a.set_disabled("eve", true).unwrap();
         let (token, _) = a.create_token("claude", "the agent", "ada").unwrap();
         assert_eq!(a.who(&token).map(|w| w.name), Some("claude".into()));
+    }
+
+    /// This machine's run file is the account that set the server up (the plan's D45): tied in the
+    /// version setup makes, with what the OS user owned before; moved by an admin to a person here
+    /// who isn't disabled, as a version; tied to none while that account is disabled, and cleared
+    /// when it is removed, so a new principal of its name isn't the run file. Untied, the OS user
+    /// owns what it makes by its own name (`bma`, not `local:bma`); tied, it can't: it is the account.
+    #[test]
+    fn the_run_file_is_the_account_that_set_the_server_up() {
+        let a = Accounts::memory();
+        assert!(a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").is_err(), "not before the server runs as bma");
+        a.new_local("bma");
+        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
+        assert_eq!(a.tied(), None, "before setup");
+        a.setup(&a.setup_code().unwrap(), "ada", PW).unwrap();
+        let d = a.access.document();
+        assert_eq!((d.version, d.by.as_str(), d.local.as_deref()), (2, "ada", Some("ada")));
+        assert_eq!(a.tied().as_deref(), Some("ada"));
+        assert_eq!(a.principal("bma-agent").unwrap().owner.as_deref(), Some("ada"), "what the OS user owned is the account's");
+        assert!(a.add("ci", Kind::Service, "editor", "bma", "ada").unwrap_err().contains("no person \"bma\""), "tied, the OS user is ada");
+        a.invite("bob", "editor", None, "ada").unwrap();
+        a.invite("eve", "viewer", None, "ada").unwrap();
+        a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
+        a.set_disabled("eve", true).unwrap();
+        for (to, refused) in [("nobody", "there is no person \"nobody\" here"), ("claude", "claude is an agent: the run file signs in as a person"), ("eve", "eve is disabled")] {
+            let said = a.set_local(to, "ada", None).unwrap_err();
+            assert!(said.contains(refused), "{to}: {said}");
+        }
+        let before = a.access.document().version;
+        assert!(a.set_local("bob", "ada", Some("bob runs this machine now")).unwrap());
+        let d = a.access.document();
+        assert_eq!(
+            (d.version, d.by.as_str(), d.what.as_str(), d.why.as_deref(), d.local.as_deref()),
+            (before + 1, "ada", "tied this machine's run file to bob", Some("bob runs this machine now"), Some("bob"))
+        );
+        assert!(!a.set_local("bob", "ada", None).unwrap(), "tied to bob already");
+        assert_eq!(a.access.document().version, before + 1, "no change, no version");
+        a.set_disabled("bob", true).unwrap();
+        assert_eq!(a.tied(), None, "bob disabled");
+        a.set_disabled("bob", false).unwrap();
+        assert_eq!(a.tied().as_deref(), Some("bob"), "and enabled again");
+        a.remove("bob", "ada").unwrap();
+        assert_eq!((a.tied(), a.access.document().local.clone()), (None, None), "bob removed");
+        a.invite("bob", "editor", None, "ada").unwrap();
+        assert_eq!(a.tied(), None, "a new bob isn't the run file");
+        a.add("ci", Kind::Service, "editor", "bma", "local:bma").unwrap();
     }
 
     #[test]

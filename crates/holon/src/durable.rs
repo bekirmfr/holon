@@ -36,7 +36,7 @@ use holon_core::approval::{Slot, SlotKind, Steps};
 use holon_host::{Exchange, Waits, Waiting};
 
 use crate::accounts::Kind;
-use crate::bindings::ApprovalSettings;
+use crate::bindings::{ApprovalSettings, Bound};
 use crate::*;
 
 /// Every `await` and `approval` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
@@ -289,49 +289,12 @@ pub(crate) struct Decided {
     /// What they noted with it, any JSON (an agent's label and confidence): given to the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<serde_json::Value>,
-    /// What let them (the plan's D43): the binding they took it through, and the access
-    /// document's version that binding was read in, which `holon access show` prints.
+    /// What let them (the plan's D43): the id of the binding they took it through, and the
+    /// access document's version that binding was read in, which `holon access show` prints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) binding: Option<Through>,
+    pub(crate) binding: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) access: Option<u64>,
-}
-
-/// What a decision was taken through: a binding of the access document, by its id, or the OS
-/// user's local admin, which no document holds (`"local"`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Through {
-    Binding(u64),
-    Local,
-}
-
-impl Serialize for Through {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Through::Binding(id) => s.serialize_u64(*id),
-            Through::Local => s.serialize_str("local"),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Through {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        match serde_json::Value::deserialize(d)? {
-            serde_json::Value::String(s) if s == "local" => Ok(Through::Local),
-            v => v.as_u64().map(Through::Binding).ok_or_else(|| serde::de::Error::custom(format!("a binding is its id or \"local\", not {v}"))),
-        }
-    }
-}
-
-impl Through {
-    /// What `held` is, as a decision keeps it: its binding and the version it was read in, or the
-    /// OS user's admin.
-    fn of(held: &crate::bindings::Held) -> Let {
-        match held.from {
-            Some(b) => (Through::Binding(b.binding), Some(b.access)),
-            None => (Through::Local, None),
-        }
-    }
 }
 
 impl Decided {
@@ -349,7 +312,7 @@ impl Decided {
         r.extend(self.role.as_deref().map(|role| ("role".to_string(), text(role))));
         r.extend(self.reason.as_deref().map(|why| ("reason".to_string(), text(why))));
         r.extend(self.note.as_ref().and_then(|n| holon_core::parse_json(&n.to_string())).map(|n| ("note".to_string(), n)));
-        r.extend(self.binding.map(|b| ("binding".to_string(), if let Through::Binding(id) = b { Value::Number(id as f64) } else { text("local") })));
+        r.extend(self.binding.map(|id| ("binding".to_string(), Value::Number(id as f64))));
         r.extend(self.access.map(|v| ("access".to_string(), Value::Number(v as f64))));
         Value::Record(r)
     }
@@ -834,21 +797,15 @@ impl ParkedRun {
     /// Who decides none of its approvals, as this host's `settings` say: who started it, and who
     /// deployed the version it is on (of its deployment's `versions`) when they are excluded.
     fn excluded(&self, versions: &[wire::Version], settings: &ApprovalSettings) -> Excluded {
-        Excluded { starter: self.started_by.as_deref().map(as_decider), deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(), no_agents: !settings.agents }
+        Excluded { starter: self.started_by.clone(), deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(), no_agents: !settings.agents }
     }
-}
-
-/// A principal as they decide: the OS user's local admin acts as `local:<name>`, and decides as
-/// `<name>`.
-fn as_decider(name: &str) -> String {
-    name.strip_prefix("local:").unwrap_or(name).to_string()
 }
 
 /// Who deployed the version a run is on, of a deployment's `versions`: of those with the `unit`
 /// it started on, the last deployed by the time it parked, `at` (the last of them, if none was).
 fn deployer_of(versions: &[wire::Version], unit: &str, at: u64) -> Option<String> {
     let by_then = versions.iter().rfind(|v| v.unit == unit && v.deployed_at.is_none_or(|d| d <= at));
-    by_then.or_else(|| versions.iter().rfind(|v| v.unit == unit))?.by.as_deref().map(as_decider)
+    by_then.or_else(|| versions.iter().rfind(|v| v.unit == unit))?.by.clone()
 }
 
 /// Who decides none of a run's approvals, whatever they hold (the design's §8.4): who started
@@ -1109,7 +1066,7 @@ pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>,
 fn yours(caller: &access::Caller, slug: &str, excluded: &Excluded, w: &StoredWaiting) -> Vec<u8> {
     let Ok(by) = decider(caller, slug, &w.name) else { return Vec::new() };
     let point = crate::can::Resource::Approval { slug, name: Some(&w.name) };
-    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).map(Through::of);
+    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).and_then(|h| h.from);
     w.yours(excluded, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds })
 }
 
@@ -1121,18 +1078,14 @@ pub(crate) enum Outcome<'a> {
     Decides { claimed: Claimed<'a>, slot: u8, slots: Vec<SlotState>, approved: bool, event: Value },
 }
 
-/// Who decides, as the decide route found them: their name, their kind, and what they hold a
-/// role through where the approval is, by its name (`can::holding`; none named, run.decide): the
-/// binding and its version, none when they don't hold it.
+/// Who decides, as the decide route found them: their name, their kind, and the binding they
+/// hold a role through where the approval is, by its name (`can::holding`; none named, a role
+/// holding run.decide), with the version it was read in; none when they hold it through none.
 pub(crate) struct Decider<'a> {
     pub(crate) who: &'a str,
     pub(crate) kind: Kind,
-    pub(crate) holds: &'a dyn Fn(Option<&str>) -> Option<Let>,
+    pub(crate) holds: &'a dyn Fn(Option<&str>) -> Option<Bound>,
 }
-
-/// What let a decider take a step: the binding, and the access version it was read in (none for
-/// the OS user's admin).
-pub(crate) type Let = (Through, Option<u64>);
 
 impl Decider<'_> {
     /// Whether they may fill `slot`, `named` as a refusal says it: a person's step takes a person,
@@ -1144,6 +1097,8 @@ impl Decider<'_> {
         }
         match &slot.role {
             Some(role) if (self.holds)(Some(role)).is_none() => Err(format!("{named} takes someone bound to {role} here, and {} isn't", self.who)),
+            // Every decision names the binding that let it (D43, D45): none, no decision.
+            None if (self.holds)(None).is_none() => Err(format!("{named} takes someone bound here to a role that decides it, and {} isn't", self.who)),
             _ => Ok(()),
         }
     }
@@ -1178,7 +1133,7 @@ impl StoredWaiting {
         let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
         // What let them: the binding of the step's role, or of run.decide for a step without one.
-        let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |(b, v)| (Some(b), v));
+        let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |b| (Some(b.binding), Some(b.access)));
         let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note, binding, access };
         self.take(d).map(|taken| (slot, taken)).map_err(|why| (409, why))
     }
@@ -1263,13 +1218,19 @@ const MAX_REASON_CHARS: usize = 1000;
 const MAX_NOTE_BYTES: usize = 16 * 1024;
 
 /// Who `caller` decides `slug`'s approval point `point` as: a person or an agent signed in, by
-/// their name (the OS user's local admin by the name it runs as); or why they can't decide
-/// (can.rs): a service (a script), a viewer, one bound at another point, or anyone on a server
-/// without accounts. Which step they may fill, the step's kind and role say (`handle_post_decide`).
+/// their name (the run file as the account it is tied to, D45); or why they can't decide (can.rs):
+/// a service (a script), a viewer, one bound at another point, anyone on a server without
+/// accounts, or the run file tied to no account, which holds admin and no binding. Which step they
+/// may fill, the step's kind and role say (`handle_post_decide`).
 pub(crate) fn decider(caller: &access::Caller, slug: &str, point: &str) -> Result<String, crate::can::Refusal> {
     crate::can::can(caller, crate::can::Action::RunDecide, &crate::can::Resource::Approval { slug, name: Some(point) })?;
     let name = caller.name.as_deref().unwrap_or_default();
-    Ok(name.strip_prefix("local:").unwrap_or(name).to_string())
+    if caller.untied() {
+        return Err(crate::can::Refusal(format!(
+            "{name} is this machine's run file, tied to no account now (the one that set the server up is gone or disabled): an admin ties it to a person with holon access local --as NAME"
+        )));
+    }
+    Ok(name.to_string())
 }
 
 /// `POST /deployments/<slug>/runs/<run_id>/decide` — a principal approves, or declines with a
@@ -1306,7 +1267,7 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     }
     // A step with a role takes someone bound to it where the approval is, and keeps the binding.
     let point = crate::can::Resource::Approval { slug, name: Some(&body.name) };
-    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).map(Through::of);
+    let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).and_then(|h| h.from);
     let decider = Decider { who: &by, kind, holds: &holds };
     let (deployments, path) = (&state.deployments, &state.deployments_path);
     // In the activity log as what it was, by whom, at which step.
@@ -1373,14 +1334,14 @@ mod tests {
             access: None,
         };
         let noted = |d: Decided| Decided { note: Some(serde_json::json!({ "checked": ["invoice", "po"], "score": 0.93 })), ..d };
-        let through = |d: Decided, binding: Through, access: Option<u64>| Decided { binding: Some(binding), access, ..d };
+        let through = |d: Decided, binding: u64, access: u64| Decided { binding: Some(binding), access: Some(access), ..d };
         let ada = serde_json::json!({ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true });
         let rows = [
             (
                 "approved by two people, one with a note, each through what let them",
                 vec![
-                    through(took("ada", true, None, 5), Through::Binding(3), Some(7)),
-                    through(noted(took("bob", true, Some("the invoice matches"), 9)), Through::Local, None),
+                    through(took("ada", true, None, 5), 3, 7),
+                    through(noted(took("bob", true, Some("the invoice matches"), 9)), 4, 7),
                 ],
                 Some(1),
                 serde_json::json!({
@@ -1388,7 +1349,7 @@ mod tests {
                     "by": ["ada", "bob"],
                     "decisions": [{ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true, "binding": 3, "access": 7 }, {
                         "slot": 0, "who": "bob", "kind": "person", "at": 9, "approved": true, "reason": "the invoice matches",
-                        "note": { "checked": ["invoice", "po"], "score": 0.93 }, "binding": "local",
+                        "note": { "checked": ["invoice", "po"], "score": 0.93 }, "binding": 4, "access": 7,
                     }],
                 }),
             ),
@@ -1564,7 +1525,7 @@ mod tests {
             let mut decided = false;
             for (i, (who, slot, approve, then)) in decisions.into_iter().enumerate() {
                 let (_, kind, roles) = cast.iter().find(|(name, ..)| *name == who).unwrap();
-                let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some((Through::Local, None));
+                let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
                 let by = Decider { who, kind: *kind, holds: &holds };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
                 let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };
@@ -1588,12 +1549,12 @@ mod tests {
         let version = |number: u32, unit: &str, at: u64, by: &str| -> wire::Version {
             serde_json::from_value(serde_json::json!({ "number": number, "unit": unit, "deployed_at": at, "by": by })).unwrap()
         };
-        let versions = [version(1, "aa", 100, "ada"), version(2, "bb", 200, "local:bma"), version(3, "aa", 300, "bob")];
+        let versions = [version(1, "aa", 100, "ada"), version(2, "bb", 200, "cy"), version(3, "aa", 300, "bob")];
         for (unit, at, want) in [
             ("aa", 150, Some("ada")),
             ("aa", 250, Some("ada")),
             ("aa", 350, Some("bob")),
-            ("bb", 250, Some("bma")),
+            ("bb", 250, Some("cy")),
             ("aa", 50, Some("bob")),
             ("cc", 250, None),
             ("", 250, None),

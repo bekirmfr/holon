@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, SERVER, test } from "./fixtures";
+import { ADMIN, expect, PORTS, RUN_DIR, SERVER, test } from "./fixtures";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
 const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -46,7 +46,7 @@ test("refund-once, beside orders-api on one database, calls the payment API once
   expect(((await (await fetch(`${orders}/order/${order.id}`)).json()) as { refunded: number }).refunded).toBe(1);
 });
 
-test("approved-payout waits for its steps holding nothing, an agent's token classifying and two people reviewing and approving, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ adminToken }) => {
+test("approved-payout waits for its steps holding nothing, an agent's token classifying, a person reviewing and the admin approving through the run file, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ adminToken }) => {
   const base = `http://127.0.0.1:${await cliDeploy(adminToken, "approved-payout.holon.ts", "approved-payout")}`;
   const post = (path: string, data: unknown) =>
     fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
@@ -86,8 +86,9 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
       .map((e) => plain(e.events!.payout));
 
   // Who takes each step, as the sample's comment sets it up: its three roles, an agent of this
-  // run's own with a token, and two people the admin invites, who join by the link's token; each
-  // bound to one role on the tag payments, which the sample is deployed with.
+  // run's own with a token, a person the admin invites, who joins by the link's token, and the
+  // admin, who set the server up; each bound to one role on the tag payments, which the sample is
+  // deployed with (the admin once: a retry finds it bound).
   for (const [role, kind] of [["classifier", "agent"], ["reviewer", "person"], ["approver", "person"]]) {
     const defined = await control(adminToken, `/roles/${role}`, { allows: ["run.decide"], kinds: [kind], why: "e2e: approved-payout" }, "PUT");
     expect(defined.ok, await defined.clone().text()).toBe(true);
@@ -115,9 +116,10 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
     expect(joined.ok).toBe(true);
     return ((await joined.json()) as { token: string }).token;
   };
-  const [reviewer, approver] = [`e2e-reviewer-${n}`, `e2e-approver-${n}`];
-  const [reviewerToken, approverToken] = [await person(reviewer), await person(approver)];
-  const through = { [scout]: await bind(scout, "classifier"), [reviewer]: await bind(reviewer, "reviewer"), [approver]: await bind(approver, "approver") };
+  const [reviewer, approver] = [`e2e-reviewer-${n}`, ADMIN.name];
+  const reviewerToken = await person(reviewer);
+  const bound = ((await (await control(adminToken, `/bindings?who=${approver}&role=approver`)).json()) as { bindings: { id: number }[] }).bindings;
+  const through = { [scout]: await bind(scout, "classifier"), [reviewer]: await bind(reviewer, "reviewer"), [approver]: bound[0]?.id ?? (await bind(approver, "approver")) };
 
   const before = await balance();
   const earlier = await waiting();
@@ -125,8 +127,8 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
   expect(asked.status).toBe(202);
   expect(((await asked.json()) as { waiting: string }).waiting).toBe("classifier, then reviewer, then approver");
   const run = await parked(earlier);
-  // Only whoever is bound to the open step's role takes it: not the admin, who holds everything
-  // but none of the three, and not the reviewer before the classifier.
+  // Only whoever is bound to the open step's role takes it: not the admin, the approver, before
+  // the review, and not the reviewer before the classifier.
   expect((await decide(adminToken, run, { approve: true })).status).toBe(403);
   expect((await decide(reviewerToken, run, { approve: true })).ok).toBe(false);
   // The agent classifies it with its token, and a note the run is given.
@@ -137,7 +139,11 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
   const deposited = await post("/deposit/1", { amount: 50 });
   expect(((await deposited.json()) as { balance: number }).balance).toBe(before + 50);
   expect(((await (await decide(reviewerToken, run, { approve: true })).json()) as Decided).outcome).toBe("waiting");
-  const all = (await (await decide(approverToken, run, { approve: true })).json()) as Decided;
+  // The admin approves it on the server's machine: holon decide with no token signs in through
+  // the run file (local.rs), as the account that set the server up.
+  const local = { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" };
+  const decided = execFileSync(HOLON, ["decide", "approved-payout", run, "payout", "--approve", "--json", "--server", String(PORTS.server)], { encoding: "utf8", env: local });
+  const all = JSON.parse(decided) as Decided;
   expect(all.outcome).toBe("approved");
   expect(all.slots.map((s) => s.by)).toEqual([[scout], [reviewer], [approver]]);
   await expect.poll(balance).toBe(before + 50 - 30);

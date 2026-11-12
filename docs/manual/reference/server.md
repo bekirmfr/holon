@@ -322,11 +322,19 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
   roles: each holds none until the run file's admin gives it one (`holon people set NAME --role
   ROLE`), and the server names them when it starts. Its API tokens from before principals, which
   had no owner, are not read: add each as an agent or a service, and make it a token.
-- Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
-  `~/.holon/run/`, as `local:<your user>`, while that server runs.
+- Commands on this machine (`holon export`, `holon folder`, `holon decide`) sign in through the
+  run file in `~/.holon/run/`, while that server runs, as the person who set the server up: their
+  name, what is bound to them, and admin on the host. The access document keeps the tie
+  (`local`); `holon access local` (`GET /access/local`) says it, and whether it holds now, and
+  `--as NAME` (`PUT /access/local`, `people.assign` on the host) moves it to another person who
+  isn't disabled, as a version. Removing that person clears it.
+  Before setup, or tied to no one (its person removed or disabled), the run file is
+  `local:<your user>`, admin on the host, and decides no approval. Each activity entry made
+  through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
-  yours the first time, `<your user>-agent`, owned by you, even before anyone has set the server up
-  (it is set up by the first person, as ever); its token is kept in `tokens.json`.
+  yours the first time, `<your user>-agent`, even before anyone has set the server up (it is set
+  up by the first person, as ever), owned by you: by `<your user>` until then, and by the person
+  who sets it up from then on; its token is kept in `tokens.json`.
 
 ### Signing in through an identity provider
 
