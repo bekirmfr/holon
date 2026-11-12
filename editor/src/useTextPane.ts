@@ -16,7 +16,7 @@ import type { FlowSettings } from "./DeploySettings";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { TextLinked, TextNote } from "./TextPane";
 import { valueChip } from "./diagnostics";
-import { compileHolon, printHolon, type TextRange } from "./holonText";
+import { compileHolon, printedName, printHolon, type TextRange } from "./holonText";
 import { dimmed, pickAt } from "./textLink";
 import { carryOver, commentCount, syncedFromCanvas, type Graph, type Synced } from "./textSync";
 import { settingsOf, syncKeyOf, TEXT_LIMITS, type FlowMeta, type TextState } from "./tabs";
@@ -118,7 +118,7 @@ export function useTextPane({
   const syncedNow = useCallback(() => {
     const { flow: f, key: k } = now.current;
     if (synced.current?.key === k) return synced.current;
-    const base = f.text.key === k && f.text.synced !== null ? f.text.synced : printHolon(f.name, canvasDoc(), ev);
+    const base = f.text.key === k && f.text.synced !== null ? f.text.synced : printHolon(printedName(f.name, f.text.synced, ev), canvasDoc(), ev);
     const c = compileHolon(base, ev);
     const canvas: Graph = { nodes: live.current.nodes, edges: live.current.edges };
     synced.current = { key: k, synced: syncedFromCanvas(canvas, { nodes: c.doc.nodes, edges: c.doc.edges } as Graph, c.names), lines: c.lines, spans: c.spans };
@@ -134,7 +134,7 @@ export function useTextPane({
     let value: string | null = remembered ?? null;
     if (value === null) {
       try {
-        value = printHolon(flow.name, canvasDoc(), ev);
+        value = printHolon(printedName(flow.name, text.synced, ev), canvasDoc(), ev);
       } catch (e) {
         setStatus(`the canvas can't be written as text yet: ${message(e)}`);
       }

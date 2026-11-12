@@ -94,6 +94,17 @@ export function sourceOf(name: string | null, doc: Printable): string | null {
   }
 }
 
+/** The name a tab's text is printed under: the tab's, else the one its text says. An unnamed
+ *  draft's `flow("…")` stays as written when the canvas or the settings write the text again. */
+export function printedName(name: string | null, text: string | null, ev: Evaluator): string | null {
+  if (name !== null || text === null) return name;
+  try {
+    return compileHolon(text, ev).name;
+  } catch {
+    return null;
+  }
+}
+
 /** A flow document as its text: its settings, its holons (each with its boundary given, so it
  *  compiles back to the same unit), its handlers. Positions
  *  are not part of a program. `bindings` names top-level nodes (from `compileHolon`), so a text
