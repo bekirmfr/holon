@@ -312,8 +312,6 @@ Known, and not yet covered:
    older ones the library changed, `slice`, `index_of`, `json_stringify`, but not `sort`, `flat`,
    `merge` or the date and math leaves) and runs no case through holon-host's sourced resolver;
    `differential.sh` builds only from `5f29d1d` on.
-10. A strict run whose log fails to sync answering 500 ("the request ran, but"): the log's cell is
-    tested, the answer the listener makes of it is not (G1).
-11. The plan against the walk on generated graphs draws only `add`, `subtract`, `divide` and
+10. The plan against the walk on generated graphs draws only `add`, `subtract`, `divide` and
     `guard`, with fixed inputs: nested composites, folds and maps, `coalesce`, text and drawn
     inputs (NaN, `-0`, absent) are held only by the samples (G4).

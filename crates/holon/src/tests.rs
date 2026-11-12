@@ -11088,6 +11088,7 @@ allow_private_addresses = true").unwrap());
 ///   must refuse.
 /// - If it fails: a credential goes out to a channel's subscribers, or a send the grant no longer
 ///   allows goes out, as a run parks.
+///
 /// Mutations it was checked against: the parking copy without its secret checks, without its
 /// grant check; the finishing path without its literal-secret check.
 #[test]
@@ -11692,6 +11693,71 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert!((1..=32).contains(&syncs), "{syncs} syncs for 32 runs");
     assert!(synced());
     eprintln!("32 strict runs at once: {syncs} syncs");
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
+}
+
+/// A run whose record a failed sync left off the disk is never answered as done, and what it sent
+/// waits for its record: a table of each way a run is answered (a request, an action) by each
+/// level (strict, lazy), every sync of the log failing. A strict run is answered 500 ("… ran,
+/// but …") and its pack is held; a lazy one is answered 200 without asking for a sync, and its
+/// pack waits for the syncer. Syncs working again, the syncer puts every entry on disk and every
+/// pack goes out, once each.
+/// - Guards: resilience.md G1 (an answered strict run is on disk) for the answer a caller gets,
+///   where the log's model holds only what the log's cell is told; channels.md (no pack goes out
+///   before its record is on disk).
+/// - Why: the cell's verdict becomes an answer in two places (`listeners.rs`, `deploy.rs`), and
+///   neither had a test of the failing case.
+/// - If it fails: a caller is told a request or an action is done whose record a power loss can
+///   take, or a subscriber gets a pack the log may never hold.
+///
+/// Mutations it was checked against: either answer ignoring a failed keep; packs released
+/// whatever the sync said.
+#[test]
+fn a_run_whose_record_isnt_on_disk_is_never_answered_as_done_and_its_sends_wait() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("failed-sync").into();
+    let slug = deploy_plain_text(
+        &state,
+        "import { action, flow, route } from \"holon\"\nimport news from \"channel:news\"\n\nflow(\"board\", { port: 8172 })\n\nroute.post(\"/strict\", () => {\n  news.send({ by: \"a strict request\" })\n  return \"sent\"\n})\n\nroute.post(\"/lazy\", () => {\n  news.send({ by: \"a lazy request\" })\n  return \"sent\"\n}, { log: \"lazy\" })\n\nexport const strictly = action(() => {\n  news.send({ by: \"a strict action\" })\n  return \"sent\"\n})\n\nexport const lazily = action(() => {\n  news.send({ by: \"a lazy action\" })\n  return \"sent\"\n}, { log: \"lazy\" })\n",
+    );
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+    let out = || -> Vec<String> { state.deployments.lock().unwrap()[&slug].channels.kept("news", true).iter().map(|p| p.json.clone()).collect() };
+    let request = |path: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("POST", path, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    let action = |name: &str| {
+        let r = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+        (r.status, r.reply.to_string())
+    };
+    // Each way a run is answered, by each level: what the caller is told, and what was said.
+    type Row<'a> = (&'a str, Box<dyn Fn() -> (u16, String) + 'a>, u16, &'a str);
+    let rows: Vec<Row> = vec![
+        ("a strict request", Box::new(|| request("/strict")), 500, "the request ran, but could not sync the run log"),
+        ("a strict action", Box::new(|| action("strictly")), 500, "the action ran, but could not sync the run log"),
+        ("a lazy request", Box::new(|| request("/lazy")), 200, "sent"),
+        ("a lazy action", Box::new(|| action("lazily")), 200, "sent"),
+    ];
+    log.with(|l| l.fail_syncs = true);
+    for (row, run, status, says) in &rows {
+        let (got, body) = run();
+        assert_eq!(got, *status, "{row}: {body}");
+        assert!(body.contains(says), "{row}: {body}");
+        assert!(out().is_empty(), "{row}: a pack went out before its record was on disk: {:?}", out());
+    }
+    assert!(recorder::sync_logs(&state.deployments).is_err(), "the syncer is told too");
+    assert!(out().is_empty(), "and holds the packs: {:?}", out());
+
+    // Syncs working again: the syncer puts every entry on disk, and every pack goes out once.
+    log.with(|l| l.fail_syncs = false);
+    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
+    let mut sent = out();
+    sent.sort();
+    let mut expected: Vec<String> = rows.iter().map(|(row, ..)| format!("{{\"by\":\"{row}\"}}")).collect();
+    expected.sort();
+    assert_eq!(sent, expected);
+    assert_eq!(log.next_seq(), rows.len() as u64, "every run is in the log");
     let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }

@@ -601,7 +601,7 @@ pub struct Log {
     fail_partway: bool,
     /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
     #[cfg(test)]
-    fail_syncs: bool,
+    pub(crate) fail_syncs: bool,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
