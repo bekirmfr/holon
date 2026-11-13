@@ -267,8 +267,14 @@ holon verify notes-api-runs.json --head 3f9c2a7be01d…
 ```
 
 ```
-  witnessed head 3f9c2a7be01d: run 42, so no run up to it was changed or removed
+  witnessed head 3f9c2a7be01d: run 42, so no run from 0 to 42 was changed or removed
 ```
+
+The head is the hash of one run's line, which chains back through every run before it, but only
+the runs in the export can be checked against it: the line names them, from the oldest the export
+holds. An export of a log trimmed to its newest runs (the newest 500 by default, `--keep-runs`)
+says `from 500 to 742`, and adds that older runs were trimmed: it says nothing of them. To check
+them too, export before they are trimmed, or keep more.
 
 An event's head is checked the same way: `witnessed head …: event 7, so no event up to it was
 changed or removed`.

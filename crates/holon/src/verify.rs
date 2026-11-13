@@ -1736,12 +1736,18 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         (Some(seq), Some(h)) => out += &format!("  witnessed head {}: event {seq}, so no event up to it was changed or removed\n", short(h)),
         _ => {}
     }
+    // A witnessed head is the hash of one line, which chains back through every run before it, but
+    // only the runs here can be checked against it: what it proves is named from the oldest of
+    // them, and a log trimmed to its newest runs says nothing of the ones before.
+    let from = r.first.unwrap_or(0);
+    let older = if r.trimmed { " (older runs were trimmed: it says nothing of them)" } else { "" };
     match (&r.witnessed, head) {
         (Some(None), Some(_)) if r.witnessed_event.is_some() => {}
         (Some(Some(seq)), Some(h)) if r.breaks.iter().any(|b| b <= seq) => {
-            out += &format!("  witnessed head {}: run {seq}, but the chain breaks before it, so runs up to it were changed\n", short(h))
+            out += &format!("  witnessed head {}: run {seq}, but the chain breaks before it, so runs from {from} to {seq} were changed{older}\n", short(h))
         }
-        (Some(Some(seq)), Some(h)) => out += &format!("  witnessed head {}: run {seq}, so no run up to it was changed or removed\n", short(h)),
+        (Some(Some(seq)), Some(h)) if *seq == from => out += &format!("  witnessed head {}: run {seq}, so it wasn't changed or removed{older}\n", short(h)),
+        (Some(Some(seq)), Some(h)) => out += &format!("  witnessed head {}: run {seq}, so no run from {from} to {seq} was changed or removed{older}\n", short(h)),
         (Some(None), Some(h)) => {
             out += &format!(
                 "  witnessed head {}: NOT FOUND: a run up to it was changed or removed, or it is older than the oldest run here\n",
@@ -2052,6 +2058,42 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest
+    /// run in the export to the head's, and, when the log was trimmed to its newest runs, that it
+    /// says nothing of the older ones; whether the chain holds there or breaks.
+    /// Why: a witnessed head is the hash of one line, chained back through every run before it,
+    /// but only the runs an export holds can be checked against it. "No run up to it was changed"
+    /// read as every run since the deployment began, where a trimmed export (the newest 500 by
+    /// default) can't say so of any run before its first (launch review B6).
+    /// If it fails: verify says more than the export holds, and a reader takes a trimmed export
+    /// as proof of runs it doesn't have (the message shows the line).
+    #[test]
+    fn what_a_witnessed_head_proves_is_named_from_the_oldest_run_here() {
+        let head = "ab".repeat(32);
+        // Trimmed, the oldest run here, the head's run, where the chain breaks.
+        for (trimmed, first, seq, breaks) in [(false, 0, 2, vec![]), (true, 500, 742, vec![]), (true, 500, 742, vec![600]), (false, 0, 5, vec![3]), (true, 742, 742, vec![])] {
+            let r = Report {
+                deployment: "shop".into(),
+                runs: (seq - first + 1) as usize,
+                first: Some(first),
+                last: Some(seq),
+                trimmed,
+                breaks: breaks.clone(),
+                head_matches: true,
+                events_head_matches: true,
+                witnessed: Some(Some(seq)),
+                ..Default::default()
+            };
+            let said = describe(&r, Some(&head));
+            let line = said.lines().find(|l| l.contains("witnessed head")).unwrap_or_else(|| panic!("no witnessed line in:\n{said}"));
+            let covered = if first == seq { format!("run {seq}, so it wasn't") } else { format!("runs from {first} to {seq} were") };
+            let covered = if first == seq || !breaks.is_empty() { covered } else { format!("no run from {first} to {seq} was") };
+            assert!(line.contains(&covered), "trimmed {trimmed}, runs {first} to {seq}, breaks {breaks:?}: {line}");
+            assert_eq!(line.contains("older runs were trimmed: it says nothing of them"), trimmed, "{line}");
+            assert!(!line.contains("up to it"), "{line}");
+        }
+    }
 
     #[test]
     fn a_files_budget_is_bytes_or_k_m_g() {
