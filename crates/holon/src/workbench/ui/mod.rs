@@ -52,11 +52,12 @@ pub(super) fn coloured(s: impl Into<String>, c: Color) -> Span<'static> {
     Span::styled(s.into(), Style::new().fg(c))
 }
 
-/// A kind's colour: its data purple, a call outside teal, else none of its own.
+/// A kind's colour: its data purple, a call outside teal, a wait amber, else none of its own.
 pub(super) fn kind_colour(k: Kind) -> Option<Color> {
     match k {
         Kind::Data => Some(DATA),
         Kind::Outside => Some(OUTSIDE),
+        Kind::Waits => Some(WARN),
         Kind::Compute | Kind::Answer => None,
     }
 }

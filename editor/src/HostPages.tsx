@@ -1,14 +1,16 @@
-// The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
+// The host's pages (holon-server's auth.rs, gaps-web.md G26–G29), each shown to whoever may view
+// it, its forms and buttons disabled, with the server's refusal as their title, for whoever may not
+// change what they change (useCan.tsx; can.rs's route table says which action each route needs), each at an
 // address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
 // .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may),
 // People and access (#people: people, the agents and services they own with their tokens,
-// signing in through an identity provider; for a person who isn't an admin, the agents and
+// signing in through an identity provider; for a person who may not see everyone, the agents and
 // services they own, with their tokens: OwnedPage) and Policy (#policy: what holon.toml allows, its limits
 // and ceilings, and the deployments it holds off). A section of People and access has its place in
 // the address too (#people.agents). Below each page, what was done, by whom. Adding someone gives a one-time link for them to set their password; resetting gives a
 // new one. The server refuses any change that would leave no admin. A grant changes only on its
 // deployment's page: who may touch what links there.
-import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   addPrincipal,
   changePrincipal,
@@ -34,6 +36,8 @@ import {
   type QueueEntry,
   listFolders,
   listGrants,
+  listProposals,
+  type Proposal,
   listServerSecrets,
   listTables,
   invitePerson,
@@ -68,37 +72,32 @@ import {
   type Principal,
   type RoleEntry,
   type SecretInfo,
-  getSecretHistory,
-  previewSecretRollback,
-  rollbackSecret,
   type DeploymentEntry,
-  type SecretHistory,
+  ServerError,
 } from "./server";
+import { Gated, gateOf, useCan, type Answer } from "./useCan";
 import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 import { describeItem } from "./holon";
-import { holdersOf, kindsHeld, othersHeld, usesText, type Holder } from "./holdings";
+import { databaseMatrix, holdersOf, kindsHeld, othersHeld, usesText, waitingFor, type Holder } from "./holdings";
+import { CollectionsTab, DatabaseMatrix, ResourceTable, SecretsTable } from "./ResourceViews";
+import { databaseLine, feedLine, folderLine, mailLine, queueLine } from "./resourceRows";
+import { seenSaid } from "./lastSeen";
+import { PolicyCheck, PolicyText } from "./PolicyViews";
+import { limitMeaning } from "./policyMeans";
+import { about, input, primary, quiet, row, small } from "./hostStyles";
 import { bindingSaid, hostRoleOf, otherBindings, rolesFor, roleTitle } from "./access";
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
-import { useDryRun } from "./DryRun";
-import { secretRollbackReport, sourceLabel } from "./DeployBar";
 
-// The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
-// a row (a card of its own), what a section is about, and a quiet note. A section's heading is
-// styles.css's hl-host-page__head.
-const small: CSSProperties = { font: "inherit", fontSize: "var(--fs-xs)", fontWeight: 500, minHeight: 26, padding: "2px 9px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)", cursor: "pointer", whiteSpace: "nowrap" };
-const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", borderColor: "var(--accent)" };
-const input: CSSProperties = { font: "inherit", fontSize: "var(--fs-sm)", minHeight: 30, padding: "4px 10px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)" };
-const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow)", fontSize: "var(--fs-sm)" };
-const about: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-sm)", marginBottom: 12, lineHeight: 1.55, maxWidth: "100ch" };
-const quiet: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-xs)" };
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A read refused (403) is what the caller may not view: left empty, not said as a failure. */
+const refusedRead = (e: unknown) => e instanceof ServerError && e.status === 403;
 /** The link someone opens to set their password. */
 const linkFor = (token: string) => `${location.origin}${location.pathname}?invite=${encodeURIComponent(token)}`;
 /** A connection typed in as a URL (`postgres://user:…@host/shop`), not where one is kept: the page never sends it. */
@@ -115,8 +114,9 @@ type SecretKind = "value" | "env" | "vault";
 
 /** What the host's pages read and do: every list (one page shows a part), what was said, and
  *  `act`, which does a change and reads everything again. `shown`: the databases' tables are
- *  read (Resources). */
-function useHost(shown = false) {
+ *  read (Resources). `tab`: the page's tab; picking another (by the address too, where the page
+ *  stays mounted) reads everything again, so what was bound elsewhere since shows. */
+function useHost(shown = false, tab: string | null = null) {
   const dialog = useDialog();
   const [principals, setPrincipals] = useState<Principal[]>([]);
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
@@ -174,6 +174,11 @@ function useHost(shown = false) {
   // A server secret being bound: its name, its value or where that is kept, and where it may go.
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "", kind: "value" as SecretKind });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
+  // Whether the grants could be read: they are the host's to view (`host.view`), and who uses a
+  // resource is read from them.
+  const [grantsKnown, setGrantsKnown] = useState(true);
+  // The versions waiting for a person: what each would add to a resource (§9.1).
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   // What reading the policy again said: when, and the deployments it holds off.
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
@@ -190,16 +195,26 @@ function useHost(shown = false) {
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
-    listPrincipals().then(setPrincipals).catch((e: unknown) => setMsg(messageOf(e)));
-    listRoles().then(setRoles).catch((e: unknown) => setMsg(messageOf(e)));
-    listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
-    listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
-    listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
-    listFeeds().then(setFeeds).catch((e: unknown) => setMsg(messageOf(e)));
-    listQueues().then(setQueues).catch((e: unknown) => setMsg(messageOf(e)));
-    listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
-    listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
-    getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
+    const said = (e: unknown) => refusedRead(e) || setMsg(messageOf(e));
+    listPrincipals().then(setPrincipals).catch(said);
+    listRoles().then(setRoles).catch(said);
+    listFolders().then(setFolders).catch(said);
+    listDatabases().then(setDatabases).catch(said);
+    listMails().then(setMails).catch(said);
+    listFeeds().then(setFeeds).catch(said);
+    listQueues().then(setQueues).catch(said);
+    listServerSecrets().then(setServerSecrets).catch(said);
+    listGrants()
+      .then((g) => {
+        setGrants(g);
+        setGrantsKnown(true);
+      })
+      .catch((e: unknown) => {
+        if (refusedRead(e)) setGrantsKnown(false);
+        said(e);
+      });
+    listProposals().then(setProposals).catch(said);
+    getPermissions().then(setPolicy).catch(said);
     getHost()
       .then((h) => {
         setHost(h);
@@ -208,17 +223,17 @@ function useHost(shown = false) {
         setWarnDraft((d) => d || h.warn_at);
         setFullDraft((d) => d || h.full_at);
       })
-      .catch((e: unknown) => setMsg(messageOf(e)));
+      .catch(said);
     getOidcSettings()
       .then((s) => {
         setOidc(s);
         setIssuer(s?.issuer ?? "");
         setClientId(s?.client_id ?? "");
       })
-      .catch((e: unknown) => setMsg(messageOf(e)));
+      .catch(said);
     setVersion((v) => v + 1);
   }, []);
-  useEffect(refresh, [refresh]);
+  useEffect(refresh, [refresh, tab]);
 
   /** Read a database's tables again (after a migration, say). */
   const readTables = useCallback((d: DatabaseEntry) => {
@@ -248,35 +263,19 @@ function useHost(shown = false) {
   const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
   const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
   const queueHolders = (q: QueueEntry) => holdersOf("queue", q, queues, grants);
-  /** Which deployments use it, said under its row. */
-  const usedBy = (holders: Holder[]) => (
-    <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
-      {holders.length === 0 ? (
-        "no deployment uses it"
-      ) : (
-        <>
-          used by {named(holders)} (
-          <a href={format({ kind: "resources", tab: "who-may" })} style={{ color: "var(--accent)", textDecoration: "none" }}>
-            who may touch what
-          </a>{" "}
-          says how)
-        </>
-      )}
-    </div>
-  );
   /** What unbinding (or binding again) does to the deployments that use it, as the server does it now. */
   const unbindingSays = (holders: Holder[]) =>
     holders.length === 0 ? "No deployment uses it." : `${named(holders)} ${holders.length === 1 ? "uses" : "use"} it: they keep running, and their calls to it fail until it is bound again.`;
 
   return {
     principals, setPrincipals, roles, oidc, setOidc, msg, setMsg, link, setLink, secret,
-    setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId,
+    setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, grantsKnown, proposals,
     folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
     databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
     setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
     setReloaded, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
     fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, version, setVersion,
-    dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays,
+    dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, unbindingSays,
     mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft,
     setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders,
   };
@@ -340,8 +339,20 @@ function MadeTokenBox({ made, onDone }: { made: MadeToken; onDone: () => void })
   );
 }
 
-/** `p`'s tokens, each revoked from its row; or that it has none, so it can't sign in yet. */
-function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void> }) {
+/** When a principal was last seen or a token last used (`what`), as a column of its row: how long
+ *  ago, the exact time as its title (lastSeen.ts). */
+function Seen({ what, at }: { what: "last seen" | "last used"; at: number | null | undefined }) {
+  const said = seenSaid(at, Date.now());
+  return (
+    <span className="hl-seen" title={said.title}>
+      {what} {said.text}
+    </span>
+  );
+}
+
+/** `p`'s tokens, each revoked from its row (when `may`), with when each was last used; or that it
+ *  has none, so it can't sign in yet. */
+function TokenRows({ p, dialog, act, may = true }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: (f: () => Promise<unknown>) => Promise<void>; may?: Answer }) {
   const tokens = p.tokens ?? [];
   if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
   return (
@@ -352,9 +363,11 @@ function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof
           <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
             a token of {p.name}, made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
           </span>
+          <Seen what="last used" at={t.last_used} />
           <button
             style={small}
             aria-label={`revoke ${p.name}'s token ${t.label}`}
+            {...gateOf(may)}
             onClick={async () => {
               if (await dialog.confirm(`Revoke ${p.name}'s token "${t.label}"? Whatever signs in with it stops working.`, "Revoke")) act(() => revokeToken(p.name, t.id));
             }}
@@ -455,10 +468,10 @@ export function OwnedPage() {
 
 /** A principal's own role on the host, to change: the roles its kind may hold, the ones an admin
  *  defined included. None when it holds one only through a group or on a flow (holon bind). */
-function RoleSelect({ p, roles, act }: { p: Principal; roles: RoleEntry[]; act: (f: () => Promise<unknown>) => void }) {
+function RoleSelect({ p, roles, act, may }: { p: Principal; roles: RoleEntry[]; act: (f: () => Promise<unknown>) => void; may: Answer }) {
   const now = hostRoleOf(p);
   return (
-    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value }))}>
+    <select aria-label={`${p.name}'s role`} value={now} style={input} {...gateOf(may, { title: roleTitle(roles, now) })} onChange={(e) => act(() => changePrincipal(p.name, { role: e.target.value }))}>
       {now === "" && (
         <option value="" disabled>
           no role on the host
@@ -485,8 +498,13 @@ function HeldElsewhere({ p }: { p: Principal }) {
   );
 }
 
-export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
-  const h = useHost();
+export function PeoplePage({ me, kind, tab }: { me: string; kind: Kind; tab: string | null }) {
+  const h = useHost(false, tab);
+  // Every change here is to a principal (`people.manage` on the host, can.rs's routes).
+  const can = useCan(["people.manage"]);
+  const manage = can.may("people.manage");
+  /** An agent's or a service's tokens: an admin's to make, or its owner's (can.rs's owner rule). */
+  const tokensOf = (p: Principal): Answer => (kind === "person" && p.owner === me ? true : manage);
   const { principals, roles, oidc, link, setLink, secret, setSecret, draft, setDraft, addDraft, setAddDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
   const people = principals.filter((p) => p.kind === "person");
   const others = principals.filter((p) => p.kind !== "person");
@@ -519,7 +537,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.name}
               {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
             </span>
-            <RoleSelect p={p} roles={roles} act={act} />
+            <RoleSelect p={p} roles={roles} act={act} may={manage} />
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
               <HeldElsewhere p={p} />
               {p.email ?? ""}
@@ -527,9 +545,10 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
             </span>
+            <Seen what="last seen" at={p.last_seen} />
             <button
               style={small}
-              title="the email they sign in with through the identity provider"
+              {...gateOf(manage, { title: "the email they sign in with through the identity provider" })}
               onClick={async () => {
                 const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
                 if (email !== null) act(() => changePrincipal(p.name, { email }));
@@ -539,7 +558,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
             </button>
             <button
               style={small}
-              title="a new link to set a new password; their sign-ins end"
+              {...gateOf(manage, { title: "a new link to set a new password; their sign-ins end" })}
               onClick={async () => {
                 if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
                 act(async () => {
@@ -550,12 +569,12 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
             >
               reset
             </button>
-            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} {...gateOf(manage, { title: p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={owns.length > 0 ? "give what they own another owner first" : "remove them"}
+              {...gateOf(manage, { title: owns.length > 0 ? "give what they own another owner first" : "remove them" })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? What they deployed stays, and says who did it. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
               }}
@@ -565,6 +584,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           </div>
         );
       })}
+      <Gated may={manage}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -589,6 +609,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           add person
         </button>
       </form>
+      </Gated>
 
       <div className="hl-host-page__head" data-section="agents">agents and services</div>
       <div style={about}>
@@ -604,8 +625,8 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           <div style={row}>
             <span style={{ color: "var(--accent)", minWidth: 90 }}>{p.name}</span>
             <span style={quiet}>{p.kind}</span>
-            <RoleSelect p={p} roles={roles} act={act} />
-            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} title="the person answerable for it" onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
+            <RoleSelect p={p} roles={roles} act={act} may={manage} />
+            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} {...gateOf(manage, { title: "the person answerable for it" })} onChange={(e) => act(() => changePrincipal(p.name, { owner: e.target.value }))}>
               {owners(p.owner).map((o) => (
                 <option key={o} value={o}>
                   owned by {o}
@@ -617,15 +638,16 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
-            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setSecret)}>
+            <Seen what="last seen" at={p.last_seen} />
+            <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(tokensOf(p), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, dialog, act, setSecret)}>
               make token
             </button>
-            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
+            <button style={small} onClick={() => act(() => changePrincipal(p.name, { disabled: !p.disabled }))} {...gateOf(manage, { title: p.disabled ? "let its tokens sign in again" : "refuse its tokens" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={`remove the ${p.kind}`}
+              {...gateOf(manage, { title: `remove the ${p.kind}` })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? Its tokens stop working. This can't be undone.`, "Remove")) act(() => removePrincipal(p.name));
               }}
@@ -633,9 +655,10 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
               ×
             </button>
           </div>
-          <TokenRows p={p} dialog={dialog} act={act} />
+          <TokenRows p={p} dialog={dialog} act={act} may={tokensOf(p)} />
         </Fragment>
       ))}
+      <Gated may={manage}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -680,6 +703,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           add {addDraft.kind}
         </button>
       </form>
+      </Gated>
       <ConnectingAnAgent />
 
       <div className="hl-host-page__head" data-section="sign-in">signing in through an identity provider</div>
@@ -687,6 +711,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
         with PKCE and this page&apos;s address as its redirect. Someone signing in is matched to the person with their email (set under people).
       </div>
+      <Gated may={manage}>
       <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
         <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
         <input aria-label="client id" placeholder="client id" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...input, flex: 1, minWidth: 120 }} />
@@ -699,14 +724,24 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
           </button>
         )}
       </div>
+      </Gated>
       <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
     </HostPage>
   );
 }
 
-export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
-  const h = useHost(true);
-  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
+export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: ResourcesTab; deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
+  const h = useHost(true, tab);
+  // Binding (and a server secret's where and roll back), unbinding, and the host's storage and
+  // sweeps (can.rs's routes: resource.bind, resource.unbind, host.operate).
+  const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
+  const [bind, unbind, operate] = [can.may("resource.bind"), can.may("resource.unbind"), can.may("host.operate")];
+  // Where a database or a folder is (its path, where its connection is kept) is shown to whoever
+  // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer):
+  // the server leaves it out of their lists.
+  const seesWhere = can.holds("resource.bind");
+  const secretValue = useRef<HTMLInputElement>(null);
+  const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
       <nav className="hl-flow__tabs" aria-label="resources tabs">
@@ -730,49 +765,55 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             away (503). For what a commit&apos;s check can&apos;t cover: a sequence&apos;s next value, a queue, or contention so high that running again costs
             more than waiting.
           </div>
-          {databases.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
-          {databases.map((d) => {
-            const read = tables[keyOf(d)];
-            return (
-              <Fragment key={keyOf(d)}>
-                <div style={row}>
-                  <span style={{ color: "var(--accent)", minWidth: 90 }}>database {d.name}</span>
-                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
-                  <span style={{ color: "var(--faint)", fontSize: 11 }}>
-                    {d.engine} · {d.access === "read" ? "read only" : "read and write"}
-                    {d.lock === "run" ? " · held for whole runs" : ""}
-                    {d.deployment ? ` · for ${d.deployment} only` : ""}
-                  </span>
+          <ResourceTable
+            kind="database"
+            empty="no databases bound"
+            known={h.grantsKnown}
+            rows={databases.map((d) => {
+              const read = tables[keyOf(d)];
+              const holders = databaseHolders(d);
+              const waiting = waitingFor("database", d, databases, h.proposals);
+              return {
+                ...databaseLine(d, seesWhere),
+                holders,
+                waiting,
+                actions: (
                   <button
                     style={small}
-                    title="unbind the name: the database stays where it is"
+                    aria-label={`unbind ${d.name}`}
+                    {...gateOf(unbind, { title: "unbind the name: the database stays where it is" })}
                     onClick={async () => {
                       const whose = d.deployment ? ` for ${d.deployment}` : "";
-                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(databaseHolders(d))}`, "Unbind"))
+                      if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is. ${unbindingSays(holders)}`, "Unbind"))
                         act(() => unbindDatabase(d.name, d.deployment));
                     }}
                   >
                     ×
                   </button>
-                </div>
-                <div aria-label={`${d.name}'s tables`} style={{ ...quiet, padding: "0 10px 2px", marginTop: -2, display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ flex: 1, overflowWrap: "anywhere" }}>
-                    {read === undefined
-                      ? "reading its tables…"
-                      : "error" in read
-                        ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
-                        : read.length === 0
-                          ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
-                          : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
-                  </span>
-                  <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
-                    read the schema again
-                  </button>
-                </div>
-                {usedBy(databaseHolders(d))}
-              </Fragment>
-            );
-          })}
+                ),
+                below: (
+                  <>
+                    <div aria-label={`${d.name}'s tables`} style={{ ...quiet, display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                      <span style={{ flex: 1, overflowWrap: "anywhere" }}>
+                        {read === undefined
+                          ? "reading its tables…"
+                          : "error" in read
+                            ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
+                            : read.length === 0
+                              ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
+                              : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
+                      </span>
+                      <button style={small} title="read its tables again, after a migration" onClick={() => readTables(d)}>
+                        read the schema again
+                      </button>
+                    </div>
+                    <DatabaseMatrix name={d.name} matrix={databaseMatrix(Array.isArray(read) ? read : [], holders, waiting)} known={h.grantsKnown} />
+                  </>
+                ),
+              };
+            })}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -847,6 +888,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind database
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -861,23 +903,19 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to
             it; one that waits past its claim_wait is turned away (503). For files a program expects one writer for.
           </div>
-          {folders.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
-          {folders.map((f) => (
-            <Fragment key={keyOf(f)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>folder {f.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
-                <span style={{ color: "var(--faint)", fontSize: 11 }}>
-                  {f.access === "read" ? "read only" : "read and write"}
-                  {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
-                  {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
-                  {f.shared ? " · other servers bind it too" : ""}
-                  {f.lock === "run" ? " · held for whole runs" : ""}
-                  {f.deployment ? ` · for ${f.deployment} only` : ""}
-                </span>
+          <ResourceTable
+            kind="folder"
+            empty="no folders bound"
+            known={h.grantsKnown}
+            rows={folders.map((f) => ({
+              ...folderLine(f, seesWhere),
+              holders: folderHolders(f),
+              waiting: waitingFor("folder", f, folders, h.proposals),
+              actions: (
                 <button
                   style={small}
-                  title="unbind the name: the files stay where they are"
+                  aria-label={`unbind ${f.name}`}
+                  {...gateOf(unbind, { title: "unbind the name: the files stay where they are" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
                     if (await dialog.confirm(`Unbind the folder "${f.name}"${whose}? Its files stay where they are. ${unbindingSays(folderHolders(f))}`, "Unbind"))
@@ -886,10 +924,10 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 >
                   ×
                 </button>
-              </div>
-              {usedBy(folderHolders(f))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -897,7 +935,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               const name = folderDraft.name.trim();
               const deployment = folderDraft.deployment?.trim() || null;
               const there = folders.find((f) => f.name === name && f.deployment === deployment);
-              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces the binding to ${there.path}. ${unbindingSays(folderHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces the binding${there.path ? ` to ${there.path}` : ""}. ${unbindingSays(folderHolders(there)).replace(/: they keep running.*/, ": their next runs use the new one.")}`, "Bind again")))
                 return;
               act(async () => {
                 const keep = folderDraft.keep === "bytes for " ? `bytes for ${keepFor.trim()}` : folderDraft.keep;
@@ -966,6 +1004,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind folder
             </button>
           </form>
+          </Gated>
           {/* Outside the form: its own buttons and form would submit the binding. */}
           {browsing && (
             <FolderPicker
@@ -993,22 +1032,19 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             (without one, no message is authenticated). A server that takes no password (Microsoft 365, Google Workspace) logs in with a token: its URL names
             the user and no password, and the OAuth source keeps the token request (https://id:secret@host/…/token?scope=…), which the server sends to get one.
           </div>
-          {mails.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
-          {mails.map((m) => (
-            <Fragment key={keyOf(m)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>mail {m.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {m.smtp && `${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`}
-                  {m.smtp && m.mailbox && " · "}
-                  {m.mailbox &&
-                    `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
-                  {m.oauth && ` · logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`}
-                </span>
-                {m.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {m.deployment} only</span>}
+          <ResourceTable
+            kind="mail"
+            empty="no mail bound"
+            known={h.grantsKnown}
+            rows={mails.map((m) => ({
+              ...mailLine(m),
+              holders: mailHolders(m),
+              waiting: waitingFor("mail", m, mails, h.proposals),
+              actions: (
                 <button
                   style={small}
-                  title="unbind the name: mail on its way through it is given up"
+                  aria-label={`unbind ${m.name}`}
+                  {...gateOf(unbind, { title: "unbind the name: mail on its way through it is given up" })}
                   onClick={async () => {
                     const whose = m.deployment ? ` for ${m.deployment}` : "";
                     if (await dialog.confirm(`Unbind the mail "${m.name}"${whose}? Mail on its way through it is given up. ${unbindingSays(mailHolders(m))}`, "Unbind"))
@@ -1017,10 +1053,10 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 >
                   ×
                 </button>
-              </div>
-              {usedBy(mailHolders(m))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1103,6 +1139,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind mail
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1125,28 +1162,19 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             listens on it (<code>LISTEN</code>) in a database bound here, the one each deployment sees by that name, and each notification
             (<code>pg_notify</code>, from a trigger) is an event; what is sent while it isn&apos;t listening is lost, for the flow to read from the table.
           </div>
-          {feeds.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
-          {feeds.map((f) => (
-            <Fragment key={keyOf(f)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>feed {f.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`}
-                  {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
-                  {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
-                  {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
-                  {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
-                  {f.id && ` · its id ${f.id.join("/")}`}
-                  {f.sequence && ` · numbered by ${f.sequence}${f.key ? `, each ${f.key} on its own` : ""}`}
-                  {f.resume?.query && ` · resumes from its position with ${f.resume.query}= in the URL`}
-                  {f.resume?.header && ` · resumes from its position with the header ${f.resume.header}`}
-                  {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
-                  {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
-                </span>
-                {f.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {f.deployment} only</span>}
+          <ResourceTable
+            kind="feed"
+            empty="no feed bound"
+            known={h.grantsKnown}
+            rows={feeds.map((f) => ({
+              ...feedLine(f),
+              holders: feedHolders(f),
+              waiting: waitingFor("feed", f, feeds, h.proposals),
+              actions: (
                 <button
                   style={small}
-                  title="unbind the name: its connections close"
+                  aria-label={`unbind ${f.name}`}
+                  {...gateOf(unbind, { title: "unbind the name: its connections close" })}
                   onClick={async () => {
                     const whose = f.deployment ? ` for ${f.deployment}` : "";
                     if (await dialog.confirm(`Unbind the feed "${f.name}"${whose}? Its connections close. ${unbindingSays(feedHolders(f))}`, "Unbind")) act(() => unbindFeed(f.name, f.deployment));
@@ -1154,10 +1182,10 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 >
                   ×
                 </button>
-              </div>
-              {usedBy(feedHolders(f))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1308,6 +1336,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind feed
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1325,21 +1354,19 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             received is kept out of sight at first (5m, kept so while it runs); and whether a failed run&apos;s message is left in the queue, for its redrive
             policy to move, rather than deleted.
           </div>
-          {queues.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no queue bound</div>}
-          {queues.map((q) => (
-            <Fragment key={keyOf(q)}>
-              <div style={row}>
-                <span style={{ color: "var(--accent)", minWidth: 90 }}>queue {q.name}</span>
-                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>
-                  {`${q.address} (from ${q.url})`}
-                  {q.fifo && " · FIFO"}
-                  {` · ${Math.round(q.largest / 1024)} KiB at most · out of sight for ${q.visibility}s`}
-                  {q.keep_failed && " · a failed run's message is left for the redrive"}
-                </span>
-                {q.deployment && <span style={{ color: "var(--faint)", fontSize: 11 }}>for {q.deployment} only</span>}
+          <ResourceTable
+            kind="queue"
+            empty="no queue bound"
+            known={h.grantsKnown}
+            rows={queues.map((q) => ({
+              ...queueLine(q),
+              holders: queueHolders(q),
+              waiting: waitingFor("queue", q, queues, h.proposals),
+              actions: (
                 <button
                   style={small}
-                  title="unbind the name: its listeners stop"
+                  aria-label={`unbind ${q.name}`}
+                  {...gateOf(unbind, { title: "unbind the name: its listeners stop" })}
                   onClick={async () => {
                     const whose = q.deployment ? ` for ${q.deployment}` : "";
                     if (await dialog.confirm(`Unbind the queue "${q.name}"${whose}? Its listeners stop, and what it holds stays in it. ${unbindingSays(queueHolders(q))}`, "Unbind"))
@@ -1348,10 +1375,10 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                 >
                   ×
                 </button>
-              </div>
-              {usedBy(queueHolders(q))}
-            </Fragment>
-          ))}
+              ),
+            }))}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={async (e) => {
@@ -1403,6 +1430,18 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind queue
             </button>
           </form>
+          </Gated>
+        </>
+      )}
+
+      {tab === "collections" && (
+        <>
+          <div style={about}>
+            What each flow keeps on this host by name, with nothing to bind: its collections (<code>import orders from &quot;collection:orders&quot;</code>), each
+            with how many items it holds now, and the channels it sends on (<code>import updates from &quot;channel:updates&quot;</code>), which keep their
+            newest packs for whoever subscribes. Each flow&apos;s State shows them item by item, with the runs that changed them.
+          </div>
+          <CollectionsTab deployments={deployments} grants={grants} />
         </>
       )}
 
@@ -1410,46 +1449,35 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
         <>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
-            under its ⚙, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
+            in its Settings in the editor, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
             refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
           </div>
-          {serverSecrets.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
-          {serverSecrets.map((s) => (
-            <Fragment key={s.name}>
-            <div style={row} aria-label={`server secret ${s.name}`}>
-              <span style={{ color: "var(--accent)", minWidth: 90 }}>secret {s.name}</span>
-              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
-                v{s.version} · {s.source === "local" ? "a value" : s.source}
-                {s.problem ? ` · can't be read: ${s.problem}` : ""}
-                {" · "}
-                {s.to ? (s.to.length ? `may go only to ${s.to.map((d) => (d.startsWith("db:") ? `the database "${d.slice(3)}"` : `https://${d}`)).join(", ")}` : "may go nowhere") : "may go wherever its flows' approvals show"}
-              </span>
-              <button
-                style={small}
-                title="change where it may go"
-                onClick={async () => {
-                  const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
-                  if (typed === null) return;
-                  const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
-                  act(() => capServerSecret(s.name, to.length ? to : null));
-                }}
-              >
-                where…
-              </button>
-              <button
-                style={small}
-                title="remove the server's secret, every version"
-                onClick={async () => {
-                  if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
-                    act(() => unbindServerSecret(s.name));
-                }}
-              >
-                ×
-              </button>
-            </div>
-            <ServerSecretHistory name={s.name} onChanged={refresh} />
-            </Fragment>
-          ))}
+          <SecretsTable
+            secrets={serverSecrets}
+            grants={grants}
+            known={h.grantsKnown}
+            proposals={h.proposals}
+            bind={bind}
+            unbind={unbind}
+            onSetNew={(s) => {
+              // The bind form below takes it, its value typed where it is never shown.
+              setSecretDraft({ ...secretDraft, name: s.name, value: "", kind: s.source === "local" ? "value" : s.source.startsWith("vault:") ? "vault" : "env" });
+              secretValue.current?.scrollIntoView({ block: "center" });
+              secretValue.current?.focus();
+            }}
+            onWhere={async (s) => {
+              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+              if (typed === null) return;
+              const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
+              act(() => capServerSecret(s.name, to.length ? to : null));
+            }}
+            onRemove={async (s) => {
+              if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
+                act(() => unbindServerSecret(s.name));
+            }}
+            onChanged={refresh}
+          />
+          <Gated may={bind}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={(e) => {
@@ -1474,6 +1502,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               <option value="vault">a Vault field</option>
             </select>
             <input
+              ref={secretValue}
               aria-label="secret value"
               type={secretDraft.kind === "value" ? "password" : "text"}
               autoComplete={secretDraft.kind === "value" ? "new-password" : "off"}
@@ -1495,6 +1524,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               bind secret
             </button>
           </form>
+          </Gated>
         </>
       )}
 
@@ -1551,6 +1581,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   })}
                 </div>
               )}
+              <Gated may={operate}>
               <form
                 style={row}
                 onSubmit={(e) => {
@@ -1650,6 +1681,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   set
                 </button>
               </form>
+              </Gated>
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (
                   <div key={l} style={i === 0 ? quiet : undefined}>
@@ -1667,6 +1699,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
           </div>
           {sweeps && (
             <>
+              <Gated may={operate}>
               <form
                 style={row}
                 onSubmit={(e) => {
@@ -1692,6 +1725,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
                   set
                 </button>
               </form>
+              </Gated>
               <div style={{ ...row, ...quiet }}>
                 last: the store {reportLine(sweeps.store, "values", Date.now())}; file texts {reportLine(sweeps.folders, "texts", Date.now())}
               </div>
@@ -1701,7 +1735,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             <span style={{ flex: 1 }}>the store: states and values{swept.store && <span style={quiet}> · {swept.store}</span>}</span>
             <button
               style={small}
-              title="count what a sweep would remove, then ask"
+              {...gateOf(operate, { title: "count what a sweep would remove, then ask" })}
               onClick={() =>
                 act(async () => {
                   const would = await sweepStore(true);
@@ -1724,7 +1758,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             <span style={{ flex: 1 }}>file texts: what runs read and wrote in folders{swept.folders && <span style={quiet}> · {swept.folders}</span>}</span>
             <button
               style={small}
-              title="remove the file texts nothing kept names"
+              {...gateOf(operate, { title: "remove the file texts nothing kept names" })}
               onClick={async () => {
                 if (!(await dialog.confirm("Sweep the file texts no live run, kept run or folder names? A run whose files are removed can't be shown with them again.", "Sweep"))) return;
                 act(async () => {
@@ -1742,28 +1776,28 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
       {tab === "who-may" && (
         <>
           <div style={about}>
-            Each resource, and the deployments granted it, by table for a database, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
-            is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
+            Each resource, and the deployments granted it, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
+            is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens. A database&apos;s, table by table, is its matrix on{" "}
+            <a href={format({ kind: "resources", tab: "databases" })} style={{ color: "var(--accent)", textDecoration: "none" }}>
+              Databases
+            </a>
+            .
           </div>
           <label style={{ ...quiet, display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases, folders, mail, feeds and queues always: they're listed as resources, held or not. */}
-              {["databases", "folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
+              {/* Folders, mail, feeds and queues always: they're listed as resources, held or not. Databases are their matrix's. */}
+              {["folders", "mail", "feeds", "queues", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds", "queues"].includes(k))].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
               ))}
             </select>
           </label>
-          {(kind === "everything" || kind === "databases") &&
-            databases.map((d) => (
-              <Resource key={`db:${keyOf(d)}`} title={`database ${d.name}`} detail={`${d.engine}${d.deployment ? ` · for ${d.deployment} only` : ""}`} holders={databaseHolders(d)} onOpen={onOpenDeployment} />
-            ))}
           {(kind === "everything" || kind === "folders") &&
             folders.map((f) => (
-              <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${f.path}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
+              <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${seesWhere ? f.path : ""}${f.deployment ? `${seesWhere ? " · " : ""}for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
             ))}
           {(kind === "everything" || kind === "mail") &&
             mails.map((m) => (
@@ -1810,7 +1844,11 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
 
 export function PolicyPage({ deployments, onOpenDeployment }: { deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
   const h = useHost();
+  // Reading holon.toml again (`POST /permissions/reload`) is policy.edit's.
+  const can = useCan(["policy.edit"]);
   const { policy, setPolicy, reloaded, setReloaded, act } = h;
+  // Check flows against it: shown once asked, read from the deployments and proposals as they are.
+  const [checking, setChecking] = useState(false);
   return (
     <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
       <div className="hl-host-page__head" data-section="policy">the policy</div>
@@ -1837,12 +1875,14 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
               "may propose: a version of theirs that needs a person waits in Approvals"
             )}
           </div>
+          <div className="hl-matrix-wrap">
           <table aria-label="limits" className="hl-table">
             <thead>
               <tr>
                 <th>limit</th>
                 <th>default</th>
                 <th>at most</th>
+                <th>what it means</th>
               </tr>
             </thead>
             <tbody>
@@ -1853,16 +1893,18 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
                     <td>{name}</td>
                     <td className="hl-table__num">{policy.defaults[name] ?? "—"}</td>
                     <td className="hl-table__num">{policy.ceilings[name] ?? "no ceiling"}</td>
+                    <td className="hl-policy__means">{limitMeaning(name) ?? ""}</td>
                   </tr>
                 ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
         <button
           style={small}
-          title="read holon.toml again and hold every deployment to it"
+          {...can.gate("policy.edit", { title: "read holon.toml again and hold every deployment to it" })}
           onClick={() =>
             act(async () => {
               const r = await reloadPermissions();
@@ -1873,6 +1915,9 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
         >
           read the policy again
         </button>
+        <button style={small} aria-pressed={checking} title="which deployments run within it, and each version waiting for a person against it" onClick={() => setChecking(!checking)}>
+          check flows against it
+        </button>
         {reloaded && (
           <span style={quiet}>
             read again at {new Date(reloaded.at).toLocaleTimeString()}:{" "}
@@ -1880,6 +1925,16 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
           </span>
         )}
       </div>
+
+      {checking && policy && <PolicyCheck policy={policy} deployments={deployments} proposals={h.proposals} />}
+
+      <div className="hl-host-page__head" data-section="policy-file">
+        the policy file
+      </div>
+      <div style={about}>
+        <code>holon.toml</code> as the server read it, at its start or when it was last read again: an edit on the server&apos;s machine holds once it is.
+      </div>
+      <PolicyText text={policy?.text} />
 
       <div className="hl-host-page__head" data-section="held-off">held off</div>
       <div style={about}>
@@ -1899,67 +1954,6 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
         ))}
       {!deployments.some((d) => d.attention) && <div style={quiet}>none: every deployment runs as granted</div>}
     </HostPage>
-  );
-}
-
-/** A server secret's versions and changes, folded under its row; an older version is made
- *  current again after a dry run, as a deployment's is (DeployBar.tsx's SecretRow). Never a
- *  value: versions are told apart by their fingerprints. */
-function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () => void }) {
-  const [history, setHistory] = useState<SecretHistory | null>(null);
-  const [said, setSaid] = useState("");
-  const dryRun = useDryRun();
-  const load = () => getSecretHistory(null, name).then(setHistory).catch((e: unknown) => setSaid(messageOf(e)));
-  const rollback = async (to: number) => {
-    try {
-      if (!(await dryRun.ask(secretRollbackReport(null, name, await previewSecretRollback(null, name, to))))) return;
-      const v = await rollbackSecret(null, name, to);
-      setSaid(`version ${to} is current again, as version ${v}`);
-      onChanged();
-      void load();
-    } catch (e) {
-      setSaid(messageOf(e));
-    }
-  };
-  const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-  return (
-    <div style={{ padding: "0 10px 6px", marginTop: -2, fontSize: 11 }}>
-      <button style={{ ...small, padding: "0 6px" }} aria-expanded={history !== null} aria-label={`versions of ${name}`} onClick={() => (history ? setHistory(null) : void load())}>
-        {history ? "▾" : "▸"} versions and changes
-      </button>
-      {said && <span style={{ ...quiet, marginLeft: 8 }}>{said}</span>}
-      {history && (
-        <div style={{ display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid var(--border)", marginTop: 4 }}>
-          {history.versions.map((v) => (
-            <div key={v.version} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ color: v.current ? "var(--ok)" : "var(--muted)", minWidth: 24 }}>v{v.version}</span>
-              <span style={{ flex: 1 }}>{sourceLabel(v.source)}</span>
-              <span style={quiet}>{when(v.set_at)}</span>
-              {v.current ? (
-                <span style={{ color: "var(--ok)", width: 64, textAlign: "right" }}>current</span>
-              ) : (
-                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} title={`make version ${v.version} current again`}>
-                  roll back
-                </button>
-              )}
-            </div>
-          ))}
-          {history.events
-            .slice()
-            .reverse()
-            .map((e, i) => (
-              <div key={i} style={quiet}>
-                {when(e.at)} · {e.action}
-                {e.version ? ` v${e.version}` : ""}
-                {e.source ? ` · ${sourceLabel(e.source)}` : ""}
-                {e.detail ? ` · ${e.detail}` : ""}
-                {e.by ? ` · by ${e.by}` : ""}
-              </div>
-            ))}
-        </div>
-      )}
-      {dryRun.modal}
-    </div>
   );
 }
 

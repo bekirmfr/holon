@@ -1,6 +1,7 @@
 // A question in the page answers to keys as well as clicks: Enter is its button, Esc cancels, and
 // a yes/no question takes y and n, shown as chips that stay out of the buttons' names. Keys that
-// answer it don't reach the page beneath; typing in a prompt still reaches its field.
+// answer it don't reach the page beneath; typing in a prompt still reaches its field. A notice has
+// one button, and its letter.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -110,5 +111,35 @@ describe("dialog keys", () => {
     });
     press("Enter", {}, field);
     await expect(name).resolves.toBe("shout");
+  });
+  it("gives each of a choice's answers its letter, the last answered by Enter too, Esc none", async () => {
+    const d = mount();
+    const three = ["Keep it open", "Discard", "Save and close"];
+    const { answer: kept } = await ask(() => d.choose("Close it?", three));
+    expect(buttons().map((b) => b.querySelector("kbd")?.textContent)).toEqual(["k", "d", "s"]);
+    press("k");
+    await expect(kept).resolves.toBe(0);
+    const { answer: saved } = await ask(() => d.choose("Close it?", three));
+    press("Enter");
+    await expect(saved).resolves.toBe(2);
+    const { answer: none } = await ask(() => d.choose("Close it?", three));
+    press("Escape");
+    await expect(none).resolves.toBeNull();
+  });
+
+  it("shows a notice with its one button, closed by its letter, Enter or Esc", async () => {
+    const d = mount();
+    const { answer: lettered } = await ask(() => d.notice("The chain of shop's runs", "Close"));
+    expect(buttons().map(nameOf)).toEqual(["Close"]);
+    expect(buttons().map((b) => b.querySelector("kbd")?.textContent)).toEqual(["c"]);
+    press("c");
+    await expect(lettered).resolves.toBeUndefined();
+    expect(document.querySelector("[role=dialog]")).toBeNull();
+    for (const key of ["Enter", "Escape"]) {
+      const { answer } = await ask(() => d.notice("Your password is changed."));
+      expect(buttons().map(nameOf)).toEqual(["OK"]);
+      press(key);
+      await expect(answer).resolves.toBeUndefined();
+    }
   });
 });

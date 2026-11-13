@@ -105,7 +105,7 @@ const SAID_WITH: &[(&str, &str)] = &[("from", "import"), ("else", "if"), ("case"
 
 /// What a flow imports from outside a run, by its kind: each use is a permission the flow asks for.
 const NOUNS: &[(&str, &str)] = &[
-    ("secret", "A secret, `import key from \"secret:NAME\"`, set by an admin under the deployment's ⚙ and never in the run log; `with { optional: \"true\" }`, one the flow can run without. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
+    ("secret", "A secret, `import key from \"secret:NAME\"`, set by an admin in the flow's Settings and never in the run log; `with { optional: \"true\" }`, one the flow can run without. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
     ("state", "`state.key`: the flow's own value under `key` (`import state from \"state\"`), as the run began; `state.key = v` writes it when the run finishes. Each key read or written is one permission."),
     ("now", "`now` (`import { now } from \"holon:clock\"`): the time the run started, in seconds since the epoch, recorded with the run so a replay sees the same; in a clock, the tick's. A permission: reading the clock."),
     ("random", "`random` (`import { random } from \"holon:random\"`): one random number for the run, recorded so a replay sees the same. A permission: randomness."),

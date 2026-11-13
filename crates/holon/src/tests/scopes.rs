@@ -383,3 +383,33 @@ fn no_one_gives_more_than_they_hold() {
     assert_eq!(ada("POST", "/people", json!({ "name": "bot", "kind": "service", "role": "editor", "owner": "bob" })).0, 200);
     assert_eq!(send(&state, &t.bob, "POST", "/people/bot/tokens", json!({ "label": "bob's bot" })).0, 200, "its owner, holding less");
 }
+
+/// Where a database or a folder is (its file, its connection's source and address, its path) is
+/// shown to whoever may bind one, not to whoever only views them (web console L4, Q4): cy, holding
+/// a role that allows resource.view on the host, sees each binding, its name and kind, without
+/// where it is; ada, an admin, sees it all.
+#[test]
+fn where_a_resource_is_shows_only_to_whoever_may_bind_one() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let dir = std::env::temp_dir().join(format!("holon-where-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = dir.display().to_string();
+    let file = dir.join("shop.db").display().to_string();
+    assert_eq!(ada("POST", "/admin/folders", json!({ "name": "inbox", "path": folder, "access": "read" })).0, 200);
+    let (code, said) = ada("POST", "/admin/databases", json!({ "name": "shop", "path": file, "schema": "create table orders (id integer primary key)" }));
+    assert_eq!(code, 200, "{said}");
+    assert_eq!(ada("PUT", "/roles/looker", json!({ "allows": ["resource.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("PATCH", "/people/cy", json!({ "role": "looker" })).0, 200);
+
+    let listed = |token: &str, path: &str| -> Value { serde_json::from_str(&send(&state, token, "GET", path, Value::Null).1).unwrap() };
+    let (folders, databases) = (listed(&t.ada, "/admin/folders"), listed(&t.ada, "/admin/databases"));
+    assert_eq!((&folders[0]["name"], &folders[0]["path"]), (&json!("inbox"), &json!(folder)));
+    assert_eq!((&databases[0]["name"], &databases[0]["path"]), (&json!("shop"), &json!(file)));
+
+    let (folders, databases) = (listed(&t.cy, "/admin/folders"), listed(&t.cy, "/admin/databases"));
+    assert_eq!(folders, json!([{ "name": "inbox", "deployment": null, "access": "read", "keep": "bytes", "cap": null, "shared": false, "lock": "commit" }]));
+    assert_eq!(databases, json!([{ "name": "shop", "deployment": null, "engine": "sqlite", "access": "read-write", "lock": "commit" }]));
+    assert_eq!(refusal(send(&state, &t.cy, "POST", "/admin/folders", json!({ "name": "x", "path": folder }))).0, 403, "cy only views");
+    std::fs::remove_dir_all(&dir).ok();
+}

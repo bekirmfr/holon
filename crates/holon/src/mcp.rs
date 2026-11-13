@@ -518,7 +518,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     let secrets_note = if missing.is_empty() {
         String::new()
     } else {
-        format!("\nSecrets not set yet (an admin sets them in the editor, under the deployment's ⚙): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
+        format!("\nSecrets not set yet (an admin sets them in the editor, in the flow's Settings): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
     };
     // Its text goes with it, comments and all, so the person who opens it reads what was written.
     body["document"] = saved_document(&plan, text);
@@ -718,7 +718,7 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
     }
     let reads: Vec<String> = strings(&manifest, "capabilities").iter().filter_map(|c| c.strip_prefix("SecretRead(\"")?.strip_suffix("\")").map(str::to_string)).collect();
     if !reads.is_empty() {
-        let named: Vec<String> = reads.iter().map(|r| if secrets.iter().any(|s| s.as_str() == Some(r)) { format!("{r} (set)") } else { format!("{r} (not set: an admin sets it under the deployment's ⚙)") }).collect();
+        let named: Vec<String> = reads.iter().map(|r| if secrets.iter().any(|s| s.as_str() == Some(r)) { format!("{r} (set)") } else { format!("{r} (not set: an admin sets it in the flow's Settings)") }).collect();
         out.push(format!("The secrets it reads: {}", named.join(", ")));
     }
     let waits = waits_for(d, saved(slug));
@@ -2050,7 +2050,7 @@ mod tests {
         json_of(&other, "POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true, "reason": "matches the invoice" })))).unwrap();
 
         let listed = tool_as(&agent, "runs", json!({ "slug": "payouts" })).unwrap();
-        assert!(listed.contains(&format!("run {} (action pay, since ", &run_id[..12])), "{listed}");
+        assert!(listed.contains(&format!("run {} (action pay, started by ada, since ", &run_id[..12])), "{listed}");
         assert!(listed.contains("waits at approval \"payout\" (2 people): 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
         assert!(listed.contains("A person's step is a person's to decide") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
         assert!(tool_as(&agent, "deployments", json!({})).unwrap().contains("1 waiting (`runs` says for what)"));

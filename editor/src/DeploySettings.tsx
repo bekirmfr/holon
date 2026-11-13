@@ -1,6 +1,7 @@
-// The flow's deploy controls, in the canvas header next to save: one Deploy (or Update) for the
-// whole flow, its live status with pause / stop / run, and the flow's deploy settings (port, and
-// what it needs beyond its graph: limits and exceptions, which become part of its manifest). The deployment is named after the flow, so there is no separate slug.
+// A flow's deploy settings, in the editor's bottom pane (its Settings tab, web-console-L4.md §5.4):
+// its port, and what it needs beyond its graph (limits and exceptions, which become part of its
+// manifest), its permissions and its secrets, for the version in the tab. They are saved and
+// deployed with it. The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
@@ -14,7 +15,6 @@ import {
   previewSecretRollback,
   rollbackSecret,
   setSecret,
-  type DeploymentEntry,
   type HostPolicy,
   type Requirements,
   type SecretHistory,
@@ -94,104 +94,7 @@ const base: CSSProperties = {
   borderRadius: 3,
   cursor: "pointer",
 };
-const primary: CSSProperties = { ...base, color: "var(--accent-ink)", background: "var(--accent)", border: "none", padding: "3px 10px" };
 const input: CSSProperties = { ...base, color: "var(--ink)", cursor: "text", width: 64 };
-
-const LOOK = {
-  running: { mark: "●", color: "var(--ok)" },
-  paused: { mark: "❚❚", color: "var(--warn)" },
-  stopped: { mark: "■", color: "var(--faint)" },
-} as const;
-
-export function DeployBar({
-  entry,
-  outOfDate,
-  busy,
-  onDeploy,
-  onAction,
-  startsNothing = false,
-  onSettingsOpen,
-}: {
-  /** This flow's deployment, if it has one. */
-  entry: DeploymentEntry | undefined;
-  /** The canvas no longer matches what is deployed (known for servers; null when unknown). */
-  outOfDate: boolean | null;
-  busy: boolean;
-  onDeploy: () => void;
-  onAction: (action: "run" | "pause" | "stop") => void;
-  /** Nothing would start a run (no route, websocket, clock, file, mail, feed or queue handler or
-   *  action): deploy is greyed. */
-  startsNothing?: boolean;
-  onSettingsOpen?: () => void;
-}) {
-  const look = entry ? LOOK[entry.status] : null;
-  const label = busy ? "deploying…" : entry ? "update" : "deploy";
-  const title = startsNothing
-    ? "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand)"
-    : entry
-      ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
-      : "deploy this flow, named after it";
-  const off = busy || startsNothing;
-
-  return (
-    <span style={{ display: "inline-flex", gap: 6, alignItems: "center", position: "relative" }}>
-      <button
-        onClick={onDeploy}
-        disabled={off}
-        title={title}
-        style={{ ...primary, opacity: off ? 0.5 : 1, cursor: off ? "default" : "pointer" }}
-      >
-        {label}
-        {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
-      </button>
-      {startsNothing && (
-        <span style={{ color: "var(--warn)", fontSize: 11 }} title={title}>
-          nothing would start a run
-        </span>
-      )}
-      {entry && look && (
-        <>
-          <span style={{ color: look.color, fontSize: 11 }} title={`session ${entry.session}`}>
-            {look.mark} {entry.status}
-            {entry.port !== null && entry.status !== "stopped" ? ` :${entry.port}` : ""}
-          </span>
-          {entry.attention && (
-            <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.attention}>
-              ⚠ needs approval
-            </span>
-          )}
-          {entry.listen_error && (
-            <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.listen_error}>
-              ⚠ port in use
-            </span>
-          )}
-          {entry.status === "running" && (
-            <button style={base} onClick={() => onAction("pause")} title="stop answering, keep the session">
-              pause
-            </button>
-          )}
-          {entry.status === "paused" && (
-            <button style={base} onClick={() => onAction("run")} title="continue the same session">
-              resume
-            </button>
-          )}
-          {entry.status !== "stopped" ? (
-            <button style={base} onClick={() => onAction("stop")} title="end the session, save its state">
-              stop
-            </button>
-          ) : (
-            <button style={base} onClick={() => onAction("run")} title="start a new session from the latest state">
-              run
-            </button>
-          )}
-        </>
-      )}
-      <button style={base} onClick={onSettingsOpen} title="deploy settings: port, what it needs">
-        ⚙
-      </button>
-    </span>
-  );
-}
 
 /** Where a secret's value comes from, as the row picks it. */
 type Kind = "value" | "env" | "vault";
@@ -659,13 +562,11 @@ function GroupHead({ label, open, onToggle, first = false }: {
 }
 
 /**
- * The deployment settings panel: port, limits, permissions, and secrets, rendered as
- * a persistent right-side panel. The ⚙ button in the canvas header opens it; the panel's own
- * header closes it. Open/closed state is owned by the parent (App.tsx).
+ * The deploy settings: server, limits, network, permissions and secrets, each a group that folds.
+ * `open`: whether they are shown (what the host allows and the secrets are read once they are).
  */
-export function DeployPanel({
+export function DeploySettings({
   open,
-  onOpen,
   settings,
   setSettings,
   slug,
@@ -676,7 +577,6 @@ export function DeployPanel({
   readOnly = false,
 }: {
   open: boolean;
-  onOpen: (open: boolean) => void;
   settings: FlowSettings;
   setSettings: (s: FlowSettings) => void;
   slug: string | null;
@@ -711,50 +611,20 @@ export function DeployPanel({
     });
   const [hideDefaults, setHideDefaults] = useState(false);
 
-  if (!open) {
-    return (
-      <aside className="hl-deploy hl-deploy--closed">
-        <button
-          className="hl-deploy__fold"
-          onClick={() => onOpen(true)}
-          title="deployment settings"
-          aria-label="open deployment settings"
-        >
-          deployment
-        </button>
-      </aside>
-    );
-  }
-
   const req = settings.requirements;
   const noPlainHttp = policy !== null && !policy.allow_plain_http;
   const hasPlainHttp = (req?.plain_http ?? []).length > 0;
 
   return (
-    <aside className="hl-deploy" role="complementary" aria-label="Deployment settings">
-      <div className="hl-panel-header">
-        <span className="hl-panel-header__title">deployment</span>
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--faintest)", cursor: "pointer", marginLeft: "auto", marginRight: 4, userSelect: "none" }}
-          title="hide settings that are still at their defaults"
-        >
-          <input type="checkbox" checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} style={{ cursor: "pointer", accentColor: "var(--faint)" }} />
-          hide defaults
-        </label>
-        <button
-          className="hl-panel-header__btn"
-          onClick={() => onOpen(false)}
-          title="hide deployment panel"
-          aria-label="hide deployment panel"
-        >›</button>
-      </div>
+    <div className="hl-settings">
+      <label className="hl-settings__defaults" title="hide settings that are still at their defaults">
+        <input type="checkbox" checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} />
+        hide defaults
+      </label>
       <div
         style={{
-          flex: "1 1 0",
-          overflowY: "auto",
-          padding: "8px 12px",
           display: "grid",
-          gridTemplateColumns: "minmax(0, 140px) 1fr",
+          gridTemplateColumns: "minmax(0, 180px) minmax(0, 360px)",
           gap: "4px 8px",
           alignItems: "start",
           alignContent: "start",
@@ -876,6 +746,6 @@ export function DeployPanel({
           </>
         )}
       </div>
-    </aside>
+    </div>
   );
 }

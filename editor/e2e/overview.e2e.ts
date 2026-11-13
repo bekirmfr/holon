@@ -1,7 +1,7 @@
 // The Overview (OverviewPage.tsx), from the host's summary (GET /summary, holon-server's
 // summary.rs): the pulse sample deployed, ticked and asked for a beat not come yet (a 503: a run
-// that failed), its runs hour by hour in the flows table, red where one failed, its newest runs
-// among the latest across every flow, and Check now reading every log's chain again.
+// that failed), its runs hour by hour in the flows table, red where one failed, with its p50; its
+// newest runs among the latest across every flow; and Check now reading every log's chain again.
 
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -38,13 +38,18 @@ test("the overview counts pulse's runs by hour, red where one failed, lists its 
     const glance = page.getByRole("region", { name: "at a glance" });
     await expect(glance).toContainText("runs in the last 24 h");
     await expect(glance).toContainText("of them failed");
+    await expect(glance).toContainText(/\d+ of \d+\s*flows? live/);
+    await expect(glance).toContainText("waiting for a person");
 
-    // Its row: live, its last 24 hours as bars (read out as words), the 503 among them failed.
+    // Its row: version 1, live, its last 24 hours as bars (read out as words), the 503 among them
+    // failed; the middle of its runs' times, and what it may do counted.
     const row = page.getByRole("region", { name: "flows" }).getByRole("row").filter({ hasText: slug });
+    await expect(row.getByRole("cell").first()).toHaveText(`${slug} v1`);
     await expect(row).toContainText("live");
     await expect(row.getByRole("img")).toHaveAccessibleName(/^\d+ runs, 1 failed in the last 24 hours$/);
     await expect(row.locator(".hl-spark__bad")).toHaveCount(1);
-    await expect.poll(async () => Number((await row.locator("td").last().innerText()).replace(/,/g, ""))).toBeGreaterThanOrEqual(5);
+    await expect(row.getByRole("cell").nth(4)).toHaveText(/^[\d.]+ (ms|s)$/);
+    await expect(row.getByRole("cell").nth(5)).toHaveText(/^\d+$/);
 
     // Its newest runs, among the latest across every flow: one opens its record.
     const latest = page.getByRole("region", { name: "latest runs" });
@@ -55,8 +60,10 @@ test("the overview counts pulse's runs by hour, red where one failed, lists its 
     await page.goto("/#overview");
     await page.getByRole("button", { name: "Check now" }).click();
     await expect(page.getByText(/^Checked [\d,]+ runs: every line names the one before it\.$/)).toBeVisible();
-    await expect(page.getByRole("region", { name: "run log" })).toContainText("every line names the one before");
-    await expect(glance).toContainText(/run log, checked \d/);
+    const log = page.getByRole("region", { name: "run log" });
+    await expect(log).toContainText("every line names the one before");
+    await expect(log).toContainText("intact");
+    await expect(log).not.toContainText("as written");
   } finally {
     await request.delete(`${SERVER}/deployments/${slug}`, { headers: { Authorization: `Bearer ${adminToken}` } });
   }

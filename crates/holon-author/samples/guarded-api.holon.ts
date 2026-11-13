@@ -2,10 +2,10 @@
 //
 // Answers a caller that sends the API token with a receipt signed by a key from the server's
 // environment. The token is a secret the server seals, versioned: set a new one to rotate it, and
-// roll back to an earlier one under the gear (a dry run says what it would do first). The receipt
+// roll back to an earlier one in its Settings (a dry run says what it would do first). The receipt
 // key is an optional permission: without it the route still answers, its receipt "unsigned".
 //
-// Before it works, set its two secrets under the deployment's settings (the gear):
+// Before it works, set its two secrets in the flow's Settings:
 //   api_token     the bearer token callers send
 //   receipt_key   the key receipts are signed with: choose env, then HOLON_SECRET_RECEIPT_KEY,
 //                 a variable in the server's environment or its dotenv file

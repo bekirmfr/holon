@@ -588,6 +588,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/logs", RunView, On::Slug),
     asks("GET", "/deployments/{slug}/feeds", StateView, On::Slug),
     asks("GET", "/deployments/{slug}/queues", StateView, On::Slug),
+    asks("GET", "/deployments/{slug}/channels", StateView, On::Slug),
     asks("POST", "/deployments/{slug}/runs/{id}/decide", RunDecide, On::Approvals),
     asks("GET", "/deployments/{slug}/changes", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/history", FlowView, On::Slug),

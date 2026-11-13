@@ -296,6 +296,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return queues::handle_get_queues(state, slug);
         }
+        if let Some(slug) = rest.strip_suffix("/channels")
+            && method == "GET"
+        {
+            return channels::handle_get_channels(state, slug);
+        }
         if let Some((slug, run_id)) = rest.strip_suffix("/decide").and_then(|r| r.split_once("/runs/"))
             && method == "POST"
         {
@@ -387,7 +392,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest);
             // Deleted, it is on no tag.
             if response.status_code == 200
                 && let Some(accounts) = state.access.accounts()

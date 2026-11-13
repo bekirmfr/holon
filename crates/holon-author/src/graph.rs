@@ -3,16 +3,19 @@
 //! with the wires between them; the nodes a statement is made of are its detail. Each trigger (a
 //! route, a clock, an action, a file handler) is a band of its own, headed by its trigger, as the
 //! canvas stacks them. [`lanes`] draws a band's wires as `git log --graph` draws history: a lane
-//! from each row down to the last row it feeds.
+//! from each row down to the last row it feeds. The editor draws the same graph (`holon_graph`, in
+//! holon-wasm), so the terminal and the web can't draw a flow differently.
 
 use std::collections::{BTreeMap, HashMap};
+
+use serde::{Deserialize, Serialize};
 
 use crate::lang::ast::{Item, Pos, Span, Stmt, StmtKind};
 use crate::lang::{lower, ts};
 use crate::wire::WParam;
 
 /// A placed node, as a statement's detail.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     /// Its name in the text, else its id.
     pub name: String,
@@ -24,8 +27,58 @@ pub struct Part {
     pub inputs: Vec<(String, String)>,
 }
 
+/// What a statement does, as its colour says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// It only computes.
+    Compute,
+    /// It reads or writes the flow's data: its state, a collection, a database.
+    Data,
+    /// It calls outside: a request, a file, a channel, another flow.
+    Outside,
+    /// It answers the request.
+    Answer,
+    /// It waits: for people to approve it, or for an event.
+    Waits,
+}
+
+impl Kind {
+    /// A leaf's kind, by its name.
+    pub fn of_leaf(leaf: &str) -> Kind {
+        if leaf == "approval" || leaf == "await" {
+            Kind::Waits
+        } else if ["db_", "store_", "collection_"].iter().any(|p| leaf.starts_with(p)) {
+            Kind::Data
+        } else if ["http_", "file_", "channel_", "flow_"].iter().any(|p| leaf.starts_with(p)) || leaf == "egress" {
+            Kind::Outside
+        } else if leaf == "respond" {
+            Kind::Answer
+        } else {
+            Kind::Compute
+        }
+    }
+
+    /// A row's kind: a wait if it waits, else a call outside if it makes one, else its data if it
+    /// touches it, else its answer, else it computes.
+    pub fn of_row(row: &Row) -> Kind {
+        Kind::of_parts(&row.parts)
+    }
+
+    fn of_parts(parts: &[Part]) -> Kind {
+        let kinds: Vec<Kind> = parts.iter().map(|p| Kind::of_leaf(&p.leaf)).collect();
+        [Kind::Waits, Kind::Outside, Kind::Data, Kind::Answer].into_iter().find(|k| kinds.contains(k)).unwrap_or(Kind::Compute)
+    }
+
+    /// Each line's kind in a text, by its statement: what a run's timeline colours its bars by.
+    pub fn by_line(text: &str) -> HashMap<u32, Kind> {
+        let Ok(g) = graph(text, false) else { return Default::default() };
+        g.bands.iter().flat_map(|b| &b.rows).filter(|r| !r.head).flat_map(|r| (r.line..=r.last).map(move |n| (n, r.kind))).collect()
+    }
+}
+
 /// A row: a statement (or, with every node shown, a node), or a band's trigger.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     /// Its first and last line in the text, 1-based.
     pub line: u32,
@@ -44,6 +97,11 @@ pub struct Row {
     pub head: bool,
     /// It acts on the world (writes, answers, calls out, waits), not only computes.
     pub effect: bool,
+    /// What it does, as its colour says ([`Kind::of_row`]).
+    pub kind: Kind,
+    /// The answer when its value is absent, where the text says one (`?? status(404)`,
+    /// `missing: 404`): the status.
+    pub fallback: Option<String>,
     /// The rows of this band it takes from, by index (only earlier rows, as the text writes).
     pub from: Vec<usize>,
     /// What it takes from outside its band, by name.
@@ -52,14 +110,14 @@ pub struct Row {
 }
 
 /// One trigger and the statements it runs.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Band {
     /// The trigger as the text writes it: `route POST /notes/:id (req)`, `every 5s`.
     pub title: String,
     pub rows: Vec<Row>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Graph {
     pub bands: Vec<Band>,
     /// How many nodes it has in all.
@@ -152,6 +210,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         let mut row_of: HashMap<&str, usize> = HashMap::new();
         let trigger: Vec<&str> = doc.nodes.iter().map(|n| n.id.as_str()).filter(|id| place.get(id) == Some(&(b, None))).collect();
         let head_line = block.span.start.line;
+        let parts: Vec<Part> = trigger.iter().filter_map(|id| part_of(id)).collect();
         rows.push(Row {
             line: head_line,
             last: head_line,
@@ -161,9 +220,11 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             mark: whole(head_line),
             head: true,
             effect: false,
+            kind: Kind::of_parts(&parts),
+            fallback: None,
             from: vec![],
             outside: vec![],
-            parts: trigger.iter().filter_map(|id| part_of(id)).collect(),
+            parts,
         });
         for id in &trigger {
             row_of.insert(id, 0);
@@ -201,6 +262,13 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             let bind = matches!(stmt.kind, StmtKind::Bind { .. });
             let leaves = |of: &[&str]| -> Vec<String> { of.iter().filter_map(|id| doc.nodes.iter().find(|n| n.id == *id)).map(|n| n.data.name.clone()).collect() };
             let effect = !bind || leaves(&ids).iter().any(|l| effectful(l));
+            // A route's answer when its value is absent, where the statement says one: unsaid, it
+            // is the 404 every answer has.
+            let said = (stmt.span.start.line..=last).any(|n| lines.get(n as usize - 1).is_some_and(|l| l.contains("?? status(") || l.contains("missing:")));
+            let fallback = |parts: &[Part]| -> Option<String> {
+                let answer = parts.iter().find(|p| p.leaf == "respond" && p.inputs.iter().any(|(port, _)| port == "body"))?;
+                said.then(|| answer.params.iter().find(|(k, _)| k == "missing").map(|(_, v)| v.clone())).flatten()
+            };
             if every {
                 for id in &ids {
                     let part = part_of(id).unwrap_or_else(|| Part { name: id.to_string(), leaf: String::new(), params: vec![], inputs: vec![] });
@@ -215,6 +283,8 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                         mark: lowered.spans.get(*id).copied().unwrap_or(mark),
                         head: false,
                         effect: effectful(&part.leaf),
+                        kind: Kind::of_leaf(&part.leaf),
+                        fallback: fallback(std::slice::from_ref(&part)),
                         from: vec![],
                         outside: vec![],
                         parts: vec![part],
@@ -227,6 +297,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             for id in &ids {
                 row_of.insert(id, rows.len());
             }
+            let parts: Vec<Part> = ids.iter().filter_map(|id| part_of(id)).collect();
             rows.push(Row {
                 line: stmt.span.start.line,
                 last,
@@ -236,9 +307,11 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                 mark,
                 head: false,
                 effect,
+                kind: Kind::of_parts(&parts),
+                fallback: fallback(&parts),
                 from: vec![],
                 outside: vec![],
-                parts: ids.iter().filter_map(|id| part_of(id)).collect(),
+                parts,
             });
         }
         // The wires between rows, each once, in the order the rows come.
@@ -342,7 +415,7 @@ pub fn lanes(rows: &[Row]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{graph, lanes};
+    use super::{graph, lanes, Graph, Kind};
 
     const PAYOUT: &str = include_str!("../samples/approved-payout.holon.ts");
 
@@ -425,5 +498,43 @@ mod tests {
         }
         let titles: Vec<String> = graph(crate::samples::sample("file-audit").unwrap().text, false).unwrap().bands.into_iter().map(|b| b.title).collect();
         assert_eq!(titles, ["on file inbox matching \"*.csv\"", "on file inbox deleted", "on file outbox"]);
+    }
+
+    /// What the editor draws (holon-wasm's `holon_graph`) is the graph as JSON, whole: read back,
+    /// it is the same graph, for every sample, by statement and by node.
+    #[test]
+    fn every_samples_graph_round_trips_as_json() {
+        for s in crate::samples::samples() {
+            for every in [false, true] {
+                let g = graph(s.text, every).unwrap();
+                let json = serde_json::to_value(&g).unwrap();
+                assert_eq!(serde_json::from_value::<Graph>(json.clone()).unwrap(), g, "{} (every: {every})", s.name);
+                let row = &json["bands"][0]["rows"][0];
+                assert!(row["kind"].is_string() && row["mark"]["start"]["line"].is_number() && row.get("fallback").is_some(), "{}: {row}", s.name);
+            }
+        }
+    }
+
+    /// A row's kind is its colour: a wait (an approval, an event) before a call outside, before
+    /// its data, before its answer. A fallback answer is the status the text says for a value
+    /// that is absent.
+    #[test]
+    fn a_row_says_its_kind_and_its_fallback() {
+        let g = graph(PAYOUT, false).unwrap();
+        let kinds: Vec<Kind> = g.bands[1].rows.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds[1..3], [Kind::Data, Kind::Waits], "{kinds:?}");
+        assert_eq!(g.bands[0].rows[2].kind, Kind::Outside, "flow_start");
+        assert_eq!(g.bands[0].rows.last().unwrap().kind, Kind::Answer);
+        assert_eq!(Kind::of_leaf("await"), Kind::Waits);
+        let every = graph(PAYOUT, true).unwrap();
+        assert!(every.bands[1].rows.iter().any(|r| r.does == "approval" && r.kind == Kind::Waits));
+
+        let board = graph(crate::samples::sample("leaderboard").unwrap().text, false).unwrap();
+        let answers: Vec<(&str, Option<&str>)> = board.bands.iter().flat_map(|b| &b.rows).filter(|r| r.kind == Kind::Answer).map(|r| (r.text.as_str(), r.fallback.as_deref())).collect();
+        assert!(answers.contains(&("return card ?? status(404)", Some("404"))), "{answers:?}");
+        let hello = graph(crate::samples::sample("hello-api").unwrap().text, false).unwrap();
+        assert!(hello.bands.iter().flat_map(|b| &b.rows).all(|r| r.fallback.is_none()), "an answer that says none has none");
+        let calc = graph(crate::samples::sample("calc").unwrap().text, false).unwrap();
+        assert!(calc.bands.iter().flat_map(|b| &b.rows).any(|r| r.fallback.as_deref() == Some("400")), "calc's ?? status(400)");
     }
 }

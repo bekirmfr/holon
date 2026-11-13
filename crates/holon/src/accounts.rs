@@ -143,6 +143,10 @@ pub(crate) struct Principal {
     /// start): opaque here, so it follows them to any browser.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     prefs: serde_json::Value,
+    /// When it was last seen: its last request let in, by a session, a token or a provider's
+    /// sign-in (`Accounts::saw`). Kept to the minute; absent until it is first seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_seen: Option<u64>,
 }
 
 impl Principal {
@@ -159,6 +163,7 @@ impl Principal {
             created_by: by.map(String::from),
             owner: None,
             prefs: serde_json::Value::Null,
+            last_seen: None,
         }
     }
 }
@@ -192,6 +197,9 @@ pub(crate) struct ApiToken {
     hash: String,
     pub(crate) created_at: u64,
     pub(crate) created_by: String,
+    /// When a request last came with it (`Accounts::saw`), kept as `Principal::last_seen` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_used: Option<u64>,
 }
 
 /// Signing in through an identity provider, as an admin set it.
@@ -263,6 +271,21 @@ struct Tries {
     last: Option<Instant>,
 }
 
+/// When each principal was last seen and each token last used, as requests come in (`saw`): known
+/// at once in memory, and written into the book with the next change to it, or once one of the
+/// principal's is a minute newer than what was last written for them (`SEEN_KEPT_EVERY`), so a
+/// busy client writes the accounts file once a minute, not once a request.
+#[derive(Default)]
+struct Seen {
+    principals: HashMap<String, u64>,
+    tokens: HashMap<String, u64>,
+    /// When each principal's were last written.
+    kept: HashMap<String, u64>,
+}
+
+/// At most how often (seconds) a principal's being seen is written to the accounts file.
+const SEEN_KEPT_EVERY: u64 = 60;
+
 /// Where a password change's tries are counted from, in place of a client's address: by name,
 /// apart from signing in.
 const CHANGING: &str = "(changing the password)";
@@ -296,6 +319,8 @@ pub(crate) struct Accounts {
     /// The local token's hash and who it is (local.rs): made when the server starts, good as that
     /// OS user's admin until it stops, never stored.
     local: Mutex<Option<(String, String)>>,
+    /// When each principal was last seen and each token last used (`saw`).
+    seen: Mutex<Seen>,
 }
 
 /// A new secret token: `prefix` and 32 random bytes, in hex.
@@ -497,6 +522,16 @@ fn new_setup_code() -> String {
     format!("{}-{}", &code[..4], &code[4..])
 }
 
+/// A setup code as it is compared: trimmed, and in capitals, the way a person may not type it.
+fn setup_form(code: &str) -> String {
+    code.trim().to_uppercase()
+}
+
+/// The setup code: `HOLON_SETUP_CODE`'s value (`given`) when there is one, else a new one.
+fn setup_code_from(given: Option<String>) -> String {
+    given.map(|c| setup_form(&c)).filter(|c| !c.is_empty()).unwrap_or_else(new_setup_code)
+}
+
 impl Accounts {
     /// The accounts at `path` (none yet if it doesn't exist), and the access document beside them.
     pub(crate) fn open(path: &str) -> Result<Accounts, String> {
@@ -532,8 +567,8 @@ impl Accounts {
     }
 
     fn with(path: Option<PathBuf>, book: Book, access: Bindings) -> Accounts {
-        let code = no_person(&book).then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
-        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
+        let code = no_person(&book).then(|| setup_code_from(std::env::var("HOLON_SETUP_CODE").ok()));
+        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None), seen: Mutex::new(Seen::default()) }
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -549,8 +584,42 @@ impl Accounts {
         book.sessions.retain(|s| s.expires_at > now);
         book.invites.retain(|i| i.expires_at > now);
         let out = f(&mut book)?;
+        self.stamp(&mut book);
         self.save(&book)?;
         Ok(out)
+    }
+
+    /// The book's principals and tokens given when each was last seen or used, from `seen`, where
+    /// that is newer than what it says.
+    fn stamp(&self, book: &mut Book) {
+        let seen = hold(&self.seen);
+        for u in &mut book.users {
+            u.last_seen = u.last_seen.max(seen.principals.get(&u.name).copied());
+        }
+        for t in &mut book.credentials {
+            t.last_used = t.last_used.max(seen.tokens.get(&t.id).copied());
+        }
+    }
+
+    /// `name` was seen at `now`, with its API token `token` (by its id) if with one: known at
+    /// once, and written into the book when what was last written for them is a minute old
+    /// (`SEEN_KEPT_EVERY`). Never called under the book's lock: writing takes it.
+    fn saw(&self, name: &str, token: Option<&str>, now: u64) {
+        let due = {
+            let mut seen = hold(&self.seen);
+            seen.principals.insert(name.to_string(), now);
+            if let Some(id) = token {
+                seen.tokens.insert(id.to_string(), now);
+            }
+            let due = seen.kept.get(name).is_none_or(|at| now >= at + SEEN_KEPT_EVERY);
+            if due {
+                seen.kept.insert(name.to_string(), now);
+            }
+            due
+        };
+        if due && let Err(e) = self.change(|_| Ok(())) {
+            eprintln!("holon: when {name} was last seen isn't kept: {e}");
+        }
     }
 
     /// Change the book and the access document together, and keep both, as `change` does; the
@@ -566,6 +635,7 @@ impl Accounts {
         let before = self.access.document();
         let (mut next, mut access) = (book.clone(), Document::clone(&before));
         let out = f(&mut next, &mut access)?;
+        self.stamp(&mut next);
         access.check(|name| next.users.iter().find(|u| u.name == name).map(|u| u.kind))?;
         if an_admin(&book, &before) && !an_admin(&next, &access) {
             return Err("that would leave no admin: make someone else an admin first".into());
@@ -611,7 +681,7 @@ impl Accounts {
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong setup codes: wait a minute, then try again".into());
             }
-            if !same(&code.trim().to_uppercase(), &expected) {
+            if !same(&setup_form(code), &expected) {
                 tries.wrong += 1;
                 if tries.wrong >= MAX_FAILURES {
                     (tries.wrong, tries.locked) = (0, Some(Instant::now()));
@@ -740,27 +810,36 @@ impl Accounts {
     }
 
     /// Who a bearer token is: a session's person, or an API token's agent or service; neither
-    /// when disabled.
+    /// when disabled. Who it is is seen now, and the API token used (`saw`).
     pub(crate) fn who(&self, token: &str) -> Option<Who> {
         let hash = hash_of(token);
-        let book = hold(&self.book);
         let now = epoch_now();
-        let name = if token.starts_with("hs_") {
-            &book.sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now)?.user
-        } else if token.starts_with("ht_") {
-            &book.credentials.iter().find(|t| same(&t.hash, &hash))?.principal
-        } else {
-            return None;
+        let (who, id) = {
+            let book = hold(&self.book);
+            let (name, id) = if token.starts_with("hs_") {
+                (&book.sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now)?.user, None)
+            } else if token.starts_with("ht_") {
+                let t = book.credentials.iter().find(|t| same(&t.hash, &hash))?;
+                (&t.principal, Some(t.id.clone()))
+            } else {
+                return None;
+            };
+            let p = book.users.iter().find(|p| p.name == *name && !p.disabled)?;
+            (Who { name: p.name.clone(), kind: p.kind }, id)
         };
-        let p = book.users.iter().find(|p| p.name == *name && !p.disabled)?;
-        Some(Who { name: p.name.clone(), kind: p.kind })
+        self.saw(&who.name, id.as_deref(), now);
+        Some(who)
     }
 
-    /// The person someone the identity provider vouches for is, by their email.
+    /// The person someone the identity provider vouches for is, by their email; seen now.
     pub(crate) fn by_email(&self, email: &str) -> Option<Who> {
-        let book = hold(&self.book);
-        let p = book.users.iter().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == Some(email))?;
-        Some(Who { name: p.name.clone(), kind: p.kind })
+        let who = {
+            let book = hold(&self.book);
+            let p = book.users.iter().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == Some(email))?;
+            Who { name: p.name.clone(), kind: p.kind }
+        };
+        self.saw(&who.name, None, epoch_now());
+        Some(who)
     }
 
     /// What `name` holds now (bindings.rs): nothing, if nothing is bound to it or all of it has
@@ -971,8 +1050,14 @@ impl Accounts {
 
     // ── what an admin does ─────────────────────────────────────────────────────────────────
 
+    /// Every principal, each with when it was last seen as known now.
     pub(crate) fn principals(&self) -> Vec<Principal> {
-        hold(&self.book).users.clone()
+        let mut users = hold(&self.book).users.clone();
+        let seen = hold(&self.seen);
+        for u in &mut users {
+            u.last_seen = u.last_seen.max(seen.principals.get(&u.name).copied());
+        }
+        users
     }
 
     /// Whether an invite or reset link for `name` is waiting.
@@ -1143,9 +1228,11 @@ impl Accounts {
         })
     }
 
-    /// The tokens of `principal`, without their hashes.
+    /// The tokens of `principal`, without their hashes, each with when it was last used as known now.
     pub(crate) fn tokens(&self, principal: &str) -> Vec<ApiToken> {
-        hold(&self.book).credentials.iter().filter(|t| t.principal == principal).map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect()
+        let tokens: Vec<ApiToken> = hold(&self.book).credentials.iter().filter(|t| t.principal == principal).map(|t| ApiToken { hash: String::new(), ..t.clone() }).collect();
+        let seen = hold(&self.seen);
+        tokens.into_iter().map(|t| ApiToken { last_used: t.last_used.max(seen.tokens.get(&t.id).copied()), ..t }).collect()
     }
 
     /// A new API token for the agent or service `principal`: shown once, here.
@@ -1162,7 +1249,7 @@ impl Accounts {
             let token = new_token("ht_");
             let mut id = [0u8; 6];
             getrandom::fill(&mut id).map_err(|e| e.to_string())?;
-            let entry = ApiToken { id: crate::sealing::to_hex(&id), principal: principal.into(), label: label.into(), hash: hash_of(&token), created_at: epoch_now(), created_by: by.into() };
+            let entry = ApiToken { id: crate::sealing::to_hex(&id), principal: principal.into(), label: label.into(), hash: hash_of(&token), created_at: epoch_now(), created_by: by.into(), last_used: None };
             book.credentials.push(entry.clone());
             Ok((token, ApiToken { hash: String::new(), ..entry }))
         })
@@ -1333,6 +1420,23 @@ mod tests {
         let code = b.setup_code().unwrap();
         assert!(b.setup("WRNG-CODE", "ada", PW).is_err());
         assert!(b.setup(&code, "ada", PW).is_ok());
+    }
+
+    /// A setup code is the same however it is given (`HOLON_SETUP_CODE`) and however it is typed:
+    /// in any case, with spaces around. An empty one is no code: a new one is made.
+    #[test]
+    fn a_setup_code_matches_in_any_case_and_spacing() {
+        let forms = ["abcd-2345", "ABCD-2345", "AbCd-2345", " abcd-2345\n"];
+        for given in forms {
+            for typed in forms {
+                let a = Accounts::memory();
+                *a.setup_code.lock().unwrap() = Some(setup_code_from(Some(given.into())));
+                assert!(a.setup(typed, "ada", PW).is_ok(), "given {given:?}, typed {typed:?}");
+            }
+        }
+        for empty in [None, Some(String::new()), Some("  ".into())] {
+            assert_eq!(setup_code_from(empty).len(), "XXXX-XXXX".len());
+        }
     }
 
     #[test]
@@ -1653,6 +1757,50 @@ mod tests {
         assert_eq!(again.who(&token).map(|w| w.name), Some("ada".into()));
         assert_eq!((again.host_role("ada"), again.host_role("bob")), (Some(Role::Admin), Some(Role::Editor)), "what is bound, from access.json beside");
         assert!(dir.join("access.json").exists() && dir.join("access.versions.jsonl").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When each principal was last seen and each token last used: known at once, and written to
+    /// the accounts file at most once a minute a principal, or with the next change to it
+    /// (web-console-L4.md §9.2, §13).
+    #[test]
+    fn last_seen_and_last_used_are_kept_at_most_once_a_minute() {
+        let dir = dir("seen");
+        let path = dir.join("accounts.json").to_str().unwrap().to_string();
+        let a = Accounts::open(&path).unwrap();
+        let (session, _) = a.setup(&a.setup_code().unwrap(), "ada", PW).unwrap();
+        a.add("ci", Kind::Service, "editor", "ada", "ada").unwrap();
+        let (secret, made) = a.create_token("ci", "a script", "ada").unwrap();
+        let (_, unused) = a.create_token("ci", "never used", "ada").unwrap();
+        let seen = |a: &Accounts, name: &str| a.principals().into_iter().find(|p| p.name == name).unwrap().last_seen;
+        let kept = |name: &str| seen(&Accounts::open(&path).unwrap(), name);
+        let used = |a: &Accounts, id: &str| a.tokens("ci").into_iter().find(|t| t.id == id).unwrap().last_used;
+        assert_eq!((seen(&a, "ada"), seen(&a, "ci"), used(&a, &made.id)), (None, None, None), "nobody seen yet");
+
+        // ada's session: seen, and written at once, the first time.
+        a.who(&session).unwrap();
+        let first = seen(&a, "ada").expect("seen");
+        assert_eq!(kept("ada"), Some(first));
+        // Seen again within the minute: known, not written.
+        a.saw("ada", None, first + 30);
+        assert_eq!((seen(&a, "ada"), kept("ada")), (Some(first + 30), Some(first)));
+        // A minute after it was last written: written.
+        a.saw("ada", None, first + 61);
+        assert_eq!(kept("ada"), Some(first + 61));
+        // Seen within the minute again, then any change to the book keeps it with it.
+        a.saw("ada", None, first + 90);
+        assert_eq!(kept("ada"), Some(first + 61));
+        a.set_display("ada", Some("Ada".into())).unwrap();
+        assert_eq!(kept("ada"), Some(first + 90));
+
+        // ci's token: the service seen, the token used; the other token never.
+        a.who(&secret).unwrap();
+        let at = seen(&a, "ci").expect("seen");
+        assert_eq!((used(&a, &made.id), used(&a, &unused.id)), (Some(at), None));
+        let again = Accounts::open(&path).unwrap();
+        assert_eq!((seen(&again, "ci"), used(&again, &made.id), used(&again, &unused.id)), (Some(at), Some(at), None), "kept in the file");
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(!file.contains(&secret) && !file.contains(&session), "only hashes are kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

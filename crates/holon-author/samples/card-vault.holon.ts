@@ -8,7 +8,7 @@
 // number was, as every flow's show ‹taint:authorization› for a bearer token and ‹taint:cookie› for
 // a cookie. The caller is answered as always.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   merchant_key   the key merchants send, six characters or more
 //
 // Try it: deploy it, then

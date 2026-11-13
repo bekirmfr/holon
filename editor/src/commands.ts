@@ -1,6 +1,6 @@
 // The command palette's (ui/CommandPalette.tsx) pure part: how well what is typed matches an
 // entry, the same way the terminal workbench's Ctrl+P does (crates/holon/src/workbench/palette.rs),
-// and what a `:` command says.
+// a run asked for by its number, and what a `:` command says.
 
 import { isTheme, type Theme } from "./look";
 
@@ -44,6 +44,22 @@ export function ranked<T extends { label: string }>(items: T[], query: string): 
     .map((x) => x.it);
 }
 
+/** The run a query asks for by its number (`4812`, `#4812`, `run 4812`), or null. */
+export function runNumber(query: string): number | null {
+  const m = /^\s*(?:run\s+)?#?(\d+)\s*$/i.exec(query);
+  return m ? Number(m[1]) : null;
+}
+
+/** What the palette shows for `query`: a run asked for by its number first (`byNumber` says
+ *  which runs that is: that run of each deployed flow), then the entries that match, best
+ *  first; an entry the number already gave isn't shown twice. */
+export function matches(commands: Command[], query: string, byNumber: (seq: number) => Command[] = () => []): Command[] {
+  const seq = runNumber(query);
+  const first = seq === null ? [] : byNumber(seq);
+  const given = new Set(first.map((c) => c.label));
+  return [...first, ...ranked(commands, query).filter((c) => !given.has(c.label))];
+}
+
 /** What a `:` command asks for. */
 export type ColonCommand =
   | { kind: "line"; line: number }
@@ -53,6 +69,8 @@ export type ColonCommand =
   | { kind: "new" }
   | { kind: "restore" }
   | { kind: "keys" }
+  | { kind: "check" }
+  | { kind: "call" }
   | { kind: "theme"; theme: Theme };
 
 /** The `:` commands, as the palette offers them while one is being typed. */
@@ -61,6 +79,8 @@ export const COLON_HELP: [string, string][] = [
   [":deploy", "deploy the flow"],
   [":save", "save it"],
   [":fmt", "format the text as holon fmt writes it"],
+  [":check", "look for mistakes in the text now, as holon check does"],
+  [":call", "try a request: the request tester"],
   [":new", "a new, untitled flow"],
   [":restore", "go back to an earlier version of the flow viewed"],
   [":theme light", "how the editor looks: auto, light or dark"],
@@ -78,6 +98,8 @@ export function parseColon(text: string): ColonCommand | { error: string } {
     case "new":
     case "restore":
     case "keys":
+    case "check":
+    case "call":
       return { kind: head.toLowerCase() as "deploy" };
     case "w":
       return { kind: "save" };

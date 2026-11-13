@@ -1293,9 +1293,12 @@ fn met(sql: &str, changed: u64, expect: Option<f64>) -> Result<(), String> {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, d: &Database) -> serde_json::Value {
+/// A binding as the admin panel and `holon database list` show it. Where it is (its connection's
+/// source and address, or its file) only for `sees_where`: whoever may bind (web console L4, Q4).
+fn shown(name: &str, deployment: Option<&str>, d: &Database, sees_where: bool) -> serde_json::Value {
     let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "engine": d.engine, "access": d.access, "lock": d.lock });
     match (&d.connection, &d.address) {
+        _ if !sees_where => {}
         (Some(source), address) => {
             shown["connection"] = serde_json::json!(source);
             shown["address"] = serde_json::json!(address);
@@ -1310,9 +1313,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/databases` (list, bind), `/admin/databases/<name>` (unbind; `?deployment=<slug>` for
-/// a deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// a deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each database is. What they do goes
+/// in the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.databases;
@@ -1320,8 +1324,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, d)| shown(n, None, d));
-                let own = bound.deployments.iter().flat_map(|(s, dbs)| dbs.iter().map(move |(n, d)| shown(n, Some(s), d)));
+                let server = bound.server.iter().map(|(n, d)| shown(n, None, d, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, dbs)| dbs.iter().map(move |(n, d)| shown(n, Some(s), d, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -1363,7 +1367,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the database {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &d))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &d, sees_where))
                     }
                     Err(e) => e,
                 }

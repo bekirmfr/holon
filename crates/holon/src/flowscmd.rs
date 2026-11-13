@@ -173,7 +173,7 @@ fn save(who: &str, args: &cmdline::Args, file: &str) -> i32 {
 pub(crate) fn saved_lines(saved: &Value, deployed: &[Value]) -> Vec<String> {
     let all: Vec<&Value> = saved.as_array().into_iter().flatten().collect();
     if all.is_empty() {
-        return vec!["no flow is saved (holon new --sample lists the samples)".into()];
+        return vec!["no flow is saved (holon new --help lists the samples)".into()];
     }
     let mut rows = vec![["name", "saved", "by", "deployed"].map(String::from).to_vec()];
     for f in all {

@@ -7,7 +7,7 @@
 // with its status, and the page says so. On the free tier Google may use what is sent to improve
 // its products.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   gemini_api_key   a Gemini API key, free from aistudio.google.com (Get API key)
 //
 // Try it: deploy it, open http://127.0.0.1:8128/ and ask something: the answer shows as it is

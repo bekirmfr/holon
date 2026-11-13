@@ -54,7 +54,7 @@ holon queue remove payout_events
 The key needs these actions on the queue: `sqs:GetQueueAttributes`, `sqs:ReceiveMessage`,
 `sqs:DeleteMessage` and `sqs:ChangeMessageVisibility` to listen, `sqs:SendMessage` to send.
 Binding asks `GetQueueAttributes` alone, so a key without the rest is bound all the same: a
-listener's receive is refused (the server panel says `unreachable`, with what SQS answered), and
+listener's receive is refused (the editor's Try a request says `unreachable`, with what SQS answered), and
 a send is given up on the timeline (`answered 403 to SendMessage: AccessDenied: …`).
 
 ## Listening
@@ -148,7 +148,7 @@ route.post("/retries", (req) => {
 
 ## Its state
 
-The server panel says, for each queue a deployment listens to, what its listener is doing
+The editor's Try a request says, for each queue a deployment listens to, what its listener is doing
 (`receiving, 4 run, 1 passed over`), and for each it sends to, what its messages came to
 (`2 sent, 1 waiting`). `GET /deployments/<slug>/queues` answers the same:
 

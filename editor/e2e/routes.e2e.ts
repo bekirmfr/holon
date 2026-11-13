@@ -2,7 +2,7 @@
 // flow's address opens it, and an address that names nothing says so.
 
 import { expect, test } from "./fixtures";
-import { deploy, gotoPage, navLink, notices, openSample, viewNewestRun } from "./helpers";
+import { deploy, gotoPage, navLink, notices, openSample, viewNewestRun, viewTab } from "./helpers";
 
 test("a reload keeps the page, the flow and its mode; Back goes back", async ({ page }) => {
   await page.goto("/#flows");
@@ -74,6 +74,7 @@ test("keys: a page by its number, Esc up, ? for them all, and j steps through a 
   const port = await deploy(page);
   expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
   await viewNewestRun(page);
+  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.keyboard.press("j");
   await expect(page.locator(".hl-view__bottom")).toContainText(/node 1 of \d+/);

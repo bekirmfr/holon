@@ -37,9 +37,10 @@ const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
     --session N            from the state session N left (holon state <slug> --sessions)
   pause                    hold its runs; its state is kept
   stop                     end it; run starts it again
-  remove                   delete a stopped deployment for good: its runs' log, its timeline,
-                           its state and its secrets (holon export keeps its runs first).
-                           --yes says you mean it
+  remove                   delete a stopped deployment for good: its state, its sessions and
+                           its secrets. Its runs' log and timeline are kept on the host, as an
+                           export holon verify checks; the slug deployed again starts a new
+                           log. --yes says you mean it
 
 examples:
   holon pause shop
@@ -260,7 +261,7 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
         }
         "remove" => {
             if !args.flag("--yes") {
-                eprintln!("{who}: this deletes {slug:?} for good: its runs' log, its timeline, its state and its secrets (holon export {slug} keeps its runs first). Run it again with --yes to go ahead.");
+                eprintln!("{who}: this deletes {slug:?} for good: its state, its sessions and its secrets (its runs' log and timeline are kept on the host, for holon verify). Run it again with --yes to go ahead.");
                 return 2;
             }
             cmdline::json(&who, &args, "DELETE", &path, None)
@@ -270,6 +271,9 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
     match answer {
         Ok(d) if action == "remove" => {
             println!("{slug}: removed{}", if d["status"].is_string() { ", its secrets forgotten" } else { "" });
+            if let Some(at) = d["records"].as_str() {
+                println!("its run records: {at} (holon verify checks it)");
+            }
             0
         }
         Ok(d) => {

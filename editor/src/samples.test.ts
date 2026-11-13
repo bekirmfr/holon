@@ -29,7 +29,8 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
 import { settingsOf, settingsSaid } from "./tabs";
-import { DEFAULT_SETTINGS } from "./DeployBar";
+import { compilerLaid } from "./canvasTidy";
+import { DEFAULT_SETTINGS } from "./DeploySettings";
 import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
@@ -81,6 +82,13 @@ describe("sample flows", () => {
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
+  });
+
+  it("are laid out on the compiler's grid, so they open tidied (canvasTidy.compilerLaid)", () => {
+    for (const s of samples()) {
+      const nodes = buildSample(s, new Evaluator()).nodes as PrimitiveNodeType[];
+      if (nodes.length > 1) expect(compilerLaid(nodes), s.name).toBe(true);
+    }
   });
 
   for (const s of samples()) {

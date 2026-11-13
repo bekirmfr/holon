@@ -1613,7 +1613,7 @@ declare module "holon" {
   /**
    * `secret() -> out: Text  {name: api_key}`
    *
-   * A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.
+   * A secret's value, by the name set on the node, from the deployment's secrets (set in the flow's Settings). Never logged: it shows as ‹secret:name›. Reading it is a permission.
    */
   export function secret(...args: any[]): any
 

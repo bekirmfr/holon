@@ -363,7 +363,9 @@ fn delete_deployment_stops_its_actions_and_removes_it_from_the_list() {
     assert_eq!(route(&state, &req("POST", "/deployments/echo/stop", vec![])).status_code, 200);
     let deleted = route(&state, &req("DELETE", "/deployments/echo", vec![]));
     assert_eq!(deleted.status_code, 200);
-    assert_eq!(body_json(deleted)["unit"], to_hex(&unit));
+    let deleted = body_json(deleted);
+    assert_eq!(deleted["unit"], to_hex(&unit));
+    assert_eq!(deleted["records"], serde_json::Value::Null, "kept in memory only, its records have nowhere to go");
 
     // 404s after deletion — same as a slug that was never deployed.
     assert_eq!(echo(), 404);
@@ -658,6 +660,9 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
     }
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "glance", "unit": plan.unit })).unwrap())));
     assert_eq!(deploy_json(&state, "glance", parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    let quiet = body_json(route(&state, &req("GET", "/summary", vec![])));
+    assert_eq!(quiet["deployments"][0]["p50_ms"], serde_json::Value::Null, "no runs, no median: {quiet}");
+    assert_eq!(quiet["deployments"][0]["last_ms"], serde_json::Value::Null, "no runs, no last: {quiet}");
     for _ in 0..3 {
         assert_eq!(route(&state, &req("POST", "/trigger/glance/bump", b"{}".to_vec())).status_code, 200);
     }
@@ -673,6 +678,12 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
     let latest = summary["latest"].as_array().unwrap();
     assert_eq!(latest.iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [2, 1, 0], "the newest first");
     assert!(latest.iter().all(|r| r.get("request").is_none() && r["failed"] == false), "{latest:?}");
+    // Its median run time: the middle of the three it ran.
+    let mut took: Vec<f64> = latest.iter().map(|r| r["duration_ms"].as_f64().unwrap()).collect();
+    took.sort_by(f64::total_cmp);
+    assert_eq!(flow["p50_ms"].as_f64(), Some(took[1]), "{flow}");
+    // When it last ran: its newest run's start.
+    assert_eq!(flow["last_ms"], latest[0]["at_ms"], "{flow}");
     assert_eq!(summary["chain"]["checked"], serde_json::Value::Null, "no check yet");
     // Checked: every line follows the one before, and the summary says so until the next.
     let check = body_json(route(&state, &req("POST", "/summary/check", vec![])));
@@ -1408,6 +1419,35 @@ fn an_admin_sets_how_often_the_server_sweeps_in_its_policy_file() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// `GET /permissions` answers the policy file's text as it was read, comments and all, for a
+/// person to read whole (web-console-L4.md §9.3): the file as in force, not as it is on disk since;
+/// read again, the new text. Without a file, none: the defaults are in force.
+#[test]
+fn the_policy_answers_its_file_as_read() {
+    let mut state = test_state();
+    let text_of = |state: &AppState| body_json(route(state, &req("GET", "/permissions", vec![])))["text"].clone();
+    assert_eq!(text_of(&state), serde_json::Value::Null, "no file: the defaults");
+    let path = std::path::PathBuf::from(unique_temp_path("policy-text")).with_extension("toml");
+    let first = "# the host's policy\n[limits]\nmax_requests = 40 # a quiet host\n";
+    std::fs::write(&path, first).unwrap();
+    state.policy_path = path.display().to_string().into();
+    let text = || text_of(&state);
+    assert_eq!(route(&state, &req("POST", "/permissions/reload", vec![])).status_code, 200);
+    assert_eq!(text(), first);
+    // Edited on disk, it is the text in force until read again.
+    let second = "[limits]\nmax_requests = 30\n";
+    std::fs::write(&path, second).unwrap();
+    assert_eq!(text(), first, "not read again yet");
+    let reloaded = body_json(route(&state, &req("POST", "/permissions/reload", vec![])));
+    assert_eq!(reloaded["text"], second, "the reload answers it too");
+    assert_eq!(text(), second);
+    // A file that doesn't parse changes nothing, its text neither.
+    std::fs::write(&path, "[limits]\nnot_a_limit = 1\n").unwrap();
+    assert_eq!(route(&state, &req("POST", "/permissions/reload", vec![])).status_code, 400);
+    assert_eq!(text(), second);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn an_in_memory_store_has_nothing_to_sweep() {
     let state = test_state();
@@ -1454,6 +1494,48 @@ fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     let missing = route(&state, &req("POST", "/deployments/w/restore", serde_json::to_vec(&serde_json::json!({ "run": 1, "state": true, "dry_run": true })).unwrap()));
     let message = body_json(missing)["error"].as_str().unwrap_or_default().to_string();
     assert!(message.contains("it keeps the newest 3 runs"), "{message}");
+}
+
+/// A flow's settings change in place where they narrow it (web-console-L4.md §8.4): a limit
+/// lowered, fewer runs kept, at once and noted on its grant. One raised widens what it may do, so
+/// it is refused, saying it takes a new version, and nothing in the same change applies.
+#[test]
+fn settings_lower_in_place_and_a_raise_takes_a_new_version() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nkeep_runs = 5\n[ceilings]\nkeep_runs = 50").unwrap());
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+    for _ in 0..5 {
+        assert_eq!(put(&state, "w", "x").status_code, 200);
+    }
+    let settings = |body: serde_json::Value| route(&state, &req("POST", "/deployments/w/settings", serde_json::to_vec(&body).unwrap()));
+    let grant = || body_json(route(&state, &req("GET", "/deployments/w/grant", vec![])))["grant"].clone();
+    let kept = || log_entries(&state, "w").len();
+
+    // Lowered, with agents kept from proposing, in one change: the log keeps that many at once.
+    let lowered = settings(serde_json::json!({ "lower": { "keep_runs": 2, "run_budget_ms": 1000 }, "agents_propose": false }));
+    assert_eq!(lowered.status_code, 200);
+    let entry = body_json(lowered);
+    assert_eq!(entry["agents_propose"], false, "{entry}");
+    assert_eq!(grant()["lowered"], serde_json::json!({ "keep_runs": 2, "run_budget_ms": 1000 }));
+    assert_eq!(kept(), 2);
+    let changes: Vec<String> = grant()["changes"].as_array().unwrap().iter().map(|c| c["change"].as_str().unwrap().to_string()).collect();
+    assert_eq!(changes, ["lowered keep_runs to 2", "lowered run_budget_ms to 1000"]);
+
+    // Raised: refused whole, the agents' setting with it.
+    let raised = settings(serde_json::json!({ "lower": { "keep_runs": 4 }, "agents_propose": true }));
+    assert_eq!(raised.status_code, 400);
+    let said = body_json(raised)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("keep_runs is 2") && said.contains("a new version, which a person approves"), "{said}");
+    assert_eq!(grant()["lowered"]["keep_runs"], 2);
+    assert!(state.deployments.lock().unwrap()["w"].agents_propose_off, "nothing in the change applied");
+
+    // What isn't a setting, or is nothing, is refused.
+    for bad in [serde_json::json!({}), serde_json::json!({ "lower": { "no_such_limit": 1 } }), serde_json::json!({ "raise": { "keep_runs": 9 } })] {
+        assert_eq!(settings(bad.clone()).status_code, 400, "{bad}");
+    }
+    assert_eq!(route(&state, &req("POST", "/deployments/none/settings", serde_json::to_vec(&serde_json::json!({ "agents_propose": true })).unwrap())).status_code, 404);
 }
 
 /// With the exceptions granted (a host whose policy allows them, a deployment that asks), an
@@ -2319,6 +2401,41 @@ export const pay = action(async (order) => {
     let activity = as_ada("/activity")["entries"].as_array().unwrap().clone();
     let did = |action: &str, by: &str| activity.iter().filter(|e| e["action"] == action && e["by"] == by).count();
     assert_eq!((did("approved", "ada"), did("approved", "bob"), did("declined", "bob")), (2, 1, 1), "{activity:?}");
+}
+
+/// A run waiting at an approval keeps who started it, as its log entry names them: bob, who ran
+/// its action, and nobody for one started on a server without accounts. GET …/runs says it,
+/// and so do holon decide's lines.
+#[test]
+fn a_waiting_run_says_who_started_it() {
+    let mut state = test_state();
+    let text = r#"import { action, approval, flow } from "holon"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h" })
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    assert!(run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": 1 })).is_success());
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let started = route(&state, &req_as(&bob, "POST", "/trigger/payouts/pay", serde_json::to_vec(&serde_json::json!({ "amount": 2 })).unwrap()));
+    assert!(started.is_success(), "{}", String::from_utf8_lossy(&body_bytes(started)));
+
+    let runs = body_json(route(&state, &req_as(&ada, "GET", "/deployments/payouts/runs", vec![])))["runs"].as_array().unwrap().clone();
+    let mut by: Vec<serde_json::Value> = runs.iter().map(|r| r["by"].clone()).collect();
+    by.sort_by_key(|b| b.to_string());
+    assert_eq!(by, [serde_json::json!("bob"), serde_json::Value::Null], "{runs:?}");
+    let entries = body_json(route(&state, &req_as(&ada, "GET", "/deployments/payouts/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.iter().filter(|e| e["by"] == "bob").count(), 1, "its log entry names the same: {entries:?}");
+    let lines = crate::decidecmd::waiting_lines(&runs);
+    assert_eq!(lines.iter().filter(|l| l.contains("(action pay, started by bob, since ")).count(), 1, "{lines:?}");
 }
 
 /// **Guards:** an approval's steps are what its deploy asks for. A version that changes them asks
@@ -5330,6 +5447,37 @@ fn what_was_done_to_a_deployment_is_its_events() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A deploy's note is kept with the grant it makes: on its event, read back across a restart and
+/// exported, and in the activity. A deploy without one, or with only spaces, keeps none.
+#[test]
+fn a_deploys_note_is_kept_on_the_grants_event() {
+    let mut state = test_state();
+    let path = unique_temp_path("deploy-note");
+    state.deployments_path = path.clone().into();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "note": "  checked the key it writes with Ada  " });
+    assert_eq!(deploy_json(&state, "noted", writer, ack).status_code, 200);
+    assert_eq!(deploy_json(&state, "noted", writer, serde_json::json!({ "note": "   " })).status_code, 200);
+
+    let events = body_json(route(&state, &req("GET", "/deployments/noted/events", vec![])))["events"].as_array().unwrap().clone();
+    assert_eq!(events.len(), 2, "{events:#?}");
+    assert_eq!((events[0]["kind"].as_str(), events[0]["note"].as_str()), (Some("deploy"), Some("checked the key it writes with Ada")));
+    assert!(events[1].get("note").is_none(), "{:?}", events[1]);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/noted/export", vec![])))).unwrap();
+    assert!(export.events[0].contains("checked the key it writes with Ada"));
+    assert!(verify::check(&export, None, &BTreeMap::new()).ok());
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
+    assert_eq!(reloaded["noted"].events.entries()[0].note.as_deref(), Some("checked the key it writes with Ada"));
+
+    let activity = body_json(route(&state, &req("GET", "/activity?limit=50", vec![])))["entries"].as_array().unwrap().clone();
+    let deployed: Vec<_> = activity.iter().filter(|e| e["action"] == "deployed" && e["target"] == "noted").collect();
+    assert_eq!(deployed.len(), 2, "{activity:#?}");
+    assert_eq!((deployed[0].get("note"), deployed[1]["note"].as_str()), (None, Some("checked the key it writes with Ada")), "newest first");
+    route(&state, &req("POST", "/deployments/noted/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/noted", vec![])).status_code, 200);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A deployments file from before rc.30 kept the last 10 earlier versions' documents only: they
 /// are numbered and their documents moved into the store at load, the current version added. They
 /// open on their canvas but don't restore, having no record of what their deploys asked.
@@ -5898,9 +6046,17 @@ fn accounts_through_the_routes() {
     assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 400);
     assert_eq!(body_json(call("PATCH", "/people/claude", serde_json::json!({ "owner": "ada" }), Some(&ada)))["owner"], "ada");
     assert_eq!(call("DELETE", "/people/cy", null.clone(), Some(&ada)).status_code, 204);
+    call("POST", "/people/ci/tokens", serde_json::json!({ "label": "never used" }), Some(&ada));
     let listed = body_json(call("GET", "/people", null.clone(), Some(&ada)));
     let kinds: Vec<_> = listed.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["kind"].as_str().unwrap())).collect();
     assert_eq!(kinds, [("ada", "person"), ("ci", "service"), ("claude", "agent")]);
+    // When each was last seen, and each token last used (web-console-L4.md §9.2): ci's first
+    // token signed its requests in; the one made since, none.
+    let of = |name: &str| listed.as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone();
+    assert!(of("ada")["last_seen"].as_u64().is_some_and(|t| t > 0), "{listed}");
+    let tokens = of("ci")["tokens"].clone();
+    assert!(tokens[0]["last_used"].as_u64().is_some_and(|t| t > 0) && tokens[1].get("last_used").is_none(), "{tokens}");
+    assert_eq!(body_json(call("GET", "/people/ci/tokens", null.clone(), Some(&ada))), tokens, "its tokens' own route says the same");
 }
 
 /// The run file's token (local.rs) is the OS user's admin, by its name, until the server is set
@@ -6249,6 +6405,95 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
 
     route(&state, &req("POST", "/deployments/verified/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/verified", vec![]));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// One run, exported alone (web console L4, Q3): its line as written, which names the hash of the
+/// line before it, and the unit it ran. Checked offline it runs again to its entry, its hash is
+/// the head, and the report says the line before it is only the log's. Its line changed and
+/// hashed again, it no longer runs to its entry; changed and not, its head doesn't match.
+#[test]
+fn one_run_exported_alone_verifies_and_a_changed_one_doesnt() {
+    let state = test_state();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "single", writer, ack).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(put(&state, "single", body).status_code, 200);
+    }
+    let whole: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/single/export", vec![])))).unwrap();
+    let answer = route(&state, &req("GET", "/deployments/single/export?run=1", vec![]));
+    assert!(answer.headers.iter().any(|(k, v)| k == "Content-Disposition" && v.contains("single-run-1.json")), "{:?}", answer.headers);
+    let one: verify::Export = serde_json::from_value(body_json(answer)).unwrap();
+    assert_eq!(one.lines, [whole.lines[1].clone()], "its line exactly as written");
+    assert_eq!(one.head, recorder::line_hash(&one.lines[0]));
+    assert!(one.lines[0].contains(&recorder::line_hash(&whole.lines[0])), "it names the hash of the line before it");
+    assert_eq!(one.units, whole.units, "the units it ran, one version's as all three ran");
+    let report = verify::check(&one, Some(&one.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!((report.runs, report.reruns[0].1 == verify::Rerun::Matched), (1, true));
+    let said = verify::describe(&report, Some(&one.head));
+    assert!(said.contains(&format!("run 1 alone: the line before it hashes to {}", &recorder::line_hash(&whole.lines[0])[..12])), "{said}");
+
+    // What it performed changed, and its line hashed again: it no longer runs to its entry.
+    let mut changed: verify::Export = serde_json::from_value(serde_json::to_value(&one).unwrap()).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&one.lines[0]).unwrap();
+    let performed = v["performed"].to_string().replace("there", "elsewhere");
+    assert_ne!(performed, v["performed"].to_string());
+    v["performed"] = serde_json::from_str(&performed).unwrap();
+    changed.lines = vec![serde_json::to_string(&v).unwrap()];
+    changed.head = recorder::line_hash(&changed.lines[0]);
+    let report = verify::check(&changed, None, &BTreeMap::new());
+    assert_eq!(report.reruns[0], (1, verify::Rerun::Differs("the effects it performed".into())));
+    assert!(!report.ok());
+    // Changed, its head left as it was: the head doesn't match.
+    changed.head = one.head.clone();
+    assert!(!verify::check(&changed, None, &BTreeMap::new()).ok());
+
+    assert_eq!(route(&state, &req("GET", "/deployments/single/export?run=9", vec![])).status_code, 404);
+    assert_eq!(route(&state, &req("GET", "/deployments/single/export?run=x", vec![])).status_code, 400);
+}
+
+/// Removing a deployment keeps its run records (web console L4 §8.4): its log and timeline are
+/// written first as an export `holon verify` checks, beside the logs, and the answer says where.
+/// Deployed again, the slug starts a new chain: its first run names no line before it, and the
+/// removed runs stay, checked as they were.
+#[test]
+fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() {
+    let mut state = test_state();
+    let path = unique_temp_path("removed-log");
+    state.deployments_path = path.clone().into();
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "gone", writer, ack.clone()).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(put(&state, "gone", body).status_code, 200);
+    }
+    let head = body_json(route(&state, &req("GET", "/deployments/gone/log", vec![])))["head"].as_str().unwrap().to_string();
+    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
+    let removed = body_json(route(&state, &req("DELETE", "/deployments/gone", vec![])));
+    let kept = std::path::PathBuf::from(removed["records"].as_str().unwrap_or_else(|| panic!("where its records are: {removed}")));
+    let logs = recorder::file_for(&Place::parse(&path), "gone").unwrap();
+    assert_eq!(kept.parent(), Some(logs.with_file_name("removed").as_path()), "{}", kept.display());
+    assert!(!logs.exists(), "its live log goes");
+
+    let export = verify::read_export(&kept).unwrap();
+    assert_eq!((export.lines.len(), export.head.as_str()), (3, head.as_str()));
+    assert!(export.events.iter().any(|e| e.contains("\"deploy")), "its timeline: {:?}", export.events);
+    let report = verify::check(&export, Some(&head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    // The slug deployed again: a new chain, the old records where they were.
+    assert_eq!(deploy_json(&state, "gone", writer, ack).status_code, 200);
+    assert!(log_entries(&state, "gone").is_empty(), "no run on its new record yet");
+    assert_eq!(put(&state, "gone", "anew").status_code, 200);
+    let fresh = log_entries(&state, "gone");
+    assert_eq!((fresh.len(), fresh[0]["seq"].as_u64(), fresh[0].get("prev")), (1, Some(0), None), "{fresh:?}");
+    assert_eq!(verify::read_export(&kept).unwrap().lines, export.lines);
+
+    route(&state, &req("POST", "/deployments/gone/stop", vec![]));
+    route(&state, &req("DELETE", "/deployments/gone", vec![]));
+    let _ = std::fs::remove_dir_all(logs.parent().unwrap());
     let _ = std::fs::remove_file(&path);
 }
 
@@ -11555,9 +11800,15 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
 
     let entries = log_entries(&state, &slug);
     assert!(entries.iter().any(|e| e["route"] == "GET /live" && e["status"] == 200), "a subscription is logged as a request");
+    // What the console counts (Resources › Collections and channels): the packs kept, the
+    // subscribers now, none of the packs.
+    let counted = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/channels"), vec![])));
+    assert_eq!(counted(), serde_json::json!({ "channels": [{ "name": "updates", "kept": 2, "subscribers": 3 }] }));
 
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
     assert_eq!(next_event(&mut live), ["event: closed", "data: {}"]);
+    assert_eq!(counted()["channels"][0], serde_json::json!({ "name": "updates", "kept": 2, "subscribers": 0 }), "the kept packs stay");
+    assert_eq!(route(&state, &req("GET", "/deployments/nope/channels", vec![])).status_code, 404);
 }
 
 /// A durable run's progress (`docs/L4s/channels-L4.md` §8, slice 3): the pack that doesn't wait

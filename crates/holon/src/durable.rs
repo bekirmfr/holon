@@ -788,6 +788,7 @@ impl ParkedRun {
             "run_id": self.run_id,
             "kind": self.kind,
             "route": self.route,
+            "by": self.started_by,
             "parked_at": self.parked_at,
             "waiting": self.waiting.iter().map(StoredWaiting::listed).collect::<Vec<_>>(),
             "delivered": self.events.keys().collect::<Vec<_>>(),

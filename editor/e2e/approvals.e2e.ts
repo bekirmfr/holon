@@ -43,7 +43,7 @@ test("a flow saved and never deployed waits under Deploys; reviewed, ticked and 
 
   // Deployed: its page says so, and nothing waits for it any more.
   await expect(page).toHaveURL(new RegExp(`#${name}$`));
-  await expect(page.getByLabel(`flow ${name}`).locator(".hl-flow__status")).toContainText("running");
+  await expect(page.getByLabel(`flow ${name}`).locator(".hl-flow__head .hl-chip").first()).toHaveText("live");
   await page.goto("/#approvals");
   await expect(page.getByRole("region", { name: "deploys" }).getByRole("row").filter({ hasText: name })).toHaveCount(0);
 });

@@ -1,13 +1,17 @@
 // The editor's tab strip (Home, then one tab per open flow), its bar (the flow toolbar, above
-// the canvas), and the projection panel (bottom right of the canvas).
+// the canvas: web-console-L4.md §5.1), and the projection panel (bottom right of the canvas).
 
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import type { WValue } from "./holon";
 import { boundaryLabels, formatValue } from "./diagnostics";
 import { BoundaryField } from "./BoundaryField";
 import type { Projection } from "./canvasOps";
 import type { Mode } from "./tabs";
+import type { CanvasLevel } from "./canvasLevel";
 import { Kbd } from "./ui/Kbd";
+import { gateOf, type Answer } from "./useCan";
+import type { DeploymentEntry } from "./server";
+import { follow, format, type Route } from "./routes";
 
 const primaryBtn: CSSProperties = {
   font: "inherit",
@@ -141,55 +145,83 @@ function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; o
  *  pane and whether it shows ("text on"). */
 export type PaneToggle = { key: string; name: string; on: boolean; toggle: () => void };
 
-/** The editor's bar, above the canvas: the flow's name and mode, the panes, then in edit mode
- *  save, undo/redo and the deploy bar (passed in as `deployBar`). `error` shows in both. */
+const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
+
+/** What the bar says of the file: `v3 live` while a version of it is deployed (`v3 paused`,
+ *  `v3 stopped`), else `saved` or `draft`; and `changed` while it has unsaved changes. */
+export function fileState(entry: DeploymentEntry | undefined, saved: boolean, dirty: boolean): string[] {
+  const deployed = entry ? `${entry.version ? `v${entry.version} ` : ""}${entry.status === "running" ? "live" : entry.status}` : null;
+  return [deployed ?? (saved ? "saved" : "draft"), ...(dirty ? ["changed"] : [])];
+}
+
+/** The editor's bar, above the canvas (web-console-L4.md §5.1): the mode, the file with its state,
+ *  the panes; in Edit, format, check, save and deploy; in View runs, its runs and history on its
+ *  page. A deployed flow's status is a chip that goes to its page, where it is paused, resumed,
+ *  stopped and run. `error` shows in both. The canvas's own controls are its head's (CanvasHead). */
 export function FlowToolbar({
-  histVersion,
   mode,
   canView,
   onMode,
   panes,
   flowName,
+  saved,
   dirty,
-  onSave,
-  canUndo,
-  canRedo,
-  onUndo,
-  onRedo,
-  deployBar,
+  entry,
+  navigate,
+  edit,
   error,
-  onTidy,
-  onFit,
 }: {
-  histVersion: number;
   mode: Mode;
   /** Whether it has a deployment to view. */
   canView: boolean;
   onMode: (m: Mode) => void;
   panes: PaneToggle[];
   flowName: string | null;
+  /** Whether it is saved on the server, and whether it has unsaved changes. */
+  saved: boolean;
   dirty: boolean;
-  onSave: () => void;
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
-  deployBar: ReactNode;
+  /** Its deployment, if it has one. */
+  entry: DeploymentEntry | undefined;
+  navigate: (r: Route) => void;
+  /** Edit's buttons: format and check the text, save it (`maySave`: `flow.edit`, or why not),
+   *  and deploy it (`mayDeploy`: `flow.propose`, as `POST /deploy` asks; an agent's version that
+   *  needs a person waits as a proposal). `outOfDate`: the flow no longer matches what is
+   *  deployed; `waiting`: the version it is, when it is proposed already and waits for a person;
+   *  `startsNothing`: nothing would start a run, so it doesn't deploy. */
+  edit: {
+    onFormat: () => void;
+    onCheck: () => void;
+    onSave: () => void;
+    maySave?: Answer;
+    onDeploy: () => void;
+    mayDeploy?: Answer;
+    busy: boolean;
+    outOfDate: boolean | null;
+    waiting?: number | null;
+    startsNothing: boolean;
+  };
   error: string;
-  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
-  onTidy: () => void;
-  /** Fits the whole flow in the view. */
-  onFit: () => void;
 }) {
+  const link = (to: Route, label: string, title: string) => (
+    <a className="hl-bar__link" href={format(to)} onClick={follow(to, navigate)} title={title}>
+      {label}
+    </a>
+  );
+  const slug = flowName ?? "";
+  const nothing =
+    "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand)";
+  const deployOff = edit.busy || edit.startsNothing || (edit.mayDeploy ?? true) !== true;
   return (
-    // histVersion is what makes the undo/redo disabled state live — history itself is a ref
-    // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
-    <div data-hist={histVersion} style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-      <span style={{ color: mode === "view" ? "var(--ink)" : "var(--muted)", fontSize: 12, letterSpacing: "0.04em" }}>
-        {flowName ?? "untitled"}
-        {dirty && <span title="modified: unsaved changes"> ●</span>}
-      </span>
+    <div className="hl-bar">
       <ModeSwitch mode={mode} canView={canView} onMode={onMode} />
+      <span className="hl-bar__file" title={dirty ? "unsaved changes" : undefined}>
+        <span className="hl-bar__name">{flowName ?? "untitled"}.holon.ts</span>
+        {fileState(entry, saved, dirty).map((s) => (
+          <span key={s} className={s === "changed" ? "hl-bar__state hl-bar__state--changed" : "hl-bar__state"}>
+            {s}
+          </span>
+        ))}
+      </span>
       <span className="hl-panes" role="group" aria-label="panes">
         {panes.map((p) => (
           <button
@@ -205,29 +237,140 @@ export function FlowToolbar({
           </button>
         ))}
       </span>
-      <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
-        ⤢
-      </button>
       {mode === "view" ? (
-        <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
+        <>
+          {link({ kind: "flow", slug, tab: "runs" }, "All runs", "every run of it, on its page")}
+          {link({ kind: "flow", slug, tab: "history" }, "History", "its versions and what changed, on its page")}
+        </>
       ) : (
         <>
-          <button onClick={onSave} style={primaryBtn}>
+          <button className="hl-bar__button" onClick={edit.onFormat} title="as holon fmt writes it (Shift+Alt+F)">
+            format
+          </button>
+          <button className="hl-bar__button" onClick={edit.onCheck} title="look for mistakes now, as holon check does: listed in Problems">
+            check
+          </button>
+          <button onClick={edit.onSave} style={primaryBtn} {...gateOf(edit.maySave ?? true)}>
             save
           </button>
-          <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
-            ⟲
+          <button
+            onClick={edit.onDeploy}
+            disabled={deployOff}
+            title={edit.mayDeploy !== undefined && edit.mayDeploy !== true ? edit.mayDeploy : edit.startsNothing ? nothing : entry ? "deploy the flow as it is now; the deployment keeps its state and sessions" : "deploy this flow, named after it"}
+            style={{ ...primaryBtn, opacity: deployOff ? 0.5 : 1, cursor: deployOff ? "default" : "pointer" }}
+          >
+            {edit.busy ? "deploying…" : entry ? "update" : "deploy"}
+            {edit.outOfDate && (edit.waiting ?? null) === null && <span title="the canvas has changed since it was deployed"> •</span>}
           </button>
-          <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
-            ⟳
-          </button>
-          <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
-            ▤
-          </button>
-          {deployBar}
+          {edit.waiting != null &&
+            link({ kind: "review", slug, version: edit.waiting }, `v${edit.waiting} waits`, `as it is now, it is v${edit.waiting}, proposed and waiting for a person to approve it: its review`)}
+          {edit.startsNothing && (
+            <span style={{ color: "var(--warn)", fontSize: 11 }} title={nothing}>
+              nothing would start a run
+            </span>
+          )}
         </>
       )}
+      {entry && (
+        <a
+          className={`hl-bar__status hl-flow__status--${entry.status}`}
+          href={format({ kind: "flow", slug, tab: "status" })}
+          onClick={follow({ kind: "flow", slug, tab: "status" }, navigate)}
+          title={`its page: pause, resume, stop or run it (session ${entry.session})`}
+        >
+          {STATUS_MARK[entry.status]} {entry.status}
+          {entry.port !== null && entry.status !== "stopped" ? ` :${entry.port}` : ""}
+        </a>
+      )}
+      {entry?.attention && (
+        <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.attention}>
+          ⚠ needs approval
+        </span>
+      )}
+      {entry?.listen_error && (
+        <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.listen_error}>
+          ⚠ port in use
+        </span>
+      )}
       {error && <span style={{ color: "var(--bad)", fontSize: 11, maxWidth: 420 }}>{error}</span>}
+    </div>
+  );
+}
+
+/** The canvas pane's head: its level, Statements or Nodes (`l`), and at the Nodes level the
+ *  canvas's own controls: fit, and while it is edited undo, redo and tidy. */
+export function CanvasHead({
+  level,
+  onLevel,
+  editing,
+  histVersion,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onTidy,
+  onFit,
+}: {
+  level: CanvasLevel;
+  onLevel: (l: CanvasLevel) => void;
+  /** In edit mode: undo, redo and tidy are offered. */
+  editing: boolean;
+  histVersion: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
+  onTidy: () => void;
+  /** Fits the whole flow in the view. */
+  onFit: () => void;
+}) {
+  const seg = (l: CanvasLevel, label: string, title: string) => (
+    <button
+      className="hl-levels__seg"
+      onClick={() => l !== level && onLevel(l)}
+      aria-label={label}
+      aria-pressed={l === level}
+      aria-keyshortcuts="l"
+      title={`${title} (l)`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    // histVersion is what makes the undo/redo disabled state live — history itself is a ref
+    // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
+    <div className="hl-canvas__head" data-hist={histVersion}>
+      <span className="hl-canvas__title">Canvas</span>
+      <kbd className="hl-pane-key" aria-hidden="true">
+        c
+      </kbd>
+      <span className="hl-levels" role="group" aria-label="canvas level">
+        {seg("statements", "Statements", "the flow by its statements, as the text says it: read only, edited through the text")}
+        {seg("nodes", "Nodes", "the nodes the flow runs: place, wire, group")}
+      </span>
+      <Kbd k="l" />
+      <span style={{ flex: 1 }} />
+      {level === "nodes" && (
+        <span className="hl-canvas__controls">
+          <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
+            ⤢
+          </button>
+          {editing && (
+            <>
+              <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
+                ⟲
+              </button>
+              <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
+                ⟳
+              </button>
+              <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
+                ▤
+              </button>
+            </>
+          )}
+        </span>
+      )}
     </div>
   );
 }

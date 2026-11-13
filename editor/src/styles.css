@@ -250,9 +250,47 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__head > .hl-flow__status[class*="--"] { align-self: center; font-size: var(--fs-sm); }
 /* A flow is named in mono, as the text names it. */
 .hl-flow[aria-label^="flow "] > .hl-flow__head .hl-flow__name { font-family: var(--mono); font-size: 20px; letter-spacing: 0; }
-.hl-table td:first-child, .hl-overview__runs .hl-table__dim, .hl-overview__runs .hl-flow__what { font-family: var(--mono); font-size: 12px; }
+.hl-table td:first-child { font-family: var(--mono); font-size: 12px; }
 .hl-flow__port { color: var(--faint); }
 .hl-flow__spacer { flex: 1; }
+/* The header (web-console-L4.md §8.1): its state's dot, version, chips, what starts it, and its
+   description on a line of its own. */
+.hl-flow__dot { align-self: center; width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+.hl-flow__dot--running { background: var(--ok); }
+.hl-flow__dot--paused { background: var(--warn); }
+.hl-flow__dot--draft { background: transparent; border: 1px dashed var(--faint); }
+.hl-flow__version { font-family: var(--mono); font-size: var(--fs-sm, 12px); color: var(--muted); }
+.hl-flow__starts { font-size: var(--fs-sm, 12px); color: var(--muted); }
+.hl-flow__about { flex-basis: 100%; order: 9; margin: 0; font-size: var(--fs, 13px); color: var(--muted); }
+.hl-flow__button--waits:not(:disabled) { color: var(--warn); border-color: var(--warn); }
+.hl-flow__link { font: inherit; padding: 0; color: var(--accent); background: none; border: 0; cursor: pointer; text-decoration: underline; }
+.hl-flow__out { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; color: var(--body); }
+.hl-flow__waits { padding: 2px 0 4px; }
+.hl-flow__settings { display: flex; flex-direction: column; gap: 18px; }
+.hl-flow__limits .hl-flow__number { width: 110px; }
+@media (max-width: 560px) {
+  .hl-flow__limits :is(th, td):nth-child(3) { display: none; }
+  .hl-flow__limits .hl-flow__number { width: 72px; }
+}
+/* A value's history, under its row (FlowState.tsx), and a cell's line over time. */
+.hl-cellhistory__open { font: inherit; font-size: 10px; line-height: 1.4; padding: 0 5px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; white-space: nowrap; }
+.hl-cellhistory__open[aria-expanded="true"] { color: var(--ink); border-color: var(--accent); }
+.hl-flow__history-row > td { background: var(--surface-2); }
+.hl-cellhistory__inline { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.hl-cellline { display: block; max-width: 100%; }
+.hl-cellline__line { fill: none; stroke: var(--db, var(--accent)); stroke-width: 1.5; }
+.hl-cellline__mark line { stroke: var(--warn); stroke-dasharray: 3 2; }
+.hl-cellline__mark circle { fill: var(--warn); }
+.hl-cellline__none { font-size: 11px; color: var(--faint); }
+.hl-history__cell { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.hl-history__cell .hl-flow__filter { width: auto; }
+/* A dry run's summary in tagged lines, and what it leaves as it is. */
+.hl-dryrun__summary { margin: 0; display: grid; gap: 3px; }
+.hl-dryrun__summary > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+.hl-dryrun__summary dt { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.hl-dryrun__summary dd { margin: 0; overflow-wrap: anywhere; }
+.hl-dryrun__banner { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border: 1px solid var(--warn); border-radius: 4px; background: var(--warn-bg); }
+.hl-dryrun__banner strong { color: var(--warn); font-weight: 600; }
 .hl-flow__button {
   font: inherit; font-size: 12px; padding: 3px 10px; color: var(--body);
   background: transparent; border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
@@ -265,6 +303,11 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
 .hl-flow__none { color: var(--muted); font-size: 12px; }
 .hl-flow__bar { display: flex; align-items: center; gap: 8px; }
+/* A form the caller may not use (useCan.tsx's Gated): its controls disabled, no box of its own. */
+.hl-gated { display: contents; border: 0; padding: 0; margin: 0; min-width: 0; }
+/* The host pages draw their controls inline: one refused is greyed, and says so on hover. */
+.hl-host-page :is(button, input, select, textarea):disabled,
+.hl-canvas__bar button:disabled { opacity: 0.5; cursor: not-allowed !important; }
 .hl-flow__count { color: var(--faint); margin-left: 3px; }
 .hl-flow__said { font-size: 12px; color: var(--body); }
 .hl-flow__said code { color: var(--ink); }
@@ -275,6 +318,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flow__filter { font: inherit; font-size: 12px; padding: 3px 8px; color: var(--ink); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; width: 220px; }
 .hl-flow__split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 .hl-flow__history .hl-history { border: 1px solid var(--border); border-radius: 5px; }
+.hl-history__note { color: var(--muted); }
 .hl-history__details { display: flex; flex-direction: column; gap: 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 10px; position: sticky; top: 0; }
 .hl-history__details dl { margin: 0; display: grid; gap: 4px; }
 .hl-history__details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
@@ -340,8 +384,12 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flows__used { font-size: 11px; color: var(--faint); margin-top: 2px; }
 .hl-flows__user { color: var(--body); }
 .hl-flows__changed { font-size: 11px; color: var(--faint); }
+/* Under a flow's name: when it changed and who places it, in the page's font. */
+.hl-table td .hl-flows__changed, .hl-table td .hl-flows__used { font-family: var(--font-ui); min-width: 150px; }
 .hl-flows__do { white-space: nowrap; text-align: right; }
 .hl-flows__do .hl-flow__button { font-size: 11px; padding: 1px 7px; margin-left: 4px; }
+/* A tutorial's samples, under its first paragraph: each opens an unsaved copy. */
+.hl-library__uses { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .hl-flows__step + .hl-flows__step { margin-top: 4px; }
 .hl-library__pages { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
 .hl-library__pages a, .hl-library a { color: var(--accent); text-decoration: none; }
@@ -382,6 +430,30 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__why b { color: var(--ink); }
 .hl-review-page__note { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border-strong); color: var(--muted); white-space: pre-wrap; }
 .hl-review-page__if { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--body); }
+.hl-review-page__policy { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; color: var(--body); }
+.hl-review-page__policy span { color: var(--ok); }
+.hl-review-page__policy--no, .hl-review-page__policy--no span { color: var(--bad); }
+.hl-review-page__note-field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.hl-review-page__note-field textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 4px 6px; resize: vertical; }
+/* A proposal's card on Approvals (ApprovalsPage.tsx): its versions, place, why, and the rows that
+   change, + new in amber, − no longer struck through. */
+.hl-approval-cards { display: grid; gap: 10px; margin-bottom: 14px; }
+.hl-approval-card { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.hl-approval-card[data-at] { box-shadow: inset 3px 0 0 var(--accent); background: var(--row); }
+.hl-approval-card__head { display: flex; align-items: baseline; gap: 10px; }
+.hl-approval-card__versions { font-family: var(--mono); color: var(--body); }
+.hl-approval-card__place { color: var(--faint); }
+.hl-approval-card__by { color: var(--muted); }
+.hl-approval-card__why { margin: 0; color: var(--ink); }
+.hl-approval-card__rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.hl-approval-card__row { display: flex; gap: 6px; align-items: baseline; }
+.hl-approval-card__row--new { color: var(--warn); }
+.hl-approval-card__row--gone { color: var(--faint); }
+.hl-approval-card__row--gone > span:nth-child(2) { text-decoration: line-through; }
+.hl-approval-card__sign { font-family: var(--mono); width: 10px; }
+.hl-approval-card__line { margin-left: auto; color: var(--faint); font-size: 11px; }
+.hl-approval-card__same { margin: 0; color: var(--faint); }
+.hl-approval-card__do { display: flex; gap: 6px; justify-content: flex-end; }
 /* A version replayed on recent runs (ReplayRuns.tsx): the count, then each run that differs. */
 .hl-replay__summary { margin: 0 0 6px; font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
 .hl-replay__runs { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; font-size: 12px; }
@@ -395,16 +467,58 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__line { display: flex; gap: 10px; padding: 0 10px; color: var(--body); }
 .hl-review-page__line--at { background: var(--row); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
 .hl-review-page__n { flex: 0 0 32px; text-align: right; color: var(--faint); user-select: none; }
-.hl-review-page__canvas-box { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); }
-.hl-review-page__canvas { display: block; }
-.hl-review-page__node { fill: var(--bg); stroke: var(--border-strong); }
-.hl-review-page__wire { fill: none; stroke: var(--faint); stroke-width: 1.5; }
-.hl-review-page__label { font-size: 12px; fill: var(--ink); }
+/* The statement graph (StatementGraph.tsx): a column per trigger, a box per statement, its bar in
+   its kind's colour; new rows dashed amber, rows a run didn't reach dimmed, its step thick. */
+.hl-sg { display: flex; flex-direction: column; gap: 8px; overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); padding: 10px; }
+.hl-sg--compute { --k: var(--faint); }
+.hl-sg--data { --k: var(--db); }
+.hl-sg--outside { --k: var(--ext); }
+.hl-sg--answer { --k: var(--accent); }
+.hl-sg--waits { --k: var(--warn); }
+/* Terminal's accent is teal, the colour of a call outside: an answer there is plain ink, as
+   `holon editor` draws it (kindColours.test.ts). */
+[data-ui="b"] .hl-sg--answer { --k: var(--ink); }
+.hl-sg__key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-xs); color: var(--muted); }
+.hl-sg__swatch::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--k); vertical-align: -1px; }
+.hl-sg__swatch--new::before { background: none; border: 1.5px dashed var(--warn); width: 7px; height: 7px; }
+.hl-sg__count { margin-left: auto; color: var(--faint); }
+.hl-sg__bands { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px 22px; }
+.hl-sg__rows { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.hl-sg__wires { position: absolute; left: 0; top: 0; overflow: visible; }
+.hl-sg__wires path { fill: none; stroke: var(--faint); stroke-width: 1.25; }
+.hl-sg__wires circle { fill: var(--faint); }
+.hl-sg__slot { display: flex; align-items: center; gap: 6px; }
+.hl-sg__row { all: unset; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 2px; width: 250px; height: 100%; padding: 0 10px; cursor: pointer; background: var(--bg); border: 1px solid var(--border-strong); border-left: 4px solid var(--k); border-radius: 5px; }
+.hl-sg__row:hover { background: var(--row); }
+.hl-sg__row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hl-sg__row[aria-current="true"] { background: var(--sel); outline: 2px solid var(--accent); outline-offset: 1px; }
+.hl-sg__row.hl-sg__row--head { --k: var(--accent); background: var(--surface); }
+.hl-sg__row--head .hl-sg__name { color: var(--accent); }
+.hl-sg__row--new { border: 1.5px dashed var(--warn); border-left: 4px solid var(--k); background: var(--warn-panel); }
+.hl-sg__row--idle { opacity: 0.45; }
+.hl-sg__row--failed { border-color: var(--bad); border-left-color: var(--bad); background: var(--bad-bg); }
+.hl-sg__failed { color: var(--bad); font-weight: 600; }
+.hl-sg__new { color: var(--warn-ink); font-weight: 600; }
+.hl-sg__wire--idle { opacity: 0.3; }
+.hl-sg__row--current { border-width: 3px 3px 3px 5px; border-top-color: var(--ink); border-right-color: var(--ink); border-bottom-color: var(--ink); }
+.hl-sg__said { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.hl-sg__kind { color: var(--k); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.hl-sg__line { color: var(--faint); }
+.hl-sg__outside { margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-family: var(--font-mono); }
+.hl-sg__name { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hl-sg__does { color: var(--faint); font-size: 11px; }
+.hl-sg__value { color: var(--ok-ink); }
+.hl-sg__side { width: 96px; }
+.hl-sg__fallback { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--body); padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); white-space: nowrap; }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
+.hl-table th.hl-table__num { text-align: right; }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
 .hl-table__row { cursor: pointer; }
 .hl-table__row:hover td { background: var(--row); }
+/* The row selected from the keys (ui/Keys.tsx's useListKeys: j, k, Enter). */
+.hl-table tr[data-at] td { background: var(--row); }
+.hl-table tr[data-at] td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .hl-table__dim { color: var(--faint) !important; }
 .hl-table a { color: var(--accent); text-decoration: none; }
 
@@ -456,6 +570,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-host__bad { color: var(--bad); }
 .hl-host__runs code { font-size: var(--fs-xs); color: var(--muted); }
 .hl-host__asof { font-size: var(--fs-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.hl-host--down .hl-host__asof { color: var(--bad); }
+.hl-host--down .hl-host__log, .hl-host--down .hl-host__runs { opacity: 0.5; }
 .hl-host__refresh { display: grid; place-items: center; width: 20px; height: 20px; margin: -2px -4px -2px 0; padding: 0; color: var(--muted); background: none; border: 0; border-radius: var(--r-sm); cursor: pointer; }
 .hl-host__refresh:hover:not(:disabled) { color: var(--ink); background: var(--row); }
 .hl-host__refresh:disabled { cursor: default; }
@@ -488,22 +604,28 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-top__find span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .hl-top__find kbd { font-size: 10.5px; color: var(--muted); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 5px; }
 .hl-top__right { display: flex; align-items: center; gap: 8px; flex: none; }
-/* The account: an avatar with the initials, and its menu. */
-.hl-user__box { position: relative; display: inline-flex; }
+/* The keys (?) beside the account. */
+.hl-top__keys {
+  width: 30px; height: 30px; display: grid; place-items: center; flex: none;
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--r); cursor: pointer;
+}
+.hl-top__keys:hover { color: var(--ink); border-color: var(--border-strong); }
+/* The account: an avatar with the initials, and its dialog (AuthGate.tsx's AccountDialog). */
+.hl-account { width: min(440px, calc(100vw - 32px)); }
+.hl-account__facts { margin: 0; padding: 12px; display: grid; gap: 8px; }
+.hl-account__facts > div { display: flex; gap: 12px; }
+.hl-account__facts dt { flex: 0 0 72px; color: var(--faint); }
+.hl-account__facts dd { margin: 0; color: var(--body); min-width: 0; overflow-wrap: anywhere; }
+.hl-account__facts b { color: var(--ink); font-weight: 600; }
+.hl-account__dim { color: var(--muted); }
+.hl-account__may { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.hl-account__do { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .hl-user {
   width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
   font: inherit; font-size: 12px; font-weight: 600; color: var(--sel-ink); background: var(--sel); border: 0; cursor: pointer;
 }
 .hl-user:hover { box-shadow: 0 0 0 2px var(--border-strong); }
-.hl-user__menu {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 200px;
-  display: grid; gap: 2px; padding: 6px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: 0 8px 24px rgba(17, 24, 39, 0.14);
-}
-.hl-user__who { padding: 4px 8px 6px; margin-bottom: 2px; font-size: var(--fs-xs); color: var(--muted); border-bottom: 1px solid var(--row); }
-.hl-user__who b { color: var(--ink); font-weight: 600; }
-.hl-user__menu [role="menuitem"] { font: inherit; font-size: var(--fs-sm); text-align: left; padding: 6px 8px; color: var(--body); background: none; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.hl-user__menu [role="menuitem"]:hover { color: var(--ink); background: var(--row); }
 
 .hl-body { display: flex; flex: 1 1 auto; min-height: 0; }
 .hl-error { color: var(--bad); padding: 16px; white-space: pre-wrap; }
@@ -554,26 +676,6 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-palette__name { font-size: 13px; }
 
-/* ── Deployment panel: right of the canvas, mirrors the palette's fold pattern ─ */
-.hl-deploy {
-  flex: 0 0 280px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  min-height: 0;
-}
-.hl-deploy--closed {
-  flex: 0 0 28px;
-  overflow: hidden;
-}
-.hl-deploy__fold {
-  writing-mode: vertical-rl; font: inherit; font-size: 11px; letter-spacing: 0.06em;
-  background: transparent; border: none; color: var(--faint); cursor: pointer;
-  padding: 10px 0; width: 100%;
-}
-.hl-deploy__fold:hover { color: var(--ink); }
-
 /* ── Tabs: the editor's Home, then one per open flow, above the canvas ──── */
 .hl-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* Under the tabs: the palette (a flow tab's, in edit mode) beside the canvas. */
@@ -617,7 +719,27 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-edhome__keys { list-style: none; margin: 6px 0 10px; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--body); }
 .hl-edhome__keys .hl-kbd { margin-right: 3px; }
 
-/* The editor's bar (CanvasPanels.tsx's FlowToolbar): the panes it shows or hides. */
+/* The editor's bar (CanvasPanels.tsx's FlowToolbar, web-console-L4.md §5.1): the mode, the file
+   and its state, the panes it shows or hides, then the mode's buttons and the status chip. */
+.hl-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.hl-bar__file { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; min-width: 0; }
+.hl-bar__name { color: var(--ink); letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-bar__state { color: var(--faint); font-size: 11px; }
+.hl-bar__state::before { content: "· "; content: "· " / ""; }
+.hl-bar__state--changed { color: var(--warn); }
+.hl-bar__button {
+  font: inherit; font-size: 11px; padding: 3px 8px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.hl-bar__button:hover { color: var(--ink); }
+.hl-bar__link { font-size: 11px; color: var(--accent); text-decoration: none; padding: 3px 4px; }
+.hl-bar__link:hover { text-decoration: underline; }
+.hl-bar__status {
+  font-size: 11px; color: var(--faint); text-decoration: none; padding: 1px 8px;
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.hl-bar__status:hover { border-color: var(--border-strong); }
+/* The panes it shows or hides. */
 .hl-panes { display: inline-flex; gap: 2px; }
 .hl-panes__toggle {
   font: inherit; font-size: 11px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 4px;
@@ -639,8 +761,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) 28px; }
 .hl-canvas__flow { position: relative; min-width: 0; min-height: 0; grid-column: 1; grid-row: 2; }
-.hl-canvas--viewing { grid-template-rows: auto minmax(0, 1fr) var(--view-height, 34%); }
-.hl-canvas--viewing.hl-canvas--no-bottom { grid-template-rows: auto minmax(0, 1fr); }
+.hl-canvas--bottom { grid-template-rows: auto minmax(0, 1fr) var(--view-height, 34%); }
 .hl-inspector { grid-column: 2; grid-row: 2; border-left: 1px solid var(--border-strong); }
 .hl-panel-header {
   display: flex; align-items: center; padding: 0 4px 0 14px;
@@ -659,7 +780,56 @@ code, kbd, pre, samp { font-family: var(--mono); }
   font: inherit; background: transparent; border: none; color: var(--faint); cursor: pointer;
 }
 .hl-inspector__fold:hover { color: var(--ink); }
-.hl-view__bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+.hl-view__bottom, .hl-bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+/* The bottom pane in Edit (BottomPane.tsx): its tabs, then the one shown. Hidden (b), it keeps
+   what was typed into it. */
+.hl-bottom { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); font-size: 11px; color: var(--muted); }
+.hl-bottom[hidden] { display: none; }
+.hl-bottom__head { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); flex-shrink: 0; }
+.hl-bottom__tabs { display: flex; gap: 2px; overflow-x: auto; }
+.hl-bottom__tab {
+  font: inherit; font-size: 11px; letter-spacing: 0.04em; padding: 6px 10px; white-space: nowrap;
+  color: var(--faint); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
+}
+.hl-bottom__tab:hover { color: var(--ink); }
+.hl-bottom__tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.hl-bottom__count { margin-left: 6px; padding: 0 5px; border-radius: 8px; font-size: 10px; color: var(--faint); background: var(--surface); }
+.hl-bottom__count--bad { color: var(--bad-ink); background: var(--bad-bg); }
+.hl-bottom__panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px; }
+.hl-bottom__panel[hidden] { display: none; }
+/* View runs' tabs, Runs and Run, under the same head as Edit's; the run picked said beside them. */
+.hl-view__panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.hl-view__panel[hidden] { display: none; }
+.hl-view__said { flex: 1; display: flex; gap: 10px; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; }
+.hl-bottom__none { margin: 4px 0; color: var(--faint); font-size: 12px; }
+.hl-bottom__button {
+  font: inherit; font-size: 11px; padding: 2px 8px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.hl-bottom__button:disabled { opacity: 0.5; cursor: default; }
+/* Problems: a row per mistake, a click goes to its line. */
+.hl-problems__checked { margin-bottom: 6px; color: var(--body); font-size: 12px; }
+.hl-problems__list { list-style: none; margin: 0; padding: 0; }
+.hl-problems__list button {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 12px; padding: 3px 6px;
+  color: var(--body); background: transparent; border: 0; border-radius: 3px; cursor: pointer;
+}
+.hl-problems__list button:hover { background: var(--row); }
+.hl-problems__line { color: var(--bad); margin-right: 6px; font-family: var(--mono); }
+/* Try a request: what starts it beside the request tester. */
+.hl-try { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+.hl-try__starts, .hl-try__request { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+@media (max-width: 880px) { .hl-try { grid-template-columns: minmax(0, 1fr); } }
+/* Settings: the deploy settings' groups. */
+.hl-settings { display: flex; flex-direction: column; gap: 6px; }
+.hl-settings__defaults { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--faint); cursor: pointer; user-select: none; }
+/* Replay the draft: a row per run replayed. */
+.hl-replay-draft { display: flex; flex-direction: column; gap: 8px; }
+.hl-replay-draft__head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--body); }
+.hl-replay-draft__table td { vertical-align: top; }
+.hl-replay-draft__row--same .hl-replay-draft__outcome { color: var(--ok); }
+.hl-replay-draft__row--differs .hl-replay-draft__outcome { color: var(--bad); }
+.hl-replay-draft__row--cant_tell .hl-replay-draft__outcome { color: var(--warn); }
 .hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
 .hl-view__edge:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .hl-view__edge::after {
@@ -739,6 +909,27 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-tok-escape, .hl-tok-interpolation, .hl-tok-operator { color: var(--op); }
 .hl-tok-number { color: var(--num); }
 .hl-tok-boolean { color: var(--bool); }
+/* The canvas pane's head (CanvasHead): its level, Statements or Nodes, and at the Nodes level its
+   own controls. Under the Statements level the nodes stay laid out, hidden, so a row opened frames
+   them at once. */
+.hl-canvas__flow { display: flex; flex-direction: column; }
+.hl-canvas__flow > .react-flow { flex: 1 1 0; height: auto; min-height: 0; }
+.hl-canvas__flow--statements > .react-flow { visibility: hidden; }
+.hl-canvas__head {
+  display: flex; align-items: center; gap: 8px; height: 32px; flex-shrink: 0; padding: 0 8px; min-width: 0; overflow: hidden;
+  background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12px; position: relative; z-index: 4;
+}
+.hl-canvas__title { color: var(--ink); letter-spacing: 0.04em; }
+.hl-levels { display: inline-flex; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+.hl-levels__seg { font: inherit; font-size: 11px; padding: 2px 10px; border: none; color: var(--muted); background: transparent; cursor: pointer; }
+.hl-levels__seg:hover { color: var(--ink); }
+.hl-levels__seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); cursor: default; }
+.hl-levels__seg:disabled { opacity: 0.4; cursor: not-allowed; }
+.hl-canvas__controls { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.hl-canvas__statements { position: absolute; left: 0; right: 0; bottom: 0; top: 32px; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; z-index: 3; }
+.hl-canvas__parse { padding: 5px 10px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn-bg) 53%, transparent); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.hl-canvas__none { margin: auto; max-width: 420px; padding: 16px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }
+.hl-sg.hl-sg--pane { flex: 1 1 auto; min-height: 0; max-height: none; border: 0; border-radius: 0; background: var(--bg); padding: 12px 14px; }
 .hl-canvas__empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -811,14 +1002,20 @@ code, kbd, pre, samp { font-family: var(--mono); }
   white-space: normal;
   pointer-events: none;
 }
+/* A node's params: one to a row, the names in one column and the fields lined up in the next. Beside
+   the outputs (a node with no inputs to show), they take the inputs' column. */
 .hl-node__params {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-items: center;
+  gap: 4px 8px;
   padding: 5px 12px 0;
   color: var(--faint);
   font-size: 10px;
 }
+.hl-node__param { display: contents; }
+.hl-node__col--in > .hl-node__params { padding: 0 0 0 12px; }
 .hl-node__body { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0 9px; }
 .hl-node__col { display: flex; flex-direction: column; gap: 7px; }
 .hl-node__col--out { align-items: flex-end; }
@@ -946,6 +1143,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
   color: var(--faint); background: transparent; border: none;
 }
 .hl-toast__close:hover { color: var(--ink); }
+.hl-toast__link { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.hl-toast__link:hover { text-decoration: underline; }
 .hl-kbd {
   display: inline-block; min-width: 1.4em; margin-right: 6px; padding: 0 4px;
   font: inherit; font-size: 10px; line-height: 1.5; text-align: center;
@@ -1051,6 +1250,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-history__restore-go:disabled { opacity: 0.4; cursor: default; }
 
+/* The Record tab's claims (ViewPanes.tsx Claims). */
+.hl-claims { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 3px; white-space: normal; }
+
 /* ── The edit area: the It may strip over the canvas and its panes (MayStrip.tsx) ── */
 .hl-edit { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .hl-may {
@@ -1065,16 +1267,34 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-may__chip--gone { color: var(--faint); text-decoration: line-through; }
 .hl-may__tag { font-size: 10px; color: var(--warn); }
 .hl-may__chip--gone .hl-may__tag { color: var(--faint); text-decoration: none; }
-/* The text's mistakes, listed under it (TextPane.tsx): a click goes to one. */
-.hl-text__problems { list-style: none; margin: 0; padding: 2px 0; max-height: 25%; overflow-y: auto; border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
-.hl-text__problems button {
-  display: block; width: 100%; text-align: left; font: inherit; font-size: 11.5px; padding: 2px 10px;
-  color: var(--body); background: transparent; border: 0; cursor: pointer;
-}
-.hl-text__problems button:hover { background: var(--row); }
-.hl-text__problem-line { color: var(--bad); margin-right: 6px; }
+
+/* The run strip, in its place in View runs (RunStrip.tsx). */
+.hl-runstrip { gap: 4px 10px; }
+.hl-runstrip__seq { color: var(--ink); font-weight: 600; text-decoration: none; }
+.hl-runstrip__seq:hover { text-decoration: underline; }
+.hl-runstrip__ended { font-family: var(--font-mono); color: var(--ok-ink); }
+.hl-runstrip__ended--failed { color: var(--bad); }
+.hl-runstrip__ended--waiting { color: var(--warn); }
+.hl-runstrip__came { font-family: var(--font-mono); color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.hl-runstrip__version, .hl-runstrip__at { color: var(--muted); }
+.hl-runstrip__out { border-color: var(--ext); color: var(--ext); }
+.hl-runstrip__wrote { border-color: var(--db); color: var(--db); }
 
 /* ── The name at the text's cursor, in the Inspector (ViewPanes.tsx WordSection) ── */
+/* The Inspector at the Statements level (InspectorText.tsx): an import, a statement, this flow. */
+.hl-itext { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.hl-itext:last-child { border-bottom: 0; }
+.hl-itext__head { color: var(--muted); white-space: normal; }
+.hl-itext__head code { color: var(--ink); font-weight: 600; }
+.hl-itext__kind { color: var(--k); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; }
+.hl-itext__code { font-family: var(--font-mono); font-size: 11.5px; color: var(--body); white-space: pre-wrap; word-break: break-word; }
+.hl-itext__body { color: var(--body); white-space: normal; word-break: break-word; }
+.hl-itext__body code, .hl-itext__starts code { color: var(--ink); }
+.hl-itext__dim { color: var(--faint); white-space: normal; }
+.hl-itext__section { display: flex; flex-direction: column; gap: 3px; }
+.hl-itext__title { color: var(--faint); letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
+.hl-itext__may, .hl-itext__starts { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; color: var(--body); white-space: normal; }
+.hl-itext__new { color: var(--warn); }
 .hl-word { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .hl-word__head { color: var(--muted); }
 .hl-word__head code { color: var(--ink); font-weight: 600; }
@@ -1091,20 +1311,22 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-overview__head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .hl-overview__head p { margin: 4px 0 0; }
 .hl-overview__cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
-.hl-overview__side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.hl-overview__runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12px; }
-.hl-overview__runs a { display: grid; grid-template-columns: 44px minmax(0, auto) minmax(0, 1fr) auto; gap: 8px; padding: 4px 6px; border-radius: 4px; color: var(--body); text-decoration: none; }
-.hl-overview__runs a:hover { background: var(--surface-2); }
-.hl-overview__route { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-overview__main, .hl-overview__side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.hl-overview__route { color: var(--muted); font-family: var(--mono); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hl-overview__check { margin-left: auto; float: right; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .hl-needs { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-bg, var(--surface-2)); color: var(--warn-ink, var(--warn)); font-size: 12px; }
 .hl-needs__row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .hl-needs__said { color: var(--body); flex: 1; min-width: 200px; }
-.hl-table__num { text-align: right; font-variant-numeric: tabular-nums; }
-.hl-spark { display: block; }
+.hl-needs__versions { font-family: var(--mono); color: var(--body); }
+.hl-table__num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hl-overview .hl-table td:first-child { white-space: nowrap; }
+/* No wider than where it is (the Status page on a phone): its bars narrow, its height stays. */
+.hl-spark { display: block; max-width: 100%; }
 .hl-spark rect { fill: var(--accent); opacity: 0.55; }
 .hl-spark rect.hl-spark__bad { fill: var(--bad); opacity: 0.9; }
-@media (max-width: 880px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }
+/* The tables want the width: the run log and what was done go below them on a narrower screen. */
+.hl-overview__main .hl-flow__section { overflow-x: auto; }
+@media (max-width: 1100px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }
 
 /* ── The pages over the canvas (App.tsx): the room a page has ── */
 .hl-pagebox { position: absolute; inset: 0; z-index: 10; background: var(--bg); overflow: auto; padding: 24px; }
@@ -1198,6 +1420,11 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-chip--paused, .hl-chip--waits { color: var(--warn-ink); background: var(--warn-bg); border-color: transparent; }
 .hl-chip--stopped { color: var(--muted); }
 .hl-chip--bad { color: var(--bad-ink); background: var(--bad-bg); border-color: transparent; }
+/* Who proposed a change: an agent in the accent, a person outlined; a call outside, teal. */
+.hl-chip--agent { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+.hl-chip--person { color: var(--body); background: none; border-color: var(--border-strong); }
+.hl-chip--ext { color: var(--ext); background: var(--ext-bg); border-color: transparent; }
+.hl-chip--secret { color: var(--db); background: var(--db-bg); border-color: transparent; }
 .hl-chip--pick { background: none; border-color: var(--border-strong); cursor: pointer; }
 .hl-chip--pick:hover { color: var(--ink); border-color: var(--border-strong); }
 .hl-chip--pick[aria-pressed="true"] { color: var(--sel-ink); background: var(--sel); border-color: var(--accent); }
@@ -1217,6 +1444,8 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .hl-tile { display: grid; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .hl-tile__value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.hl-tile__value.hl-flow__bad { color: var(--bad); }
+.hl-tile__value.hl-flow__waiting { color: var(--warn); }
 .hl-tile__label { font-size: var(--fs-sm); color: var(--muted); }
 /* Tabs: the current one underlined in the accent. */
 .hl-flow__tabs { overflow-x: auto; }
@@ -1237,6 +1466,54 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 /* The host's pages: a heading per section, and the fields the rows don't style. */
 .hl-host-page__head { margin: 22px 0 10px; font-size: var(--fs-h2); font-weight: 600; color: var(--ink); }
 .hl-host-page__head::first-letter { text-transform: uppercase; }
+/* Resources (ResourceViews.tsx): who uses a resource under its row, amber what a waiting version
+   would add; a database's matrix; the secrets as a table, each with its mark, never its value. */
+.hl-used-by { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 0 10px 8px; margin-top: -2px; font-size: var(--fs-xs); color: var(--muted); }
+.hl-used-by a, .hl-matrix a, .hl-secrets a, .hl-policy-check a { color: var(--accent); text-decoration: none; }
+.hl-used-by__one a { font-family: var(--mono); }
+.hl-used-by__waiting { color: var(--warn-ink); }
+.hl-used-by__waiting a { color: inherit; text-decoration: underline dotted; }
+.hl-used-by__revoked { text-decoration: line-through; color: var(--bad); }
+/* People's Last seen and a token's Last used, a column of its row (HostPages.tsx's Seen). */
+.hl-seen { flex: 0 0 auto; min-width: 118px; color: var(--faint); font-size: 11px; white-space: nowrap; }
+/* A tab of bindings as a table: the resource, its details, Used by (its own cell, so no padding of
+   its own), the buttons; a database's tables and matrix on a row under its own. */
+.hl-resources td { vertical-align: top; }
+.hl-resources td.hl-resources__name { white-space: nowrap; }
+.hl-resources__details { min-width: 220px; overflow-wrap: anywhere; }
+.hl-resources__where { color: var(--ink); }
+.hl-resources__used { min-width: 160px; }
+.hl-resources td .hl-used-by { padding: 0; margin: 0; }
+.hl-resources tr:has(+ .hl-resources__below) td { border-bottom: 0; }
+.hl-resources__below > td { padding-top: 0; }
+.hl-resources__below .hl-matrix-wrap { margin-bottom: 4px; }
+.hl-matrix-wrap { overflow-x: auto; margin: 0 0 12px; }
+.hl-matrix th { text-transform: none; letter-spacing: 0; }
+.hl-matrix th a { font-family: var(--mono); }
+.hl-matrix td.hl-matrix__waiting, .hl-matrix th.hl-matrix__waiting { color: var(--warn-ink); background: var(--warn-panel); }
+.hl-matrix th.hl-matrix__waiting a { color: inherit; }
+.hl-matrix__version { font-size: var(--fs-xs); }
+.hl-secret-mark { font-family: var(--mono); font-size: var(--fs-xs); color: var(--warn-ink); background: var(--warn-bg); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.hl-secrets td { vertical-align: top; }
+.hl-secrets__from { min-width: 96px; font-family: var(--mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.hl-secrets__wrap { min-width: 140px; }
+.hl-secrets__do { white-space: nowrap; text-align: right; }
+.hl-secrets__do button { margin-left: 4px; }
+/* Policy (PolicyViews.tsx): the file with line numbers, what each limit means, and the check. */
+.hl-policy-text { margin: 0 0 8px; padding: 8px 0; overflow-x: auto; font: 12.5px/1.7 var(--mono); color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.hl-policy-text__line { display: flex; white-space: pre; min-width: max-content; }
+.hl-policy-text__n { flex: 0 0 44px; padding-right: 10px; text-align: right; color: var(--faint); user-select: none; }
+.hl-policy-text__comment { color: var(--faint); font-style: italic; }
+.hl-policy-text__section { color: var(--ink); font-weight: 600; }
+.hl-policy__means { color: var(--muted); font-size: var(--fs-xs); min-width: 160px; }
+.hl-policy-check { display: grid; gap: 8px; margin: 10px 0 4px; padding: 11px 14px; font-size: var(--fs-sm); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.hl-policy-check__version { display: grid; gap: 3px; }
+.hl-policy-check__version > div > a { font-family: var(--mono); }
+.hl-policy-check__item { display: flex; gap: 8px; align-items: baseline; padding-left: 4px; font-size: var(--fs-xs); color: var(--body); }
+.hl-policy-check__sign { flex: 0 0 12px; font-weight: 700; text-align: center; }
+.hl-policy-check__item--refused .hl-policy-check__sign { color: var(--bad); }
+.hl-policy-check__item--auto .hl-policy-check__sign { color: var(--ok); }
+.hl-policy-check__item--person .hl-policy-check__sign { color: var(--warn); }
 .hl-flow input:not([type="checkbox"]):not([type="radio"]):not([class]):not([style]), .hl-flow select:not([class]):not([style]) {
   font: inherit; font-size: var(--fs-sm); height: 32px; padding: 0 10px; color: var(--ink);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
@@ -1245,10 +1522,6 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) th:first-child { border-top-left-radius: var(--r-lg); }
 .hl-flow .hl-table:not(.hl-flow__section .hl-table) th:last-child { border-top-right-radius: var(--r-lg); }
-/* The overview's latest runs. */
-.hl-overview__runs { font-size: var(--fs-sm); }
-.hl-overview__runs a { padding: 6px 8px; border-radius: var(--r-sm); }
-.hl-overview__runs a:hover { background: var(--row); }
 
 /* ── The Terminal interface (look.ts's data-ui="b", gaps-web.md G33): one dark look, mono,
    square corners, [ ] buttons, ~/ titles, keys on show and a status bar. ── */
@@ -1361,9 +1634,10 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 [data-ui="b"] .hl-chip::before { content: "‹"; content: "‹" / ""; color: var(--faint); width: auto; height: auto; background: none; border-radius: 0; }
 [data-ui="b"] .hl-chip::after { content: "›"; content: "›" / ""; color: var(--faint); }
 [data-ui="b"] .hl-chip--pick[aria-pressed="true"] { color: var(--accent); background: var(--sel); }
+[data-ui="b"] .hl-chip--agent { color: var(--accent); }
 /* Tables, tabs, panes: small caps headers, the selection a rule. */
 [data-ui="b"] .hl-table th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
-[data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
+[data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title, [data-ui="b"] .hl-canvas__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
 [data-ui="b"] .hl-pane-key { display: inline; margin: 0 8px 0 -4px; font: inherit; font-size: 10.5px; color: var(--accent); }
 [data-ui="b"] .hl-pane-key::before { content: "["; content: "[" / ""; color: var(--faint); }
 [data-ui="b"] .hl-pane-key::after { content: "]"; content: "]" / ""; color: var(--faint); }
@@ -1460,19 +1734,23 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   .hl-canvas__bar > :first-child { min-width: 0; flex: 1 1 100%; }
   .hl-panes { display: none; }
   .hl-canvas, .hl-canvas.hl-canvas--text, .hl-canvas.hl-canvas--inspector-closed, .hl-canvas.hl-canvas--no-canvas.hl-canvas--text { grid-template-columns: minmax(0, 1fr); }
-  .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector { grid-column: 1; grid-row: 2; border-left: 0; }
+  .hl-canvas.hl-canvas--bottom { grid-template-rows: auto minmax(0, 1fr); }
+  .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector, .hl-canvas > .hl-bottom, .hl-canvas > .hl-view__bottom { grid-column: 1; grid-row: 2; border-left: 0; }
+  .hl-canvas:not([data-pane="bottom"]) > .hl-bottom, .hl-canvas:not([data-pane="bottom"]) > .hl-view__bottom,
+  .hl-canvas[data-pane="bottom"] > .hl-canvas__flow, .hl-canvas[data-pane="bottom"] > .hl-text, .hl-canvas[data-pane="bottom"] > .hl-inspector { display: none !important; }
+  .hl-view__edge { display: none; }
   .hl-text__edge { display: none; }
   .hl-canvas[data-pane="canvas"] > .hl-text, .hl-canvas[data-pane="canvas"] > .hl-inspector,
   .hl-canvas[data-pane="text"] > .hl-canvas__flow, .hl-canvas[data-pane="text"] > .hl-inspector,
   .hl-canvas[data-pane="inspector"] > .hl-canvas__flow, .hl-canvas[data-pane="inspector"] > .hl-text { display: none !important; }
-  .hl-canvas[data-pane="canvas"].hl-canvas--no-canvas > .hl-canvas__flow { display: block; }
+  .hl-canvas[data-pane="canvas"].hl-canvas--no-canvas > .hl-canvas__flow { display: flex; }
+  .hl-canvas__head { gap: 6px; padding: 0 6px; }
+  .hl-canvas__head > .hl-canvas__title, .hl-canvas__head > .hl-pane-key, .hl-canvas__head > .hl-kbd { display: none; }
 }
 @media (max-width: 560px) {
   /* The palette, open, lies over the canvas's left; a node is dragged from it as before. */
   .hl-work { position: relative; }
   .hl-palette:not(.hl-palette--closed) { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(240px, 75vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
-  /* So do the tools and the deployment settings, over its right. */
-  .hl-deploy:not(.hl-deploy--closed) { position: absolute; inset: 0 0 0 auto; z-index: 20; width: min(320px, 85vw); box-shadow: 0 0 18px rgba(0, 0, 0, 0.3); }
 }
 
 /* A deployment's log lines (LogsPane.tsx, docs/L4s/logs-L4.md §5): a terminal beside its runs. */

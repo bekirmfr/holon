@@ -2,23 +2,44 @@
 // three columns. Left, what it may do, grouped as a person decides (needs your approval /
 // unchanged / no longer), each pointing at its line. Middle, the version itself: its changes
 // beside the version deployed (hunks, as a deploy's consent shows them), the whole flow, or its
-// canvas. Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
+// statement graph, the rows new since the version deployed dashed (StatementGraph.tsx). Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
 // note), what approving it does, the gate ("I read …"), Approve, keep it saved without deploying,
 // or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
 // A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
 // saved since. A version of a deployed flow is replayed on its recent runs (G11, ReplayRuns.tsx).
+// Under what it may do (web-console-L4.md §7.3): while it runs (its port, run budget, the runs it
+// keeps, what it holds between runs), and the lines of the host's policy it relies on, each
+// checked. A note the approver writes is kept with the grant, on the deploy's event (events.rs).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
 import { codeHunk, touchHunks } from "./hunks";
+import { holonGraph, type FlowGraph } from "./holonText";
 import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
-import { mayGroups, textLines } from "./reviewMay";
+import { StatementGraph } from "./StatementGraph";
+import { mayGroups, policyRows, textLines, whileItRuns } from "./reviewMay";
 import { touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
-import { deployUnit, getDeployedDocument, getFlow, getProposal, getVersions, previewDeploy, type DeployPreview, type DeploymentEntry, type FlowDocument, type FlowRecord, type Proposal, type VersionEntry } from "./server";
+import {
+  deployUnit,
+  getDeployedDocument,
+  getFlow,
+  getPermissions,
+  getProposal,
+  getVersions,
+  previewDeploy,
+  type DeployPreview,
+  type DeploymentEntry,
+  type FlowDocument,
+  type FlowRecord,
+  type HostPolicy,
+  type Proposal,
+  type VersionEntry,
+} from "./server";
 import { useKeys } from "./ui/Keys";
+import { useCan } from "./useCan";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -76,6 +97,15 @@ export function ReviewPage({
   const [line, setLine] = useState<number | null>(null);
   const [read, setRead] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  // The host's policy, for the lines this version relies on: null while unread, or why it can't be.
+  const [policy, setPolicy] = useState<HostPolicy | string | null>(null);
+  useEffect(() => {
+    getPermissions().then(setPolicy, (e: unknown) => setPolicy(e instanceof Error ? e.message : String(e)));
+  }, []);
+  // Deploying it asks flow.deploy of the flow, and flow.approve-deploy for what it newly asks for;
+  // declining a proposal, flow.approve-deploy (can.rs, deploy.rs).
+  const can = useCan(["flow.deploy", "flow.approve-deploy"], { flow: slug });
 
   // Read again when another version is saved or proposed, or one is deployed.
   const proposalId = waiting?.proposal?.id;
@@ -135,7 +165,8 @@ export function ReviewPage({
     const next = queue[(((at < 0 ? 0 : at + by) % queue.length) + queue.length) % queue.length];
     if (next.version !== null) navigate({ kind: "review", slug: next.slug, version: next.version });
   };
-  useKeys({ "]": () => step(1), "[": () => step(-1) });
+  // The queue, and the whole flow or the diff: the review's d, not the docs.
+  useKeys("review", { "]": () => step(1), "[": () => step(-1), w: () => setView("whole"), d: () => setView("changes") });
 
   const lines = useMemo(() => textLines(data?.text ?? ""), [data]);
   const groups = useMemo(() => (data ? mayGroups(data.preview.touches, data.preview.settings, lines) : []), [data, lines]);
@@ -152,7 +183,7 @@ export function ReviewPage({
     setBusy(true);
     setError("");
     try {
-      await deployUnit(slug, data.hash, data.preview.needs_approval, data.document, data.saved.document.server?.requirements);
+      await deployUnit(slug, data.hash, data.preview.needs_approval, data.document, data.saved.document.server?.requirements, note);
       onDeployed(slug, data.version);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -175,6 +206,28 @@ export function ReviewPage({
     next();
   });
   const gone = groups.find((g) => g.key === "gone")?.rows ?? [];
+  const requirements = data?.saved.document.server?.requirements;
+  const hostPolicy = typeof policy === "object" ? policy : null;
+  const running = useMemo(
+    () =>
+      data
+        ? whileItRuns({ port: data.saved.document.server?.port ?? entry?.port?.toString() ?? null, touches: data.preview.touches, limits: requirements?.limits, defaults: hostPolicy?.defaults })
+        : [],
+    [data, entry, requirements, hostPolicy],
+  );
+  const relies = data
+    ? policyRows({
+        touches: data.preview.touches,
+        items: data.preview.items,
+        limits: requirements?.limits,
+        privateAddresses: requirements?.private_addresses,
+        policy: hostPolicy,
+        agent: data.proposal?.agent ?? false,
+        may: can.may(asked > 0 ? "flow.approve-deploy" : "flow.deploy"),
+        approving: asked > 0,
+      })
+    : [];
+  const editor: Route = { kind: "editor", slug, view: false, seq: null };
 
   return (
     <div className="hl-flow hl-review-page">
@@ -184,6 +237,9 @@ export function ReviewPage({
         </h1>
         <span className="hl-flow__status">{entry ? "a new version" : "its first deploy"}</span>
         <span className="hl-flow__spacer" />
+        <a className="hl-flow__button" href={format(editor)} onClick={follow(editor, navigate)} title="its saved version, in the editor">
+          Open in the editor
+        </a>
         {queue.length > 0 && (
           <span className="hl-review-page__queue" aria-label="queue">
             <button className="hl-flow__button" onClick={() => step(-1)} aria-label="the review before" title="[">
@@ -231,6 +287,28 @@ export function ReviewPage({
             ))}
             {data.preview.missing_secrets.length > 0 && <p className="hl-flow__note">Not set yet: {data.preview.missing_secrets.join(", ")}. Until they are, those nodes stay empty.</p>}
             {data.preview.withheld && data.preview.withheld.length > 0 && <p className="hl-flow__note">Left out, for a person to grant back: {data.preview.withheld.join(", ")}.</p>}
+            <div className="hl-review-page__group" role="group" aria-label="while it runs">
+              <h3>While it runs</h3>
+              <dl className="hl-flow__facts">
+                {running.map(([k, v]) => (
+                  <div key={k}>
+                    <dt>{k}</dt>
+                    <dd>{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <div className="hl-review-page__group" role="group" aria-label="host policy">
+              <h3>Host policy</h3>
+              {typeof policy === "string" && <p className="hl-flow__note">The host&apos;s policy couldn&apos;t be read: {policy}</p>}
+              <ul className="hl-review-page__policy">
+                {relies.map((r, i) => (
+                  <li key={i} className={r.ok ? undefined : "hl-review-page__policy--no"}>
+                    <span aria-hidden="true">{r.ok ? "✓" : "✗"}</span> {r.text}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </section>
 
           <section className="hl-review-page__body" aria-label="review">
@@ -255,7 +333,7 @@ export function ReviewPage({
             ) : view === "whole" ? (
               <Whole lines={lines} line={line} />
             ) : (
-              <Canvas doc={data.saved.document} />
+              <Canvas text={data.text} deployed={data.deployedText} version={data.current?.number ?? null} onLine={show} />
             )}
           </section>
 
@@ -300,11 +378,15 @@ export function ReviewPage({
               <div className="hl-flow__banner">This host can't grant it: {data.preview.refused}</div>
             ) : (
               <>
+                <label className="hl-review-page__note-field">
+                  A note, kept with the grant
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="why you approve it, what you checked" />
+                </label>
                 <label className="hl-flow__check">
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}
                 </label>
-                <button className="hl-flow__button hl-flow__button--go" disabled={!read || busy} onClick={() => void approve()}>
+                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 ? "flow.approve-deploy" : "flow.deploy", { disabled: !read || busy })} onClick={() => void approve()}>
                   {busy ? "Deploying…" : asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy"}
                 </button>
               </>
@@ -313,7 +395,7 @@ export function ReviewPage({
               Keep it saved, don't deploy
             </button>
             {data.proposal && (
-              <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })}>
+              <button className="hl-flow__button hl-flow__button--bad" {...can.gate("flow.approve-deploy")} onClick={() => void decline({ ...data.proposal!, version: data.version })}>
                 Decline with a reason…
               </button>
             )}
@@ -343,41 +425,30 @@ function Whole({ lines, line }: { lines: string[]; line: number | null }) {
   );
 }
 
-/** Its canvas as saved, drawn plain: each node where it was placed, each wire between them. */
-function Canvas({ doc }: { doc: FlowDocument }) {
-  type N = { id: string; position?: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number; height?: number; parentId?: string; data?: { name?: string; label?: string } };
-  const nodes = (doc.nodes as N[]).filter((n) => n.position && !n.parentId);
-  const edges = doc.edges as { id: string; source: string; target: string }[];
-  if (nodes.length === 0) return <p className="hl-flow__none">No canvas was saved with it.</p>;
-  const size = (n: N) => ({ w: n.measured?.width ?? n.width ?? 170, h: n.measured?.height ?? n.height ?? 48 });
-  const box = new Map(nodes.map((n) => [n.id, { ...n.position!, ...size(n) }]));
-  const xs = nodes.flatMap((n) => [box.get(n.id)!.x, box.get(n.id)!.x + box.get(n.id)!.w]);
-  const ys = nodes.flatMap((n) => [box.get(n.id)!.y, box.get(n.id)!.y + box.get(n.id)!.h]);
-  const [x0, y0] = [Math.min(...xs) - 20, Math.min(...ys) - 20];
-  const [w, h] = [Math.max(...xs) - x0 + 20, Math.max(...ys) - y0 + 20];
+/** Its statement graph, the rows new since the version deployed dashed; a row picked shows its
+ *  line in the whole flow. */
+function Canvas({ text, deployed, version, onLine }: { text: string; deployed: string | null; version: number | null; onLine: (n: number) => void }) {
+  const drawn = useMemo((): { graph: FlowGraph; against: FlowGraph | null } | string => {
+    try {
+      const graph = holonGraph(text);
+      let against: FlowGraph | null = null;
+      try {
+        against = deployed === null ? null : holonGraph(deployed);
+      } catch {
+        // The version deployed has no graph: nothing is marked new.
+      }
+      return { graph, against };
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }, [text, deployed]);
+  if (typeof drawn === "string") return <p className="hl-flow__none">It has no statement graph: {drawn}</p>;
   return (
-    // Near the size it was drawn at (three quarters), scrolled when wider than the column.
-    <div className="hl-review-page__canvas-box">
-    <svg className="hl-review-page__canvas" viewBox={`${x0} ${y0} ${w} ${h}`} width={w * 0.75} height={h * 0.75} role="img" aria-label="canvas">
-      {edges.map((e) => {
-        const a = box.get(e.source);
-        const b = box.get(e.target);
-        if (!a || !b) return null;
-        const [sx, sy, tx, ty] = [a.x + a.w, a.y + a.h / 2, b.x, b.y + b.h / 2];
-        return <path key={e.id} d={`M${sx},${sy} C${sx + 60},${sy} ${tx - 60},${ty} ${tx},${ty}`} className="hl-review-page__wire" />;
-      })}
-      {nodes.map((n) => {
-        const b = box.get(n.id)!;
-        return (
-          <g key={n.id}>
-            <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={5} className="hl-review-page__node" />
-            <text x={b.x + 10} y={b.y + 20} className="hl-review-page__label">
-              {n.data?.label ?? n.data?.name ?? n.id}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-    </div>
+    <>
+      <p className="hl-flow__note">
+        {drawn.against ? `Dashed: new since v${version ?? "the one deployed"}.` : deployed === null ? "Its first deploy: all of it is new." : ""} Click a row for its line.
+      </p>
+      <StatementGraph graph={drawn.graph} against={drawn.against} onPick={(r) => onLine(r.line)} />
+    </>
   );
 }

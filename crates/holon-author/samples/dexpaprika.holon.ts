@@ -13,7 +13,7 @@
 //                                string by a js holon (Holon has no leaf that escapes a URL)
 //   preSend assertPathParameter  the holon segment: an id that would add to the path is refused
 //
-// Optional: set dexpaprika_key under the deployment's settings (the gear) for a higher rate limit
+// Optional: set dexpaprika_key in the flow's Settings for a higher rate limit
 // and the two pro operations (token ohlcv and indicators); without it the free tier answers.
 //
 // Try it: deploy it, then
