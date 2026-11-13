@@ -108,7 +108,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Budgeted, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS, MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, sourced_value, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
+pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, sourced_value, takes_trigger, ASKS_HOST, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};

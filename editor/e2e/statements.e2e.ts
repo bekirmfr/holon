@@ -1,5 +1,6 @@
-// The canvas's two levels (web-console-L4.md §5.2, §5.3), in the real editor: a flow opens at its
-// Statements, the statement graph of its text, with no palette; `l` goes to its Nodes and back. A
+// The canvas's levels (web-console-L4.md §5.2, §5.3), in the real editor: a flow opens at its
+// Nodes, the flow itself, with the palette; `l` goes to its read-only views, its Statements (the
+// statement graph of its text) and Grouped (the nodes in their statements' frames), and back. A
 // row picked puts the text's cursor on its mark, opening the text if it is shut, and the
 // Inspector says the statement; Enter on it opens the Nodes it stands for, picked. In View runs the
 // statements show the run (web-console-L4.md §4, §5.5): the strip says it, its rows what they
@@ -7,32 +8,44 @@
 
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { deploy, openSample, viewNewestRun, viewTab } from "./helpers";
+import { deploy, nodesLevel, openSample, statementsLevel, viewNewestRun } from "./helpers";
 
-const level = (page: Page, name: "Statements" | "Nodes") =>
-  page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name, exact: true });
+const level = (page: Page, name: "Statements" | "Grouped" | "Nodes") =>
+  page.locator(".hl-canvas__head").getByRole("button", { name, exact: true });
 
-test("a sample opens at the Statements level", async ({ page }) => {
+test("a sample opens at the Nodes level, and l goes to its read-only views", async ({ page }) => {
   await openSample(page, "Hello API");
-  await expect(level(page, "Statements")).toHaveAttribute("aria-pressed", "true");
-  const graph = page.getByRole("region", { name: "statement graph" });
-  await expect(graph.locator(".hl-sg__row").first()).toBeVisible();
-  await expect(graph.locator(".hl-sg__row", { hasText: "return" })).toHaveCount(1);
-  await expect(page.locator(".hl-palette")).toHaveCount(0);
-  // l: the nodes, with the palette to place more; l again: the statements.
-  await page.keyboard.press("l");
   await expect(level(page, "Nodes")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".hl-palette")).toBeVisible();
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node").first()).toBeVisible();
-  await expect(graph).toHaveCount(0);
+  const readOnly = page.locator(".hl-levels__readonly");
+  await expect(readOnly).toHaveCount(0);
+  // l: the statements, read only, with no palette.
+  const graph = page.getByRole("region", { name: "statement graph" });
   await page.keyboard.press("l");
   await expect(level(page, "Statements")).toHaveAttribute("aria-pressed", "true");
+  await expect(graph.locator(".hl-sg__row").first()).toBeVisible();
+  await expect(graph.locator(".hl-sg__row", { hasText: "return" })).toHaveCount(1);
   await expect(page.locator(".hl-palette")).toHaveCount(0);
-  await expect(graph).toBeVisible();
+  await expect(readOnly).toBeVisible();
+  // l: the nodes in their statements' frames, read only.
+  await page.keyboard.press("l");
+  await expect(level(page, "Grouped")).toHaveAttribute("aria-pressed", "true");
+  await expect(graph).toHaveCount(0);
+  await expect(page.locator(".hl-frame--row").first()).toBeVisible();
+  await expect(page.locator(".hl-frame--band", { hasText: "GET /hello/:name" })).toHaveCount(1);
+  await expect(page.locator(".hl-palette")).toHaveCount(0);
+  await expect(readOnly).toBeVisible();
+  // l: the nodes again.
+  await page.keyboard.press("l");
+  await expect(level(page, "Nodes")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".hl-frame")).toHaveCount(0);
+  await expect(page.locator(".hl-palette")).toBeVisible();
 });
 
 test("clicking a row moves the cursor", async ({ page }) => {
   await openSample(page, "Orders API (a database on the host)");
+  await statementsLevel(page);
   // Below 1600px wide (the tests' 1280) the text is shut: picking a row opens it.
   const text = page.getByRole("region", { name: "Text" });
   await expect(text).toHaveCount(0);
@@ -55,7 +68,7 @@ test("View runs draws the run on the statements, stepped through", async ({ page
   const port = await deploy(page);
   expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
   await viewNewestRun(page);
-  await expect(level(page, "Statements")).toHaveAttribute("aria-pressed", "true");
+  await statementsLevel(page);
   const strip = page.getByRole("region", { name: "what ran" });
   await expect(strip).toContainText(/Run #\d+/);
   await expect(strip).toContainText("200");
@@ -68,7 +81,6 @@ test("View runs draws the run on the statements, stepped through", async ({ page
   await expect(answer).toContainText('= 200 "Hello, Ada"');
   await expect(graph.locator('.hl-sg__row[data-run="idle"]')).toHaveCount(0);
   // Stepping marks the step's row.
-  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.keyboard.press("j");
   await expect(graph.locator(".hl-sg__row--current")).toHaveCount(1);
@@ -78,8 +90,7 @@ test("View runs draws the run on the statements, stepped through", async ({ page
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   await inspector.getByRole("button", { name: "Record", exact: true }).click();
   await expect(inspector).toContainText("none: it held no key it read while calling out");
-  // l: the nodes, with their values.
-  await page.keyboard.press("l");
-  await expect(level(page, "Nodes")).toHaveAttribute("aria-pressed", "true");
+  // The nodes, with their values.
+  await nodesLevel(page);
   await expect(page.locator('.hl-node[data-run="done"]').first()).toBeVisible();
 });

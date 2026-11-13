@@ -13,7 +13,8 @@ import type { Edge } from "@xyflow/react";
 import type { Evaluator } from "./holon";
 import { documentText, holonGraph, printHolon, type FlowGraph, type GraphRow } from "./holonText";
 import { getDeployedDocument } from "./server";
-import { compileRows, keepLevel, lineAt, rowOnCanvas, rowsMay, type CanvasLevel, type RowMay } from "./canvasLevel";
+import { compileRows, keepLevel, LEVELS, lineAt, rowOnCanvas, rowsMay, type CanvasLevel, type RowMay } from "./canvasLevel";
+import { groupByStatements, type Grouped } from "./statementGroups";
 import { graphRun, rowsOnCanvas, type RunOnCanvas } from "./runRows";
 import type { GraphRun } from "./StatementGraph";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -72,7 +73,10 @@ export function useCanvasLevel({
 }) {
   const viewing = flow.viewing !== null;
   const level: CanvasLevel = flow.level;
-  const statements = level === "statements";
+  // The graph is drawn for the Statements level, and for the Grouped one, which lays the nodes out
+  // by its rows.
+  const statements = level !== "nodes";
+  const grouping = level === "grouped";
   const name = useRef(flow.name);
   name.current = flow.name;
   const setLevel = useCallback(
@@ -82,7 +86,7 @@ export function useCanvasLevel({
     },
     [setFlow],
   );
-  useKeys("editor", { l: () => setLevel(statements ? "nodes" : "statements") }, { enabled });
+  useKeys("editor", { l: () => setLevel(LEVELS[(LEVELS.indexOf(level) + 1) % LEVELS.length]) }, { enabled });
 
   // The text drawn: as typed while it stands for the canvas (a mistake in it too: the graph then
   // keeps its last), else the canvas printed. In View runs, always the canvas printed: the version
@@ -158,6 +162,17 @@ export function useCanvasLevel({
   );
   const drawnRun = useMemo((): GraphRun | null => (rows && run ? graphRun(rows, run) : null), [rows, run]);
 
+  // The Grouped level's layout: the canvas's nodes in their statements' frames. Laid out again
+  // when the graph or the canvas's structure changes, or its nodes are first measured.
+  const measured = nodes.every((n) => n.measured?.width !== undefined);
+  const grouped = useMemo(
+    (): Grouped | null =>
+      grouping && graph && compiled ? groupByStatements(graph, rows ?? rowsOnCanvas(graph, compiled, canvas.current), canvas.current.nodes, canvas.current.edges) : null,
+    // canvasKey changes exactly when the canvas's structure does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [grouping, graph, compiled, rows, canvasKey, measured],
+  );
+
   // The version deployed, as text, read once per version while its statements are shown in Edit.
   const against = statements && !viewing ? deployed : null;
   const againstKey = against ? `${against.slug} ${against.unit}` : null;
@@ -221,6 +236,8 @@ export function useCanvasLevel({
     against: againstGraph,
     /** In View runs, the run as the rows show it. */
     run: drawnRun,
+    /** At the Grouped level, where each node is drawn and the frames round them. */
+    grouped,
     /** Why the text drawn has no graph now (it doesn't parse): the last one stays. */
     error: shown?.error ?? null,
     caret,

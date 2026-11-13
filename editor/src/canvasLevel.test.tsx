@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 import { Evaluator, initSync } from "../wasm/holon_wasm.js";
-import { compileRows, DEFAULT_LEVEL, keepLevel, levelOf, rowNodes } from "./canvasLevel";
+import { compileRows, DEFAULT_LEVEL, keepLevel, levelOf, rowNodes, type CanvasLevel } from "./canvasLevel";
 import { structuralKey } from "./flowDoc";
 import { compileHolon, holonGraph } from "./holonText";
 import { getDeployedDocument } from "./server";
@@ -71,7 +71,10 @@ function Editor({ tab, ev, opened, deployed = null }: { tab: TabState; ev: Evalu
   );
 }
 
-function open(name: string, text?: string, deployed: { slug: string; unit: string } | null = null) {
+/** `name` open in the harness, at `at` (kept for it in this browser, as a level left there is):
+ *  the statement graph unless a test says otherwise, a flow opening at its Nodes by default. */
+function open(name: string, text?: string, deployed: { slug: string; unit: string } | null = null, at: CanvasLevel = "statements") {
+  keepLevel(name, at);
   const ev = new Evaluator();
   // A text given is kept with its document, as a save keeps it: the tab shows it as written.
   const doc = text === undefined ? buildSample(samples().find((s) => s.name === name)!, ev) : { ...compileHolon(text, ev).doc, source: text };
@@ -91,11 +94,11 @@ const rows = (c: HTMLElement) => [...c.querySelectorAll<HTMLButtonElement>(".hl-
 const key = (k: string, at: EventTarget = document.body) => act(() => void at.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })));
 
 describe("the canvas's level", () => {
-  it("opens at the default, Statements, and keeps a flow's in this browser by its name", () => {
-    expect(DEFAULT_LEVEL).toBe("statements");
+  it("opens at the default, Nodes (the flow itself), and keeps a flow's in this browser by its name", () => {
+    expect(DEFAULT_LEVEL).toBe("nodes");
     expect(levelOf("hello-api")).toBe(DEFAULT_LEVEL);
-    keepLevel("hello-api", "nodes");
-    expect(levelOf("hello-api")).toBe("nodes");
+    keepLevel("hello-api", "statements");
+    expect(levelOf("hello-api")).toBe("statements");
     expect(levelOf(null)).toBe(DEFAULT_LEVEL);
   });
 
@@ -113,12 +116,16 @@ describe("the canvas's level", () => {
     expect(rows(c).filter((r) => r.getAttribute("aria-current") === "true")).toHaveLength(1);
   });
 
-  it("switches with l, and a row opened (Enter) shows its nodes at the Nodes level", () => {
-    const { c, opened, level, tab } = open("hello-api");
-    expect(level()).toBe("statements");
-    key("l");
+  it("switches with l, Nodes then its two views, and a row opened (Enter) shows its nodes at the Nodes level", () => {
+    const { c, opened, level, tab } = open("hello-api", undefined, null, "nodes");
     expect(level()).toBe("nodes");
     expect(c.querySelector(".hl-sg")).toBeNull();
+    key("l");
+    expect(level()).toBe("statements");
+    key("l");
+    expect(level()).toBe("grouped");
+    key("l");
+    expect(level()).toBe("nodes");
     key("l");
     expect(level()).toBe("statements");
     // The answer's row: Enter on it opens it, the canvas's nodes it stands for framed.

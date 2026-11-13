@@ -106,10 +106,10 @@ export function EditBottomPane({
             </button>
           ))}
         </div>
-        <span style={{ flex: 1 }} />
         <kbd className="hl-pane-key" aria-hidden="true">
           b
         </kbd>
+        <span style={{ flex: 1 }} />
         <button className="hl-panel-header__btn" onClick={onClose} title="hide the bottom pane (b)" aria-label="hide the bottom pane">
           ×
         </button>

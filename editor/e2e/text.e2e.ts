@@ -110,7 +110,9 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // answers nothing has no TypeScript form.
   const undo = page.locator(".hl-canvas").getByRole("button", { name: "⟲" });
   await expect(undo).toBeEnabled();
-  await page.locator(".react-flow__pane").dispatchEvent("click");
+  // A click on the empty canvas lets go of what is selected: a real one, a press and a release,
+  // as React Flow takes it once a drag there draws a selection box (canvasGestures.ts).
+  await page.locator(".react-flow__pane").click({ position: { x: 8, y: 8 } });
   await pick(nodeNamed(page, "uppercase"));
   await expect(page.locator(".react-flow__node.selected")).toHaveCount(1);
   await page.keyboard.press("Delete");

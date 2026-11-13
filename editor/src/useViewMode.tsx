@@ -23,14 +23,14 @@ import {
   recordedReads,
   recordedResponses,
   replay,
+  replayVerdict,
+  failureWire,
   runGroup,
   sameNodesRan,
   stateAtStep,
   whyNotRun,
-  wireKey,
   type ReplayNode,
 } from "./replay";
-import { stable } from "./textSync";
 import { printHolon } from "./holonText";
 import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
@@ -161,26 +161,10 @@ export function useViewMode(input: ViewModeInput) {
       },
     );
     const diagnosis = diagnose(ns, es, selectedRun, run);
-    let verdict: boolean | null = null;
-    const respond = run.order.find((id) => {
-      const n = ns.find((x) => x.id === id);
-      return n?.data.name === "respond" && n.data.body.kind === "Template";
-    });
-    // An action's run is answered as a request is: by its respond.
-    const action = selectedRun.kind === "trigger" && !!selectedRun.route;
-    if ((selectedRun.kind === "request" || action) && respond && selectedRun.outputs.length > 0) {
-      verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
-    }
-    // A clock's tick, a file handler's run or an action that only writes answers nobody: it
-    // reproduces when each node gives what the log says it gave.
-    if ((selectedRun.kind === "tick" || selectedRun.kind === "file" || (action && !respond)) && selectedRun.route) {
-      const recorded = [...nodeOutputs(selectedRun, viewTrace)].filter(([id]) => run.traces.has(id));
-      if (recorded.length > 0) verdict = recorded.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
-    }
     // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
     // can tell.
-    const group = runGroup(ns, es, selectedRun);
-    if (sameNodesRan(group, run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0) === false) verdict = false;
+    const ranSame = sameNodesRan(runGroup(ns, es, selectedRun), run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0);
+    const verdict = replayVerdict(selectedRun, run, ns, nodeOutputs(selectedRun, viewTrace), ranSame);
     return { ...run, verdict, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -333,7 +317,7 @@ export function useViewMode(input: ViewModeInput) {
               labelBgBorderRadius: 6,
             }
           : {};
-      if (replayed.diagnosis?.path.has(wireKey(e))) {
+      if (replayed.diagnosis && failureWire(replayed.diagnosis, e)) {
         return { ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
       }
       return value === null ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } } : { ...e, ...hover };
@@ -396,7 +380,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
 
 /** View mode's bottom pane: the log, the history and the timeline (the Inspector, on the right,
  *  is App's). `onRestored`: a restore from the history changed the deployment. */
-export function ViewModePanes({ view, flow, nodes, onRestored, keys = true }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[]; onRestored?: () => void; keys?: boolean }) {
+export function ViewModePanes({ view, flow, nodes, onRestored, keys = true, onClose }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[]; onRestored?: () => void; keys?: boolean; onClose?: () => void }) {
   const { viewing, selectedRun, step } = flow;
   if (!viewing) return null;
   const { replayed } = view;
@@ -422,6 +406,7 @@ export function ViewModePanes({ view, flow, nodes, onRestored, keys = true }: { 
         onRestored={onRestored}
         codeText={view.codeText}
         keys={keys}
+        onClose={onClose}
       />
     </>
   );

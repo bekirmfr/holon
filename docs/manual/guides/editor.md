@@ -214,9 +214,11 @@ The header of the run pane says **✓ replay reproduces the run** when the edito
 again from the log, got the same answer. A run on an earlier version is shown on the canvas it
 ran on.
 
-**A failed run** opens on the node where it failed, outlined in red, with the reason. Nodes that
-didn't get their input because of it are marked **↯**. **show** in the banner picks the failing
-node.
+**A failed run** opens on the node where it failed, outlined in red, with the reason, and its
+wires out in red. Nodes that didn't run because of it are dimmed, with a dotted border, saying
+which input never arrived; an answer that fell back to its `missing` status is marked **↯**.
+**show** in the banner picks the failing node. A request no route matched ran none of the flow:
+every node is dimmed.
 
 **Flow state** (a tab of the inspector, in view mode) shows each state key and collection before
 and after the run, or after the step you are on.

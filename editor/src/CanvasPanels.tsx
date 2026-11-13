@@ -297,8 +297,8 @@ export function FlowToolbar({
   );
 }
 
-/** The canvas pane's head: its level, Statements or Nodes (`l`), and at the Nodes level the
- *  canvas's own controls: fit, and while it is edited undo, redo and tidy. */
+/** The canvas pane's head: its level, Statements, Grouped or Nodes (`l`), and below Statements the
+ *  canvas's own controls: fit, and at the Nodes level while it is edited undo, redo and tidy. */
 export function CanvasHead({
   level,
   onLevel,
@@ -309,7 +309,6 @@ export function CanvasHead({
   onUndo,
   onRedo,
   onTidy,
-  onFit,
 }: {
   level: CanvasLevel;
   onLevel: (l: CanvasLevel) => void;
@@ -322,8 +321,6 @@ export function CanvasHead({
   onRedo: () => void;
   /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
   onTidy: () => void;
-  /** Fits the whole flow in the view. */
-  onFit: () => void;
 }) {
   const seg = (l: CanvasLevel, label: string, title: string) => (
     <button
@@ -345,18 +342,29 @@ export function CanvasHead({
       <kbd className="hl-pane-key" aria-hidden="true">
         c
       </kbd>
+      {/* Nodes is the flow itself, the level you edit; Statements and Grouped are drawn from it,
+          read only (edited at Nodes or through the text). */}
       <span className="hl-levels" role="group" aria-label="canvas level">
-        {seg("statements", "Statements", "the flow by its statements, as the text says it: read only, edited through the text")}
-        {seg("nodes", "Nodes", "the nodes the flow runs: place, wire, group")}
+        {seg("nodes", "Nodes", "the flow itself, the nodes it runs: place, wire, group. Statements and Grouped are drawn from it")}
       </span>
+      <span className="hl-levels__views" title="drawn from the nodes, read only: edit at Nodes or in the text">
+        views
+      </span>
+      <span className="hl-levels hl-levels--views" role="group" aria-label="read-only views">
+        {seg("statements", "Statements", "a read-only view of the nodes, by the text's statements: edit at Nodes or in the text")}
+        {seg("grouped", "Grouped", "a read-only view of the nodes, inside their statements' frames: nothing is moved in the flow")}
+      </span>
+      {level !== "nodes" && (
+        <span className="hl-levels__readonly" title="edit at Nodes or in the text">
+          read only
+        </span>
+      )}
       <Kbd k="l" />
       <span style={{ flex: 1 }} />
-      {level === "nodes" && (
+      {/* Fitting the flow in the view is the canvas's own control, at its corner. */}
+      {level !== "statements" && (
         <span className="hl-canvas__controls">
-          <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
-            ⤢
-          </button>
-          {editing && (
+          {editing && level === "nodes" && (
             <>
               <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
                 ⟲

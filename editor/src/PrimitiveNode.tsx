@@ -19,7 +19,8 @@ const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
   hex: { mode: ["encode", "decode"] },
   base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"], bytes: ["utf8", "latin1"] },
 };
-import { templateInterface } from "./templates";
+import { startsIt, templateInterface } from "./templates";
+import { fellBack } from "./replay";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 import { InfoIcon, useNodeActions, useNodeDocs } from "./NodeDocs";
 import { useOptionalDialog } from "./Dialog";
@@ -234,6 +235,9 @@ const portButtonStyle: CSSProperties = {
 
 function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>) {
   const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
+  // Starved of an input and gave nothing: it didn't run, and is drawn faint, as a node the run
+  // skipped. Red is for where the run failed, and for an answer that fell back.
+  const quiet = trace?.issue?.role === "starved" && !fellBack(trace.outputs);
   const describe = useNodeDocs();
   const actions = useNodeActions();
   const dialog = useOptionalDialog();
@@ -437,7 +441,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
       style={{
         position: "relative",
         ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
-        ...(trace?.issue?.role === "starved" ? { borderColor: "var(--bad)", borderStyle: "dashed" } : {}),
+        ...(trace?.issue?.role === "starved" ? (quiet ? { opacity: 0.4, borderStyle: "dotted" } : { borderColor: "var(--bad)", borderStyle: "dashed" }) : {}),
         ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px color-mix(in srgb, ${FAIL} 40%, transparent)` } : {}),
         ...(trace?.state === "active" ? { borderColor: "var(--accent)", boxShadow: "0 0 0 2px var(--accent)" } : {}),
         ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
@@ -498,12 +502,13 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             lineHeight: "16px",
             padding: "0 7px",
             borderRadius: 8,
-            color: trace.issue.role === "origin" ? "var(--bad-bg)" : "var(--bad-ink)",
-            background: trace.issue.role === "origin" ? FAIL : "var(--bad-bg)",
-            border: `1px solid ${trace.issue.role === "origin" ? FAIL : "var(--bad)"}`,
+            color: trace.issue.role === "origin" ? "var(--bad-bg)" : quiet ? "var(--faint)" : "var(--bad-ink)",
+            background: trace.issue.role === "origin" ? FAIL : quiet ? "var(--surface-2)" : "var(--bad-bg)",
+            border: `1px solid ${trace.issue.role === "origin" ? FAIL : quiet ? "var(--border)" : "var(--bad)"}`,
+            opacity: quiet ? 0.8 : undefined,
           }}
         >
-          {trace.issue.role === "origin" ? "✗ " : "↯ "}
+          {trace.issue.role === "origin" ? "✗ " : quiet ? "" : "↯ "}
           {trace.issue.reason}
         </div>
       )}
@@ -545,7 +550,12 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         <div className="hl-node__col hl-node__col--in">
           {beside && paramGrid}
           {!hiddenInputs && inputs.map((port) => (
-            <div className="hl-port" key={port.name} style={port.name === "trigger" ? { opacity: 0.55 } : undefined} title={port.name === "trigger" ? "what starts it: a route's request, or what it runs after" : undefined}>
+            <div
+              className="hl-port"
+              key={port.name}
+              style={startsIt({ data }, port.name) ? { opacity: 0.55 } : undefined}
+              title={port.name === "trigger" ? "what starts it: a route's request, or what it runs after" : startsIt({ data }, port.name) ? "what starts it: the request it answers" : undefined}
+            >
               <Handle
                 type="target"
                 position={Position.Left}

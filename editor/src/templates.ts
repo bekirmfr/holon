@@ -6,6 +6,12 @@
 import { template_defaults, template_doc, template_interface, template_names } from "../wasm/holon_wasm.js";
 import type { WParam, WPort } from "./holon";
 
+/** Whether an input is what starts its node, drawn lighter, as its wire is: a write's or call
+ *  out's `trigger`, and a `respond`'s `request`, the request it answers (triggers-L4.md §7). */
+export function startsIt(node: { data: { name: string; body: { kind: string } } }, port: string | null | undefined): boolean {
+  return port === "trigger" || (port === "request" && node.data.name === "respond" && node.data.body.kind === "Template");
+}
+
 /** The templates, in palette order. */
 export function templateNames(): string[] {
   return template_names();

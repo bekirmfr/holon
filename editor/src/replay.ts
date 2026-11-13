@@ -13,8 +13,9 @@
 //
 // Evaluation itself is passed in (`evalNode`), so this is testable without a real evaluator.
 
-import { choiceNext, type WParam, type WPort, type WValue } from "./holon";
+import { asksHostPrimitives, choiceNext, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
+import { stable } from "./textSync";
 
 export type ReplayNode = {
   id: string;
@@ -475,6 +476,10 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     if (!every) return [];
     return components(nodes, edges).find((ids) => ids.includes(every.id)) ?? [];
   }
+  // A request no route matched (the server answered 404, "no route for this path") ran nothing
+  // on a canvas that has routes: its nodes are not the run's. Only a canvas with no route to match
+  // runs as a whole.
+  if (entry.kind === "request" && !entry.route && nodes.some((n) => n.data.name === "request" && n.data.body.kind === "Template")) return [];
   if (entry.kind !== "request" || !entry.route) return nodes.map((n) => n.id);
   const [method, path] = [entry.route.slice(0, entry.route.indexOf(" ")), entry.route.slice(entry.route.indexOf(" ") + 1)];
   const req = nodes.find(
@@ -487,6 +492,10 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
   if (!req) return [];
   return components(nodes, edges).find((ids) => ids.includes(req.id)) ?? [];
 }
+
+// The leaves that ask the host, read once from core (catalog.rs's ASKS_HOST).
+let asksHostLeaves: Set<string> | null = null;
+const asksHost = () => (asksHostLeaves ??= asksHostPrimitives());
 
 /**
  * Re-run `entry` over the canvas, as core runs it: from the nodes the run's answer and effects
@@ -623,9 +632,12 @@ export function replay(
       const shown = entry.secrets?.[secret];
       return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
     }
-    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "flow_start", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
-      // Answered from the record, never the network, the store or the disk: a replay is offline
-      // and exact, and shows the collection or folder as the run found it, whatever it holds now.
+    if (primitive && asksHost().has(name)) {
+      // Answered from the record, never the network, the store, the disk or a database: a replay
+      // is offline and exact, and shows the collection, folder or table as the run found it,
+      // whatever it holds now. Which leaves are core's one list (`catalog::ASKS_HOST`), not one
+      // kept here: a list kept here once lacked the database reads, and every run that read a
+      // table replayed as though it found nothing.
       return { inputs, outputs: [responses.get(id) ?? null] };
     }
     // A route's request, or a websocket block's record, as the log keeps it.
@@ -711,6 +723,43 @@ export function whyNotRun(nodes: ReplayNode[], by: string | null): string {
  *  `null` when it can't tell: no timeline, a run that waited (what waits on an event isn't run,
  *  but a replay has nothing to wait for), or one logged before choices were lazy (its timeline
  *  lists every node, taken or not). */
+/** What a run gave, as a verdict reads it: its kind, the route or action it ran, what it answered
+ *  (nothing, until it answers) and the waiting points it is parked at. */
+export type VerdictRun = { kind: string; route: string | null; outputs: (WValue | null)[]; parked?: string[] | null };
+
+/**
+ * Whether a replay reproduces the run: true, false, or null when nothing tells.
+ *
+ * - A request, or an action with a `respond`, that answered: the replay's respond gives the same
+ *   answer.
+ * - A run parked at a waiting point (an `await`, an approval) hasn't answered: each node it ran
+ *   gives what its log says. The replay goes on past the waiting point, which nobody has decided
+ *   and so gives nothing, down to a respond the run never reached, which falls back to its
+ *   `missing` answer (404 "not found"); held to the answer, every waiting run read as different.
+ * - A clock's tick, a file handler's run, an action that only writes: each node gives what the log
+ *   says, as a waiting run.
+ *
+ * And it differs whenever it ran other nodes than the run did (`ranSame`, from `sameNodesRan`).
+ */
+export function replayVerdict(entry: VerdictRun, run: Pick<Replay, "order" | "traces">, nodes: ReplayNode[], recorded: Map<string, (WValue | null)[]>, ranSame: boolean | null): boolean | null {
+  if (ranSame === false) return false;
+  const respond = run.order.find((id) => {
+    const n = nodes.find((x) => x.id === id);
+    return n?.data.name === "respond" && n.data.body.kind === "Template";
+  });
+  // An action's run is answered as a request is: by its respond.
+  const action = entry.kind === "trigger" && !!entry.route;
+  const waiting = (entry.parked?.length ?? 0) > 0;
+  if (!waiting && (entry.kind === "request" || action) && respond && entry.outputs.length > 0) {
+    return JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(entry.outputs[0]);
+  }
+  if (waiting || ((entry.kind === "tick" || entry.kind === "file" || (action && !respond)) && entry.route)) {
+    const ran = [...recorded].filter(([id]) => run.traces.has(id));
+    if (ran.length > 0) return ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
+  }
+  return null;
+}
+
 export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {
   if (timings.size === 0 || waited) return null;
   if (run.notRun.size > 0 && group.every((id) => timings.has(id))) return null;
@@ -724,6 +773,17 @@ export function sameNodesRan(group: string[], run: Replay, timings: Map<string, 
 // node after it is starved of that value, down to the answer (a `respond` falling back to its
 // `missing` status) or the effect that never happens. The diagnosis finds that node, the origin,
 // says why in its own terms, and marks the path the absence took.
+
+/** Whether a node starved of an input still gave something (a `respond` falling back to its
+ *  `missing` answer): it ran. One that gave nothing didn't run. */
+export const fellBack = (outputs: (WValue | null)[]) => outputs.some((o) => o !== null);
+
+/** Whether a wire is drawn as the failure: one out of a node where it started, on its way. The
+ *  wires further on, between nodes that never ran, carried nothing and are drawn so, faint: the
+ *  failure is the node that started it, not everything after it. */
+export function failureWire(d: Pick<Diagnosis, "origins" | "path">, w: ReplayEdge): boolean {
+  return d.origins.includes(w.source) && d.path.has(wireKey(w));
+}
 
 /** A wire, as one key: which output feeds which input. */
 export const wireKey = (w: ReplayEdge) => `${w.source}:${w.sourceHandle ?? ""}→${w.target}:${w.targetHandle ?? ""}`;
@@ -749,7 +809,7 @@ const fieldOf = (v: WValue | null, key: string) => (v?.type === "Record" ? (v.va
 const listOf = (keys: string[]) => (keys.length === 0 ? "nothing" : keys.slice(0, 8).join(", ") + (keys.length > 8 ? ", …" : ""));
 
 /** Why `node` produced nothing from the inputs it got, as precisely as its kind allows. */
-function whyNothing(node: ReplayNode, trace: NodeTrace): string {
+function whyNothing(node: ReplayNode, trace: NodeTrace, empty: string[]): string {
   const p = (name: string) => frozen(node.data.params, name);
   const [a, b] = trace.inputs;
   switch (node.data.name) {
@@ -869,7 +929,8 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "respond":
       return "nothing to answer with";
     case "request":
-      return "the request's body isn't valid JSON";
+      // Its json is the one output a request it answers can leave empty: the body isn't JSON.
+      return empty.length === 1 && empty[0] === "json" ? "the request's body isn't valid JSON" : `it gave no ${empty.join(", ")}`;
     default:
       return "it got its inputs but produced nothing (a value of the wrong kind, or one it can't use)";
   }
@@ -926,8 +987,7 @@ export function diagnose(
     const missing = fedBy.filter((w) => carried(w) === null);
     if (missing.length > 0) {
       const from = missing.map((w) => `${w.targetHandle} (from ${node(w.source).data.name})`).join(", ");
-      const fellBack = trace.outputs.some((o) => o !== null);
-      issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
+      issues.set(id, { role: "starved", reason: `${fellBack(trace.outputs) ? "fell back: " : "didn't run: "}${from} never arrived` });
       continue;
     }
     if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call" || n.data.name === "flow_start") && n.data.body.kind === "Primitive") {
@@ -939,8 +999,9 @@ export function diagnose(
       }
     }
     const feeds = wires.filter((w) => w.source === id);
-    if (feeds.some((w) => carried(w) === null)) {
-      issues.set(id, { role: "origin", reason: whyNothing(n, trace) });
+    const empty = feeds.filter((w) => carried(w) === null);
+    if (empty.length > 0) {
+      issues.set(id, { role: "origin", reason: whyNothing(n, trace, [...new Set(empty.map((w) => w.sourceHandle ?? ""))]) });
       origins.push(id);
     }
   }

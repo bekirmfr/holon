@@ -15,6 +15,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useStoreApi,
   useNodesInitialized,
   addEdge,
   type NodeTypes,
@@ -76,6 +77,8 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { CanvasHead, FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { StatementFrames } from "./StatementFrames";
+import { GESTURES } from "./canvasGestures";
 import { StatementGraph } from "./StatementGraph";
 import { InspectorText } from "./InspectorText";
 import { useCanvasLevel } from "./useCanvasLevel";
@@ -296,9 +299,6 @@ function Canvas({
     return live.current.nodes.map((n) => ({ ...n, position: at.get(n.id) ?? n.position }));
   }, [getInternalNode]);
   const tidyCanvas = useCallback(() => setNodes(tidied()), [setNodes, tidied]);
-  const fitCanvas = useCallback(() => {
-    fitView({ padding: 0.1, duration: 200 });
-  }, [fitView]);
   // The text a save keeps with the flow (the pane's, as typed, while it stands for the canvas).
   const source = useMemo(() => sourceToSave(flow.text, syncKeyOf(nodes, edges, settings, flowName)), [flow.text, nodes, edges, settings, flowName]);
   const dirty = useMemo(
@@ -1167,13 +1167,34 @@ function Canvas({
   }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes, secretMarks]);
 
   // Trigger wires are drawn lighter than data wires (canvasOps.lighterTriggers).
-  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges), [viewing, view.viewEdges, edges]);
+  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges, nodes), [viewing, view.viewEdges, edges, nodes]);
 
   // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx), and in view mode the run
   // shown in it.
   const replayed = view.replayed;
   const textRun = useMemo(() => (replayed ? { order: replayed.order, traces: replayed.traces, step: flow.step } : null), [replayed, flow.step]);
-  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode });
+  // A node the text's cursor picks is brought into the canvas's view when none of what it picked
+  // shows, at the zoom it is at; the Statements level follows the cursor itself.
+  const flowStore = useStoreApi<PrimitiveNodeType>();
+  const atStatementsNow = useRef(false);
+  const bringIntoView = useCallback(
+    (picked: string[]) => {
+      if (atStatementsNow.current) return;
+      const ids = picked.filter((id) => getInternalNode(id) !== undefined);
+      if (ids.length === 0) return;
+      const { width, height, transform } = flowStore.getState();
+      const [tx, ty, zoom] = transform;
+      const seen = { left: -tx / zoom, top: -ty / zoom, right: (width - tx) / zoom, bottom: (height - ty) / zoom };
+      const shows = ids.some((id) => {
+        const n = getInternalNode(id)!;
+        const p = n.internals.positionAbsolute;
+        return p.x + (n.measured.width ?? 0) > seen.left && p.x < seen.right && p.y + (n.measured.height ?? 0) > seen.top && p.y < seen.bottom;
+      });
+      if (!shows) void fitView({ nodes: ids.map((id) => ({ id })), duration: 300, minZoom: zoom, maxZoom: zoom });
+    },
+    [flowStore, getInternalNode, fitView],
+  );
+  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode, onCursorNodes: bringIntoView });
 
   // The canvas's level, Statements or Nodes (useCanvasLevel.ts): a row picked puts the text's
   // cursor on it (opening the text when it is shut); a row opened selects its nodes and frames
@@ -1217,6 +1238,21 @@ function Canvas({
     deployed: flowName && deployedEntry ? { slug: flowName, unit: deployedEntry.unit } : null,
   });
   const atStatements = canvasLevel.level === "statements";
+  atStatementsNow.current = atStatements;
+  // The Grouped level draws the nodes where their statements' frames put them: a way of looking,
+  // so they aren't dragged there, and the flow's own positions stay as they are.
+  const grouped = canvasLevel.level === "grouped" ? canvasLevel.grouped : null;
+  const drawnNodes = useMemo(
+    () => (grouped ? decoratedNodes.map((n) => (grouped.positions.has(n.id) ? { ...n, position: grouped.positions.get(n.id)! } : n)) : decoratedNodes),
+    [grouped, decoratedNodes],
+  );
+  // Shown grouped, the whole flow is fitted in the view; back at Nodes, it is fitted again.
+  useEffect(() => {
+    if (canvasLevel.level === "statements") return;
+    requestAnimationFrame(() => void fitView({ padding: 0.06 }));
+    // Fitted when the level changes, and once the grouping is first laid out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasLevel.level, grouped !== null]);
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -1268,7 +1304,7 @@ function Canvas({
     <div className="hl-work">
     {/* The palette is the flow tab's, at the Nodes level: edit mode places nodes from it; view
         mode is read only. */}
-    {!viewing && shown === "canvas" && !atStatements && (
+    {!viewing && shown === "canvas" && canvasLevel.level === "nodes" && (
       // A flow isn't offered inside itself.
       <Palette
         catalog={catalog}
@@ -1287,7 +1323,7 @@ function Canvas({
       className={[
         "hl-canvas",
         viewing ? "hl-canvas--viewing" : "",
-        bottomShown ? "hl-canvas--bottom" : "",
+        bottomShown ? "hl-canvas--bottom" : "hl-canvas--bottom-folded",
         inspectorOpen ? "" : "hl-canvas--inspector-closed",
         textPane.open ? "hl-canvas--text" : "",
         canvasShown || !textPane.open ? "" : "hl-canvas--no-canvas",
@@ -1308,9 +1344,9 @@ function Canvas({
           panes={[
             { key: "c", name: "canvas", on: canvasShown || !textPane.open, toggle: toggleCanvas },
             { key: "x", name: "text", on: textPane.open, toggle: toggleText },
-            { key: "i", name: "inspector", on: inspectorOpen, toggle: () => onInspectorOpen(!inspectorOpen) },
+            // The Inspector and the bottom pane are folded and opened on themselves (› and ×, and
+            // the strip each folds to), where they are; i and b still do it from anywhere.
             ...(viewing ? [{ key: "v", name: "values", on: paneShown("values"), toggle: () => showPane("values", !paneShown("values")) }] : []),
-            { key: "b", name: "bottom", on: bottomShown, toggle: () => onBottomShown(!bottomShown) },
           ]}
           flowName={viewing ?? flowName}
           saved={flow.saved}
@@ -1350,12 +1386,16 @@ function Canvas({
           onUndo={undo}
           onRedo={redo}
           onTidy={tidyCanvas}
-          onFit={fitCanvas}
         />
         <ReactFlow<PrimitiveNodeType>
+          {...GESTURES}
           colorMode={dark ? "dark" : "light"}
-          nodes={decoratedNodes}
-          onNodeClick={view.onNodeClick}
+          nodes={drawnNodes}
+          onNodeClick={(e, n) => {
+            view.onNodeClick(e, n);
+            // Its code into the text's view, where the text shows.
+            textPane.revealNode(n.id, true);
+          }}
           onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
           onEdgeMouseLeave={viewing ? () => view.setHoveredWire(null) : undefined}
           onNodesChange={onNodesChange}
@@ -1366,7 +1406,8 @@ function Canvas({
           nodeTypes={nodeTypes}
           connectionLineStyle={{ stroke: "var(--accent)", strokeWidth: 1.6 }}
           fitView={false}
-          minZoom={0.4}
+          // The Grouped level fits a whole flow of many statements, to be zoomed into.
+          minZoom={grouped ? 0.08 : 0.4}
           maxZoom={2}
           proOptions={{ hideAttribution: true }}
           // Select a node or wire, then Backspace or Delete removes it — React Flow's own built-in
@@ -1375,12 +1416,16 @@ function Canvas({
           // reach for first, especially on Windows. React Flow itself skips this handling while a
           // text input/select inside a node has focus, so editing a const's value or type is safe.
           deleteKeyCode={viewing ? null : ["Backspace", "Delete"]}
-          nodesDraggable={!viewing}
+          // A node dragged moves, in View runs too: there the flow shown is the deployed version's,
+          // set aside on going back to Edit, so a move is for looking and is never saved. At
+          // Grouped the nodes stand where their statements put them.
+          nodesDraggable={!grouped}
           nodesConnectable={!viewing}
         >
           <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />
           <Controls showInteractive={false} />
-          {!viewing && (
+          {grouped && <StatementFrames frames={grouped.frames} />}
+          {!viewing && !grouped && (
             <Panel position="bottom-right">
               <ProjectionPanel
                 nodeCount={nodes.length}
@@ -1455,7 +1500,17 @@ function Canvas({
           ) : undefined
         }
       />
-      {bottomShown && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} />}
+      {bottomShown && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} onClose={() => onBottomShown(false)} />}
+      {/* Hidden, the bottom pane folds to a strip along the bottom, as the Inspector does along
+          its side: a click opens it again. */}
+      {!bottomShown && (
+        <button className="hl-bottom__fold" onClick={() => onBottomShown(true)} title="open the bottom pane (b)" aria-label="open the bottom pane">
+          ⌃ {viewing ? "Runs" : "Problems · Try · Replay · Settings"}
+          <kbd className="hl-pane-key" aria-hidden="true">
+            b
+          </kbd>
+        </button>
+      )}
       {/* In Edit, the bottom pane's tabs (web-console-L4.md §5.4): kept while hidden, so what was
           typed into them stays. */}
       {!viewing && (

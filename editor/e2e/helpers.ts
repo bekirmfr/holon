@@ -46,9 +46,8 @@ export async function openSample(page: Page, title: string, reload = true) {
 
 /** A new untitled draft from the menu, once its tab is the one shown. New opens the tab a render
  *  after the click (App.tsx's pendingNew), so a step taken at once can act on the tab shown before
- *  it: a click on its Nodes, pressed already, does nothing, and the draft then opens at its
- *  Statements. The draft is the tab shown, untitled, and with the tab bar shown before it, one tab
- *  more than there was. */
+ *  it: a click on its canvas level acts on that tab's, not the draft's. The draft is the tab
+ *  shown, untitled, and with the tab bar shown before it, one tab more than there was. */
 export async function newFlow(page: Page) {
   const tabs = page.getByRole("tablist", { name: "open tabs" }).locator(".hl-tab:not(.hl-tab--home)");
   const before = await tabs.count();
@@ -57,13 +56,21 @@ export async function newFlow(page: Page) {
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
 }
 
-/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): a flow
- *  opens at its Statements. Pressed as such: beside the text and the Inspector at the tests'
- *  width, the canvas's head can lie under another pane's edge. */
+/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): where a flow
+ *  opens, unless this browser kept another level for it. Pressed as such: beside the text and the
+ *  Inspector at the tests' width, the canvas's head can lie under another pane's edge. */
 export async function nodesLevel(page: Page) {
   const nodes = page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name: "Nodes", exact: true });
   await nodes.dispatchEvent("click");
   await expect(nodes).toHaveAttribute("aria-pressed", "true");
+}
+
+/** The canvas at its Statements, a read-only view of the nodes: the statement graph of its text.
+ *  Pressed as `nodesLevel` presses. */
+export async function statementsLevel(page: Page) {
+  const statements = page.locator(".hl-canvas").getByRole("group", { name: "read-only views" }).getByRole("button", { name: "Statements", exact: true });
+  await statements.dispatchEvent("click");
+  await expect(statements).toHaveAttribute("aria-pressed", "true");
 }
 
 /** The Flows page's row of the flow `name`, saved or deployed. */
@@ -99,7 +106,7 @@ export function deploySettings(page: Page): Locator {
 export async function openDeployPanel(page: Page) {
   const panel = deploySettings(page);
   if (!(await panel.isVisible())) {
-    const off = page.locator(".hl-canvas").getByRole("button", { name: "bottom off" });
+    const off = page.locator(".hl-canvas").getByRole("button", { name: "open the bottom pane" });
     if (await off.isVisible()) await off.dispatchEvent("click");
     await page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Settings" }).dispatchEvent("click");
     await panel.waitFor({ state: "visible", timeout: 5_000 });
@@ -159,12 +166,6 @@ export async function dropFromPalette(page: Page, entry: string) {
 export async function viewNewestRun(page: Page) {
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
-}
-
-/** View runs' bottom pane's tab (ViewPanes.tsx): Runs, the list (its name carries how many), or
- *  Run, the run picked, with Details, Errors and Timeline. */
-export async function viewTab(page: Page, name: "Runs" | "Run") {
-  await page.locator(".hl-view__bottom").getByRole("tab", { name: name === "Run" ? "Run" : /^Runs/, exact: name === "Run" }).click();
 }
 
 /** What the editor says once, in the corner (ui/Toast.tsx): saved, updated, not saved. */

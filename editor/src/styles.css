@@ -780,7 +780,15 @@ code, kbd, pre, samp { font-family: var(--mono); }
   font: inherit; background: transparent; border: none; color: var(--faint); cursor: pointer;
 }
 .hl-inspector__fold:hover { color: var(--ink); }
-.hl-view__bottom, .hl-bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+.hl-view__bottom, .hl-bottom, .hl-bottom__fold { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
+/* The bottom pane folded (b, or its ×): a strip that opens it, as the Inspector folds to its side. */
+.hl-canvas--bottom-folded { grid-template-rows: auto minmax(0, 1fr) 24px; }
+.hl-bottom__fold {
+  display: flex; align-items: center; gap: 6px; padding: 0 10px; text-align: left;
+  font: inherit; font-size: 11px; letter-spacing: 0.06em; background: var(--surface-2); border-left: 0; border-right: 0; border-bottom: 0;
+  color: var(--faint); cursor: pointer;
+}
+.hl-bottom__fold:hover { color: var(--ink); }
 /* The bottom pane in Edit (BottomPane.tsx): its tabs, then the one shown. Hidden (b), it keeps
    what was typed into it. */
 .hl-bottom { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); font-size: 11px; color: var(--muted); }
@@ -800,6 +808,12 @@ code, kbd, pre, samp { font-family: var(--mono); }
 /* View runs' tabs, Runs and Run, under the same head as Edit's; the run picked said beside them. */
 .hl-view__panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; }
 .hl-view__panel[hidden] { display: none; }
+/* The runs and the run picked, side by side (ViewPanes.tsx), the divider between them dragged. */
+.hl-view__split { display: flex; flex: 1 1 auto; min-height: 0; }
+.hl-view__runs { border-right: 1px solid var(--border); }
+.hl-view__divider { width: 5px; flex-shrink: 0; cursor: col-resize; margin-left: -3px; }
+.hl-view__divider:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.hl-view__title { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 10px; font-weight: 600; color: var(--ink); flex-shrink: 0; }
 .hl-view__said { flex: 1; display: flex; gap: 10px; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; }
 .hl-bottom__none { margin: 4px 0; color: var(--faint); font-size: 12px; }
 .hl-bottom__button {
@@ -925,7 +939,24 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-levels__seg:hover { color: var(--ink); }
 .hl-levels__seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); cursor: default; }
 .hl-levels__seg:disabled { opacity: 0.4; cursor: not-allowed; }
+/* The read-only views, after the nodes they are drawn from: lighter, and named as views. */
+.hl-levels__views { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); flex-shrink: 0; cursor: help; }
+.hl-levels__views::before { content: "→ "; letter-spacing: 0; }
+.hl-levels--views { border-style: dashed; }
+.hl-levels--views .hl-levels__seg[aria-pressed="true"] { color: var(--ink); background: var(--surface-2); }
+.hl-levels__readonly { font-size: 10px; padding: 1px 6px; border-radius: 3px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); flex-shrink: 0; cursor: help; }
 .hl-canvas__controls { display: inline-flex; gap: 4px; flex-shrink: 0; }
+/* The Grouped level's frames (StatementFrames.tsx), under the nodes: a trigger's column, and each
+   statement's box in its kind's colour (--k, as the Statements level's rows). */
+.hl-frame { position: absolute; left: 0; top: 0; box-sizing: border-box; border-radius: 8px; pointer-events: none; z-index: -1; }
+.hl-frame--band { border: 1px dashed var(--border-strong); background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.hl-frame--row, .hl-frame--loose { --k: var(--faint); border: 1px solid color-mix(in srgb, var(--k) 55%, var(--border)); border-left: 4px solid var(--k); background: color-mix(in srgb, var(--k) 7%, var(--bg)); }
+.hl-frame--head { --k: var(--accent); }
+.hl-frame__bar { display: flex; align-items: baseline; gap: 8px; height: 26px; padding: 0 10px; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 26px; color: var(--muted); }
+.hl-frame--band > .hl-frame__bar { height: 32px; line-height: 32px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.hl-frame__label { flex: none; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--k, var(--ink)); }
+.hl-frame--band .hl-frame__label { text-transform: none; letter-spacing: 0; font-family: var(--mono); color: var(--ink); }
+.hl-frame__text { overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); color: var(--body); }
 .hl-canvas__statements { position: absolute; left: 0; right: 0; bottom: 0; top: 32px; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; z-index: 3; }
 .hl-canvas__parse { padding: 5px 10px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn-bg) 53%, transparent); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .hl-canvas__none { margin: auto; max-width: 420px; padding: 16px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }
@@ -1334,8 +1365,17 @@ code, kbd, pre, samp { font-family: var(--mono); }
 /* ── The phone's menu (ui/Shell.tsx) ── */
 .hl-nav__scrim { display: none; }
 .hl-top__menu { display: none; font: inherit; font-size: 15px; line-height: 1; padding: 5px 8px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
-/* A pane's key in its header, on show in the Terminal interface. */
-.hl-pane-key { display: none; }
+/* A pane's key beside its title (Text [x], Inspector [i], Runs [b]), as the bar's buttons wear
+   theirs (.hl-kbd); the Terminal interface writes it in brackets. */
+.hl-pane-key {
+  display: inline-block; box-sizing: border-box; min-width: 18px; min-height: 16px; margin: 0 6px; padding: 0 4px;
+  font: inherit; font-size: 10px; font-weight: 400; line-height: 14px; text-align: center; letter-spacing: 0; text-transform: none;
+  color: var(--faint); border: 1px solid currentColor; border-radius: 3px; opacity: 0.8;
+}
+.hl-panel-header__title--keyed { flex: 0 1 auto; }
+/* Upright in the folded strip's sideways writing, so a letter as narrow as i still reads. */
+.hl-inspector__fold .hl-pane-key { writing-mode: horizontal-tb; margin: 8px 0 0; }
+.hl-view__title .hl-pane-key { margin: 0 0 0 2px; align-self: center; }
 /* The status bar: the Terminal interface's own. */
 .hl-status {
   flex: 0 0 auto; display: flex; align-items: center; gap: 18px; height: 28px; padding: 0 14px;
@@ -1638,7 +1678,7 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
 /* Tables, tabs, panes: small caps headers, the selection a rule. */
 [data-ui="b"] .hl-table th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
 [data-ui="b"] .hl-panel-header__title, [data-ui="b"] .hl-text__title, [data-ui="b"] .hl-canvas__title { letter-spacing: 0.12em; text-transform: uppercase; font-size: 10.5px; }
-[data-ui="b"] .hl-pane-key { display: inline; margin: 0 8px 0 -4px; font: inherit; font-size: 10.5px; color: var(--accent); }
+[data-ui="b"] .hl-pane-key { display: inline; margin: 0 8px 0 -4px; padding: 0; min-width: 0; border: 0; opacity: 1; font: inherit; font-size: 10.5px; color: var(--accent); }
 [data-ui="b"] .hl-pane-key::before { content: "["; content: "[" / ""; color: var(--faint); }
 [data-ui="b"] .hl-pane-key::after { content: "]"; content: "]" / ""; color: var(--faint); }
 [data-ui="b"] .hl-kbd { opacity: 0.9; color: var(--accent); border-color: var(--border-strong); }
@@ -1734,7 +1774,8 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   .hl-canvas__bar > :first-child { min-width: 0; flex: 1 1 100%; }
   .hl-panes { display: none; }
   .hl-canvas, .hl-canvas.hl-canvas--text, .hl-canvas.hl-canvas--inspector-closed, .hl-canvas.hl-canvas--no-canvas.hl-canvas--text { grid-template-columns: minmax(0, 1fr); }
-  .hl-canvas.hl-canvas--bottom { grid-template-rows: auto minmax(0, 1fr); }
+  .hl-canvas.hl-canvas--bottom, .hl-canvas.hl-canvas--bottom-folded { grid-template-rows: auto minmax(0, 1fr); }
+  .hl-bottom__fold { display: none; }
   .hl-canvas > .hl-canvas__flow, .hl-canvas > .hl-text, .hl-canvas > .hl-inspector, .hl-canvas > .hl-bottom, .hl-canvas > .hl-view__bottom { grid-column: 1; grid-row: 2; border-left: 0; }
   .hl-canvas:not([data-pane="bottom"]) > .hl-bottom, .hl-canvas:not([data-pane="bottom"]) > .hl-view__bottom,
   .hl-canvas[data-pane="bottom"] > .hl-canvas__flow, .hl-canvas[data-pane="bottom"] > .hl-text, .hl-canvas[data-pane="bottom"] > .hl-inspector { display: none !important; }

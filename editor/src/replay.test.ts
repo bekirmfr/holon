@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
-import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
-import type { WParam, WValue } from "./holon";
+import { Evaluator, initSync } from "../wasm/holon_wasm.js";
+import { buildSample, samples } from "./samples";
+import { tabFromDocument } from "./tabs";
+import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun } from "./replay";
+import { asksHostPrimitives, choiceNext, primitiveCatalog, type WParam, type WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
 beforeAll(() => {
@@ -346,6 +348,83 @@ describe("secrets in a replay", () => {
   });
 });
 
+describe("absent, across the choice bridge", () => {
+  // Absent is null in the editor, as in core (None) and a run's log (JSON null), never undefined:
+  // a replayed node whose output was undefined read as differing from the log's null. Every leaf,
+  // with every pattern of absent and present inputs, to three: what a choice leaf decides is a
+  // value or null.
+  it("decides a value or null, for every leaf and every pattern of inputs", () => {
+    const one: WValue = { type: "Boolean", value: true };
+    let decided = 0;
+    for (const unit of primitiveCatalog()) {
+      if (unit.body.kind !== "Primitive") continue;
+      for (let size = 0; size <= 3; size++) {
+        for (let mask = 0; mask < 1 << size; mask++) {
+          const seen = Array.from({ length: size }, (_, i) => (mask & (1 << i) ? one : null));
+          const choice = choiceNext(unit.body.name, seen);
+          if (choice && "done" in choice) {
+            decided++;
+            expect(choice.done, `${unit.body.name} ${JSON.stringify(seen)}`).not.toBeUndefined();
+          }
+        }
+      }
+    }
+    expect(decided).toBeGreaterThan(0);
+  });
+});
+
+describe("a replay's verdict", () => {
+  // A table over every kind of run, answered or waiting, the replay agreeing or not: the verdict
+  // reads the answer only when there is one, and otherwise what each node the run ran gave.
+  const num = (value: number): WValue => ({ type: "Number", value });
+  const answer: WValue = { type: "Record", value: [["status", num(200)]] };
+  const notFound: WValue = { type: "Record", value: [["status", num(404)]] };
+  const nodes = [n("a", "add", [], ["out"]), n("r", "respond", ["value"], ["out"], [], "Template")];
+  // The replay: `a` gives `got`, and the respond answers `said` (null: it never got there).
+  const replayed = (got: number, said: WValue | null): Pick<Replay, "order" | "traces"> => ({
+    order: said === null ? ["a"] : ["a", "r"],
+    traces: new Map<string, NodeTrace>([["a", { inputs: [], outputs: [num(got)] }], ...(said === null ? [] : [["r", { inputs: [], outputs: [said] }] as [string, NodeTrace]])]),
+  });
+  const logged = new Map<string, (WValue | null)[]>([["a", [num(1)]]]);
+  const cases: [string, VerdictRun, ReturnType<typeof replayed>, boolean | null][] = [
+    ["a request answered the same", { kind: "request", route: "GET /x", outputs: [answer] }, replayed(1, answer), true],
+    ["a request answered differently", { kind: "request", route: "GET /x", outputs: [answer] }, replayed(1, notFound), false],
+    ["an action answered the same", { kind: "trigger", route: "action pay", outputs: [answer] }, replayed(1, answer), true],
+    ["an action waiting, its nodes the same, the respond past the wait falling back", { kind: "trigger", route: "action pay", outputs: [null, null], parked: ["pay"] }, replayed(1, notFound), true],
+    ["an action waiting, a node different", { kind: "trigger", route: "action pay", outputs: [null, null], parked: ["pay"] }, replayed(2, notFound), false],
+    ["a request waiting, its nodes the same", { kind: "request", route: "POST /x", outputs: [null], parked: ["ok"] }, replayed(1, notFound), true],
+    ["a tick, its nodes the same", { kind: "tick", route: "every 1m", outputs: [] }, replayed(1, null), true],
+    ["a tick, a node different", { kind: "tick", route: "every 1m", outputs: [] }, replayed(2, null), false],
+    ["an action that only writes", { kind: "trigger", route: "action note", outputs: [] }, replayed(1, null), true],
+    ["a file run", { kind: "file", route: "file inbox", outputs: [] }, replayed(1, null), true],
+  ];
+  it.each(cases)("%s", (_, entry, run, want) => {
+    expect(replayVerdict(entry, run, nodes, logged, null)).toBe(want);
+  });
+  it("differs whenever it ran other nodes than the run did, whatever it answered", () => {
+    for (const [, entry, run] of cases) expect(replayVerdict(entry, run, nodes, logged, false)).toBe(false);
+  });
+});
+
+describe("what a run asked the host, in a replay", () => {
+  // Every leaf that asks the host (core's ASKS_HOST: calls, collection, file and database reads)
+  // replays with the answer the run recorded, never one computed here: a list kept by hand once
+  // lacked the database reads, and a route that read a table replayed as though it found nothing.
+  // A waiting point and its token have their own sources (the logged event, a redacted token).
+  const own = new Set(["await", "approval", "resume_token"]);
+  it("answers each with what the run recorded, whatever leaf it is", () => {
+    const leaves = [...asksHostPrimitives()].filter((leaf) => !own.has(leaf));
+    expect(leaves).toEqual(expect.arrayContaining(["http_request", "collection_get", "file_read", "db_query", "db_one", "db_find", "db_find_one"]));
+    for (const leaf of leaves) {
+      const answer: WValue = list({ type: "Record", value: [["leaf", { type: "Text", value: leaf }]] });
+      const nodes = [n("x", leaf, [], ["out"])];
+      // Evaluated here, a leaf that asks the host gives nothing: the record must answer it.
+      const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, (node) => node.data.outputs.map(() => null), new Map([["x", answer]]));
+      expect(traces.get("x")?.outputs, leaf).toEqual([answer]);
+    }
+  });
+});
+
 describe("collection reads in a replay", () => {
   it("are answered from the run's record, by node, as it found the collection", () => {
     const nodes = [n("g", "collection_get", ["key"], ["out"], [frozen("collection", "notes")]), n("l", "collection_list", ["prefix", "after"], ["out"], [frozen("collection", "notes")])];
@@ -533,6 +612,34 @@ describe("execution order", () => {
   });
 });
 
+describe("a request no route matched", () => {
+  // The server answers 404, "no route for this path", and runs none of the flow: on every
+  // sample, such a run's nodes are none of the canvas's, so nothing is replayed and nothing is
+  // diagnosed (it was the whole canvas, every node starved behind a request with no record). A
+  // canvas with no route to match still runs as a whole.
+  const noRoute = { kind: "request", route: null, request: null, sourced: [], state_before: {} } satisfies ReplayInput;
+  it("runs none of a canvas that has routes, on every sample", () => {
+    let withRoutes = 0;
+    for (const sample of samples()) {
+      const ev = new Evaluator();
+      const { nodes, edges } = tabFromDocument(sample.name, buildSample(sample, ev), false, ev);
+      const routes = nodes.some((x) => x.data.name === "request" && x.data.body.kind === "Template");
+      const group = runGroup(nodes, edges, noRoute);
+      if (!routes) {
+        expect(group, sample.name).toHaveLength(nodes.length);
+        continue;
+      }
+      withRoutes++;
+      expect(group, sample.name).toEqual([]);
+      const run = replay(nodes, edges, noRoute, (x) => x.data.outputs.map(() => null));
+      expect(run.order, sample.name).toEqual([]);
+      expect(diagnose(nodes, edges, { status: 404, error: null }, run)?.issues.size ?? 0, sample.name).toBe(0);
+      ev.free();
+    }
+    expect(withRoutes).toBeGreaterThan(0);
+  });
+});
+
 describe("why a run failed", () => {
   const txt = (value: string): WValue => ({ type: "Text", value });
   const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
@@ -578,6 +685,22 @@ describe("why a run failed", () => {
       role: "starved",
       reason: "didn't run: record (from field) never arrived",
     });
+  });
+
+  it("draws as the failure only the wires out of where it started; past them, nothing ran", () => {
+    // read → field (no "kind": the origin) → field → respond (falls back): the field after it
+    // never ran, and the wire into the answer carried nothing; neither is drawn as the failure.
+    const chain = [...nodes.slice(0, 2), n("next", "field", ["record"], ["out"], [frozen("name", "x")]), nodes[2]];
+    const wires = [edges[0], wire("kind", "out", "next", "record"), wire("next", "out", "res", "body")];
+    const r = replay(chain, wires, { kind: "tick", route: null, request: null, sourced: [], state_before: { event: rec(["id", txt("e")]) } }, evaluate);
+    const d = diagnose(chain, wires, { status: 400, error: null }, r)!;
+    expect(d.origins).toEqual(["kind"]);
+    expect(wires.map((w) => failureWire(d, w))).toEqual([false, true, false]);
+    // The way the absence took is still the path: the explain and the timeline read it.
+    expect(d.path.has(wireKey(wires[2]))).toBe(true);
+    // The field after it didn't run (drawn faint); the answer fell back (drawn red).
+    expect(fellBack(r.traces.get("next")!.outputs)).toBe(false);
+    expect(fellBack(r.traces.get("res")!.outputs)).toBe(true);
   });
 
   it("has nothing to say about a run that didn't fail", () => {
