@@ -15,7 +15,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | `data/` | the server's state: **the one folder to back up** |
 | `keys/` | the secrets key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
-| `tokens.json` | the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
+| `tokens.json` | the session `holon login` began on each server you signed in to, and the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
 
 In the data folder (`--data`, `HOLON_DATA`):

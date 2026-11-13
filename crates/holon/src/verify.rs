@@ -1880,7 +1880,7 @@ pub(crate) fn export(args: &[String]) -> i32 {
                 .unwrap_or_else(|| body.trim().to_string());
             eprintln!("holon export: {server} answered {code}: {why}");
             if code == 401 {
-                eprintln!("holon export: for a server elsewhere, set HOLON_TOKEN to an API token (the editor's admin page, API tokens)");
+                eprintln!("holon export: {}", local::sign_in_hint(server, target.from));
             }
             return 1;
         }
@@ -1983,7 +1983,8 @@ examples:
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.";
+  as you with holon login (and with none running here, the one you signed in to needs no
+  --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 #[cfg(test)]
 mod tests {

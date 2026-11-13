@@ -802,6 +802,12 @@ impl Accounts {
         Ok(right)
     }
 
+    /// When the session `token` ends (seconds since 1970), while it lasts.
+    pub(crate) fn session_ends(&self, token: &str) -> Option<u64> {
+        let (hash, now) = (hash_of(token), epoch_now());
+        hold(&self.book).sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now).map(|s| s.expires_at)
+    }
+
     pub(crate) fn sign_out(&self, token: &str) {
         let hash = hash_of(token);
         let _ = self.change(|book| {

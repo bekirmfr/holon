@@ -28,8 +28,8 @@ const USAGE: &str = "usage: holon decide <slug> [<run> <name> --approve|--declin
   --json                   print the server's answer as JSON
   --server PORT|URL        which holon server to ask (see below)
 
-  A person decides a person's step, an agent an agent's, with its token in HOLON_TOKEN; a
-  service's token is refused.
+  A person decides a person's step, signed in as themselves (on a server elsewhere, holon login
+  first); an agent an agent's, with its token in HOLON_TOKEN. A service's token is refused.
 
 examples:
   holon decide payouts

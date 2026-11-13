@@ -8,7 +8,8 @@
 // bound to its role on the flow, of its kind, each a different principal, and never by whoever
 // started the run; one decline, with a reason, ends it. Each sees what they decide: the account,
 // the amount and the balance the run read (its shows). They decide in the editor's Approvals
-// (Runs waiting) or with holon decide, the agent with its own token or holon mcp's decide tool.
+// (Runs waiting) or with holon decide: a person on another machine signs in first with holon
+// login, the agent uses its own token or holon mcp's decide tool.
 // The run holds nothing on the account meanwhile: a deposit goes ahead while it waits. Approved,
 // it reads the balance as it is now, sends the payout (to httpbin.org, standing in for a bank)
 // with who approved it and the classifier's note, and writes the new balance and a record of the
@@ -49,8 +50,9 @@
 //                                                                     and what it shows
 // scout classifies it, with its token in HOLON_TOKEN, and a note:
 //   holon decide approved-payout <run> payout --approve --note '{"label":"invoice","confidence":0.93}'
-// then bob reviews it, signed in to the editor, in Approvals, and you approve it on the server's
-// machine, with HOLON_TOKEN unset: each only your own step, and in turn. It pays it:
+// then bob reviews it, in the editor's Approvals, or from another machine (holon login --server
+// <URL>, then the same holon decide), and you approve it on the server's machine, with
+// HOLON_TOKEN unset: each only their own step, and in turn. It pays it:
 //   holon decide approved-payout <run> payout --approve
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
 import { action, approval, flow, route, status } from "holon"

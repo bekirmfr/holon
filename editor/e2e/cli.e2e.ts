@@ -3,7 +3,9 @@
 // is the built binary, signed in with the e2e admin's token (HOLON_TOKEN), as a script would be.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, OWN_PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
@@ -15,15 +17,20 @@ const SAMPLES = join(root, "crates", "holon-author", "samples");
 
 type Ran = { status: number; out: string; err: string };
 
-/** Run `holon args… --server SERVER`, with `input` piped in: its exit code, stdout and stderr. */
-function holon(token: string, args: string[], input = ""): Ran {
+/** Run `holon args…` in `env`, with `input` piped in: its exit code, stdout and stderr. */
+function ran(args: string[], env: NodeJS.ProcessEnv, input = ""): Ran {
   try {
-    const out = execFileSync(HOLON, [...args, "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: token }, input, encoding: "utf8", stdio: "pipe" });
+    const out = execFileSync(HOLON, args, { env, input, encoding: "utf8", stdio: "pipe" });
     return { status: 0, out, err: "" };
   } catch (e) {
     const failed = e as { status: number; stdout: string; stderr: string };
     return { status: failed.status, out: failed.stdout, err: failed.stderr };
   }
+}
+
+/** Run `holon args… --server SERVER` signed in with `token`, with `input` piped in. */
+function holon(token: string, args: string[], input = ""): Ran {
+  return ran([...args, "--server", SERVER], { ...process.env, HOLON_TOKEN: token }, input);
 }
 
 /** `holon args…`, which must succeed: its stdout. */
@@ -131,6 +138,66 @@ test("flows are saved and read back, and people and tokens managed, from the com
   expect(holon(token, ["deployments"]).status).toBe(1);
   ok(adminToken, ["people", "remove", service, "--yes"]);
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
+});
+
+test("a person signs in with holon login, the other commands act as them with no token, and holon logout ends it", async ({ adminToken }) => {
+  // A person invited, who joins with a password of their own.
+  const person = `cli-login-${Date.now()}`;
+  const password = `pw-${randomUUID()}`;
+  const invite = /invite=(hi_[A-Za-z0-9_-]+)/.exec(ok(adminToken, ["people", "add", person, "--person", "--role", "viewer"]))?.[1] ?? "";
+  const joined = await fetch(`${SERVER}/auth/invite`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite, password }) });
+  expect(joined.ok).toBe(true);
+
+  // Their own ~/.holon, with no server running in it: as on another machine.
+  const home = mkdtempSync(join(tmpdir(), "holon-login-"));
+  mkdirSync(join(home, "run"));
+  const env: NodeJS.ProcessEnv = { ...process.env, HOLON_HOME: home, HOLON_RUN_DIR: join(home, "run") };
+  delete env.HOLON_TOKEN;
+  delete env.HOLON_SERVER;
+  const as = (args: string[], input = "") => ran(args, env, input);
+  const tokens = join(home, "tokens.json");
+  try {
+    // A wrong password signs no one in, and keeps nothing.
+    const wrong = as(["login", "--server", SERVER, "--name", person], "not it\n");
+    expect(wrong.status).toBe(1);
+    expect(wrong.err).toContain("didn't sign you in (401)");
+    expect(existsSync(tokens)).toBe(false);
+
+    // The name and the password piped in, as typed at its prompts: signed in as them, kept for
+    // the server, and neither the password nor the session's token printed.
+    const login = as(["login", "--server", SERVER], `${person}\n${password}\n`);
+    expect(login.status, login.err).toBe(0);
+    expect(login.out).toContain(`Signed in to ${SERVER} as ${person} (viewer on the host), until `);
+    expect(login.out + login.err).not.toContain(password);
+    expect(login.out + login.err).not.toMatch(/hs_/);
+    expect(Object.keys(JSON.parse(readFileSync(tokens, "utf8")) as object)).toEqual([SERVER]);
+
+    // The other commands reach the one server signed in to, as them: a viewer lists, and isn't
+    // let manage people as the run file's admin would be.
+    expect(as(["deployments"]).status).toBe(0);
+    const people = as(["people"]);
+    expect(people.status).toBe(1);
+    expect(people.err).toContain("answered 403");
+
+    // Out: ended there and forgotten; a command then says how to sign in.
+    const out = as(["logout"]);
+    expect(out.status, out.err).toBe(0);
+    expect(out.out).toContain(`Signed out of ${SERVER}.`);
+    const after = as(["deployments", "--server", SERVER]);
+    expect(after.status).toBe(1);
+    expect(after.err).toContain(`answered 401`);
+    expect(after.err).toContain(`a person signs in with holon login --server ${SERVER}`);
+
+    // A reset ends a session: a command says to sign in again.
+    expect(as(["login", "--server", SERVER, "--name", person], `${password}\n`).status).toBe(0);
+    ok(adminToken, ["people", "reset", person]);
+    const ended = as(["deployments"]);
+    expect(ended.status).toBe(1);
+    expect(ended.err).toContain(`your session there has ended`);
+  } finally {
+    ok(adminToken, ["people", "remove", person, "--yes"]);
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("roles, groups and bindings are made and read back from the command line, and People and access offers and lists them", async ({ adminToken, page }) => {

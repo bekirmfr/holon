@@ -31,6 +31,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
+| [`holon login`, `logout`](#holon-login-logout) | sign in to a server elsewhere as you, a person, for the other commands |
 | [`holon people`, `oidc`](#people-and-sign-in) | people, agents and services, and their tokens; signing in through a provider |
 | [`holon roles`](#holon-roles) | the roles principals are bound, and defining your own |
 | [`holon groups`](#holon-groups) | groups of principals, to bind a role to all of them |
@@ -192,9 +193,9 @@ holon deploy <file> [--server PORT|URL] [--slug NAME] [--approve]
 
 Compiles the flow and deploys it, as the editor's deploy does: under its own name, or `--slug`.
 From the server you run on this machine, signed in as you; with several running, `--server PORT`
-picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in
-`HOLON_TOKEN`. A token goes over https, or plain http only to this machine: a host given bare is
-reached over https, and `http://` to another machine is refused while there is a token to send.
+picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`. A
+password or a token goes over https, or plain http only to this machine: a host given bare is
+reached over https, and `http://` to another machine is refused while there is one to send.
 
 A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
 approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:
@@ -286,8 +287,9 @@ With no server it still opens, checks and formats files.
 
 What the editor's deployed page does, from the command line. Each command below reaches the
 server you run on this machine, signed in as you; with several running, `--server PORT` picks
-one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in `HOLON_TOKEN`.
-Those that list take `--json`, for the server's answer as it is.
+one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`; with no
+server running here, the one you signed in to needs no `--server`. Those that list take `--json`,
+for the server's answer as it is.
 
 ### `holon deployments`
 
@@ -459,8 +461,9 @@ the decision, up to 16 KiB, which the run is given with it. It says what the dec
 step it took, what the approval still waits for, approved by whom, or declined; the run goes on
 with the decision once it is made. Each decides one step, once, and not of a run they started;
 one decline ends it, and the host's [approval settings](#holon-access) may keep out whoever
-deployed the version, and agents. A person decides a person's step, signed in, as you are on
-your own machine. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
+deployed the version, and agents. A person decides a person's step, signed in as themselves:
+as you are on your own machine, or after [`holon login`](#holon-login-logout) on a server
+elsewhere. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
 (or `holon mcp`'s `decide`), never a person's; a service's token is refused.
 
 ### `holon wait`
@@ -622,8 +625,39 @@ grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up
 
 ## People and sign-in
 
-Admins only, as the editor's People and access; an agent's or a service's owner also makes and
-revokes its tokens (in the editor, *Your agents and services*).
+`holon login` and `logout` are anyone's. The rest are admins' only, as the editor's People and
+access; an agent's or a service's owner also makes and revokes its tokens (in the editor, *Your
+agents and services*).
+
+### `holon login`, `logout`
+
+```
+holon login [--server URL] [--name NAME]
+holon logout [--server URL]
+```
+
+How a person uses the command line on a server elsewhere, as themselves. `login` asks your name
+(or takes `--name`) and your password, which isn't shown as you type it (or reads them piped in,
+a line each), and signs you in. The session is kept for that server in `~/.holon/tokens.json`,
+readable only by you, and `login` says who you are and until when: a week from then. Every
+other command reaching that server signs in with it, unless `HOLON_TOKEN` is set, which wins;
+with no server running on this machine, they reach the one you signed in to without `--server`:
+
+```sh
+holon login --server https://holon.example.com
+holon decide payouts          # the steps yours to take, then one taken as you
+holon logout
+```
+
+A password goes over https only, or plain http to this machine: for a server elsewhere on plain
+http, reach it through an SSH tunnel (`ssh -L 7420:localhost:7420 HOST`, then `--server 7420`).
+`logout` ends the session on the server too, and forgets it. A session also ends when an admin
+resets your password; a command then says so, and to `holon login` again. Neither the password
+nor the session's token is printed or written anywhere else.
+
+An agent or a service signs in with a token of its own (`holon people token NAME`) in
+`HOLON_TOKEN`, never `login`. Signing in through a provider ([`holon oidc`](#holon-oidc)) isn't in
+the command line yet: such a person signs in to the editor.
 
 ### `holon people`
 
@@ -792,8 +826,7 @@ holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
 verify`. From the server you run on this machine, signed in as you; with several running,
-`--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API
-token in `HOLON_TOKEN`.
+`--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
 read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.md).
@@ -1064,6 +1097,6 @@ Code extension starts it.
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |
 | `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_NAMESPACE` | for secrets whose source is vault |
-| `HOLON_SERVER` | the server `export`, `folder` and `mcp` reach |
-| `HOLON_TOKEN` | an API token to sign in to it with |
+| `HOLON_SERVER` | the server the commands reach, when `--server` isn't given |
+| `HOLON_TOKEN` | an agent's or a service's token to sign in with; it wins over a `holon login` session |
 | `HOLON_EDITOR` | `holon serve --editor` |

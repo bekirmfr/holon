@@ -80,6 +80,10 @@ pub(crate) trait Api {
     fn server(&self) -> String;
     /// Send a request; its status and body.
     fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String>;
+    /// What to do when the server doesn't take the sign-in it sends (a 401).
+    fn sign_in_hint(&self) -> String {
+        crate::local::sign_in_hint(&self.server(), crate::local::TokenFrom::Nothing)
+    }
 }
 
 /// A server over HTTP, signed in with `token`.

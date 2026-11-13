@@ -622,7 +622,7 @@ impl App {
     /// Find the server (as `holon deploy` does) and read it.
     pub(crate) fn connect(&mut self) {
         match crate::local::target(self.server_arg.as_deref()) {
-            Ok(t) => self.attach(Client::new(Box::new(crate::deploycmd::Person { server: t.server, token: t.token }))),
+            Ok(t) => self.attach(Client::new(Box::new(crate::deploycmd::Person(t)))),
             Err(e) => {
                 self.client = None;
                 self.offline = Some(e);

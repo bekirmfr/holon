@@ -105,8 +105,11 @@ fn address(request: &Request) -> String {
     }
 }
 
+/// A session begun: its token, whose it is, and when it ends (`holon login` says so).
 fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
-    Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name) }))
+    Response::json(&serde_json::json!({
+        "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name), "expires_at": accounts.session_ends(token),
+    }))
 }
 
 /// `/auth/…`, `/admin/…` and `/people…`, or None for any other path.

@@ -1,6 +1,7 @@
 //! `holon deploy <file>`: compile a flow and deploy it to a running server, as the editor does.
 //! The server and sign-in come from the one this user runs here (`local.rs`), or `--server` and
-//! `HOLON_TOKEN`. Useful from CI or a test harness that wants to deploy without a browser.
+//! a person's `holon login` or `HOLON_TOKEN`. Useful from CI or a test harness that wants to
+//! deploy without a browser.
 
 use std::io::Read;
 use std::time::Duration;
@@ -32,7 +33,8 @@ examples:
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.";
+  as you with holon login (and with none running here, the one you signed in to needs no
+  --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file: Option<String> = None;
@@ -94,7 +96,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         }
     };
     let server = target.server.clone();
-    let api = Person { server: target.server, token: target.token };
+    let api = Person(target);
 
     let staged = match stage(&api, &plan, &slug) {
         Ok(s) => s,
@@ -270,22 +272,22 @@ pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document
 
 /// A server reached as a person: whoever the token signs in as, not as an agent (mcp.rs), so a
 /// deploy can approve what it asks for.
-pub(crate) struct Person {
-    pub(crate) server: String,
-    pub(crate) token: Option<String>,
-}
+pub(crate) struct Person(pub(crate) local::Target);
 
 impl Api for Person {
     fn server(&self) -> String {
-        self.server.clone()
+        self.0.server.clone()
     }
     fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
-        let token = self.token.as_deref();
+        let (server, token) = (&self.0.server, self.0.token.as_deref());
         match body {
-            None => send(&self.server, token, method, path, None, ""),
-            Some(Body::Json(v)) => send(&self.server, token, method, path, Some(v.to_string().as_bytes()), "application/json"),
-            Some(Body::Bytes(b)) => send(&self.server, token, method, path, Some(&b), "application/octet-stream"),
+            None => send(server, token, method, path, None, ""),
+            Some(Body::Json(v)) => send(server, token, method, path, Some(v.to_string().as_bytes()), "application/json"),
+            Some(Body::Bytes(b)) => send(server, token, method, path, Some(&b), "application/octet-stream"),
         }
+    }
+    fn sign_in_hint(&self) -> String {
+        local::sign_in_hint(&self.0.server, self.0.from)
     }
 }
 
@@ -299,7 +301,7 @@ pub(crate) fn call(api: &dyn Api, method: &str, path: &str, body: Option<Body>) 
     }
     let why = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
     Err(match status {
-        401 => format!("{server} wants a sign-in: set HOLON_TOKEN to a service's or an agent's token (holon people token NAME, or the editor's People and access): {why}"),
+        401 => format!("{server} wants a sign-in ({why}): {}", api.sign_in_hint()),
         403 => format!("{server} refused: {why}"),
         _ => format!("{server} answered {status}: {why}"),
     })

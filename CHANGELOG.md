@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A person signs in to a server elsewhere from the command line: `holon login`.** On another
+  machine a person's only way in was the editor; the commands took an agent's or a service's
+  token. Now `holon login --server https://holon.example.com` asks their name and password (not
+  shown as typed, or piped in), signs them in, and keeps the session for that server in
+  `~/.holon/tokens.json`, readable only by them; it says who they are and until when, a week on.
+  Every other command reaching that server signs in with it unless `HOLON_TOKEN` is set, and with
+  no server running here they reach the one signed in to without `--server`, so `holon decide
+  payouts` lists their steps and takes one as them. `holon logout` ends the session there and
+  forgets it. A refused sign-in says what to do by where it came from: a session that ended,
+  `holon login` again; `HOLON_TOKEN` not taken; none, how to sign in. A password goes over https
+  only, as a token does. The sign-in answer says when the session ends (`expires_at`). An agent's
+  token `holon mcp setup --server` keeps for a server elsewhere is now kept as `agent:<URL>`, apart
+  from a person's session: set it up again. Signing in through a provider isn't in the command
+  line yet.
 - **Those who decide an approval see what they approve, and nothing else of the flow's runs.**
   An approval listed its steps and who had taken them, never what the run would do: a reviewer
   approved a payout without seeing its amount or payee. Now `await approval("payout", { shows:

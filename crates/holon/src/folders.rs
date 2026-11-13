@@ -1512,7 +1512,8 @@ examples:
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.";
+  as you with holon login (and with none running here, the one you signed in to needs no
+  --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 /// What a run's read of a file kept: its hash and size, and where its text is if not in the log.
 #[derive(Clone, Debug, PartialEq)]
