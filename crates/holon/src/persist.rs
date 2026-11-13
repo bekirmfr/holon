@@ -49,14 +49,27 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 versions: Vec::new(),
                 versions_kept: dep.versions.clone(),
                 grant: Some(dep.grant.clone()),
-                // What a waiting run keeps that may hold a secret is sealed under the secrets
-                // master key, which is kept apart from this file: a backup of it carries none.
-                // With what each sent as it parked, which its channels hold.
+                // What a waiting run keeps that may hold a secret is sealed under its
+                // deployment's keys, whose root is kept apart from this file: a backup of it
+                // carries none. With what each sent as it parked, which its channels hold. One
+                // that can't be sealed is left out, never written in the clear.
                 parked: {
-                    let sealer = dep.secrets.lock().unwrap().sealer.clone();
+                    let keys = dep.secrets.lock().unwrap().keys.clone();
                     dep.parked
                         .values()
-                        .map(|p| ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s)) })
+                        .filter_map(|p| {
+                            let kept = match keys.as_deref() {
+                                Some(keys) => p.sealed_for_disk(slug, keys),
+                                None => Ok(p.clone()),
+                            };
+                            match kept {
+                                Ok(kept) => Some(ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..kept }),
+                                Err(e) => {
+                                    eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
+                                    None
+                                }
+                            }
+                        })
                         .collect()
                 },
             }

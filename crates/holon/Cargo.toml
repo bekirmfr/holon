@@ -12,7 +12,8 @@ repository = "https://github.com/bekirmfr/holon"
 homepage = "https://github.com/bekirmfr/holon"
 
 [dependencies]
-aes-gcm = "0.10"
+# Encryption at rest (at_rest.rs): XChaCha20-Poly1305, a 192-bit random nonce per record.
+chacha20poly1305 = "0.10"
 argon2 = "0.5"
 # `holon update` (selfmanage.rs): the newest release, and the installer that fetches it.
 axoupdater = { version = "0.10", default-features = false, features = ["blocking", "github_releases"] }

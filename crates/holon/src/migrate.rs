@@ -11,20 +11,20 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use crate::local;
-use crate::sealing::{self, KeySource};
+use crate::sealing;
 
-const USAGE: &str = "usage: holon migrate [--yes] [--check] [--from DIR] [--secrets-key os|env:VAR|file:PATH]
+const USAGE: &str = "usage: holon migrate [--yes] [--check] [--from DIR] [--root-key os|env:VAR|file:PATH]
 
   Moves what an older release left where this one doesn't look:
   - a server's data kept as .holon-* files in a folder (this one, or --from DIR), into
     ~/.holon/data (or HOLON_HOME/data, or HOLON_DATA)
-  - secrets keys kept in ~/.config/holon/keys, into ~/.holon/keys
+  - key files kept in ~/.config/holon/keys, into ~/.holon/keys
 
   --yes                    go ahead without asking
   --check                  change nothing; exit 1 if anything needs migrating
   --from DIR               where the .holon-* files are (default: this folder)
-  --secrets-key SOURCE     where the old secrets file's key is, if not the OS key store:
-                           env:VAR or file:PATH
+  --root-key SOURCE        where the root key of the data's keys.json is, if not the OS key
+                           store: env:VAR or file:PATH
 
 examples:
   holon migrate --check
@@ -59,18 +59,18 @@ pub(crate) struct Env {
     pub(crate) keys: PathBuf,
     /// Where key files were kept before.
     pub(crate) old_keys: Option<PathBuf>,
-    /// `--secrets-key`, for opening the old secrets file.
-    pub(crate) secrets_key: Option<String>,
+    /// `--root-key`, for opening what the copy's keyring sealed.
+    pub(crate) root_key: Option<String>,
 }
 
 impl Env {
-    fn here(from: Option<PathBuf>, secrets_key: Option<String>) -> Result<Env, String> {
+    fn here(from: Option<PathBuf>, root_key: Option<String>) -> Result<Env, String> {
         let home = local::holon_home().ok_or("no home folder (USERPROFILE or HOME), and no HOLON_HOME")?;
         let from = match from {
             Some(f) => f,
             None => std::env::current_dir().map_err(|e| format!("which folder is this? {e}"))?,
         };
-        Ok(Env { from, data: data_folder(&home), keys: home.join("keys"), old_keys: sealing::old_keys_dir(), secrets_key })
+        Ok(Env { from, data: data_folder(&home), keys: home.join("keys"), old_keys: sealing::old_keys_dir(), root_key })
     }
 }
 
@@ -110,14 +110,14 @@ pub(crate) fn run(args: &[String]) -> i32 {
 }
 
 fn main(args: &[String]) -> Result<i32, String> {
-    let (mut yes, mut check, mut from, mut secrets_key) = (false, false, None, None);
+    let (mut yes, mut check, mut from, mut root_key) = (false, false, None, None);
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--yes" | "-y" => yes = true,
             "--check" => check = true,
             "--from" => from = Some(PathBuf::from(args.next().ok_or("--from needs a folder")?)),
-            "--secrets-key" => secrets_key = Some(args.next().ok_or("--secrets-key needs os, env:VAR or file:PATH")?.clone()),
+            "--root-key" => root_key = Some(args.next().ok_or("--root-key needs os, env:VAR or file:PATH")?.clone()),
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return Ok(0);
@@ -125,7 +125,7 @@ fn main(args: &[String]) -> Result<i32, String> {
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
     }
-    let env = Env::here(from, secrets_key)?;
+    let env = Env::here(from, root_key)?;
     let plans: Vec<(&Migration, Plan)> = MIGRATIONS.iter().filter_map(|m| (m.needed)(&env).map(|p| (m, p))).collect();
     if plans.is_empty() {
         println!("nothing to migrate");
@@ -211,12 +211,6 @@ fn name(p: &Path) -> String {
 }
 
 fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
-    // The secrets open with their key before anything moves; opening records the key's id in
-    // the file, so the copy finds the same key wherever it goes.
-    let old_secrets = env.from.join(".holon-secrets.json");
-    if old_secrets.exists() {
-        open_secrets(&old_secrets, env.secrets_key.as_deref()).map_err(|e| format!("{e}; nothing was moved"))?;
-    }
     let partial = env.data.with_file_name(format!("{}.partial", name(&env.data)));
     if partial.exists() {
         // What an interrupted run left: the old files are all still there.
@@ -226,7 +220,7 @@ fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
     for (old, new) in &plan.moves {
         copy_all(old, &partial.join(name(new))).map_err(|e| format!("could not copy {}: {e}", old.display()))?;
     }
-    check_copy(&partial, env.secrets_key.as_deref()).map_err(|e| format!("the copy in {} doesn't check: {e}; the old files are untouched", partial.display()))?;
+    check_copy(&partial, env.root_key.as_deref()).map_err(|e| format!("the copy in {} doesn't check: {e}; the old files are untouched", partial.display()))?;
     if env.data.exists() {
         // Empty (a server there was refused above): only an empty folder is removed.
         std::fs::remove_dir(&env.data).map_err(|e| format!("{} isn't empty: {e}", env.data.display()))?;
@@ -240,13 +234,9 @@ fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
     Ok(format!("{} things moved into {}", plan.moves.len(), env.data.display()))
 }
 
-fn open_secrets(path: &Path, key_arg: Option<&str>) -> Result<(), String> {
-    let path = path.to_string_lossy();
-    let key = KeySource::parse(key_arg, &path)?;
-    crate::secrets::SecretStore::open(&path, &key, crate::secret_sources::Sources::none()).map(|_| ())
-}
-
-/// The copy is a server's: the store opens, the tables parse, the secrets open with their key.
+/// The copy is a server's: the store opens, the tables parse, and where it has a keyring
+/// (`keys.json`) the keyring opens under its root and the secrets under it. A copy with none is
+/// from before the server sealed its data: moved as it is, which this release won't read.
 fn check_copy(dir: &Path, key_arg: Option<&str>) -> Result<(), String> {
     let store = dir.join("store");
     if store.exists() {
@@ -259,9 +249,13 @@ fn check_copy(dir: &Path, key_arg: Option<&str>) -> Result<(), String> {
             serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| format!("{table}: {e}"))?;
         }
     }
-    let secrets = dir.join("secrets.json");
-    if secrets.exists() {
-        open_secrets(&secrets, key_arg)?;
+    let keys = dir.join("keys.json");
+    if keys.exists() {
+        let keys = crate::at_rest::Keyring::open(&keys, key_arg, &[]).map_err(|e| format!("its keys: {e}"))?;
+        let secrets = dir.join("secrets.json");
+        if secrets.exists() {
+            crate::secrets::SecretStore::open(&secrets.to_string_lossy(), std::sync::Arc::new(keys), crate::secret_sources::Sources::none())?;
+        }
     }
     Ok(())
 }
@@ -301,7 +295,7 @@ fn keys_needed(env: &Env) -> Option<Plan> {
     let moves: Vec<(PathBuf, PathBuf)> = files.into_iter().map(|f| (f.clone(), env.keys.join(name(&f)))).collect();
     let clash = moves.iter().find(|(old, new)| new.exists() && std::fs::read(old).ok() != std::fs::read(new).ok());
     let blocked = clash.map(|(_, new)| format!("{} holds a different key already", new.display()));
-    let lines = vec![format!("move {} secrets key file(s) from {} into {}", moves.len(), old.display(), env.keys.display())];
+    let lines = vec![format!("move {} key file(s) from {} into {}", moves.len(), old.display(), env.keys.display())];
     Some(Plan { lines, blocked, moves })
 }
 
@@ -333,12 +327,11 @@ mod tests {
     }
 
     fn env(dir: &Path) -> Env {
-        Env { from: dir.join("old"), data: dir.join("home").join("data"), keys: dir.join("home").join("keys"), old_keys: Some(dir.join("config").join("holon").join("keys")), secrets_key: None }
+        Env { from: dir.join("old"), data: dir.join("home").join("data"), keys: dir.join("home").join("keys"), old_keys: Some(dir.join("config").join("holon").join("keys")), root_key: None }
     }
 
-    /// An older server's folder: a store, its tables, a log and a policy, and a secret sealed
-    /// under a key file named for where the secrets file was.
-    fn old_server(env: &Env) -> String {
+    /// An older server's folder: a store, its tables, a log, its secrets and a policy.
+    fn old_server(env: &Env) {
         let old = &env.from;
         std::fs::create_dir_all(old.join(".holon-store").join("ab")).unwrap();
         std::fs::write(old.join(".holon-store").join("ab").join("unit"), b"bytes").unwrap();
@@ -347,47 +340,35 @@ mod tests {
         std::fs::write(old.join(".holon-deployments.logs").join("a.jsonl"), b"{}\n").unwrap();
         std::fs::write(old.join(".holon-accounts.json"), b"{}").unwrap();
         std::fs::write(old.join(".holon-host-key"), b"k").unwrap();
+        std::fs::write(old.join(".holon-secrets.json"), br#"{"format": 3, "deployments": {}}"#).unwrap();
+        std::fs::write(old.join(".holon-secrets.audit.jsonl"), b"{}\n").unwrap();
         std::fs::write(old.join("holon.toml"), b"").unwrap();
-        let secrets = old.join(".holon-secrets.json").to_string_lossy().into_owned();
-        let key = KeySource::File(env.keys.join(format!("{}.key", sealing::path_key_id(&secrets))));
-        let store = crate::secrets::SecretStore::open(&secrets, &key, crate::secret_sources::Sources::none()).unwrap();
-        store.set("app", "token", "s3cret", None).unwrap();
-        secrets
     }
 
     #[test]
-    fn an_older_servers_folder_moves_into_the_data_folder_and_its_secrets_still_open() {
+    fn an_older_servers_folder_moves_into_the_data_folder() {
         let dir = temp("data");
         let env = env(&dir);
         assert!(data_needed(&env).is_none(), "nothing there: nothing to do");
-        let secrets = old_server(&env);
+        old_server(&env);
         let plan = data_needed(&env).expect("the old files are found");
         assert!(plan.blocked.is_none());
         assert_eq!(plan.moves.len(), 8, "seven of the server's files (the secrets' audit too) and the policy");
-        // The key is named for the old path; the moved file finds it by the id it records.
-        let id = sealing::path_key_id(&secrets);
-        let key_file = env.keys.join(format!("{id}.key"));
-        let key = KeySource::File(key_file.clone());
-        crate::secrets::SecretStore::open(&secrets, &key, crate::secret_sources::Sources::none()).unwrap();
-        // apply opens with the default key source, which on this OS may be the key store: name it.
-        let env = Env { secrets_key: Some(format!("file:{}", key_file.display())), ..env };
         data_apply(&env, &plan).unwrap();
-        for (old, new) in OLD_DATA.iter().filter(|(o, _)| !o.contains("heads") && !o.contains("activity") && !o.contains("flows") && !o.contains("audit")) {
+        for (old, new) in OLD_DATA.iter().filter(|(o, _)| !o.contains("heads") && !o.contains("activity") && !o.contains("flows")) {
             assert!(!env.from.join(old).exists(), "{old} removed");
             assert!(env.data.join(new).exists(), "{new} there");
         }
         assert_eq!(std::fs::read(env.data.join("store").join("ab").join("unit")).unwrap(), b"bytes");
         assert!(env.data.join("holon.toml").exists());
-        let moved = env.data.join("secrets.json").to_string_lossy().into_owned();
-        assert_eq!(sealing::key_id(&moved), id, "the file records the key's id");
-        let store = crate::secrets::SecretStore::open(&moved, &key, crate::secret_sources::Sources::none()).unwrap();
-        assert_eq!(store.names("app"), ["token"]);
         assert!(data_needed(&env).is_none(), "applied: nothing left to do");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A copy with a keyring is checked under its root: the root it was made under opens it, and
+    /// another doesn't.
     #[test]
-    fn a_data_folder_that_holds_a_server_blocks_the_move_and_a_wrong_key_moves_nothing() {
+    fn a_data_folder_that_holds_a_server_blocks_the_move_and_a_wrong_root_fails_the_check() {
         let dir = temp("blocked");
         let env = env(&dir);
         old_server(&env);
@@ -395,13 +376,16 @@ mod tests {
         std::fs::write(env.data.join("accounts.json"), b"{}").unwrap();
         assert!(data_needed(&env).unwrap().blocked.unwrap().contains("holds a server already"));
         std::fs::remove_file(env.data.join("accounts.json")).unwrap();
-        // A key that isn't the one that sealed the secrets: refused before anything moves.
+        // A copy with a keyring, made under one root, checked under it and under another.
+        let copy = dir.join("copy");
+        std::fs::create_dir_all(&copy).unwrap();
+        let made = dir.join("made.key");
+        crate::at_rest::Keyring::open(&copy.join("keys.json"), Some(&format!("file:{}", made.display())), &[]).unwrap();
+        assert!(check_copy(&copy, Some(&format!("file:{}", made.display()))).is_ok(), "its own root");
         let wrong = dir.join("wrong.key");
-        KeySource::File(wrong.clone()).create().unwrap();
-        let env = Env { secrets_key: Some(format!("file:{}", wrong.display())), ..env };
-        let plan = data_needed(&env).unwrap();
-        let e = data_apply(&env, &plan).unwrap_err();
-        assert!(e.contains("different key") && e.contains("nothing was moved"), "{e}");
+        crate::sealing::KeySource::File(wrong.clone()).create().unwrap();
+        let e = check_copy(&copy, Some(&format!("file:{}", wrong.display()))).unwrap_err();
+        assert!(e.contains("different root key"), "{e}");
         assert!(env.from.join(".holon-store").exists() && !env.data.join("store").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -286,7 +286,7 @@ asking (`--yes` skips that).
 ### Where it keeps things
 
 Everything is in one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), or `HOLON_HOME`:
-`bin/` the program, `data/` the server's state (the one folder to back up), `keys/` secrets keys
+`bin/` the program, `data/` the server's state (the one folder to back up), `keys/` root keys
 where there's no OS key store, `run/` a file per running server, `tokens.json` and
 `mcp-hosts.toml`.
 

@@ -34,7 +34,8 @@ use zeroize::Zeroizing;
 
 use crate::deploy::epoch_now;
 use crate::recorder::LogEntry;
-use crate::sealing::{KeySource, Sealer, context, write_private};
+use crate::at_rest::{self, Keyring};
+use crate::sealing::write_private;
 use crate::secret_sources::{Reference, STALE_AFTER, Sources};
 use crate::SValue;
 
@@ -60,15 +61,13 @@ pub(crate) struct Resolved {
     pub(crate) server: BTreeMap<String, Option<BTreeSet<String>>>,
     /// name → the version its current value is of, and when it was last read from its source.
     fetched: BTreeMap<String, (u32, std::time::Instant)>,
-    /// What seals what the deployment keeps on disk that may hold these values (a waiting run's
-    /// requests): the store's, under its master key; a store that keeps no key (`":memory:"`)
-    /// seals under one that is never kept, so what it sealed can't be opened after a restart, as
-    /// its secrets aren't there after one. Set whenever the vault is (`vault`, `resolve`): a
-    /// waiting run is never written to disk unsealed. None only for a vault no store made.
-    pub(crate) sealer: Option<Arc<Sealer>>,
-    /// What fingerprints a value the log shows by a mark (a token a call answered), for every
-    /// store, an in-memory one too: unlike `sealer`, nothing is opened with it later.
-    pub(crate) prints: Option<Arc<Sealer>>,
+    /// The keys that seal what the deployment keeps on disk that may hold these values (a
+    /// waiting run's requests, under its own scope, `at_rest::deployment`), and fingerprint a
+    /// value the log shows by a mark: the server's keyring; a store kept in memory has one that
+    /// is never written, so what it sealed can't be opened after a restart, as its secrets aren't
+    /// there after one. Set whenever the vault is (`vault`, `resolve`): a waiting run is never
+    /// written to disk unsealed. None only for a vault no store made.
+    pub(crate) keys: Option<Arc<Keyring>>,
 }
 
 /// The shortest value accepted: shorter ones would match ordinary text when redacting.
@@ -82,24 +81,19 @@ pub(crate) const MAX_VERSIONS: usize = 5;
 struct Stored {
     version: u32,
     set_at: u64,
-    /// Where the value comes from: `local` (sealed here, in `nonce` and `sealed`), or a
-    /// reference resolved by the host (`env:…`, `vault:…`).
+    /// Where the value comes from: `local` (sealed here, in `sealed`), or a reference resolved
+    /// by the host (`env:…`, `vault:…`).
     source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    nonce: Option<String>,
+    /// A local value, sealed under the keyring's `secrets` scope for [`context`] (a sealed line,
+    /// `a1.<version>.…`): it opens only for its deployment, name and version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sealed: Option<String>,
 }
 
-/// The secrets file. `key_check` recognises the master key without revealing it.
+/// The secrets file: its values sealed under the keyring (`keys.json` beside it), never a key.
 #[derive(Serialize, Deserialize)]
 struct SecretsFile {
     format: u32,
-    cipher: String,
-    key_check: String,
-    /// The id the key is kept under (format 3): the file finds its key wherever it is moved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    key_id: Option<String>,
     deployments: BTreeMap<String, BTreeMap<String, Vec<Stored>>>,
     /// Where each of the server's secrets may go, as an admin bound it: hosts (`api.stripe.com`)
     /// and databases (`db:shop`). One not listed may go wherever its flows' approvals show.
@@ -112,7 +106,12 @@ struct SecretsFile {
 /// a deployment's own of that name overriding it. Not a slug, so no deployment is called it.
 pub(crate) const SERVER: &str = "*";
 
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
+
+/// What a sealed value is bound to: a value sealed for one place doesn't open in another.
+fn context(slug: &str, name: &str, version: u32) -> String {
+    format!("holon-secret/v3\0{slug}\0{name}\0{version}")
+}
 
 #[derive(Default)]
 struct Slug {
@@ -239,9 +238,7 @@ impl Audit {
 /// Every deployment's secrets, by slug. A slug may have secrets before it is first deployed.
 pub(crate) struct SecretStore {
     path: String,
-    /// What the file records its key is kept under.
-    key_id: String,
-    sealer: Arc<Sealer>,
+    keys: Arc<Keyring>,
     sources: Sources,
     audit: Audit,
     slugs: Mutex<BTreeMap<String, Slug>>,
@@ -273,8 +270,7 @@ impl SecretStore {
     pub(crate) fn memory() -> SecretStore {
         SecretStore {
             path: ":memory:".into(),
-            key_id: String::new(),
-            sealer: Arc::new(Sealer::ephemeral()),
+            keys: Arc::new(Keyring::memory()),
             sources: Sources::none(),
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
             slugs: Mutex::new(BTreeMap::new()),
@@ -295,88 +291,32 @@ impl SecretStore {
         self
     }
 
-    /// The store at `path`, its master key from `key` (created there when there's nothing to
-    /// open yet). A file that exists but doesn't parse, or a key that's missing or doesn't match,
-    /// is an error: starting empty would lose every secret at the next write. A file from before
-    /// sealing (plain values) is sealed and rewritten.
-    pub(crate) fn open(path: &str, key: &KeySource, sources: Sources) -> Result<SecretStore, String> {
+    /// The store at `path`, its values sealed under `keys`. A file that exists but doesn't
+    /// parse is an error: starting empty would lose every secret at the next write.
+    pub(crate) fn open(path: &str, keys: Arc<Keyring>, sources: Sources) -> Result<SecretStore, String> {
         if path == ":memory:" {
-            return Ok(SecretStore::memory());
+            return Ok(SecretStore { keys, ..SecretStore::memory() });
         }
-        let audit = || Audit { path: Some(Path::new(path).with_extension("audit.jsonl")), kept: Mutex::new(Vec::new()) };
+        let audit = Audit { path: Some(Path::new(path).with_extension("audit.jsonl")), kept: Mutex::new(Vec::new()) };
+        let store = |caps| SecretStore { path: path.into(), keys, sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
         let bytes = match std::fs::read(path) {
-            Ok(b) => {
-                // One written before files were restricted on every OS is restricted now.
-                let _ = crate::sealing::restrict_to_owner(Path::new(path));
-                Some(b)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(store(BTreeMap::new())),
             Err(e) => return Err(format!("could not read {path:?}: {e}")),
         };
-        let parsed: Option<serde_json::Value> = match &bytes {
-            Some(b) => Some(serde_json::from_slice(b).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?),
-            None => None,
-        };
-        let Some(parsed) = parsed else {
-            let master = match key.read()? {
-                Some(k) => k,
-                None => key.create()?,
-            };
-            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(BTreeMap::new()) });
-        };
-        if parsed.get("format").is_none() {
-            // Plain values, from before sealing: seal them under a key (kept from now on).
-            let plain: BTreeMap<String, BTreeMap<String, String>> =
-                serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
-            let master = match key.read()? {
-                Some(k) => k,
-                None => key.create()?,
-            };
-            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(BTreeMap::new()) };
-            let count: usize = plain.values().map(|names| names.len()).sum();
-            for (slug, names) in plain {
-                for (name, value) in names {
-                    let value = Zeroizing::new(value);
-                    let version = store.add_version(&slug, &name, "local", Some(&value), false)?;
-                    store.event(&slug, &name, "sealed", Some(version), Some("local"), None, None);
-                }
-            }
-            store.resolve_all(&store.slugs.lock().unwrap());
-            store.persist()?;
-            eprintln!("holon: sealed {count} secret(s) in {path:?} under {key}");
-            return Ok(store);
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
+        let format = parsed.get("format").and_then(serde_json::Value::as_u64);
+        if format != Some(u64::from(FORMAT)) {
+            return Err(format!("{path:?} is secrets format {}, this server reads {FORMAT}", format.map_or("(none)".into(), |f| f.to_string())));
         }
         let file: SecretsFile = serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
-        // Format 2 is format 3 without its key's id: that was the path's, and is recorded now.
-        if file.format != FORMAT && file.format != 2 {
-            return Err(format!("{path:?} is secrets format {}, this server reads {FORMAT}", file.format));
-        }
-        let upgrade = file.format == 2;
-        let key_id = file.key_id.clone().unwrap_or_else(|| crate::sealing::path_key_id(path));
-        let has_secrets = file.deployments.values().any(|names| !names.is_empty());
-        let master = match key.read()? {
-            Some(k) => k,
-            None if !has_secrets => key.create()?,
-            None => {
-                return Err(format!(
-                    "the key that seals {path:?} isn't in {key}: without it its secrets can't be read (restore the key, or move the file aside to start over)"
-                ));
-            }
-        };
-        let sealer = Sealer::new(&master);
-        if has_secrets && sealer.check() != file.key_check {
-            return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
-        }
-        let store = SecretStore { path: path.into(), key_id, sealer: Arc::new(sealer), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(file.caps) };
+        let store = store(file.caps);
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
                 slugs.entry(slug).or_default().secrets = secrets;
             }
             store.resolve_all(&slugs);
-        }
-        if upgrade {
-            store.persist()?;
         }
         Ok(store)
     }
@@ -394,8 +334,7 @@ impl SecretStore {
         };
         {
             let mut v = vault.lock().unwrap();
-            v.prints.get_or_insert_with(|| Arc::clone(&self.sealer));
-            v.sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
+            v.keys.get_or_insert_with(|| Arc::clone(&self.keys));
         }
         vault
     }
@@ -534,9 +473,9 @@ impl SecretStore {
     pub(crate) fn rollback_preview(&self, slug: &str, name: &str, to: u32) -> Result<RollbackPreview, String> {
         let (old, current) = self.rollback_from(slug, name, to)?;
         let value = self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
-        let current_print = current.as_ref().and_then(|c| self.value_of(slug, name, c).ok()).map(|v| self.sealer.fingerprint(&v));
+        let current_print = current.as_ref().and_then(|c| self.value_of(slug, name, c).ok()).map(|v| self.keys.fingerprint(&v));
         let current = current.map_or(0, |c| c.version);
-        Ok(RollbackPreview { to, current, version: current + 1, source: old.source, to_print: self.sealer.fingerprint(&value), current_print })
+        Ok(RollbackPreview { to, current, version: current + 1, source: old.source, to_print: self.keys.fingerprint(&value), current_print })
     }
 
     /// The kept version `to` of `slug`'s `name`, and the one current now; refused when `to` isn't
@@ -623,14 +562,11 @@ impl SecretStore {
         let entry = slugs.entry(slug.to_string()).or_default();
         let versions = entry.secrets.entry(name.to_string()).or_default();
         let version = versions.last().map_or(1, |v| v.version + 1);
-        let (nonce, sealed) = match value {
-            Some(value) => {
-                let (n, s) = self.sealer.seal(&context(slug, name, version), value);
-                (Some(n), Some(s))
-            }
-            None => (None, None),
+        let sealed = match value {
+            Some(value) => Some(self.keys.seal_line(at_rest::SECRETS, &context(slug, name, version), value.as_bytes())?),
+            None => None,
         };
-        versions.push(Stored { version, set_at: epoch_now(), source: source.into(), nonce, sealed });
+        versions.push(Stored { version, set_at: epoch_now(), source: source.into(), sealed });
         if versions.len() > MAX_VERSIONS {
             versions.drain(..versions.len() - MAX_VERSIONS);
         }
@@ -672,9 +608,12 @@ impl SecretStore {
     /// One stored version's value, or why there is none.
     fn value_of(&self, slug: &str, name: &str, v: &Stored) -> Result<Zeroizing<String>, String> {
         match v.source.as_str() {
-            "local" => match (&v.nonce, &v.sealed) {
-                (Some(nonce), Some(sealed)) => self.sealer.open(&context(slug, name, v.version), nonce, sealed),
-                _ => Err("no sealed value".into()),
+            "local" => match &v.sealed {
+                Some(sealed) => {
+                    let plain = self.keys.open_line(at_rest::SECRETS, &context(slug, name, v.version), sealed).map_err(|e| e.to_string())?;
+                    String::from_utf8(plain.to_vec()).map(Zeroizing::new).map_err(|_| "not text".into())
+                }
+                None => Err("no sealed value".into()),
             },
             other => self.sources.fetch(&Reference::parse(other)?),
         }
@@ -684,9 +623,9 @@ impl SecretStore {
     /// A value from a remote source that can't be read now is kept, for [`STALE_AFTER`] at most.
     /// `server`: the server's secrets ([`SERVER`]), read where the deployment has none of its own.
     fn resolve(&self, slug: &str, entry: &Slug, server: Option<&Slug>) {
-        // Its sealer too: a vault rebuilt without one (a secret set, a source read again) left a
+        // Its keys too: a vault rebuilt without them (a secret set, a source read again) left a
         // waiting run to be written to disk unsealed.
-        let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), sealer: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
+        let mut resolved = Resolved { keys: Some(Arc::clone(&self.keys)), ..Resolved::default() };
         let mut before = std::mem::take(&mut *entry.vault.lock().unwrap());
         let now = std::time::Instant::now();
         let caps = self.caps.lock().unwrap();
@@ -744,7 +683,7 @@ impl SecretStore {
 
     /// How the log tells `value`, version `version` of a secret, apart: `v3 #a1b2c3d4`.
     fn shown(&self, version: u32, value: &str) -> String {
-        format!("v{version} #{}", self.sealer.fingerprint(value))
+        format!("v{version} #{}", self.keys.fingerprint(value))
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -753,9 +692,6 @@ impl SecretStore {
         }
         let file = SecretsFile {
             format: FORMAT,
-            cipher: "AES-256-GCM".into(),
-            key_check: self.sealer.check().into(),
-            key_id: Some(self.key_id.clone()),
             deployments: self
                 .slugs
                 .lock()
@@ -905,7 +841,7 @@ impl Redactor {
     /// The credentials a run's calls answered ([`answered_tokens`]), as `‹token:answer field #a1b2c3d4›`:
     /// the fingerprint tells which one a run had, as a secret's does.
     pub(crate) fn answers(tokens: &[(String, String)], vault: &Vault) -> Redactor {
-        let prints = vault.lock().unwrap().prints.clone();
+        let prints = vault.lock().unwrap().keys.clone();
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (name, value) in tokens {
             let mark = match &prints {
@@ -1297,17 +1233,20 @@ mod tests {
 
     use super::*;
 
-    fn temp(name: &str) -> (String, KeySource) {
+    /// A secrets file in a folder of its own, and the keyring beside it, its root in a key file.
+    fn temp(name: &str) -> (String, Arc<Keyring>) {
         let dir = std::env::temp_dir().join(format!("holon-secrets-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        (dir.join("secrets.json").to_str().unwrap().to_string(), KeySource::File(dir.join("secrets.key")))
+        let root = format!("file:{}", dir.join("root.key").display());
+        let keys = Keyring::open(&dir.join("keys.json"), Some(&root), &[]).unwrap();
+        (dir.join("secrets.json").to_str().unwrap().to_string(), Arc::new(keys))
     }
 
     #[test]
     fn a_store_keeps_values_sealed_and_survives_a_restart() {
         let (path, key) = temp("restart");
-        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(store.set("api", "stripe_key", "sk_live_123456", None).unwrap(), 1);
         assert!(store.set("api", "bad name", "longenough", None).is_err());
         assert!(store.set("api", "short", "12345", None).unwrap_err().contains("at least 6"));
@@ -1316,15 +1255,15 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
 
-        let again = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let again = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(*again.vault("api").lock().unwrap().current["stripe_key"], "sk_live_123456");
         assert!(store.remove("api", "stripe_key", None).unwrap());
         assert!(vault.lock().unwrap().current.is_empty(), "a running deployment's vault sees the change");
         store.set("api", "k", "longenough", None).unwrap();
         store.forget("api", None).unwrap();
-        assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api").is_empty());
+        assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
-        assert!(SecretStore::open(&path, &key, Sources::none()).is_err());
+        assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).is_err());
     }
 
     /// The server's secret is read by a deployment with none of its own, overridden by one it
@@ -1332,7 +1271,7 @@ mod tests {
     #[test]
     fn the_servers_secret_is_read_where_a_deployment_has_none_and_keeps_its_cap() {
         let (path, key) = temp("server");
-        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         let shop = store.vault("shop");
         store.set(SERVER, "stripe_key", "sk_live_server_1", None).unwrap();
         store.set_cap("stripe_key", Some(BTreeSet::from(["api.stripe.com".to_string()])), Some("ada")).unwrap();
@@ -1352,28 +1291,51 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
         // After a restart: the same, a deployment new to it reads it.
-        let again = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let again = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(*again.vault("new").lock().unwrap().current["stripe_key"], "sk_live_server_1");
         assert_eq!(again.list(SERVER)[0].to, Some(BTreeSet::from(["api.stripe.com".to_string()])));
         assert_eq!(again.history(SERVER, "stripe_key").unwrap().1.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), ["set", "capped"]);
         // Removed, so is its cap, and the deployments read nothing for it.
         assert!(again.remove(SERVER, "stripe_key", None).unwrap());
         assert!(again.vault("new").lock().unwrap().current.is_empty());
-        assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().list(SERVER).is_empty());
+        assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().list(SERVER).is_empty());
     }
 
+    /// Guards: a sealed value opens only under the keys that sealed it, and only for the
+    /// deployment, name and version it was sealed for.
+    /// Why: a value copied to another deployment's entry in the file (by whoever can write it)
+    /// must not be read by that deployment's runs.
     #[test]
-    fn a_missing_or_wrong_key_refuses_instead_of_starting_empty() {
-        let (path, key) = temp("wrongkey");
-        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "sk_live_123456", None).unwrap();
-        let KeySource::File(key_file) = &key else { unreachable!() };
-        let kept = std::fs::read(key_file).unwrap();
-        std::fs::remove_file(key_file).unwrap();
-        assert!(SecretStore::open(&path, &key, Sources::none()).err().unwrap().contains("isn't in"));
-        key.create().unwrap();
-        assert!(SecretStore::open(&path, &key, Sources::none()).err().unwrap().contains("different key"));
-        std::fs::write(key_file, kept).unwrap();
-        assert_eq!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api"), vec!["k"]);
+    fn a_value_opens_only_under_its_keys_and_for_its_place() {
+        let (path, key) = temp("place");
+        SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().set("api", "k", "sk_live_123456", None).unwrap();
+        let other = SecretStore::open(&path, Arc::new(Keyring::memory()), Sources::none()).unwrap();
+        let vault = other.vault("api");
+        assert!(vault.lock().unwrap().current.is_empty(), "another keyring opens nothing");
+        assert!(vault.lock().unwrap().problems["k"].contains("doesn't open"), "{:?}", vault.lock().unwrap().problems);
+        // Its sealed value put under another deployment, and another name.
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let sealed = v["deployments"]["api"]["k"].clone();
+        v["deployments"]["shop"] = serde_json::json!({ "k": sealed.clone() });
+        v["deployments"]["api"]["j"] = sealed;
+        std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
+        assert_eq!(*store.vault("api").lock().unwrap().current["k"], "sk_live_123456", "where it was sealed");
+        assert!(!store.vault("shop").lock().unwrap().current.contains_key("k"), "not for another deployment");
+        assert!(!store.vault("api").lock().unwrap().current.contains_key("j"), "nor another name");
+    }
+
+    /// A secrets file of another format (plain values, or sealed under the key the server kept
+    /// before its keyring) is refused, never read or rewritten.
+    #[test]
+    fn a_secrets_file_of_another_format_is_refused() {
+        let (path, key) = temp("format");
+        for text in [r#"{"sign-payload": {"signing_key": "sample-signing-key-42"}}"#, r#"{"format": 3, "cipher": "AES-256-GCM", "key_check": "00", "deployments": {}}"#] {
+            std::fs::write(&path, text).unwrap();
+            let refused = SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap();
+            assert!(refused.contains("this server reads 4"), "{refused}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "left as it was");
+        }
     }
 
     #[test]
@@ -1415,41 +1377,6 @@ mod tests {
         let other = SecretStore::memory();
         other.set("api", "k", "first-value-1", None).unwrap();
         assert_ne!(print(&marked(&other, "first-value-1")), p1, "keyed: another key, another print");
-    }
-
-    #[test]
-    fn a_file_of_plain_values_is_sealed_on_open() {
-        let (path, key) = temp("migrate");
-        std::fs::write(&path, r#"{"sign-payload": {"signing_key": "sample-signing-key-42"}}"#).unwrap();
-        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
-        assert_eq!(*store.vault("sign-payload").lock().unwrap().current["signing_key"], "sample-signing-key-42");
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(on_disk.contains("\"format\": 3") && !on_disk.contains("sample-signing"), "{on_disk}");
-        assert!(on_disk.contains(&format!("\"key_id\": \"{}\"", crate::sealing::path_key_id(&path))), "a new store records its path's id: {on_disk}");
-        assert_eq!(SecretStore::open(&path, &key, Sources::none()).unwrap().list("sign-payload")[0].version, 1);
-    }
-
-    #[test]
-    fn a_format_2_file_records_its_paths_key_id_and_a_moved_file_still_names_its_key() {
-        let (path, key) = temp("travel");
-        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "travelling-value", None).unwrap();
-        let id = crate::sealing::path_key_id(&path);
-        // As a release before key ids wrote it: format 2, no key_id.
-        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        v["format"] = 2.into();
-        v.as_object_mut().unwrap().remove("key_id");
-        std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
-        SecretStore::open(&path, &key, Sources::none()).unwrap();
-        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!((on_disk["format"].as_u64(), on_disk["key_id"].as_str()), (Some(3), Some(id.as_str())), "upgraded on open");
-        // Moved elsewhere, it names the same key, and that key opens it.
-        let moved = std::path::Path::new(&path).with_file_name("elsewhere.json").to_string_lossy().into_owned();
-        std::fs::rename(&path, &moved).unwrap();
-        assert_ne!(crate::sealing::path_key_id(&moved), id);
-        assert_eq!(crate::sealing::key_id(&moved), id);
-        let store = SecretStore::open(&moved, &key, Sources::none()).unwrap();
-        assert_eq!(*store.vault("api").lock().unwrap().current["k"], "travelling-value");
-        assert!(SecretStore::open(&moved, &KeySource::File(std::path::Path::new(&moved).with_file_name("other.key")), Sources::none()).is_err(), "a key that isn't its own is refused");
     }
 
     #[test]
@@ -1515,7 +1442,7 @@ mod tests {
     #[test]
     fn a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited() {
         let (path, key) = temp("rollback");
-        let store = SecretStore::open(&path, &key, Sources::of(&[("HOLON_SECRET_K", "from-the-env")])).unwrap();
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::of(&[("HOLON_SECRET_K", "from-the-env")])).unwrap();
         store.set("api", "k", "first-value", None).unwrap();
         store.set_from("api", "k", "env:HOLON_SECRET_K", None).unwrap();
         store.set("api", "k", "third-value", None).unwrap();
@@ -1524,7 +1451,7 @@ mod tests {
         // A dry run says what it would do, and does nothing.
         assert!(store.rollback_preview("api", "k", 3).unwrap_err().contains("already current"));
         let preview = store.rollback_preview("api", "k", 2).unwrap();
-        let print = |v: &str| store.sealer.fingerprint(v);
+        let print = |v: &str| store.keys.fingerprint(v);
         assert_eq!(
             preview,
             RollbackPreview { to: 2, current: 3, version: 4, source: "env:HOLON_SECRET_K".into(), to_print: print("from-the-env"), current_print: Some(print("third-value")) }
@@ -1557,7 +1484,7 @@ mod tests {
             // Stored as if set while Vault was up; it isn't now.
             let mut slugs = store.slugs.lock().unwrap();
             let entry = slugs.entry("pay".into()).or_default();
-            entry.secrets.insert("s".into(), vec![Stored { version: 1, set_at: 0, source: "vault:secret/x#f".into(), nonce: None, sealed: None }]);
+            entry.secrets.insert("s".into(), vec![Stored { version: 1, set_at: 0, source: "vault:secret/x#f".into(), sealed: None }]);
         }
         store.refresh();
         store.refresh();

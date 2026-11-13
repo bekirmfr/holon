@@ -39,6 +39,7 @@ mod deploycmd;
 mod replaycmd;
 mod activity;
 mod arrivals;
+mod at_rest;
 mod auth;
 mod bindings;
 mod blobs;
@@ -173,8 +174,8 @@ const BESIDE_DEPLOYMENTS: [&str; 6] = ["logs", "state", "arrivals", "mail-seen",
 
 /// The server's own files, which no folder may be or hold: those it was given (`files`), what it
 /// keeps beside its deployments file (`BESIDE_DEPLOYMENTS`) and beside its secrets file (their
-/// audit), the `.env` it reads secrets from, and the secrets key's file.
-fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
+/// audit), the `.env` it reads secrets from, and the root key's file.
+fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Option<&str>, key: Option<&sealing::KeySource>) -> Vec<PathBuf> {
     let mut own: Vec<PathBuf> = files.iter().filter(|p| p.as_str() != ":memory:").map(PathBuf::from).collect();
     if deployments != ":memory:" {
         own.extend(BESIDE_DEPLOYMENTS.map(|beside| Path::new(deployments).with_extension(beside)));
@@ -183,7 +184,7 @@ fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Opt
         own.push(Path::new(secrets).with_extension("audit.jsonl"));
     }
     own.extend(dotenv.map(PathBuf::from));
-    if let sealing::KeySource::File(path) = key {
+    if let Some(sealing::KeySource::File(path)) = key {
         own.push(path.clone());
     }
     own
@@ -542,9 +543,10 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                            none (default 64M) [HOLON_VALUE_CACHE]
   --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
                            HOLON_EXPORT_HEADS_TOKEN]
-  --secrets-key SOURCE     where the secrets file's key is kept: os, the OS key store (the
-                           default); env:VAR; or file:PATH
-  --new-secrets-key        print a fresh key for --secrets-key env:VAR, and exit
+  --root-key SOURCE        where the root key is kept, which opens everything the server seals
+                           in its data folder (keys.json): os, the OS key store (the default);
+                           env:VAR; or file:PATH. Never in the data folder; keep a copy apart
+  --new-root-key           print a fresh key for --root-key env:VAR, and exit
   --dotenv FILE            a .env file HOLON_SECRET_* values are also read from
   --editor DIR             serve the editor from DIR instead of the built-in one
 
@@ -570,7 +572,7 @@ examples:
   holon serve
   holon serve --at 0.0.0.0:7420 --allow-host holon.example.com
   holon serve --data /srv/holon --keep-runs 5000 --flow-cache 1G
-  holon serve --secrets-key env:HOLON_SECRETS_KEY --dotenv .env";
+  holon serve --root-key env:HOLON_ROOT_KEY --dotenv .env";
 
 /// Where `--at` (or HOLON_SERVER_ADDR) says to listen: `IP:PORT`, or a port alone on 127.0.0.1.
 fn parse_at(v: &str) -> Result<std::net::SocketAddr, String> {
@@ -696,7 +698,7 @@ fn serve(args: Vec<String>) {
     let mut mails_arg = ".holon-mails.json".to_string();
     let mut feeds_arg = ".holon-feeds.json".to_string();
     let mut queues_arg = ".holon-queues.json".to_string();
-    let mut secrets_key_arg: Option<String> = None;
+    let mut root_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut accounts_arg = ".holon-accounts.json".to_string();
     // One folder for all of it (`--data DIR`, or HOLON_DATA): the defaults above move inside it.
@@ -806,11 +808,11 @@ fn serve(args: Vec<String>) {
             if let Some(v) = args.next() {
                 queues_arg = v;
             }
-        } else if a == "--secrets-key" {
-            // Where the secrets file's master key is kept: `os` (the OS key store, the default
-            // where there is one), `env:VAR` or `file:PATH` (sealing.rs).
+        } else if a == "--root-key" {
+            // Where the root key is kept: `os` (the OS key store, the default where there is
+            // one), `env:VAR` or `file:PATH` (sealing.rs, at_rest.rs).
             if let Some(v) = args.next() {
-                secrets_key_arg = Some(v);
+                root_key_arg = Some(v);
             }
         } else if a == "--data" || a == "--editor" {
             if let Some(v) = args.next() {
@@ -835,8 +837,8 @@ fn serve(args: Vec<String>) {
             if let Some(v) = args.next() {
                 dotenv_arg = Some(v);
             }
-        } else if a == "--new-secrets-key" {
-            // A fresh master key, for `--secrets-key env:VAR`: keep it safe, and set the variable.
+        } else if a == "--new-root-key" {
+            // A fresh root key, for `--root-key env:VAR`: keep it safe, and set the variable.
             println!("{}", sealing::to_hex(sealing::new_key().as_slice()));
             return;
         } else if a == "--policy" {
@@ -990,6 +992,25 @@ fn serve(args: Vec<String>) {
         eprintln!("holon: is another holon running there? Stop it, or pick another address with --at");
         std::process::exit(1);
     });
+    let refuse_to_start = |e: String| -> ! {
+        eprintln!("holon: {e}");
+        eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
+        std::process::exit(1);
+    };
+    // The keys everything the server seals is sealed under (at_rest.rs), opened before anything
+    // that reads what they sealed: `keys.json` in the data folder, its root where --root-key
+    // says. A server that keeps nothing keeps them in memory only.
+    let kept_anywhere = [&store_arg, &deployments_arg, &secrets_arg, &host_key_arg].iter().any(|a| a.as_str() != ":memory:");
+    let keys_path = dir.join("keys.json");
+    let keys = Arc::new(if kept_anywhere {
+        if let Err(e) = holon_host::create_private_dir(&dir) {
+            refuse_to_start(format!("the data folder {}: {e}", dir.display()));
+        }
+        let sealed: Vec<&Path> = [&secrets_arg, &host_key_arg, &deployments_arg].into_iter().filter(|a| a.as_str() != ":memory:").map(|a| Path::new(a.as_str())).collect();
+        at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| refuse_to_start(e))
+    } else {
+        at_rest::Keyring::memory()
+    });
     let store = if store_arg == ":memory:" {
         println!("holon: in-memory store (nothing persists past this run)");
         SharedStore::new(Box::new(MemStore::new()))
@@ -1018,16 +1039,10 @@ fn serve(args: Vec<String>) {
             }
         }
     }
-    let refuse_to_start = |e: String| -> ! {
-        eprintln!("holon: {e}");
-        eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
-        std::process::exit(1);
-    };
     let policy = Arc::new(Policy::load(&policy_at).unwrap_or_else(|e| refuse_to_start(e)));
-    let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
     let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
     let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
-    let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
+    let secrets = Arc::new(SecretStore::open(&secrets_arg, Arc::clone(&keys), sources).unwrap_or_else(|e| refuse_to_start(e)));
     {
         // References are read again every minute: a value changed or revoked where it is kept
         // reaches the runs without a restart.
@@ -1045,8 +1060,11 @@ fn serve(args: Vec<String>) {
         &deployments_arg,
         &secrets_arg,
         dotenv_arg.as_deref(),
-        &secrets_key,
+        keys.source(),
     );
+    if kept_anywhere {
+        own.push(keys_path.clone());
+    }
     own.extend(local::holon_home());
     // The access document beside the accounts (bindings.rs), and its versions.
     if accounts_arg != ":memory:" {
@@ -1071,7 +1089,7 @@ fn serve(args: Vec<String>) {
     let folders = folders.with_logs(logs::Logs::beside(&deployments_at, log_caps));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
-    durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
+    durable::load_host_key(&host_key_arg, &keys).unwrap_or_else(|e| refuse_to_start(e));
     // Whether the server before stopped with every line on disk: after a crash, a run may have
     // been cut off between its commit and its line, and each deployment it left a state says so.
     let stopped_cleanly = stopping::stopped_cleanly(&deployments_at);
@@ -1081,10 +1099,10 @@ fn serve(args: Vec<String>) {
     }
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
-        // Its waiting runs' sealed parts open under the secrets key.
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        // Its waiting runs' sealed parts open under its keys.
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         for run in dep.parked.values_mut() {
-            if let Err(e) = run.open(slug, sealer.as_deref()) {
+            if let Err(e) = run.open(slug, keys.as_deref()) {
                 eprintln!("holon: waiting run {} of {slug:?} can't be opened: {e}", run.run_id);
             }
         }

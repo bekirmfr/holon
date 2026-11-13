@@ -2826,8 +2826,8 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/deployments.json");
     state.deployments_path = path.clone().into();
-    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
-    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
+    let keys = crate::at_rest::Keyring::open(std::path::Path::new(&format!("{dir}/keys.json")), Some(&format!("file:{dir}/root.key")), &[]).unwrap();
+    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), Arc::new(keys), crate::secret_sources::Sources::none()).unwrap());
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
     let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
     let frozen = |k: &str, v: &str| Param::frozen(k, v);
@@ -2862,7 +2862,7 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
     // A secret set for it rebuilds its vault, as a source read again does: it still seals.
     state.secrets.set("sealed", "api_key", "sk_live_abcdef", Some("ada")).unwrap();
-    assert!(state.deployments.lock().unwrap()["sealed"].secrets.lock().unwrap().sealer.is_some(), "a vault rebuilt keeps its sealer");
+    assert!(state.deployments.lock().unwrap()["sealed"].secrets.lock().unwrap().keys.is_some(), "a vault rebuilt keeps its keys");
     // The order carries its caller's credential, which the waiting run keeps with its request.
     let mut order = fake_data("POST", "/orders", vec![]);
     order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
@@ -2883,11 +2883,11 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     {
         let dep = reloaded.get_mut("sealed").unwrap();
         dep.secrets = state.secrets.vault("sealed");
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         let run = dep.parked.values_mut().next().unwrap();
         assert!(run.sealed.is_some() && run.inputs.is_empty(), "loaded sealed");
-        assert!(run.open("other-slug", sealer.as_deref()).is_err(), "bound to its deployment");
-        run.open("sealed", sealer.as_deref()).unwrap();
+        assert!(run.open("other-slug", keys.as_deref()).is_err(), "bound to its deployment");
+        run.open("sealed", keys.as_deref()).unwrap();
         assert!(format!("{:?}", run.inputs).contains("caller_credential_xyz"), "opened whole");
     }
     *state.deployments.lock().unwrap() = reloaded;
@@ -2940,9 +2940,9 @@ fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
     let mut reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let dep = reloaded.get_mut("sealed").unwrap();
     dep.secrets = SecretStore::memory().vault("sealed");
-    let sealer = dep.secrets.lock().unwrap().sealer.clone();
+    let keys = dep.secrets.lock().unwrap().keys.clone();
     let run = dep.parked.values_mut().next().unwrap();
-    assert!(run.open("sealed", sealer.as_deref()).is_err(), "its key went with the server");
+    assert!(run.open("sealed", keys.as_deref()).is_err(), "its key went with the server");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -12358,7 +12358,7 @@ fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
     let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{keys}/secrets.key")));
     let memory = ":memory:".to_string();
     let secrets = format!("{dir}/conf/secrets.json");
-    let own = server_files(&[&deployments, &memory, &secrets], &deployments, &secrets, Some(&format!("{env}/.env")), &key);
+    let own = server_files(&[&deployments, &memory, &secrets], &deployments, &secrets, Some(&format!("{env}/.env")), Some(&key));
     let folders = crate::folders::Folders::open(":memory:", &own).unwrap();
     let bind = |path: &str| folders.bind("x", path, crate::folders::FolderAccess::Read, crate::folders::Keep::Bytes, None, None);
     let bind_rw = |path: &str| folders.bind("y", path, crate::folders::FolderAccess::ReadWrite, crate::folders::Keep::Bytes, None, None);
@@ -12995,10 +12995,10 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     {
         let dep = reloaded.get_mut(&slug).unwrap();
         dep.secrets = state.secrets.vault(&slug);
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         let run = dep.parked.values_mut().next().unwrap();
         assert_eq!(run.sent, [("updates".to_string(), r#"{"held":"POST"}"#.to_string())]);
-        run.open(&slug, sealer.as_deref()).unwrap();
+        run.open(&slug, keys.as_deref()).unwrap();
     }
     *state.deployments.lock().unwrap() = reloaded;
     let mut after = subscribe(&state);

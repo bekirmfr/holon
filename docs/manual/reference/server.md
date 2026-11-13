@@ -13,7 +13,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 |---|---|
 | `bin/` | the program |
 | `data/` | the server's state: **the one folder to back up** |
-| `keys/` | the secrets key, where there is no OS key store |
+| `keys/` | the root key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
 | `tokens.json` | the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
@@ -41,8 +41,8 @@ the command that makes it yours alone (`chmod 700 …`); the server leaves it as
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
-To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
-a file (see [The secrets key](#the-secrets-key)).
+To move a server, stop it and copy the data folder; the root key goes with it only if it is in a
+file (see [The root key](#the-root-key)).
 
 ### Stopping it
 
@@ -352,20 +352,23 @@ signing in.
 
 Secrets are set per deployment, by an admin, in the editor (**Settings → secrets**); see
 [Deploying](../guides/deploying.md#secrets). The server keeps them in `secrets.json`, each value
-sealed with AES-256-GCM, the deployment, name and version bound in.
+sealed with XChaCha20-Poly1305, the deployment, name and version bound in.
 
-### The secrets key
+### The root key
 
-`--secrets-key` says where the key is:
+What the server seals in its data folder (secret values, and what a waiting run keeps) is sealed
+under data keys kept in `keys.json`, each wrapped by one root key, which is never in the folder.
+`--root-key` says where it is:
 
 | Value | |
 |---|---|
-| `os` | the OS key store (the default on Windows and macOS) |
-| `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/`) |
-| `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-secrets-key` prints one |
+| `os` | the OS key store, as `holon` / `root-key-<id>` (the default on Windows and macOS) |
+| `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/<id>.key`) |
+| `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-root-key` prints one |
 
-Without the right key the server doesn't start. Back the key up apart from the data: one without
-the other opens nothing.
+`<id>` is the one `keys.json` records. Without the right root the server doesn't start; nor does it
+when `keys.json` is missing beside data it sealed. Back the root up apart from the data: one
+without the other opens nothing.
 
 ### Secrets from elsewhere
 
