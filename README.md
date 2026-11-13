@@ -94,8 +94,8 @@ holon serve
 Open http://127.0.0.1:7420. The first time, the server prints a one-time setup code: enter it in
 the editor to create the admin.
 
-**3. Deploy a flow.** On the editor's **flows** page, open **Hello API**, press **deploy**, and
-approve what it asks for (to receive requests). It answers on its own port:
+**3. Deploy a flow.** In the editor, press **Library**: under **Samples**, open **Hello API**,
+press **deploy**, and approve what it asks for (to receive requests). It answers on its own port:
 
 ```sh
 curl http://127.0.0.1:8101/hello/ada
@@ -112,7 +112,7 @@ holon mcp setup claude-code      # or cursor, vscode, … (holon mcp hosts lists
 ```
 
 The agent writes the flow, checks it and deploys it through `holon mcp`. It can't approve what a
-flow may do: a first deploy waits on the flows page for you to approve.
+flow may do: a first deploy waits under **Approvals** for you to approve.
 
 **5. Or write flows as text,** on any machine:
 
@@ -168,7 +168,7 @@ grants, starts, stops, deletes or sets a secret.
 ## Samples
 
 Every sample is a `.holon.ts` file in [`crates/holon-author/samples/`](crates/holon-author/samples),
-opens from the editor's flows page, and is deployed by the end-to-end tests.
+opens from the editor's **Library** (under **Samples**), and is deployed by the end-to-end tests.
 `holon new file.holon.ts --sample NAME` writes one.
 
 | Sample | Shows |

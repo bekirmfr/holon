@@ -282,9 +282,10 @@ too: `holon people`, `holon oidc`, `holon folder`,
 ## The marketplace
 
 A marketplace is itself a flow (the **Marketplace** sample) that holds published holons. Set its
-address on the flows page (**set**). Then **publish** on a saved flow publishes it, and its
-entries appear in the palette to place. Placing one shows what it may do first. A publisher can
-**yank** an entry: it stays listed, flagged, and flows that placed it keep it.
+address under **Library**, on its **Marketplace** tab (**set**). Then **publish** on a saved flow,
+on the flows page, publishes it, and its entries appear in the palette to place. Placing one shows
+what it may do first. A publisher can **yank** an entry: it stays listed, flagged, and flows that
+placed it keep it.
 
 ## Other editors
 
