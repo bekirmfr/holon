@@ -123,8 +123,9 @@ describe("the bottom pane's tabs", () => {
     expect(pane.textContent).toContain("/hello/run2");
   });
 
-  it("in View runs: Runs and Run; live leaves the tab, a run picked in Runs or from elsewhere shows Run", () => {
+  it("in View runs: the runs and the run picked side by side; a click picks, a double click frames its nodes, the edge between them is dragged and kept", () => {
     let pickFromElsewhere: (e: LogEntry) => void = () => undefined;
+    const framed: string[][] = [];
     function Pane() {
       const [selected, setSelected] = useState<LogEntry | null>(null);
       pickFromElsewhere = setSelected;
@@ -135,7 +136,7 @@ describe("the bottom pane's tabs", () => {
           onSelect={setSelected}
           step={null}
           onStep={() => undefined}
-          order={[]}
+          order={selected ? ["request-0", "respond-1"] : []}
           nodes={[]}
           timings={new Map()}
           exchanges={[]}
@@ -143,31 +144,42 @@ describe("the bottom pane's tabs", () => {
           onPickNode={() => undefined}
           diagnosis={null}
           onShowNode={() => undefined}
-          onFitToNodes={() => undefined}
+          onFitToNodes={(ids) => void framed.push(ids)}
           keys={false}
         />
       );
     }
     const c = mount(<Pane />);
-    expect(tabs(c).map((t) => t.textContent)).toEqual(["Runs2", "Run"]);
-    // Live picked the newest run, and the list stays: its tools are the list's.
+    const runs = c.querySelector<HTMLElement>("[role=region][aria-label=Runs]")!;
+    const run = c.querySelector<HTMLElement>("[role=region][aria-label=Run]")!;
+    // Both in sight at once: no tabs to choose between.
+    expect(runs).not.toBeNull();
+    expect(run).not.toBeNull();
+    expect(c.querySelector("[role=tablist][aria-label='bottom tabs']")).toBeNull();
+    // Live picked the newest run: the list keeps its tools, the run its Details and Timeline.
     expect(c.textContent).toContain("#2 · GET /hello/:name");
-    expect(shownPanels(c)).toEqual(["Runs"]);
-    const runs = c.querySelector<HTMLElement>("[role=tabpanel][aria-label=Runs]")!;
     expect([...runs.querySelectorAll("button")].map((b) => b.textContent)).toContain("● live");
-    // A run picked in the list shows Run, with Details, Errors' place and Timeline.
+    expect([...run.querySelectorAll("button")].map((b) => b.textContent)).toEqual(expect.arrayContaining(["Details", "Timeline"]));
+    expect(run.textContent).toContain("/hello/run2");
+    // A run clicked in the list shows beside it, the list still there; double-clicked, its nodes
+    // are framed on the canvas.
     const row = [...runs.querySelectorAll<HTMLElement>("div")].find((d) => d.firstElementChild?.nextElementSibling?.textContent === "#1")!;
     act(() => row.click());
-    expect(shownPanels(c)).toEqual(["Run"]);
-    const run = c.querySelector<HTMLElement>("[role=tabpanel][aria-label=Run]")!;
-    expect([...run.querySelectorAll("button")].map((b) => b.textContent)).toEqual(expect.arrayContaining(["Details", "Timeline"]));
     expect(run.textContent).toContain("/hello/run1");
-    expect(localStorage.getItem("holon.viewTab")).toBe("run");
-    // Back to Runs by its tab; a run picked elsewhere (its address, a cell's history) shows Run.
-    act(() => tabs(c)[0].click());
-    expect(shownPanels(c)).toEqual(["Runs"]);
+    expect(runs.isConnected).toBe(true);
+    act(() => void row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(framed).toEqual([["request-0", "respond-1"]]);
+    // A run picked elsewhere (its address, a cell's history) shows the same way.
     act(() => pickFromElsewhere(RUNS[1]));
-    expect(shownPanels(c)).toEqual(["Run"]);
+    expect(run.textContent).toContain("/hello/run2");
+    // The edge between them is dragged, and its width kept for next time.
+    const edge = c.querySelector<HTMLElement>(".hl-view__divider")!;
+    act(() => {
+      edge.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 400 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { clientX: 300 }));
+    });
+    expect(Number(localStorage.getItem("holon.logRightWidth"))).toBeGreaterThan(0);
   });
 
   it("is b in both modes, beside c, x and i", () => {

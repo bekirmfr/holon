@@ -1,14 +1,16 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane (`b`, its frame
-// BottomPane.tsx's) has two tabs (web-console-L4.md §5.4). Runs: the flow log live (every request,
-// trigger and tick), a sortable, filterable run list with copy, export and compare, a
-// capability-badge column, ↺ (go back to the run; the rest of its history is its page's,
-// FlowPage.tsx), the chain's head and ● live. Run: the run picked, in three tabs — Details (what
-// the run read and produced), Errors when it failed, and Timeline (one row per node, timed by the
-// server) with the stepper. Picking a run in Runs shows Run. The side pane shows the selected run's
+// BottomPane.tsx's) shows the runs and the run picked side by side (web-console-L4.md §5.4), so
+// both are in sight while runs are picked, and a run double-clicked frames its nodes on the
+// canvas. Left, Runs: the flow log live (every request, trigger and tick), a sortable, filterable
+// run list with copy, export and compare, a capability-badge column, ↺ (go back to the run; the
+// rest of its history is its page's, FlowPage.tsx), the chain's head and ● live. Right, Run: the
+// run picked, in three tabs — Details (what the run read and produced), Errors when it failed, and
+// Timeline (one row per node, timed by the server) with the stepper. The split between them is
+// dragged and remembered. The side pane shows the selected run's
 // flow state as of the current step, and the selected node: its params, and the inputs and
 // outputs it had in that run (replayed, replay.ts).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { decisionSaid } from "./decisions";
 import { claimNotes, field, runActions, runLabel, text } from "./runs";
@@ -25,7 +27,6 @@ import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
 import { useBottomHeight } from "./BottomPane";
-import { useRememberedTab } from "./useBottomPane";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
 import { WordSection } from "./InspectorText";
@@ -124,14 +125,17 @@ const paneStyle: CSSProperties = {
 
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
-/** The bottom pane's tabs in View runs (web-console-L4.md §5.4): the runs, and the run picked. */
-export const VIEW_TABS = [
-  ["runs", "Runs"],
-  ["run", "Run"],
-] as const;
-export type ViewTab = (typeof VIEW_TABS)[number][0];
-const VIEW_TAB_NAMES = VIEW_TABS.map(([t]) => t);
-const VIEW_TAB_KEY = "holon.viewTab";
+// The width of the run picked, beside the runs: dragged, and remembered in this browser.
+const SPLIT_KEY = "holon.logRightWidth";
+function rememberedSplit(): number | null {
+  try {
+    const w = Number(localStorage.getItem(SPLIT_KEY));
+    return Number.isFinite(w) && w > 0 ? w : null;
+  } catch {
+    return null;
+  }
+}
+const clampSplit = (w: number, total: number) => Math.max(180, Math.min(total - 200, w));
 
 /** The step controls: back, forward, or the whole run. */
 function Stepper({ step, steps, onStep }: { step: number | null; steps: number; onStep: (s: number | null) => void }) {
@@ -248,17 +252,6 @@ export function BottomPane({
     }
   }, [live, newest, selected, onSelect]);
 
-  // Runs or Run (web-console-L4.md §5.4), remembered as Edit's tab is. A run picked (in the list,
-  // or from elsewhere: its address, a cell's history) shows Run; one live follows, or `,` and `.`
-  // move to, leaves the tab as it is.
-  const [tab, setTab] = useRememberedTab<ViewTab>(VIEW_TAB_KEY, VIEW_TAB_NAMES, "runs");
-  const quiet = useRef<number | null>(null);
-  useEffect(() => {
-    if (!selected || selected.seq === followed.current || selected.seq === quiet.current) return;
-    setTab("run");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.seq]);
-
   const pick = (e: LogEntry) => {
     setLive(false);
     // Live no longer follows: a run picked after this, even the one it followed, is a person's.
@@ -270,7 +263,6 @@ export function BottomPane({
     if (!selected) return false;
     const there = by < 0 ? entries.filter((e) => e.seq < selected.seq).pop() : entries.find((e) => e.seq > selected.seq);
     if (!there) return false;
-    quiet.current = there.seq;
     pick(there);
   };
   const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
@@ -305,14 +297,9 @@ export function BottomPane({
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
       <div className="hl-bottom__head">
-        <div className="hl-bottom__tabs" role="tablist" aria-label="bottom tabs">
-          {VIEW_TABS.map(([t, label]) => (
-            <button key={t} role="tab" aria-selected={t === tab} className="hl-bottom__tab" onClick={() => setTab(t)}>
-              {label}
-              {t === "runs" && <span className="hl-bottom__count">{entries.length}</span>}
-            </button>
-          ))}
-        </div>
+        <span className="hl-view__title">
+          Runs<span className="hl-bottom__count">{entries.length}</span>
+        </span>
         <div className="hl-view__said">
           {selected && (
             <span style={{ color: ink }}>
@@ -338,11 +325,7 @@ export function BottomPane({
         </div>
       )}
       <LogTab
-        tab={tab}
-        open={(e) => {
-          pick(e);
-          setTab("run");
-        }}
+        open={pick}
         entries={entries}
         tallies={tallies}
         selected={selected}
@@ -395,7 +378,6 @@ type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
 function LogTab({
-  tab,
   open,
   tools,
   entries,
@@ -416,9 +398,7 @@ function LogTab({
   onRestored,
   codeText,
 }: {
-  /** Which tab shows: the runs, or the run picked. Both stay mounted, so a filter typed stays. */
-  tab: ViewTab;
-  /** A run picked in the list: it is shown, on the Run tab. */
+  /** A run picked in the list: it is shown beside it. */
   open: (e: LogEntry) => void;
   /** The list's own buttons, at the end of its bar: the chain, and ● live. */
   tools: ReactNode;
@@ -445,6 +425,31 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
+  const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
+  const container = useRef<HTMLDivElement>(null);
+  // The divider between the runs and the run picked, dragged: the run's width, kept once let go.
+  const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+    const total = container.current?.getBoundingClientRect().width ?? 600;
+    const startX = ev.clientX;
+    const startW = rightWidth ?? total * 0.45;
+    let last = startW;
+    const move = (m: PointerEvent) => {
+      last = clampSplit(startW + startX - m.clientX, total);
+      setRightWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem(SPLIT_KEY, String(Math.round(last)));
+      } catch {
+        // Not remembered, then.
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
@@ -633,10 +638,12 @@ function LogTab({
     );
   };
 
+  const rightStyle: CSSProperties = rightWidth !== null ? { width: rightWidth, flex: "0 0 auto" } : { flex: "1 1 45%" };
   return (
     <>
+    <div ref={container} className="hl-view__split">
       {/* Runs: the filter bar, its tools, and the runs. */}
-      <div role="tabpanel" aria-label="Runs" className="hl-view__panel" hidden={tab !== "runs"}>
+      <div role="region" aria-label="Runs" className="hl-view__panel hl-view__runs" style={{ flex: rightWidth !== null ? "1 1 0" : "1 1 55%" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <input
             placeholder="filter runs…"
@@ -754,8 +761,9 @@ function LogTab({
           </div>
         </div>
       </div>
+      <div className="hl-view__divider" onPointerDown={onDivider} title="drag to resize" />
       {/* Run: Details | Errors | Timeline, and the stepper. */}
-      <div role="tabpanel" aria-label="Run" className="hl-view__panel" hidden={tab !== "run"}>
+      <div role="region" aria-label="Run" className="hl-view__panel" style={rightStyle}>
           <Tabs
             tabs={[
               ["details", "Details"],
@@ -845,6 +853,7 @@ function LogTab({
             />
           )}
       </div>
+    </div>
     {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
     </>
   );

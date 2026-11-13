@@ -799,6 +799,12 @@ code, kbd, pre, samp { font-family: var(--mono); }
 /* View runs' tabs, Runs and Run, under the same head as Edit's; the run picked said beside them. */
 .hl-view__panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; }
 .hl-view__panel[hidden] { display: none; }
+/* The runs and the run picked, side by side (ViewPanes.tsx), the divider between them dragged. */
+.hl-view__split { display: flex; flex: 1 1 auto; min-height: 0; }
+.hl-view__runs { border-right: 1px solid var(--border); }
+.hl-view__divider { width: 5px; flex-shrink: 0; cursor: col-resize; margin-left: -3px; }
+.hl-view__divider:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.hl-view__title { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 10px; font-weight: 600; color: var(--ink); flex-shrink: 0; }
 .hl-view__said { flex: 1; display: flex; gap: 10px; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; }
 .hl-bottom__none { margin: 4px 0; color: var(--faint); font-size: 12px; }
 .hl-bottom__button {

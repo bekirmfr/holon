@@ -272,11 +272,12 @@ The Inspector follows the cursor in the text, or the row picked on the canvas.
 - **Settings**: the Deployment panel's groups (server, limits, network, permissions, secrets) for
   the version in this tab. They are deployed with it.
 
-**In View runs:**
+**In View runs**, side by side so both stay in sight while runs are picked; the edge between them
+is dragged to share the width, which is remembered:
 
-- **Runs**: today's run list, with its filter, sort, selection, compare, export, ↺ restore and
-  ● live.
-- **Run**: Details, Errors and Timeline, with the stepper.
+- **Runs**, on the left: today's run list, with its filter, sort, selection, compare, export,
+  ↺ restore and ● live. A click picks a run; a double click frames its nodes on the canvas.
+- **Run**, on the right: Details, Errors and Timeline, with the stepper.
 
 ### 5.5 View runs
 

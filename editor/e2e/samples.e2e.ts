@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, viewTab } from "./helpers";
+import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -109,7 +109,7 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   expect(await answer.text()).toContain("Hello, Ada");
   await viewNewestRun(page);
   // The bottom pane's top edge drags its height (ViewPanes.tsx), and the canvas above takes the rest.
-  const pane = page.getByRole("region", { name: "run" });
+  const pane = page.getByRole("region", { name: "run", exact: true });
   const before = (await pane.boundingBox())!.height;
   const edge = (await pane.locator(".hl-view__edge").boundingBox())!;
   await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
@@ -1244,7 +1244,6 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   const values = text.locator(".hl-text__value");
   await expect(values.first()).toHaveText("1");
   await expect(values.nth(1)).toHaveText("0");
-  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
@@ -1883,7 +1882,7 @@ test("a deployment's runs export from view mode and from holon export, and holon
   await viewNewestRun(page);
 
   // Exported from the run log: the head it chains up to, and the file (the run pane's top bar).
-  const chain = page.getByRole("region", { name: "run" });
+  const chain = page.getByRole("region", { name: "run", exact: true });
   await expect(chain).toContainText("chain unbroken");
   const head = (await chain.locator("[title]").filter({ hasText: /^[0-9a-f]{12}$/ }).getAttribute("title"))!;
   expect(head).toMatch(/^[0-9a-f]{64}$/);
