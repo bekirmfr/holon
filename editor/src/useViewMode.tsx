@@ -24,11 +24,11 @@ import {
   recordedResponses,
   replay,
   replayVerdict,
+  failureWire,
   runGroup,
   sameNodesRan,
   stateAtStep,
   whyNotRun,
-  wireKey,
   type ReplayNode,
 } from "./replay";
 import { printHolon } from "./holonText";
@@ -317,7 +317,7 @@ export function useViewMode(input: ViewModeInput) {
               labelBgBorderRadius: 6,
             }
           : {};
-      if (replayed.diagnosis?.path.has(wireKey(e))) {
+      if (replayed.diagnosis && failureWire(replayed.diagnosis, e)) {
         return { ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
       }
       return value === null ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } } : { ...e, ...hover };

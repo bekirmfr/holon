@@ -476,6 +476,10 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     if (!every) return [];
     return components(nodes, edges).find((ids) => ids.includes(every.id)) ?? [];
   }
+  // A request no route matched (the server answered 404, "no route for this path") ran nothing
+  // on a canvas that has routes: its nodes are not the run's. Only a canvas with no route to match
+  // runs as a whole.
+  if (entry.kind === "request" && !entry.route && nodes.some((n) => n.data.name === "request" && n.data.body.kind === "Template")) return [];
   if (entry.kind !== "request" || !entry.route) return nodes.map((n) => n.id);
   const [method, path] = [entry.route.slice(0, entry.route.indexOf(" ")), entry.route.slice(entry.route.indexOf(" ") + 1)];
   const req = nodes.find(
@@ -770,6 +774,17 @@ export function sameNodesRan(group: string[], run: Replay, timings: Map<string, 
 // `missing` status) or the effect that never happens. The diagnosis finds that node, the origin,
 // says why in its own terms, and marks the path the absence took.
 
+/** Whether a node starved of an input still gave something (a `respond` falling back to its
+ *  `missing` answer): it ran. One that gave nothing didn't run. */
+export const fellBack = (outputs: (WValue | null)[]) => outputs.some((o) => o !== null);
+
+/** Whether a wire is drawn as the failure: one out of a node where it started, on its way. The
+ *  wires further on, between nodes that never ran, carried nothing and are drawn so, faint: the
+ *  failure is the node that started it, not everything after it. */
+export function failureWire(d: Pick<Diagnosis, "origins" | "path">, w: ReplayEdge): boolean {
+  return d.origins.includes(w.source) && d.path.has(wireKey(w));
+}
+
 /** A wire, as one key: which output feeds which input. */
 export const wireKey = (w: ReplayEdge) => `${w.source}:${w.sourceHandle ?? ""}→${w.target}:${w.targetHandle ?? ""}`;
 
@@ -794,7 +809,7 @@ const fieldOf = (v: WValue | null, key: string) => (v?.type === "Record" ? (v.va
 const listOf = (keys: string[]) => (keys.length === 0 ? "nothing" : keys.slice(0, 8).join(", ") + (keys.length > 8 ? ", …" : ""));
 
 /** Why `node` produced nothing from the inputs it got, as precisely as its kind allows. */
-function whyNothing(node: ReplayNode, trace: NodeTrace): string {
+function whyNothing(node: ReplayNode, trace: NodeTrace, empty: string[]): string {
   const p = (name: string) => frozen(node.data.params, name);
   const [a, b] = trace.inputs;
   switch (node.data.name) {
@@ -914,7 +929,8 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "respond":
       return "nothing to answer with";
     case "request":
-      return "the request's body isn't valid JSON";
+      // Its json is the one output a request it answers can leave empty: the body isn't JSON.
+      return empty.length === 1 && empty[0] === "json" ? "the request's body isn't valid JSON" : `it gave no ${empty.join(", ")}`;
     default:
       return "it got its inputs but produced nothing (a value of the wrong kind, or one it can't use)";
   }
@@ -971,8 +987,7 @@ export function diagnose(
     const missing = fedBy.filter((w) => carried(w) === null);
     if (missing.length > 0) {
       const from = missing.map((w) => `${w.targetHandle} (from ${node(w.source).data.name})`).join(", ");
-      const fellBack = trace.outputs.some((o) => o !== null);
-      issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
+      issues.set(id, { role: "starved", reason: `${fellBack(trace.outputs) ? "fell back: " : "didn't run: "}${from} never arrived` });
       continue;
     }
     if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call" || n.data.name === "flow_start") && n.data.body.kind === "Primitive") {
@@ -984,8 +999,9 @@ export function diagnose(
       }
     }
     const feeds = wires.filter((w) => w.source === id);
-    if (feeds.some((w) => carried(w) === null)) {
-      issues.set(id, { role: "origin", reason: whyNothing(n, trace) });
+    const empty = feeds.filter((w) => carried(w) === null);
+    if (empty.length > 0) {
+      issues.set(id, { role: "origin", reason: whyNothing(n, trace, [...new Set(empty.map((w) => w.sourceHandle ?? ""))]) });
       origins.push(id);
     }
   }

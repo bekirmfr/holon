@@ -315,6 +315,17 @@ export const run = action((input) => slugify(input).toUpperCase())
     expect(untiedSinks(dropped, fixed).size).toBe(0);
     // Trigger wires are drawn lighter.
     expect(lighterTriggers(fixed).filter((e) => e.style?.opacity !== undefined).length).toBe(fixed.filter((e) => e.targetHandle === TRIGGER).length);
+    // So is what starts a respond, the request it answers, given the nodes; and a trigger wire a
+    // failed run draws as its failure stays in its colour, as plain to see, dashed.
+    const answers = new Set(dropped.filter((n) => n.data.name === "respond" && n.data.body.kind === "Template").map((n) => n.id));
+    const startsAnswer = fixed.filter((e) => answers.has(e.target) && e.targetHandle === "request");
+    expect(startsAnswer.length).toBeGreaterThan(0);
+    const drawn = lighterTriggers(fixed, dropped);
+    expect(drawn.filter((e) => e.style?.opacity !== undefined).length).toBe(fixed.filter((e) => e.targetHandle === TRIGGER).length + startsAnswer.length);
+    const failed = fixed.map((e) => (e.targetHandle === TRIGGER ? { ...e, animated: true, style: { stroke: "var(--bad)", strokeWidth: 2.6 } } : e));
+    for (const e of lighterTriggers(failed, dropped).filter((x) => x.targetHandle === TRIGGER)) {
+      expect(e.style).toEqual({ stroke: "var(--bad)", strokeWidth: 2.6, strokeDasharray: "6 3" });
+    }
     // Already migrated, it is left as it is.
     expect(withTriggers(nodes, edges, primitive_catalog() as WUnit[]).nodes).toBe(nodes);
   });

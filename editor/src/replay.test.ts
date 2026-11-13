@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
-import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun } from "./replay";
+import { Evaluator, initSync } from "../wasm/holon_wasm.js";
+import { buildSample, samples } from "./samples";
+import { tabFromDocument } from "./tabs";
+import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun } from "./replay";
 import { asksHostPrimitives, choiceNext, primitiveCatalog, type WParam, type WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -610,6 +612,34 @@ describe("execution order", () => {
   });
 });
 
+describe("a request no route matched", () => {
+  // The server answers 404, "no route for this path", and runs none of the flow: on every
+  // sample, such a run's nodes are none of the canvas's, so nothing is replayed and nothing is
+  // diagnosed (it was the whole canvas, every node starved behind a request with no record). A
+  // canvas with no route to match still runs as a whole.
+  const noRoute = { kind: "request", route: null, request: null, sourced: [], state_before: {} } satisfies ReplayInput;
+  it("runs none of a canvas that has routes, on every sample", () => {
+    let withRoutes = 0;
+    for (const sample of samples()) {
+      const ev = new Evaluator();
+      const { nodes, edges } = tabFromDocument(sample.name, buildSample(sample, ev), false, ev);
+      const routes = nodes.some((x) => x.data.name === "request" && x.data.body.kind === "Template");
+      const group = runGroup(nodes, edges, noRoute);
+      if (!routes) {
+        expect(group, sample.name).toHaveLength(nodes.length);
+        continue;
+      }
+      withRoutes++;
+      expect(group, sample.name).toEqual([]);
+      const run = replay(nodes, edges, noRoute, (x) => x.data.outputs.map(() => null));
+      expect(run.order, sample.name).toEqual([]);
+      expect(diagnose(nodes, edges, { status: 404, error: null }, run)?.issues.size ?? 0, sample.name).toBe(0);
+      ev.free();
+    }
+    expect(withRoutes).toBeGreaterThan(0);
+  });
+});
+
 describe("why a run failed", () => {
   const txt = (value: string): WValue => ({ type: "Text", value });
   const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
@@ -655,6 +685,22 @@ describe("why a run failed", () => {
       role: "starved",
       reason: "didn't run: record (from field) never arrived",
     });
+  });
+
+  it("draws as the failure only the wires out of where it started; past them, nothing ran", () => {
+    // read → field (no "kind": the origin) → field → respond (falls back): the field after it
+    // never ran, and the wire into the answer carried nothing; neither is drawn as the failure.
+    const chain = [...nodes.slice(0, 2), n("next", "field", ["record"], ["out"], [frozen("name", "x")]), nodes[2]];
+    const wires = [edges[0], wire("kind", "out", "next", "record"), wire("next", "out", "res", "body")];
+    const r = replay(chain, wires, { kind: "tick", route: null, request: null, sourced: [], state_before: { event: rec(["id", txt("e")]) } }, evaluate);
+    const d = diagnose(chain, wires, { status: 400, error: null }, r)!;
+    expect(d.origins).toEqual(["kind"]);
+    expect(wires.map((w) => failureWire(d, w))).toEqual([false, true, false]);
+    // The way the absence took is still the path: the explain and the timeline read it.
+    expect(d.path.has(wireKey(wires[2]))).toBe(true);
+    // The field after it didn't run (drawn faint); the answer fell back (drawn red).
+    expect(fellBack(r.traces.get("next")!.outputs)).toBe(false);
+    expect(fellBack(r.traces.get("res")!.outputs)).toBe(true);
   });
 
   it("has nothing to say about a run that didn't fail", () => {

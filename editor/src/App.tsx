@@ -1160,7 +1160,7 @@ function Canvas({
   }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes, secretMarks]);
 
   // Trigger wires are drawn lighter than data wires (canvasOps.lighterTriggers).
-  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges), [viewing, view.viewEdges, edges]);
+  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges, nodes), [viewing, view.viewEdges, edges, nodes]);
 
   // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx), and in view mode the run
   // shown in it.
