@@ -3617,62 +3617,6 @@ route.websocket(\"/room/:name\", {{
     assert!(gone.to_string().contains("bob") && gone.to_string().contains("1006"), "bob's close ran, as a dropped connection's: {gone}");
 }
 
-/// A route whose runs can never wait (unrecorded and granted, reading only its request, the clock
-/// and random numbers, its flow in memory) is answered on the data plane's own worker, without the
-/// hop onto the blocking pool (docs/L4s/request-path-L4.md §4.5 a): through a real socket it
-/// answers as any route does, CORS and all. Any other keeps the hop, since a worker that waits holds
-/// up every connection on it (docs/L4s/resilience-audit-L4.md, R2): a lazy one (its log's lock), one
-/// reading a collection (the store's lock while a write syncs) or a folder, a strict one, one that
-/// calls out; and a light one too until its flow is loaded.
-#[test]
-fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
-    let mut state = test_state();
-    state.listeners = Some(Mutex::new(BTreeMap::new()));
-    let port = free_port();
-    let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport notes from \"collection:notes\"\nimport docs from \"folder:docs\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"light\", {{ port: {port}, browsers: \"https://a.example\" }})\n\nroute.get(\"/health\", () => \"ok\", {{ log: \"unrecorded\" }})\n\nroute.get(\"/notes\", () => notes.list({{ limit: 50 }}), {{ log: \"lazy\" }})\n\nroute.post(\"/notes\", (req) => {{\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n}})\n\nroute.get(\"/uuid\", async () => (await httpbin.get(\"/uuid\")).body)\n\nroute.get(\"/file\", () => docs.get(\"a.txt\"), {{ log: \"lazy\" }})\n"
-    );
-    let dir = std::env::temp_dir().join(format!("holon-light-docs-{}-{}", std::process::id(), rand::random::<u32>()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let docs = serde_json::json!({ "name": "docs", "path": dir.display().to_string(), "access": "read" });
-    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&docs).unwrap())).status_code, 200);
-    let slug = deploy_plain_text(&state, &text);
-    // The pages it answers are a deploy setting, which this deploy leaves out.
-    state.deployments.lock().unwrap().get_mut(&slug).unwrap().browsers = vec!["https://a.example".to_string()];
-    sync_listeners(&state);
-    let here = Mutex::new(dataplane::Here::default());
-    let light = |method: &str, url: &str| dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data(method, url, vec![]), &here);
-    // Its flow let go of by the flow cache: the pool, which loads it.
-    state.store.3.set_budget(0);
-    assert!(!light("GET", "/health"), "its flow not in memory: the pool");
-    state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
-    let unit = state.deployments.lock().unwrap()[&slug].unit;
-    assert!(crate::units::closure(&state.store, unit).is_ok(), "loaded, as a run on the pool loads it");
-    assert!(light("GET", "/health"), "unrecorded, reading only its request, loaded: here");
-    assert!(light("GET", "/health"), "and again, from what it worked out");
-    assert!(!light("GET", "/notes?x=1"), "lazy, reading a collection: the pool");
-    assert!(!light("GET", "/file"), "a folder may take as long as it likes: the pool");
-    assert!(!light("POST", "/notes") && !light("GET", "/uuid") && !light("GET", "/nowhere"), "strict, calling out, or no route: the pool");
-
-    let body = r#"{"id":"a","text":"hi"}"#;
-    let posted = raw_http(port, format!("POST /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
-    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
-    let health = raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    assert!(health.starts_with("HTTP/1.1 200") && health.ends_with("ok"), "{health}");
-    let listed = raw_http(port, b"GET /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://a.example\r\nConnection: close\r\n\r\n");
-    assert!(listed.starts_with("HTTP/1.1 200") && listed.contains(r#"{"a":"hi"}"#), "{listed}");
-    assert!(listed.to_ascii_lowercase().contains("access-control-allow-origin: https://a.example"), "CORS as for any route: {listed}");
-    // Many at once, each answered.
-    std::thread::scope(|s| {
-        for _ in 0..16 {
-            s.spawn(|| assert!(raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200")));
-        }
-    });
-    assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["GET /health"].runs, 17);
-    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// **Guards:** a panic ends the run it was in and nothing else, whatever started the run and
 /// wherever in it the panic is (docs/engineering/themes/resilience.md, G3).
 ///
@@ -3686,12 +3630,12 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
 /// dropped with no answer.
 ///
 /// The test asks for the panic (`panic_for_tests`): in a run itself, where every run passes
-/// (`fire_with_state`), and in a request's handler before its run (answered where its connection
-/// is, dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
+/// (`fire_with_state`), and in a request's handler before its run (on the blocking pool,
+/// dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
 /// comes back, a caller is told 500, and the deployment beside it runs all the same. Calm again,
 /// it runs: nothing that drives runs was ended. A run that panicked is on record as one that
 /// failed. The rows are every way a run starts that a test drives without a far side: a request
-/// answered on its connection's worker and one on the pool, an action, a clock, a file, and a
+/// to an unrecorded route and one to a recorded route, an action, a clock, a file, and a
 /// waiting run going on at its deadline. A feed's, a queue's, a mailbox's and a socket's runs
 /// pass the same function.
 #[test]
@@ -3791,8 +3735,8 @@ on.file.created(inbox, (f) => {{
         None
     };
     let rows = [
-        Row { what: "a request answered on its connection's worker", counts: None, logged: None, before: None, start: &light, all: false },
-        Row { what: "a request answered on the pool", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
+        Row { what: "a request to an unrecorded route", counts: None, logged: None, before: None, start: &light, all: false },
+        Row { what: "a request to a recorded route", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
         Row { what: "an action", counts: Some(1), logged: Some("trigger"), before: None, start: &bump, all: false },
         Row { what: "a clock", counts: Some(2), logged: Some("tick"), before: None, start: &ticked, all: true },
         Row { what: "a file", counts: Some(3), logged: Some("file"), before: None, start: &filed, all: true },
@@ -3803,11 +3747,6 @@ on.file.created(inbox, (f) => {{
     type Applies<'a> = &'a dyn Fn(&Row) -> bool;
     let (every_row, requests): (Applies, Applies) = (&|_| true, &|row| row.what.starts_with("a request"));
     let faults = [("in its run", vec!["a run of faulty"], every_row), ("in its request's handler", vec!["/faulty-light", "/faulty-hit"], requests)];
-
-    // Loaded by a first run, so the light route is answered on the worker from here on.
-    assert_eq!(light("faulty", ports[0].1), Some(200));
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "faulty", &fake_data("GET", "/faulty-light/x", vec![]), &here), "answered on the worker");
 
     let ran = |row: &Row, name: &str, was: &[u64], told: Option<u16>| match row.counts {
         Some(at) => seen(name)[at] > was[at],
@@ -3880,8 +3819,8 @@ on.file.created(inbox, (f) => {{
 /// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
 /// the exit with what it did on no record; or the run going on refused its own end.
 ///
-/// Each way a run starts that a test drives without a far side is a row: a request answered on
-/// its connection's worker and one on the pool, a WebSocket opened, an action over the control
+/// Each way a run starts that a test drives without a far side is a row: a request to an
+/// unrecorded route and one to a recorded route, a WebSocket opened, an action over the control
 /// plane (`admitted`), a clock, a file and a waiting run at its deadline. Before the stop each
 /// runs; after it none does, and a caller is told 503. A feed's, a queue's, a mailbox's and a
 /// socket message's runs ask `takes_runs` as the clock's and the file's do: the sweep at the end
@@ -3981,8 +3920,8 @@ on.file.created(inbox, (f) => {{
         None
     };
     let rows = [
-        Row { what: "a request answered on its connection's worker", counts: None, start: &light },
-        Row { what: "a request answered on the pool", counts: Some("hits"), start: &hit },
+        Row { what: "a request to an unrecorded route", counts: None, start: &light },
+        Row { what: "a request to a recorded route", counts: Some("hits"), start: &hit },
         Row { what: "a WebSocket opened", counts: None, start: &socket },
         Row { what: "an action over the control plane", counts: Some("bumps"), start: &bump },
         Row { what: "a clock", counts: Some("ticks"), start: &tick },
@@ -4001,8 +3940,6 @@ on.file.created(inbox, (f) => {{
         let told = (row.start)();
         assert!(ran(row, was, told), "{}: it runs ({told:?})", row.what);
     }
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "stopping", &fake_data("GET", "/light/x", vec![]), &here), "answered on the worker");
     assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
 
     // A run going on, its call out, as the server is told to stop.

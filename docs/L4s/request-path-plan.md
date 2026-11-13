@@ -998,6 +998,12 @@ req/s to 60–400. Now only an unrecorded route that reads its request, the cloc
 its flow in memory, runs there; `/notes` and lazy routes take the hop again, which costs them
 65–145 µs at one connection and gains them throughput at 64.
 
+**Taken out since** (B5, 2026-11-13): a run on the worker that read its request runs on the one
+worker watching the network, so a route that waits on nothing but computes a while left every
+listener on the server deaf until it ended. Every run goes to the pool now; what that cost and the
+ways around it weighed are in docs/engineering/themes/performance.md, "Nothing computes on a
+data-plane worker".
+
 ### 12.2 No timeline for unrecorded runs (about −20 µs)
 
 - `recorder::Timer` (`recorder.rs:293–350`) gains `enabled: bool`, with `Timer::off()`. `enter`,

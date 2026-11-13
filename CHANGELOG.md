@@ -75,6 +75,14 @@
   `split`, `json_parse`, `csv_parse`, `xml_parse` and `bytes_to_list` when they would read more
   than 1,048,576 values out of one text or bytes. `pad`, `gunzip` and a number's text (`js_string`)
   make what they make with less held on the way.
+- **One request no longer stops every flow on the server from answering.** A short route (one
+  that is unrecorded and reads only its request, the clock and random numbers) ran on the thread
+  that read its request, which was also the one watching the network for every flow's port. A
+  route that computed a while held it: a fold of 3 s kept another deployment's requests, and a
+  413 on its own port, waiting 1.65 s, until it ended. Every run now goes to the server's pool of
+  run threads, and a request beside 24 such runs is answered in milliseconds. A trivial route
+  called one request at a time takes about 20–30 µs longer; under load it is about even, and
+  ahead at 64 connections.
 
 ## 0.1.0-rc.35
 

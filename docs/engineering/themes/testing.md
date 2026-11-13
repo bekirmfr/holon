@@ -135,13 +135,16 @@ A slower path that is still right would pass every test above; these fail instea
 
 ### Isolation
 
-- `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (12.1, R2): which runs answer
-  on the worker and which on the pool, then over a real socket.
+- `nothing_a_run_computes_holds_up_the_data_plane` (B5, G2; `crates/holon/tests/data_plane.rs`, a
+  binary of its own, so it runs apart from the unit tests): the real server, one long run, then
+  more at once than there are cores, and beside them a request refused before its body is read
+  and another deployment's route, each answered before any run ends. A run put back on the
+  worker fails it with one.
 - `a_panic_ends_its_run_and_nothing_else` (R1, G3): a table, each way a run starts a row (a request
-  on the worker and on the pool, an action, a clock, a file, a waiting run at its deadline), a
-  panic asked for in the run and in the request's handler before it. Calm, faulted, calm again:
-  the run fails, its caller is told 500, it is logged as failed, the deployment beside it runs,
-  and what drives runs goes on. It replaced the test of the two request rows alone.
+  to an unrecorded route and to a recorded one, an action, a clock, a file, a waiting run at its
+  deadline), a panic asked for in the run and in the request's handler before it. Calm, faulted,
+  calm again: the run fails, its caller is told 500, it is logged as failed, the deployment beside
+  it runs, and what drives runs goes on. It replaced the test of the two request rows alone.
 - `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
   busy log is written and cut back.
 - `a_fire_in_progress_does_not_stall_the_table`: a regression (a persist held the table's lock
@@ -294,20 +297,17 @@ and the holes in the class-level tests that exist are in
 
 Known, and not yet covered:
 
-1. Nothing shows an **unrecorded** route reading state, a collection or a secret going to the pool:
-   every pooled case in the isolation test is also lazy, strict or calling out. `CollectionRead`
-   put back in `READS_HERE` would likely pass.
-2. The `Here` memo keeping only the live version's endpoints (S2) after a redeploy.
-3. The caches against real memory: only by hand, and it asserts nothing; a return to 2.8–7.8 times
+1. The caches against real memory: only by hand, and it asserts nothing; a return to 2.8–7.8 times
    their size would pass CI.
-4. The counting rule (D2) has no tripwire of its own, only the unrecorded tests.
-5. The directory sync after a cut-back's swap.
-6. The soak's flat lines (memory, threads, files, latency): no automated check; the soak script is
+2. The counting rule (D2) has no tripwire of its own, only the unrecorded tests.
+3. The directory sync after a cut-back's swap.
+4. The soak's flat lines (memory, threads, files, latency): no automated check; the soak script is
    not in the repo.
-7. Tallies written by the syncer when only they changed, across a real restart.
-8. No end-to-end latency or isolation check: the cross-deployment figures come from `wrk` runs by
-   hand.
-9. The differential harness predates most of the library's leaves (its `LEAVES` list has the
+5. Tallies written by the syncer when only they changed, across a real restart.
+6. One end-to-end isolation check (`nothing_a_run_computes_holds_up_the_data_plane`, a request
+   beside long runs) and no latency check: the cross-deployment throughput figures come from `wrk`
+   runs by hand.
+7. The differential harness predates most of the library's leaves (its `LEAVES` list has the
    older ones the library changed, `slice`, `index_of`, `json_stringify`, but not `sort`, `flat`,
    `merge` or the date and math leaves) and runs no case through holon-host's sourced resolver;
    `differential.sh` builds only from `5f29d1d` on.

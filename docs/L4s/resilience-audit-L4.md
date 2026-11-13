@@ -110,7 +110,8 @@ The fixes proposed are of three kinds: **one source of truth** (the knowledge in
   deploy to reading (`may_record_lightly`), so running a failed one again with its timeline kept,
   and logging that, changes nothing outside it; the rule is D2's to keep in one place.
 - **Unknown capabilities go to the blocking pool** (12.1): `READS_HERE` lists what may run inline;
-  anything else, a new capability included, takes the hop.
+  anything else, a new capability included, takes the hop. (Since B5 every run takes it: see R2
+  below.)
 
 ### 2.5 Decided, and kept as decided
 
@@ -131,7 +132,10 @@ listed so they are seen as policy, not as optimizations:
   log lock), it reads only its request, the clock and random numbers (`READS_HERE`: no state, no
   collection, no secret, each behind a lock a writer holds through a sync), and its flow is in the
   flow cache already (`FlowCache::holds`: nothing loaded from the store on the worker). The memo of
-  which routes run inline holds only the live version's endpoints (S2).
+  which routes run inline holds only the live version's endpoints (S2). **Taken out since** (B5,
+  2026-11-13): a run that never waits may still compute, and on the worker that read it, the one
+  watching the network, it left every listener deaf until it ended. Every run goes to the pool;
+  docs/engineering/themes/performance.md, "Nothing computes on a data-plane worker", has why.
 - **R3:** where the evaluator's new paths stopped the run, they fail closed: a node whose kind
   isn't its body's computes nothing; a plan that finds an input not yet evaluated, or a
   pass-through whose condition or value isn't in, hands the run to the walk. A test turns 1,000
