@@ -3,6 +3,7 @@
 // session in the browser, as signing in leaves it (server.ts's holon.session). Ports, and the
 // folder of run files, are the run's slot's (ports.mjs).
 
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,21 @@ export const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(ROOT, "target"), 
 /** The samples' texts (crates/holon-author/samples) and their entries (samples.rs). */
 export const SAMPLES = join(ROOT, "crates", "holon-author", "samples");
 export const SAMPLES_RS = join(ROOT, "crates", "holon-author", "src", "samples.rs");
+
+/** The sample `file` as a command-line deploy takes it: a copy with its port (in its `flow(…)`
+ *  line) moved by SAMPLE_SHIFT, as the editor's tests move it in Settings, and that port; null for
+ *  a sample without one. Deployed as it is, a sample listens on its own port, where a developer's
+ *  server or another session's may hold it: the deploy still succeeds (the deployment just can't
+ *  listen), and a test sent there talks to the other server's flow, with its other data. */
+export function movedSample(file: string): { path: string; port: number | null } {
+  const text = readFileSync(join(SAMPLES, file), "utf8");
+  const line = /^(flow\(.*\bport: )(\d+)\b/m;
+  const own = line.exec(text)?.[2];
+  const port = own === undefined ? null : Number(own) + SAMPLE_SHIFT;
+  const path = join(mkdtempSync(join(tmpdir(), "holon-e2e-sample-")), file);
+  writeFileSync(path, port === null ? text : text.replace(line, `$1${port}`));
+  return { path, port };
+}
 /** The ports the tests' own flows take (a flow under a slug of its own), before SAMPLE_SHIFT:
  *  in the samples' range, so a slot's ports stay its own, and in its gaps, so the sweep, which
  *  deploys every sample on its own port moved, never finds one taken. The sweep says so first. */
