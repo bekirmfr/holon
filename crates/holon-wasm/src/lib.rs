@@ -326,6 +326,13 @@ pub fn passes_extra_primitives() -> Vec<String> {
     holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
 }
 
+/// The leaves that ask the host (core's `catalog::ASKS_HOST`): a replay answers each from what
+/// the run recorded, never recomputing it.
+#[wasm_bindgen]
+pub fn asks_host_primitives() -> Vec<String> {
+    holon_core::ASKS_HOST.iter().map(|s| s.to_string()).collect()
+}
+
 /// The values each family leaf's parameter may take (core's `catalog::FAMILIES`), by leaf, then
 /// parameter: `{math: {fn: ["abs", …]}, compare: {op: ["=", …]}, …}`. The editor offers them as a
 /// choice, so a node can't hold one core refuses.
@@ -1776,6 +1783,11 @@ fn check_variadic_primitives() {
     let mut extra = passes_extra_primitives();
     extra.sort();
     assert_eq!(extra, vec!["all", "any", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "map", "sort_by"]);
+    // The leaves a replay answers from the run's record are core's one list, the reads all in it.
+    let asks = asks_host_primitives();
+    for read in ["collection_get", "file_read", "db_query", "db_one", "db_find", "db_find_one"] {
+        assert!(asks.contains(&read.to_string()), "{read}");
+    }
     // subtract is two-input like add but must NOT be offered as growable — it's
     // not associative, core gives it no N-ary meaning.
     assert!(!names.contains(&"subtract".to_string()));

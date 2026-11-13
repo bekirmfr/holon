@@ -2742,6 +2742,18 @@ mod tests {
     use crate::{MapResolver, Port, Type};
     use std::collections::BTreeMap;
 
+    /// The leaves that ask the host are one list (catalog's `ASKS_HOST`): of every leaf, `Request`
+    /// knows exactly those, so a replay that answers the list from the record answers every read.
+    #[test]
+    fn the_leaves_that_ask_the_host_are_one_list() {
+        for name in crate::GENESIS {
+            assert_eq!(Request::of(name).is_some(), crate::ASKS_HOST.contains(name), "{name}");
+        }
+        for name in crate::ASKS_HOST {
+            assert!(crate::GENESIS.contains(name), "{name} is no leaf");
+        }
+    }
+
     fn num(n: f64) -> Value { Value::Number(n) }
     fn nport(name: &str) -> Port { Port { name: name.into(), ty: Type::Number } }
     fn edge(fc: u32, fp: u32, tc: u32, tp: u32) -> Edge {

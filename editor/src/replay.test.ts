@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
 import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
-import type { WParam, WValue } from "./holon";
+import { asksHostPrimitives, type WParam, type WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
 beforeAll(() => {
@@ -343,6 +343,25 @@ describe("secrets in a replay", () => {
     const got = nodeOutputs({ kind: "tick", route: null, timeline }, trace);
     expect(got.get("a")).toEqual([num(2)]);
     expect(got.has("b")).toBe(false);
+  });
+});
+
+describe("what a run asked the host, in a replay", () => {
+  // Every leaf that asks the host (core's ASKS_HOST: calls, collection, file and database reads)
+  // replays with the answer the run recorded, never one computed here: a list kept by hand once
+  // lacked the database reads, and a route that read a table replayed as though it found nothing.
+  // A waiting point and its token have their own sources (the logged event, a redacted token).
+  const own = new Set(["await", "approval", "resume_token"]);
+  it("answers each with what the run recorded, whatever leaf it is", () => {
+    const leaves = [...asksHostPrimitives()].filter((leaf) => !own.has(leaf));
+    expect(leaves).toEqual(expect.arrayContaining(["http_request", "collection_get", "file_read", "db_query", "db_one", "db_find", "db_find_one"]));
+    for (const leaf of leaves) {
+      const answer: WValue = list({ type: "Record", value: [["leaf", { type: "Text", value: leaf }]] });
+      const nodes = [n("x", leaf, [], ["out"])];
+      // Evaluated here, a leaf that asks the host gives nothing: the record must answer it.
+      const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, (node) => node.data.outputs.map(() => null), new Map([["x", answer]]));
+      expect(traces.get("x")?.outputs, leaf).toEqual([answer]);
+    }
   });
 });
 

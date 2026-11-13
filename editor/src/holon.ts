@@ -23,6 +23,7 @@ import init, {
   primitive_docs,
   variadic_primitives,
   passes_extra_primitives,
+  asks_host_primitives,
   always_tainted,
   is_taint_key,
   family_params,
@@ -271,6 +272,15 @@ export function variadicPrimitives(): Set<string> {
  */
 export function passesExtraPrimitives(): Set<string> {
   return new Set(passes_extra_primitives() as string[]);
+}
+
+/**
+ * The leaves that ask the host (core's `catalog::ASKS_HOST`): an outbound call, a call to another
+ * flow, a waiting point, and every collection, file and database read. A replay answers each from
+ * the run's record. Call after {@link ensureReady}.
+ */
+export function asksHostPrimitives(): Set<string> {
+  return new Set(asks_host_primitives() as string[]);
 }
 
 /**

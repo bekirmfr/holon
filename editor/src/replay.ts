@@ -13,7 +13,7 @@
 //
 // Evaluation itself is passed in (`evalNode`), so this is testable without a real evaluator.
 
-import { choiceNext, type WParam, type WPort, type WValue } from "./holon";
+import { asksHostPrimitives, choiceNext, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
 
 export type ReplayNode = {
@@ -488,6 +488,10 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
   return components(nodes, edges).find((ids) => ids.includes(req.id)) ?? [];
 }
 
+// The leaves that ask the host, read once from core (catalog.rs's ASKS_HOST).
+let asksHostLeaves: Set<string> | null = null;
+const asksHost = () => (asksHostLeaves ??= asksHostPrimitives());
+
 /**
  * Re-run `entry` over the canvas, as core runs it: from the nodes the run's answer and effects
  * come from (and any node nothing consumes), back through what each needs. An ordinary node needs
@@ -623,9 +627,12 @@ export function replay(
       const shown = entry.secrets?.[secret];
       return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
     }
-    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "flow_start", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
-      // Answered from the record, never the network, the store or the disk: a replay is offline
-      // and exact, and shows the collection or folder as the run found it, whatever it holds now.
+    if (primitive && asksHost().has(name)) {
+      // Answered from the record, never the network, the store, the disk or a database: a replay
+      // is offline and exact, and shows the collection, folder or table as the run found it,
+      // whatever it holds now. Which leaves are core's one list (`catalog::ASKS_HOST`), not one
+      // kept here: a list kept here once lacked the database reads, and every run that read a
+      // table replayed as though it found nothing.
       return { inputs, outputs: [responses.get(id) ?? null] };
     }
     // A route's request, or a websocket block's record, as the log keeps it.

@@ -28,8 +28,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         "group_by" => group_by(inputs, &unit.params, resolver),
         "json_parse" | "json_stringify" if unit.params.iter().any(|p| p.name() == "fn" && p.value().is_some_and(|f| !f.is_empty())) => json(name, inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
-        "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "approval" | "collection_get" | "collection_list" | "file_read" | "file_read_bytes" | "file_list" | "file_handle" | "file_lines" | "file_slice"
-        | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
+        _ if crate::ASKS_HOST.contains(&name) => None,
         _ if crate::SOURCED.contains(&name) => crate::sourced_value(unit, resolver.sourced(unit)),
         "coalesce" => inputs.iter().flatten().next().cloned(),
         // In order, to the input that decides (`false` for `and`, `true` for `or`) or the last:
