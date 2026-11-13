@@ -2569,26 +2569,39 @@ export const pay = action(async (order) => {
     assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true, "changes": null }));
 
     // How many people approve an access change that gives more: one to five, said in the
-    // version; null, none. Each row: what is sent, and what is kept or why it is refused.
-    let refused = |n: u8| format!("changes is how many people approve an access change that gives more, 1 to 5, not {n}: null lets one apply at once");
-    let rows: [(Value, Result<Value, String>, &str); 6] = [
-        (json!(2), Ok(json!(2)), "an access change that gives more waits until 2 people other than its author approve it"),
-        (json!(1), Ok(json!(1)), "an access change that gives more waits until 1 person other than its author approves it"),
-        (json!(5), Ok(json!(5)), "an access change that gives more waits until 5 people other than its author approve it"),
-        (json!(null), Ok(Value::Null), "an access change applies at once"),
-        (json!(0), Err(refused(0)), ""),
-        (json!(6), Err(refused(6)), ""),
+    // version; null, none. Raising it is made at once; lowering it, or turning it off, gives more,
+    // and waits for that many people (access_proposals.rs). Each row: what is sent, and what is
+    // kept, or that it waits, or why it is refused.
+    enum Then {
+        Kept(Value),
+        Waits,
+        Refused(String),
+    }
+    let refused = |n: u8| Then::Refused(format!("changes is how many people approve an access change that gives more, 1 to 5, not {n}: null lets one apply at once"));
+    let rows: [(Value, Then, &str); 6] = [
+        (json!(2), Then::Kept(json!(2)), "an access change that gives more waits until 2 people other than its author approve it"),
+        (json!(5), Then::Kept(json!(5)), "an access change that gives more waits until 5 people other than its author approve it"),
+        (json!(1), Then::Waits, "an access change that gives more waits until 1 person other than its author approves it"),
+        (json!(null), Then::Waits, "an access change applies at once"),
+        (json!(0), refused(0), ""),
+        (json!(6), refused(6), ""),
     ];
-    for (sent, kept, said) in rows {
+    for (sent, then, said) in rows {
         let before = ask(&ada, "GET", "/access", Value::Null).1;
         let (code, answer) = set(&ada, json!({ "changes": sent, "why": "how many approve" }));
-        match kept {
-            Ok(kept) => {
+        let what = || ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0]["what"].as_str().unwrap().to_string();
+        match then {
+            Then::Kept(kept) => {
                 assert_eq!((code, &answer["approvals"]["changes"]), (200, &kept), "{sent}: {answer}");
-                let what = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0]["what"].as_str().unwrap().to_string();
-                assert!(what.ends_with(&format!("; {said}")), "{sent}: {what}");
+                assert!(what().ends_with(&format!("; {said}")), "{sent}: {}", what());
             }
-            Err(why) => {
+            Then::Waits => {
+                let p = &answer["proposal"];
+                assert_eq!((code, p["state"].as_str(), p["needs"].as_u64()), (202, Some("waiting"), Some(5)), "{sent}: {answer}");
+                assert!(p["what"].as_str().unwrap().ends_with(&format!("; {said}")), "{sent}: {answer}");
+                assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"]["changes"], json!(5), "{sent}: as it was");
+            }
+            Then::Refused(why) => {
                 assert_eq!((code, answer["error"].as_str()), (400, Some(why.as_str())), "{sent}");
                 assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["version"], before["version"], "{sent}: no version");
             }
@@ -2597,8 +2610,7 @@ export const pay = action(async (order) => {
     // Not a number, it is refused as the body; left out, it stays as it is.
     let (code, said) = set(&ada, json!({ "changes": "two" }));
     assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
-    set(&ada, json!({ "changes": 3 }));
-    assert_eq!(set(&ada, json!({ "agents": true, "exclude_deployer": true })).1["approvals"]["changes"], json!(3));
+    assert_eq!(set(&ada, json!({ "agents": true, "exclude_deployer": true })).1["approvals"]["changes"], json!(5));
 }
 
 /// **Guards:** the run file decides as the account that set the server up (the plan's D45): it

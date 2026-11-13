@@ -265,12 +265,32 @@ admin binds it (`POST /bindings`):
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
 answers one whole. Each change is also in the activity log.
 
-`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "why": "…"}`, either or
-both; `people.assign` on the host) sets how the host decides approvals beyond each step's role,
-as a new version: with `exclude_deployer`, whoever deployed the version a run is on decides none
-of its approvals; with `agents` false, no agent decides one, and a deploy whose approval has a
-step for an agent is refused. They are `false` and `true` by default, and `GET /access` has them,
-`approvals`.
+`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "starter": false,
+"changes": 2, "why": "…"}`, any of them; `people.assign` on the host) sets how the host decides
+approvals beyond each step's role, as a new version: with `exclude_deployer`, whoever deployed the
+version a run is on decides none of its approvals; with `agents` false, no agent decides one, and
+a deploy whose approval has a step for an agent is refused; with `starter` false, no step takes
+whoever started the run, and a deploy whose approval has a step that would is refused; with
+`changes` N (1 to 5; `null` turns it off), an access change that gives more waits for N people.
+They are `false`, `true`, `true` and `null` by default, and `GET /access` has them, `approvals`.
+
+While `changes` is N, a change that gives someone more (`POST /bindings`, `PUT /roles/<name>`,
+`PUT /groups/<name>`, `PATCH /people/<name>` with a role, `PUT /access/approvals` loosening them)
+isn't made: it is answered 202, `{"proposal": {…}, "version": n}` (`PATCH` answers the principal
+with its `proposal`), and kept as a proposal: `id`, `author`, `why`, `change` (as the route got
+it), `what` (what its version will say), `gives` (in words), `base` (the version it was proposed
+on), `needs`, `approvals` and `state` (`waiting`; `applied` with its `version`; `declined` with
+`declined_by` and `reason`; `stale` with why). `POST /people` with a role that would wait is
+refused, 409: invite or add them with one that gives less, then give it. A change through this
+machine's run file to `/access/approvals` is made at once.
+
+- `GET /access/proposals` (`people.view`) lists every proposal, newest first.
+- `POST /access/proposals/<id>/approve` (`people.assign`): a person other than its author, holding
+  what it gives (403 if not), approves it; the N-th approval makes it, by its author, its why
+  saying who approved it, and answers it `applied`. One that no longer applies is `stale`: 409,
+  saying why.
+- `POST /access/proposals/<id>/decline` (`{"reason": "…"}`, `people.assign`): declines it; its
+  author withdraws it so. One that no longer waits is 409.
 
 An admin also defines roles of their own, and groups:
 

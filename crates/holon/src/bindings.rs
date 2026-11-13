@@ -32,6 +32,7 @@ use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::access::{Caller, Role};
+use crate::access_proposals::{govern, Change, Governed};
 use crate::accounts::Kind;
 use crate::can::{can, Action, Resource, RoleDef};
 use crate::http::{err, read_body};
@@ -487,7 +488,7 @@ impl Document {
     }
 
     /// What each principal holds, and until when: its own bindings and its groups'.
-    fn index(&self) -> HashMap<String, Vec<(Held, Option<u64>)>> {
+    pub(crate) fn index(&self) -> HashMap<String, Vec<(Held, Option<u64>)>> {
         let roles: HashMap<&str, Arc<RoleDef>> = self.roles.iter().filter_map(|r| Some((r.name.as_str(), Arc::new(r.def().ok()?)))).collect();
         let mut held: HashMap<String, Vec<(Held, Option<u64>)>> = HashMap::new();
         for b in &self.bindings {
@@ -503,6 +504,16 @@ impl Document {
         }
         held
     }
+}
+
+/// `name`, of `kind`, as a caller holding what of `held` (a document's `index` for it) holds at
+/// `now` and still does at `until` (none: for good): what a change to the document would let it
+/// do, and for how long (access_proposals.rs). A scope by tag selects no flow by its slug here, as
+/// no flow is read as deployed with it.
+pub(crate) fn as_caller(held: &[(Held, Option<u64>)], name: &str, kind: Kind, now: u64, until: Option<u64>) -> Caller {
+    let lasts = |end: Option<u64>| end.is_none_or(|end| now < end && until.is_some_and(|until| until <= end));
+    let holds: Arc<[Held]> = held.iter().filter(|(_, end)| lasts(*end)).map(|(h, _)| h.clone()).collect();
+    Caller { name: Some(name.into()), kind: Some(kind), holds: Some(holds), local: None }
 }
 
 /// A version as its history lists it: who made it, when, what and why, without its bindings.
@@ -584,6 +595,12 @@ impl Bindings {
     #[cfg(test)]
     pub(crate) fn memory() -> Bindings {
         Bindings::with(None, Document::default())
+    }
+
+    /// `document`, held in memory only: where a change is tried before it is made or proposed
+    /// (accounts.rs `trial`).
+    pub(crate) fn scratch(document: Document) -> Bindings {
+        Bindings::with(None, document)
     }
 
     fn with(path: Option<PathBuf>, document: Document) -> Bindings {
@@ -736,25 +753,31 @@ fn on_the_host(action: Action) -> Resource<'static> {
     if Resource::Host.takes(action) { Resource::Host } else { Resource::Flow("") }
 }
 
-/// What `role` bound at `scope` would hold, and on what: each action it allows that the scope
-/// covers.
-fn gives<'a>(role: &Arc<RoleDef>, scope: &'a Scope) -> Vec<(Action, Resource<'a>)> {
+/// Where a role allowing `action` bound at `scope` would be asked it: on the host for the host's
+/// actions; at an approval point, deciding it; on a tag's flows, the tag (every flow on it, those
+/// tagged later too: only the host and the tag cover it); on a flow, the flow.
+pub(crate) fn given_on(action: Action, scope: &Scope) -> Resource<'_> {
     let slug = match scope {
         Scope::Host | Scope::Flows(Selector::Tag(_)) | Scope::Approval { flow: Selector::Tag(_), .. } => "",
         Scope::Flows(Selector::Slug(slug)) | Scope::Approval { flow: Selector::Slug(slug), .. } => slug.as_str(),
     };
+    match scope {
+        Scope::Host => on_the_host(action),
+        _ if Resource::Host.takes(action) => Resource::Host,
+        Scope::Approval { name, .. } => Resource::Approval { slug, name: Some(name.as_str()) },
+        Scope::Flows(Selector::Tag(tag)) => Resource::Tag(tag),
+        Scope::Flows(_) => Resource::Flow(slug),
+    }
+}
+
+/// What `role` bound at `scope` would hold, and on what: each action it allows that the scope
+/// covers.
+pub(crate) fn gives<'a>(role: &Arc<RoleDef>, scope: &'a Scope) -> Vec<(Action, Resource<'a>)> {
     let held = Held::new(Arc::clone(role), scope.clone());
     role.allows()
         .into_iter()
         .filter_map(|a| {
-            let on = match scope {
-                Scope::Host => on_the_host(a),
-                _ if Resource::Host.takes(a) => Resource::Host,
-                Scope::Approval { name, .. } => Resource::Approval { slug, name: Some(name.as_str()) },
-                // Every flow on the tag, those tagged later too: only the host and the tag cover it.
-                Scope::Flows(Selector::Tag(tag)) => Resource::Tag(tag),
-                Scope::Flows(_) => Resource::Flow(slug),
-            };
+            let on = given_on(a, scope);
             (on.takes(a) && held.covers(&on)).then_some((a, on))
         })
         .collect()
@@ -844,18 +867,27 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
 /// - `GET /groups`, `PUT /groups/<name>` (`{about?, members, why?}`: all of them),
 ///   `DELETE /groups/<name>` (`?why=`), as for roles;
+/// - `/access/proposals…`: the access changes waiting for people (access_proposals.rs);
 /// - `GET /auth/me/can`: `me_can`.
+///
+/// A binding, a role, a group or the approval settings that give someone more, while the host has
+/// people approve such a change (`approvals.changes`), aren't made: each is answered 202
+/// `{proposal, version}`, the change kept as a proposal (access_proposals.rs `govern`).
 pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     if url == "/auth/me/can" && method == "GET" {
         return Some(me_can(request, caller));
     }
-    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/access/local", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
+    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/access/local", "/access/proposals", "/roles", "/groups"].contains(&url.as_str())
+        || ["/bindings/", "/roles/", "/groups/", "/access/proposals/"].iter().any(|p| url.starts_with(p));
     if !ours {
         return None;
     }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
+    if url == "/access/proposals" || url.starts_with("/access/proposals/") {
+        return Some(crate::access_proposals::route(state, request, caller, accounts));
+    }
     let by = caller.name.as_deref().unwrap_or("");
     let why = request.get_param("why");
     let now = crate::deploy::epoch_now();
@@ -904,11 +936,13 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
             if new.expires_at.is_some_and(|at| at <= now) {
                 return Some(err(400, "expires_at has passed: a binding expires later than now"));
             }
-            match accounts.bind(new.who, &new.role, new.scope, new.expires_at, by, new.why.as_deref()) {
-                Ok(binding) => {
+            let change = Change::Bind { who: new.who.clone(), role: new.role.clone(), scope: new.scope.clone(), expires_at: new.expires_at };
+            match govern(accounts, caller, change, new.why.as_deref(), || accounts.bind(new.who, &new.role, new.scope, new.expires_at, by, new.why.as_deref())) {
+                Ok(Governed::Made(binding)) => {
                     recorded(&format!("bound {} to", binding.role), &format!("{} {}", binding.who.said(), binding.scope.said()));
                     Response::json(&serde_json::json!({ "binding": listed(&binding, now), "version": accounts.access_document().version }))
                 }
+                Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
                 Err(e) => err(400, e),
             }
         }
@@ -950,14 +984,16 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
             settings.starter = change.starter.unwrap_or(settings.starter);
             settings.changes = change.changes.unwrap_or(settings.changes);
             let said = settings.said();
-            match accounts.set_approvals(settings, by, change.why.as_deref()) {
-                Ok(changed) => {
+            let proposed = crate::access_proposals::Change::Approvals { settings: settings.clone() };
+            match govern(accounts, caller, proposed, change.why.as_deref(), || accounts.set_approvals(settings, by, change.why.as_deref())) {
+                Ok(Governed::Made(changed)) => {
                     if changed {
                         recorded("set the approvals", &said);
                     }
                     let document = accounts.access_document();
                     Response::json(&serde_json::json!({ "approvals": document.approvals, "version": document.version }))
                 }
+                Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
                 Err(e) => err(400, e),
             }
         }
@@ -1074,8 +1110,9 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
         return err(403, format!("{name} allows {}, which you don't hold on this host: a role is changed only by someone who holds what it allows", a.name()));
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match accounts.define_role(text, by, def.why.as_deref()) {
-        Ok(changed) => {
+    match govern(accounts, caller, Change::Role { role: text.clone() }, def.why.as_deref(), || accounts.define_role(text, by, def.why.as_deref())) {
+        Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
+        Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the role" } else { "defined the role" }, name, Some(by));
             let document = accounts.access_document();
             let about = document.roles.iter().find(|r| r.name == name).and_then(|r| r.about.clone());
@@ -1126,8 +1163,9 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
         }
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match accounts.set_group(group.clone(), by, def.why.as_deref()) {
-        Ok(changed) => {
+    match govern(accounts, caller, Change::Group { group: group.clone() }, def.why.as_deref(), || accounts.set_group(group.clone(), by, def.why.as_deref())) {
+        Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
+        Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the group" } else { "made the group" }, name, Some(by));
             let document = accounts.access_document();
             Response::json(&serde_json::json!({ "group": group, "bound": document.bound(None, Some(name)), "version": document.version }))

@@ -13,9 +13,12 @@
 //!   widest built-in role bound to it on the host, and with an agent's or a service's tokens;
 //! - `POST /people` (`{name, kind, role, owner?, email?, display?}`): a person, answered with
 //!   their invite link; an agent or a service, owned by `owner` (by default whoever asks); `role`
-//!   is bound to it on the host;
+//!   is bound to it on the host; 409 for a role that would wait for people (access_proposals.rs
+//!   `adding`): a new principal is made with a role that gives less, and given it after;
 //! - `PATCH /people/<name>` (role, disabled, email, display, owner; a role is bound on the host in
-//!   place of what was there), `DELETE /people/<name>` (with what is bound to it),
+//!   place of what was there, and a role that gives more, while the host has people approve such
+//!   a change, waits: 202, the principal with the `proposal`), `DELETE /people/<name>` (with what
+//!   is bound to it),
 //!   `POST /people/<name>/reset` (a person's new invite link);
 //! - `GET`/`POST /people/<name>/tokens` (`{label}`), `DELETE /people/<name>/tokens/<id>`: also for
 //!   the agent's or service's owner (can.rs's owner rule).
@@ -27,6 +30,7 @@ use rouille::{Request, Response};
 use serde::Deserialize;
 
 use crate::access::Caller;
+use crate::access_proposals::{govern, Governed};
 use crate::accounts::{Accounts, Kind, OidcSettings, Principal};
 use crate::http::{err, read_body};
 use crate::AppState;
@@ -292,6 +296,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }
             return respond(body::<New>(request).and_then(|n| {
                 may_give(caller, accounts, &n.role)?;
+                crate::access_proposals::adding(accounts, &n.name, n.kind, &n.role).map_err(|e| err(409, e))?;
                 let invite = if n.kind == Kind::Person {
                     let link = accounts.invite(&n.name, &n.role, n.email, by).map_err(fail)?;
                     state.activity.record("invited", &n.name, Some(by));
@@ -402,10 +407,19 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                     owner: Option<String>,
                 }
                 return respond(body::<Change>(request).and_then(|c| {
+                    // A role that gives more waits for people (access_proposals.rs); the rest is
+                    // changed at once, and the answer says what waits.
+                    let mut waits = None;
                     if let Some(role) = c.role {
                         may_give(caller, accounts, &role)?;
-                        accounts.set_role(name, &role, by).map_err(fail)?;
-                        state.activity.record(&format!("made {role}"), name, Some(by));
+                        let change = crate::access_proposals::Change::HostRole { name: name.into(), role: role.clone() };
+                        match govern(accounts, caller, change, None, || accounts.set_role(name, &role, by, None)).map_err(fail)? {
+                            Governed::Made(()) => state.activity.record(&format!("made {role}"), name, Some(by)),
+                            Governed::Waits(p) => {
+                                state.activity.record("proposed an access change", &format!("{}: {}", p.id, p.what), Some(by));
+                                waits = Some(p);
+                            }
+                        }
                     }
                     if let Some(disabled) = c.disabled {
                         accounts.set_disabled(name, disabled).map_err(fail)?;
@@ -422,7 +436,14 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         state.activity.record(&format!("made {owner} the owner of"), name, Some(by));
                     }
                     let p = accounts.principal(name).ok_or_else(|| err(404, "no such principal"))?;
-                    Ok(Response::json(&shown(&p, accounts)))
+                    let mut answer = shown(&p, accounts);
+                    Ok(match waits {
+                        Some(proposal) => {
+                            answer["proposal"] = serde_json::json!(proposal);
+                            Response::json(&answer).with_status_code(202)
+                        }
+                        None => Response::json(&answer),
+                    })
                 }));
             }
             Response::empty_404()

@@ -780,7 +780,7 @@ holon unbind 12 --why "back from leave"
 holon access [versions] [--json]
 holon access show [--version N] [--json]
 holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
-                       [--why TEXT] [--json]
+                       [--changes N|off] [--why TEXT] [--json]
 holon access local [--as NAME] [--why TEXT] [--json]
 ```
 
@@ -797,6 +797,7 @@ it, as a new version (holding `people.assign` on the host):
 exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
 agents            on   agents take the steps written for them
 starter           on   a person who started a run may take a step of it that says so
+changes           2    an access change that gives more waits until 2 people other than its author approve it
 (version 7)
 ```
 
@@ -806,7 +807,11 @@ whose approval has a step for an agent doesn't deploy, and an agent takes no ste
 already waiting (on by default). `--starter off` lets whoever started a run take no step of it:
 a flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
 already waiting goes by it at once (on by default: a person who started a run may take a step that
-says so). An agent never decides a run it started, whatever these say.
+says so). An agent never decides a run it started, whatever these say. `--changes N` (1 to 5, or
+`off`, the default) has an access change that gives someone more wait until N people other than
+its author approve it ([People and access](../guides/people.md#access-changes-that-wait-for-people)):
+loosening any of these is such a change, but made here, through this machine's run file, where it
+applies at once.
 
 `local` says who this machine's run file signs in as: the person who set the server up, so the
 commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to

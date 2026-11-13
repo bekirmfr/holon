@@ -475,7 +475,8 @@ struct World {
 /// principal or what it holds, and a viewer's besides; bob, editor on the host; fay, editor through
 /// the group `editors` (bob and fay), and dee and cy in `readers`, bound viewer; the roles `ops`
 /// (flow.deploy, run.view) and `watch` (run.view); and the services `ci`, editor, and `reader`,
-/// viewer, each with a token, owned by ada.
+/// viewer, each with a token, owned by ada. Then an access change that gives more waits for one
+/// person besides its author, and two of ada's wait: dee made an admin, and given people-admin.
 fn world() -> World {
     let (state, t, _, _) = server();
     let ada = |method: &str, path: &str, body: Value| {
@@ -502,6 +503,11 @@ fn world() -> World {
     }
     let host = |name: &str| accounts.bindings_of(name).into_iter().find(|b| b.scope == crate::bindings::Scope::Host).unwrap().id.to_string();
     ids.extend([("bob-editor", host("bob")), ("dee-viewer", host("dee"))]);
+    ada("PUT", "/access/approvals", json!({ "changes": 1 }));
+    for (change, role) in [("admin-change", "admin"), ("assign-change", "people-admin")] {
+        let waits: Value = serde_json::from_str(&ada("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": role, "scope": "host" }))).unwrap();
+        ids.push((change, waits["proposal"]["id"].to_string()));
+    }
     World { state, t, ids }
 }
 
@@ -518,7 +524,7 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
     type Ask = (&'static str, &'static str, Value);
     // (route, cy refused, (by ada?, the same to someone holding no more)).
     type Case = ((&'static str, &'static str), Ask, (bool, Ask));
-    let cases: [Case; 11] = [
+    let cases: [Case; 12] = [
         (("POST", "/people"), ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })), (false, ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })))),
         (("POST", "/admin/oidc"), ("POST", "/admin/oidc", json!({ "settings": null })), (true, ("POST", "/admin/oidc", json!({ "settings": null })))),
         (("POST", "/people/{name}/tokens"), ("POST", "/people/ci/tokens", json!({ "label": "mine" })), (false, ("POST", "/people/reader/tokens", json!({ "label": "mine" })))),
@@ -530,12 +536,16 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
         (("DELETE", "/bindings/{id}"), ("DELETE", "/bindings/{bob-editor}", Value::Null), (false, ("DELETE", "/bindings/{dee-viewer}", Value::Null))),
         (("PUT", "/roles/{name}"), ("PUT", "/roles/ops", json!({ "allows": ["run.view"], "kinds": ["person"] })), (false, ("PUT", "/roles/watch", json!({ "allows": ["run.view"], "kinds": ["person", "service"] })))),
         (("PUT", "/groups/{name}"), ("PUT", "/groups/editors", json!({ "members": ["bob"] })), (false, ("PUT", "/groups/readers", json!({ "members": ["cy"] })))),
+        // Approving an access change gives what it gives (D6): dee made an admin, which cy isn't;
+        // dee given people-admin, which cy holds.
+        (("POST", "/access/proposals/{id}/approve"), ("POST", "/access/proposals/{admin-change}/approve", Value::Null), (false, ("POST", "/access/proposals/{assign-change}/approve", Value::Null))),
     ];
     let neither = [
         (("PUT", "/access/approvals"), "how this host decides approvals: no one's sign-in, tokens or holdings"),
         (("PUT", "/access/local"), "whom the run file signs in as, which is admin on the host whoever it is (D45)"),
         (("DELETE", "/roles/{name}"), "refused while the role is bound (D28): it takes from no one"),
         (("DELETE", "/groups/{name}"), "refused while the group is bound (D28): it takes from no one"),
+        (("POST", "/access/proposals/{id}/decline"), "a change declined is never made: it gives and takes nothing"),
     ];
     let changing: Vec<(&str, &str)> = ROUTES
         .iter()
@@ -555,5 +565,79 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
         assert!(code == 403 && said.contains("which you don't"), "{route:?}, cy to more: {code} {said}");
         let (code, said) = send(&w.state, if by_ada { &w.t.ada } else { &w.t.cy }, method, &fill(path), body);
         assert!((200..300).contains(&code), "{route:?}, to no more: {code} {said}");
+    }
+}
+
+/// While an access change that gives more waits for people (`approvals.changes`), each route that
+/// makes one answers 202 with the proposal, saying what its version will say, and changes nothing
+/// but what gives no more (a display name beside a role); a new principal with a role that would
+/// wait is refused (409). The proposals are listed newest first; their author doesn't approve
+/// them, another admin does, each then made as its author asked, by them, its why saying who
+/// approved it; a decline needs a reason. The activity log says each.
+#[test]
+fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let bob = |method: &str, path: &str, body: Value| send(&state, &t.bob, method, path, body);
+    assert_eq!(ada("PATCH", "/people/bob", json!({ "role": "admin" })).0, 200);
+    assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("PUT", "/groups/team", json!({ "members": ["cy"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "team" }, "role": "approver", "scope": { "flows": { "slug": "d" } } })).0, 200);
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200, "turning it up is made at once");
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let base = accounts.access_document().version;
+
+    let waiting = [
+        ("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "approver", "scope": "host", "why": "on call" }), "bound approver to dee on this host"),
+        ("PUT", "/groups/team", json!({ "members": ["cy", "dee"] }), "changed the group team: cy, dee"),
+        ("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view", "secret.set"], "kinds": ["person"] }), "changed the role approver: run.decide, run.view, secret.set, held by a person"),
+        ("PATCH", "/people/dee", json!({ "role": "editor", "display": "Dee" }), "bound editor to dee on this host"),
+        ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once"),
+    ];
+    for (n, (method, path, body, what)) in waiting.iter().enumerate() {
+        let (code, said) = ada(method, path, body.clone());
+        assert_eq!(code, 202, "{method} {path}: {said}");
+        let v: Value = serde_json::from_str(&said).unwrap();
+        let p = &v["proposal"];
+        assert_eq!((p["id"].as_u64(), p["what"].as_str(), p["state"].as_str(), p["author"].as_str(), p["base"].as_u64()), (Some(n as u64 + 1), Some(*what), Some("waiting"), Some("ada"), Some(base)), "{said}");
+    }
+    assert_eq!(accounts.access_document().version, base, "nothing it gives is made");
+    assert_eq!(accounts.principal("dee").unwrap().display.as_deref(), Some("Dee"), "a display name gives nothing");
+    assert_eq!(listed(&state, &t.ada, "/access/proposals", Some("proposals"), "what"), waiting.iter().rev().map(|w| w.3.to_string()).collect::<Vec<_>>());
+    let (code, said) = refusal(ada("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })));
+    assert_eq!(code, 409, "{said}");
+    assert!(said.ends_with("invite eve as viewer, then give them editor, which waits"), "{said}");
+
+    assert_eq!(refusal(ada("POST", "/access/proposals/1/approve", Value::Null)), (403, "ada proposed access change 1: it is approved by people other than its author".into()));
+    for id in 1..=waiting.len() {
+        let (code, said) = bob("POST", &format!("/access/proposals/{id}/approve"), Value::Null);
+        assert_eq!(code, 200, "{id}: {said}");
+        let v: Value = serde_json::from_str(&said).unwrap();
+        assert_eq!((v["proposal"]["state"].as_str(), v["proposal"]["version"].as_u64()), (Some("applied"), Some(base + id as u64)), "{said}");
+    }
+    let document = accounts.access_document();
+    assert_eq!((document.version, document.by.as_str(), document.why.as_deref()), (base + 5, "ada", Some("access change 5, approved by bob")));
+    assert_eq!(accounts.access_version(base + 1).unwrap().unwrap().why.as_deref(), Some("on call; access change 1, approved by bob"));
+    assert_eq!((accounts.host_role("dee"), document.approvals.changes), (Some(crate::access::Role::Editor), None));
+
+    // Back on: a decline needs a reason.
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "admin", "scope": "host" })).0, 202);
+    assert_eq!(refusal(bob("POST", "/access/proposals/6/decline", json!({}))), (400, "say why it is declined: {\"reason\": \"…\"}".into()));
+    let (code, said) = bob("POST", "/access/proposals/6/decline", json!({ "reason": "cy is a viewer" }));
+    assert_eq!(code, 200, "{said}");
+    let declined: Value = serde_json::from_str(&said).unwrap();
+    assert_eq!((declined["proposal"]["state"].as_str(), declined["proposal"]["declined_by"].as_str(), declined["proposal"]["reason"].as_str()), (Some("declined"), Some("bob"), Some("cy is a viewer")));
+    assert_eq!(accounts.host_role("cy"), Some(crate::access::Role::Viewer));
+
+    let activity: Value = serde_json::from_str(&ada("GET", "/activity", Value::Null).1).unwrap();
+    let done: Vec<String> = activity["entries"].as_array().unwrap().iter().map(|e| format!("{} {} {}", e["by"].as_str().unwrap_or_default(), e["action"].as_str().unwrap(), e["target"].as_str().unwrap())).collect();
+    for said in [
+        "ada proposed an access change 1: bound approver to dee on this host",
+        "bob approved an access change (1 of 1) 1: bound approver to dee on this host",
+        "bob made an access change 1: bound approver to dee on this host",
+        "bob declined an access change 6: bound admin to cy on this host (cy is a viewer)",
+    ] {
+        assert!(done.iter().any(|d| d == said), "{said}: {done:?}");
     }
 }

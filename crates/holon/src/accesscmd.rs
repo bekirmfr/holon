@@ -146,6 +146,19 @@ fn as_json(args: &cmdline::Args, v: &Value) -> bool {
     args.flag("--json")
 }
 
+/// What a change kept as a proposal says (access_proposals.rs: it gives more, and waits for
+/// people), when the server's answer `v` is one: "bound approver to dee on this host: waits for 2
+/// people other than you to approve it (access change 3)".
+pub(crate) fn waiting(v: &Value) -> Option<String> {
+    let p = &v["proposal"];
+    let id = p["id"].as_u64()?;
+    let people = match p["needs"].as_u64().unwrap_or(1) {
+        1 => "1 person".to_string(),
+        n => format!("{n} people"),
+    };
+    Some(format!("{}: waits for {people} other than you to approve it (access change {id})", p["what"].as_str().unwrap_or_default()))
+}
+
 /// The `?why=` of a request, when one is given.
 fn why_query(args: &cmdline::Args) -> String {
     args.value("--why").map(|w| format!("?why={}", seg(w))).unwrap_or_default()
@@ -187,8 +200,13 @@ pub(crate) fn roles(args: &[String]) -> i32 {
             match cmdline::json(WHO, &args, "PUT", &format!("/roles/{}", seg(name)), Some(&body)) {
                 Ok(v) => {
                     if !as_json(&args, &v) {
-                        let role = &v["role"];
-                        println!("{name}: allows {}, held by {} (version {})", words(&role["allows"]).join(", "), words(&role["kinds"]).join(" or "), v["version"]);
+                        match waiting(&v) {
+                            Some(line) => println!("{line}"),
+                            None => {
+                                let role = &v["role"];
+                                println!("{name}: allows {}, held by {} (version {})", words(&role["allows"]).join(", "), words(&role["kinds"]).join(" or "), v["version"]);
+                            }
+                        }
                     }
                     0
                 }
@@ -247,7 +265,9 @@ pub(crate) fn groups(args: &[String]) -> i32 {
             let body = json!({ "members": members, "about": about, "why": args.value("--why") });
             match cmdline::json(WHO, &args, "PUT", &format!("/groups/{}", seg(group)), Some(&body)) {
                 Ok(v) => {
-                    if !as_json(&args, &v) {
+                    if let Some(line) = waiting(&v).filter(|_| !args.flag("--json")) {
+                        println!("{line}");
+                    } else if !as_json(&args, &v) {
                         let members = words(&v["group"]["members"]);
                         let members = if members.is_empty() { "no one".to_string() } else { members.join(", ") };
                         println!("{group}: {members} (version {})", v["version"]);
@@ -312,6 +332,10 @@ pub(crate) fn bind(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     if as_json(&args, &v) {
+        return 0;
+    }
+    if let Some(line) = waiting(&v) {
+        println!("{line}");
         return 0;
     }
     let b = &v["binding"];
@@ -405,7 +429,9 @@ pub(crate) fn access(args: &[String]) -> i32 {
             };
             match answer {
                 Ok(v) => {
-                    if !as_json(&args, &v) {
+                    if let Some(line) = waiting(&v).filter(|_| !args.flag("--json")) {
+                        println!("{line}");
+                    } else if !as_json(&args, &v) {
                         approval_lines(&v["approvals"]).iter().for_each(|l| println!("{l}"));
                         println!("(version {})", v["version"]);
                     }
@@ -791,6 +817,10 @@ mod tests {
             "3   editor  the group payments  on \"d\"        1970-01-01T00:00:30 (expired)  ada",
         ]);
         assert_eq!(local_line(&Value::Null), "this machine's run file is tied to no account: it operates the host, and decides no approval");
+        let proposal = |needs: u64| json!({ "proposal": { "id": 3, "what": "bound approver to dee on this host", "needs": needs, "state": "waiting" }, "version": 9 });
+        assert_eq!(waiting(&proposal(2)).as_deref(), Some("bound approver to dee on this host: waits for 2 people other than you to approve it (access change 3)"));
+        assert_eq!(waiting(&proposal(1)).as_deref(), Some("bound approver to dee on this host: waits for 1 person other than you to approve it (access change 3)"));
+        assert_eq!(waiting(&json!({ "binding": {}, "version": 9 })), None);
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
         assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false, "changes": 2 })), [

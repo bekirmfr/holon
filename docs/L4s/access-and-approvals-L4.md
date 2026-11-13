@@ -202,12 +202,17 @@ at deploy, is the thing being governed. Slugs stay for one-off bindings.
 - **The activity log** names each change ("ada bound payout-approver to bob on payments").
 - **Changing access can need approval.** A host setting `access_changes: { people: 2 }`, kept as
   `approvals.changes: 2` beside the approval settings of §8.4 (`holon access approvals --changes
-  2`, 1 to 5, or `off`): a change to roles or bindings is kept as a proposal (the same
-  `proposals.rs` shape as an agent's deploy) until that many people holding `people.assign`
-  approve it, none of them its author. Off by default; on, it covers granting `admin` and
-  anything touching `run.decide`.
+  2`, 1 to 5, or `off`): a change that gives someone `run.decide` or anything of an admin's (a
+  binding, a member of a group bound to one, a role changed to hold one, a role set on the host),
+  or that loosens the approval settings, is kept as a proposal until that many people approve it,
+  none of them its author, each a person holding `people.assign` on the host and what the change
+  gives (`access_proposals.rs`). Off by default. Taking away applies at once, as does a change
+  through the run file to the settings (below). Proposals are a file of their own,
+  `access.proposals.json` beside `access.json`, not versions of the document; one made is a
+  version by its author, its why naming who approved it.
 - **No one locks the host out.** The last binding of `admin` to an enabled person can't be removed;
-  the OS user's run-file admin always works.
+  the OS user's run-file admin always works: a change to the approval settings through it is made
+  at once, so a host whose approvers are gone turns `changes` down there.
 
 ## 7. The decision function
 
@@ -414,6 +419,9 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /groups` · `PUT /groups/<name>` | `people.view` / `people.assign` | members |
 | `GET /bindings` · `POST` · `DELETE /bindings/<id>` | `people.view` / `people.assign` | bindings |
 | `GET /access/versions` · `GET /access?version=n` | `people.view` | access history |
+| `PUT /access/approvals` | `people.assign` | the host's approval settings (§8.4, §6) |
+| `GET /access/proposals` | `people.view` | access changes waiting for people (§6) |
+| `POST /access/proposals/<id>/approve` · `…/decline` | `people.assign`, a person holding what it gives | approve, decline (`{reason}`) |
 | `GET /auth/me/can?actions=&flow=` | — | what the caller may do, for the editor |
 | `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals | §8.7 |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
@@ -492,7 +500,12 @@ One commit each; the first two change no behaviour.
    (a flow call is deployed only by someone who may run the action it calls) and H9 (an agent's
    change to what a flow sends out waits for a person).
 7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`.
-8. **Governed access changes.** `access_changes: { people: N }` through proposals.
+8. **Governed access changes.** `access_changes: { people: N }` through proposals. *Done
+   (server):* `approvals.changes` (8b); `access_proposals.rs` (8c): what a change gives is read by
+   making it on a copy of the accounts (`Accounts::trial`) and comparing what each principal may
+   do before and after, for as long, through `can`; a route's change that gives more waits (202),
+   approved by people holding what it gives, made at the last approval, stale if it no longer
+   applies. The CLI, `holon mcp` and the editor follow (8d).
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and
    approvals pages; the editor guide.
 

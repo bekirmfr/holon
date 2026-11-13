@@ -186,13 +186,14 @@ holds what reaches the pages of those it changes within seconds, without signing
 An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"
 }]`), and each principal takes one step, once, never of a run they started but a step that says
 `starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft approves it as it
-reads), and an agent never of one it started. The host says three things more, for every flow,
+reads), and an agent never of one it started. The host says four things more, for every flow,
 kept with the roles and bindings:
 
 ```sh
 holon access approvals --exclude-deployer on --why "who ships a payout doesn't sign it off"
 holon access approvals --agents off --why "no agent decides money yet"
 holon access approvals --starter off --why "whoever asks for something never signs it off"
+holon access approvals --changes 2 --why "two more sign off whoever is given more"
 ```
 
 - `--exclude-deployer on`: whoever deployed the version a run is on decides none of its
@@ -202,8 +203,39 @@ holon access approvals --starter off --why "whoever asks for something never sig
 - `--starter off`: whoever started a run takes no step of it, whatever the step says. A flow whose
   approval has a step that lets them (`starter: true`) doesn't deploy, and a run already waiting
   goes by it at once. On by default: a person who started a run may take a step that says so.
+- `--changes N`: an access change that gives someone more waits until N people other than its
+  author approve it, 1 to 5 ([below](#access-changes-that-wait-for-people)). Off by default: a
+  change applies at once.
 
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
+
+## Access changes that wait for people
+
+With `--changes N`, a change that gives someone more isn't made: it waits as a proposal. It gives
+more when it lets someone do what they couldn't, of `run.decide` or of what is an admin's
+(people, roles, secrets, the host's resources and operations): binding a role that holds it,
+adding someone to a group bound to one, changing a role so that it holds it, setting someone's
+role on the host to one; and when it loosens these settings (`--exclude-deployer off`,
+`--agents on`, `--starter on`, `--changes` lower or off). A binding that lasts longer than the
+one it outlives gives more too.
+
+The server answers such a change 202 with the proposal: what its version will say, what it gives
+and to whom, and how many must approve it. N people other than its author approve it, each a
+person holding `people.assign` on the host and what the change gives, where it gives it: two who
+hold less don't give more together. The last approval makes it, as its author asked it, by them,
+its why saying who approved it; it is read again first, and one that no longer applies (its role
+removed since, the last admin) is stale, saying why, and its author proposes it again. Anyone who
+may approve it declines it with a reason, and its author withdraws it so. Proposals are kept
+beside the access document (`access.proposals.json`), never as versions of it: a proposal changes
+no one's access. The routes are the server's ([The server](../reference/server.md#accounts-and-roles)).
+
+Taking away applies at once: unbinding, taking someone out of a group, narrowing a role, raising
+`--changes`. So does a change that gives no one more, and a change to these settings made on the
+server's machine through its run file (`holon access approvals` there): it is how a host whose
+approvers are gone gets its access back, and whoever holds that machine holds the data folder
+anyway. A new person or agent is never made waiting, as an invitation's link is shown once, to
+whoever makes it: one with a role that would wait is refused (409), saying to invite or add them
+as a viewer and then give them the role, which waits.
 
 Each decision is kept with what let it: the binding its principal took the step through, by its
 id, and the version of the access document it was read in. The run is given them with the

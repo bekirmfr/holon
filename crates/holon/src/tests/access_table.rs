@@ -176,6 +176,10 @@ fn rows(unit: &str) -> Vec<Row> {
         at("DELETE", "/bindings/none", "", Admins),
         at("GET", "/access/versions", "", Admins),
         at("GET", "/access", "", Admins),
+        // Access changes waiting for people.
+        at("GET", "/access/proposals", "", Admins),
+        at("POST", "/access/proposals/0/approve", "", Admins),
+        at("POST", "/access/proposals/0/decline", "[]", Admins),
         // Roles and groups.
         at("GET", "/roles", "", Admins),
         at("PUT", "/roles/none", "[]", Admins),

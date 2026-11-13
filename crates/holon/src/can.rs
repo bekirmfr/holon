@@ -554,6 +554,11 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
     asks("PUT", "/access/approvals", PeopleAssign, On::Host),
+    // Access changes waiting for people (access_proposals.rs): approved and declined by a person
+    // holding what each gives, as its handler asks.
+    asks("GET", "/access/proposals", PeopleView, On::Host),
+    asks("POST", "/access/proposals/{id}/approve", PeopleAssign, On::Host),
+    asks("POST", "/access/proposals/{id}/decline", PeopleAssign, On::Host),
     asks("GET", "/access/local", PeopleView, On::Host),
     asks("PUT", "/access/local", PeopleAssign, On::Host),
     asks("GET", "/roles", RoleView, On::Host),

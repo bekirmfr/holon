@@ -25,6 +25,7 @@
 //! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
 mod access;
+mod access_proposals;
 mod accesscmd;
 mod accounts;
 mod accountscmd;

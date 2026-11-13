@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **An access change that gives more can wait for people: `holon access approvals --changes N`.**
+  With `changes` set (1 to 5; off by default), a change that gives someone `run.decide` or
+  anything of an admin's isn't made: binding a role that holds it, adding someone to a group bound
+  to one, changing a role so that it holds it, setting someone's role on the host to one, and
+  loosening the approval settings (`--exclude-deployer off`, `--agents on`, `--starter on`,
+  `--changes` lower or off). It is answered 202 with a proposal saying what it changes and what it
+  gives to whom, kept beside the access document (`access.proposals.json`), and listed at
+  `GET /access/proposals`. N people other than its author approve it
+  (`POST /access/proposals/<id>/approve`), each a person holding `people.assign` and what it
+  gives, so two who hold less don't give more together; the last approval makes it as its author
+  asked, its version's why naming who approved it, and one that no longer applies (its role
+  removed since) is stale, saying why. `…/decline` takes a reason; its author withdraws it so.
+  Taking away applies at once, as does a change that gives no one more, and a change to the
+  approval settings through the server machine's run file: that is how a host whose approvers
+  are gone gets its access back. A new principal with a role that would wait is refused (409),
+  saying to give the role after. The commands and the editor's page for proposals come with the
+  next step; the settings table shows `changes`, and the editor's version diff names it.
 - **A step of an approval may let whoever started the run take it: `starter: true`.** Whoever
   started a run took no step of any of its approvals: right for a request check, as whoever asks
   for a payout never approves it, and wrong for an output review, where a person asks agents for

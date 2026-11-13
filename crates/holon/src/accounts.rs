@@ -337,6 +337,8 @@ pub(crate) struct Accounts {
     /// The local token's hash and who it is (local.rs): made when the server starts, good as that
     /// OS user's admin until it stops, never stored.
     local: Mutex<Option<(String, String)>>,
+    /// The access changes waiting for people, beside the access document (access_proposals.rs).
+    proposals: crate::access_proposals::Proposals,
 }
 
 /// A new secret token: `prefix` and 32 random bytes, in hex.
@@ -596,7 +598,8 @@ impl Accounts {
             let file = at.file_name().unwrap_or_default().to_string_lossy();
             eprintln!("holon: {} {hold} no role: {file} is new. The OS user gives each one: holon people set NAME --role ROLE", names.join(", "));
         }
-        let accounts = Accounts::with(Some(PathBuf::from(path)), book, access);
+        let proposals = crate::access_proposals::Proposals::open(crate::access_proposals::beside(&at))?;
+        let accounts = Accounts::with(Some(PathBuf::from(path)), book, access, proposals);
         if let Some(settings) = accounts.oidc_settings() {
             match crate::oidc::Oidc::discover(&settings.issuer, &settings.client_id) {
                 Ok(oidc) => *accounts.oidc.write().unwrap() = Some(oidc),
@@ -609,12 +612,31 @@ impl Accounts {
     /// Accounts kept in memory only (the tests).
     #[cfg(test)]
     pub(crate) fn memory() -> Accounts {
-        Accounts::with(None, Book::default(), Bindings::memory())
+        Accounts::with(None, Book::default(), Bindings::memory(), crate::access_proposals::Proposals::memory())
     }
 
-    fn with(path: Option<PathBuf>, book: Book, access: Bindings) -> Accounts {
+    fn with(path: Option<PathBuf>, book: Book, access: Bindings, proposals: crate::access_proposals::Proposals) -> Accounts {
         let code = no_person(&book).then(|| setup_code(std::env::var("HOLON_SETUP_CODE").ok()));
-        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(Failures::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
+        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(Failures::default()), oidc: RwLock::new(None), local: Mutex::new(None), proposals }
+    }
+
+    /// The access changes waiting for people.
+    pub(crate) fn proposals(&self) -> &crate::access_proposals::Proposals {
+        &self.proposals
+    }
+
+    /// What `f` would make of the access document, made on a copy of the accounts held in memory
+    /// only, so that it is checked as it would be (`change_access`): the document as it is, and as
+    /// it would be after. Refused as `f` is; nothing here changes.
+    pub(crate) fn trial(&self, f: impl FnOnce(&Accounts) -> Result<(), String>) -> Result<(Arc<Document>, Document), String> {
+        let (book, before) = {
+            let book = hold(&self.book);
+            (book.clone(), self.access.document())
+        };
+        let scratch = Accounts::with(None, book, Bindings::scratch(Document::clone(&before)), crate::access_proposals::Proposals::memory());
+        f(&scratch)?;
+        let after = Document::clone(&scratch.access.document());
+        Ok((before, after))
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -1201,9 +1223,10 @@ impl Accounts {
         })
     }
 
-    /// Bind `role` to `name` on the host, in place of what was bound to it there.
-    pub(crate) fn set_role(&self, name: &str, role: &str, by: &str) -> Result<(), String> {
-        self.change_access(by, &bound(role, name), None, |book, access| {
+    /// Bind `role` to `name` on the host, in place of what was bound to it there, by `by`, saying
+    /// why.
+    pub(crate) fn set_role(&self, name: &str, role: &str, by: &str, why: Option<&str>) -> Result<(), String> {
+        self.change_access(by, &bound(role, name), why, |book, access| {
             if !book.users.iter().any(|u| u.name == name) {
                 return Err(format!("no principal {name:?}"));
             }
@@ -1675,7 +1698,7 @@ mod tests {
     fn no_change_leaves_no_admin() {
         let (a, _) = set_up();
         a.new_local("bma");
-        assert!(a.set_role("ada", "viewer", "local:bma").unwrap_err().contains("that would leave no admin: make someone else an admin first"));
+        assert!(a.set_role("ada", "viewer", "local:bma", None).unwrap_err().contains("that would leave no admin: make someone else an admin first"));
         assert!(a.set_disabled("ada", true).unwrap_err().contains("no admin"));
         assert!(a.remove("ada", "local:bma").unwrap_err().contains("no admin"));
         assert_eq!((a.host_role("ada"), a.access.document().version), (Some(Role::Admin), 1), "each refused, nothing changed");
@@ -1683,9 +1706,9 @@ mod tests {
         // bob is another admin (enabled, even before using his link); a disabled one doesn't count.
         a.set_disabled("bob", true).unwrap();
         assert!(a.remove("ada", "ada").is_err());
-        assert!(a.set_role("ada", "editor", "ada").is_err());
+        assert!(a.set_role("ada", "editor", "ada", None).is_err());
         a.set_disabled("bob", false).unwrap();
-        a.set_role("ada", "editor", "bob").unwrap();
+        a.set_role("ada", "editor", "bob", None).unwrap();
         a.remove("ada", "bob").unwrap();
         assert_eq!(a.principals().iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["bob"]);
     }
@@ -1706,10 +1729,10 @@ mod tests {
         assert_eq!(last(&a), (2, "ada".into(), "invited bob: bound editor to bob on this host".into()));
         a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
         assert_eq!(last(&a), (3, "ada".into(), "added claude, an agent: bound agent to claude on this host".into()));
-        a.set_role("bob", "viewer", "ada").unwrap();
+        a.set_role("bob", "viewer", "ada", None).unwrap();
         assert_eq!(last(&a), (4, "ada".into(), "bound viewer to bob on this host".into()));
         assert!(a.access.document().at >= started);
-        a.set_role("bob", "viewer", "ada").unwrap();
+        a.set_role("bob", "viewer", "ada", None).unwrap();
         a.set_disabled("bob", true).unwrap();
         a.set_email("bob", Some("bob@example.com".into())).unwrap();
         assert_eq!(last(&a).0, 4, "nothing bound anew: no version");
@@ -1760,9 +1783,9 @@ mod tests {
         assert!(a.add("bob", Kind::Person, "editor", "ada", "ada").unwrap_err().contains("invited"));
         let claude = a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
         assert_eq!((claude.kind, a.host_role("claude"), claude.owner.as_deref(), claude.created_by.as_deref()), (Kind::Agent, Some(Role::Agent), Some("ada"), Some("ada")));
-        a.set_role("claude", "viewer", "ada").unwrap();
-        assert!(a.set_role("claude", "admin", "ada").unwrap_err().contains("an agent is"));
-        assert!(a.set_role("ada", "agent", "ada").unwrap_err().contains("a person is"));
+        a.set_role("claude", "viewer", "ada", None).unwrap();
+        assert!(a.set_role("claude", "admin", "ada", None).unwrap_err().contains("an agent is"));
+        assert!(a.set_role("ada", "agent", "ada", None).unwrap_err().contains("a person is"));
         assert!(a.invite("claude", "viewer", None, "ada").unwrap_err().contains("already"), "names are unique across kinds");
         assert!(a.add("ada", Kind::Service, "viewer", "ada", "ada").unwrap_err().contains("already"));
         assert!(a.reset("claude").unwrap_err().contains("not a password"));
@@ -1939,7 +1962,7 @@ mod tests {
         assert!(a.holding("ada").is_empty() && a.holding("bob").is_empty(), "the file's roles aren't read");
         assert!(!a.needs_setup());
         a.new_local("bma");
-        a.set_role("ada", "admin", "local:bma").unwrap();
+        a.set_role("ada", "admin", "local:bma", None).unwrap();
         assert_eq!(Accounts::open(&path).unwrap().host_role("ada"), Some(Role::Admin));
         assert!(dir.join(".holon-access.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
