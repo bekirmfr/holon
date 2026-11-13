@@ -1,13 +1,15 @@
 // The Approvals page (gaps-web.md G8, C3): what waits for a person. Deploys: versions to review
 // and deploy, in the queue the Review page goes through, and what else a deployment waits on a
 // person for; a version an agent proposed with its why, and Decline (with a reason its author
-// reads back, proposals.rs). Runs waiting: runs parked across flows. An approval (`await
-// approval(…)`) is decided here, Approve or Decline with a reason, by people signed in (durable.rs);
-// an event goes on through its flow's own route.
+// reads back, proposals.rs). Runs waiting: runs parked across flows that whoever is signed in may
+// see or decide (`GET /runs/waiting`), an approval in steps drawn as its chain. An approval
+// (`await approval(…)`) is decided here, Approve or Decline with a reason, by people signed in
+// (durable.rs); an event goes on through its flow's own route.
 
+import { Fragment } from "react";
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, decidedSaid, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
@@ -31,6 +33,7 @@ export function useDecline(onDeclined: (p: Proposal) => void) {
       `Why it was declined\n\n${p.slug} ${v}, proposed by ${p.by ?? "someone"}. Tell them what to change. It is kept on the flow's history${p.agent ? ", and the agent reads it through holon mcp" : ""}. The version stays saved, and what runs keeps running.`,
       "",
       "Submit",
+      { required: "A decline says why: type a reason." },
     );
     if (reason === null) return;
     try {
@@ -55,8 +58,10 @@ export function ApprovalsPage({
 }: {
   tab: "deploys" | "runs";
   approvals: Approval[];
+  /** The deployments whoever is signed in may list: a run's flow is a link only to one of them. */
   deployments: DeploymentEntry[];
-  /** The runs waiting in them (useApprovals), null until first read. */
+  /** The runs waiting across flows that whoever is signed in may see or decide (useApprovals),
+   *  null until first read. */
   runs: WaitingRunOf[] | null;
   me: Me;
   navigate: (r: Route) => void;
@@ -65,11 +70,9 @@ export function ApprovalsPage({
   /** An approval was decided: the runs and deployments are read again. */
   onDecided: () => void;
 }) {
-  const waiting = deployments.filter((d) => (d.waiting ?? 0) > 0);
-  const waitingRuns = waiting.reduce((n, d) => n + (d.waiting ?? 0), 0);
   const tabs: ["deploys" | "runs", string, number][] = [
     ["deploys", "Deploys", approvals.length],
-    ["runs", "Runs waiting", waitingRuns],
+    ["runs", "Runs waiting", runs?.length ?? 0],
   ];
   return (
     <div className="hl-flow hl-approvals">
@@ -91,7 +94,7 @@ export function ApprovalsPage({
       {tab === "deploys" ? (
         <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} />
       ) : (
-        <RunsWaiting any={waiting.length > 0} runs={runs} me={me} navigate={navigate} onDecided={onDecided} />
+        <RunsWaiting runs={runs} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
       )}
     </div>
   );
@@ -166,14 +169,12 @@ function useDecide(onDecided: () => void) {
           `Approve "${w.name}"${as} for this run of ${slug}?\n\n${after ? `It then waits for ${after}.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
           "",
           "Approve",
-          true,
+          "optional",
         )
-      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", true);
+      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", {
+          required: "A decline says why: type a reason.",
+        });
     if (reason === null) return;
-    if (!approve && reason.trim() === "") {
-      toast("A decline says why: give a reason.", "bad");
-      return;
-    }
     try {
       const d = await decideRun(slug, runId, w.name, step.slot, approve, reason);
       toast(decidedSaid(d), "ok");
@@ -185,23 +186,48 @@ function useDecide(onDecided: () => void) {
   };
 }
 
-/** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
- *  decided here a step at a time, each step by whoever the server says may take it. */
+/** A step of a chain on hover: each decision taken on it, a line each (who, kind, role, when, why,
+ *  the binding), or that it is open, or not open yet. */
+const stepTitle = (c: ChainStep) =>
+  c.decisions.length > 0 ? c.decisions.map((d) => decidedLine(d, when)).join("\n") : c.state === "open" ? `${c.name}: open` : `${c.name}: opens once the steps before it are approved`;
+
+/** An approval in steps as its chain: each step taken (✓, who took it), open (◻), or not open yet
+ *  (dimmed), a decision's details on hover. */
+function Chain({ w }: { w: WaitingPoint }) {
+  return (
+    <span className="hl-chain" role="group" aria-label={`approval "${w.name}": ${chainSaid(w)}`}>
+      <span className="hl-chain__name">approval &quot;{w.name}&quot;: </span>
+      {chainOf(w).map((c, i) => (
+        <Fragment key={c.slot}>
+          {i > 0 && <span aria-hidden="true"> → </span>}
+          <span className={`hl-chain__step hl-chain__step--${c.state}`} title={stepTitle(c)}>
+            {c.state === "done" ? "✓" : "◻"} {c.name}
+            {c.detail && <span className="hl-chain__detail"> ({c.detail})</span>}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+/** The runs waiting across flows (GET /runs/waiting): what each waits for and until when. An
+ *  approval is decided here a step at a time, each step by whoever the server says may take it. */
 function RunsWaiting({
-  any,
   runs,
+  listed,
   me,
   navigate,
   onDecided,
 }: {
-  any: boolean;
   runs: WaitingRunOf[] | null;
+  /** The flows they may open: whoever only decides an approval of another sees its slug alone. */
+  listed: Set<string>;
   me: Me;
   navigate: (r: Route) => void;
   onDecided: () => void;
 }) {
   const decide = useDecide(onDecided);
-  if (!any) return <p className="hl-flow__none">No run is waiting.</p>;
+  if (runs !== null && runs.length === 0) return <p className="hl-flow__none">No run is waiting.</p>;
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
@@ -225,9 +251,13 @@ function RunsWaiting({
             return (
               <tr key={`${slug}:${run.run_id}`}>
                 <td>
-                  <a href={format(to)} onClick={follow(to, navigate)}>
-                    {slug}
-                  </a>
+                  {listed.has(slug) ? (
+                    <a href={format(to)} onClick={follow(to, navigate)}>
+                      {slug}
+                    </a>
+                  ) : (
+                    slug
+                  )}
                 </td>
                 <td title={`run ${run.run_id}`}>{run.route ?? run.kind}</td>
                 <td>
@@ -236,7 +266,8 @@ function RunsWaiting({
                     const shown = isApproval(w) ? shownSaid(w) : null;
                     return (
                       <div key={w.name}>
-                        {`${isApproval(w) ? approvalSaid(w) : w.name} (until ${when(w.expires_at)})`}
+                        {inSteps(w) ? <Chain w={w} /> : isApproval(w) ? approvalSaid(w) : w.name}
+                        {` (until ${when(w.expires_at)})`}
                         {shown && (
                           <div className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
                             {shown.label}: {shown.text}

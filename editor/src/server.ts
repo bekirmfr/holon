@@ -866,14 +866,27 @@ export type DeploymentEntry = {
 };
 
 /** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
- *  it, as what, when, and what they noted. */
-export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string; note?: unknown };
+ *  it, as what, when, what they noted, and what let them: the binding they took it through and
+ *  the access document's version it was read in (`holon access show --version N`). */
+export type WaitingDecision = {
+  slot: number;
+  who: string;
+  kind: "person" | "agent";
+  role?: string;
+  at: number;
+  approved: boolean;
+  reason?: string;
+  note?: unknown;
+  binding?: number;
+  access?: number;
+};
 
 /** One step of an approval as it stands (durable.rs `SlotState`): its number and stage, the role
  *  and kind it takes, how many different principals, who approved it, and whether it is open. */
 export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; by: string[]; open: boolean };
 
-/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
+/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`, `GET /runs/waiting`;
+ *  never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;
@@ -917,6 +930,14 @@ export async function getCollectionItems(
 export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
   return (await asJson<{ runs: WaitingRun[] }>(res)).runs;
+}
+
+/** `GET /runs/waiting`: every flow's waiting runs as each flow's own listing gives them to whoever
+ *  is signed in, each with its flow's slug. Someone who only decides an approval (bound at it)
+ *  may list no flow, and finds what waits for them here. */
+export async function listAllWaitingRuns(): Promise<(WaitingRun & { slug: string })[]> {
+  const res = await api(`${BASE}/runs/waiting`);
+  return (await asJson<{ runs: (WaitingRun & { slug: string })[] }>(res)).runs;
 }
 
 /** What the host granted a deployment (permissions.rs's `Grant`): the items it holds, what it

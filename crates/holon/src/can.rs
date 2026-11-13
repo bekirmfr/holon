@@ -584,6 +584,8 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/permissions", PolicyView, On::Host),
     asks("POST", "/permissions/reload", PolicyEdit, On::Host),
     asks("GET", "/deployments", FlowView, On::Flows),
+    // Every flow's waiting runs, each as its flow's runs list them to the caller (durable.rs).
+    signed_in("GET", "/runs/waiting"),
     asks("GET", "/deployments/{slug}/secrets", SecretList, On::Slug),
     asks("GET", "/deployments/{slug}/secrets/{name}", SecretList, On::Slug),
     asks("POST", "/deployments/{slug}/secrets/{name}", SecretSet, On::Slug),

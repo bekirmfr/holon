@@ -25,7 +25,8 @@ In the code:
   `RunOutcome::waiting` and performs nothing.
 - `crates/holon/src/durable.rs`: parking (`park_if_waiting`, `ParkedRun`), tokens (`token_for`,
   `load_host_key`), claiming (`claim_by_token`, `Claimed`), resuming (`resume_parked`), expiring
-  (`expire_waiting`), `GET /deployments/<slug>/runs` (`handle_get_runs`).
+  (`expire_waiting`), `GET /deployments/<slug>/runs` (`handle_get_runs`) and `GET /runs/waiting`
+  (`handle_get_waiting`), both listing through `waiting_runs`.
 - `crates/holon/src/lifecycle.rs`: the deployment's lifecycle and sessions, which a waiting run
   outlives.
 
@@ -157,7 +158,12 @@ as it stands, `approved` false, with `expired: true` and who had approved.
 `GET /deployments/<slug>/runs` lists the waiting runs (`summary`: run id, kind, route, when it
 parked, its waiting points and deadlines, an approval's `people` and `approved`, the points
 delivered), never their tokens; the editor's
-deployment card shows how many wait.
+deployment card shows how many wait. `GET /runs/waiting` (signed in) lists every deployment's the
+same way, each run with its `slug`: one function, `waiting_runs`, filters both for the caller (all
+of a flow whose runs they view; of another, the runs waiting at an approval they may decide, those
+points alone, nothing delivered). Someone bound only at an approval point lists no deployment
+(`GET /deployments` asks `flow.view`), so the editor's Runs waiting reads this one, and counts in
+the nav the approvals with a step still theirs.
 
 ## 3. Why it is this way
 

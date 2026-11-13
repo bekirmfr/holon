@@ -122,7 +122,8 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   approval, and an agent takes only a step written for an agent (durable.rs's `Decider`), each
   decision kept with the binding that let it; one who decides a flow's approvals without viewing
   its runs lists only the runs waiting at one they may decide, those points alone (the runs
-  route's `Rule::Either`, `handle_get_runs`), each with what it shows, kept at park as the log
+  route's `Rule::Either`; `durable::waiting_runs`, which `GET /runs/waiting` lists across flows
+  through as well, to anyone signed in), each with what it shows, kept at park as the log
   keeps it: redacted by the log's redactor, withheld when a secret may have made it, sized past
   16 KiB, sealed with the run (`durable::shown_of`, the launch review's H6); a person manages the
   tokens of an agent or a service they own.

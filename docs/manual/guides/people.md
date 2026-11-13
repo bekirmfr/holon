@@ -125,9 +125,10 @@ holon bind editor --to bob --flow payout --why "owns the payout flow"
 holon bind editor --to dee --approval payout:ok --until 7d --why "covers for bob"
 ```
 
-A binding at an approval point decides it and nothing else: `holon decide payout` lists Dee the
-runs waiting there, and what each shows, but no other run, and the editor lists only the flows
-one may view, so `holon bind` says what to add (`holon bind viewer --to dee --flow payout`). A
+A binding at an approval point decides it and nothing else: `holon decide payout` and the
+editor's Runs waiting list Dee the runs waiting there, and what each shows, but no other run. The
+editor lists only the flows one may view, so to open the flow itself `holon bind` says what to add
+(`holon bind viewer --to dee --flow payout`). A
 role of your own
 allows only the actions you choose, from the catalogue `holon roles define` lists when you get one
 wrong:
@@ -190,8 +191,10 @@ Each change is a version, with who made it and why; `holon access approvals` alo
 Each decision is kept with what let it: the binding its principal took the step through, by its
 id, and the version of the access document it was read in. The run is given them with the
 decision, so its log and its export carry them: an auditor checks who took each step, in which
-order and through what, offline, against `holon access show N`. The `approved-payout` sample
-binds an agent, a person and you on its tag, one to each of its three steps.
+order and through what, offline, against `holon access show --version N`. The editor shows them
+too: on hover over a step in Runs waiting, and on the run's page, a line each. The
+`approved-payout` sample binds an agent, a person and you on its tag, one to each of its three
+steps.
 
 ## Taking access away
 

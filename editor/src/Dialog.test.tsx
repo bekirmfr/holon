@@ -111,4 +111,37 @@ describe("dialog keys", () => {
     press("Enter", {}, field);
     await expect(name).resolves.toBe("shout");
   });
+
+  it("holds a required answer until something is typed, saying why, and still cancels", async () => {
+    const d = mount();
+    const type = (value: string) =>
+      act(() => {
+        const field = document.querySelector<HTMLInputElement>("[aria-modal=true] input")!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    const decline = () => buttons().find((b) => nameOf(b) === "Decline")!;
+    const { answer: why } = await ask(() => d.prompt("Decline it?", "", "Decline", { required: "A decline says why: type a reason." }));
+    expect([decline().disabled, decline().title]).toEqual([true, "A decline says why: type a reason."]);
+    expect(document.querySelector("[role=dialog]")!.textContent).toContain("A decline says why: type a reason.");
+    press("Enter");
+    type("   ");
+    press("Enter");
+    expect(document.querySelector("[role=dialog]")).not.toBeNull();
+    type(" not this vendor ");
+    expect(decline().disabled).toBe(false);
+    expect(document.querySelector("[role=dialog]")!.textContent).not.toContain("A decline says why");
+    press("Enter");
+    await expect(why).resolves.toBe("not this vendor");
+    const { answer: none } = await ask(() => d.prompt("Decline it?", "", "Decline", { required: "A decline says why: type a reason." }));
+    press("Escape");
+    await expect(none).resolves.toBeNull();
+    // An optional answer may be empty; by default an empty one answers as Cancel does.
+    const { answer: optional } = await ask(() => d.prompt("Approve it?", "", "Approve", "optional"));
+    press("Enter");
+    await expect(optional).resolves.toBe("");
+    const { answer: needed } = await ask(() => d.prompt("Name it:"));
+    press("Enter");
+    await expect(needed).resolves.toBeNull();
+  });
 });

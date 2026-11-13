@@ -122,6 +122,7 @@ fn rows(unit: &str) -> Vec<Row> {
         at("GET", "/proposals/1", "", All),
         at("POST", "/proposals/1/decline", "[]", Editors),
         at("GET", "/deployments", "", All),
+        at("GET", "/runs/waiting", "", SignedIn),
         at("POST", "/deployments/none/grant", "[]", Editors),
         at("POST", "/deployments/none/settings", "[]", Editors),
         at("POST", "/deployments/none/tick", "", Editors),

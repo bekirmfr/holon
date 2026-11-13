@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Runs waiting finds every run waiting for you, draws an approval in steps as its chain, and a
+  run's page says each step's decision.** Someone bound only at an approval point decided it with
+  `holon decide`, but the editor's Approvals, which read the runs of each flow it listed, showed
+  them nothing: they may list no flow. Now `GET /runs/waiting` lists, across flows, the runs
+  whoever is signed in may see or decide, as each flow's own listing gives them, and Runs waiting
+  and the nav's count read it. An approval in steps is drawn as its chain, `✓ classifier (scout,
+  invoice, 0.93) → ◻ reviewer → ◻ approver (not open yet)`: who took a step and what their note
+  says in a word or two, the open steps, the steps not open yet dimmed; hovering over a step shows
+  each decision on it (who, kind, role, when, why, and the binding that let them, with the access
+  version `holon access show --version N` prints). Declining a step, or an agent's proposal, needs
+  a reason: the button waits for one and says so, where an empty one used to close the dialog
+  silently. The run's page, and the details pane of a run stepped through in the editor, say what
+  the resumed part was given: the approval's decision, then each step's decision a line.
 - **A person signs in to a server elsewhere from the command line: `holon login`.** On another
   machine a person's only way in was the editor; the commands took an agent's or a service's
   token. Now `holon login --server https://holon.example.com` asks their name and password (not

@@ -271,5 +271,26 @@ export const pay = action(async (order) => {
             assert_eq!(points(&listed), want, "{who} on {slug}: {listed}");
         }
     }
+    // Across flows, for each of them: exactly what every flow's runs list them, each run with its
+    // flow's slug; nothing of a flow that refuses them.
+    let key = |r: &Value| (r["slug"].as_str().unwrap_or_default().to_string(), r["run_id"].as_str().unwrap_or_default().to_string());
+    for who in ["ada", "cy", "dee", "rex"] {
+        let mut each = Vec::new();
+        for slug in [&pay, &tab, &pays] {
+            let (code, listed) = waiting(&state, &token(who), slug);
+            if code == 200 {
+                each.extend(listed["runs"].as_array().unwrap().iter().cloned().map(|mut run| {
+                    run["slug"] = json!(slug);
+                    run
+                }));
+            }
+        }
+        let (code, across) = send(&state, &token(who), "GET", "/runs/waiting", Value::Null);
+        assert_eq!(code, 200, "{who}: {across}");
+        let mut across = across["runs"].as_array().unwrap().clone();
+        across.sort_by_key(key);
+        each.sort_by_key(key);
+        assert_eq!(across, each, "{who}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

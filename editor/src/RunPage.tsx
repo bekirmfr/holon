@@ -1,9 +1,12 @@
 // One run's record, at `#<slug>.run-<n>` (gaps-web.md G15c): how it ended, its steps timed by the
-// server, what came in and went out, what it read, what it did outside the flow and what the log
-// holds of it; checked offline with `holon verify`, or stepped through in the editor.
+// server, what came in and went out, what it read, what it did outside the flow, the approvals it
+// was given (each step's decision a line: who, as what, when, why and the binding that let them)
+// and what the log holds of it; checked offline with `holon verify`, or stepped through in the
+// editor.
 
 import { LogsPane } from "./LogsPane";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { decidedLine, decisionSaid, decisionsOf } from "./decisions";
 import { useDialog } from "./Dialog";
 import { formatValue } from "./diagnostics";
 import type { WValue } from "./holon";
@@ -13,6 +16,7 @@ import { field, outside, runLabel, runOutcome, text } from "./runs";
 import { downloadRuns, getDeployedDocument, getLog, type FlowDocument, type LogEntry } from "./server";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
+const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)} ms` : `${t.toFixed(0)} µs`);
 
 /** The log's entry for run `seq`, and the canvas of the version it ran on (for its steps' names). */
@@ -71,6 +75,9 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
     if (yes) await downloadRuns(slug).catch(() => undefined);
   };
   const exchanges = (run.rounds ?? []).flatMap((r) => r.exchanges);
+  // What its resumed part was given: an approval's decision, or an event's request.
+  const given = Object.entries(run.events ?? {});
+  const decided = given.filter(([, v]) => decisionSaid(v) !== null);
   return (
     <article className="hl-run" aria-label={`run ${seq}`}>
       <header className="hl-run__head">
@@ -117,13 +124,35 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         <Section title="In">
           {run.url && <Line name="request">{`${run.method ?? ""} ${run.url}`}</Line>}
           {run.request && <Value v={run.request} />}
-          {!run.url && !run.request && <p className="hl-flow__note">started by {run.kind}</p>}
+          {given
+            .filter(([, v]) => decisionSaid(v) === null)
+            .map(([name, v]) => (
+              <Line key={name} name={`event ${name}`}>
+                {show(v)}
+              </Line>
+            ))}
+          {!run.url && !run.request && given.length === 0 && <p className="hl-flow__note">started by {run.kind}</p>}
         </Section>
         <Section title="Out">
           {run.response_body !== null ? <Line name={`answered ${run.status ?? ""}`}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}
           {run.outputs.length > 0 && run.response_body === null && run.outputs.map((v, i) => <Value key={i} v={v} />)}
         </Section>
       </div>
+
+      {decided.length > 0 && (
+        <Section title="Decided">
+          {decided.map(([name, v]) => (
+            <div key={name} role="group" aria-label={`approval ${name}`}>
+              <Line name={`approval ${name}`}>{decisionSaid(v)}</Line>
+              {decisionsOf(v).map((d, i) => (
+                <Line key={i} name={d.approved ? "✓" : "✗"}>
+                  {decidedLine(d, when)}
+                </Line>
+              ))}
+            </div>
+          ))}
+        </Section>
+      )}
 
       <div className="hl-flow__columns">
         <Section title="Read">

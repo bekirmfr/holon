@@ -41,14 +41,19 @@ closes with its ×.
   agent's proposal with its why and note, and **Decline with a reason…**), and **Runs waiting**.
   **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
   flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
-  and Approve, keep it saved, or decline it. **Runs waiting** lists the runs waiting at an
-  `approval`, each step and who has taken it so far, and what it shows: what the flow named
-  (`shows`), else what the run was started with (*started with*), redacted as its log is.
-  **Approve**, or **Decline…** with a reason,
-  on the steps you may take (*Approve as reviewer…* when there are several). Each principal takes
-  one step, once, never of a run they started, and the host's [approval
-  settings](people.md#who-decides-an-approval) can keep out whoever deployed the version, and
-  agents.
+  and Approve, keep it saved, or decline it. **Runs waiting** lists, across flows, the runs
+  waiting at an `approval` that you may see or decide (one bound only at an approval point sees
+  the runs waiting there, though no flow), and what each shows: what the flow named (`shows`),
+  else what the run was started with (*started with*), redacted as its log is. An approval in
+  steps is its chain, `✓ classifier (scout, invoice, 0.93) → ◻ reviewer → ◻ approver (not open
+  yet)`: a step taken, with who took it and what their note says in a word or two; an open one; one
+  not open yet, dimmed. Hover over a step for each decision on it: who, of which kind and role,
+  when, why, and the binding that let them. **Approve** (a reason optional), or **Decline…** (a
+  reason required: its button waits for one), on the steps you may take (*Approve as reviewer…*
+  when there are several). Each principal takes one step, once, never of a run they started, and
+  the host's [approval settings](people.md#who-decides-an-approval) can keep out whoever deployed
+  the version, and agents. A run's page says what its resumed part was given: the approval's
+  decision, then each step's decision a line.
 - **Getting started** has the steps to start, each ticked once done, your notes (kept with your
   account) and short docs. Untick **show this on start** to stop it opening.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each

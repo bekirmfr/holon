@@ -8,8 +8,9 @@
 // bound to its role on the flow, of its kind, each a different principal, and never by whoever
 // started the run; one decline, with a reason, ends it. Each sees what they decide: the account,
 // the amount and the balance the run read (its shows). They decide in the editor's Approvals
-// (Runs waiting) or with holon decide: a person on another machine signs in first with holon
-// login, the agent uses its own token or holon mcp's decide tool.
+// (Runs waiting draws the three steps as a chain: who took each, the classifier's note, what is
+// open) or with holon decide: a person on another machine signs in first with holon login, the
+// agent uses its own token or holon mcp's decide tool.
 // The run holds nothing on the account meanwhile: a deposit goes ahead while it waits. Approved,
 // it reads the balance as it is now, sends the payout (to httpbin.org, standing in for a bank)
 // with who approved it and the classifier's note, and writes the new balance and a record of the

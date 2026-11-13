@@ -264,6 +264,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return handle_get_deployments(&state.deployments, &caller);
     }
 
+    if method == "GET" && url == "/runs/waiting" {
+        return durable::handle_get_waiting(&state.deployments, &caller, &crate::bindings::approval_settings(state));
+    }
+
     if let Some(rest) = url.strip_prefix("/deployments/") {
         if let Some(slug) = rest.strip_suffix("/secrets") {
             return handle_secrets(&state.secrets, &state.deployments, slug, None, method, request, by);

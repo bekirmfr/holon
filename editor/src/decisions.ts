@@ -1,11 +1,12 @@
 // An approval a run waits at (`await approval(…)`, durable.rs): which of its steps whoever is
-// signed in may take, what it says in Runs waiting, what a decision did, and the decision a
-// resumed run was given, as its log entry holds it.
+// signed in may take, what it says in Runs waiting (in words, or as its chain of steps), what a
+// decision did, and the decision a resumed run was given, as its log entry holds it, with each
+// step's decision a line on the run's timeline.
 
 import type { Me } from "./AuthGate";
 import type { WValue } from "./holon";
 import { field, text } from "./runs";
-import type { Decided, WaitingRun } from "./server";
+import type { Decided, WaitingDecision, WaitingRun } from "./server";
 
 export type WaitingPoint = WaitingRun["waiting"][number];
 export type WaitingStep = NonNullable<WaitingPoint["slots"]>[number];
@@ -31,6 +32,10 @@ export const stepName = (s: WaitingStep) => s.role ?? `slot ${s.slot}`;
 
 /** Whether it is the short form: one step of people, with no role. */
 const alone = (slots: WaitingStep[]): WaitingStep | null => (slots.length === 1 && slots[0].kind === "person" && slots[0].role === undefined ? slots[0] : null);
+
+/** Whether an approval is in steps (roles, kinds, an order), which Runs waiting draws as a chain;
+ *  the short form, people alone, it says in words (`approvalSaid`). */
+export const inSteps = (w: WaitingPoint) => isApproval(w) && alone(w.slots ?? []) === null;
 
 const filled = (s: WaitingStep) => s.by.length >= s.people;
 
@@ -63,6 +68,41 @@ export function shownSaid(w: WaitingPoint): { label: string; text: string } | nu
   const text = record ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k} ${one(v)}`).join(" · ") : one(value);
   return { label: named ? "shows" : "started with", text };
 }
+
+/** One step of an approval in its chain, as it stands: taken (`done`), `open`, or not open yet
+ *  (`later`); in words, who took it or how far it is (`detail`); and the decisions taken on it. */
+export type ChainStep = { slot: number; name: string; state: "done" | "open" | "later"; detail: string | null; decisions: WaitingDecision[] };
+
+/** What a note says in a word or two: its `label`, its `confidence` (an agent's classification),
+ *  as plain values; null for any other note, which a decision's line shows whole. */
+function noteWords(note: unknown): string | null {
+  if (typeof note !== "object" || note === null || Array.isArray(note)) return null;
+  const { label, confidence } = note as Record<string, unknown>;
+  const words = [typeof label === "string" ? label : null, typeof confidence === "number" ? String(confidence) : null].filter((x) => x !== null);
+  return words.length > 0 ? words.join(", ") : null;
+}
+
+/** An approval's steps in their order, each as it stands: who took a step (with what their note
+ *  says in a word or two), how many of its people approved so far, or that it isn't open yet. */
+export function chainOf(w: WaitingPoint): ChainStep[] {
+  return (w.slots ?? []).map((s): ChainStep => {
+    const decisions = (w.decisions ?? []).filter((d) => d.slot === s.slot);
+    const took = and(
+      s.by.map((who) => {
+        const words = noteWords(decisions.find((d) => d.who === who)?.note);
+        return words ? `${who}, ${words}` : who;
+      }),
+    );
+    const many = s.people > 1 ? `${s.people} people` : null;
+    if (filled(s)) return { slot: s.slot, name: stepName(s), state: "done", detail: took, decisions };
+    if (s.open) return { slot: s.slot, name: stepName(s), state: "open", detail: s.by.length > 0 ? `${s.by.length} of ${s.people}: ${took}` : many, decisions };
+    return { slot: s.slot, name: stepName(s), state: "later", detail: [many, "not open yet"].filter((x) => x !== null).join(", "), decisions };
+  });
+}
+
+/** An approval's chain in a line: `✓ classifier (scout, invoice, 0.93) → ◻ reviewer → ◻ approver
+ *  (not open yet)`, a step taken ✓, any other ◻. */
+export const chainSaid = (w: WaitingPoint) => chainOf(w).map((c) => `${c.state === "done" ? "✓" : "◻"} ${c.name}${c.detail ? ` (${c.detail})` : ""}`).join(" → ");
 
 /** What the approval still waits for once `step` is approved: more people for it, or the steps
  *  left; null when it is then decided. */
@@ -108,4 +148,64 @@ export function decisionSaid(v: WValue | null | undefined): string | null {
   const expired = field(v, "expired");
   const before = names.length > 0 ? `, approved by ${and(names)} before` : "";
   return expired?.type === "Boolean" && expired.value ? `ran out undecided${before}` : `not approved${before}`;
+}
+
+/** One decision in a line: when, who (an agent says so), what they decided as which step, why,
+ *  what they noted, and the binding that let them, with the access document's version it was
+ *  read in, which `holon access show --version N` prints for an auditor. */
+export function decidedLine(d: WaitingDecision, when: (seconds: number) => string): string {
+  const who = d.kind === "agent" ? `${d.who} (an agent)` : d.who;
+  const as = d.role ? ` as ${d.role}` : d.slot > 0 ? ` as slot ${d.slot}` : "";
+  const why = d.reason ? `: ${d.reason}` : "";
+  const noted = d.note === undefined ? "" : ` · noted ${JSON.stringify(d.note)}`;
+  const through = d.binding === undefined ? "" : ` · through binding ${d.binding}${d.access === undefined ? "" : ` (holon access show --version ${d.access})`}`;
+  return `${when(d.at)}: ${who} ${d.approved ? "approved" : "declined"}${as}${why}${noted}${through}`;
+}
+
+/** A logged value as plain JSON: a note, as its decider gave it. */
+function plain(v: WValue): unknown {
+  switch (v.type) {
+    case "Record":
+      return Object.fromEntries(v.value.map(([k, x]) => [k, plain(x)]));
+    case "List":
+      return v.value.map(plain);
+    case "Sum":
+      return v.value.arm === 0 ? plain(v.value.payload) : null;
+    case "Effect":
+    case "Bytes":
+      return v.type;
+    default:
+      return v.value;
+  }
+}
+
+/** The decisions an approval's event holds (its `decisions`, a step's each), as Runs waiting
+ *  lists them; none for a value that isn't one. */
+export function decisionsOf(v: WValue | null | undefined): WaitingDecision[] {
+  const list = field(v, "decisions");
+  if (list?.type !== "List") return [];
+  return list.value.flatMap((d): WaitingDecision[] => {
+    const number = (k: string) => {
+      const x = field(d, k);
+      return x?.type === "Number" ? x.value : undefined;
+    };
+    const approved = field(d, "approved");
+    const who = text(field(d, "who"));
+    if (approved?.type !== "Boolean" || who === "") return [];
+    const note = field(d, "note");
+    return [
+      {
+        slot: number("slot") ?? 0,
+        who,
+        kind: text(field(d, "kind")) === "agent" ? "agent" : "person",
+        ...(text(field(d, "role")) ? { role: text(field(d, "role")) } : {}),
+        at: number("at") ?? 0,
+        approved: approved.value,
+        ...(text(field(d, "reason")) ? { reason: text(field(d, "reason")) } : {}),
+        ...(note ? { note: plain(note) } : {}),
+        ...(number("binding") !== undefined ? { binding: number("binding") } : {}),
+        ...(number("access") !== undefined ? { access: number("access") } : {}),
+      },
+    ];
+  });
 }

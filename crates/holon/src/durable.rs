@@ -1175,12 +1175,38 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
 /// whoever views the flow's runs; to whoever only decides, each run waiting at an approval they
 /// may decide, with those points alone: what they decide, and nothing else of the flow's runs.
 pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
+    let table = deployments.lock().unwrap();
+    let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+    Response::json(&serde_json::json!({ "runs": waiting_runs(dep, slug, caller, settings) }))
+}
+
+/// `GET /runs/waiting`: every deployment's waiting runs as [`waiting_runs`] lists them to
+/// `caller`, each with its deployment's slug. Someone who only decides an approval (bound at it,
+/// or holding run.decide alone) may list no flow (`GET /deployments` asks flow.view), so this is
+/// how the editor's Runs waiting finds what waits for them.
+pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment>>, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
+    let table = deployments.lock().unwrap();
+    let runs: Vec<serde_json::Value> = table
+        .iter()
+        .flat_map(|(slug, dep)| {
+            waiting_runs(dep, slug, caller, settings).into_iter().map(move |mut run| {
+                run["slug"] = slug.as_str().into();
+                run
+            })
+        })
+        .collect();
+    Response::json(&serde_json::json!({ "runs": runs }))
+}
+
+/// The waiting runs of `dep` (deployed as `slug`) `caller` lists: each run and every point it
+/// waits at to whoever views its runs; to whoever only decides one of its approvals, the runs
+/// waiting at an approval they may decide, those points alone, and nothing delivered to its
+/// events. Each approval says which of its steps are the caller's to take (`yours`).
+fn waiting_runs(dep: &Deployment, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Vec<serde_json::Value> {
     use crate::can::{Action, Resource, can};
     let views = can(caller, Action::RunView, &Resource::Flow(slug)).is_ok();
     let decides = |w: &StoredWaiting| !w.is_event() && can(caller, Action::RunDecide, &Resource::Approval { slug, name: Some(&w.name) }).is_ok();
-    let table = deployments.lock().unwrap();
-    let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-    let runs = dep.parked.values().filter_map(|run| {
+    dep.parked.values().filter_map(|run| {
         let mut listed = run.summary();
         let excluded = run.excluded(&dep.versions, settings);
         let points = listed["waiting"].as_array_mut()?;
@@ -1203,8 +1229,8 @@ pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>,
             listed["delivered"] = serde_json::json!([]);
         }
         Some(listed)
-    });
-    Response::json(&serde_json::json!({ "runs": runs.collect::<Vec<_>>() }))
+    })
+    .collect()
 }
 
 /// The open steps of `w` `caller` may fill, by number: none when `run.decide` refuses them there.

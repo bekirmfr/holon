@@ -518,8 +518,8 @@ Each decision keeps what let its decider (§8.6): `binding`, the id of the bindi
 step through (`holon access show` lists it), and `access`, the version of the access document it
 was read in. The run is given them, so the resumed part's log entry, the run's export and `holon
 verify` carry them: an auditor checks the order, the kinds, the different principals and their
-bindings offline, against `holon access show N`. On the server's machine, `holon decide` signs in
-as the account that set the server up, one principal with its session. The approved-payout
+bindings offline, against `holon access show --version N`. On the server's machine, `holon
+decide` signs in as the account that set the server up, one principal with its session. The approved-payout
 sample pays in three steps: an agent bound to `classifier` takes the first with a note (`holon
 decide --note`, or `holon mcp`'s `decide`), a person bound to `reviewer` the second, and you,
 bound to `approver`, the third, each bound on its tag.
@@ -533,7 +533,11 @@ as its log keeps it: a field tainted by a secret's mark redacted as the log reda
 (`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB its size instead.
 Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
 decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
-`run.view` lists only the runs waiting at an approval they may decide, those points alone.
+`run.view` lists only the runs waiting at an approval they may decide, those points alone: the
+editor's Runs waiting finds them across flows (`GET /runs/waiting`), though it lists them no flow.
+It draws an approval in steps as its chain, `✓ classifier (scout, invoice, 0.93) → ◻ reviewer →
+◻ approver (not open yet)`, each decision on hover, and the run's page, once it is given the
+decision, says each step's decision a line, with the binding that let it.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its

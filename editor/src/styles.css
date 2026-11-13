@@ -343,6 +343,11 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-flows__do { white-space: nowrap; text-align: right; }
 .hl-flows__do .hl-flow__button { font-size: 11px; padding: 1px 7px; margin-left: 4px; }
 .hl-flows__step + .hl-flows__step { margin-top: 4px; }
+/* An approval in steps, as its chain (ApprovalsPage.tsx): a step not open yet is dimmed. */
+.hl-chain__step--done { color: var(--ok); }
+.hl-chain__step--later { color: var(--muted); opacity: 0.7; }
+.hl-chain__detail { color: var(--muted); }
+.hl-chain__step--done .hl-chain__detail { color: inherit; }
 .hl-library__pages { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
 .hl-library__pages a, .hl-library a { color: var(--accent); text-decoration: none; }
 .hl-library__samples { display: flex; flex-direction: column; gap: 10px; }
