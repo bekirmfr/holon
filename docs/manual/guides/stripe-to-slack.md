@@ -67,8 +67,8 @@ The flow needs the path part: `/services/T0000/B0000/XXXXXXXXXXXXXXXX`.
 
 ## 2. Deploy the flow
 
-In the editor, on the **flows** page, open the **Stripe → Slack** sample (or import the flow above
-from a file). Press **deploy**. It asks to:
+In the editor, press **Library**: under **Samples**, open the **Stripe → Slack** sample (or import
+the flow above from a file, with **import text** on the flows page). Press **deploy**. It asks to:
 
 - read the clock
 - call https://hooks.slack.com

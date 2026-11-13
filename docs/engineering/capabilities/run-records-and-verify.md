@@ -123,8 +123,9 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 
 1. **The chain**, as the server checks it: bad lines, breaks, whether the oldest line names one
    not there (`trimmed`), and whether the last line's hash is the export's head. `--head <hex>`
-   checks a head a witness holds is in the export (`witnessed`), so no run up to it was changed or
-   removed.
+   checks a head a witness holds is in the export (`witnessed`), so no run from the export's
+   oldest to it was changed or removed; of runs a trimmed log no longer holds it says nothing,
+   and `describe` says so.
 2. **The units**, each against its hash.
 3. **Every run again** (`rerun`): the same unit, request, state, clock and random, its outbound
    answers and collection reads from the entry, through the same core and rounds, compared with

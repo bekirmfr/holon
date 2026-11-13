@@ -108,7 +108,11 @@ The fixes proposed are of three kinds: **one source of truth** (the knowledge in
   line's room is the last line's, capped at 1 MiB), and holding no data between uses.
 - **Unrecorded runs counted without an entry** (bookkeeping): an unrecorded handler is limited at
   deploy to reading (`may_record_lightly`), so running a failed one again with its timeline kept,
-  and logging that, changes nothing outside it; the rule is D2's to keep in one place.
+  and logging that, changes nothing outside it; the rule is D2's to keep in one place. *No longer
+  so (2026-11-13, launch review B6): since 8ece60b5 a handler's level is what its author writes,
+  and an unrecorded one may write, call out and send (`may_record_lightly` is gone); and a failed
+  unrecorded run is counted, never run again or logged (resilience.md, "Why never logged"). What
+  rested on "changes nothing" no longer can.*
 - **Unknown capabilities go to the blocking pool** (12.1): `READS_HERE` lists what may run inline;
   anything else, a new capability included, takes the hop. (Since B5 every run takes it: see R2
   below.)
@@ -121,7 +125,8 @@ listed so they are seen as policy, not as optimizations:
 - A `lazy` run's record reaches the disk within a second (`SYNC_EVERY`), not before its answer.
 - A request no route took is logged lazily (Q12).
 - A failed unrecorded run is run again to be logged: the run logged is the second, which may read
-  a newer state than the first did.
+  a newer state than the first did. *Reversed since: a failed unrecorded run is counted, never
+  logged (performance.md Q10).*
 
 ## 2.6 Fixed: R1–R4, and what it cost
 

@@ -211,5 +211,6 @@ At each deploy, every item of the manifest is:
 3. otherwise, **shown to a person**, who approves it or not. An agent can't.
 
 At each effect, while it runs, the server checks the item is in the grant: an effect outside it
-is refused. A grant can be narrowed while the deployment runs
+is refused. A grant can be narrowed while the deployment runs: each run from then on has the
+narrower one, and a run already going keeps the grant it began with
 ([Changing a grant](../guides/deploying.md#changing-a-grant)).

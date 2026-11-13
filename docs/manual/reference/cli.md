@@ -103,7 +103,8 @@ holon check <file>
 Compiles the flow and prints what it is:
 
 ```
-hello: 6 nodes, 6 wires
+$ holon check hello-api.holon.ts
+hello-api: 6 nodes, 6 wires
 a server on :8101
   GET /hello/:name
 unit 7714237e7d00edfc…

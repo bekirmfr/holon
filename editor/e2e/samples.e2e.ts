@@ -1903,7 +1903,8 @@ test("a deployment's runs export from view mode and from holon export, and holon
   // And each began from the balances the one before left (the first, from what no run here left).
   expect(verified).toContain("state: 3 runs began from the state the run before them left");
   expect(verified).not.toContain("DOESN'T FOLLOW");
-  expect(verified).toContain("so no run up to it was changed or removed");
+  expect(verified).toMatch(/so no run from \d+ to \d+ was changed or removed$/m);
+  expect(verified).not.toContain("older runs were trimmed");
   expect(verified.trim().endsWith("ok")).toBe(true);
 
   // The same file from the command line, signed in with a token.
