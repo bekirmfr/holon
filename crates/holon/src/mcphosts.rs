@@ -616,6 +616,7 @@ fn sign_in(server: Option<&str>, agent: Option<&str>, remove: bool) -> Result<()
 /// The token for a server this user doesn't run: `HOLON_TOKEN`, or asked for; checked to be an
 /// agent's, and kept.
 fn keep_token_for(server: &str) -> Result<(), String> {
+    local::token_safe_to(server)?;
     let file = local::tokens_file().ok_or("no home folder to keep the token in")?;
     let kept = local::saved_token(&file, server);
     let given = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
@@ -1115,7 +1116,7 @@ mod tests {
         let kept = || local::saved_token(&file, &local::agent_key(&admin.server()));
 
         let (name, owner, first) = local_agent(&admin, None, &file).unwrap();
-        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "bma"));
+        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "local:bma"));
         assert_eq!(kept().as_deref(), Some(first.as_str()));
         assert_eq!(who(&Signed { state: &state, token: &first }).unwrap(), Some(Me::Is { name: "bma-agent".into(), kind: "agent".into(), role: "agent".into() }), "signs in before setup");
         assert!(accounts.needs_setup(), "left for a person to set up");
@@ -1126,7 +1127,7 @@ mod tests {
 
         let (cursor, _, _) = local_agent(&admin, Some("bma-cursor"), &file).unwrap();
         assert_eq!(cursor, "bma-cursor");
-        accounts.add("ci", crate::accounts::Kind::Service, "viewer", "bma", "local:bma").unwrap();
+        accounts.add("ci", crate::accounts::Kind::Service, "viewer", "local:bma", "local:bma").unwrap();
         assert!(local_agent(&admin, Some("ci"), &file).unwrap_err().contains("ci on the test server is a service, not an agent"));
         accounts.set_disabled("bma-cursor", true).unwrap();
         assert!(local_agent(&admin, Some("bma-cursor"), &file).unwrap_err().contains("is disabled"));

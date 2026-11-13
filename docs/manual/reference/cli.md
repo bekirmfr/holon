@@ -178,7 +178,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
 | `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--queues`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails`, the messages to queues in `queue-spool` beside `--queues` |
 
-`HOLON_SETUP_CODE` sets the setup code instead of a random one.
+`HOLON_SETUP_CODE` sets the setup code instead of a random one; it is entered in any case.
 
 Ctrl+C (or SIGTERM, or closing its console) stops it: it takes no new runs, finishes those going
 on, syncs its logs and exits. A second ctrl+c stops it at once ([Stopping
@@ -193,7 +193,8 @@ holon deploy <file> [--server PORT|URL] [--slug NAME] [--approve]
 Compiles the flow and deploys it, as the editor's deploy does: under its own name, or `--slug`.
 From the server you run on this machine, signed in as you; with several running, `--server PORT`
 picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in
-`HOLON_TOKEN`.
+`HOLON_TOKEN`. A token goes over https, or plain http only to this machine: a host given bare is
+reached over https, and `http://` to another machine is refused while there is a token to send.
 
 A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
 approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:

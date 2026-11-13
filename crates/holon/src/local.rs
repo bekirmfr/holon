@@ -153,16 +153,44 @@ fn answers(server: &str) -> Option<bool> {
     }
 }
 
-/// `--server` as given: a port alone (`7401`), `host:port`, or a URL.
+/// `--server` as given: a port alone (`7401`, on this machine), `host:port`, or a URL. A host
+/// given bare is reached over https unless it is this machine (`token_safe_to`).
 pub(crate) fn server_url(given: &str) -> String {
     let given = given.trim().trim_end_matches('/');
     if given.parse::<u16>().is_ok() {
         format!("http://127.0.0.1:{given}")
     } else if given.contains("://") {
         given.to_string()
-    } else {
+    } else if on_this_machine(given) {
         format!("http://{given}")
+    } else {
+        format!("https://{given}")
     }
+}
+
+/// Whether `authority` (`host`, `host:port`, `[v6]:port`) names this machine: `localhost`, or a
+/// loopback address.
+fn on_this_machine(authority: &str) -> bool {
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').filter(|(_, port)| port.parse::<u16>().is_ok()).map_or(authority, |(host, _)| host),
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Why no token is sent to `server` (a URL), if none may be: it is plain http to another machine,
+/// where anyone on the way could read the token and sign in with it.
+pub(crate) fn token_safe_to(server: &str) -> Result<(), String> {
+    let plain = server.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"));
+    let authority = server.get(7..).unwrap_or_default().split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    if !plain || on_this_machine(authority) {
+        return Ok(());
+    }
+    Err(format!(
+        "{server} is plain http to another machine: a token sent there could be read on the way, and signed in with. \
+         Give its https:// address, or reach it through an SSH tunnel (ssh -L 7420:localhost:7420 HOST, then --server 7420)"
+    ))
 }
 
 /// The server a command talks to, and the token it signs in with.
@@ -286,7 +314,11 @@ fn target_from(
     // A token kept for a server is for one given by name; the one server running is signed in to
     // with its run file's.
     let kept = given.and_then(|_| kept(&server));
-    Ok(Target { token: env_token.or(kept).or(from_run), server })
+    let token = env_token.or(kept).or(from_run);
+    if token.is_some() {
+        token_safe_to(&server)?;
+    }
+    Ok(Target { token, server })
 }
 
 /// [`agent_target`], given what it reads.
@@ -298,11 +330,17 @@ fn agent_target_from(
     kept: impl Fn(&str) -> Option<String>,
 ) -> Result<AgentTarget, String> {
     let (server, from_run) = server_from(given, files, answers)?;
-    if env_token.is_some() {
-        return Ok(AgentTarget { server, token: env_token, run_token: None });
+    let target = match env_token {
+        Some(token) => AgentTarget { server, token: Some(token), run_token: None },
+        None => {
+            let token = kept(&agent_key(&server)).or_else(|| from_run.is_none().then(|| kept(&server)).flatten());
+            AgentTarget { server, token, run_token: from_run }
+        }
+    };
+    if target.token.is_some() || target.run_token.is_some() {
+        token_safe_to(&target.server)?;
     }
-    let token = kept(&agent_key(&server)).or_else(|| from_run.is_none().then(|| kept(&server)).flatten());
-    Ok(AgentTarget { server, token, run_token: from_run })
+    Ok(target)
 }
 
 /// Which server: `given`, else the one this user runs here; and its run file's token, when this
@@ -352,11 +390,43 @@ mod tests {
         (PathBuf::from(format!("/nowhere/{port}.json")), f)
     }
 
+    /// `--server` as given, where it is reached, and whether a token is sent there: never over
+    /// plain http to another machine, wherever the token comes from (`HOLON_TOKEN`, one kept for
+    /// the server); to this machine, as before. A host given bare is reached over https.
     #[test]
-    fn server_takes_a_port_an_address_or_a_url() {
-        assert_eq!(server_url("7401"), "http://127.0.0.1:7401");
-        assert_eq!(server_url("holon.example.com:443"), "http://holon.example.com:443");
-        assert_eq!(server_url("https://holon.example.com/"), "https://holon.example.com");
+    fn a_token_crosses_a_network_only_over_https() {
+        #[rustfmt::skip]
+        let cases = [
+            ("7401", "http://127.0.0.1:7401", true),
+            ("localhost:7420", "http://localhost:7420", true),
+            ("127.0.0.2:7420", "http://127.0.0.2:7420", true),
+            ("[::1]:7420", "http://[::1]:7420", true),
+            ("http://LOCALHOST:7420/", "http://LOCALHOST:7420", true),
+            ("holon.example.com:443", "https://holon.example.com:443", true),
+            ("holon.example.com", "https://holon.example.com", true),
+            ("https://holon.example.com/", "https://holon.example.com", true),
+            ("http://holon.example.com:7420", "http://holon.example.com:7420", false),
+            ("http://192.168.1.5:7420", "http://192.168.1.5:7420", false),
+            ("http://[fe80::1]:7420", "http://[fe80::1]:7420", false),
+            ("http://localhost.example.com", "http://localhost.example.com", false),
+            ("http://127.0.0.1@holon.example.com", "http://127.0.0.1@holon.example.com", false),
+            ("HTTP://holon.example.com", "HTTP://holon.example.com", false),
+        ];
+        for (given, url, sent) in cases {
+            assert_eq!(server_url(given), url, "{given}");
+            assert_eq!(token_safe_to(url).is_ok(), sent, "{given}");
+            let kept = |_: &str| Some("ht_kept".to_string());
+            for (env, kept) in [(Some("ht_env".to_string()), &none as &dyn Fn(&str) -> Option<String>), (None, &kept)] {
+                let target = target_from(Some(given), env.clone(), vec![], |_| None, kept);
+                assert_eq!(target.is_ok(), sent, "{given}, HOLON_TOKEN {env:?}: {target:?}");
+                let agent = agent_target_from(Some(given), env.clone(), vec![], |_| None, kept);
+                assert_eq!(agent.is_ok(), sent, "holon mcp: {given}, HOLON_TOKEN {env:?}: {agent:?}");
+            }
+            // No token, nothing to read on the way.
+            assert!(target_from(Some(given), None, vec![], |_| None, none).is_ok(), "{given}, no token");
+        }
+        let said = token_safe_to("http://holon.example.com:7420").unwrap_err();
+        assert!(said.contains("https://") && said.contains("ssh -L"), "{said}");
     }
 
     #[test]

@@ -307,8 +307,12 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
-  behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
-  a sign-in waits its turn, and past thirty seconds is told the server is busy (503).
+  behind a proxy, every address is the proxy's), and five wrong setup codes lock setting up from
+  that address the same way. A few passwords are checked at once: past that, a sign-in waits its
+  turn, and past thirty seconds is told the server is busy (503). While 64 wait, or 8 from one
+  address (an IPv6 address by its /64), whatever the names, one more is told so at once: a flood
+  of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
+  checked before its password is.
 - The server answers up to 512 requests at once; one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
@@ -340,8 +344,13 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
   through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
   yours the first time, `<your user>-agent`, even before anyone has set the server up (it is set
-  up by the first person, as ever), owned by you: by `<your user>` until then, and by the person
-  who sets it up from then on; its token is kept in `tokens.json`.
+  up by the first person, as ever), owned by you: by `local:<your user>` until then (a name no
+  one here can have, so a person later invited as `<your user>` owns none of it), and by the
+  person who sets it up from then on; its token is kept in `tokens.json`.
+- **The command line** sends its token over https, or over plain http only to this machine: given
+  `http://` to another machine with a token (`HOLON_TOKEN`, or one kept for it), it refuses, and
+  says to give the server's https address, or to reach it through an SSH tunnel. A host given
+  bare (`--server holon.example.com`) is reached over https.
 
 ### Signing in through an identity provider
 
@@ -357,7 +366,9 @@ email is refused, saying whose email it is, until an admin sets that person's em
 matches them anew. A token for several audiences must say it was issued to this client (`azp`).
 People are still added here, with a role; the provider only proves who is signing in. Since the
 provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
-person holds: an admin.
+person holds: an admin. An ID token is good until it expires, wherever it is shown, so signing out
+with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
+sign-in of theirs at the provider still is one.
 
 ## Secrets
 

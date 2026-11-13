@@ -345,12 +345,11 @@ pub(crate) fn everywhere(who: &Caller, action: Action) -> bool {
     can(who, action, &Resource::Flow("")).is_ok()
 }
 
-/// The owner's rule: a person manages the tokens of an agent or a service they own (the OS user by
-/// the name it runs as).
+/// The owner's rule: a person manages the tokens of an agent or a service they own (the OS user as
+/// `local:<user>`, while its run file is tied to no account).
 fn owns(who: &Caller, action: Action, on: &Resource) -> bool {
     let Resource::Principal { owner: Some(owner), .. } = on else { return false };
-    let me = who.name.as_deref().map(|n| n.strip_prefix("local:").unwrap_or(n));
-    action == PeopleManage && who.kind == Some(Kind::Person) && me == Some(*owner)
+    action == PeopleManage && who.kind == Some(Kind::Person) && who.name.as_deref() == Some(*owner)
 }
 
 /// What is a person's, whatever role an agent holds (the plan's D20): approving a deploy, starting,

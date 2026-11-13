@@ -5867,6 +5867,19 @@ fn accounts_through_the_routes() {
     let again = body_json(call("POST", "/auth/sign-in", serde_json::json!({ "name": "cy", "password": pw }), None))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&again)).status_code, 204);
     assert_eq!(call("GET", "/flows", null.clone(), Some(&again)).status_code, 401);
+    // Through a provider, then out: that ID token, though the provider signed it to last, is
+    // refused from then on; another of cy's sign-ins there isn't.
+    {
+        use crate::oidc::tests::{provider, token};
+        accounts.set_email("cy", Some("cy@example.com".into())).unwrap();
+        accounts.use_oidc(provider());
+        let [first, second] = [1, 2].map(|n| token(serde_json::json!({ "email": "cy@example.com", "email_verified": true, "nonce": n })));
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&first)).status_code, 200);
+        assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&first)).status_code, 204);
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&first)).status_code, 401);
+        assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&first)).status_code, 401, "signed out already");
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&second)).status_code, 200);
+    }
 
     // An admin makes cy an editor; a service for CI writes with its token, never managing people.
     assert_eq!(body_json(call("PATCH", "/people/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
@@ -5923,9 +5936,10 @@ fn the_run_file_is_its_users_admin_then_the_account_that_set_the_server_up() {
     assert_eq!(call("GET", "/flows", vec![], &local).status_code, 200, "before setup");
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 403, "the last run's token");
     let json = |s: &str| serde_json::json!(s);
-    // Before setup, an agent it adds is owned by the OS user, by its name.
+    // Before setup, an agent it adds is owned by the OS user, as `local:ada`: no person here, ada
+    // among them, can be it.
     let added = body_json(call("POST", "/people", br#"{"name":"ada-agent","kind":"agent","role":"agent"}"#.to_vec(), &local));
-    assert_eq!((&added["owner"], &added["created_by"]), (&json("ada"), &json("local:ada")), "{added}");
+    assert_eq!((&added["owner"], &added["created_by"]), (&json("local:ada"), &json("local:ada")), "{added}");
     let (bob, _) = accounts.setup(&accounts.setup_code().unwrap(), "bob", "correct horse battery").unwrap();
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 401);
     assert_eq!(call("GET", "/flows", vec![], "hl_nope").status_code, 401);

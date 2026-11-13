@@ -124,6 +124,23 @@ fn a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else() {
     let targets: Vec<&str> = activity["entries"].as_array().unwrap().iter().map(|e| e["target"].as_str().unwrap()).collect();
     assert!(!targets.is_empty() && targets.iter().all(|t| *t == "d" || t.starts_with("d run ")), "{targets:?}");
     assert_eq!(listed(&state, &t.cy, "/deployments", Some("deployments"), "slug"), ["d", "e"]);
+
+    // A unit is d's code (and e's), and he reads it; e's alone, or one no flow places, he is
+    // answered as for a hash nothing has. cy, viewing every flow, reads each.
+    let stage = |text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap();
+        for u in &plan.units {
+            assert_eq!(ask(&state, Some(&t.ada), "POST", "/unit", u.clone()).0, 200);
+        }
+        plan.unit
+    };
+    let only_e = stage(&PAY.replace("\"1h\"", "\"2h\""));
+    assert_eq!(deploy(&state, Some(&t.ada), "e", &only_e, json!({})).0, 200);
+    let staged = stage(&PAY.replace("\"1h\"", "\"3h\""));
+    for (hash, his) in [(&unit, true), (&only_e, false), (&staged, false), (&"0".repeat(64), false)] {
+        assert_eq!(bob("GET", &format!("/unit/{hash}"), Value::Null).0, if his { 200 } else { 404 }, "bob, {hash}");
+        assert_eq!(send(&state, &t.cy, "GET", &format!("/unit/{hash}"), Value::Null).0, if hash.starts_with('0') { 404 } else { 200 }, "cy, {hash}");
+    }
     let all: Value = serde_json::from_str(&send(&state, &t.cy, "GET", "/activity", Value::Null).1).unwrap();
     assert!(all["entries"].as_array().unwrap().iter().any(|e| e["target"] == "e"), "{all}");
 }

@@ -165,6 +165,9 @@ impl Access {
                 Ok(i) => i,
                 Err(e) => return refuse(format!("sign-in not accepted: {e}")),
             };
+            if accounts.provider_sign_in_ended(presented) {
+                return refuse("you signed out of this sign-in: sign in again".into());
+            }
             match accounts.through_provider(&oidc.issuer, &identity.subject, identity.email.as_deref()) {
                 Ok(who) => Ok(who),
                 Err(Some(name)) => Err(err(403, format!("{name}'s email is yours at your identity provider, but {name} signs in as someone else there: ask an admin to set {name}'s email again, which matches whoever signs in with it next"))),

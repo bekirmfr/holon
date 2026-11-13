@@ -489,7 +489,10 @@ from the sections below:
   once it knows whose it is. D18's draft (saved by its caller, deployed by no one) is theirs
   wherever they hold the action, which the gate can't know from the path.
 - **`GET /unit/{hash}` and `POST /unit`** stay on `On::Flows`: a unit is content-addressed, and
-  isn't any flow's until a deploy names it.
+  isn't any flow's until a deploy names it. Once one does, it is that flow's code: the handler
+  answers `GET` to someone who views every flow, or a deployment whose closure places it, and
+  404 to anyone else (2026-11-13, the launch review's medium: a binding on one flow read
+  another's code by its hash).
 - **A proposal's `agent`** is its author's kind: a person bound to propose but not to approve
   makes one too.
 - **A version's words** for a binding: `bound editor to bob on "payout"`, with

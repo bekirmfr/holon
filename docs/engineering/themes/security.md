@@ -23,10 +23,12 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 ### 2.1 Accounts, sign-in and roles (accounts.rs, access.rs, can.rs, oidc.rs, local.rs)
 
 - **First run.** A server with no accounts prints a setup code (`new_setup_code`: 8 characters
-  from a 32-letter alphabet, `XXXX-XXXX`; or `HOLON_SETUP_CODE`) and answers 403 to all but the
-  open paths below until `Accounts::setup` is given it; the code is then cleared. Whoever enters
-  it is the first admin. `MAX_FAILURES` (5) wrong codes in a row refuse setting up for
-  `LOCKED_FOR` (a minute; `setup_tries`), so the code (about 40 bits) can't be guessed at speed.
+  from a 32-letter alphabet, `XXXX-XXXX`; or `HOLON_SETUP_CODE`, in capitals as it is entered,
+  in any case: `setup_code`) and answers 403 to all but the open paths below until
+  `Accounts::setup_from` is given it; the code is then cleared. Whoever enters it is the first
+  admin. `MAX_FAILURES` (5) wrong codes in a row from an address refuse setting up from there for
+  `LOCKED_FOR` (a minute; counted as a name's passwords are, under `SETTING_UP`), so the code
+  (about 40 bits) can't be guessed at speed, and no one elsewhere keeps the admin from entering it.
 - **Passwords**: at least `MIN_PASSWORD` (10) characters, kept as argon2id hashes. `MAX_FAILURES`
   (5) wrong in a row lock the name, for the address they came from (`sign_in_from`: the name and
   the client's address), for `LOCKED_FOR` (a minute); sign-ins in flight count toward it, so
@@ -36,7 +38,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (4) passwords are hashed or checked at once, on as many threads kept for it (`checking`,
   `on_a_checker`); one more waits its turn up to `CHECK_WAIT` (30 s), then is answered busy
   (503). The cap bounds the memory; the wait is long so a busy machine slows sign-ins rather
-  than refusing them (2 s turned some away on a loaded two-core CI runner).
+  than refusing them (2 s turned some away on a loaded two-core CI runner). At most
+  `CHECKS_WAITING` (64) wait, and one more is answered busy at once (`Slots`), so sign-ins under
+  ever new names hold no more than 68 of the requests answered at once and the rest of the control
+  plane answers on; one address (an IPv6 one by its /64: `auth::address`) has at most
+  `CHECKS_FROM_ONE` (8) checked or waiting, under any names (`counted`), so it can't take the
+  line. An invite link is checked before its password is hashed (`accept`): what a cheap check
+  refuses (a link made up or used, a wrong setup code, a locked name) waits for no check.
 - **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
   (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work. A body is read
   by `BODY_DEADLINE` (30 s, as the data plane's `body_timeout`): `read_body`, the only reader
@@ -59,7 +67,14 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   say signs no one in, and is told why. An email set later, or one the provider gives another
   subject, isn't a way in: another subject with a matched person's email is refused, until an
   admin sets that email again (`set_email` clears the match). Setting the provider takes holding
-  what each person holds (`POST /admin/oidc`, auth.rs), since it says who each of them is.
+  what each person holds (`POST /admin/oidc`, auth.rs), since it says who each of them is. An ID
+  token is good wherever it is shown until it expires, so signing out with one keeps its hash
+  refused until then (`Book::ended`, `end_provider_sign_in`; forgotten past its expiry).
+- **The command line** sends a token over https, or over plain http only to this machine
+  (`local::token_safe_to`, asked by `target` and `agent_target` whatever the token, and by
+  `holon mcp setup` before it asks for one): a token that crosses a network in clear could be
+  read on the way, and signed in with. A host given bare (`--server holon.example.com`) is reached
+  over https.
 - **Who may change whom** (D19 both ways, the roles-and-bindings plan): a binding gives, and is
   taken away, only by someone who holds what it gives where it is (`may_bind`, the unbind route);
   a member is added to or taken out of a bound group, and a defined role changed, only by someone
@@ -67,6 +82,10 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   reset, making or revoking its tokens) holds all it holds (`auth::may_change`), since they could
   then act as it, its owner making and revoking its tokens aside. A role holding `people.manage`
   or `people.assign` without the rest doesn't make, become or lock out an admin.
+- **A unit** is a flow's code once a deploy names it: `GET /unit/<hash>` answers it to someone who
+  views every flow (`can::everywhere`), or who views a deployment whose closure places it, and
+  404 to anyone else, as for a hash nothing has (units.rs `handle_get_unit`), so a binding on one
+  flow doesn't read another's code by its hash.
 - **The OS user running the server** signs in through the run file `local::publish` writes
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token for this run only. It is the account
   that set the server up, the access document's `local` (`Accounts::tied`, the approval-steps
@@ -74,7 +93,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   `authenticate`), with `Caller.local` the OS user, which each activity entry it makes says
   (`via`, `activity::Via`). Tied to none (before setup, its account disabled or removed), it is
   `local:<user>`, admin alone, and decides no approval (`durable::decider`; `can::holding` skips
-  what no binding of the document holds).
+  what no binding of the document holds); what it makes then is owned by `local:<user>`, a name
+  no principal can have (`valid_name`), so a person invited later under the OS user's name owns
+  none of it (`may_own`).
 - **Roles** (can.rs): the catalogue of actions (`Action`, the access design's §4) and the
   built-in roles made from it (`BUILTIN`, §5.1): `viewer` reads flows, runs, state, a secret's
   names and the policy, and exports runs; `editor` also saves, deploys and approves, restores,
@@ -381,8 +402,9 @@ What is not defended, or only partly:
 - **The control plane's limits under load**: each request still has a thread of its own (rouille's
   default), and a stream's answer, once its handler returns, isn't among the `MAX_IN_FLIGHT`; a
   sign-in's lock is per address, so many addresses each get their tries (5 a minute a name each),
-  and behind a proxy it is the name's for everyone; anyone can hold setting up off a minute at a
-  time with wrong codes.
+  and behind a proxy it is the name's for everyone, as setting up is the proxy's; many addresses
+  sending sign-ins under ever new names fill the line of checks, and sign-ins are told busy while
+  they do (the rest of the control plane answers on).
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **The run file is the OS user's admin**: an agent with a shell, running as that user, can read
   it and act as them, as the account that set the server up, taking the approval steps bound to
@@ -409,9 +431,19 @@ What is not defended, or only partly:
   (15 paths refused it; the header lowers, never raises), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
   `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
-  `wrong_setup_codes_lock_setting_up_for_a_while`,
+  `wrong_setup_codes_lock_setting_up_for_a_while_where_they_came_from` (and `HOLON_SETUP_CODE` in
+  any case), `every_way_in_that_takes_a_secret_counts_its_wrong_guesses` (each from an address,
+  and in from another),
   `wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten`,
-  `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy`,
+  `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy` (and told at once
+  while the line is full), `one_address_has_a_few_checked_at_once_under_any_names`,
+  `what_a_cheap_check_refuses_waits_for_no_password_check`,
+  `a_token_crosses_a_network_only_over_https` (every way `--server` is given, with and without a
+  token, for `holon mcp` too), `accounts_through_the_routes` (an ID token signed out of is refused,
+  another of the same person's isn't), `the_run_file_is_the_account_that_set_the_server_up` (a
+  person named as the OS user owns nothing it made),
+  `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
+  places is answered 404),
   `the_control_plane_admits_so_many_requests_at_once`,
   `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
   `a_token_the_provider_signed_for_this_client_says_who` and

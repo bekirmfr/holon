@@ -93,6 +93,18 @@ fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Re
     }
 }
 
+/// Where `request` came from, as the tries of a way in are counted (accounts.rs, `counted`): its
+/// address, or for IPv6 its /64, which one client is commonly given whole.
+fn address(request: &Request) -> String {
+    match request.remote_addr().ip() {
+        std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        ip => ip.to_canonical().to_string(),
+    }
+}
+
 fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
     Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name) }))
 }
@@ -150,8 +162,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
-    // Whose what they add is, and what they own: the OS user by its name.
-    let me = by.strip_prefix("local:").unwrap_or(by);
+    // Whose what they add is, and what they own: the OS user as `local:<user>`, which no principal
+    // is named (accounts.rs, `may_own`).
+    let me = by;
     let method = request.method();
     let respond = |r: Result<Response, Response>| Some(r.unwrap_or_else(|e| e));
     let fail = |e: String| err(400, e);
@@ -172,7 +185,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<Setup>(request).and_then(|s| {
-                let (token, a) = accounts.setup(&s.code, &s.name, &s.password).map_err(fail)?;
+                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
                 state.activity.record("set up the server", &a.name, Some(&a.name));
                 Ok(signed_in(&token, &a, accounts))
             }));
@@ -184,8 +197,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<SignIn>(request).and_then(|s| {
-                let from = request.remote_addr().ip().to_string();
-                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &from).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
+                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
@@ -238,8 +250,17 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }));
         }
         ("POST", "/auth/sign-out") => {
-            if let Some(token) = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")) {
-                accounts.sign_out(token.trim());
+            let token = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or_default();
+            // A provider's ID token is good until it expires: it is kept refused until then.
+            if crate::oidc::looks_like_jwt(token) {
+                let until = accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at);
+                if let Some(until) = until
+                    && let Err(e) = accounts.end_provider_sign_in(token, until)
+                {
+                    return Some(err(500, format!("couldn't sign you out: {e}")));
+                }
+            } else {
+                accounts.sign_out(token);
             }
             Response::empty_204()
         }

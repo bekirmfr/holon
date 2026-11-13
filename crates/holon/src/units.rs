@@ -4,10 +4,24 @@ use crate::*;
 use std::collections::HashMap;
 use holon_core::{Resolved, Shape, Shapes};
 
-pub(crate) fn handle_get_unit(store: &SharedStore, hash_hex: &str) -> Response {
+/// `GET /unit/<hash>`: a unit's bytes, for someone who may read it. A unit is a flow's code once a
+/// deploy names it, so it is answered to someone who views every flow, or to someone who views a
+/// deployment that places it; to anyone else, as to everyone for a hash nothing has, 404, so a
+/// hash isn't asked to learn what another flow is.
+pub(crate) fn handle_get_unit(state: &AppState, who: &crate::access::Caller, hash_hex: &str) -> Response {
     let Some(key) = parse_hash(hash_hex) else {
         return err(400, "not a 64-char hex hash");
     };
+    let store = &state.store;
+    if !crate::can::everywhere(who, crate::can::Action::FlowView) {
+        let roots: Vec<Hash> = {
+            let deployments = state.deployments.lock().unwrap();
+            deployments.iter().filter(|(slug, _)| crate::can::can(who, crate::can::Action::FlowView, &crate::can::Resource::Flow(slug)).is_ok()).map(|(_, d)| d.unit).collect()
+        };
+        if !roots.into_iter().any(|root| root == key || closure(store, root).is_ok_and(|c| c.resolve(&key).is_some())) {
+            return Response::empty_404();
+        }
+    }
     match store.get(&key) {
         // Re-encode through the ONE core encoder rather than caching raw bytes separately —
         // decode∘encode is proven byte-identical (hash.rs's own round-trip tests), so this is

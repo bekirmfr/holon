@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Signing in, setting up and reading units hold against what the launch review found.**
+  - **A flood of sign-ins under ever new names no longer takes the server down.** Each waited its
+    turn for a password check, up to 30 seconds, until the 512 requests the server answers at
+    once were all sign-ins, and everything was answered 503. Now at most 64 wait, and 8 from one
+    address (an IPv6 address by its /64), whatever the names; one more is told the server is
+    busy at once. Sign-ins wait while it lasts, never the rest of what the server answers. An
+    invite link is checked before its password is hashed, so links made up wait for nothing.
+  - **Setting up is locked per address.** Five wrong setup codes locked setting up for everyone,
+    so anyone could keep the first admin out a minute at a time; now only from the address that
+    sent them. A `HOLON_SETUP_CODE` with lowercase letters never matched (what was entered was
+    put in capitals, and it wasn't): it is entered in any case now.
+  - **Signing out ends a provider's sign-in.** An ID token stayed good after signing out, until
+    it expired. The server now keeps one signed out of refused until then (its hash, forgotten
+    once it has expired); another sign-in of the person's at the provider still is one.
+  - **The command line sends no token over plain http to another machine.** `--server
+    holon.example.com` was reached over http, the token with it; a host given bare is reached
+    over https now, and `http://` to another machine with a token to send is refused, saying to
+    give its https address or reach it through an SSH tunnel. This machine stays plain http.
+  - **What the run file makes before anyone is tied to it is owned by `local:<user>`.** It was
+    owned by the OS user's bare name, so a person invited under that name owned the agents and
+    services it made (and made their tokens). `local:` is no principal's name.
+  - **`GET /unit/<hash>` reads only a flow you may view.** Anyone viewing one flow read any
+    flow's code by its hash. Now a unit is answered to someone who views every flow, or one who
+    views a deployment that places it; anyone else is answered 404, as for a hash nothing has.
 - **A role that manages people no longer makes its holder an admin.** No one gave more than they
   held, but anyone holding `people.manage` changed anyone: an admin's email (and, setting the
   identity provider to one they ran, signed in as them), a service's owner (and then made its

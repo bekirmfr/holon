@@ -190,7 +190,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(hash_hex) = url.strip_prefix("/unit/")
         && method == "GET" {
-            return handle_get_unit(&state.store, hash_hex);
+            return handle_get_unit(state, &caller, hash_hex);
         }
 
     if method == "POST" && url == "/unit" {

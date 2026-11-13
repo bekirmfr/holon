@@ -14,7 +14,8 @@
 //! Who it is is then matched to an account (`Accounts::through_provider`): by its subject, with
 //! this issuer, once it has signed in; the first time, by its email, only when the provider says
 //! it verified it (`email_verified` true). Signing in proves who someone is; their account decides
-//! what they may do.
+//! what they may do. Signing out with an ID token keeps it refused until it expires
+//! (`Accounts::end_provider_sign_in`): the provider signed it to last until then.
 
 use crate::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -31,12 +32,18 @@ pub(crate) struct Identity {
     /// An email the token gave that the provider didn't say it verified: not who it is, but said
     /// back when it matches no one, so the person knows why.
     pub(crate) unverified: Option<String>,
+    /// When it expires (seconds since the epoch), past the clocks' leeway: until then a sign-out
+    /// keeps it refused (`Accounts::end_provider_sign_in`).
+    pub(crate) expires_at: u64,
 }
 
 /// The algorithms accepted: what providers sign ID tokens with. Never `none`, never HMAC (that
 /// would need a secret shared with the provider, and accepting it would let anyone holding the
 /// public key forge one).
 const ALGORITHMS: [Algorithm; 5] = [Algorithm::RS256, Algorithm::RS384, Algorithm::RS512, Algorithm::ES256, Algorithm::ES384];
+
+/// How far a token's times may be off, in seconds: the clocks' leeway.
+const LEEWAY: u64 = 60;
 
 /// The least time between two reads of the provider's keys.
 const REFETCH_EVERY: Duration = Duration::from_secs(60);
@@ -61,6 +68,7 @@ struct Discovery {
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
+    exp: u64,
     /// Who it is for: one audience, or a list of them.
     #[serde(default)]
     aud: serde_json::Value,
@@ -122,7 +130,7 @@ impl Oidc {
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.client_id]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        validation.leeway = 60;
+        validation.leeway = LEEWAY;
         let claims = jsonwebtoken::decode::<Claims>(token, &key, &validation).map_err(|e| format!("{e}"))?.claims;
         // The party it was issued to, when it names one, is this client; and it must name one
         // when the token is for several audiences (OpenID Connect Core 3.1.3.7).
@@ -138,7 +146,7 @@ impl Oidc {
         let verified = claims.email_verified == Some(true);
         let email = claims.email.map(|e| e.to_lowercase());
         let (email, unverified) = if verified { (email, None) } else { (None, email) };
-        Ok(Identity { subject: claims.sub, email, unverified })
+        Ok(Identity { subject: claims.sub, email, unverified, expires_at: claims.exp.saturating_add(LEEWAY) })
     }
 
     /// The key `kid` names (or the only one, when the token names none); the provider's keys read
@@ -258,8 +266,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_token_the_provider_signed_for_this_client_says_who() {
-        let who = provider().verify(&token(serde_json::json!({ "email": "Ada@Example.com", "email_verified": true }))).unwrap();
-        assert_eq!(who, Identity { subject: "user-1".into(), email: Some("ada@example.com".into()), unverified: None });
+        let who = provider().verify(&token(serde_json::json!({ "email": "Ada@Example.com", "email_verified": true, "exp": 4_000_000_000u64 }))).unwrap();
+        assert_eq!(who, Identity { subject: "user-1".into(), email: Some("ada@example.com".into()), unverified: None, expires_at: 4_000_000_000 + LEEWAY });
         // An email the provider hasn't verified isn't taken; nor one it doesn't say of.
         let unverified = provider().verify(&token(serde_json::json!({ "email": "ada@example.com", "email_verified": false }))).unwrap();
         assert_eq!(unverified.email, None);

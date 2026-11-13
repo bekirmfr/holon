@@ -3,7 +3,8 @@
 //!
 //! - **First run.** A server without accounts answers nothing but its setup: it prints a one-time
 //!   setup code at startup (or takes `HOLON_SETUP_CODE`), and whoever enters it in the editor
-//!   creates the first admin. Nobody else on the network can claim it first.
+//!   creates the first admin. Nobody else on the network can claim it first; a few wrong codes
+//!   lock setting up from their address for a minute.
 //! - **Principals** have a name, unique across kinds, and a kind, which says who it is and which
 //!   roles it may hold (docs/L4s/access-and-approvals-L4.md §3, §5.1). What each one holds is in
 //!   the access document beside this file (bindings.rs), which the book changes with it: a
@@ -13,7 +14,9 @@
 //!   leaves the host without an enabled person holding admin:
 //!   - a **person** (viewer, editor or admin) signs in with a password, kept as an argon2id hash,
 //!     through an identity provider, or through the run file. Signing in gives a session token
-//!     (`hs_…`, for 7 days); a few wrong passwords in a row lock that name for a minute;
+//!     (`hs_…`, for 7 days); a few wrong passwords in a row lock that name for a minute, from
+//!     their address; signing out of a provider's sign-in keeps its ID token refused until it
+//!     expires;
 //!   - an **agent** (agent or viewer) and a **service** (viewer or editor) sign in with their own
 //!     API tokens (`ht_…`), and have an owner, the person answerable for them.
 //! - **Invites.** An admin adds a person by name and role and gets a one-time link (`hi_…`, for
@@ -21,7 +24,8 @@
 //! - **API tokens** belong to an agent or a service: made by an admin or its owner, shown once,
 //!   revoked any time. Disabling the principal stops its tokens.
 //! - **Signing in through an identity provider** (oidc.rs), optional: an admin sets the issuer
-//!   and client id; someone signing in is matched to the account with their email.
+//!   and client id; someone signing in is matched to the account with their email the first
+//!   time, then by their subject there.
 //!
 //! Only hashes of tokens are kept, never the tokens; passwords only as argon2id hashes.
 
@@ -98,7 +102,8 @@ pub(crate) fn held(kind: Kind, role: Role) -> Result<(), String> {
 
 /// Why `owner` may not own an agent or a service, if it may not: it must be a person here who can
 /// sign in, or the OS user who runs the server while its run file is tied to no account (`local`,
-/// local.rs; tied, the account owns what it makes).
+/// local.rs; tied, the account owns what it makes), as `local:<user>`, which no principal can be
+/// named: a person invited later under the OS user's name owns none of what it made.
 fn may_own(book: &Book, owner: &str, local: Option<&str>) -> Result<(), String> {
     if local == Some(owner) {
         return Ok(());
@@ -229,6 +234,17 @@ struct Book {
     credentials: Vec<ApiToken>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     oidc: Option<OidcSettings>,
+    /// Provider sign-ins signed out of: an ID token is good until it expires, wherever it is
+    /// shown, so each is kept refused until then (`end_provider_sign_in`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ended: Vec<Ended>,
+}
+
+/// A provider's ID token signed out of: its hash, and when it expires (seconds since the epoch).
+#[derive(Clone, Serialize, Deserialize)]
+struct Ended {
+    hash: String,
+    until: u64,
 }
 
 /// Who a token is: a principal's name (or the OS user's, `local:<user>`) and its kind. What it
@@ -280,6 +296,19 @@ struct Tries {
 /// apart from signing in.
 const CHANGING: &str = "(changing the password)";
 
+/// What setup codes are counted as tried for, in place of a name: no name can be it.
+const SETTING_UP: &str = "(setting up)";
+
+/// The tries of each way in that takes a secret (`counted`).
+#[derive(Default)]
+struct Failures {
+    /// By what was tried (a name, or `SETTING_UP`) and where from (the client's address, or
+    /// `CHANGING`).
+    tries: HashMap<(String, String), Tries>,
+    /// How many are checked, or wait to be, from each address: at most `CHECKS_FROM_ONE`.
+    from: HashMap<String, u32>,
+}
+
 /// How many names' tries are kept before the old ones are forgotten.
 const TRIES_KEPT: usize = 4096;
 
@@ -298,12 +327,11 @@ pub(crate) struct Accounts {
     access: Bindings,
     /// The one-time code that creates the first admin, while there is none.
     setup_code: Mutex<Option<String>>,
-    /// Each name's sign-ins from each address (`sign_in_from`).
-    failures: Mutex<HashMap<(String, String), Tries>>,
-    /// Wrong setup codes: as a name's wrong passwords, `MAX_FAILURES` then locked for
-    /// `LOCKED_FOR`, so the code (about 40 bits) can't be guessed at speed while the server waits
-    /// for its first admin.
-    setup_tries: Mutex<Tries>,
+    /// Each name's sign-ins from each address (`sign_in_from`), and the setup codes tried from
+    /// each (`setup_from`): `MAX_FAILURES` wrong lock it there for `LOCKED_FOR`, so the setup code
+    /// (about 40 bits) can't be guessed at speed while the server waits for its first admin, and
+    /// no one elsewhere can keep its admin from entering it.
+    failures: Mutex<Failures>,
     /// The identity provider, discovered from `book.oidc` (oidc.rs).
     oidc: RwLock<Option<crate::oidc::Oidc>>,
     /// The local token's hash and who it is (local.rs): made when the server starts, good as that
@@ -349,9 +377,16 @@ fn check_password(password: &str) -> Result<(), String> {
 /// the server is busy. The wait is long: the cap is what bounds the memory, and a sign-in that
 /// waits its turn is better than one turned away on a busy machine (two seconds turned away
 /// sign-ins on a loaded two-core CI runner, where a check in a debug build takes longer).
-/// What waits is bounded by the requests admitted at once (main.rs, `MAX_IN_FLIGHT`).
+/// At most `CHECKS_WAITING` wait, from everywhere, and any more are told the server is busy at
+/// once: sign-ins under ever new names, each waiting its turn, would otherwise hold every request
+/// the server answers at once (main.rs, `MAX_IN_FLIGHT`), and it would answer nothing else. One
+/// address has at most `CHECKS_FROM_ONE` checked or waiting at once (`counted`), so it can't fill
+/// the line either.
 const CHECKS_AT_ONCE: usize = 4;
+const CHECKS_WAITING: usize = 64;
+const CHECKS_FROM_ONE: u32 = 8;
 const CHECK_WAIT: Duration = Duration::from_secs(30);
+const _: () = assert!(CHECKS_AT_ONCE + CHECKS_WAITING <= crate::MAX_IN_FLIGHT / 4, "sign-ins hold no more than a quarter of the requests answered at once");
 
 thread_local! {
     /// How many of the accounts' locks this thread holds (`hold`). A password is never hashed or
@@ -388,49 +423,76 @@ impl<T> std::ops::DerefMut for Held<'_, T> {
     }
 }
 
-/// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
+/// Slots for work done a few at once: at most `most` run and `waiting` wait for one, each up to
+/// `wait`.
 struct Slots {
-    taken: Mutex<usize>,
+    taken: Mutex<Taken>,
     freed: crate::sync::Condvar,
     most: usize,
+    waiting: usize,
     wait: Duration,
 }
 
+/// How many slots are taken, and how many wait for one.
+#[derive(Debug, PartialEq)]
+struct Taken {
+    running: usize,
+    waiting: usize,
+}
+
 impl Slots {
-    const fn new(most: usize, wait: Duration) -> Slots {
-        Slots { taken: Mutex::new(0), freed: crate::sync::Condvar::new(), most, wait }
+    const fn new(most: usize, waiting: usize, wait: Duration) -> Slots {
+        Slots { taken: Mutex::new(Taken { running: 0, waiting: 0 }), freed: crate::sync::Condvar::new(), most, waiting, wait }
     }
 
-    /// Run `f` once a slot is free, or say the server is busy past `wait`.
+    /// Run `f` once a slot is free, or say the server is busy: at once while `waiting` wait
+    /// already, else once it has waited `wait`.
     fn run<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         struct Slot<'a>(&'a Slots);
         impl Drop for Slot<'_> {
             fn drop(&mut self) {
-                *self.0.taken.lock().unwrap() -= 1;
+                self.0.taken.lock().unwrap().running -= 1;
                 self.0.freed.notify_one();
             }
         }
         let deadline = Instant::now() + self.wait;
         let mut taken = self.taken.lock().unwrap();
-        while *taken >= self.most {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+        if taken.running >= self.most {
+            if taken.waiting >= self.waiting {
                 return Err(BUSY.into());
             }
-            taken = self.freed.wait_timeout(taken, left).unwrap().0;
+            taken.waiting += 1;
+            while taken.running >= self.most {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    taken.waiting -= 1;
+                    return Err(BUSY.into());
+                }
+                taken = self.freed.wait_timeout(taken, left).unwrap().0;
+            }
+            taken.waiting -= 1;
         }
-        *taken += 1;
+        taken.running += 1;
         drop(taken);
         let _slot = Slot(self);
         f()
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many passwords this thread has had hashed or checked (`checking`): what a test counts to
+    /// see a request refused before any is.
+    static CHECKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Run `f` (a password hashed or checked) once one of `CHECKS_AT_ONCE` slots is free, on one of
 /// as many threads kept for it (`on_a_checker`).
 fn checking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     debug_assert_eq!(HELD.with(std::cell::Cell::get), 0, "a password hashed or checked holding an accounts lock: every request would wait on it");
-    static CHECKS: Slots = Slots::new(CHECKS_AT_ONCE, CHECK_WAIT);
+    #[cfg(test)]
+    CHECKED.with(|c| c.set(c.get() + 1));
+    static CHECKS: Slots = Slots::new(CHECKS_AT_ONCE, CHECKS_WAITING, CHECK_WAIT);
     CHECKS.run(|| on_a_checker(f))
 }
 
@@ -510,6 +572,12 @@ fn new_setup_code() -> String {
     format!("{}-{}", &code[..4], &code[4..])
 }
 
+/// The setup code: `given` (`HOLON_SETUP_CODE`) as it is entered, in capitals (`setup_from`), or
+/// a new one.
+fn setup_code(given: Option<String>) -> String {
+    given.map(|c| c.trim().to_uppercase()).filter(|c| !c.is_empty()).unwrap_or_else(new_setup_code)
+}
+
 impl Accounts {
     /// The accounts at `path` (none yet if it doesn't exist), and the access document beside them.
     pub(crate) fn open(path: &str) -> Result<Accounts, String> {
@@ -545,8 +613,8 @@ impl Accounts {
     }
 
     fn with(path: Option<PathBuf>, book: Book, access: Bindings) -> Accounts {
-        let code = no_person(&book).then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
-        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
+        let code = no_person(&book).then(|| setup_code(std::env::var("HOLON_SETUP_CODE").ok()));
+        Accounts { path, book: Mutex::new(book), access, setup_code: Mutex::new(code), failures: Mutex::new(Failures::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -616,28 +684,23 @@ impl Accounts {
         token
     }
 
-    /// The first admin, with the setup code; signed in.
+    /// The first admin, with the setup code, from nowhere in particular: a test's.
+    #[cfg(test)]
     pub(crate) fn setup(&self, code: &str, name: &str, password: &str) -> Result<(String, Principal), String> {
+        self.setup_from(code, name, password, "")
+    }
+
+    /// The first admin, with the setup code (in any case), sent from `from`; signed in. Wrong codes
+    /// lock setting up for that address, as wrong passwords lock a name (`counted`).
+    pub(crate) fn setup_from(&self, code: &str, name: &str, password: &str, from: &str) -> Result<(String, Principal), String> {
         let expected = self.setup_code().ok_or("this server is set up already")?;
-        {
-            let mut tries = hold(&self.setup_tries);
-            if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
-                return Err("too many wrong setup codes: wait a minute, then try again".into());
-            }
-            if !same(&code.trim().to_uppercase(), &expected) {
-                tries.wrong += 1;
-                if tries.wrong >= MAX_FAILURES {
-                    (tries.wrong, tries.locked) = (0, Some(Instant::now()));
-                    eprintln!("holon: {MAX_FAILURES} wrong setup codes in a row: setting up is refused for a minute");
-                }
-                return Err("that isn't the setup code (it is printed when the server starts)".into());
-            }
-            *tries = Tries::default();
+        if !self.counted((SETTING_UP.into(), from.into()), "setup codes", || Ok(same(&code.trim().to_uppercase(), &expected)))? {
+            return Err("that isn't the setup code (it is printed when the server starts)".into());
         }
         valid_name(name)?;
         check_password(password)?;
         let hash = hash_password(password)?;
-        let os = self.local_user();
+        let os = self.local_name();
         let what = format!("set up the server: {}; this machine's run file signs in as {name}", bound("admin", name));
         let out = self.change_access(name, &what, None, |book, access| {
             if !no_person(book) {
@@ -677,7 +740,7 @@ impl Accounts {
         let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
         // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
         // password, so how long a refusal takes doesn't say which names are accounts.
-        let right = self.counted((name.to_string(), from.to_string()), || Ok(password_matches(password, hash.unwrap_or(stand_in_hash()))? && hash.is_some()))?;
+        let right = self.counted((name.to_string(), from.to_string()), "passwords", || Ok(password_matches(password, hash.unwrap_or(stand_in_hash()))? && hash.is_some()))?;
         if !right {
             return Err("that name and password don't match an account here".to_string());
         }
@@ -686,37 +749,53 @@ impl Accounts {
         Ok((token, account))
     }
 
-    /// A password checked for `key` (a name, and where it came from), counted: refused while the
-    /// key is locked, or while as many are being checked for it as may still go wrong (so tries
-    /// sent at once can't try more than MAX_FAILURES before the lock). A wrong one counts, and the
-    /// MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. `check` says whether it
-    /// was right, or that it couldn't be checked (the server busy), which counts as neither.
-    fn counted(&self, key: (String, String), check: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
+    /// A secret (`wrong` says which: passwords, setup codes) checked for `key` (what was tried,
+    /// and where from), counted: refused while the key is locked, or while as many are being
+    /// checked for it as may still go wrong (so tries sent at once can't try more than MAX_FAILURES
+    /// before the lock), or while `CHECKS_FROM_ONE` are being checked from where it came, under any
+    /// name (so one address can't take the line every sign-in waits in). A wrong one counts, and
+    /// the MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. `check` says
+    /// whether it was right, or that it couldn't be checked (the server busy), which counts as
+    /// neither.
+    fn counted(&self, key: (String, String), wrong: &str, check: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
         {
             let mut failures = hold(&self.failures);
-            forget_old_tries(&mut failures);
-            let tries = failures.entry(key.clone()).or_default();
+            forget_old_tries(&mut failures.tries);
+            if failures.from.get(&key.1).is_some_and(|n| *n >= CHECKS_FROM_ONE) {
+                return Err("the server is busy checking others sent from your address: try again in a moment".into());
+            }
+            let tries = failures.tries.entry(key.clone()).or_default();
             tries.last = Some(Instant::now());
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
-                return Err("too many wrong passwords: wait a minute, then try again".into());
+                return Err(format!("too many wrong {wrong}: wait a minute, then try again"));
             }
             if tries.wrong + tries.checking >= MAX_FAILURES {
                 return Err("too many tries at once: wait a moment, then try again".into());
             }
             tries.checking += 1;
+            *failures.from.entry(key.1.clone()).or_default() += 1;
         }
         let right = check();
         let mut failures = hold(&self.failures);
-        let tries = failures.entry(key.clone()).or_default();
+        if let Some(n) = failures.from.get_mut(&key.1) {
+            *n -= 1;
+            if *n == 0 {
+                failures.from.remove(&key.1);
+            }
+        }
+        let tries = failures.tries.entry(key.clone()).or_default();
         tries.checking -= 1;
         let right = right?;
         if !right {
             tries.wrong += 1;
             if tries.wrong >= MAX_FAILURES {
                 (tries.wrong, tries.locked) = (0, Some(Instant::now()));
+                if key.0 == SETTING_UP {
+                    eprintln!("holon: {MAX_FAILURES} wrong setup codes in a row from {}: setting up is refused there for a minute", key.1);
+                }
             }
         } else if tries.checking == 0 {
-            failures.remove(&key);
+            failures.tries.remove(&key);
         } else {
             (tries.wrong, tries.locked) = (0, None);
         }
@@ -729,6 +808,23 @@ impl Accounts {
             book.sessions.retain(|s| s.hash != hash);
             Ok(())
         });
+    }
+
+    /// Sign out of a provider's sign-in: its ID token `token`, good until `until` (its expiry,
+    /// with the clocks' leeway), is refused from now until then. Those past theirs are forgotten.
+    pub(crate) fn end_provider_sign_in(&self, token: &str, until: u64) -> Result<(), String> {
+        let (hash, now) = (hash_of(token), epoch_now());
+        self.change(|book| {
+            book.ended.retain(|e| e.until > now && e.hash != hash);
+            book.ended.push(Ended { hash, until });
+            Ok(())
+        })
+    }
+
+    /// Whether the provider's ID token `token` was signed out of.
+    pub(crate) fn provider_sign_in_ended(&self, token: &str) -> bool {
+        let hash = hash_of(token);
+        hold(&self.book).ended.iter().any(|e| same(&e.hash, &hash))
     }
 
     /// A new local token for OS user `user`, replacing any before it: an admin's, for this run of
@@ -747,9 +843,9 @@ impl Accounts {
         same(hash, &hash_of(token)).then(|| Who { name: name.clone(), kind: Kind::Person })
     }
 
-    /// The OS user the local token is for (`bma`, not `local:bma`), once there is one.
-    fn local_user(&self) -> Option<String> {
-        hold(&self.local).as_ref().and_then(|(_, name)| name.strip_prefix("local:").map(String::from))
+    /// Who the local token is (`local:bma`, the OS user), once there is one.
+    fn local_name(&self) -> Option<String> {
+        hold(&self.local).as_ref().map(|(_, name)| name.clone())
     }
 
     /// Who a bearer token is: a session's person, or an API token's agent or service; neither
@@ -908,11 +1004,10 @@ impl Accounts {
         })
     }
 
-    /// Set how this host decides approvals (§8.4), by `by`, saying why: whether they changed.
-    /// The OS user who runs the server, while its run file is tied to no account: who may own an
-    /// agent or a service by that name (`may_own`).
+    /// The OS user who runs the server (`local:<user>`), while its run file is tied to no account:
+    /// who may own an agent or a service by that name (`may_own`).
     fn untied_user(&self) -> Option<String> {
-        self.local_user().filter(|_| self.tied().is_none())
+        self.local_name().filter(|_| self.tied().is_none())
     }
 
     /// The account this machine's run file signs in as (D45): the access document's `local`, while
@@ -938,6 +1033,7 @@ impl Accounts {
         })
     }
 
+    /// Set how this host decides approvals (§8.4), by `by`, saying why: whether they changed.
     pub(crate) fn set_approvals(&self, settings: bindings::ApprovalSettings, by: &str, why: Option<&str>) -> Result<bool, String> {
         let changed = self.access.document().approvals != settings;
         let what = format!("set the approvals: {}", settings.said());
@@ -970,7 +1066,7 @@ impl Accounts {
     pub(crate) fn change_password(&self, name: &str, current: &str, new: &str, kept: Option<&str>) -> Result<(), String> {
         check_password(new)?;
         let old = hold(&self.book).users.iter().find(|u| u.name == name).ok_or("no such account")?.password.clone();
-        let right = self.counted((name.to_string(), CHANGING.to_string()), || old.as_deref().map_or(Ok(false), |h| password_matches(current, h)))?;
+        let right = self.counted((name.to_string(), CHANGING.to_string()), "passwords", || old.as_deref().map_or(Ok(false), |h| password_matches(current, h)))?;
         if !right {
             return Err("that isn't the current password".to_string());
         }
@@ -1077,14 +1173,18 @@ impl Accounts {
         hold(&self.book).invites.iter().find(|i| same(&i.hash, &hash) && i.expires_at > now).map(|i| i.name.clone())
     }
 
-    /// The link's holder sets their password, and is signed in; the link is used up.
+    /// The link's holder sets their password, and is signed in; the link is used up. The link is
+    /// checked before the password is hashed, so links made up take no hashing: only someone
+    /// holding a good one is let wait for it.
     pub(crate) fn accept(&self, token: &str, password: &str) -> Result<(String, Principal), String> {
+        const GONE: &str = "this link is used, expired or wrong: ask for a new one";
         check_password(password)?;
+        self.invite_for(token).ok_or(GONE)?;
         let hash = hash_password(password)?;
         let invite = hash_of(token);
         self.change(|book| {
             let now = epoch_now();
-            let at = book.invites.iter().position(|i| same(&i.hash, &invite) && i.expires_at > now).ok_or("this link is used, expired or wrong: ask for a new one")?;
+            let at = book.invites.iter().position(|i| same(&i.hash, &invite) && i.expires_at > now).ok_or(GONE)?;
             let name = book.invites.remove(at).name;
             let account = book.users.iter_mut().find(|u| u.name == name).ok_or("its account is gone")?;
             account.password = Some(hash);
@@ -1284,7 +1384,7 @@ mod tests {
     fn an_agent_made_first_leaves_the_server_to_be_set_up() {
         let a = Accounts::memory();
         a.new_local("bma");
-        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
+        a.add("bma-agent", Kind::Agent, "agent", "local:bma", "local:bma").unwrap();
         assert!(a.needs_setup());
         let code = a.setup_code().unwrap();
         assert!(a.setup(&code, "bma-agent", PW).unwrap_err().contains("there is a principal"));
@@ -1303,24 +1403,27 @@ mod tests {
         }
         assert!(a.sign_in_from("ada", PW, "203.0.113.9").unwrap_err().contains("too many"), "locked for the address that tried");
         assert!(a.sign_in_from("ada", PW, "198.51.100.4").is_ok(), "its owner, elsewhere, signs in");
-        let mut failures = a.failures.lock().unwrap();
+        let mut held = a.failures.lock().unwrap();
+        let failures = &mut held.tries;
         let old = Instant::now() - LOCKED_FOR - Duration::from_secs(1);
         for i in 0..=TRIES_KEPT {
             failures.insert((format!("name-{i}"), "203.0.113.9".into()), Tries { wrong: 1, last: Some(old), ..Tries::default() });
         }
         failures.insert(("fresh".into(), "203.0.113.9".into()), Tries { wrong: 1, last: Some(Instant::now()), ..Tries::default() });
-        forget_old_tries(&mut failures);
+        forget_old_tries(failures);
         assert!(failures.contains_key(&("fresh".to_string(), "203.0.113.9".to_string())), "a recent try is kept");
         assert!(failures.contains_key(&("ada".to_string(), "203.0.113.9".to_string())), "and a lock");
         assert!(failures.len() < 10, "the old ones forgotten: {}", failures.len());
     }
 
     /// No more than `CHECKS_AT_ONCE` passwords are checked at once; one more waits its turn, and
-    /// past `CHECK_WAIT` is told the server is busy, not that it is wrong.
+    /// past `CHECK_WAIT` is told the server is busy, not that it is wrong. While `CHECKS_WAITING`
+    /// wait, one more is told at once: sign-ins hold no more of the requests the server answers
+    /// at once than a quarter.
     #[test]
     fn passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy() {
-        // Slots of its own, so other tests' passwords aren't held up.
-        let slots = std::sync::Arc::new(Slots::new(2, Duration::from_millis(300)));
+        // Slots of its own, so other tests' passwords aren't held up: two run, one waits.
+        let slots = std::sync::Arc::new(Slots::new(2, 1, Duration::from_millis(300)));
         let (release, wait) = std::sync::mpsc::channel::<()>();
         let wait = std::sync::Arc::new(Mutex::new(wait));
         let held: Vec<_> = (0..2)
@@ -1329,49 +1432,120 @@ mod tests {
                 std::thread::spawn(move || slots.run(|| Ok(wait.lock().unwrap().recv_timeout(Duration::from_secs(10)).ok())))
             })
             .collect();
-        while *slots.taken.lock().unwrap() < 2 {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let taken = |running, waiting| {
+            while *slots.taken.lock().unwrap() != (Taken { running, waiting }) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        taken(2, 0);
         let started = Instant::now();
         assert_eq!(slots.run(|| Ok(())).unwrap_err(), BUSY);
         assert!(started.elapsed() >= Duration::from_millis(250), "it waited its turn first");
-        // A slot freed while one waits: it goes on.
+        // One waits: one more is told at once.
         let waiter = {
             let slots = std::sync::Arc::clone(&slots);
             std::thread::spawn(move || slots.run(|| Ok(7)))
         };
-        std::thread::sleep(Duration::from_millis(50));
+        taken(2, 1);
+        let started = Instant::now();
+        assert_eq!(slots.run(|| Ok(())).unwrap_err(), BUSY);
+        assert!(started.elapsed() < Duration::from_millis(250), "the line is full: told at once");
+        // A slot freed while one waits: it goes on.
         release.send(()).unwrap();
         assert_eq!(waiter.join().unwrap(), Ok(7), "given the slot freed");
         release.send(()).unwrap();
         for h in held {
             h.join().unwrap().unwrap();
         }
-        assert_eq!(*slots.taken.lock().unwrap(), 0);
-        // The server's own: CHECKS_AT_ONCE of them.
-        assert_eq!((CHECKS_AT_ONCE, CHECK_WAIT), (4, Duration::from_secs(30)));
+        taken(0, 0);
+        // The server's own.
+        assert_eq!((CHECKS_AT_ONCE, CHECKS_WAITING, CHECKS_FROM_ONE, CHECK_WAIT), (4, 64, 8, Duration::from_secs(30)));
     }
 
-    /// Wrong setup codes lock setting up for a while, as wrong passwords lock a name: the code
-    /// can't be guessed at speed while the server waits for its first admin.
+    /// One address has at most `CHECKS_FROM_ONE` checked or waiting at once, under any names: one
+    /// more from it is told the server is busy, at once, and another address isn't held up.
     #[test]
-    fn wrong_setup_codes_lock_setting_up_for_a_while() {
+    fn one_address_has_a_few_checked_at_once_under_any_names() {
+        let (a, _) = set_up();
+        let here = "203.0.113.9";
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        std::thread::scope(|s| {
+            let held: Vec<_> = (0..CHECKS_FROM_ONE)
+                .map(|i| {
+                    let (a, wait) = (&a, &wait);
+                    s.spawn(move || a.counted((format!("name-{i}"), here.into()), "passwords", || Ok(wait.lock().unwrap().recv_timeout(Duration::from_secs(10)).is_err())))
+                })
+                .collect();
+            while a.failures.lock().unwrap().from.get(here) != Some(&CHECKS_FROM_ONE) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let said = a.counted(("another".into(), here.into()), "passwords", || Ok(true)).unwrap_err();
+            assert!(said.contains("busy"), "{said}");
+            assert_eq!(a.counted(("another".into(), "198.51.100.4".into()), "passwords", || Ok(true)), Ok(true), "another address isn't held up");
+            for _ in 0..CHECKS_FROM_ONE {
+                release.send(()).unwrap();
+            }
+            for h in held {
+                assert_eq!(h.join().unwrap(), Ok(false));
+            }
+        });
+        assert!(a.failures.lock().unwrap().from.is_empty(), "none counted once checked");
+        assert_eq!(a.counted(("another".into(), here.into()), "passwords", || Ok(true)), Ok(true));
+    }
+
+    /// What a cheap check refuses has no password hashed or checked for it: a made-up or used
+    /// invite link, a wrong setup code, a name locked. Only someone holding something good (or
+    /// trying a name, which is counted) waits in the line every sign-in waits in.
+    #[test]
+    fn what_a_cheap_check_refuses_waits_for_no_password_check() {
+        let refused = |what: &str, ask: &dyn Fn() -> Result<(), String>| {
+            let before = CHECKED.with(std::cell::Cell::get);
+            assert!(ask().is_err(), "{what}: refused");
+            assert_eq!(CHECKED.with(std::cell::Cell::get), before, "{what}: a password hashed or checked first");
+        };
+        let new = Accounts::memory();
+        refused("a wrong setup code", &|| new.setup("WRONG-CODE", "ada", PW).map(drop));
+        let (a, _) = set_up();
+        let link = a.invite("bob", "editor", None, "ada").unwrap();
+        refused("a made-up invite link", &|| a.accept("made-up", PW).map(drop));
+        a.accept(&link, PW).unwrap();
+        refused("a used invite link", &|| a.accept(&link, PW).map(drop));
+        for _ in 0..MAX_FAILURES {
+            assert!(a.sign_in("ada", "wrong password!").is_err());
+        }
+        refused("a name locked", &|| a.sign_in("ada", PW).map(drop));
+    }
+
+    /// Wrong setup codes lock setting up for a while from where they came, as wrong passwords lock
+    /// a name there: the code can't be guessed at speed while the server waits for its first
+    /// admin, and no one elsewhere keeps its admin from entering it. It is entered in any case,
+    /// whatever case `HOLON_SETUP_CODE` gave it in.
+    #[test]
+    fn wrong_setup_codes_lock_setting_up_for_a_while_where_they_came_from() {
+        let here = "203.0.113.9";
         let a = Accounts::memory();
         let code = a.setup_code().unwrap();
         for _ in 0..MAX_FAILURES {
-            assert!(a.setup("WRNG-CODE", "ada", PW).unwrap_err().contains("isn't the setup code"));
+            assert!(a.setup_from("WRNG-CODE", "ada", PW, here).unwrap_err().contains("isn't the setup code"));
         }
-        assert!(a.setup(&code, "ada", PW).unwrap_err().contains("too many"), "locked, even with the right one");
+        assert!(a.setup_from(&code, "ada", PW, here).unwrap_err().contains("too many wrong setup codes"), "locked, even with the right one");
         assert!(a.needs_setup());
         // A minute on, the right code sets it up.
-        a.setup_tries.lock().unwrap().locked = Some(Instant::now() - LOCKED_FOR - Duration::from_secs(1));
-        let (_, account) = a.setup(&code, "ada", PW).unwrap();
+        a.failures.lock().unwrap().tries.get_mut(&(SETTING_UP.into(), here.into())).unwrap().locked = Some(Instant::now() - LOCKED_FOR - Duration::from_secs(1));
+        let (_, account) = a.setup_from(&code, "ada", PW, here).unwrap();
         assert_eq!(a.host_role(&account.name), Some(Role::Admin));
         // A wrong code then right one counts afresh: one wrong code isn't a lock.
         let b = Accounts::memory();
         let code = b.setup_code().unwrap();
         assert!(b.setup("WRNG-CODE", "ada", PW).is_err());
         assert!(b.setup(&code, "ada", PW).is_ok());
+        // Given in lowercase, entered in either.
+        for (given, entered) in [("live-ab12", "LIVE-AB12"), (" Live-Ab12 ", "live-ab12")] {
+            let c = Accounts::memory();
+            *c.setup_code.lock().unwrap() = Some(setup_code(Some(given.into())));
+            assert!(c.setup(entered, "ada", PW).is_ok(), "{given:?}, entered as {entered:?}");
+        }
     }
 
     #[test]
@@ -1462,13 +1636,18 @@ mod tests {
         assert!(guess(true).unwrap_err().contains("too many"), "{what}: after {MAX_FAILURES} wrong, the right one is refused too");
     }
 
+    /// Each way in that takes a secret counts its wrong guesses, and those from a client's address
+    /// lock it for that address only: whoever it is for gets in from another.
     #[test]
     fn every_way_in_that_takes_a_secret_counts_its_wrong_guesses() {
+        let (here, elsewhere) = ("203.0.113.9", "198.51.100.4");
         let new = Accounts::memory();
         let code = new.setup_code().unwrap();
-        is_counted("the setup code", |right| new.setup(if right { &code } else { "WRONG-CODE" }, "ada", PW).map(drop));
+        is_counted("the setup code", |right| new.setup_from(if right { &code } else { "WRONG-CODE" }, "ada", PW, here).map(drop));
+        new.setup_from(&code, "ada", PW, elsewhere).expect("the setup code, from elsewhere");
         let (a, first) = set_up();
-        is_counted("signing in", |right| a.sign_in("ada", if right { PW } else { "wrong password!" }).map(drop));
+        is_counted("signing in", |right| a.sign_in_from("ada", if right { PW } else { "wrong password!" }, here).map(drop));
+        a.sign_in_from("ada", PW, elsewhere).expect("signing in, from elsewhere");
         is_counted("the current password, to change it", |right| a.change_password("ada", if right { PW } else { "wrong password!" }, "a new good password", Some(&first)));
     }
 
@@ -1617,20 +1796,21 @@ mod tests {
     /// version setup makes, with what the OS user owned before; moved by an admin to a person here
     /// who isn't disabled, as a version; tied to none while that account is disabled, and cleared
     /// when it is removed, so a new principal of its name isn't the run file. Untied, the OS user
-    /// owns what it makes by its own name (`bma`, not `local:bma`); tied, it can't: it is the account.
+    /// owns what it makes as `local:bma`, a name no principal can have, so a person invited as
+    /// `bma` owns none of it; tied, it can't: it is the account.
     #[test]
     fn the_run_file_is_the_account_that_set_the_server_up() {
         let a = Accounts::memory();
-        assert!(a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").is_err(), "not before the server runs as bma");
+        assert!(a.add("bma-agent", Kind::Agent, "agent", "local:bma", "local:bma").is_err(), "not before the server runs as bma");
         a.new_local("bma");
-        a.add("bma-agent", Kind::Agent, "agent", "bma", "local:bma").unwrap();
+        a.add("bma-agent", Kind::Agent, "agent", "local:bma", "local:bma").unwrap();
         assert_eq!(a.tied(), None, "before setup");
         a.setup(&a.setup_code().unwrap(), "ada", PW).unwrap();
         let d = a.access.document();
         assert_eq!((d.version, d.by.as_str(), d.local.as_deref()), (2, "ada", Some("ada")));
         assert_eq!(a.tied().as_deref(), Some("ada"));
         assert_eq!(a.principal("bma-agent").unwrap().owner.as_deref(), Some("ada"), "what the OS user owned is the account's");
-        assert!(a.add("ci", Kind::Service, "editor", "bma", "ada").unwrap_err().contains("no person \"bma\""), "tied, the OS user is ada");
+        assert!(a.add("ci", Kind::Service, "editor", "local:bma", "ada").unwrap_err().contains("no person \"local:bma\""), "tied, the OS user is ada");
         a.invite("bob", "editor", None, "ada").unwrap();
         a.invite("eve", "viewer", None, "ada").unwrap();
         a.add("claude", Kind::Agent, "agent", "ada", "ada").unwrap();
@@ -1656,7 +1836,12 @@ mod tests {
         assert_eq!((a.tied(), a.access.document().local.clone()), (None, None), "bob removed");
         a.invite("bob", "editor", None, "ada").unwrap();
         assert_eq!(a.tied(), None, "a new bob isn't the run file");
-        a.add("ci", Kind::Service, "editor", "bma", "local:bma").unwrap();
+        a.add("ci", Kind::Service, "editor", "local:bma", "local:bma").unwrap();
+        // A person named as the OS user is owns none of what it made untied.
+        assert!(valid_name("local:bma").is_err(), "no principal is named as the OS user owns");
+        a.invite("bma", "viewer", None, "ada").unwrap();
+        assert_eq!(a.principal("ci").unwrap().owner.as_deref(), Some("local:bma"));
+        assert!(a.principals().iter().all(|p| p.owner.as_deref() != Some("bma")), "bma owns nothing");
     }
 
     /// A provider's subject is the person its verified email matched the first time it signed in
@@ -1713,11 +1898,16 @@ mod tests {
         let a = Accounts::open(&path).unwrap();
         let (token, _) = a.setup(&a.setup_code().unwrap(), "ada", PW).unwrap();
         a.invite("bob", "editor", None, "ada").unwrap();
+        // Provider sign-ins signed out of: one good for an hour yet, one past its expiry.
+        let (ended, gone) = ("eyJ.ended.sig", "eyJ.gone.sig");
+        a.end_provider_sign_in(gone, epoch_now() - 1).unwrap();
+        a.end_provider_sign_in(ended, epoch_now() + 3600).unwrap();
         let file = std::fs::read_to_string(&path).unwrap();
-        assert!(!file.contains(&token) && !file.contains(PW), "only hashes are kept");
+        assert!(!file.contains(&token) && !file.contains(PW) && !file.contains(ended), "only hashes are kept");
         let again = Accounts::open(&path).unwrap();
         assert!(!again.needs_setup());
         assert_eq!(again.who(&token).map(|w| w.name), Some("ada".into()));
+        assert_eq!((again.provider_sign_in_ended(ended), again.provider_sign_in_ended(gone)), (true, false), "the one past its expiry forgotten");
         assert_eq!((again.host_role("ada"), again.host_role("bob")), (Some(Role::Admin), Some(Role::Editor)), "what is bound, from access.json beside");
         assert!(dir.join("access.json").exists() && dir.join("access.versions.jsonl").exists());
         let _ = std::fs::remove_dir_all(&dir);
