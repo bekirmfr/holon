@@ -121,9 +121,11 @@ class NoteWidget extends WidgetType {
 }
 
 /** What the canvas links to the text: the ranges of the nodes picked there (their lines marked
- *  in the gutter's colour too), and in view mode the run. */
-export type TextLinked = { marks: TextRange[]; dims: TextRange[]; step: TextRange | null; reveal: TextRange | null; revealSerial: number; notes: TextNote[] };
-const NOTHING_LINKED: TextLinked = { marks: [], dims: [], step: null, reveal: null, revealSerial: 0, notes: [] };
+ *  in the gutter's colour too), and in view mode the run. `reveal` is a range to scroll to, once
+ *  per `revealSerial`: centred, or (`revealNear`, a node clicked on the canvas) only as far as
+ *  brings it into view, so a range already showing doesn't move. */
+export type TextLinked = { marks: TextRange[]; dims: TextRange[]; step: TextRange | null; reveal: TextRange | null; revealSerial: number; revealNear: boolean; notes: TextNote[] };
+const NOTHING_LINKED: TextLinked = { marks: [], dims: [], step: null, reveal: null, revealSerial: 0, revealNear: false, notes: [] };
 
 const PICKED_LINE = Decoration.line({ class: "hl-text__picked" });
 const MARK = Decoration.mark({ class: "hl-text__mark" });
@@ -421,7 +423,7 @@ export function TextPane({
     const at = link.step ? `${link.step.from}:${link.step.to}` : "";
     const stepScrolls = at !== "" && at !== shownStep.current ? [EditorView.scrollIntoView(link.step!.from, { y: "center" })] : [];
     shownStep.current = at;
-    const revealScrolls = link.reveal && shownRevealSerial.current !== -1 && link.revealSerial !== shownRevealSerial.current ? [EditorView.scrollIntoView(link.reveal.from, { y: "center" })] : [];
+    const revealScrolls = link.reveal && shownRevealSerial.current !== -1 && link.revealSerial !== shownRevealSerial.current ? [EditorView.scrollIntoView(link.reveal.from, link.revealNear ? { y: "nearest", yMargin: 48 } : { y: "center" })] : [];
     shownRevealSerial.current = link.revealSerial;
     v.dispatch({ effects: [setLinked.of(link), ...stepScrolls, ...revealScrolls] });
   }, [link, text]);

@@ -15,6 +15,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useStoreApi,
   useNodesInitialized,
   addEdge,
   type NodeTypes,
@@ -1167,7 +1168,28 @@ function Canvas({
   // shown in it.
   const replayed = view.replayed;
   const textRun = useMemo(() => (replayed ? { order: replayed.order, traces: replayed.traces, step: flow.step } : null), [replayed, flow.step]);
-  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode });
+  // A node the text's cursor picks is brought into the canvas's view when none of what it picked
+  // shows, at the zoom it is at; the Statements level follows the cursor itself.
+  const flowStore = useStoreApi<PrimitiveNodeType>();
+  const atStatementsNow = useRef(false);
+  const bringIntoView = useCallback(
+    (picked: string[]) => {
+      if (atStatementsNow.current) return;
+      const ids = picked.filter((id) => getInternalNode(id) !== undefined);
+      if (ids.length === 0) return;
+      const { width, height, transform } = flowStore.getState();
+      const [tx, ty, zoom] = transform;
+      const seen = { left: -tx / zoom, top: -ty / zoom, right: (width - tx) / zoom, bottom: (height - ty) / zoom };
+      const shows = ids.some((id) => {
+        const n = getInternalNode(id)!;
+        const p = n.internals.positionAbsolute;
+        return p.x + (n.measured.width ?? 0) > seen.left && p.x < seen.right && p.y + (n.measured.height ?? 0) > seen.top && p.y < seen.bottom;
+      });
+      if (!shows) void fitView({ nodes: ids.map((id) => ({ id })), duration: 300, minZoom: zoom, maxZoom: zoom });
+    },
+    [flowStore, getInternalNode, fitView],
+  );
+  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode, onCursorNodes: bringIntoView });
 
   // The canvas's level, Statements or Nodes (useCanvasLevel.ts): a row picked puts the text's
   // cursor on it (opening the text when it is shut); a row opened selects its nodes and frames
@@ -1211,6 +1233,7 @@ function Canvas({
     deployed: flowName && deployedEntry ? { slug: flowName, unit: deployedEntry.unit } : null,
   });
   const atStatements = canvasLevel.level === "statements";
+  atStatementsNow.current = atStatements;
   // The Grouped level draws the nodes where their statements' frames put them: a way of looking,
   // so they aren't dragged there, and the flow's own positions stay as they are.
   const grouped = canvasLevel.level === "grouped" ? canvasLevel.grouped : null;
@@ -1362,8 +1385,12 @@ function Canvas({
         />
         <ReactFlow<PrimitiveNodeType>
           colorMode={dark ? "dark" : "light"}
-          onNodeClick={view.onNodeClick}
           nodes={drawnNodes}
+          onNodeClick={(e, n) => {
+            view.onNodeClick(e, n);
+            // Its code into the text's view, where the text shows.
+            textPane.revealNode(n.id, true);
+          }}
           onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
           onEdgeMouseLeave={viewing ? () => view.setHoveredWire(null) : undefined}
           onNodesChange={onNodesChange}

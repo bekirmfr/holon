@@ -52,6 +52,7 @@ export function useTextPane({
   viewing,
   run,
   onPick,
+  onCursorNodes,
 }: {
   flow: FlowMeta;
   setFlow: (update: (m: FlowMeta) => FlowMeta) => void;
@@ -69,12 +70,15 @@ export function useTextPane({
   run: TextRun | null;
   /** In view mode, the node the cursor picked (for the side pane). */
   onPick: (id: string) => void;
+  /** The nodes the cursor picked, to bring into the canvas's view. */
+  onCursorNodes?: (ids: string[]) => void;
 }) {
   const text = flow.text;
   const setText = useCallback((update: (t: TextState) => TextState) => setFlow((m) => ({ ...m, text: update(m.text) })), [setFlow]);
   const [status, setStatus] = useState("");
   const [revealSerial, setRevealSerial] = useState(0);
   const [revealId, setRevealId] = useState<string | null>(null);
+  const [revealNear, setRevealNear] = useState(false);
   const [width, setWidthState] = useState(() => {
     try {
       return Number(localStorage.getItem(WIDTH_KEY)) || 420;
@@ -250,7 +254,7 @@ export function useTextPane({
     const rangeOf = (id: string) => link.spans.get(id);
     const marks = selectedIds === "" ? [] : selectedIds.split(" ").flatMap((id) => rangeOf(id) ?? []);
     const reveal = revealId ? (rangeOf(revealId) ?? null) : null;
-    if (!viewing || !run) return { marks, dims: [], step: null, reveal, revealSerial, notes: [] };
+    if (!viewing || !run) return { marks, dims: [], step: null, reveal, revealSerial, revealNear, notes: [] };
     const ran = new Set(run.order);
     const atStep = run.step === null ? undefined : run.order[run.step];
     // Notes for what is named (one value each: a route's `req` is a whole request), the node at
@@ -266,8 +270,8 @@ export function useTextPane({
       const said = outputs.length === 1 ? valueChip(outputs[0] ?? null) : outputs.map((v, i) => `${ports[i]?.name ?? i}: ${valueChip(v ?? null)}`).join("  ");
       return [{ at: r.to, text: said, none: outputs.every((v) => v === null) }];
     });
-    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, reveal, revealSerial, notes };
-  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes, revealId, revealSerial]);
+    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, reveal, revealSerial, revealNear, notes };
+  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes, revealId, revealSerial, revealNear]);
 
   // The cursor picks the node under it: selected on the canvas, or in view mode shown in the
   // side pane (of several written as one, the outermost that ran: lowering makes it last, as the
@@ -282,19 +286,25 @@ export function useTextPane({
       if (ids.length === 0) return;
       if (viewing) {
         const ran = ids.filter((id) => run?.order.includes(id));
-        onPick(ran[ran.length - 1] ?? ids[ids.length - 1]);
+        const id = ran[ran.length - 1] ?? ids[ids.length - 1];
+        onPick(id);
+        onCursorNodes?.([id]);
         return;
       }
       const picked = new Set(ids);
       setNodes((ns) => ns.map((n) => (Boolean(n.selected) === picked.has(n.id) ? n : { ...n, selected: picked.has(n.id) })));
+      onCursorNodes?.(ids);
     },
-    [link, viewing, run, onPick, setNodes],
+    [link, viewing, run, onPick, setNodes, onCursorNodes],
   );
 
   const toggle = useCallback(() => setText((t) => ({ ...t, open: !t.open })), [setText]);
 
-  const revealNode = useCallback((id: string) => {
+  /** Scrolls the text to a node's range: centred, or `near` (a node clicked on the canvas) only
+   *  when it is out of view. */
+  const revealNode = useCallback((id: string, near = false) => {
     setRevealId(id);
+    setRevealNear(near);
     setRevealSerial((s) => s + 1);
   }, []);
 
