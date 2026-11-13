@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The editor's buttons follow what the server would answer you.** A viewer saw **Pause**,
+  **Revoke**, **run** and the rest as an admin did, and learned only on pressing one that it was
+  refused; the host's pages were shown by the built-in role alone (an admin's, or People and
+  access to whoever held `people.view`). Now each button that changes something asks the server's
+  `can` for its flow (`GET /auth/me/can`, every action at once, once per flow) and, refused, is
+  disabled, saying why in the server's words on hover (`cy may not do that: a viewer only reads`):
+  deploying and approving a deploy, run, pause, resume and stop, removing a deployment and deleting
+  a saved flow, declining a proposal, revoking and granting back, whether agents may propose,
+  setting, removing and rolling back a secret (a flow's and the server's own), running an action,
+  reading the policy again, binding and unbinding. Each host page is shown to whoever may view it:
+  **Resources** to `resource.view`, **People and access** to `people.view`, **Policy** to
+  `policy.view`, which a viewer holds, so a viewer reads the host's policy now. `/auth/me` answers
+  `access_version`, which the editor reads every few seconds and on coming back to the window, and
+  it asks again when that moves, when it changes something and when the server refuses it.
+  Someone who may deploy a flow but not approve what a version asks is offered **Propose**: it
+  waits in Approvals for someone who may, as the editor then says (it had sent an acknowledgement
+  the server refuses from them, and asked nothing of a flow named just then). A server test writes what `can` answers five callers into the editor's fixture
+  (`HOLON_BLESS=1`), and the editor's table of callers and buttons is held to it.
 - **People and access binds roles, makes groups and roles, and says what each principal may do.**
   Binding a role on one flow, a tag or an approval point, defining a role, making a group, and
   reading what the access document's versions changed took the command line: the editor's People

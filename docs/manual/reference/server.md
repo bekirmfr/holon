@@ -303,8 +303,10 @@ An admin also defines roles of their own, and groups:
 
 `GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout` answers, for each action, `true`
 or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
-with `&approval=ok`), and with no flow, on the host for the host's actions and on every flow at
-once for the others. `/auth/me` and `GET /people` answer what holds for a principal, each binding
+with `&approval=ok`), and with no flow, on the host for the host's actions and on any flow for the
+others, as the lists ask. The editor's buttons follow it. `/auth/me` answers `access_version`, the
+access document's version, which moves with every change to who may do what: what `can` answers
+changes only with it (or with a flow's tags, on deploying). `/auth/me` and `GET /people` answer what holds for a principal, each binding
 with what its role allows (an agent may not read `/roles`), and one to one of its groups with the
 group's name. `POST` and `PATCH /people` take any role the principal's kind may hold, an admin's
 own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`

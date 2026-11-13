@@ -62,7 +62,20 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
     setSession(null);
     signOut();
   }
+  if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
+}
+
+/** Whether what the buttons follow (can.ts) may have changed with this answer: a change refused
+ *  (what was kept is out of date), or made from here (a binding, a deploy that tags a flow). Not
+ *  one's own prefs, sign-in or password, nor staging a unit or previewing a deploy; nor a read
+ *  refused, which a list polled every few seconds may be for good (Approvals' deployments, to
+ *  someone bound at an approval point alone): the access version tells those. */
+export function mayHaveChanged(url: string, method: string, status: number): boolean {
+  if (method === "GET") return false;
+  const path = url.replace(/^[a-z]+:\/\/[^/]+/, "").split("?")[0];
+  if (/^\/(auth\/|unit$|deploy\/preview$)/.test(path)) return false;
+  return status === 403 || (status >= 200 && status < 300);
 }
 
 const post = (url: string, body?: unknown) =>
@@ -104,7 +117,9 @@ export async function mayI(actions: string[], at: { flow?: string; approval?: st
   if (at.approval) q.set("approval", at.approval);
   return asJson(await api(`${BASE}/auth/me/can?${q}`));
 }
-export const whoAmI = async () => asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null }>(await api(`${BASE}/auth/me`));
+/** `GET /auth/me`. `access_version`: the access document's, which what `can` answers moves with. */
+export const whoAmI = async () =>
+  asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null; access_version?: number }>(await api(`${BASE}/auth/me`));
 export async function changePassword(current: string, next: string): Promise<void> {
   await asJson<void>(await post(`${BASE}/auth/password`, { current, new: next }));
 }
@@ -586,6 +601,9 @@ export type DeployResult = {
   slug: string;
   unit: string;
   triggers: string[];
+  /** Answered 202 instead: whoever deployed it may not approve what it asks, so it waits as this
+   *  proposal (proposals.rs). */
+  proposal?: { id: number; version?: number };
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the

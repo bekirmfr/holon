@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { describeItem } from "./holon";
 import { holonIndex, type HolonUse } from "./holonUsage";
+import { gate, useCan } from "./can";
 import { deleteFlow, getFlow, getManifest, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord } from "./server";
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
@@ -255,6 +256,10 @@ function FlowRow({
   publishTo: string;
 }) {
   const { name, saved, deployed } = row;
+  // Deleting, as the server answers it on any flow, as the list asks: whoever holds it on no flow
+  // sees it disabled, saying why; one who holds it on some flows only is answered row by row on
+  // deleting (and a draft of one's own is one's own wherever one holds it, flows.rs).
+  const can = useCan();
   const to: Route = deployed ? { kind: "flow", slug: name, tab: "status" } : { kind: "editor", slug: name, view: false, seq: null };
   const may = useMay(row, manifestOf);
   return (
@@ -311,7 +316,7 @@ function FlowRow({
             <button className="hl-flow__button" title="download it as text (.holon.ts): edit it anywhere, keep it in git, check it with `holon check`" onClick={onDownload}>
               .holon.ts
             </button>
-            <button className="hl-flow__button" onClick={onDelete} aria-label={`delete ${name}`} title="delete this saved flow">
+            <button className="hl-flow__button" onClick={onDelete} aria-label={`delete ${name}`} {...gate(can, "deleteSaved", false, "delete this saved flow")}>
               ×
             </button>
           </>

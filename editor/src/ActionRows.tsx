@@ -3,7 +3,8 @@
 // server panel and a flow's Status tab both show them (docs/L4s/triggers-L4.md §7).
 
 import { useState, type CSSProperties } from "react";
-import { actionUrl, runAction, type Role } from "./server";
+import { refusal, useCan } from "./can";
+import { actionUrl, runAction } from "./server";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -23,7 +24,6 @@ type Ran = { text: string; ok: boolean; seq?: number };
 export function ActionRows({
   names,
   slug,
-  role,
   outOfDate = false,
   onViewRun,
 }: {
@@ -31,8 +31,6 @@ export function ActionRows({
   names: string[];
   /** The running deployment that runs them; empty when there is none (the rows are greyed). */
   slug: string;
-  /** Who is signed in: a viewer sees the rows, never runs one. */
-  role?: Role;
   /** The canvas has changes not deployed: a run runs the deployed version, which says so. */
   outOfDate?: boolean;
   /** Open view mode on the run an action made. */
@@ -41,7 +39,9 @@ export function ActionRows({
   // What to send each action (JSON; empty is {}), and what each last answered.
   const [sent, setSent] = useState<Record<string, string>>({});
   const [ran, setRan] = useState<Record<string, Ran>>({});
-  const viewer = role === "viewer";
+  // Someone the server wouldn't let run them sees the rows, never a run: why, in its words.
+  const refused = refusal(useCan(slug || null), "runAction");
+  const viewer = refused !== undefined;
   const run = (name: string) => {
     const answered = (r: Ran) => setRan((m) => ({ ...m, [name]: r }));
     answered({ text: "running…", ok: true });
@@ -50,7 +50,7 @@ export function ActionRows({
       .catch((err: unknown) => answered({ text: err instanceof Error ? err.message : String(err), ok: false }));
   };
   if (names.length === 0) return null;
-  const why = viewer ? "an editor or an admin runs this" : !slug ? "deploy the flow to run it" : "run this action once, now, on the deployment, with what to send";
+  const why = refused ?? (!slug ? "deploy the flow to run it" : "run this action once, now, on the deployment, with what to send");
   return (
     <>
       {outOfDate && slug && (
@@ -75,7 +75,7 @@ export function ActionRows({
               </button>
             </div>
             {viewer ? (
-              <div style={{ color: "var(--faint)" }}>an editor or an admin runs this</div>
+              <div style={{ color: "var(--faint)" }}>{refused}</div>
             ) : (
               <textarea
                 value={sent[name] ?? ""}

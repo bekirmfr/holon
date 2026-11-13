@@ -369,6 +369,54 @@ fn me_can_answers_what_each_route_asks() {
     assert_eq!((code, error_of(&said)), (400, "\"flow.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…".into()));
 }
 
+/// What the editor's buttons are held to (`editor/src/can.test.ts`, the plan's step 7c): the
+/// catalogue, what each route asks, and what `/auth/me/can` answers for every action, with no flow
+/// and on `d`, to an admin (ada), an editor (bob) and a viewer (cy) on the host, someone bound at
+/// `d`'s approval point alone (dee) and an agent (scout). `HOLON_BLESS=1` writes it again; until
+/// then a change to any of them fails here, and the editor's table of callers and buttons then
+/// says whether its buttons still follow.
+#[test]
+fn the_editor_is_held_to_what_can_answers() {
+    use crate::can::{Action, Rule, ROUTES};
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "bob" }, "role": "editor", "scope": "host" })).0, 200);
+    only(&state, &t.ada, "dee", "editor", json!({ "approval": { "flow": { "slug": "d" }, "name": "payout" } }));
+    assert_eq!(ada("POST", "/people", json!({ "name": "scout", "kind": "agent", "role": "agent" })).0, 200);
+    let (code, said) = ada("POST", "/people/scout/tokens", json!({ "label": "the editor's table" }));
+    assert_eq!(code, 200, "{said}");
+    let scout = serde_json::from_str::<Value>(&said).unwrap()["token"].as_str().unwrap().to_string();
+    let all = Action::ALL.map(Action::name).join(",");
+    let answers = |token: &str| {
+        let at = |query: &str| {
+            let (code, said) = send(&state, token, "GET", &format!("/auth/me/can?actions={all}{query}"), Value::Null);
+            assert_eq!(code, 200, "{said}");
+            serde_json::from_str::<Value>(&said).unwrap()
+        };
+        json!({ "host": at(""), "flow": at("&flow=d") })
+    };
+    let routes: serde_json::Map<String, Value> = ROUTES
+        .iter()
+        .filter_map(|r| match r.rule {
+            Rule::Can(action, _) => Some((format!("{} {}", r.method, r.path), json!(action.name()))),
+            _ => None,
+        })
+        .collect();
+    let fixture = json!({
+        "actions": Action::ALL.map(Action::name),
+        "routes": routes,
+        "callers": { "admin": answers(&t.ada), "editor": answers(&t.bob), "viewer": answers(&t.cy), "point": answers(&t.dee), "agent": answers(&scout) },
+    });
+    let text = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/src/can.fixture.json");
+    let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+    if kept != text && std::env::var_os("HOLON_BLESS").is_some() {
+        std::fs::write(&path, &text).unwrap();
+        return;
+    }
+    assert!(kept == text, "{} is out of date: HOLON_BLESS=1 cargo test -p holon the_editor_is_held_to_what_can_answers writes it again", path.display());
+}
+
 /// No one gives more than they hold (D19), whichever route gives it: cy, holding a role that
 /// manages and assigns people on the host and a viewer's besides, doesn't make an admin or an
 /// editor by inviting, setting a role or adding to a group bound admin, and doesn't reset or make

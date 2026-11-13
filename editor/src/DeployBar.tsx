@@ -5,6 +5,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
+import { gate, refusal, useCan } from "./can";
 import {
   deleteSecret,
   getEnvSecretNames,
@@ -104,6 +105,7 @@ const LOOK = {
 } as const;
 
 export function DeployBar({
+  slug = null,
   entry,
   outOfDate,
   busy,
@@ -112,6 +114,9 @@ export function DeployBar({
   startsNothing = false,
   onSettingsOpen,
 }: {
+  /** The flow's name, which its deployment takes; null while it has none. Each button follows
+   *  what the server would answer on it (can.ts). */
+  slug?: string | null;
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
   /** The canvas no longer matches what is deployed (known for servers; null when unknown). */
@@ -131,16 +136,13 @@ export function DeployBar({
     : entry
       ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
       : "deploy this flow, named after it";
-  const off = busy || startsNothing;
+  const can = useCan(slug);
+  const deploy = gate(can, "deploy", busy || startsNothing, title);
+  const off = deploy.disabled;
 
   return (
     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", position: "relative" }}>
-      <button
-        onClick={onDeploy}
-        disabled={off}
-        title={title}
-        style={{ ...primary, opacity: off ? 0.5 : 1, cursor: off ? "default" : "pointer" }}
-      >
+      <button onClick={onDeploy} {...deploy} style={{ ...primary, opacity: off ? 0.5 : 1, cursor: off ? "default" : "pointer" }}>
         {label}
         {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
       </button>
@@ -166,21 +168,21 @@ export function DeployBar({
             </span>
           )}
           {entry.status === "running" && (
-            <button style={base} onClick={() => onAction("pause")} title="stop answering, keep the session">
+            <button style={base} onClick={() => onAction("pause")} {...gate(can, "pause", false, "stop answering, keep the session")}>
               pause
             </button>
           )}
           {entry.status === "paused" && (
-            <button style={base} onClick={() => onAction("run")} title="continue the same session">
+            <button style={base} onClick={() => onAction("run")} {...gate(can, "run", false, "continue the same session")}>
               resume
             </button>
           )}
           {entry.status !== "stopped" ? (
-            <button style={base} onClick={() => onAction("stop")} title="end the session, save its state">
+            <button style={base} onClick={() => onAction("stop")} {...gate(can, "stop", false, "end the session, save its state")}>
               stop
             </button>
           ) : (
-            <button style={base} onClick={() => onAction("run")} title="start a new session from the latest state">
+            <button style={base} onClick={() => onAction("run")} {...gate(can, "run", false, "start a new session from the latest state")}>
               run
             </button>
           )}
@@ -250,7 +252,8 @@ export function secretRollbackReport(slug: string | null, name: string, p: Secre
 /**
  * One secret in the deploy settings: its current version and where it comes from (or why it
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
- * history, from which an older version can be rolled back to.
+ * history, from which an older version can be rolled back to. Setting, removing and rolling back
+ * follow what the server would answer (can.ts): refused, they are disabled, saying why.
  */
 export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
@@ -262,6 +265,8 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
   const picking = kind === "env" && envNames.length > 0 && !typing;
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const dryRun = useDryRun();
+  const can = useCan(slug);
+  const setting = refusal(can, "setSecret");
   // The row follows where the secret comes from once that's known (the list loads after it).
   useEffect(() => {
     if (info) setKind(kindOf(info.source));
@@ -327,8 +332,8 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
             setText(next !== "env" ? "" : envNames.length === 0 || envNames.includes(suggested) ? suggested : "");
             setTyping(false);
           }}
-          disabled={!slug}
-          title={k.title}
+          disabled={!slug || setting !== undefined}
+          title={setting ?? k.title}
           style={{ ...base, padding: "3px 4px" }}
         >
           {KINDS.map((x) => (
@@ -340,7 +345,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
         {picking ? (
           <select
             value={text}
-            disabled={!slug}
+            disabled={!slug || setting !== undefined}
             onChange={(e) => (e.target.value === OTHER ? (setTyping(true), setText("")) : setText(e.target.value))}
             title="a HOLON_SECRET_… variable of the server's environment or its --dotenv file"
             style={{ ...base, padding: "3px 4px", width: 158 }}
@@ -364,14 +369,14 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
           data-lpignore="true"
           value={text}
           placeholder={k.placeholder(name, !!info)}
-          disabled={!slug}
+          disabled={!slug || setting !== undefined}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && save()}
-          title={k.title}
+          title={setting ?? k.title}
           style={{ ...input, width: 150 }}
         />
         )}
-        <button style={base} disabled={!slug || !text.trim()} onClick={save}>
+        <button style={base} onClick={save} {...gate(can, "setSecret", !slug || !text.trim())}>
           set
         </button>
         {info && !theirs && (
@@ -380,7 +385,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
           </button>
         )}
         {info && !theirs && (
-          <button style={base} onClick={remove} title="remove this secret, every version">
+          <button style={base} onClick={remove} {...gate(can, "removeSecret", false, "remove this secret, every version")}>
             ×
           </button>
         )}
@@ -397,7 +402,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
               {v.current ? (
                 <span style={{ color: "var(--ok)", width: 58, textAlign: "right" }}>current</span>
               ) : (
-                <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} title={`make version ${v.version} current again`}>
+                <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} {...gate(can, "rollBackSecret", false, `make version ${v.version} current again`)}>
                   roll back
                 </button>
               )}

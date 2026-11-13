@@ -19,15 +19,23 @@ password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is besi
 
 The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
 **Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
-for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8); for
-someone else whose role lets them see people (`people.view`), **People and access** (7); for anyone
-else **Your agents and services** (7); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
+the host's pages, each to whoever may view it: **Resources** (6, `resource.view`), **People and
+access** (7, `people.view`; to a person who can't, **Your agents and services**) and **Policy** (8,
+`policy.view`, a viewer's too); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
 run log is intact, how many runs it holds and the newest head, as of the time it shows (read every
 minute; its refresh button reads it now). The version the server runs is beside the name, top left. The top bar
 says where you are (each step back a link), and has the search (**Ctrl K** or **/**: a page, a
 flow or a command), the interface, the theme and your account.
 Every place has its own address (`#overview`, `#pulse.history`, `#approvals.shout.v1`), so the
 browser's back and forward work, and a link opens where it says.
+
+Each button follows what the server would answer you: one it would refuse (**Pause** to a viewer,
+**Approve and deploy** to someone who doesn't approve deploys, **bind** to someone who can't bind)
+is disabled, and says why in the server's words on hover, as `cy may not do that: a viewer only
+reads`. The editor asks the server once per flow what you may do there, and asks again when who
+may do what changes (it reads `/auth/me`'s `access_version` every few seconds and on coming back to
+the window), when you change something, and when the server refuses you. The server still decides
+each request.
 
 **new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
 or deploy it. A name another saved flow or a deployment already has asks before that one is
@@ -135,8 +143,8 @@ The **tools** panel on the right lists what starts the flow's runs: its clocks (
 its file handlers (`on file inbox`), its actions and its routes, with a count when it is folded.
 **tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
 send it, as JSON, and **run**: the answer shows under it with the run's number, and **view run**
-opens that run. A viewer sees the actions and can't run them
-([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
+opens that run. Someone who may not run them (a viewer) sees the actions, and **run** disabled
+saying why ([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
 and the panel says so.
 
 **test** opens a request
@@ -170,7 +178,9 @@ The deploy bar (edit mode, in the toolbar) has **deploy** (or **update**, with *
 canvas differs from what is deployed), the deployment's state and port, **pause**, **resume**,
 **stop** and **run**, and **⚙** for its settings: port, limits, secrets, optional
 permissions and which actions agents may run. Deploying shows what the flow may do and asks you
-to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
+to approve what isn't granted yet; if you may deploy the flow but not approve what it asks
+(`flow.approve-deploy`), the button says **Propose**, and the version waits in Approvals for
+someone who may, as the editor then says. [Deploying and permissions](deploying.md) covers it in full.
 
 A flow with no route, clock, file handler or action starts nothing, so **deploy** is greyed and
 says why: add one. An action is the one a person runs by hand.
@@ -236,7 +246,7 @@ A deployed flow has a page of its own (`#pulse`): its name and state, **Pause**,
 
 ## The host's pages
 
-An admin's, in the nav's second group:
+In the nav's second group, each to whoever may view it (an admin, all of them):
 
 - **Resources**, in tabs: **Databases** and **Folders** flows use by name
   ([Files on the host](files.md), [Databases](databases.md)); **Mail** and **Feeds**; the
@@ -270,7 +280,8 @@ An admin's, in the nav's second group:
   services** instead: the agents and services they own, whose tokens they make (each shown once)
   and revoke; an admin adds one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
-  grants, whether agents may propose versions, and each limit's default and ceiling.
+  grants, whether agents may propose versions, and each limit's default and ceiling. A viewer reads
+  it; **read the policy again** is `policy.edit`'s.
 
 The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
 too: `holon people`, `holon bind`, `holon roles`, `holon groups`, `holon access`, `holon oidc`, `holon folder`,

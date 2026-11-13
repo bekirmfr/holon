@@ -1,9 +1,11 @@
 // A flow's Settings tab (FlowPage.tsx): what it is granted and the host's controls over it
 // (revoke, grant back, lower a limit, keep running), its secrets, the settings it was deployed
 // with, whether agents may propose its versions, its waiting runs, its sessions and what it holds,
-// and removing it.
+// and removing it. Each control follows what the server would answer (can.ts): one it would refuse
+// is disabled, saying why.
 
 import { useEffect, useRef, useState } from "react";
+import { gate, refusal, useCan } from "./can";
 import { SecretRow } from "./DeployBar";
 import { approvalSaid, isApproval, shownSaid } from "./decisions";
 import { summarizeState } from "./diagnostics";
@@ -25,7 +27,6 @@ import {
   type GrantView,
   type Holds,
   type ManifestReply,
-  type Role,
   type SecretInfo,
   type SessionEntry,
   type WaitingRun,
@@ -37,7 +38,6 @@ const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function SettingsTab({
   slug,
   entry,
-  role,
   focus,
   onChanged,
   onRunFrom,
@@ -45,7 +45,6 @@ export function SettingsTab({
 }: {
   slug: string;
   entry: DeploymentEntry;
-  role: Role;
   /** Asked for from the admin page: each new value brings the permissions into view. */
   focus?: number;
   /** Its grant changed here: the table should be fetched again. */
@@ -67,9 +66,9 @@ export function SettingsTab({
   return (
     <div className="hl-flow__settings">
       <Permissions slug={slug} version={version} manifest={manifest} focus={focus} onChanged={onChanged} />
-      {secretNames.length > 0 && <Secrets slug={slug} names={secretNames} admin={role === "admin"} />}
+      {secretNames.length > 0 && <Secrets slug={slug} names={secretNames} />}
       <DeploySettings manifest={manifest} />
-      <Agents slug={slug} entry={entry} viewer={role === "viewer"} onChanged={onChanged} />
+      <Agents slug={slug} entry={entry} onChanged={onChanged} />
       {(entry.waiting ?? 0) > 0 && <Waiting slug={slug} count={entry.waiting ?? 0} />}
       <Sessions entry={entry} onRunFrom={onRunFrom} />
       <Remove slug={slug} stopped={entry.status === "stopped"} onRemove={onRemove} />
@@ -79,7 +78,8 @@ export function SettingsTab({
 
 /** Whether agents may propose its versions (proposals.rs): off, an agent's deploy of it is
  *  refused, neither proposed nor saved. */
-function Agents({ slug, entry, viewer, onChanged }: { slug: string; entry: DeploymentEntry; viewer: boolean; onChanged: () => void }) {
+function Agents({ slug, entry, onChanged }: { slug: string; entry: DeploymentEntry; onChanged: () => void }) {
+  const can = useCan(slug);
   const [on, setOn] = useState(entry.agents_propose !== false);
   const [msg, setMsg] = useState("");
   // Whether the host takes agents' proposals at all (its policy's `[agents] propose`).
@@ -108,8 +108,8 @@ function Agents({ slug, entry, viewer, onChanged }: { slug: string; entry: Deplo
     <section className="hl-flow__section" aria-label="agents">
       <h2>Agents</h2>
       {msg && <div className="hl-flow__bad">{msg}</div>}
-      <label className="hl-flow__check">
-        <input type="checkbox" checked={on} disabled={viewer} onChange={(e) => change(e.target.checked)} />
+      <label className="hl-flow__check" title={gate(can, "agentsPropose").title}>
+        <input type="checkbox" checked={on} {...gate(can, "agentsPropose")} onChange={(e) => change(e.target.checked)} />
         agents may propose versions
       </label>
       <p className="hl-flow__note">
@@ -131,6 +131,8 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
   const [msg, setMsg] = useState("");
   const [lowerTo, setLowerTo] = useState<Record<string, string>>({});
   const here = useRef<HTMLElement>(null);
+  // Revoking, granting back, lowering and keeping running are approving what it may do.
+  const can = useCan(slug);
   useEffect(() => {
     getGrant(slug).then(setView, (e: unknown) => setMsg(say(e)));
   }, [slug, version]);
@@ -169,7 +171,7 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
                 <span className="hl-flow__what">✓ {describeItem(item)}</span>
                 {!item.startsWith("Limit(") && <KindBadge item={item} optional={optional} trigger={trigger} />}
                 <span className="hl-flow__spacer" />
-                <button className="hl-flow__button" onClick={() => change({ revoke: [item] })} title={revokeTitle(item)}>
+                <button className="hl-flow__button" onClick={() => change({ revoke: [item] })} {...gate(can, "grant", false, revokeTitle(item))}>
                   Revoke
                 </button>
               </li>
@@ -179,7 +181,7 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
                 <span>{describeItem(item)}</span>
                 <span className="hl-table__dim"> · revoked</span>
                 <span className="hl-flow__spacer" />
-                <button className="hl-flow__button" onClick={() => change({ grant: [item] })} title="grant it back">
+                <button className="hl-flow__button" onClick={() => change({ grant: [item] })} {...gate(can, "grant", false, "grant it back")}>
                   Grant back
                 </button>
               </li>
@@ -209,7 +211,7 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
                       </td>
                       <td>
                         <input className="hl-flow__filter hl-flow__number" inputMode="numeric" aria-label={`lower ${name} to`} value={typed} onChange={(e) => setLowerTo({ ...lowerTo, [name]: e.target.value })} />{" "}
-                        <button className="hl-flow__button" disabled={!ok} onClick={() => change({ lower: { [name]: to } })} title="lower it without redeploying; a deploy can raise it again">
+                        <button className="hl-flow__button" onClick={() => change({ lower: { [name]: to } })} {...gate(can, "grant", !ok, "lower it without redeploying; a deploy can raise it again")}>
                           Lower
                         </button>
                       </td>
@@ -219,8 +221,8 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
               </tbody>
             </table>
           )}
-          <label className="hl-flow__check" title="when the grant doesn't cover what it needs">
-            <input type="checkbox" checked={grant.keep_running ?? false} onChange={(e) => change({ keep_running: e.target.checked })} />
+          <label className="hl-flow__check" title={gate(can, "grant", false, "when the grant doesn't cover what it needs").title}>
+            <input type="checkbox" checked={grant.keep_running ?? false} disabled={gate(can, "grant").disabled} onChange={(e) => change({ keep_running: e.target.checked })} />
             Keep running when something required is revoked (those calls fail) instead of pausing
           </label>
           {(grant.changes ?? []).length > 0 && (
@@ -243,15 +245,17 @@ function Permissions({ slug, version, manifest, focus, onChanged }: { slug: stri
 
 /** The secrets it reads: each one's version and where it comes from, set anew, its history, and
  *  rolled back to an older version. Values are never shown. */
-function Secrets({ slug, names, admin }: { slug: string; names: string[]; admin: boolean }) {
+function Secrets({ slug, names }: { slug: string; names: string[] }) {
   const [infos, setInfos] = useState<SecretInfo[]>([]);
   const [envNames, setEnvNames] = useState<string[]>([]);
+  // The server's environment's names, to whoever may view the host's resources.
+  const listsEnv = useCan()?.["resource.view"] === true;
   const reload = () => listSecrets(slug).then(setInfos, () => setInfos([]));
   useEffect(() => {
     void reload();
-    if (admin) getEnvSecretNames().then((r) => setEnvNames(r.names), () => setEnvNames([]));
+    if (listsEnv) getEnvSecretNames().then((r) => setEnvNames(r.names), () => setEnvNames([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, admin]);
+  }, [slug, listsEnv]);
   return (
     <section className="hl-flow__section" aria-label="secrets">
       <h2>Secrets</h2>
@@ -334,6 +338,7 @@ function Sessions({ entry, onRunFrom }: { entry: DeploymentEntry; onRunFrom: (se
   const [sessions, setSessions] = useState<SessionEntry[] | null>(null);
   const [holds, setHolds] = useState<Holds | null>(null);
   const [msg, setMsg] = useState("");
+  const can = useCan(entry.slug);
   useEffect(() => {
     getSessions(entry.slug).then((s) => setSessions(s.sessions), (e: unknown) => setMsg(say(e)));
     getHolds(entry.slug).then(setHolds, () => setHolds(null));
@@ -360,7 +365,7 @@ function Sessions({ entry, onRunFrom }: { entry: DeploymentEntry; onRunFrom: (se
               </td>
               <td className="hl-flow__cell-end">
                 {stopped && s.state !== null && (
-                  <button className="hl-flow__button" onClick={() => onRunFrom(s.number).catch((e: unknown) => setMsg(say(e)))} title="run a new session from this one's state">
+                  <button className="hl-flow__button" onClick={() => onRunFrom(s.number).catch((e: unknown) => setMsg(say(e)))} {...gate(can, "run", false, "run a new session from this one's state")}>
                     Run from it
                   </button>
                 )}
@@ -385,6 +390,7 @@ function Sessions({ entry, onRunFrom }: { entry: DeploymentEntry; onRunFrom: (se
 function Remove({ slug, stopped, onRemove }: { slug: string; stopped: boolean; onRemove: () => Promise<void> }) {
   const [typed, setTyped] = useState("");
   const [msg, setMsg] = useState("");
+  const refused = refusal(useCan(slug), "remove");
   return (
     <section className="hl-flow__section hl-flow__danger" aria-label="remove">
       <h2>Remove</h2>
@@ -392,8 +398,8 @@ function Remove({ slug, stopped, onRemove }: { slug: string; stopped: boolean; o
         Removes the deployment, every session and its state. It can't be undone; its saved flow stays.{stopped ? "" : " Stop it first."}
       </p>
       <div className="hl-flow__bar">
-        <input className="hl-flow__filter" aria-label={`type ${slug} to remove it`} placeholder={`type ${slug}`} value={typed} disabled={!stopped} onChange={(e) => setTyped(e.target.value)} />
-        <button className="hl-flow__button hl-flow__button--danger" disabled={!stopped || typed !== slug} onClick={() => onRemove().catch((e: unknown) => setMsg(say(e)))}>
+        <input className="hl-flow__filter" aria-label={`type ${slug} to remove it`} placeholder={`type ${slug}`} value={typed} disabled={!stopped || refused !== undefined} title={refused} onChange={(e) => setTyped(e.target.value)} />
+        <button className="hl-flow__button hl-flow__button--danger" onClick={() => onRemove().catch((e: unknown) => setMsg(say(e)))} disabled={!stopped || typed !== slug || refused !== undefined} title={refused}>
           Remove {slug}
         </button>
       </div>

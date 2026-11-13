@@ -8,7 +8,7 @@ import { lastDay, sinceOf, type VersionItems } from "./statusFacts";
 import { describeItem } from "./holon";
 import { follow, format, type Route } from "./routes";
 import { runLabel, runOutcome } from "./runs";
-import { getDeployedDocument, getManifest, getSummary, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type Role, type VersionEntry } from "./server";
+import { getDeployedDocument, getManifest, getSummary, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type VersionEntry } from "./server";
 import { useFlowLog } from "./useFlowLog";
 import { Spark } from "./ui/Spark";
 
@@ -23,13 +23,11 @@ export function StatusTab({
   slug,
   entry,
   navigate,
-  role,
   manifestOf,
 }: {
   slug: string;
   entry: DeploymentEntry;
   navigate: (r: Route) => void;
-  role: Role;
   /** What a version's canvas may do, derived as deploying it would. */
   manifestOf: (doc: FlowDocument) => { items: string[] };
 }) {
@@ -214,7 +212,7 @@ export function StatusTab({
         <section className="hl-flow__section" aria-label="actions">
           <h2>Actions</h2>
           <div className="hl-flow__actions">
-            <ActionRows names={actions} slug={entry.status === "running" ? slug : ""} role={role} onViewRun={(seq) => navigate({ kind: "run", slug, seq })} />
+            <ActionRows names={actions} slug={entry.status === "running" ? slug : ""} onViewRun={(seq) => navigate({ kind: "run", slug, seq })} />
           </div>
         </section>
       )}

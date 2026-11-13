@@ -223,15 +223,20 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
-        // Through the run file, `local` says so: the OS user, `local:<user>` (D45).
-        ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
-            Some(p) => Response::json(&serde_json::json!({
-                "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
-                "email": p.email, "owner": p.owner, "display": p.display, "local": caller.local,
-            })),
-            // The run file tied to no account (`local:<user>`): admin on the host, bound nowhere.
-            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role(), "local": caller.local })),
-        },
+        // Through the run file, `local` says so: the OS user, `local:<user>` (D45). `access_version`
+        // is the access document's: what `can` answers changes only with it (or a flow's tags), so
+        // the editor reads its buttons again when it moves.
+        ("GET", "/auth/me") => {
+            let access_version = accounts.access_document().version;
+            match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
+                Some(p) => Response::json(&serde_json::json!({
+                    "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
+                    "email": p.email, "owner": p.owner, "display": p.display, "local": caller.local, "access_version": access_version,
+                })),
+                // The run file tied to no account (`local:<user>`): admin on the host, bound nowhere.
+                None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role(), "local": caller.local, "access_version": access_version })),
+            }
+        }
         ("GET", "/auth/owned") => Response::json(&accounts.principals().iter().filter(|p| p.owner.as_deref() == Some(me)).map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/auth/password") => {
             #[derive(Deserialize)]

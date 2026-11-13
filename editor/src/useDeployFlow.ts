@@ -2,7 +2,9 @@
 // header). It deploys as the server its handlers derive (routes, clocks, file handlers, actions);
 // a flow with none starts nothing, and doesn't deploy. Before anything is sent, the person sees
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
-// And running, pausing or stopping it once deployed.
+// And running, pausing or stopping it once deployed. Whoever the server wouldn't let deploy it is
+// told why before anything is staged; whoever may deploy it but not approve what it asks proposes
+// it, for someone who may (can.ts), and is told it waits in Approvals.
 
 import { createElement, useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
@@ -14,6 +16,8 @@ import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { changeDeployment, deployUnit, getDeployedDocument, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeployBar";
+import { canOn, refusal } from "./can";
+import { useToast } from "./ui/Toast";
 import { touchLines } from "./touches";
 import type { useDialog } from "./Dialog";
 import { codeHunk, touchHunks, type Hunk } from "./hunks";
@@ -61,6 +65,7 @@ export function useDeployFlow({
   onDeployed?: () => void;
 }) {
   const [deployBusy, setDeployBusy] = useState(false);
+  const toast = useToast();
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
   const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
 
@@ -94,6 +99,13 @@ export function useDeployFlow({
       if (deployments.some((d) => d.slug === name) && !(await dialog.confirm(`"${name}" is deployed already. Update it with this flow?`, "Update"))) return;
       setFlowName(name);
     }
+    // What the server would answer on this flow, named just now or not.
+    const can = await canOn(name);
+    const refused = refusal(can, "deploy");
+    if (refused) {
+      setError(refused);
+      return;
+    }
     let hash: string;
     const trace = derived.trace;
     try {
@@ -108,10 +120,12 @@ export function useDeployFlow({
       return;
     }
     // The host decides what needs approval (its policy, and what this deployment was already
-    // granted): ask it, then show asked against granted, and acknowledge exactly what it asks.
+    // granted): ask it, then show asked against granted, and acknowledge exactly what it asks;
+    // proposed, nothing (the server refuses an acknowledgement from someone who doesn't approve).
     const existing = deployments.some((d) => d.slug === name);
     const requirements = settings.requirements;
     let ask: string[];
+    let proposes = false;
     try {
       await stageClosure(ev, hash, new Set());
       const preview = await previewDeploy(name, hash, requirements);
@@ -123,8 +137,12 @@ export function useDeployFlow({
       // Each item says whether the flow can run without it (deploy settings' optional ones).
       const optional = requirements?.optional ?? [];
       const said = (i: string) => `• ${describeItemSending(i, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
-      const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
-      if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
+      // Someone who may not approve what it asks proposes it: it waits in Approvals.
+      const notApproving = refusal(can, "approve");
+      proposes = ask.length > 0 && notApproving !== undefined;
+      const lines = [proposes ? `Propose "${name}"?` : `${existing ? "Update" : "Deploy"} "${name}"?`];
+      if (ask.length > 0) lines.push("", proposes ? "It needs a person's approval to:" : "It needs your approval to:", ...ask.map(said));
+      if (proposes) lines.push("", `You may not approve it (${notApproving}): it waits in Approvals for someone who may.`);
       // An agent's deploy leaves its secrets out: a person grants them back.
       if (preview.withheld?.length) lines.push("", `Left out, for a person to grant back: ${preview.withheld.join(", ")}`);
       // The review (Review.tsx): its text beside the version deployed, then everything it touches
@@ -142,7 +160,7 @@ export function useDeployFlow({
       const pages = browsersOf(settings);
       if (pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
       if (existing) lines.push("", "Its state and sessions are kept.");
-      const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
+      const action = proposes ? "Propose" : ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
       // A deployed flow's new version, replayed on its recent runs first (G11).
       const review = hunks.length > 0 ? createElement(Review, { hunks }) : null;
       const shown = existing ? createElement("div", { style: { display: "grid", gap: 10 } }, createElement(ReplayRuns, { slug: name, unit: hash }), review) : review;
@@ -168,15 +186,17 @@ export function useDeployFlow({
         ...(source !== null ? { source } : {}),
         ...(bindings ? { bindings } : {}),
       };
-      await deployUnit(name, hash, ask, document, requirements);
+      const done = await deployUnit(name, hash, proposes ? [] : ask, document, requirements);
       refreshDeployments();
-      onDeployed?.();
+      // Proposed (as the dialog said, or as the server decided): nothing deployed yet.
+      if (done.proposal) toast(`Proposed version ${done.proposal.version ?? "?"} of "${name}": it waits in Approvals for someone who may approve it.`, "info");
+      else onDeployed?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed]);
+  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed, toast]);
 
   /** The code's hunk: the flow's text beside the deployed version's (none on a first deploy);
    *  null when either can't be written as text. */

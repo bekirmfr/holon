@@ -3,17 +3,20 @@
 // flow; unbinding, which says why, takes it away; History says each change, and a version what it
 // changed. Someone who holds less than a binding gives is refused it in the server's words. And
 // what a principal's page says it may do (access.ts givesOf) is what the server's `can` answers
-// them, for each way of being bound.
+// them, for each way of being bound. And the buttons follow `can` (can.ts): a viewer's flow page
+// has each that changes something disabled, saying why in the server's words, until a binding
+// lets them, which the page then follows; someone who may deploy a flow but not approve what it
+// asks proposes it, told why, and it waits in Approvals.
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser } from "@playwright/test";
+import type { Browser, Locator } from "@playwright/test";
 import { givesOf, type Tagged } from "../src/access";
 import type { Principal, RoleEntry } from "../src/server";
 import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, peopleTab } from "./helpers";
+import { flowRow, gotoPage, navLink, peopleTab } from "./helpers";
 
 /** A call to the control plane as whoever `token` signs in. */
 const control = (token: string, path: string, data?: unknown, method?: string) =>
@@ -228,5 +231,114 @@ test("what a principal's page says it may do is what the server's can answers th
     }
   } finally {
     for (const slug of [tagged, plain]) await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
+  }
+});
+
+test("a viewer's flow page has each button that changes something disabled, saying why in the server's words; bound editor there, the page follows", async ({ page, browser, adminToken }) => {
+  const n = Date.now().toString(36);
+  const slug = `follows-${n}`;
+  deploy(adminToken, slug, `import { action, flow } from "holon"\n\nflow("${slug}")\n\nexport const shout = action((input) => input.toUpperCase())\n`);
+  try {
+    const vic = `e2e-vic-${n}`;
+    const asVic = await editorAs(browser, await joined(adminToken, vic), vic);
+    const reads = `${vic} may not do that: a viewer only reads`;
+    const disabled = async (button: Locator, title: string) => {
+      await expect(button).toBeDisabled();
+      await expect(button).toHaveAttribute("title", title);
+    };
+
+    // The header: pausing and stopping are an editor's.
+    await asVic.goto(`/#${slug}`);
+    const flowPage = asVic.locator(`[aria-label="flow ${slug}"]`);
+    await disabled(flowPage.getByRole("button", { name: "Pause", exact: true }), reads);
+    await disabled(flowPage.getByRole("button", { name: "Stop", exact: true }), reads);
+    // Status: its action is seen, not run.
+    const shout = flowPage.locator('[aria-label="action shout"]');
+    await disabled(shout.getByRole("button", { name: "run", exact: true }), reads);
+    await expect(shout).toContainText(reads);
+    // Settings: revoking, whether agents may propose, removing it.
+    await asVic.goto(`/#${slug}.settings`);
+    const revokes = flowPage.getByRole("button", { name: "Revoke", exact: true });
+    await expect(revokes).not.toHaveCount(0);
+    for (const revoke of await revokes.all()) await disabled(revoke, reads);
+    await expect(flowPage.getByRole("checkbox", { name: "agents may propose versions" })).toBeDisabled();
+    await disabled(flowPage.getByRole("button", { name: `Remove ${slug}` }), reads);
+
+    // The host's pages: the policy is a viewer's to read, not to read again; resources and
+    // people aren't.
+    await expect(navLink(asVic, "Policy")).toBeVisible();
+    await expect(navLink(asVic, "Resources")).toHaveCount(0);
+    await expect(navLink(asVic, "People and access")).toHaveCount(0);
+    await asVic.goto("/#policy");
+    await expect(asVic.getByText("granted without asking:")).toBeVisible();
+    await disabled(asVic.getByRole("button", { name: "read the policy again" }), reads);
+    await expect(asVic.getByRole("alert")).toHaveCount(0);
+
+    // The admin's page has them all.
+    await page.goto(`/#${slug}`);
+    await expect(page.locator(`[aria-label="flow ${slug}"]`).getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
+
+    // Bound editor on the flow, the page follows once it reads the access version again (as it
+    // does now and then, and on coming back to the window).
+    await asVic.goto(`/#${slug}`);
+    const pause = flowPage.getByRole("button", { name: "Pause", exact: true });
+    await expect(pause).toBeDisabled();
+    await sure(control(adminToken, "/bindings", { who: { principal: vic }, role: "editor", scope: { flows: { slug } }, why: "e2e: runs it" }));
+    await asVic.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(pause).toBeEnabled();
+    await expect(pause).toHaveAttribute("title", "stop answering, keep the port and the session");
+    await asVic.context().close();
+  } finally {
+    await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
+  }
+});
+
+test("someone who may deploy a flow but not approve what it asks proposes it from the editor, told why; it waits in Approvals", async ({ page, browser, adminToken }) => {
+  const n = Date.now().toString(36);
+  const slug = `proposes-${n}`;
+  const text = (more: string) => `import { action, flow } from "holon"${more ? '\nimport example from "host:example.com"' : ""}\n\nflow("${slug}")\n\nexport const shout = action((input) => input.toUpperCase())\n${more}`;
+  deploy(adminToken, slug, text(""));
+  try {
+    // pia, a viewer, bound on the flow a role that edits and deploys it, and approves nothing.
+    const pia = `e2e-pia-${n}`;
+    const role = `proposer-${n}`;
+    await sure(control(adminToken, `/roles/${role}`, { allows: ["flow.view", "flow.edit", "flow.propose", "flow.deploy"], kinds: ["person"] }, "PUT"));
+    const asPia = await editorAs(browser, await joined(adminToken, pia), pia);
+    await sure(control(adminToken, "/bindings", { who: { principal: pia }, role, scope: { flows: { slug } }, why: "e2e: proposes its versions" }));
+
+    // A version that calls a host it isn't granted: the dialog says pia proposes it, and why.
+    await asPia.goto("/");
+    await gotoPage(asPia, "new");
+    const canvas = asPia.locator(".hl-canvas");
+    await canvas.getByRole("button", { name: "text off" }).click();
+    await asPia.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+    await asPia.keyboard.press("Control+A");
+    await asPia.keyboard.insertText(text("\nexport const ping = action(async () => await example.get(\"/\"))\n"));
+    // Compiled: the tools panel lists its new action.
+    await expect(asPia.locator('[aria-label="action ping"]')).toBeVisible({ timeout: 15_000 });
+    const deployButton = canvas.getByRole("button", { name: /^deploy/ });
+    await expect(deployButton).toBeEnabled();
+    await deployButton.dispatchEvent("click");
+    await asPia.locator('[aria-modal="true"]').locator("input").fill(slug);
+    await asPia.keyboard.press("Enter");
+    await asPia.getByRole("dialog").getByRole("button", { name: "Update", exact: true }).click();
+    const asked = asPia.getByRole("dialog");
+    await expect(asked).toContainText(`Propose "${slug}"?`);
+    await expect(asked).toContainText("It needs a person's approval to:");
+    await expect(asked).toContainText(`You may not approve it (${pia} may not do that: `);
+    await expect(asked).toContainText("it waits in Approvals for someone who may.");
+    const sent = asPia.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+    await asked.getByRole("button", { name: "Propose", exact: true }).click();
+    expect((await sent).status()).toBe(202);
+    await expect(asPia.getByRole("status").filter({ hasText: `of "${slug}": it waits in Approvals for someone who may approve it.` })).toBeVisible();
+    await asPia.context().close();
+
+    // It waits, pia's; the version deployed is still the first.
+    const { proposals } = await json<{ proposals: { slug: string; state: string; by?: string }[] }>(control(adminToken, "/proposals"));
+    expect(proposals.filter((p) => p.slug === slug).map((p) => [p.state, p.by])).toEqual([["waiting", pia]]);
+    await page.goto(`/#approvals`);
+    await expect(page.getByText(slug).first()).toBeVisible();
+  } finally {
+    await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
   }
 });

@@ -59,6 +59,9 @@
 // HOLON_TOKEN unset: each only their own step, and in turn. It pays it:
 //   holon decide approved-payout <run> payout --approve
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
+// Signed in as bob, the flow's page has each button that would change it disabled, saying why in
+// the server's words (no role bob holds on "approved-payout" holds flow.lifecycle): he reviews its
+// payouts; bound editor on the flow, his page follows within seconds.
 import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"
 import httpbin from "host:httpbin.org"

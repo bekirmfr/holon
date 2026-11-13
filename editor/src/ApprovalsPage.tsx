@@ -9,6 +9,7 @@
 import { Fragment } from "react";
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
+import { gate, useCan } from "./can";
 import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
@@ -134,11 +135,7 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
                   {proposal?.note && <div className="hl-flow__note">{proposal.note}</div>}
                 </td>
                 <td className="hl-flows__do">
-                  {proposal && (
-                    <button className="hl-flow__button" onClick={() => void decline(proposal)} aria-label={`decline ${a.slug}`}>
-                      Decline with a reason…
-                    </button>
-                  )}
+                  {proposal && <DeclineButton proposal={proposal} onDecline={decline} />}
                   {to === null ? (
                     <span className="hl-table__dim">…</span>
                   ) : (
@@ -153,6 +150,16 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
         </tbody>
       </table>
     </section>
+  );
+}
+
+/** Decline a proposal, to whoever the server would let (approving its flow's deploys). */
+function DeclineButton({ proposal, onDecline }: { proposal: Proposal; onDecline: (p: Proposal) => Promise<void> }) {
+  const can = useCan(proposal.slug);
+  return (
+    <button className="hl-flow__button" onClick={() => void onDecline(proposal)} aria-label={`decline ${proposal.slug}`} {...gate(can, "decline")}>
+      Decline with a reason…
+    </button>
   );
 }
 

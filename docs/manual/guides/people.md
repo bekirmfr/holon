@@ -175,6 +175,12 @@ people; a service never decides an approval. A binding's **unbind**, which asks 
 unbind ID` takes it away, and an expired one holds nothing. A binding, a role or a group change
 refused says why in the server's words, in the editor as on the command line.
 
+The editor shows each person what their bindings let them: a button the server would refuse them
+(**Pause** on a flow they only view, **bind** without `people.assign`) is disabled, and says why in
+the server's words, and each of the host's pages is shown to whoever may view it. A change to who
+holds what reaches the pages of those it changes within seconds, without signing in again
+([The web editor](editor.md#pages-and-tabs)).
+
 ## Who decides an approval
 
 An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"

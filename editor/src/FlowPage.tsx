@@ -12,7 +12,8 @@ import { SettingsTab } from "./FlowSettings";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { follow, format, type FlowTab, type Route } from "./routes";
-import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type Role } from "./server";
+import { gate, useCan } from "./can";
+import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 
@@ -35,7 +36,6 @@ export function FlowPage({
   run = null,
   entry,
   navigate,
-  role,
   card,
   codeText,
   onRestored,
@@ -48,7 +48,6 @@ export function FlowPage({
   /** Its row in the server's table; undefined while it isn't deployed. */
   entry: DeploymentEntry | undefined;
   navigate: (r: Route) => void;
-  role: Role;
   /** What a version's canvas may do, for since when it may do each thing. */
   manifestOf: (doc: FlowDocument) => { items: string[] };
   /** Its versions printed as text, for a restore's diff. */
@@ -65,6 +64,8 @@ export function FlowPage({
   };
 }) {
   const edit = () => navigate({ kind: "editor", slug, view: false, seq: null });
+  // Each button as the server would answer it: one it would refuse is disabled, saying why.
+  const can = useCan(slug);
   const [failed, setFailed] = useState("");
   const act = (action: "run" | "pause" | "stop") => {
     setFailed("");
@@ -82,22 +83,22 @@ export function FlowPage({
         )}
         <span className="hl-flow__spacer" />
         {entry?.status === "running" && (
-          <button className="hl-flow__button" onClick={() => act("pause")} title="stop answering, keep the port and the session">
+          <button className="hl-flow__button" onClick={() => act("pause")} {...gate(can, "pause", false, "stop answering, keep the port and the session")}>
             Pause
           </button>
         )}
         {entry?.status === "paused" && (
-          <button className="hl-flow__button" onClick={() => act("run")} title="continue the same session">
+          <button className="hl-flow__button" onClick={() => act("run")} {...gate(can, "run", false, "continue the same session")}>
             Resume
           </button>
         )}
         {entry && entry.status !== "stopped" && (
-          <button className="hl-flow__button" onClick={() => act("stop")} title="end the session, save its state, release the port">
+          <button className="hl-flow__button" onClick={() => act("stop")} {...gate(can, "stop", false, "end the session, save its state, release the port")}>
             Stop
           </button>
         )}
         {entry?.status === "stopped" && (
-          <button className="hl-flow__button" onClick={() => act("run")} title="a new session, from the state the last one left">
+          <button className="hl-flow__button" onClick={() => act("run")} {...gate(can, "run", false, "a new session, from the state the last one left")}>
             Run
           </button>
         )}
@@ -131,12 +132,11 @@ export function FlowPage({
           ) : tab === "history" ? (
             <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "status" ? (
-            <StatusTab slug={slug} entry={entry} navigate={navigate} role={role} manifestOf={manifestOf} />
+            <StatusTab slug={slug} entry={entry} navigate={navigate} manifestOf={manifestOf} />
           ) : (
             <SettingsTab
               slug={slug}
               entry={entry}
-              role={role}
               focus={card.focus}
               onChanged={card.onChanged}
               onRunFrom={(session) => card.onAction("run", session)}

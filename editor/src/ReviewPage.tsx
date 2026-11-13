@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
+import { gate, useCan } from "./can";
 import { codeHunk, touchHunks } from "./hunks";
 import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
@@ -76,6 +77,8 @@ export function ReviewPage({
   const [line, setLine] = useState<number | null>(null);
   const [read, setRead] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Approving what it asks, deploying it and declining it, as the server would answer (can.ts).
+  const can = useCan(slug);
 
   // Read again when another version is saved or proposed, or one is deployed.
   const proposalId = waiting?.proposal?.id;
@@ -304,7 +307,7 @@ export function ReviewPage({
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}
                 </label>
-                <button className="hl-flow__button hl-flow__button--go" disabled={!read || busy} onClick={() => void approve()}>
+                <button className="hl-flow__button hl-flow__button--go" onClick={() => void approve()} {...gate(can, asked > 0 ? "approve" : "deploy", !read || busy)}>
                   {busy ? "Deploying…" : asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy"}
                 </button>
               </>
@@ -313,7 +316,7 @@ export function ReviewPage({
               Keep it saved, don't deploy
             </button>
             {data.proposal && (
-              <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })}>
+              <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })} {...gate(can, "decline")}>
                 Decline with a reason…
               </button>
             )}

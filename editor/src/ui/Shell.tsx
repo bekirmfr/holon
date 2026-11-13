@@ -53,9 +53,13 @@ const HOST: Entry[] = [
 ];
 /** A person who may not view people: the agents and services they own, on People and access's page. */
 const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: "people" }, icon: "people", key: 7 };
-/** The host's pages `me` is shown: an admin's all of them; People and access to whoever may view
- *  people; another person's what they own. */
-const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.people ? [HOST[1]] : me.kind === "person" ? [OWNED] : []);
+/** The host's pages `me` is shown, each to whoever may view it as the server answers (can.ts);
+ *  to a person who may not view people, what they own in its place. The nav's, and the palette's. */
+export const hostEntries = (me: Me): Entry[] => [
+  ...(me.resources === true ? [HOST[0]] : []),
+  ...(me.people === true ? [HOST[1]] : me.kind === "person" ? [OWNED] : []),
+  ...(me.policy === true ? [HOST[2]] : []),
+];
 const HELP: Entry[] = [
   { label: "Getting started", to: { kind: "start" }, icon: "start" },
   { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs" },
@@ -119,7 +123,7 @@ export function Shell({
   const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
   // People and access is, for a person who may not view people, what they own.
-  const crumb = (r: Route) => (r.kind === "people" && r.tab === "people" && !me.people && me.role !== "admin" ? OWNED.label : labelOf(r));
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === "people" && me.people !== true ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);

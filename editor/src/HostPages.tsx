@@ -1,4 +1,4 @@
-// The host's pages (admins only; holon-server's auth.rs, gaps-web.md G26–G29), each at an
+// The host's pages (each to whoever may view it, can.ts; auth.rs, gaps-web.md G26–G29), each at an
 // address of its own: Resources, in tabs (#resources: its databases; #resources.folders, .mail,
 // .feeds, .queues, .secrets with the server's own and their history, .host with its storage, .who-may)
 // and Policy (#policy: what holon.toml allows, its limits and ceilings, and the deployments it
@@ -64,6 +64,7 @@ import { holdersOf, kindsHeld, othersHeld, usesText, type Holder } from "./holdi
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
 import { useDryRun } from "./DryRun";
 import { secretRollbackReport, sourceLabel } from "./DeployBar";
+import { gate, useCan } from "./can";
 
 // The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
 // a row (a card of its own), what a section is about, and a quiet note. A section's heading is
@@ -140,9 +141,6 @@ function useHost(shown = false) {
   // A server secret being bound: its name, its value or where that is kept, and where it may go.
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "", kind: "value" as SecretKind });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
-  const [policy, setPolicy] = useState<HostPolicy | null>(null);
-  // What reading the policy again said: when, and the deployments it holds off.
-  const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
   // What the last sweep of the store and of the file texts said.
   const [swept, setSwept] = useState<{ store?: string; folders?: string }>({});
   // What the host holds and how it sweeps (`GET /admin/host`), and the sweep setting being edited.
@@ -163,7 +161,6 @@ function useHost(shown = false) {
     listQueues().then(setQueues).catch((e: unknown) => setMsg(messageOf(e)));
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
-    getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
     getHost()
       .then((h) => {
         setHost(h);
@@ -229,8 +226,7 @@ function useHost(shown = false) {
     msg, setMsg,
     folders, setFolders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing,
     databases, setDatabases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets,
-    setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, policy, setPolicy, reloaded,
-    setReloaded, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
+    setServerSecrets, secretDraft, setSecretDraft, grants, setGrants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft,
     fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, version, setVersion,
     dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays,
     mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft,
@@ -265,6 +261,8 @@ export function HostPage({ title, about: what, tab, host, children }: { title: s
 
 export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; onOpenDeployment: (slug: string) => void }) {
   const h = useHost(true);
+  // The server's secrets are set, capped and removed by whoever the server would let (can.ts).
+  const can = useCan();
   const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, usedBy, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
     <HostPage title="Resources" about="what exists on this host for flows to use, and who may touch what" tab={null} host={h}>
@@ -985,7 +983,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               </span>
               <button
                 style={small}
-                title="change where it may go"
+                {...gate(can, "capServerSecret", false, "change where it may go")}
                 onClick={async () => {
                   const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
                   if (typed === null) return;
@@ -997,7 +995,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               </button>
               <button
                 style={small}
-                title="remove the server's secret, every version"
+                {...gate(can, "removeServerSecret", false, "remove the server's secret, every version")}
                 onClick={async () => {
                   if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
                     act(() => unbindServerSecret(s.name));
@@ -1050,7 +1048,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
               onChange={(e) => setSecretDraft({ ...secretDraft, to: e.target.value })}
               style={{ ...input, flex: 1, minWidth: 200 }}
             />
-            <button type="submit" style={primary} disabled={!secretDraft.name.trim() || !secretDraft.value}>
+            <button type="submit" style={primary} {...gate(can, "setServerSecret", !secretDraft.name.trim() || !secretDraft.value)}>
               bind secret
             </button>
           </form>
@@ -1367,11 +1365,29 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
   );
 }
 
+/** The host's policy, to whoever may view it (`policy.view`, a viewer's too): it reads the policy
+ *  alone, not the host's other pages; reading it again is `policy.edit`'s. */
 export function PolicyPage({ deployments, onOpenDeployment }: { deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
-  const h = useHost();
-  const { policy, setPolicy, reloaded, setReloaded, act } = h;
+  const [policy, setPolicy] = useState<HostPolicy | null>(null);
+  // What reading the policy again said: when, and the deployments it holds off.
+  const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
+  const [msg, setMsg] = useState("");
+  const [version, setVersion] = useState(0);
+  const can = useCan();
+  useEffect(() => {
+    getPermissions().then(setPolicy, (e: unknown) => setMsg(messageOf(e)));
+  }, []);
+  const act = async (f: () => Promise<unknown>) => {
+    setMsg("");
+    try {
+      await f();
+    } catch (e) {
+      setMsg(messageOf(e));
+    }
+    setVersion((v) => v + 1);
+  };
   return (
-    <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
+    <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={{ msg, version }}>
       <div className="hl-host-page__head" data-section="policy">the policy</div>
       <div style={about}>
         What this host allows at all, from its <code>holon.toml</code> (edited there, on the server&apos;s machine). Reading it again holds every deployment
@@ -1421,7 +1437,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
         <button
           style={small}
-          title="read holon.toml again and hold every deployment to it"
+          {...gate(can, "reloadPolicy", false, "read holon.toml again and hold every deployment to it")}
           onClick={() =>
             act(async () => {
               const r = await reloadPermissions();
@@ -1468,6 +1484,7 @@ function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () 
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const [said, setSaid] = useState("");
   const dryRun = useDryRun();
+  const can = useCan();
   const load = () => getSecretHistory(null, name).then(setHistory).catch((e: unknown) => setSaid(messageOf(e)));
   const rollback = async (to: number) => {
     try {
@@ -1497,7 +1514,7 @@ function ServerSecretHistory({ name, onChanged }: { name: string; onChanged: () 
               {v.current ? (
                 <span style={{ color: "var(--ok)", width: 64, textAlign: "right" }}>current</span>
               ) : (
-                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} title={`make version ${v.version} current again`}>
+                <button style={{ ...small, width: 64 }} onClick={() => void rollback(v.version)} {...gate(can, "rollBackServerSecret", false, `make version ${v.version} current again`)}>
                   roll back
                 </button>
               )}

@@ -36,7 +36,7 @@ import {
   describeItem,
 } from "./holon";
 import { toDecide } from "./decisions";
-import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, mayI, setPrefs, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
@@ -93,7 +93,8 @@ import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
-import { Shell } from "./ui/Shell";
+import { hostEntries, Shell } from "./ui/Shell";
+import { useCan, type Action } from "./can";
 import { PolicyPage, ResourcesPage } from "./HostPages";
 import { OwnedPage, PeoplePage } from "./PeoplePages";
 import { OverviewPage } from "./OverviewPage";
@@ -820,17 +821,7 @@ function Canvas({
       ["Flows", { kind: "flows" }],
       ["Editor", { kind: "editor", slug: null, view: false, seq: null }],
       ["Library", { kind: "library", tab: "samples" }],
-      ...(me.role === "admin"
-        ? ([
-            ["Resources", { kind: "resources", tab: "databases" }],
-            ["People and access", { kind: "people", tab: "people" }],
-            ["Policy", { kind: "policy" }],
-          ] as [string, Route][])
-        : me.people
-          ? ([["People and access", { kind: "people", tab: "people" }]] as [string, Route][])
-          : me.kind === "person"
-            ? ([["Your agents and services", { kind: "people", tab: "people" }]] as [string, Route][])
-            : []),
+      ...hostEntries(me).map((e): [string, Route] => [e.label, e.to]),
       ["Docs", { kind: "docs", page: null, anchor: null }],
       ["Welcome", { kind: "start" }],
     ];
@@ -852,7 +843,7 @@ function Canvas({
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue]);
+  }, [finding, editing, flowName, deployments, savedFlows, me, start.prefs, approvals.queue]);
   // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
   const askTextOpening = (ask: TextAsk) => {
     if (askText(ask)) return;
@@ -1177,6 +1168,7 @@ function Canvas({
           onFit={fitCanvas}
           deployBar={
             <DeployBar
+              slug={flowName}
               entry={deployedEntry}
               outOfDate={outOfDate}
               busy={deployBusy}
@@ -1352,16 +1344,17 @@ function Canvas({
               }}
             />
           )}
-          {/* The host's pages, an admin's (HostPages.tsx); People and access, whoever may view people's (PeoplePages.tsx). */}
-          {(shown === "resources" || shown === "policy") && me.role !== "admin" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
-          {shown === "people" && !me.people && me.kind !== "person" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
+          {/* The host's pages (HostPages.tsx, PeoplePages.tsx), each to whoever may view it; to anyone else, why not, in the server's words. */}
+          {shown === "resources" && typeof me.resources === "string" && <p className="hl-flow__note">{me.resources}</p>}
+          {shown === "policy" && typeof me.policy === "string" && <p className="hl-flow__note">{me.policy}</p>}
+          {shown === "people" && typeof me.people === "string" && me.kind !== "person" && <p className="hl-flow__note">{me.people}</p>}
           {/* A person who may not view people: the agents and services they own. */}
-          {shown === "people" && !me.people && me.kind === "person" && <OwnedPage />}
-          {shown === "resources" && route.kind === "resources" && me.role === "admin" && (
+          {shown === "people" && me.people !== true && me.kind === "person" && <OwnedPage />}
+          {shown === "resources" && route.kind === "resources" && me.resources === true && (
             <ResourcesPage tab={route.tab} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}
-          {shown === "people" && me.people && <PeoplePage me={me.name} route={route} />}
-          {shown === "policy" && me.role === "admin" && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
+          {shown === "people" && me.people === true && <PeoplePage me={me.name} route={route} />}
+          {shown === "policy" && me.policy === true && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
           {shown === "docs" && (
             <Suspense fallback={<div style={{ color: "var(--faint)" }}>loading the manual…</div>}>
               <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
@@ -1379,7 +1372,7 @@ function Canvas({
               onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && <OverviewPage name={me.name} admin={me.role === "admin"} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
+          {shown === "home" && <OverviewPage name={me.name} admin={me.warnings === true} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}
@@ -1387,7 +1380,6 @@ function Canvas({
               run={route.kind === "run" ? route.seq : null}
               entry={deployments.find((d) => d.slug === route.slug)}
               navigate={navigate}
-              role={me.role}
               codeText={async (unit) => {
                 const doc = await getDeployedDocument(route.slug, unit);
                 const plain = printHolon(route.slug, doc, ev);
@@ -1429,7 +1421,6 @@ function Canvas({
         errors={derived.errors}
         liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
         tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
-        role={me.role}
         outOfDate={outOfDate === true}
         onViewRun={(seq) => flowName && onView(flowName, seq)}
       />
@@ -1456,19 +1447,13 @@ function Canvas({
 }
 
 function Editor({ me: signedIn }: { me: Me }) {
-  // Whether they may view People and access: an admin may, and whoever holds people.view on the
-  // host, as the server answers once they are in.
-  const [people, setPeople] = useState(signedIn.role === "admin");
-  useEffect(() => {
-    let stale = false;
-    mayI(["people.view"])
-      .then((can) => !stale && setPeople(can["people.view"] === true))
-      .catch(() => !stale && setPeople(signedIn.role === "admin"));
-    return () => {
-      stale = true;
-    };
-  }, [signedIn.name, signedIn.role]);
-  const me = useMemo(() => ({ ...signedIn, people }), [signedIn, people]);
+  // The host's pages they may view, as the server answers once they are in (can.ts): until it
+  // has, an admin's are shown.
+  const can = useCan();
+  const me = useMemo(() => {
+    const may = (action: Action) => can?.[action] ?? (signedIn.role === "admin" ? true : undefined);
+    return { ...signedIn, people: may("people.view"), resources: may("resource.view"), policy: may("policy.view"), warnings: may("host.view") };
+  }, [signedIn, can]);
   // What the work area shows: a page, or the canvas (the active flow's tab), as the address
   // says (routes.ts). A place shown by another page's is written as that page's.
   const { route, navigate, arrivedAt } = useHashRoute();
