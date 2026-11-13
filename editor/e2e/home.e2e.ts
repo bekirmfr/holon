@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, nodesLevel, openSample } from "./helpers";
+import { gotoPage, navLink, nodesLevel, openSample, statementsLevel } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -183,8 +183,9 @@ test("the bar's panes: c, x and i show or hide the canvas, the text and the Insp
 test("closing a changed tab asks: Save and close saves it, then closes it", async ({ page, request, adminToken }) => {
   await openSample(page, "Hello API");
   const tabs = page.getByRole("tablist", { name: "open tabs" });
-  // A route of its own, typed in the text: once the canvas shows it, the text stands for the flow
-  // and is what a save keeps.
+  // A route of its own, typed in the text: once the canvas shows it (its statements say the path,
+  // where the nodes hold it in a field), the text stands for the flow and is what a save keeps.
+  await statementsLevel(page);
   const path = `/saved-on-close-${Date.now()}/:name`;
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
   const line = page.getByRole("region", { name: "Text" }).locator(".cm-line", { hasText: 'route.get("/hello/:name"' });

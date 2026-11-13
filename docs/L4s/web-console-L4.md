@@ -209,11 +209,18 @@ The terminal editor and the web read the same function, so they can't draw a flo
 **Pause, resume, stop and run move to the flow page's header** (§8.1). The editor is for the
 text, and the bar shows the flow's status as a chip linking there.
 
-### 5.2 The canvas: Statements and Nodes
+### 5.2 The canvas: Nodes, and the views drawn from it
 
-- **Statements** (the default): `StatementGraph` over the text as typed. It is read-only: it is
+Nodes is the flow itself and the one level edited; Statements and Grouped are read-only views of
+it, edited at Nodes or through the text. The canvas's head says so: Nodes, then "views" with the
+two, and a "read only" tag while one of them shows.
+
+- **Statements:** `StatementGraph` over the text as typed. It is read-only: it is
   edited through the text, and clicking a row moves the cursor.
-- **Nodes:** today's React Flow canvas, with:
+- **Grouped:** the nodes as the Nodes level's tidy lays them out, each statement framed as a lane
+  over its nodes' columns, each trigger framed round its statements (`statementGroups.ts`). For
+  looking: nothing moves in the flow.
+- **Nodes** (the default): today's React Flow canvas, with:
   - the primitive Palette, shown only at this level;
   - composites, projection and group / ungroup;
   - undo and redo, tidy and fit, in the canvas's own controls;
@@ -663,7 +670,7 @@ Everything else is the editor's, over routes that exist.
 
 **e2e** (`editor/e2e`):
 
-- A sample opens at the Statements level.
+- A sample opens at the Nodes level; `l` goes to Statements and Grouped, each marked read only.
 - Clicking a row moves the cursor.
 - Replay the draft on a deployed sample.
 - An Approvals card's rows.

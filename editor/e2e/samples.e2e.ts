@@ -120,9 +120,7 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   // View mode is read only: no palette.
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
-  // The palette is the Nodes level's.
-  await expect(page.locator(".hl-palette")).toHaveCount(0);
-  await nodesLevel(page);
+  // The palette is the Nodes level's, where the flow opens.
   await expect(page.locator(".hl-palette")).toBeVisible();
 });
 

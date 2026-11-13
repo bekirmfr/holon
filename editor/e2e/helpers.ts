@@ -44,13 +44,21 @@ export async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
-/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): a flow
- *  opens at its Statements. Pressed as such: beside the text and the Inspector at the tests'
- *  width, the canvas's head can lie under another pane's edge. */
+/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): where a flow
+ *  opens, unless this browser kept another level for it. Pressed as such: beside the text and the
+ *  Inspector at the tests' width, the canvas's head can lie under another pane's edge. */
 export async function nodesLevel(page: Page) {
   const nodes = page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name: "Nodes", exact: true });
   await nodes.dispatchEvent("click");
   await expect(nodes).toHaveAttribute("aria-pressed", "true");
+}
+
+/** The canvas at its Statements, a read-only view of the nodes: the statement graph of its text.
+ *  Pressed as `nodesLevel` presses. */
+export async function statementsLevel(page: Page) {
+  const statements = page.locator(".hl-canvas").getByRole("group", { name: "read-only views" }).getByRole("button", { name: "Statements", exact: true });
+  await statements.dispatchEvent("click");
+  await expect(statements).toHaveAttribute("aria-pressed", "true");
 }
 
 /** The Flows page's row of the flow `name`, saved or deployed. */

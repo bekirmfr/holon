@@ -780,7 +780,6 @@ code, kbd, pre, samp { font-family: var(--mono); }
   font: inherit; background: transparent; border: none; color: var(--faint); cursor: pointer;
 }
 .hl-inspector__fold:hover { color: var(--ink); }
-.hl-view__bottom, .hl-bottom { grid-column: 1 / -1; grid-row: 3; border-top: 1px solid var(--border-strong); }
 /* The bottom pane in Edit (BottomPane.tsx): its tabs, then the one shown. Hidden (b), it keeps
    what was typed into it. */
 .hl-bottom { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); font-size: 11px; color: var(--muted); }
@@ -925,7 +924,24 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-levels__seg:hover { color: var(--ink); }
 .hl-levels__seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); cursor: default; }
 .hl-levels__seg:disabled { opacity: 0.4; cursor: not-allowed; }
+/* The read-only views, after the nodes they are drawn from: lighter, and named as views. */
+.hl-levels__views { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); flex-shrink: 0; cursor: help; }
+.hl-levels__views::before { content: "→ "; letter-spacing: 0; }
+.hl-levels--views { border-style: dashed; }
+.hl-levels--views .hl-levels__seg[aria-pressed="true"] { color: var(--ink); background: var(--surface-2); }
+.hl-levels__readonly { font-size: 10px; padding: 1px 6px; border-radius: 3px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); flex-shrink: 0; cursor: help; }
 .hl-canvas__controls { display: inline-flex; gap: 4px; flex-shrink: 0; }
+/* The Grouped level's frames (StatementFrames.tsx), under the nodes: a trigger's column, and each
+   statement's box in its kind's colour (--k, as the Statements level's rows). */
+.hl-frame { position: absolute; left: 0; top: 0; box-sizing: border-box; border-radius: 8px; pointer-events: none; z-index: -1; }
+.hl-frame--band { border: 1px dashed var(--border-strong); background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.hl-frame--row, .hl-frame--loose { --k: var(--faint); border: 1px solid color-mix(in srgb, var(--k) 55%, var(--border)); border-left: 4px solid var(--k); background: color-mix(in srgb, var(--k) 7%, var(--bg)); }
+.hl-frame--head { --k: var(--accent); }
+.hl-frame__bar { display: flex; align-items: baseline; gap: 8px; height: 26px; padding: 0 10px; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 26px; color: var(--muted); }
+.hl-frame--band > .hl-frame__bar { height: 32px; line-height: 32px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.hl-frame__label { flex: none; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--k, var(--ink)); }
+.hl-frame--band .hl-frame__label { text-transform: none; letter-spacing: 0; font-family: var(--mono); color: var(--ink); }
+.hl-frame__text { overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); color: var(--body); }
 .hl-canvas__statements { position: absolute; left: 0; right: 0; bottom: 0; top: 32px; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; z-index: 3; }
 .hl-canvas__parse { padding: 5px 10px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn-bg) 53%, transparent); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .hl-canvas__none { margin: auto; max-width: 420px; padding: 16px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }

@@ -76,6 +76,7 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { CanvasHead, FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { StatementFrames } from "./StatementFrames";
 import { StatementGraph } from "./StatementGraph";
 import { InspectorText } from "./InspectorText";
 import { useCanvasLevel } from "./useCanvasLevel";
@@ -1210,6 +1211,20 @@ function Canvas({
     deployed: flowName && deployedEntry ? { slug: flowName, unit: deployedEntry.unit } : null,
   });
   const atStatements = canvasLevel.level === "statements";
+  // The Grouped level draws the nodes where their statements' frames put them: a way of looking,
+  // so they aren't dragged there, and the flow's own positions stay as they are.
+  const grouped = canvasLevel.level === "grouped" ? canvasLevel.grouped : null;
+  const drawnNodes = useMemo(
+    () => (grouped ? decoratedNodes.map((n) => (grouped.positions.has(n.id) ? { ...n, position: grouped.positions.get(n.id)! } : n)) : decoratedNodes),
+    [grouped, decoratedNodes],
+  );
+  // Shown grouped, the whole flow is fitted in the view; back at Nodes, it is fitted again.
+  useEffect(() => {
+    if (canvasLevel.level === "statements") return;
+    requestAnimationFrame(() => void fitView({ padding: 0.06 }));
+    // Fitted when the level changes, and once the grouping is first laid out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasLevel.level, grouped !== null]);
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -1261,7 +1276,7 @@ function Canvas({
     <div className="hl-work">
     {/* The palette is the flow tab's, at the Nodes level: edit mode places nodes from it; view
         mode is read only. */}
-    {!viewing && shown === "canvas" && !atStatements && (
+    {!viewing && shown === "canvas" && canvasLevel.level === "nodes" && (
       // A flow isn't offered inside itself.
       <Palette
         catalog={catalog}
@@ -1347,8 +1362,8 @@ function Canvas({
         />
         <ReactFlow<PrimitiveNodeType>
           colorMode={dark ? "dark" : "light"}
-          nodes={decoratedNodes}
           onNodeClick={view.onNodeClick}
+          nodes={drawnNodes}
           onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
           onEdgeMouseLeave={viewing ? () => view.setHoveredWire(null) : undefined}
           onNodesChange={onNodesChange}
@@ -1359,7 +1374,8 @@ function Canvas({
           nodeTypes={nodeTypes}
           connectionLineStyle={{ stroke: "var(--accent)", strokeWidth: 1.6 }}
           fitView={false}
-          minZoom={0.4}
+          // The Grouped level fits a whole flow of many statements, to be zoomed into.
+          minZoom={grouped ? 0.08 : 0.4}
           maxZoom={2}
           proOptions={{ hideAttribution: true }}
           // Select a node or wire, then Backspace or Delete removes it — React Flow's own built-in
@@ -1368,12 +1384,14 @@ function Canvas({
           // reach for first, especially on Windows. React Flow itself skips this handling while a
           // text input/select inside a node has focus, so editing a const's value or type is safe.
           deleteKeyCode={viewing ? null : ["Backspace", "Delete"]}
-          nodesDraggable={!viewing}
+          // At Grouped the nodes stand where their statements put them.
+          nodesDraggable={!viewing && !grouped}
           nodesConnectable={!viewing}
         >
           <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />
           <Controls showInteractive={false} />
-          {!viewing && (
+          {grouped && <StatementFrames frames={grouped.frames} />}
+          {!viewing && !grouped && (
             <Panel position="bottom-right">
               <ProjectionPanel
                 nodeCount={nodes.length}

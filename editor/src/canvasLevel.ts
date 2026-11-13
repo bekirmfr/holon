@@ -1,6 +1,7 @@
-// The canvas's two levels (web-console-L4.md §5.2): Statements, the flow as its text says it (the
-// statement graph, read only), and Nodes, the nodes the core runs (today's canvas, where they are
-// placed and wired). A tab keeps its level, and a flow's is remembered in this browser by its name,
+// The canvas's levels (web-console-L4.md §5.2): Nodes, the nodes the core runs, is the flow itself
+// and the one level edited (where they are placed and wired); Statements (the flow as its text says
+// it, the statement graph) and Grouped (the nodes framed by their statements) are read-only views
+// drawn from it, edited at Nodes or through the text. A tab keeps its level, and a flow's is remembered in this browser by its name,
 // so it opens again where it was left. A row of the statement graph stands for nodes: opening it
 // frames them on the Nodes level, and what they may do is what its row may.
 
@@ -11,10 +12,16 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { rowKey } from "./StatementGraph";
 import { sameGraph, type Graph } from "./textSync";
 
-export type CanvasLevel = "statements" | "nodes";
+/** Grouped is the nodes inside their statements' frames (statementGroups.ts): the Nodes level's
+ *  nodes, laid out by the Statements level's rows, for looking at; nothing is moved in the flow. */
+export type CanvasLevel = "statements" | "grouped" | "nodes";
+
+/** The levels in the order `l` steps through them, as the canvas's head shows them: the nodes,
+ *  the flow itself and the one level edited, then the two read-only views drawn from it. */
+export const LEVELS: CanvasLevel[] = ["nodes", "statements", "grouped"];
 
 /** The level a flow opens at, when this browser has none kept for it. */
-export const DEFAULT_LEVEL: CanvasLevel = "statements";
+export const DEFAULT_LEVEL: CanvasLevel = "nodes";
 
 const KEY = "holon.level";
 /** How many flows' levels are kept: the newest. */
@@ -34,7 +41,7 @@ function kept(): Record<string, CanvasLevel> {
 export function levelOf(name: string | null): CanvasLevel {
   if (name === null) return DEFAULT_LEVEL;
   const l = kept()[name];
-  return l === "statements" || l === "nodes" ? l : DEFAULT_LEVEL;
+  return LEVELS.includes(l) ? l : DEFAULT_LEVEL;
 }
 
 /** Keep the level the flow `name` is at, for when it opens again. */
