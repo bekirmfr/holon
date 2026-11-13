@@ -707,6 +707,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/approved-payout.holon.ts"),
     },
     Sample {
+        name: "reviewed-draft",
+        title: "Reviewed draft (an agent drafts it, and whoever asked for it may approve it as it reads)",
+        description: "An output review: you start its draft action yourself (the editor's run, or holon action) with a title and a brief, and the run waits at an approval in two steps, a day at most: an agent bound to drafter takes the first, its draft the note the run is given, then a person bound to proofreader approves it as it reads. That step says starter: true, so whoever started the run may take it, as the one who asked checks what was made; left out, as in a payout, whoever started a run takes no step of it, and an agent that started one takes none whatever a step says. Each step is a different principal, and one decline, with a reason, ends it. Approved, the draft is written to a folder as <title>.md. A host that lets no step take whoever started a run (holon access approvals --starter off) refuses to deploy it, saying why.",
+        shows: &["approval in steps", "an agent's step", "whoever started the run", "actions", "named folders"],
+        port: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder and say who takes each step (an admin; on the server's machine holon signs in as you, who set the server up): holon folder add drafts ~/holon-drafts; holon roles define drafter --allow run.decide --kinds agent; holon roles define proofreader --allow run.decide; holon people add quill --agent; holon people token quill; holon bind drafter --to quill --flow reviewed-draft; holon bind proofreader --to <you> --flow reviewed-draft; its review then says who decides it: an agent holding drafter, then a person holding proofreader, who may be whoever started the run. Deploy, then holon action reviewed-draft draft --input '{\"title\":\"launch\",\"brief\":\"two lines on Monday\"}' (it waits for the drafter); holon decide reviewed-draft lists the run, its steps and what it shows; quill drafts it with its token in HOLON_TOKEN: holon decide reviewed-draft <run> shape --approve --note '{\"text\":\"We launch on Monday.\"}'; then you read the draft in the editor's Approvals (Runs waiting: ✓ drafter (quill) → ◻ proofreader (whoever started it may take it), quill's note beside it) and approve it with HOLON_TOKEN unset: holon decide reviewed-draft <run> shape --approve; ~/holon-drafts/launch.md holds the draft. Started by quill instead, the run waits for someone else: an agent never decides a run it started; and holon access approvals --starter off makes the flow refuse to deploy",
+        text: include_str!("../samples/reviewed-draft.holon.ts"),
+    },
+    Sample {
         name: "atlas-notes",
         title: "Atlas notes (a MongoDB database)",
         description: "Keeps notes as documents in a MongoDB collection an admin binds on the host: a cluster on MongoDB Atlas, or a replica set of your own. Each call is a record literal written in the flow, its fields and operators ($in, $set, $inc) the flow's and each value from the request passed in as data, so a request can never add an operator; the collection is the permission. Finds are answered as the run found them; inserts, updates and deletes land when the run finishes, in one transaction that first checks what it found is still so. Marking a note done must match exactly one open note (expect: 1): twice, the second finds none, and nothing lands.",
@@ -1123,10 +1135,11 @@ mod tests {
         let ports: Vec<_> = samples().iter().filter_map(|s| s.port).collect();
         assert_eq!(ports.iter().collect::<HashSet<_>>().len(), ports.len(), "each server its own port");
         for s in samples() {
-            // What starts it: requests on its port, or, without one, its clock or new files (an
-            // `every` or `on.file` handler; beside routes, the port is what the entry says).
-            let handled = s.text.lines().any(|l| l.starts_with("every(") || l.starts_with("on.file."));
-            assert!(s.port.is_some() || handled, "{}: a port, a clock or new files", s.name);
+            // What starts it: requests on its port, or, without one, its clock, new files or a
+            // person running one of its actions (an `every` or `on.file` handler, or an `action`;
+            // beside routes, the port is what the entry says).
+            let handled = s.text.lines().any(|l| l.starts_with("every(") || l.starts_with("on.file.") || (l.starts_with("export const ") && l.contains(" = action(")));
+            assert!(s.port.is_some() || handled, "{}: a port, a clock, new files or an action", s.name);
             let doc = build(s).unwrap_or_else(|e| panic!("{e}"));
             assert!(!doc.nodes.is_empty(), "{}", s.name);
         }

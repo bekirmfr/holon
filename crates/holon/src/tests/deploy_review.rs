@@ -231,7 +231,8 @@ export const pay = action(async (order) => {{
 /// §9: the review says an approval is not ready when its steps can't all be taken here: a step
 /// takes a principal of its kind bound to its role where the approval is (as the version's tags
 /// would make it), not disabled, one principal a step; whoever deploys it takes none on a host that
-/// keeps them out; nor does whoever starts its run, here anyone who may run its action. Each row:
+/// keeps them out; nor does whoever starts its run, here anyone who may run its action, but for a
+/// step that says `starter: true` on a host that lets one (then refusing the version). Each row:
 /// a flow, who is bound to what on it, and what the review says of its approval as ada: why it is
 /// not ready, and which of its runs would wait there undecided (every run, or some runs: those its
 /// starter takes no step of, which the editor's deploy doesn't ask about again).
@@ -254,6 +255,7 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
     bind(&book, "bob", "reviewer", slug("p5"));
     bind(&book, "bob", "approver", slug("p5"));
     bind(&book, "ada", "approver", slug("p6"));
+    bind(&book, "ada", "approver", slug("p10"));
     bind(&book, "pat", "editor", slug("p7"));
     bind(&book, "pat", "approver", slug("p7"));
     bind(&book, "eve", "approver", slug("p8"));
@@ -263,30 +265,40 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
     let one = "{ steps: [{ role: \"approver\" }], expires: \"1h\" }";
     let two = "{ steps: [{ role: \"approver\", people: 2 }], expires: \"1h\" }";
     let none = |role: &str| format!("{role}: no person holds it here");
-    // What, the flow, its settings, its approval, whether the host keeps the deployer out, and why
-    // the review says it is not ready (none: it is), with which of its runs would wait there.
+    let theirs = "{ steps: [{ role: \"approver\", starter: true }], expires: \"1h\" }";
+    // What, the flow, its settings, its approval, whether the host keeps the deployer out, and
+    // lets a step take whoever started the run, and why the review says it is not ready (none: it
+    // is), with which of its runs would wait there.
     let every = |why: &str| Some(("every run", why.to_string()));
     let some = |why: String| Some(("some runs", why));
-    type Row<'a> = (&'a str, &'a str, &'a str, &'a str, bool, Option<(&'a str, String)>);
-    let rows: [Row; 11] = [
-        ("one approver, and dee holds it", "p1", "", one, false, None),
-        ("two approvers, and dee alone holds it", "p2", "", two, false, every("approver: 1 person holds it here; it needs 2")),
-        ("two, and the version's tag brings cy", "p3", tagged, two, false, None),
-        ("two, untagged, without cy", "p3", "", two, false, every("approver: 1 person holds it here; it needs 2")),
-        ("an agent's step no agent holds", "p4", "", "{ steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"approver\" }], expires: \"1h\" }", false, every("classifier: no agent holds it here")),
-        ("two steps, bob alone for both", "p5", "", "{ steps: [{ role: \"reviewer\" }, { role: \"approver\" }], expires: \"1h\" }", false, every("its steps take 2 different principals, one a step, and fewer can here")),
-        ("ada deploys, the one approver, who may start a run", "p6", "", one, false, some(format!("a run ada starts can't be decided, as they take no step of it: {}", none("approver")))),
-        ("ada deploys, kept out", "p6", "", one, true, every(&none("approver"))),
-        ("pat alone approves, and may start a run", "p7", "", one, false, some(format!("a run pat starts can't be decided, as they take no step of it: {}", none("approver")))),
-        ("eve, disabled, doesn't count", "p8", "", two, false, every("approver: 1 person holds it here; it needs 2")),
-        ("two people, of whom only ada decides here", "p9", "", "{ people: 2, expires: \"1h\" }", false, every("its step: 1 person may decide it here; it needs 2")),
+    type Row<'a> = (&'a str, &'a str, &'a str, &'a str, bool, bool, Option<(&'a str, String)>);
+    let rows: [Row; 13] = [
+        ("one approver, and dee holds it", "p1", "", one, false, true, None),
+        ("two approvers, and dee alone holds it", "p2", "", two, false, true, every("approver: 1 person holds it here; it needs 2")),
+        ("two, and the version's tag brings cy", "p3", tagged, two, false, true, None),
+        ("two, untagged, without cy", "p3", "", two, false, true, every("approver: 1 person holds it here; it needs 2")),
+        ("an agent's step no agent holds", "p4", "", "{ steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"approver\" }], expires: \"1h\" }", false, true, every("classifier: no agent holds it here")),
+        ("two steps, bob alone for both", "p5", "", "{ steps: [{ role: \"reviewer\" }, { role: \"approver\" }], expires: \"1h\" }", false, true, every("its steps take 2 different principals, one a step, and fewer can here")),
+        ("ada deploys, the one approver, who may start a run", "p6", "", one, false, true, some(format!("a run ada starts can't be decided, as they take no step of it: {}", none("approver")))),
+        ("ada deploys, kept out", "p6", "", one, true, true, every(&none("approver"))),
+        ("pat alone approves, and may start a run", "p7", "", one, false, true, some(format!("a run pat starts can't be decided, as they take no step of it: {}", none("approver")))),
+        ("eve, disabled, doesn't count", "p8", "", two, false, true, every("approver: 1 person holds it here; it needs 2")),
+        ("two people, of whom only ada decides here", "p9", "", "{ people: 2, expires: \"1h\" }", false, true, every("its step: 1 person may decide it here; it needs 2")),
+        ("ada, the one approver, may take a step that says so", "p10", "", theirs, false, true, None),
+        ("not on a host that lets no step take whoever started it", "p10", "", theirs, false, false, some(format!("a run ada starts can't be decided, as they take no step of it: {}", none("approver")))),
     ];
-    for (what, s, settings, asked, exclude_deployer, said) in rows {
-        let (code, answer) = send(&state, &ada, "PUT", "/access/approvals", json!({ "exclude_deployer": exclude_deployer, "agents": true, "why": what }));
+    for (what, s, settings, asked, exclude_deployer, starter, said) in rows {
+        let (code, answer) = send(&state, &ada, "PUT", "/access/approvals", json!({ "exclude_deployer": exclude_deployer, "agents": true, "starter": starter, "why": what }));
         assert_eq!(code, 200, "{answer}");
         let unit = stage(&state, &ada, &pay(s, settings, asked));
         let (_, _, touches) = review(&state, &ada, s, &unit);
         let row = touches.as_array().unwrap().iter().find(|r| r["kind"] == "approval").cloned().unwrap();
         assert_eq!((row["waits"].as_str(), row["ready"].as_str()), said.as_ref().map_or((None, None), |(runs, why)| (Some(*runs), Some(why.as_str()))), "{what}: {row}");
+        // A step that lets the starter in, on a host that lets none: refused, saying how to let it.
+        let (_, preview) = send(&state, &ada, "POST", "/deploy/preview", json!({ "slug": s, "unit": unit }));
+        let refused = (!starter && asked == theirs).then_some(
+            "this host lets no step take whoever started the run, and \"payout\" asks for a person holding approver, who may be whoever started the run (holon access approvals --starter on)",
+        );
+        assert_eq!(preview["refused"].as_str(), refused, "{what}");
     }
 }

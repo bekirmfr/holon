@@ -3867,14 +3867,15 @@ impl<'s, 't> Reader<'s, 't> {
         Ok((stages, nested))
     }
 
-    /// One step of an approval: `{ role: "reviewer" }`, with `kind: "agent"` when an agent takes it
-    /// and `people: 2` when more than one does. With no role, anyone holding `run.decide` takes it,
-    /// a person.
+    /// One step of an approval: `{ role: "reviewer" }`, with `kind: "agent"` when an agent takes it,
+    /// `people: 2` when more than one does, and `starter: true` when whoever started the run may
+    /// take it (left out, they may not: one form). With no role, anyone holding `run.decide` takes
+    /// it, a person.
     fn approval_slot(&self, e: &js::Expression) -> R<approval::Slot> {
         let js::Expression::ObjectExpression(o) = e else {
             return fail(self.span(e.span()), "a step is an object: { role: \"reviewer\" }, { role: \"classifier\", kind: \"agent\" }");
         };
-        let mut slot = approval::Slot { kind: approval::SlotKind::Person, role: None, people: 1 };
+        let mut slot = approval::Slot { kind: approval::SlotKind::Person, role: None, people: 1, starter: false };
         for (key, value, at) in self.fields(o)? {
             match key.as_str() {
                 "role" => match self.unwrap(value) {
@@ -3895,11 +3896,18 @@ impl<'s, 't> Reader<'s, 't> {
                         _ => return fail(self.span(value.span()), "a step's people is how many different principals take it, a number from 1 to 5: { role: \"approver\", people: 2 }"),
                     }
                 }
-                other => return fail(at, format!("a step's fields are role, kind and people, not \"{other}\"")),
+                "starter" => match self.unwrap(value) {
+                    js::Expression::BooleanLiteral(b) if b.value => slot.starter = true,
+                    _ => return fail(self.span(value.span()), "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
+                },
+                other => return fail(at, format!("a step's fields are role, kind, people and starter, not \"{other}\"")),
             }
         }
         if slot.kind == approval::SlotKind::Agent && slot.role.is_none() {
             return fail(self.span(o.span), "an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }");
+        }
+        if slot.kind == approval::SlotKind::Agent && slot.starter {
+            return fail(self.span(o.span), "an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }");
         }
         Ok(slot)
     }

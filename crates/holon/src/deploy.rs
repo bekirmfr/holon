@@ -816,8 +816,9 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
 /// is (none named: to a role that decides there), as the version's tags would make it, and not
 /// disabled; one principal a step, as many as the step's `people`. Whoever deploys it takes none
 /// on a host that keeps them out (`approvals.exclude_deployer`), nor whoever starts a run, which,
-/// for an approval in one of its actions, may be anyone who may run that action. None worked out
-/// on a server without accounts. With why, which of its runs would wait there undecided: `every
+/// for an approval in one of its actions, may be anyone who may run that action, but for a step
+/// that says `starter: true`, a person, where the host lets one (`approvals.starter`). None
+/// worked out on a server without accounts. With why, which of its runs would wait there undecided: `every
 /// run` (a step no one here may take, or too few), or `some runs` (those a principal starts who
 /// would then take no step of them: a run a route, a schedule or a file starts has no starter, and
 /// can be decided), which deploying in the editor doesn't ask about again.
@@ -854,7 +855,7 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
                 Taking { slot, who }
             })
             .collect();
-        if let Some(why) = untaken(&takes, None) {
+        if let Some(why) = untaken(&takes) {
             unready.insert(item.clone(), (why, "every run"));
             continue;
         }
@@ -866,7 +867,10 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
             (0..callers.len()).filter(move |&i| can(&callers[i], Action::RunCall, &Resource::Action { slug, name: &a.name, agents_may }).is_ok())
         });
         for i in starters.collect::<BTreeSet<_>>() {
-            if let Some(why) = untaken(&takes, Some(i)) {
+            // Set aside from each step that doesn't take whoever started the run.
+            let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter && callers[i].kind == Some(Kind::Person);
+            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| p != i || takes_them(t.slot)).collect() }).collect();
+            if let Some(why) = untaken(&theirs) {
                 unready.insert(item.clone(), (format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()), "some runs"));
                 break;
             }
@@ -881,13 +885,13 @@ struct Taking<'a> {
     who: Vec<usize>,
 }
 
-/// Why `takes` can't all be taken, one principal a step and as many as each needs, with `without`
-/// set aside: a step fewer may take than it needs ("approver: 1 person holds it here; it needs
-/// 2"), or fewer different principals than the steps need together.
-fn untaken(takes: &[Taking], without: Option<usize>) -> Option<String> {
+/// Why `takes` can't all be taken, one principal a step and as many as each needs: a step fewer
+/// may take than it needs ("approver: 1 person holds it here; it needs 2"), or fewer different
+/// principals than the steps need together.
+fn untaken(takes: &[Taking]) -> Option<String> {
     use holon_core::approval::SlotKind;
     for Taking { slot, who } in takes {
-        let n = who.iter().filter(|&&i| Some(i) != without).count();
+        let n = who.len();
         if n >= slot.people as usize {
             continue;
         }
@@ -905,13 +909,13 @@ fn untaken(takes: &[Taking], without: Option<usize>) -> Option<String> {
     }
     // One seat a person a step needs; each principal takes one seat at most (Kuhn's matching).
     let seats: Vec<&Vec<usize>> = takes.iter().flat_map(|t| std::iter::repeat_n(&t.who, t.slot.people as usize)).collect();
-    fn seat(s: usize, seats: &[&Vec<usize>], without: Option<usize>, seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
+    fn seat(s: usize, seats: &[&Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
         for &p in seats[s] {
-            if Some(p) == without || !seen.insert(p) {
+            if !seen.insert(p) {
                 continue;
             }
             let other = taken.get(&p).copied();
-            if other.is_none_or(|o| seat(o, seats, without, seen, taken)) {
+            if other.is_none_or(|o| seat(o, seats, seen, taken)) {
                 taken.insert(p, s);
                 return true;
             }
@@ -919,7 +923,7 @@ fn untaken(takes: &[Taking], without: Option<usize>) -> Option<String> {
         false
     }
     let mut taken = BTreeMap::new();
-    let all = (0..seats.len()).all(|s| seat(s, &seats, without, &mut BTreeSet::new(), &mut taken));
+    let all = (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken));
     (!all).then(|| format!("its steps take {} different principals, one a step, and fewer can here", seats.len()))
 }
 

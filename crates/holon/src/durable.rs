@@ -432,6 +432,9 @@ pub(crate) struct SlotState {
     pub(crate) kind: &'static str,
     /// How many different principals fill it.
     pub(crate) people: u8,
+    /// Whether whoever started the run may take it (`starter: true`); listed only when they may.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) starter: bool,
     /// Who approved it, in the order they did.
     pub(crate) by: Vec<String>,
     pub(crate) open: bool,
@@ -473,6 +476,7 @@ impl StoredWaiting {
                 role: s.role.clone(),
                 kind: s.kind.word(),
                 people: s.people,
+                starter: s.starter,
                 by: self.approvals().filter(|d| usize::from(d.slot) == n).map(|d| d.who.clone()).collect(),
                 open: false,
             })
@@ -549,13 +553,13 @@ impl StoredWaiting {
 
     /// The open steps `by` may fill now, by number: what the decide route would let them take
     /// without naming one. None when the run's `excluded` keeps them out, or they decided a step of
-    /// it already, or it is decided.
+    /// it already, or it is decided; when they started the run, only a step that takes them.
     fn yours(&self, excluded: &Excluded, by: &Decider) -> Vec<u8> {
         let Some(steps) = Steps::parse(&self.steps) else { return Vec::new() };
-        if excluded.excludes(by, &self.name).is_some() || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
+        if excluded.excludes(by, &self.name, &steps).is_some() || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
             return Vec::new();
         }
-        let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| by.may_fill(slot, "").is_ok());
+        let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| excluded.may_fill(by, slot, "").is_ok());
         self.slots().iter().filter(|s| s.open && fills(s.slot)).map(|s| s.slot).collect()
     }
 
@@ -907,10 +911,16 @@ impl ParkedRun {
         })
     }
 
-    /// Who decides none of its approvals, as this host's `settings` say: who started it, and who
-    /// deployed the version it is on (of its deployment's `versions`) when they are excluded.
+    /// Who decides none of its approvals, or only some steps, as this host's `settings` say: who
+    /// started it (a step that says so, where the host lets one), and who deployed the version it
+    /// is on (of its deployment's `versions`) when they are excluded.
     fn excluded(&self, versions: &[wire::Version], settings: &ApprovalSettings) -> Excluded {
-        Excluded { starter: self.started_by.clone(), deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(), no_agents: !settings.agents }
+        Excluded {
+            starter: self.started_by.clone(),
+            deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(),
+            no_agents: !settings.agents,
+            no_starter_steps: !settings.starter,
+        }
     }
 }
 
@@ -921,20 +931,38 @@ fn deployer_of(versions: &[wire::Version], unit: &str, at: u64) -> Option<String
     by_then.or_else(|| versions.iter().rfind(|v| v.unit == unit))?.by.clone()
 }
 
-/// Who decides none of a run's approvals, whatever they hold (the design's §8.4): who started
-/// it, whoever deployed the version it is on when this host excludes them, and every agent when
-/// it lets none decide (bindings.rs `ApprovalSettings`).
+/// Who decides none of a run's approvals, or only some of its steps, whatever they hold (the
+/// design's §8.4): who started it, but for a person's step that says `starter: true` on a host
+/// that lets one (`no_starter_steps` off), an agent never; whoever deployed the version it is on
+/// when this host excludes them; and every agent when it lets none decide (bindings.rs
+/// `ApprovalSettings`).
 #[derive(Default)]
 struct Excluded {
     starter: Option<String>,
     deployer: Option<String>,
     no_agents: bool,
+    no_starter_steps: bool,
 }
 
 impl Excluded {
-    /// Why `by` decides none of the approval `name`, if they don't.
-    fn excludes(&self, by: &Decider, name: &str) -> Option<String> {
-        if self.starter.as_deref() == Some(by.who) {
+    /// Whether `by` started the run.
+    fn started(&self, by: &Decider) -> bool {
+        self.starter.as_deref() == Some(by.who)
+    }
+
+    /// Whether `slot` takes `by` as whoever started the run: it says so, this host lets it, and
+    /// they are a person (an agent never decides a run it started).
+    fn takes_starter(&self, by: &Decider, slot: &Slot) -> bool {
+        slot.starter && !self.no_starter_steps && by.kind == Kind::Person
+    }
+
+    /// Why `by` decides none of the approval `name`, with `steps`, if they don't: they started the
+    /// run and no step takes them; the host keeps whoever deployed the version out; or it lets no
+    /// agent decide.
+    fn excludes(&self, by: &Decider, name: &str, steps: &Steps) -> Option<String> {
+        if self.started(by) && by.kind == Kind::Agent {
+            Some(format!("{} started this run, and an agent never decides a run it started: someone else decides its approval {name:?}", by.who))
+        } else if self.started(by) && !steps.slots().any(|(_, _, s)| self.takes_starter(by, s)) {
             Some(format!("{} started this run: someone else decides its approval {name:?}", by.who))
         } else if self.deployer.as_deref() == Some(by.who) {
             Some(format!("{} deployed the version this run is on: on this host, someone else decides its approval {name:?}", by.who))
@@ -943,6 +971,15 @@ impl Excluded {
         } else {
             None
         }
+    }
+
+    /// Whether `by` may fill `slot`, `named` as a refusal says it: as their kind and roles let them
+    /// (`Decider::may_fill`), and, when they started the run, only a step that takes them.
+    fn may_fill(&self, by: &Decider, slot: &Slot, named: &str) -> Result<(), String> {
+        if self.started(by) && !self.takes_starter(by, slot) {
+            return Err(format!("{} started this run, and {named} doesn't take whoever started it", by.who));
+        }
+        by.may_fill(slot, named)
     }
 }
 
@@ -1298,10 +1335,10 @@ impl StoredWaiting {
         let Some(steps) = Steps::parse(&self.steps) else {
             return Err((409, format!("{name:?} asks for steps this host can't read ({}): nobody decides it, and it runs out", self.steps)));
         };
-        if let Some(why) = excluded.excludes(by, name) {
+        if let Some(why) = excluded.excludes(by, name, &steps) {
             return Err((403, why));
         }
-        let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, by, decision.slot)? };
+        let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, excluded, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
         // What let them: the binding of the step's role, or of run.decide for a step without one.
         let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |b| (Some(b.binding), Some(b.access)));
@@ -1311,12 +1348,13 @@ impl StoredWaiting {
 
     /// The step `by` decides: the one named, when they may fill it (whether it is open, `take`
     /// says), or else the one open step they may fill. Refused when they may fill none (403), or
-    /// may fill several and named none (409, the plan's D36).
-    fn pick(&self, steps: &Steps, by: &Decider, named: Option<u8>) -> Result<u8, (u16, String)> {
+    /// may fill several and named none (409, the plan's D36). Whoever started the run fills only a
+    /// step that takes them (`excluded`).
+    fn pick(&self, steps: &Steps, excluded: &Excluded, by: &Decider, named: Option<u8>) -> Result<u8, (u16, String)> {
         let slots = self.slots();
         let fills = |s: &SlotState| -> Result<(), String> {
             let (_, _, slot) = steps.slots().nth(usize::from(s.slot)).expect("a slot of the steps");
-            by.may_fill(slot, &self.step_said(&slots, s.slot))
+            excluded.may_fill(by, slot, &self.step_said(&slots, s.slot))
         };
         if let Some(n) = named {
             let s = slots.get(usize::from(n)).ok_or((409, format!("{:?} has {} steps, from slot 0: there is no slot {n}", self.name, slots.len())))?;
@@ -1634,13 +1672,15 @@ mod tests {
         let (ok, no) = (|slot: u8, decides: bool| Ok((slot, decides)), |code: u16, why: &'static str| Err((code, why)));
         // (who, the step named, approves), then what it does.
         type Step = (&'static str, Option<u8>, bool, Result<(u8, bool), (u16, &'static str)>);
-        // What it shows, the steps, who started the run, the decisions, and what the run is given.
-        type Row = (&'static str, &'static str, Option<&'static str>, Vec<Step>, serde_json::Value);
+        // What it shows, the steps, who started the run, whether the host lets a step take them, the
+        // decisions, and what the run is given.
+        type Row = (&'static str, &'static str, Option<&'static str>, bool, Vec<Step>, serde_json::Value);
         let rows: Vec<Row> = vec![
             (
                 "a chain, decided in its order by each step's kind and role",
                 chain,
                 Some("sam"),
+                true,
                 vec![
                     ("ana", None, true, no(403, "ana is a person, and slot 0 (classifier) of \"payout\" is an agent's")),
                     ("scout", None, true, ok(0, false)),
@@ -1659,6 +1699,7 @@ mod tests {
                 "one principal, one step; a decline ends it",
                 chain,
                 None,
+                true,
                 vec![
                     ("scout", None, true, ok(0, false)),
                     ("dee", None, true, ok(1, false)),
@@ -1672,6 +1713,7 @@ mod tests {
                 "any order: two steps open at once",
                 "person:reviewer+person:approver",
                 None,
+                true,
                 vec![
                     ("dee", None, true, no(409, "dee may fill slot 0 (reviewer) and slot 1 (approver) of \"payout\": say which, with slot")),
                     ("scout", None, true, no(403, "scout may fill none of the open steps of \"payout\": scout is an agent, and slot 0 (reviewer) of \"payout\" is a person's; scout is an agent, and slot 1 (approver) of \"payout\" is a person's")),
@@ -1684,6 +1726,7 @@ mod tests {
                 "a step of two different people, then run out",
                 "person:reviewer*2>person:approver",
                 None,
+                true,
                 vec![
                     ("ana", None, true, ok(0, false)),
                     ("ana", Some(0), true, no(409, "ana already approved slot 0 (reviewer) of \"payout\": it needs 2 different people")),
@@ -1698,6 +1741,7 @@ mod tests {
                 "people alone: anyone run.decide lets in, a person",
                 "person*2",
                 Some("sam"),
+                true,
                 vec![
                     ("root", None, true, ok(0, false)),
                     ("scout", None, true, no(403, "scout is an agent, and \"payout\" is a person's")),
@@ -1706,16 +1750,46 @@ mod tests {
                 ],
                 json!({ "approved": false, "by": ["root"], "declined_by": "ana", "reason": "not this vendor" }),
             ),
-            ("an event", "", None, vec![("ana", None, true, no(409, "\"payout\" is an event, which its route delivers: nobody decides it"))], json!({ "approved": false, "by": [], "expired": true })),
+            (
+                "an output review: whoever started it takes the step that says so, and only that one",
+                "person:reviewer>person:approver^",
+                Some("dee"),
+                true,
+                vec![
+                    ("dee", Some(0), true, no(403, "dee started this run, and slot 0 (reviewer) of \"payout\" doesn't take whoever started it")),
+                    ("dee", None, true, no(403, "dee started this run, and slot 0 (reviewer) of \"payout\" doesn't take whoever started it")),
+                    ("ana", None, true, ok(0, false)),
+                    ("dee", None, true, ok(1, true)),
+                ],
+                json!({ "approved": true, "by": ["ana", "dee"] }),
+            ),
+            (
+                "a host that lets no step take whoever started the run",
+                "person:reviewer>person:approver^",
+                Some("dee"),
+                false,
+                vec![("ana", None, true, ok(0, false)), ("dee", None, true, no(403, "dee started this run: someone else decides its approval \"payout\"")), ("cy", None, true, ok(1, true))],
+                json!({ "approved": true, "by": ["ana", "cy"] }),
+            ),
+            (
+                "an agent never decides a run it started, whatever the steps say",
+                "agent:classifier>person:reviewer^",
+                Some("scout"),
+                true,
+                vec![("scout", None, true, no(403, "scout started this run, and an agent never decides a run it started: someone else decides its approval \"payout\""))],
+                json!({ "approved": false, "by": [], "expired": true }),
+            ),
+            ("an event", "", None, true, vec![("ana", None, true, no(409, "\"payout\" is an event, which its route delivers: nobody decides it"))], json!({ "approved": false, "by": [], "expired": true })),
             (
                 "steps this host can't read",
                 "person*9",
                 None,
+                true,
                 vec![("ana", None, true, no(409, "\"payout\" asks for steps this host can't read (person*9): nobody decides it, and it runs out"))],
                 json!({ "approved": false, "by": [], "expired": true }),
             ),
         ];
-        for (what, steps, starter, decisions, want) in rows {
+        for (what, steps, starter, starter_steps, decisions, want) in rows {
             let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: steps.into(), decisions: Vec::new(), shown: None };
             let mut decided = false;
             for (i, (who, slot, approve, then)) in decisions.into_iter().enumerate() {
@@ -1723,7 +1797,7 @@ mod tests {
                 let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
                 let by = Decider { who, kind: *kind, holds: &holds };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
-                let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };
+                let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, ..Default::default() };
                 let got = w.decide(&excluded, &by, decision);
                 let got = got.as_ref().map(|(slot, taken)| (*slot, taken.is_some())).map_err(|(code, why)| (*code, why.as_str()));
                 assert_eq!(got, then, "{what}: decision {i}, {who}");

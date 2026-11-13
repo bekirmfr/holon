@@ -4686,6 +4686,8 @@ route.post("/hook", async (req) => {
             ("{ steps: [{ role: \"reviewer\" }, { role: \"approver\" }], order: \"sequence\" }", "person:reviewer>person:approver"),
             ("{ steps: [[{ role: \"a\" }, { role: \"b\" }], { role: \"c\", people: 2 }] }", "person:a+person:b>person:c*2"),
             ("{ steps: [{ role: \"x-1\", kind: \"person\" }, {}], expires: \"1d\" }", "person:x-1>person"),
+            ("{ steps: [{ role: \"drafter\", kind: \"agent\" }, { role: \"editor\", starter: true }] }", "agent:drafter>person:editor^"),
+            ("{ steps: [{ starter: true, people: 2 }] }", "person*2^"),
         ] {
             assert_eq!(steps(options), canonical, "{options}");
         }
@@ -4707,7 +4709,10 @@ route.post("/hook", async (req) => {
             ("{ steps: [{ role: \"a\", people: 6 }] }", "a step's people is how many different principals take it, a number from 1 to 5: { role: \"approver\", people: 2 }"),
             ("{ steps: [{ role: \"a b\" }] }", "\"a b\" isn't a role's name: letters, digits, - and _, at most 64"),
             ("{ steps: [{ role: approver }] }", "a step's role is a name in quotes: { role: \"reviewer\" }"),
-            ("{ steps: [{ role: \"a\", who: \"ada\" }] }", "a step's fields are role, kind and people, not \"who\""),
+            ("{ steps: [{ role: \"a\", who: \"ada\" }] }", "a step's fields are role, kind, people and starter, not \"who\""),
+            ("{ steps: [{ role: \"a\", starter: false }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", starter: \"yes\" }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", kind: \"agent\", starter: true }] }", "an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }"),
             (six.as_str(), "an approval has at most 5 steps, not 6"),
             (long.as_str(), &format!("\"{}\" isn't a role's name: letters, digits, - and _, at most 64", "r".repeat(65))),
         ] {

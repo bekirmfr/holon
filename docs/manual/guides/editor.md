@@ -58,12 +58,14 @@ closes with its ×.
   else what the run was started with (*started with*), redacted as its log is. An approval in
   steps is its chain, `✓ classifier (scout, invoice, 0.93) → ◻ reviewer → ◻ approver (not open
   yet)`: a step taken, with who took it and what their note says in a word or two; an open one; one
-  not open yet, dimmed. Hover over a step for each decision on it: who, of which kind and role,
+  not open yet, dimmed; one whoever started the run may take says so (*whoever started it may take
+  it*). Hover over a step for each decision on it: who, of which kind and role,
   when, why, and the binding that let them. **Approve** (a reason optional), or **Decline…** (a
   reason required: its button waits for one), on the steps you may take (*Approve as reviewer…*
-  when there are several). Each principal takes one step, once, never of a run they started, and
-  the host's [approval settings](people.md#who-decides-an-approval) can keep out whoever deployed
-  the version, and agents. A run's page says what its resumed part was given: the approval's
+  when there are several). Each principal takes one step, once, never of a run they started but a
+  step that says `starter: true` (and an agent never of one it started), and the host's [approval
+  settings](people.md#who-decides-an-approval) can keep out whoever deployed the version, agents,
+  and whoever started the run from every step. A run's page says what its resumed part was given: the approval's
   decision, then each step's decision a line.
 - **Getting started** has the steps to start, each ticked once done, your notes (kept with your
   account) and short docs. Untick **show this on start** to stop it opening.

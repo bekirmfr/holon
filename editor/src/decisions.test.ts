@@ -6,7 +6,16 @@ import type { WValue } from "./holon";
 import type { Decided, WaitingDecision, WaitingRun } from "./server";
 
 const took = (who: string, slot = 0, role?: string, approved = true) => ({ slot, who, kind: "person" as const, role, at: 0, approved });
-const step = (slot: number, people: number, by: string[], open: boolean, role?: string, kind: "person" | "agent" = "person"): WaitingStep => ({ slot, stage: slot, role, kind, people, by, open });
+const step = (slot: number, people: number, by: string[], open: boolean, role?: string, kind: "person" | "agent" = "person", starter = false): WaitingStep => ({
+  slot,
+  stage: slot,
+  role,
+  kind,
+  people,
+  ...(starter ? { starter } : {}),
+  by,
+  open,
+});
 /** By people alone: one step of `people`, approved so far by `by`. */
 const alone = (people: number, by: string[] = [], yours: number[] = []): WaitingPoint => ({
   name: "payout",
@@ -30,6 +39,15 @@ const chain = (classified: string[], reviewed: string[], yours: number[] = []): 
   ],
   decisions: [...classified.map((b) => ({ ...took(b, 0, "classifier"), kind: "agent" as const })), ...reviewed.map((b) => took(b, 1, "reviewer"))],
   yours,
+});
+/** An output review: an agent drafts it, then whoever started the run may approve it as editor. */
+const review = (drafted: string[]): WaitingPoint => ({
+  name: "shape",
+  expires_at: 0,
+  steps: "agent:drafter>person:editor^",
+  said: "an agent holding drafter, then a person holding editor, who may be whoever started the run",
+  slots: [step(0, 1, drafted, drafted.length === 0, "drafter", "agent"), step(1, 1, [], drafted.length > 0, "editor", "person", true)],
+  decisions: drafted.map((b) => ({ ...took(b, 0, "drafter"), kind: "agent" as const })),
 });
 const ada = { name: "ada", kind: "person" as const, role: "editor" as const };
 const t = (value: string): WValue => ({ type: "Text", value });
@@ -103,12 +121,17 @@ describe("an approval in steps, as its chain", () => {
     ["the agent's note, its label and confidence", noted(chain(["scout"], []), { label: "invoice", confidence: 0.93 }), "✓ classifier (scout, invoice, 0.93) → ◻ reviewer (2 people) → ◻ approver (not open yet)"],
     ["a note of anything else, not in the chain", noted(chain(["scout"], ["ada"]), { checked: ["po"] }), "✓ classifier (scout) → ◻ reviewer (1 of 2: ada) → ◻ approver (not open yet)"],
     ["a confidence alone", noted(chain(["scout"], ["ada", "bob"]), { confidence: 0.5 }), "✓ classifier (scout, 0.5) → ✓ reviewer (ada and bob) → ◻ approver"],
+    ["a step whoever started the run may take, not open yet", review([]), "◻ drafter → ◻ editor (whoever started it may take it, not open yet)"],
+    ["and open", review(["scout"]), "✓ drafter (scout) → ◻ editor (whoever started it may take it)"],
   ];
   it.each(rows)("%s", (_, w, said) => {
     expect(chainSaid(w)).toBe(said);
   });
   it("is drawn only for an approval in steps, each step with the decisions taken on it", () => {
     expect([inSteps(chain([], [])), inSteps(alone(2)), inSteps({ name: "paid", expires_at: 0 })]).toEqual([true, false, false]);
+    // One step of people, which whoever started it may take, is a chain: the short form isn't.
+    const theirs: WaitingPoint = { ...alone(1), steps: "person^", slots: [step(0, 1, [], true, undefined, "person", true)] };
+    expect(inSteps(theirs)).toBe(true);
     expect(chainOf(chain(["scout"], ["ada"])).map((c) => [c.state, c.decisions.map((d) => d.who)])).toEqual([
       ["done", ["scout"]],
       ["open", ["ada"]],

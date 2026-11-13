@@ -184,18 +184,24 @@ holds what reaches the pages of those it changes within seconds, without signing
 ## Who decides an approval
 
 An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"
-}]`), and each principal takes one step, once, never of a run they started. The host says two
-things more, for every flow, kept with the roles and bindings:
+}]`), and each principal takes one step, once, never of a run they started but a step that says
+`starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft approves it as it
+reads), and an agent never of one it started. The host says three things more, for every flow,
+kept with the roles and bindings:
 
 ```sh
 holon access approvals --exclude-deployer on --why "who ships a payout doesn't sign it off"
 holon access approvals --agents off --why "no agent decides money yet"
+holon access approvals --starter off --why "whoever asks for something never signs it off"
 ```
 
 - `--exclude-deployer on`: whoever deployed the version a run is on decides none of its
   approvals, whatever they hold. Off by default.
 - `--agents off`: no agent decides an approval. A flow whose approval has a step for an agent
   doesn't deploy, and an agent takes no step of a run already waiting. On by default.
+- `--starter off`: whoever started a run takes no step of it, whatever the step says. A flow whose
+  approval has a step that lets them (`starter: true`) doesn't deploy, and a run already waiting
+  goes by it at once. On by default: a person who started a run may take a step that says so.
 
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
 
@@ -205,7 +211,7 @@ decision, so its log and its export carry them: an auditor checks who took each 
 order and through what, offline, against `holon access show --version N`. The editor shows them
 too: on hover over a step in Runs waiting, and on the run's page, a line each. The
 `approved-payout` sample binds an agent, a person and you on its tag, one to each of its three
-steps.
+steps; `reviewed-draft` binds an agent to draft and you to approve the draft of a run you start.
 
 ## Taking access away
 

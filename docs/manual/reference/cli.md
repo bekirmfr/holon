@@ -779,7 +779,8 @@ holon unbind 12 --why "back from leave"
 ```
 holon access [versions] [--json]
 holon access show [--version N] [--json]
-holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT] [--json]
+holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
+                       [--why TEXT] [--json]
 holon access local [--as NAME] [--why TEXT] [--json]
 ```
 
@@ -795,14 +796,17 @@ it, as a new version (holding `people.assign` on the host):
 ```
 exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
 agents            on   agents take the steps written for them
+starter           on   a person who started a run may take a step of it that says so
 (version 7)
 ```
 
 `--exclude-deployer on` keeps whoever deployed the version a run is on from deciding any of its
 approvals, whatever they hold (off by default). `--agents off` lets no agent decide one: a flow
 whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
-already waiting (on by default). Who started a run never decides its approvals, whatever these
-say.
+already waiting (on by default). `--starter off` lets whoever started a run take no step of it:
+a flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
+already waiting goes by it at once (on by default: a person who started a run may take a step that
+says so). An agent never decides a run it started, whatever these say.
 
 `local` says who this machine's run file signs in as: the person who set the server up, so the
 commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to

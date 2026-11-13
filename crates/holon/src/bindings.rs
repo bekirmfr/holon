@@ -73,13 +73,17 @@ pub(crate) struct Document {
 
 /// How this host decides approvals beyond each step's role and kind (the design's §8.4, the
 /// plan's D41): whether whoever deployed the version a run is on decides any of its approvals,
-/// and whether agents take the steps written for them.
+/// whether agents take the steps written for them, and whether a step that says so
+/// (`starter: true`) may take whoever started the run (the access plan's D10: off, none does,
+/// and a version with one is refused).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ApprovalSettings {
     #[serde(default)]
     pub(crate) exclude_deployer: bool,
     #[serde(default = "on")]
     pub(crate) agents: bool,
+    #[serde(default = "on")]
+    pub(crate) starter: bool,
 }
 
 fn on() -> bool {
@@ -88,16 +92,17 @@ fn on() -> bool {
 
 impl Default for ApprovalSettings {
     fn default() -> Self {
-        ApprovalSettings { exclude_deployer: false, agents: true }
+        ApprovalSettings { exclude_deployer: false, agents: true, starter: true }
     }
 }
 
 impl ApprovalSettings {
     /// Each setting: its name, whether it is on, and what that means here.
-    pub(crate) fn each(&self) -> [(&'static str, bool, &'static str); 2] {
+    pub(crate) fn each(&self) -> [(&'static str, bool, &'static str); 3] {
         let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
         let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
-        [("exclude_deployer", self.exclude_deployer, deployer), ("agents", self.agents, agents)]
+        let starter = if self.starter { "a person who started a run may take a step of it that says so" } else { "whoever started a run takes no step of it" };
+        [("exclude_deployer", self.exclude_deployer, deployer), ("agents", self.agents, agents), ("starter", self.starter, starter)]
     }
 
     /// As a version says them.
@@ -106,17 +111,21 @@ impl ApprovalSettings {
     }
 
     /// Why they refuse a deploy asking for `manifest`, if they do: an approval with a step for an
-    /// agent, while no agent decides one.
+    /// agent, while no agent decides one; or a step whoever started the run may take, while none
+    /// does.
     pub(crate) fn refuses(&self, manifest: &crate::permissions::Manifest) -> Option<String> {
-        if self.agents {
+        if self.agents && self.starter {
             return None;
         }
         manifest.items().iter().find_map(|item| {
             let (name, steps) = item.strip_prefix("Approval(\"")?.strip_suffix("\")")?.split_once('/')?;
             let steps = holon_core::approval::Steps::parse(steps)?;
-            steps.slots().any(|(_, _, s)| s.kind == holon_core::approval::SlotKind::Agent).then(|| {
-                format!("this host lets no agent decide an approval, and {name:?} asks for {} (holon access approvals --agents on)", steps.said())
-            })
+            let said = steps.said();
+            if !self.agents && steps.slots().any(|(_, _, s)| s.kind == holon_core::approval::SlotKind::Agent) {
+                return Some(format!("this host lets no agent decide an approval, and {name:?} asks for {said} (holon access approvals --agents on)"));
+            }
+            (!self.starter && steps.slots().any(|(_, _, s)| s.starter))
+                .then(|| format!("this host lets no step take whoever started the run, and {name:?} asks for {said} (holon access approvals --starter on)"))
         })
     }
 }
@@ -798,7 +807,7 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `DELETE /bindings/<id>` (`?why=`): 204; 409 for the last admin's (D15);
 /// - `GET /access/versions`: each version's number, when, by whom, what and why, newest first;
 /// - `GET /access` (`?version=n`): that version, whole; the newest without;
-/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, why?}`): how this host decides
+/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, starter?, why?}`): how this host decides
 ///   approvals (`ApprovalSettings`), each one given changed, as a new version;
 /// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
 ///   and whether it does now (`tied`: none while they are disabled), with the version;
@@ -898,15 +907,18 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 #[serde(default)]
                 agents: Option<bool>,
                 #[serde(default)]
+                starter: Option<bool>,
+                #[serde(default)]
                 why: Option<String>,
             }
-            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"why\": \"…\"}, either or both") {
+            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"starter\": false, \"why\": \"…\"}, any of them") {
                 Ok(c) => c,
                 Err(r) => return Some(r),
             };
             let mut settings = document.approvals.clone();
             settings.exclude_deployer = change.exclude_deployer.unwrap_or(settings.exclude_deployer);
             settings.agents = change.agents.unwrap_or(settings.agents);
+            settings.starter = change.starter.unwrap_or(settings.starter);
             let said = settings.said();
             match accounts.set_approvals(settings, by, change.why.as_deref()) {
                 Ok(changed) => {

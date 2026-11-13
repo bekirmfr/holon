@@ -491,12 +491,15 @@ Each step is taken after the one before. `order: "any"` takes them in any order;
 `steps` is a stage, its steps taken in any order and the stages in turn: `steps: [[{ role: "a" },
 { role: "b" }], { role: "c" }]`. A step with no role is anyone holding `run.decide` there, a
 person; an agent's step (`kind: "agent"`) names its role, and a service never takes one. Up to 5
-steps, each taken by 1 to 5 different principals (`people`). `people: N` is the short form of one
-step with no role, and `people` beside `steps` is refused, as are an empty stage, a stage of one
+steps, each taken by 1 to 5 different principals (`people`). `starter: true` lets whoever started
+the run take that step, a person (`{ role: "editor", starter: true }`: an output review, the one
+who asked checking what was made); left out, they may not, and an agent's step can't say it.
+`people: N` is the short form of one step with no role, which the starter doesn't take, and
+`people` beside `steps` is refused, as are an empty stage, a stage of one
 step and `order` with stages, each saying what to write.
 
 The steps lower to one canonical text, which the permission names: stages joined by `>`, a stage's
-steps by `+`, a step its kind, `:role` and `*N`. Here,
+steps by `+`, a step its kind, `:role`, `*N` and `^` when it takes the starter. Here,
 `approval{…, steps: "agent:classifier>person:reviewer>person:approver*2"}` and
 `Approval("payout/agent:classifier>person:reviewer>person:approver*2")`. A version that changes
 the steps changes the permission, so it asks anew, as weakening an approval should (§8.2).
@@ -508,11 +511,13 @@ The host decides each step in its order (§8.3, §8.4): a step opens once every 
 filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
 role, directly or through a group, on the host, the flow or the approval itself, and holding
 `run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
-step of an approval, once, and not of a run they started; one decline ends it. A decision names
-its step (`slot`), or takes the one open step its decider may fill. The host's approval settings
-say two things more, for every flow (§8.4, `holon access approvals`): with `exclude_deployer`,
-whoever deployed the version a run is on decides none of its steps; with `agents` off, no agent
-decides one, and a flow whose approval has an agent's step doesn't deploy.
+step of an approval, once, and not of a run they started but a step that says `starter: true`; an
+agent never decides a run it started. One decline ends it. A decision names its step (`slot`), or
+takes the one open step its decider may fill. The host's approval settings say three things more,
+for every flow (§8.4, `holon access approvals`): with `exclude_deployer`, whoever deployed the
+version a run is on decides none of its steps; with `agents` off, no agent decides one, and a flow
+whose approval has an agent's step doesn't deploy; with `starter` off, whoever started a run takes
+no step of it, and a flow whose approval has a `starter` step doesn't deploy.
 
 Each decision keeps what let its decider (§8.6): `binding`, the id of the binding they took the
 step through (`holon access show` lists it), and `access`, the version of the access document it

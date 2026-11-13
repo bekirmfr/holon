@@ -293,6 +293,9 @@ declare module "holon" {
     kind?: "person" | "agent"
     /** How many different principals take it. */
     people?: 1 | 2 | 3 | 4 | 5
+    /** `true` when whoever started the run may take it, a person (an output review: the one who
+     *  asked checks what was made); left out, they may not. An agent's step can't say it. */
+    starter?: true
   }
   /** What people decided on an approval. */
   export interface Decision {
@@ -318,8 +321,8 @@ declare module "holon" {
     at: number
     approved: boolean
     reason?: string
-    /** What they noted with it, any JSON (an agent's label and confidence, say). */
-    note?: unknown
+    /** What they noted with it, any JSON (an agent's label and confidence, say, or its draft). */
+    note?: any
     /** What let them: the binding they took it through, by its id (`holon access show` lists it). */
     binding?: number
     /** The version of the access document that binding was read in (`holon access show N`). */

@@ -256,12 +256,14 @@ const decision = await approval("payout", {
 if (!decision.approved) return { declined: decision.reason ?? "expired" }
 ```
 
-- `steps`: 1 to 5 slots. A slot is `{ role, kind?, people? }`:
+- `steps`: 1 to 5 slots. A slot is `{ role, kind?, people?, starter? }`:
   - `role`: a role name; the principal filling it must hold that role at a scope covering this
     approval point (§5.3);
   - `kind`: `person` (default) or `agent`. An agent slot is always written out; a slot without
     `kind` never accepts an agent or a service;
-  - `people`: how many different principals fill it, 1 to 5 (1 by default).
+  - `people`: how many different principals fill it, 1 to 5 (1 by default);
+  - `starter: true`: whoever started the run may fill it, a person (§8.4). Left out, they may not.
+    Only `true` is written: an agent's slot never says it.
 - `order`: `sequence` (each slot opens when the one before is filled) or `any` (all open at once).
   Stages are written as nested lists: `steps: [[a, b], c]` is a and b in any order, then c.
 - The short form stays: `await approval("payout", { people: 2 })` is one slot of two people, and a
@@ -287,6 +289,9 @@ What the run receives:
   `Approval("payout", "seq[agent:classifier, person:reviewer, person:approver]")`.
 - What the flow may do reads: "waits for approval (payout): an agent with classifier, then a person
   with reviewer, then a person with approver".
+- A slot that lets the starter in is marked `^` in the canonical text (`agent:drafter>person:
+  editor^`, `person*2^`), a character no role name holds, and said "…, who may be whoever started
+  the run": letting them in, or no longer, is a changed row like any change to who decides.
 - **Weakening needs approval.** Any change to the steps changes the capability, so a version that
   drops a slot, lowers `people`, turns `sequence` into `any`, renames a role, or turns a person slot
   into an agent slot asks for a new permission and waits for a person (an agent's deploy becomes a
@@ -331,8 +336,16 @@ Enforced by the host, not the flow:
 
 - **One principal, one slot.** A principal fills at most one slot of an approval, and counts once
   within it. An admin who reviewed may not also approve, though admin holds everything.
-- **Not the starter.** The principal whose request or action started the run may not fill any
-  slot. (A run started by a schedule or a file has no starter.)
+- **Not the starter, but where a step says so.** The principal whose request or action started
+  the run fills no slot but one that says `starter: true`, and then only a person: an agent never
+  decides a run it started, whatever the step says. (A run started by a schedule or a file has no
+  starter.) Strict by default: a payout is a request check, whose asker never approves it; a
+  draft an agent wrote for whoever asked is an output review, whose asker is its natural
+  reviewer, and the flow says so on that step. One flow may hold both, so neither a host switch
+  nor a deploy setting is fine enough: the step says it, and the version's review shows it.
+- **The host's floor**: `approvals.starter: false` (`holon access approvals --starter off`) lets no
+  step take whoever started the run, whatever the flow says: a version with a `starter` step is
+  refused at deploy, and a run already waiting goes by it at once. On by default.
 - **Not the deployer**, optional per host: `approvals.exclude_deployer: true` keeps whoever deployed
   the version the run is on from filling a slot.
 - **People are people.** A slot without `kind: "agent"` is filled only by a `person`. Services never
@@ -379,9 +392,10 @@ The deploy preview (`POST /deploy/preview`) adds, for each approval point:
 
 - the steps, and against the version deployed now: same, changed (a changed row, to approve);
 - **not ready** when a slot can't be filled: no principal of the slot's kind holds its role at a
-  scope covering this flow, or fewer than `people` do once the starter is set aside ("approver: 1
-  person holds it here; this needs 2");
-- refused when `approvals.agents` is false and a slot is an agent's.
+  scope covering this flow, or fewer than `people` do once the starter is set aside from each slot
+  that doesn't take them ("approver: 1 person holds it here; this needs 2");
+- refused when `approvals.agents` is false and a slot is an agent's, or `approvals.starter` is
+  false and a slot says `starter: true`.
 
 A flow whose tags (§5.5) bring it into a scope with bindings shows who gains access to it: "joins
 payments: payments-team may view and call it, payout-approver decides its approvals".

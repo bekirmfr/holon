@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A step of an approval may let whoever started the run take it: `starter: true`.** Whoever
+  started a run took no step of any of its approvals: right for a request check, as whoever asks
+  for a payout never approves it, and wrong for an output review, where a person asks agents for
+  a draft and is its natural reviewer. The rule is now the step's: `steps: [{ role: "drafter",
+  kind: "agent" }, { role: "proofreader", starter: true }]` lets the one who started the run take
+  the second step. Left out, they may not, as before. It is part of what the flow asks for
+  (`Approval("shape/agent:drafter>person:proofreader^")`, said "…, who may be whoever started the
+  run"), so letting the starter in, or no longer, is a changed row in the version's review. An
+  agent never decides a run it started, whatever a step says (an agent's step can't say it).
+  `holon access approvals --starter off` lets no step take whoever started a run, on this host:
+  a version with such a step is refused at deploy, saying how to let it, and a run already
+  waiting goes by it at once (`approvals.starter`, on by default). The deploy review sets the
+  starter aside only from the steps that don't take them, and the editor's Runs waiting says of a
+  step "whoever started it may take it". The `reviewed-draft` sample shows it: an agent drafts
+  what you asked for, you approve it as it reads, and it is written to a folder. `holon.d.ts`
+  types a decision's `note` as any JSON, so a flow reads the draft from `note.text`.
 - **Deploying a flow whose approval no one here can decide asks again, naming it.** The deploy
   preview already marked such an approval **!** (a step no principal of its kind here may take, or
   too few, or none once whoever starts the run is set aside), but deploying went on as for any

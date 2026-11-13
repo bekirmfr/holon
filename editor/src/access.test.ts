@@ -319,7 +319,7 @@ describe("what a version of the access document changed", () => {
     roles: [],
     groups: [],
     bindings: [],
-    approvals: { exclude_deployer: true, agents: true },
+    approvals: { exclude_deployer: true, agents: true, starter: true },
     ...more,
   });
   const b = (id: number, role: string, who: Subject, scope: Scope, expires_at?: number) => ({ id, who, role, scope, by: "ada", at: 0, ...(expires_at ? { expires_at } : {}) });
@@ -346,7 +346,7 @@ describe("what a version of the access document changed", () => {
         { name: "risk", members: [] },
       ],
       bindings: [b(1, "admin", { principal: "ada" }, "host"), b(3, "approver", { group: "ops" }, at("payout", "ok"), 1_796_083_200 + 32_400)],
-      approvals: { exclude_deployer: false, agents: true },
+      approvals: { exclude_deployer: false, agents: true, starter: false },
       local: "bob",
     });
     expect(changesOf(before, after)).toEqual([
@@ -359,12 +359,13 @@ describe("what a version of the access document changed", () => {
       { of: "group", change: "changed", said: "ops: + dee, − bob" },
       { of: "group", change: "added", said: "risk: no one" },
       { of: "approvals", change: "changed", said: "exclude_deployer off" },
+      { of: "approvals", change: "changed", said: "starter off" },
       { of: "run file", change: "changed", said: "the run file signs in as bob (was ada)" },
     ]);
     expect(changesOf(after, after)).toEqual([]);
   });
   it("lists everything of the first version as added, and no setting", () => {
-    const first = doc(1, { bindings: [b(1, "admin", { principal: "ada" }, "host")], local: "ada", approvals: { exclude_deployer: false, agents: false } });
+    const first = doc(1, { bindings: [b(1, "admin", { principal: "ada" }, "host")], local: "ada", approvals: { exclude_deployer: false, agents: false, starter: true } });
     expect(changesOf(null, first)).toEqual([
       { of: "binding", change: "added", said: "admin to ada on this host" },
       { of: "run file", change: "added", said: "the run file signs in as ada" },

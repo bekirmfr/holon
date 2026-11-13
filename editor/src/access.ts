@@ -272,7 +272,7 @@ export function changesOf(before: AccessDocument | null, after: AccessDocument):
     if (said.length > 0) out.push({ of: "group", change: "changed", said: `${g.name}: ${said.join("; ")}` });
   }
   if (before) {
-    for (const key of ["exclude_deployer", "agents"] as const) {
+    for (const key of ["exclude_deployer", "agents", "starter"] as const) {
       if (before.approvals[key] !== after.approvals[key]) out.push({ of: "approvals", change: "changed", said: `${key} ${after.approvals[key] ? "on" : "off"}` });
     }
   }

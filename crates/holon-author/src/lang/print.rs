@@ -89,7 +89,8 @@ fn family_param(leaf: &str) -> &'static str {
 /// An approval's options for its steps, as the language writes them, one form for each (D32):
 /// nothing for one person, `people: N` for more; otherwise `steps`, flat where every stage is one
 /// step, flat with `order: "any"` for one stage, and nested, a stage of one step unwrapped, for the
-/// rest. A step writes its role, `kind: "agent"` for an agent's, and `people` from 2.
+/// rest. A step writes its role, `kind: "agent"` for an agent's, `people` from 2, and `starter:
+/// true` when whoever started the run may take it.
 fn approval_options(steps: &holon_core::approval::Steps) -> Vec<String> {
     use holon_core::approval::{Slot, SlotKind};
     match steps.short() {
@@ -105,6 +106,9 @@ fn approval_options(steps: &holon_core::approval::Steps) -> Vec<String> {
         }
         if s.people > 1 {
             fields.push(format!("people: {}", s.people));
+        }
+        if s.starter {
+            fields.push("starter: true".to_string());
         }
         if fields.is_empty() { "{}".to_string() } else { format!("{{ {} }}", fields.join(", ")) }
     };

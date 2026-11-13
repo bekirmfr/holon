@@ -2532,7 +2532,7 @@ export const pay = action(async (order) => {
     for (exclude_deployer, agents, ada_refused, scout_refused) in rows {
         let row = format!("exclude_deployer {exclude_deployer}, agents {agents}");
         let (code, said) = set(&ada, json!({ "exclude_deployer": exclude_deployer, "agents": agents, "why": row }));
-        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents })), "{row}: {said}");
+        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents, "starter": true })), "{row}: {said}");
         let refused = (!agents).then_some(agents_off);
         let (code, preview) = ask(&ada, "POST", "/deploy/preview", json!({ "slug": "payouts", "unit": unit }));
         assert_eq!((code, preview["refused"].as_str()), (200, refused), "{row}: {preview}");
@@ -2556,7 +2556,7 @@ export const pay = action(async (order) => {
     let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
     assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
     let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
-    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them";
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so";
     assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
     assert_eq!(decide(&scout).1["outcome"], "waiting");
     assert_eq!(decide(&ada).1["outcome"], "approved");
@@ -2565,7 +2565,7 @@ export const pay = action(async (order) => {
     assert_eq!(set(&bob, json!({ "agents": false })).0, 403);
     let (code, said) = set(&ada, json!({ "deployer": true }));
     assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
-    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true }));
+    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true }));
 }
 
 /// **Guards:** the run file decides as the account that set the server up (the plan's D45): it

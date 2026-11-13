@@ -7,7 +7,8 @@
 // has each that changes something disabled, saying why in the server's words, until a binding
 // lets them, which the page then follows; someone who may deploy a flow but not approve what it
 // asks proposes it, told why, and it waits in Approvals. And a flow whose approval no one here can
-// decide says so in its consent and its review, and deploying it asks again, naming it.
+// decide says so in its consent and its review, and deploying it asks again, naming it; a step
+// whoever started the run may take (`starter: true`) says so, and deploys without asking.
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -412,6 +413,70 @@ test("a flow whose approval no one here can decide says so, and deploying it ask
     const again = page.getByRole("dialog");
     await expect(again).toContainText(`Runs of "${slug}" would wait at an approval no one here can decide yet:`);
     await again.getByRole("button", { name: "Approve and deploy anyway", exact: true }).click();
+    await expect.poll(() => sent).toEqual([200, 200]);
+    await expect(page.getByRole("status").filter({ hasText: `Deployed ${slug} v2.` })).toBeVisible();
+  } finally {
+    await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
+    await control(adminToken, `/flows/${slug}`, undefined, "DELETE");
+  }
+});
+
+test("a step whoever started the run may take says so in words, and with its one holder the admin, the flow deploys without asking again: letting the starter in is a changed row", async ({ page, adminToken }) => {
+  const n = Date.now().toString(36);
+  const slug = `own-review-${n}`;
+  const role = `proof-${n}`;
+  const text = (step: string) =>
+    `import { action, approval, flow } from "holon"\n\nflow("${slug}")\n\nexport const ask = action(async () => {\n  const decision = await approval("ok", { steps: [${step}] })\n  return decision.approved\n})\n`;
+  const sent: number[] = [];
+  page.on("response", (r) => {
+    if (r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy") sent.push(r.status());
+  });
+  // The admin, who may start its runs, is the one holder of the step's role.
+  await sure(control(adminToken, `/roles/${role}`, { allows: ["run.decide"], kinds: ["person"], why: "e2e: a review" }, "PUT"));
+  await sure(control(adminToken, "/bindings", { who: { principal: ADMIN.name }, role, scope: { flows: { slug } }, why: "e2e: reviews it" }));
+  try {
+    await page.goto("/");
+    await gotoPage(page, "new");
+    const canvas = page.locator(".hl-canvas");
+    await canvas.getByRole("button", { name: "text off" }).click();
+    const typed = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await typed.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text(`{ role: "${role}" }`));
+    await expect(page.locator('[aria-label="action ask"]')).toBeVisible({ timeout: 15_000 });
+
+    // Without `starter`, a run the admin starts can't be decided, and the consent says so; the runs
+    // others start can be, so approving it deploys without asking again.
+    await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
+    await page.locator('[aria-modal="true"]').locator("input").fill(slug);
+    await page.keyboard.press("Enter");
+    const consent = page.getByRole("dialog");
+    await expect(consent).toContainText(`approval ok: approved by a person holding ${role}`);
+    await expect(consent).toContainText(`a run ${ADMIN.name} starts can't be decided, as they take no step of it`);
+    await consent.getByRole("button", { name: "Approve and deploy", exact: true }).click();
+    await expect.poll(() => sent).toEqual([200]);
+    await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+
+    // A version whose step says `starter: true`: a different permission, so its review shows the
+    // row changed, in words; ready now, as the admin may take the step of a run they start, it
+    // deploys without asking again.
+    await typed.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text(`{ role: "${role}", starter: true }`));
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, and continue later`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    // Saved a second after the deploy at least (both are kept in seconds).
+    await page.waitForTimeout(1_100);
+    const saved = page.waitForResponse((r) => r.request().method() !== "GET" && new URL(r.url()).pathname.startsWith("/flows"));
+    await canvas.getByRole("button", { name: "save", exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    await page.goto(`/#approvals.${slug}.v2`);
+    const may = page.getByRole("region", { name: "what it may do" });
+    await expect(may).toContainText(`approval ok: +approved by a person holding ${role}, who may be whoever started the run, −approved by a person holding ${role}`);
+    await expect(may).not.toContainText("can't be decided");
+    await expect(page.getByRole("group", { name: "Can't be decided here" })).toHaveCount(0);
+    const decide = page.getByRole("complementary", { name: "decision" });
+    await decide.getByRole("checkbox").check();
+    await decide.getByRole("button", { name: "Approve and deploy", exact: true }).click();
     await expect.poll(() => sent).toEqual([200, 200]);
     await expect(page.getByRole("status").filter({ hasText: `Deployed ${slug} v2.` })).toBeVisible();
   } finally {

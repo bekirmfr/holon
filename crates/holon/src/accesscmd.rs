@@ -95,7 +95,8 @@ examples:
 
 const ACCESS_USAGE: &str = "usage: holon access [versions]
        holon access show [--version N]
-       holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT]
+       holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
+                              [--why TEXT]
        holon access local [--as NAME] [--why TEXT]
        (each with [--json] [--server PORT|URL])
 
@@ -111,6 +112,10 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
                            (off by default)
     --agents off           no agent decides an approval, and a flow whose approval has a step
                            for one doesn't deploy (on by default)
+    --starter off          whoever started a run takes no step of it, and a flow whose approval
+                           has a step that lets them (starter: true) doesn't deploy (on by
+                           default: a person who started a run may take a step that says so; an
+                           agent never decides a run it started)
     --why TEXT             why, kept with the version
   local                    the account this machine's run file signs in as: the person who set
                            the server up, until an admin ties it to another
@@ -352,14 +357,14 @@ pub(crate) fn unbind(args: &[String]) -> i32 {
 pub(crate) fn access(args: &[String]) -> i32 {
     const WHO: &str = "holon access";
     let usage = usage(ACCESS_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--as", "--why"], &["--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--starter", "--as", "--why"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
     match (args.word(0), args.word(1)) {
         (Some("approvals"), None) => {
             let mut change = serde_json::Map::new();
-            for (flag, key) in [("--exclude-deployer", "exclude_deployer"), ("--agents", "agents")] {
+            for (flag, key) in [("--exclude-deployer", "exclude_deployer"), ("--agents", "agents"), ("--starter", "starter")] {
                 match args.value(flag) {
                     None => {}
                     Some(on @ ("on" | "off")) => {
@@ -373,7 +378,7 @@ pub(crate) fn access(args: &[String]) -> i32 {
             }
             let answer = if change.is_empty() {
                 if args.value("--why").is_some() {
-                    eprintln!("{WHO}: --why says why a setting changes: give --exclude-deployer or --agents too");
+                    eprintln!("{WHO}: --why says why a setting changes: give --exclude-deployer, --agents or --starter too");
                     return 2;
                 }
                 cmdline::json(WHO, &args, "GET", "/access", None).map(|v| json!({ "approvals": v["approvals"], "version": v["version"] }))
@@ -758,6 +763,7 @@ mod tests {
             "this machine's run file signs in as ada",
             "exclude-deployer  off  whoever deployed the version a run is on may decide its approvals",
             "agents            on   agents take the steps written for them",
+            "starter           on   a person who started a run may take a step of it that says so",
             "",
             "group     bound  members",
             "payments  1      bob",
@@ -769,9 +775,10 @@ mod tests {
         assert_eq!(local_line(&Value::Null), "this machine's run file is tied to no account: it operates the host, and decides no approval");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
-        assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false })), [
+        assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false })), [
             "exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals",
             "agents            off  no agent decides an approval",
+            "starter           off  whoever started a run takes no step of it",
         ]);
     }
 }

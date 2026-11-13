@@ -238,7 +238,7 @@ export type AccessDocument = AccessVersion & {
   roles: { name: string; about?: string; allows: string[]; kinds: Kind[] }[];
   groups: { name: string; about?: string; members: string[] }[];
   bindings: Omit<BindingEntry, "expired">[];
-  approvals: { exclude_deployer: boolean; agents: boolean };
+  approvals: { exclude_deployer: boolean; agents: boolean; starter: boolean };
   local?: string;
 };
 export const getAccessVersion = async (n: number) => asJson<AccessDocument>(await api(`${BASE}/access?version=${n}`));
@@ -954,7 +954,9 @@ export type WaitingDecision = {
 
 /** One step of an approval as it stands (durable.rs `SlotState`): its number and stage, the role
  *  and kind it takes, how many different principals, who approved it, and whether it is open. */
-export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; by: string[]; open: boolean };
+/** One step of an approval as it stands (durable.rs `SlotState`): `starter` when whoever started
+ *  the run may take it. */
+export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; starter?: boolean; by: string[]; open: boolean };
 
 /** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`, `GET /runs/waiting`;
  *  never its tokens). */

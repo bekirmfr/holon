@@ -994,7 +994,10 @@ misled, the compiler refuses instead.
   role they hold, and its permission names the steps,
   `Approval("name/person:reviewer>person:approver")`; `people: n` is its short form. Each step
   is taken in turn, by a principal of its kind bound to its role where the approval is, never
-  whoever started the run, and each decision is kept with the binding that let it (`binding`,
+  whoever started the run but on a step that says `starter: true` (`{ role: "editor", starter:
+  true }`, `^` in its permission: an output review, the one who asked checking what was made),
+  and then a person: an agent never decides a run it started. Each decision is kept with the
+  binding that let it (`binding`,
   `access`), in the run's log and its export. Those who decide it see what they approve:
   `shows: { amount, payee }`, or the run's input when it names nothing, redacted as the run's log
   is; one who may decide a flow's approvals but not view its runs sees only the runs waiting at

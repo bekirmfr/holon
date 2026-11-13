@@ -1323,7 +1323,7 @@ The token that delivers an event to the waiting point (await) named on the node:
 approval(shows: Any) -> out: Record  {name: approval, expires: 604800, steps: person}
 ```
 
-Waits for people to decide: the run parks here until those its steps name, signed in to Holon, approve it (person: one person; person*2: two different people), or one declines it, and answers {approved, by} (by: who approved), with declined_by and reason when declined, or expired: true after expires seconds. Those who decide it see shows, what the run puts there (an amount, a payee), or the run's input when it isn't wired. Only the server delivers it: it has no token, and no route resumes it. Waiting for it is a permission.
+Waits for people to decide: the run parks here until those its steps name, signed in to Holon, approve it (person: one person; person*2: two different people; whoever started the run takes no step but one marked ^, starter: true, and an agent that started it none), or one declines it, and answers {approved, by} (by: who approved), with declined_by and reason when declined, or expired: true after expires seconds. Those who decide it see shows, what the run puts there (an amount, a payee), or the run's input when it isn't wired. Only the server delivers it: it has no token, and no route resumes it. Waiting for it is a permission.
 
 ### `store_read`
 

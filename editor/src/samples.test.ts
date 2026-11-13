@@ -46,7 +46,7 @@ beforeAll(() => {
 });
 
 /** What deploying `sample` asks for, by consent name, or why it can't deploy. */
-function derive(name: string): { caps: string[]; endpoints: number; clocks: number; files: number } {
+function derive(name: string): { caps: string[]; endpoints: number; clocks: number; files: number; actions: number } {
   const sample = samples().find((s) => s.name === name)!;
   const doc = buildSample(sample, new Evaluator());
   const nodes = doc.nodes as PrimitiveNodeType[];
@@ -59,7 +59,7 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
   const server = deriveServer(nodes, edges, ev, sample.port ?? "", doc.server ?? {});
   const endpoints = sample.port ? server.endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
-  return { caps, endpoints, clocks: server.clocks.length, files: server.files.length };
+  return { caps, endpoints, clocks: server.clocks.length, files: server.files.length, actions: server.actions.length };
 }
 
 
@@ -72,12 +72,12 @@ function handlerless(doc: ReturnType<typeof compileHolon>["doc"]) {
 }
 
 describe("sample flows", () => {
-  it("have unique names, and a port, a clock or new files to start them", () => {
+  it("have unique names, and a port, a clock, new files or an action to start them", () => {
     expect(new Set(samples().map((s) => s.name)).size).toBe(samples().length);
     for (const s of samples()) {
-      // Without a port, its every(…) or on.file handlers start it.
+      // Without a port, its every(…) or on.file handlers start it, or a person running an action.
       const d = derive(s.name);
-      expect(Boolean(s.port) || d.clocks > 0 || d.files > 0, s.name).toBe(true);
+      expect(Boolean(s.port) || d.clocks > 0 || d.files > 0 || d.actions > 0, s.name).toBe(true);
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);

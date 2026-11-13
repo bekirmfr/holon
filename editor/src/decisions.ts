@@ -30,8 +30,9 @@ export function yourDecision(w: WaitingPoint, me: Me): string | null {
 /** A step as a line names it: by its role, or its number. */
 export const stepName = (s: WaitingStep) => s.role ?? `slot ${s.slot}`;
 
-/** Whether it is the short form: one step of people, with no role. */
-const alone = (slots: WaitingStep[]): WaitingStep | null => (slots.length === 1 && slots[0].kind === "person" && slots[0].role === undefined ? slots[0] : null);
+/** Whether it is the short form: one step of people, with no role, which whoever started the run
+ *  doesn't take. */
+const alone = (slots: WaitingStep[]): WaitingStep | null => (slots.length === 1 && slots[0].kind === "person" && slots[0].role === undefined && !slots[0].starter ? slots[0] : null);
 
 /** Whether an approval is in steps (roles, kinds, an order), which Runs waiting draws as a chain;
  *  the short form, people alone, it says in words (`approvalSaid`). */
@@ -83,7 +84,8 @@ function noteWords(note: unknown): string | null {
 }
 
 /** An approval's steps in their order, each as it stands: who took a step (with what their note
- *  says in a word or two), how many of its people approved so far, or that it isn't open yet. */
+ *  says in a word or two), how many of its people approved so far, or that it isn't open yet; and
+ *  one whoever started the run may take, until it is taken. */
 export function chainOf(w: WaitingPoint): ChainStep[] {
   return (w.slots ?? []).map((s): ChainStep => {
     const decisions = (w.decisions ?? []).filter((d) => d.slot === s.slot);
@@ -94,9 +96,11 @@ export function chainOf(w: WaitingPoint): ChainStep[] {
       }),
     );
     const many = s.people > 1 ? `${s.people} people` : null;
+    const starter = s.starter ? "whoever started it may take it" : null;
+    const words = (...parts: (string | null)[]) => parts.filter((x) => x !== null).join(", ") || null;
     if (filled(s)) return { slot: s.slot, name: stepName(s), state: "done", detail: took, decisions };
-    if (s.open) return { slot: s.slot, name: stepName(s), state: "open", detail: s.by.length > 0 ? `${s.by.length} of ${s.people}: ${took}` : many, decisions };
-    return { slot: s.slot, name: stepName(s), state: "later", detail: [many, "not open yet"].filter((x) => x !== null).join(", "), decisions };
+    if (s.open) return { slot: s.slot, name: stepName(s), state: "open", detail: s.by.length > 0 ? words(`${s.by.length} of ${s.people}: ${took}`, starter) : words(many, starter), decisions };
+    return { slot: s.slot, name: stepName(s), state: "later", detail: words(many, starter, "not open yet"), decisions };
   });
 }
 
