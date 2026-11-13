@@ -28,7 +28,16 @@ const PLACES = [
   "resources.folders",
   "resources.who-may",
   "people",
-  "people.tokens",
+  "people.agents",
+  "people.groups",
+  "people.groups.payments-team",
+  "people.roles",
+  "people.bindings",
+  "people.history",
+  "people.history.v12",
+  "people.sign-in",
+  "people.who.ada",
+  "people.who.scout.bot%40example.com",
   "policy",
   "start",
   "docs",
@@ -62,6 +71,10 @@ describe("routes", () => {
     expect(parse("#editor.hello-api")).toEqual({ kind: "editor", slug: "hello-api", view: false, seq: null });
     expect(parse("#editor.hello-api.view.run-3")).toEqual({ kind: "editor", slug: "hello-api", view: true, seq: 3 });
     expect(parse("#library.samples")).toEqual({ kind: "library", tab: "samples" });
+    expect(parse("#people")).toEqual({ kind: "people", tab: "people" });
+    expect(parse("#people.who.scout.bot@example.com")).toEqual({ kind: "principal", name: "scout.bot@example.com" });
+    expect(parse("#people.groups.ops")).toEqual({ kind: "group", name: "ops" });
+    expect(parse("#people.history.v3")).toEqual({ kind: "access-version", version: 3 });
   });
 
   it("keeps a manual page's dots and slashes, and its heading", () => {
@@ -71,7 +84,22 @@ describe("routes", () => {
   });
 
   it("says what it doesn't know as not found", () => {
-    for (const h of ["refunds.nope", "refunds.run-x", "editor.refunds.edit", "approvals.refunds", "approvals.refunds.4", "flows.extra", "bad name", "library.nope", "editor.a.view.run-1.more"]) {
+    for (const h of [
+      "refunds.nope",
+      "refunds.run-x",
+      "editor.refunds.edit",
+      "approvals.refunds",
+      "approvals.refunds.4",
+      "flows.extra",
+      "bad name",
+      "library.nope",
+      "editor.a.view.run-1.more",
+      "people.tokens",
+      "people.who",
+      "people.groups.a.b",
+      "people.history.3",
+      "people.roles.viewer",
+    ]) {
       expect(parse(`#${h}`), h).toEqual({ kind: "notfound", hash: h });
     }
   });
@@ -86,7 +114,10 @@ describe("routes", () => {
     expect(up("#editor.refunds.view.run-3")).toEqual(["#editor.refunds.view.run-3", "#editor.refunds.view", "#editor.refunds", "#editor", "#overview"]);
     expect(up("#approvals.refunds.v4")).toEqual(["#approvals.refunds.v4", "#approvals", "#overview"]);
     expect(up("#docs.language/tour.md")).toEqual(["#docs.language/tour.md", "#docs", "#overview"]);
-    expect(up("#people.tokens")).toEqual(["#people.tokens", "#people", "#overview"]);
+    expect(up("#people.agents")).toEqual(["#people.agents", "#people", "#overview"]);
+    expect(up("#people.who.ada")).toEqual(["#people.who.ada", "#people", "#overview"]);
+    expect(up("#people.groups.ops")).toEqual(["#people.groups.ops", "#people.groups", "#people", "#overview"]);
+    expect(up("#people.history.v3")).toEqual(["#people.history.v3", "#people.history", "#people", "#overview"]);
   });
 
   it("says the crumbs from the overview down, each by its name", () => {
@@ -95,6 +126,8 @@ describe("routes", () => {
     expect(said("#editor.refunds.view")).toEqual(["Overview", "Editor", "refunds", "deployed"]);
     expect(said("#docs.language/tour.md")).toEqual(["Overview", "Docs", "tour"]);
     expect(said("#overview")).toEqual(["Overview"]);
+    expect(said("#people.history.v3")).toEqual(["Overview", "People and access", "History", "version 3"]);
+    expect(said("#people.who.ada")).toEqual(["Overview", "People and access", "ada"]);
   });
 
   it("can't address a flow named like a page by its name alone", () => {

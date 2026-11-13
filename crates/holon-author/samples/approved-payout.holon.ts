@@ -37,6 +37,9 @@
 //   holon bind classifier --to scout --tag payments
 //   holon bind reviewer --to bob --tag payments
 //   holon bind approver --to <you> --tag payments
+// Or in the editor's People and access: Roles defines the three (the classifier held by an agent
+// alone), Agents and tokens adds scout and makes its token, People adds bob, and Bindings binds
+// each role to its principal on the tag payments; each one's page then says what they decide.
 // And binds the database, with its tables and one account holding 100:
 //   holon database add bank ~/holon-bank.db --schema "create table if not exists accounts
 //     (id integer primary key, balance integer not null);

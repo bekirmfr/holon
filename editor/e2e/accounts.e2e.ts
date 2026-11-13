@@ -7,7 +7,7 @@
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
-import { gotoPage, menuEntry, navLink } from "./helpers";
+import { gotoPage, menuEntry, navLink, peopleTab } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -81,6 +81,7 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await fill(ada, "password", PASSWORD);
   await signIn.getByRole("button", { name: "sign in" }).click();
   await gotoPage(ada, "people");
+  await peopleTab(ada, "Agents and tokens");
   // ci, a service ada owns, signs in with a token of its own.
   const add = async (name: string, kind: string, role: string) => {
     await ada.getByLabel("new agent's or service's name").fill(name);
@@ -127,6 +128,7 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await fill(cy, "password", PASSWORD);
   await cy.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
+  await peopleTab(ada, "People");
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
@@ -148,6 +150,7 @@ test("an owner who isn't an admin makes and revokes their agent's tokens, on a p
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await gotoPage(ada, "people");
+  await peopleTab(ada, "Agents and tokens");
   await ada.getByLabel("new agent's or service's name").fill("scout");
   await ada.getByLabel("new agent's or service's kind").selectOption("agent");
   await ada.getByLabel("new agent's or service's owner").selectOption("cy");
@@ -191,8 +194,9 @@ test("signing in through the identity provider an admin set, matched by email", 
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await gotoPage(ada, "people");
-  // The page reads the settings it has when it opens and puts them in these fields (HostPages.tsx's
-  // refresh): a read answering after the fill empties them, and "turn on" stays disabled. So fill
+  await peopleTab(ada, "Signing in");
+  // The tab reads the settings it has when it opens and puts them in these fields (PeoplePages.tsx's
+  // SignIn): a read answering after the fill empties them, and "turn on" stays disabled. So fill
   // and click again until the click lands, which it does only with both fields filled.
   await expect(async () => {
     await ada.getByLabel("issuer").fill(ISSUER);

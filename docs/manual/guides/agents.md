@@ -116,7 +116,7 @@ decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../r
 An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
 }`): bind a role of your own to the agent where the flow is (`holon roles define classifier
 --allow run.view,run.decide --kinds agent`, then `holon bind classifier --to bma-agent --flow
-payout`), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
+payout`, or the same in the editor's People and access), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
 confidence) the run is given. A person's step it never takes: it says who decides it and where,
 for the agent to tell you. Turning agents off for the host (`holon access approvals --agents
 off`, [Who decides an approval](people.md#who-decides-an-approval)) keeps them out of every

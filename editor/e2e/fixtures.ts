@@ -20,7 +20,7 @@ export const SAMPLES_RS = join(ROOT, "crates", "holon-author", "src", "samples.r
 /** The ports the tests' own flows take (a flow under a slug of its own), before SAMPLE_SHIFT:
  *  in the samples' range, so a slot's ports stay its own, and in its gaps, so the sweep, which
  *  deploys every sample on its own port moved, never finds one taken. The sweep says so first. */
-export const OWN_PORTS = { greeting: 8142, total: 8143, priceReplay: 8144, proposal: 8145, traced: 8146, ledgerWriter: 8148 } as const;
+export const OWN_PORTS = { tagged: 8141, greeting: 8142, total: 8143, priceReplay: 8144, proposal: 8145, traced: 8146, ledgerWriter: 8148 } as const;
 /** The server left as installed, for the accounts tests (accounts.e2e.ts). */
 export const FRESH = `http://127.0.0.1:${PORTS.fresh}`;
 /** The editor pointed at it. */

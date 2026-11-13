@@ -19,8 +19,9 @@ password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is besi
 
 The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
 **Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
-for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8), and
-for anyone else **Your agents and services** (7); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
+for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8); for
+someone else whose role lets them see people (`people.view`), **People and access** (7); for anyone
+else **Your agents and services** (7); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
 run log is intact, how many runs it holds and the newest head, as of the time it shows (read every
 minute; its refresh button reads it now). The version the server runs is beside the name, top left. The top bar
 says where you are (each step back a link), and has the search (**Ctrl K** or **/**: a page, a
@@ -247,18 +248,32 @@ An admin's, in the nav's second group:
   each flow hold, as `holon host` says, how often it sweeps (`[storage] sweep_every`) and sweeping
   now, as `holon store sweep` and `holon folder sweep` do; and **Who may touch what**, each
   resource with the deployments granted it.
-- **People and access**: people (add someone with a role, and they get a link to set their
-  password, good once, for seven days; change a role, reset a password, disable, or remove);
-  **agents and services**, each with a role and an owner, and their tokens, each shown once
-  (for agents on other machines, scripts and CI); and signing in through an identity provider
-  (OpenID Connect). Someone who isn't an admin has **Your agents and services** instead: the
-  agents and services they own, whose tokens they make (each shown once) and revoke; an admin adds
-  one and names its owner.
+- **People and access**, in tabs: **People** (add someone with a role, and they get a link to
+  set their password, good once, for seven days; change a role, reset a password, disable, or
+  remove); **Agents and tokens**, each agent and service with a role and an owner, and their
+  tokens, each shown once (for agents on other machines, scripts and CI); **Groups**, each with
+  its members and what is bound to it; **Roles**, the built-in ones and your own, what each allows
+  and how many bindings hold it, and a form to define or change one by ticking its actions and who
+  may hold it; **Bindings**, every role bound, to whom, where and until when, each with
+  **unbind** (which asks why), and the form that binds one: to a person, an agent, a service or a
+  group, on the host, a flow, a tag or one approval point of a flow, until a date or for a while
+  (`7d`), and why; **History**, each version of who may do what, who made it, what and why, and
+  each version's page what it changed from the one before; and **Signing in** through an identity
+  provider (OpenID Connect). A name in these tables opens that principal's page
+  (`#people.who.NAME`): what they are, the groups they are in, their tokens, what is bound to them
+  (and through which group), a form binding one more, and what it all lets them do, as the server
+  decides it: on the host, on every flow, on the flows they saved, on each tag's flows, and on each
+  flow what more, with the approvals they decide there. A refused binding says the server's words
+  (`editor holds flow.edit on "payout", which you don't: …`); one at an approval point alone lets
+  its holder decide from Runs waiting but not open the flow, and the form says so and offers viewer
+  on the flow too. Someone who isn't an admin and can't see people has **Your agents and
+  services** instead: the agents and services they own, whose tokens they make (each shown once)
+  and revoke; an admin adds one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
   grants, whether agents may propose versions, and each limit's default and ceiling.
 
 The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
-too: `holon people`, `holon oidc`, `holon folder`,
+too: `holon people`, `holon bind`, `holon roles`, `holon groups`, `holon access`, `holon oidc`, `holon folder`,
 `holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 

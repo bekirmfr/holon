@@ -28,6 +28,18 @@ export const RESOURCES_LABELS: Record<ResourcesTab, string> = {
   host: "Host and storage",
   "who-may": "Who may touch what",
 };
+/** People and access's tabs (access-and-approvals §12): `#people` is its people. */
+export const PEOPLE_TABS = ["people", "agents", "groups", "roles", "bindings", "history", "sign-in"] as const;
+export type PeopleTab = (typeof PEOPLE_TABS)[number];
+export const PEOPLE_LABELS: Record<PeopleTab, string> = {
+  people: "People",
+  agents: "Agents and tokens",
+  groups: "Groups",
+  roles: "Roles",
+  bindings: "Bindings",
+  history: "History",
+  "sign-in": "Signing in",
+};
 
 export type Route =
   | { kind: "overview" }
@@ -46,7 +58,13 @@ export type Route =
   | { kind: "editor"; slug: string | null; view: boolean; seq: number | null }
   | { kind: "library"; tab: LibraryTab }
   | { kind: "resources"; tab: ResourcesTab }
-  | { kind: "people"; tab: string | null }
+  | { kind: "people"; tab: PeopleTab }
+  /** One principal's page: `#people.who.<name>`, the rest of the address (a name may have dots). */
+  | { kind: "principal"; name: string }
+  /** One group's page: `#people.groups.<name>`. */
+  | { kind: "group"; name: string }
+  /** One version of the access document beside the one before it: `#people.history.v<n>`. */
+  | { kind: "access-version"; version: number }
   | { kind: "policy" }
   | { kind: "start" }
   | { kind: "docs"; page: string | null; anchor: string | null }
@@ -75,7 +93,6 @@ const runOf = (t: string | undefined): number | null => {
   const m = t === undefined ? null : /^run-(\d+)$/.exec(t);
   return m ? Number(m[1]) : null;
 };
-const tabOf = (t: string | undefined): string | null => (t !== undefined && SLUG.test(t) ? t : null);
 
 /** The place an address's hash names (with or without its `#`); an empty one is the overview. */
 export function parse(hash: string): Route {
@@ -124,9 +141,17 @@ export function parse(hash: string): Route {
       return (RESOURCES_TABS as readonly string[]).includes(tab) ? done({ kind: "resources", tab: tab as ResourcesTab }, p.length === 1 ? 1 : 2) : notFound;
     }
     case "people": {
-      const tab = tabOf(p[1]);
-      if (p.length > 1 && tab === null) return notFound;
-      return done({ kind: head, tab }, p.length === 1 ? 1 : 2);
+      // A principal's name may have dots of its own: the rest is one token.
+      if (p[1] === "who") {
+        const name = raw.slice("people.who.".length);
+        return p.length > 2 && name !== "" ? { kind: "principal", name: decode(name) } : notFound;
+      }
+      const tab = p[1] ?? "people";
+      if (!(PEOPLE_TABS as readonly string[]).includes(tab)) return notFound;
+      if (tab === "groups" && p.length === 3) return SLUG.test(p[2]) ? { kind: "group", name: p[2] } : notFound;
+      const version = tab === "history" && p.length === 3 ? /^v(\d+)$/.exec(p[2]) : null;
+      if (version) return { kind: "access-version", version: Number(version[1]) };
+      return done({ kind: "people", tab: tab as PeopleTab }, p.length === 1 ? 1 : 2);
     }
   }
   if (!SLUG.test(head)) return notFound;
@@ -161,7 +186,13 @@ function tokens(r: Route): string {
     case "resources":
       return r.tab === "databases" ? "resources" : `resources.${r.tab}`;
     case "people":
-      return r.tab === null ? r.kind : `${r.kind}.${r.tab}`;
+      return r.tab === "people" ? "people" : `people.${r.tab}`;
+    case "principal":
+      return `people.who.${encode(r.name)}`;
+    case "group":
+      return `people.groups.${r.name}`;
+    case "access-version":
+      return `people.history.v${r.version}`;
     case "docs":
       return r.page === null ? "docs" : `docs.${encode(r.page)}${r.anchor === null ? "" : `@${encode(r.anchor)}`}`;
     case "notfound":
@@ -202,7 +233,13 @@ export function parentOf(r: Route): Route | null {
     case "resources":
       return r.tab === "databases" ? { kind: "overview" } : { kind: "resources", tab: "databases" };
     case "people":
-      return r.tab === null ? { kind: "overview" } : { kind: r.kind, tab: null };
+      return r.tab === "people" ? { kind: "overview" } : { kind: "people", tab: "people" };
+    case "principal":
+      return { kind: "people", tab: "people" };
+    case "group":
+      return { kind: "people", tab: "groups" };
+    case "access-version":
+      return { kind: "people", tab: "history" };
     case "docs":
       return r.page === null ? { kind: "overview" } : { kind: "docs", page: null, anchor: null };
     default:
@@ -236,7 +273,12 @@ export function labelOf(r: Route): string {
     case "resources":
       return r.tab === "databases" ? "Resources" : RESOURCES_LABELS[r.tab];
     case "people":
-      return r.tab ?? "People and access";
+      return r.tab === "people" ? "People and access" : PEOPLE_LABELS[r.tab];
+    case "principal":
+    case "group":
+      return r.name;
+    case "access-version":
+      return `version ${r.version}`;
     case "policy":
       return "Policy";
     case "start":

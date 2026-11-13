@@ -48,13 +48,14 @@ const WORK: Entry[] = [
 ];
 const HOST: Entry[] = [
   { label: "Resources", to: { kind: "resources", tab: "databases" }, icon: "resources", key: 6 },
-  { label: "People and access", to: { kind: "people", tab: null }, icon: "people", key: 7 },
+  { label: "People and access", to: { kind: "people", tab: "people" }, icon: "people", key: 7 },
   { label: "Policy", to: { kind: "policy" }, icon: "policy", key: 8 },
 ];
-/** A person who isn't an admin: the agents and services they own, on People and access's page. */
-const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: null }, icon: "people", key: 7 };
-/** The host's pages `me` is shown: an admin's all of them, another person's what they own. */
-const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.kind === "person" ? [OWNED] : []);
+/** A person who may not view people: the agents and services they own, on People and access's page. */
+const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: "people" }, icon: "people", key: 7 };
+/** The host's pages `me` is shown: an admin's all of them; People and access to whoever may view
+ *  people; another person's what they own. */
+const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.people ? [HOST[1]] : me.kind === "person" ? [OWNED] : []);
 const HELP: Entry[] = [
   { label: "Getting started", to: { kind: "start" }, icon: "start" },
   { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs" },
@@ -117,8 +118,8 @@ export function Shell({
   const at = page === "flow" ? "flows" : page;
   const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
-  // People and access is, for a person who isn't an admin, what they own.
-  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && me.role !== "admin" ? OWNED.label : labelOf(r));
+  // People and access is, for a person who may not view people, what they own.
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === "people" && !me.people && me.role !== "admin" ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);

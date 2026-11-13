@@ -37,6 +37,10 @@ export function pageOf(r: Route): AppPage {
     case "people":
     case "policy":
       return r.kind;
+    case "principal":
+    case "group":
+    case "access-version":
+      return "people";
     default:
       return "home";
   }
@@ -58,7 +62,7 @@ export function routeOfPage(p: AppPage): Route {
     case "resources":
       return { kind: "resources", tab: "databases" };
     case "people":
-      return { kind: "people", tab: null };
+      return { kind: "people", tab: "people" };
     case "policy":
       return { kind: "policy" };
     case "flow":

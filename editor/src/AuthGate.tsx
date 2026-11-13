@@ -10,7 +10,10 @@ import { finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
 
 /** Who is signed in, for the editor: a person, or (signed in with its token) an agent or a service. */
-export type Me = { name: string; kind: Kind; role: Role };
+/** Who is signed in: their name, kind and widest built-in role on the host, and whether they may
+ *  view People and access (`people` holds `people.view` on the host: an admin, or a role an
+ *  admin defined), which the editor asks the server once they are in. */
+export type Me = { name: string; kind: Kind; role: Role; people?: boolean };
 
 const card: CSSProperties = {
   background: "var(--bg)",

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **People and access binds roles, makes groups and roles, and says what each principal may do.**
+  Binding a role on one flow, a tag or an approval point, defining a role, making a group, and
+  reading what the access document's versions changed took the command line: the editor's People
+  and access gave only a role on the host. Now it is in tabs, **People**, **Agents and tokens**,
+  **Groups**, **Roles**, **Bindings**, **History** and **Signing in**. *Bindings* lists every role
+  bound, each with **unbind** (which asks why), and binds one: to a person, an agent, a service or
+  a group, on the host, a flow, a tag or one approval point (its flow, then one of the approvals
+  its deployed version has), until a date or for a while (`7d`), and why; a refusal says the
+  server's words (`editor holds flow.edit on "payout", which you don't: a binding gives only what
+  its author holds where it is made`). A binding at an approval point alone lets its holder decide
+  from Runs waiting but not open the flow, and the form says so and offers viewer on the flow too,
+  as `holon bind` does. A name in these tables opens the principal's page (`#people.who.NAME`):
+  their groups, tokens and bindings (and through which group), a form binding one more, and what
+  it all lets them do, worked out as the server's `can` decides it (an end-to-end test compares
+  the two for each way of being bound): on the host, on every flow, on the flows they saved, on
+  each tag's flows, and on each flow what more, with the approvals they decide there. *Roles*
+  defines and changes a role by ticking its actions, by resource, and who may hold it; *Groups*
+  makes one, adds and takes out members, and binds a role to it; *History* lists each version,
+  who made it, what and why, and a version's page what it changed from the one before. Someone
+  who isn't an admin and holds `people.view` (a role of your own) has People and access too, and
+  binds what their role lets them; anyone else keeps Your agents and services.
 - **Runs waiting finds every run waiting for you, draws an approval in steps as its chain, and a
   run's page says each step's decision.** Someone bound only at an approval point decided it with
   `holon decide`, but the editor's Approvals, which read the runs of each flow it listed, showed

@@ -51,8 +51,8 @@ decides no approval.
 
 ## A teammate
 
-In **People and access**, add them with a name and a role (and their email, if they sign in through
-your identity provider). You get a link: send it to them, and they choose their password with it,
+In **People and access**, *People*, add them with a name and a role (and their email, if they sign
+in through your identity provider). You get a link: send it to them, and they choose their password with it,
 once, within seven days. Or:
 
 ```sh
@@ -84,7 +84,7 @@ It proposes what needs approval, and you approve it; everything it does says *bm
 
 **From another machine**, the agent needs a token:
 
-1. An admin adds the agent, owned by you: in **People and access**, *agents and services*, or
+1. An admin adds the agent, owned by you: in **People and access**, *Agents and tokens*, or
    `holon people add ana-laptop --agent --owner ana`.
 2. You make its token: in the editor, **Your agents and services** (or, for an admin, **People and
    access**) has **make token**. Copy it then: it isn't shown again.
@@ -125,13 +125,14 @@ holon bind editor --to bob --flow payout --why "owns the payout flow"
 holon bind editor --to dee --approval payout:ok --until 7d --why "covers for bob"
 ```
 
-A binding at an approval point decides it and nothing else: `holon decide payout` and the
-editor's Runs waiting list Dee the runs waiting there, and what each shows, but no other run. The
-editor lists only the flows one may view, so to open the flow itself `holon bind` says what to add
-(`holon bind viewer --to dee --flow payout`). A
-role of your own
-allows only the actions you choose, from the catalogue `holon roles define` lists when you get one
-wrong:
+In the editor, **People and access**, *Bindings* (or the person's page, their name a link) binds
+the same: to whom, the role, where (the host, a flow, a tag, or an approval point, its flow and
+then one of its approvals), until a date or for a while, and why. A binding at an approval point
+decides it and nothing else: `holon decide payout` and the editor's Runs waiting list Dee the runs
+waiting there, and what each shows, but no other run. The editor lists only the flows one may
+view, so to open the flow itself `holon bind` says what to add (`holon bind viewer --to dee --flow
+payout`), and the form offers it. A role of your own allows only the actions you choose, from the
+catalogue `holon roles define` lists when you get one wrong, or *Roles*' form ticks:
 
 ```sh
 holon roles define payout-approver --allow run.view,run.decide --about "decides payouts"
@@ -156,8 +157,11 @@ version that adds a tag waits as a proposal, as any change it can't approve does
 
 A role bound to a **group** holds for each member whose kind it allows. **People and access**
 offers roles of your own where it offers a role, and lists beside each principal what else holds
-for them (`editor on payout via payments`); `holon people` lists the same. Approvals offers
-Approve and Decline wherever the server says you may decide.
+for them (`editor on payout via payments`); `holon people` lists the same. *Groups* makes one, and
+its page adds and takes out members and binds a role to it. Each principal's page says what their
+bindings let them do, as the server decides it: on the host, on every flow, on the flows they
+saved, on each tag's flows, and on each flow what more, with the approvals they decide there.
+Approvals offers Approve and Decline wherever the server says you may decide.
 
 No one gives more than they hold: you define a role, bind it, or add someone to a group bound it
 only holding all it allows there yourself. Nor do you take more than you hold: you change or
@@ -167,8 +171,9 @@ there) only holding all they hold, since you could then act as them: a role that
 doesn't make its holder an admin. Setting the identity provider says who everyone is, so it takes
 holding what each person holds: an admin sets it. Whatever an agent is bound, it never approves, starts,
 stops, deletes or restores, sets a secret, decides a person's step of an approval, or manages
-people; a service never decides an approval. `holon unbind ID` takes a binding away, and an
-expired one holds nothing.
+people; a service never decides an approval. A binding's **unbind**, which asks why, or `holon
+unbind ID` takes it away, and an expired one holds nothing. A binding, a role or a group change
+refused says why in the server's words, in the editor as on the command line.
 
 ## Who decides an approval
 
@@ -220,12 +225,14 @@ What was done stays under the name that did it, after any of these.
   version kept in `access.versions.jsonl` in the data folder, with who made it, when, what it
   changed and why:
   `holon access` lists them, and `holon access show --version N` prints one whole, for an auditor
-  ([the server reference](../reference/server.md#accounts-and-roles)).
+  ([the server reference](../reference/server.md#accounts-and-roles)). In the editor, **People and
+  access**, *History* lists them, and a version's page says what it changed from the one before:
+  each binding, role and group added, removed or changed, and the approval settings.
 
 ## Signing in through your identity provider
 
 People can also sign in through Keycloak, Okta, Auth0 or Entra ID: an admin registers the server
-there and sets it in **People and access** (or `holon oidc set`). The first time someone signs in
+there and sets it in **People and access**, *Signing in* (or `holon oidc set`). The first time someone signs in
 there, they are matched to the person here with the email the provider vouches for, so set each
 person's email; from then on they are who the provider names them by, whatever their email
 becomes. Setting someone's email again matches them anew the next time

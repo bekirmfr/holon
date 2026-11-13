@@ -177,6 +177,56 @@ export const createToken = async (principal: string, label: string) => asJson<{ 
 export async function revokeToken(principal: string, id: string): Promise<void> {
   await asJson<void>(await api(`${principalAt(principal)}/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
+/** Whom a binding is to (bindings.rs `Subject`): a principal, or a group. */
+export type Subject = { principal: string } | { group: string };
+/** A binding as `GET /bindings` lists it: to whom, which role, where, who bound it and when, and
+ *  until when (`expired` once that has passed). */
+export type BindingEntry = { id: number; who: Subject; role: string; scope: Scope; by: string; at: number; expires_at?: number | null; expired: boolean };
+/** A binding to make: until `expires_at` (seconds) if it ends, and `why`, which its version keeps. */
+export type NewBinding = { who: Subject; role: string; scope: Scope; expires_at?: number; why?: string };
+const put = (url: string, body: unknown) => api(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+/** A removal's `?why=`, which its version keeps. */
+const because = (why: string) => (why.trim() ? `?why=${encodeURIComponent(why.trim())}` : "");
+export const listBindings = async () => (await asJson<{ version: number; bindings: BindingEntry[] }>(await api(`${BASE}/bindings`))).bindings;
+/** `POST /bindings`: the binding and the version it made; refused in the server's words: 400 for a
+ *  role it doesn't know or one that holds nothing there, 403 for more than its author holds there. */
+export const bind = async (b: NewBinding) => asJson<{ binding: BindingEntry; version: number }>(await post(`${BASE}/bindings`, b));
+/** `DELETE /bindings/<id>`: 403 for one giving what whoever takes it doesn't hold, 409 for the last
+ *  admin's. */
+export async function unbind(id: number, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/bindings/${id}${because(why)}`, { method: "DELETE" }));
+}
+/** A group (`GET /groups`): its members, and how many bindings are to it. */
+export type GroupEntry = { name: string; about: string | null; members: string[]; bound: number };
+export const listGroups = async () => (await asJson<{ groups: GroupEntry[] }>(await api(`${BASE}/groups`))).groups;
+/** `PUT /groups/<name>`, with all its members: 403 for a member added or taken out who'd gain or
+ *  lose what its author doesn't hold. */
+export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string }) =>
+  asJson<{ group: GroupEntry; version: number }>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
+export async function removeGroup(name: string, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/groups/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
+}
+/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds. */
+export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string }) =>
+  asJson<{ role: RoleEntry; version: number }>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
+/** `DELETE /roles/<name>`: 409 while it is bound. */
+export async function removeRole(name: string, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/roles/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
+}
+/** A version of the access document (`GET /access/versions`, newest first): who made it, when,
+ *  what it changed in words, and why. */
+export type AccessVersion = { version: number; at: number; by: string; what: string; why?: string };
+export const listAccessVersions = async () => (await asJson<{ versions: AccessVersion[] }>(await api(`${BASE}/access/versions`))).versions;
+/** The access document as a version left it (`GET /access?version=n`): the roles an admin defined,
+ *  the groups, the bindings, how approvals are decided, and whom the run file signs in as. */
+export type AccessDocument = AccessVersion & {
+  roles: { name: string; about?: string; allows: string[]; kinds: Kind[] }[];
+  groups: { name: string; about?: string; members: string[] }[];
+  bindings: Omit<BindingEntry, "expired">[];
+  approvals: { exclude_deployer: boolean; agents: boolean };
+  local?: string;
+};
+export const getAccessVersion = async (n: number) => asJson<AccessDocument>(await api(`${BASE}/access?version=${n}`));
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
  *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may
@@ -863,6 +913,9 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** The tags its version is deployed with (`flow("payout", { tags: ["payments"] })`): a binding
+   *  on one of them holds on it. */
+  tags?: string[];
 };
 
 /** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
