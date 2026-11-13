@@ -19,7 +19,7 @@ export type Sample = {
   shows: string[];
   /** Deploy settings: a server's port, for a flow that answers requests. */
   port?: string;
-  /** Secrets to set under ⚙ before it works, what each is, and where to keep it when not a
+  /** Secrets to set in its Settings (the editor's bottom pane) before it works, what each is, and where to keep it when not a
    *  value sealed by the server (`env:HOLON_SECRET_…`, `vault:…`). */
   secrets?: { name: string; what: string; from?: string }[];
   /** Permissions it can run without (deploy settings' `optional`); the rest are required. */

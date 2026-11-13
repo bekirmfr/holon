@@ -56,7 +56,7 @@ test("every sample deploys from its text and answers", async ({ adminToken }) =>
         let text = readFileSync(join(SAMPLES, file), "utf8");
         const moved = port && Number(port) + SAMPLE_SHIFT;
         if (moved) {
-          // The flow's port, in its `flow(…)` line, as ⚙ moves it.
+          // The flow's port, in its `flow(…)` line, as Settings moves it.
           const shifted = text.replace(new RegExp(`^(flow\\(.*\\bport: )${port}\\b`, "m"), `$1${moved}`);
           expect(shifted, "its port is in its flow(…) line").not.toBe(text);
           text = shifted;

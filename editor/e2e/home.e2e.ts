@@ -1,11 +1,16 @@
 // Getting started and the overview (WelcomePage.tsx, OverviewPage.tsx), kept with the account (home.ts,
 // holon-server's /auth/prefs): the welcome opens on start until told not to, and the notes written
-// there come back after a reload. And the editor's tabs (CanvasPanels.tsx,
+// there come back after a reload; its commands copy, and the Library's tutorials open their
+// samples (guide.ts, tutorials.ts). And the editor's tabs (CanvasPanels.tsx,
 // EditorHome.tsx): its Home, a tab per flow, + and ×, and the panes its bar shows or hides.
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
-import { expect, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, openSample } from "./helpers";
+import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SERVER, test } from "./fixtures";
+import { gotoPage, navLink, nodesLevel, openSample } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -14,11 +19,24 @@ async function saved(request: APIRequestContext, token: string, holds: (prefs: s
   await expect.poll(async () => holds(await (await request.get(`${SERVER}/auth/prefs`, { headers })).text())).toBe(true);
 }
 
+/** Something deployed on the server: hello-api, deployed from its text by `holon deploy`, when
+ *  nothing is yet. */
+async function deployedOnce(request: APIRequestContext, token: string) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const { deployments } = (await (await request.get(`${SERVER}/deployments`, { headers })).json()) as { deployments: unknown[] };
+  if (deployments.length > 0) return;
+  const text = readFileSync(join(SAMPLES, "hello-api.holon.ts"), "utf8").replace(/(port: )8101\b/, `$1${8101 + SAMPLE_SHIFT}`);
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-e2e-welcome-")), "hello-api.holon.ts");
+  writeFileSync(copy, text);
+  execFileSync(HOLON, ["deploy", copy, "--server", SERVER, "--slug", "hello-api", "--approve"], { env: { ...process.env, HOLON_TOKEN: token }, stdio: "pipe" });
+}
+
 test("the welcome opens on start until told not to, and keeps the notes written there", async ({ page, request, adminToken }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/#start$/);
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
-  await expect(page.getByText(/^Welcome to Holon, e2e$/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Getting started" })).toBeVisible();
+  await expect(page.getByText(/^Welcome to Holon, e2e\./)).toBeVisible();
   await page.getByRole("button", { name: "▸ Secrets" }).click();
   await expect(page.getByText(/Values are sealed on the server/)).toBeVisible();
 
@@ -31,9 +49,9 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await expect(page).not.toHaveURL(/#start$/);
   await expect(page.getByRole("region", { name: "at a glance" })).toBeVisible();
 
-  // The welcome is always one click away, under the account menu; its notes are kept there.
+  // Getting started is always one click away, in the account dialog; its notes are kept there.
   await page.getByRole("button", { name: "account: e2e" }).click();
-  await page.getByRole("menuitem", { name: "Welcome and docs" }).click();
+  await page.getByRole("dialog", { name: "account" }).getByRole("button", { name: "Getting started" }).click();
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
   const notes = page.getByLabel("notes", { exact: true });
   await notes.fill("deploy the shop on friday");
@@ -41,10 +59,31 @@ test("the welcome opens on start until told not to, and keeps the notes written 
   await saved(request, adminToken, (p) => p.includes("deploy the shop on friday"));
   await page.reload();
   await expect(page.getByLabel("notes", { exact: true })).toHaveValue("deploy the shop on friday");
-  // A step done is ticked: the tests deploy before this one, so "Deploy it" is.
+  // A step done is ticked: "Deploy it", once something is deployed (by the tests before this one,
+  // else here, as its command does, on the port the tests move samples to).
+  await deployedOnce(request, adminToken);
+  await page.reload();
   await expect(page.getByRole("listitem", { name: "Deploy it, done" })).toBeVisible();
   await page.getByLabel("show this on start").check();
   await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
+});
+
+test("Help: a step's command copies as typed, and a tutorial opens the samples it uses as unsaved copies", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/#start");
+  const line = "holon new hello-api.holon.ts --sample hello-api";
+  const commands = page.getByRole("list", { name: "Open a sample, from a terminal" });
+  await expect(commands).toContainText(line);
+  await commands.getByRole("button", { name: `copy ${line}` }).click();
+  await expect(commands.getByRole("button", { name: `copy ${line}` })).toHaveText("copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(line);
+
+  // A tutorial: its page's first paragraph, its samples, and a link to it in Docs.
+  await page.goto("/#library.tutorials");
+  const card = page.getByRole("region", { name: "tutorials" }).getByRole("article", { name: "Stripe to Slack" });
+  await expect(card).toContainText("This guide runs a real webhook end to end");
+  await card.getByRole("button", { name: "open Stripe → Slack" }).click();
+  await expect(page.locator(".hl-tab--active")).toContainText("stripe-to-slack");
 });
 
 test("a welcome that loads late doesn't take you from a page you opened", async ({ page }) => {
@@ -77,10 +116,12 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await expect(tabs.getByRole("tab", { name: "Home" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "open a flow" })).toBeVisible();
   await expect(page.getByRole("region", { name: "recently closed" })).toContainText("no tab closed yet");
-  // + starts a draft, with the palette; New asks nothing: an untitled draft, named on save.
+  // + starts a draft, with the palette at its Nodes level; New asks nothing: an untitled draft,
+  // named on save.
   await tabs.getByRole("button", { name: "new tab" }).click();
   await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+  await nodesLevel(page);
   await expect(page.locator(".hl-work .hl-palette")).toBeVisible();
   // A sample takes the empty draft's tab.
   await openSample(page, "Hello API", false);
@@ -97,10 +138,14 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await tabs.getByRole("button", { name: "close hello-api" }).click();
   await page.locator('[aria-modal="true"]').getByRole("button", { name: "Discard" }).click();
   await expect(tabs.getByRole("tab")).toHaveText([/^Home/]);
+  // The last flow closed, the address is the editor's Home, not the flow's.
+  await expect(page).toHaveURL(/#editor\.home$/);
   const closed = page.getByRole("region", { name: "recently closed" });
   await expect(closed).toContainText("with its unsaved changes");
   await closed.getByRole("button", { name: "reopen hello-api" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("hello-api");
+  await expect(page).toHaveURL(/#editor\.hello-api$/);
+  await nodesLevel(page);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node").first()).toBeVisible();
   // The editor's tabs are the editor's: a page has none.
   await gotoPage(page, "resources");
@@ -133,4 +178,36 @@ test("the bar's panes: c, x and i show or hide the canvas, the text and the Insp
   await panes.getByRole("button", { name: "inspector off" }).click();
   await expect(page.getByRole("complementary", { name: "Inspector" })).toBeVisible();
   await saved(request, adminToken, (p) => p.includes('"hidden":[]'));
+});
+
+test("closing a changed tab asks: Save and close saves it, then closes it", async ({ page, request, adminToken }) => {
+  await openSample(page, "Hello API");
+  const tabs = page.getByRole("tablist", { name: "open tabs" });
+  // A route of its own, typed in the text: once the canvas shows it, the text stands for the flow
+  // and is what a save keeps.
+  const path = `/saved-on-close-${Date.now()}/:name`;
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const line = page.getByRole("region", { name: "Text" }).locator(".cm-line", { hasText: 'route.get("/hello/:name"' });
+  await line.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.insertText(`route.get("${path}", (req) => \`Hello, \${req.params.name}\`)`);
+  await expect(page.locator(".hl-canvas__flow")).toContainText(path);
+  await expect(page.locator(".hl-bar__state--changed")).toHaveText("changed");
+  await tabs.getByRole("button", { name: "close hello-api" }).click();
+  const dialog = page.locator('[aria-modal="true"]');
+  await expect(dialog).toContainText('"hello-api" has unsaved changes.');
+  await expect(dialog.getByRole("button")).toHaveText(["kKeep it open", "dDiscard", "sSave and close"]);
+  // Keep it open (k): nothing changes.
+  await page.keyboard.press("k");
+  await expect(dialog).toHaveCount(0);
+  await expect(tabs.getByRole("tab")).toHaveText([/^Home/, /^hello-api/]);
+  // Save and close: saved on the server with the change, closed, and reopened as saved.
+  await tabs.getByRole("button", { name: "close hello-api" }).click();
+  await dialog.getByRole("button", { name: "Save and close" }).click();
+  await expect(tabs.getByRole("tab")).toHaveText([/^Home/]);
+  const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  expect(((await saved.json()) as { document: { source?: string } }).document.source).toContain(path);
+  const closed = page.getByRole("region", { name: "recently closed" });
+  await expect(closed).not.toContainText("with its unsaved changes");
 });

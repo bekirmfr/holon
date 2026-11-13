@@ -7,7 +7,7 @@
 // canvas marks each request. The token is kept out of the log by its value, as the secret is, and
 // `holon verify` on an export checks every request that carried it went where it was shown.
 //
-// Before it works, set the secret under the deployment's settings (the gear):
+// Before it works, set the secret in the flow's Settings:
 //   client_secret   secret, the demo server's published secret for its client m2m
 //
 // Try it: deploy it, set the secret, then

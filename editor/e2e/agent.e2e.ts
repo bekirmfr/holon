@@ -166,12 +166,17 @@ test("an agent proposes the proposal sample with a why; a person declines it wit
     expect(proposed.text).toContain(`proposed as version 1 of "${slug}"`);
     expect(proposed.text).toContain(`#approvals.${slug}.v1`);
 
-    // Approvals lists it with the agent's why and note; declined, with a reason, it leaves.
+    // Approvals shows it as a card with the agent's why and note, and the rows it asks to approve,
+    // each with its line; declined, with a reason, it leaves.
     await page.goto("/#approvals");
-    const row = page.getByRole("region", { name: "deploys" }).getByRole("row").filter({ hasText: slug });
+    const row = page.getByRole("article", { name: `proposal ${slug}` });
     await expect(row).toContainText(why);
     await expect(row).toContainText("asked for in #payments");
-    await expect(row).toContainText("2 new permissions");
+    await expect(row).toContainText("new, v1");
+    const asks = row.getByRole("list", { name: "what changes" }).getByRole("listitem");
+    await expect(asks).toHaveCount(2);
+    await expect(asks.filter({ hasText: "host httpbin.org: call" })).toContainText(/line \d+/);
+    await expect(row).toContainText("0 the same");
     // At phone width the list still fits across, the button that says it asks why with it.
     const wide = page.viewportSize()!;
     await page.setViewportSize({ width: 390, height: 844 });

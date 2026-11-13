@@ -1267,7 +1267,7 @@ The run's 32 random bytes, the same everywhere in one run, and recorded: what pg
 secret() -> out: Text  {name: api_key}
 ```
 
-A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.
+A secret's value, by the name set on the node, from the deployment's secrets (set in the flow's Settings). Never logged: it shows as ‹secret:name›. Reading it is a permission.
 
 ### `file_arrival`
 
@@ -1320,10 +1320,10 @@ The token that delivers an event to the waiting point (await) named on the node:
 ### `approval`
 
 ```
-approval() -> out: Record  {name: approval, expires: 604800, people: 1}
+approval() -> out: Record  {name: approval, expires: 604800, steps: person}
 ```
 
-Waits for people to decide: the run parks here until as many different people as people says (1 to 5), signed in to Holon, approve it, or one declines it, and answers {approved, by} (by: who approved), with declined_by and reason when declined, or expired: true after expires seconds. Only the server delivers it: it has no token, and no route resumes it. Waiting for it is a permission.
+Waits for people to decide: the run parks here until those its steps name, signed in to Holon, approve it (person: one person; person*2: two different people), or one declines it, and answers {approved, by} (by: who approved), with declined_by and reason when declined, or expired: true after expires seconds. Only the server delivers it: it has no token, and no route resumes it. Waiting for it is a permission.
 
 ### `store_read`
 

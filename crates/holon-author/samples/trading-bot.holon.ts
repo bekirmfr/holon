@@ -20,7 +20,7 @@
 //   holon feed add ticker --url env:HOLON_SECRET_TICKER_URL \
 //     --subscribe '{"type":"subscribe","channels":["ticker"],"product_ids":["BTC-USD"]}' \
 //     --only type=ticker --id product_id,sequence --on-full latest --key product_id
-// and sets its secrets under the deployment's settings (the gear): exchange_key,
+// and sets its secrets in the flow's Settings: exchange_key,
 // exchange_secret and exchange_passphrase, an API key of the exchange's.
 //
 // Try it: deploy it, then

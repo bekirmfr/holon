@@ -85,7 +85,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("respond", "`return respond(body, { status: 201, headers: { … }, stream: true })`: a route's answer with its status, its headers (a record of texts), or streamed. Like `status(…)`, it is a route's answer and nothing else: return it."),
     ("status", "`return status(201, body)`: a route's answer with that status (200 to 599); `status(204)`, the status alone; `body ?? status(404)`, 404 when `body` has no value."),
     ("event", "`await event(\"paid\", { expires: \"1d\" })`: parks an action's run until the event arrives; a route with `{ resumes: \"paid\" }` delivers it. A route doesn't wait: it starts the action that does."),
-    ("approval", "`await approval(\"payout\", { expires: \"1d\", people: 2 })`: parks an action's run until that many different people, signed in to Holon, approve it, or one declines; the run gets `{ approved, by }` (with `declined_by` and `reason`, or `expired`). Only Holon delivers it: no token or route resumes it."),
+    ("approval", "`await approval(\"payout\", { expires: \"1d\", people: 2 })`: parks an action's run until that many different people, signed in to Holon, approve it, or one declines; the run gets `{ approved, by }` (with `declined_by` and `reason`, or `expired`). With `steps: [{ role: \"reviewer\" }, { role: \"approver\" }]`, each step in turn, by those holding its role. Only Holon delivers it: no token or route resumes it."),
     ("export", "`export const reset = action(…)`: only actions are exported, as nothing else reaches the flow from outside."),
     ("const", "`const name = expr`: binds a name, one value wherever it is read. At the top level, only literals (`const limit = 50`), functions and `js()` functions."),
     ("let", "`let name = expr`: a name that may be bound again; each assignment is a new value, and where branches assign it, the value is the branch taken's."),
@@ -105,7 +105,7 @@ const SAID_WITH: &[(&str, &str)] = &[("from", "import"), ("else", "if"), ("case"
 
 /// What a flow imports from outside a run, by its kind: each use is a permission the flow asks for.
 const NOUNS: &[(&str, &str)] = &[
-    ("secret", "A secret, `import key from \"secret:NAME\"`, set by an admin under the deployment's ⚙ and never in the run log; `with { optional: \"true\" }`, one the flow can run without. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
+    ("secret", "A secret, `import key from \"secret:NAME\"`, set by an admin in the flow's Settings and never in the run log; `with { optional: \"true\" }`, one the flow can run without. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
     ("state", "`state.key`: the flow's own value under `key` (`import state from \"state\"`), as the run began; `state.key = v` writes it when the run finishes. Each key read or written is one permission."),
     ("now", "`now` (`import { now } from \"holon:clock\"`): the time the run started, in seconds since the epoch, recorded with the run so a replay sees the same; in a clock, the tick's. A permission: reading the clock."),
     ("random", "`random` (`import { random } from \"holon:random\"`): one random number for the run, recorded so a replay sees the same. A permission: randomness."),
@@ -218,7 +218,11 @@ fn option(call: &str, key: &str) -> Option<&'static str> {
         ("on", "matching") => "`{ matching: \"*.csv\" }`: only the files whose names match (`*` and `?` within a folder, `**/` any number of folders, letters either case).",
         ("event", "expires") => "`{ expires: \"1d\" }`: how long the run waits for the event.",
         ("approval", "expires") => "`{ expires: \"1d\" }`: how long the run waits for people to decide; then it goes on with `expired: true`.",
-        ("approval", "people") => "`{ people: 2 }`: how many different people must approve, 1 to 5 (1 when left out); one decline is enough to refuse.",
+        ("approval", "people") => "`{ people: 2 }`: how many different people must approve, 1 to 5 (1 when left out); one decline is enough to refuse. In a step, `{ role: \"approver\", people: 2 }`: how many different principals take that step.",
+        ("approval", "steps") => "`steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"reviewer\" }, { role: \"approver\" }]`: who decides it, step by step, each after the one before; a list inside, `[[{ role: \"a\" }, { role: \"b\" }], { role: \"c\" }]`, is a stage whose steps are taken in any order. Up to 5 steps; one decline is enough to refuse. The steps are part of what the flow asks for: a version that changes them asks anew.",
+        ("approval", "order") => "`order: \"any\"`: the steps are taken in any order; `\"sequence\"`, when left out, each after the one before.",
+        ("approval", "role") => "`{ role: \"reviewer\" }`: the role a step's principals hold where the approval is: on the flow, its tag or the approval point (`holon bind reviewer --to bob --approval payout:payout`). Left out, anyone holding run.decide there takes it, a person.",
+        ("approval", "kind") => "`kind: \"agent\"`: an agent takes the step, holding its role; `\"person\"` when left out. A service never decides an approval.",
         ("js", "fuel") => "`fuel: 50_000_000`: the instructions a call may run (200M when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "memory") => "`memory: 16_777_216`: the memory a call may take (16 MiB when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "outputs") => "`outputs: [\"best\", \"distance\"]`: the function returns a record with those fields, each an output.",

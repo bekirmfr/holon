@@ -462,6 +462,8 @@ const USAGE: &str = "usage: holon <command>
   editor [file|slug] [--server …]    the editor in this terminal: flows, runs, approvals, and
                                      flows' text in tabs, checked as you type
   deployments [<slug>]               what is deployed; one's details and its waiting runs
+  runs <slug> [--last N]             its runs: what started each, its answer, how long it took
+                                     (--waiting, --run N: one run's steps, --json)
   run|pause|stop|remove <slug>       start (--fresh, --session N), hold, end or delete one
   call <slug> METHOD PATH            send a deployed flow a request (-H, --body)
   load <slug> [--for SECONDS]        its routes under load, one after another: requests a second,

@@ -184,6 +184,8 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         Err(rejection) => return rejection,
     };
     let by = caller.name.as_deref();
+    // What it records says it came through the run file, when it did (D45).
+    let _via = crate::activity::Via::set(caller.local.as_deref());
 
     // Preflight — answered before touching any endpoint logic.
     if method == "OPTIONS" {
@@ -301,7 +303,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {
-            return durable::handle_get_runs(&state.deployments, slug);
+            return durable::handle_get_runs(&state.deployments, slug, &caller, &crate::bindings::approval_settings(state));
         }
         if let Some(slug) = rest.strip_suffix("/logs")
             && method == "GET"
@@ -317,6 +319,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             && method == "GET"
         {
             return queues::handle_get_queues(state, slug);
+        }
+        if let Some(slug) = rest.strip_suffix("/channels")
+            && method == "GET"
+        {
+            return channels::handle_get_channels(state, slug);
         }
         if let Some((slug, run_id)) = rest.strip_suffix("/decide").and_then(|r| r.split_once("/runs/"))
             && method == "POST"
@@ -409,7 +416,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest);
             // Deleted, it is on no tag.
             if response.status_code == 200
                 && let Some(accounts) = state.access.accounts()

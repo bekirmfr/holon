@@ -22,7 +22,7 @@
 #[global_allocator]
 static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
 
-use holon_author::builder::FlowDocument;
+use holon_author::builder::{FlowDocument, UnitSettings};
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
 use holon_author::group::{self, GroupError};
@@ -308,6 +308,20 @@ pub fn primitive_catalog() -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn variadic_primitives() -> Vec<String> {
     holon_core::VARIADIC.iter().map(|s| s.to_string()).collect()
+}
+
+/// The keys every flow keeps out of its records (core's `ALWAYS_TAINTED`: credentials), beside
+/// those its settings' `taint` names: the deploy settings show them as fixed.
+#[wasm_bindgen]
+pub fn always_tainted() -> Vec<String> {
+    holon_core::ALWAYS_TAINTED.iter().map(|s| s.to_string()).collect()
+}
+
+/// Whether `key` can be one of a flow's taint keys (core's `is_taint_key`): the deploy settings
+/// check a key as it is added.
+#[wasm_bindgen]
+pub fn is_taint_key(key: &str) -> bool {
+    holon_core::is_taint_key(key)
 }
 
 /// The variadic leaves whose extra inputs are any type, passed to their function after the item
@@ -814,25 +828,26 @@ impl Evaluator {
     }
 
     /// The server a flow declares, `{endpoints, errors, serverHash, trace}`, its units stored here
-    /// (holon-author's `derive_server`). `port` and `tags` are as the flow's settings hold them.
-    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
+    /// (holon-author's `derive_server`). `port`, `tags` and `taint` are as the flow's settings hold
+    /// them.
+    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port, &tags))
+        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }))
     }
 
     /// What each canvas node does with a secret, by node id: a line for each sink a secret reaches
     /// there (holon-author's `secret_marks`), for the canvas to mark it. `{}` for a canvas that
     /// doesn't derive.
-    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<JsValue, JsError> {
+    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port, &tags))
+        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }))
     }
 
     /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
     /// as one composite. Throws why it can't be.
-    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>) -> Result<String, JsError> {
+    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str, tags: Vec<String>, taint: Vec<String>) -> Result<String, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
-        flow::flow_unit(&nodes, &wires, &mut self.resolver, port, &tags).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
+        flow::flow_unit(&nodes, &wires, &mut self.resolver, port, UnitSettings { tags: &tags, taint: &taint }).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
     }
 
     /// Parse a hex hash and resolve it against this Evaluator's own resolver — the identical
@@ -1347,6 +1362,27 @@ pub fn holon_highlight(source: &str) -> Result<JsValue, JsError> {
         .map(|h| serde_json::json!({ "from": at.offset(h.span.start), "to": at.offset(h.span.end), "class": format!("{:?}", h.class).to_lowercase() }))
         .collect();
     to_js(&coloured)
+}
+
+/// The text's statement graph (holon-author's graph.rs, as `holon editor` draws it): `{bands:
+/// [{title, rows}], nodes}`, each row graph.rs's `Row` (its `kind`, its `fallback`, its `mark`)
+/// with `at`, its mark as `{from, to}` offsets. `every`: each node a row of its own. Throws why the
+/// text has none (a mistake).
+#[wasm_bindgen]
+pub fn holon_graph(source: &str, every: bool) -> Result<JsValue, JsError> {
+    to_js(&graph_json(source, every).map_err(|e| JsError::new(&e))?)
+}
+
+fn graph_json(source: &str, every: bool) -> Result<serde_json::Value, String> {
+    let g = holon_author::graph::graph(source, every)?;
+    let at = Offsets::new(source);
+    let mut json = serde_json::to_value(&g).map_err(|e| e.to_string())?;
+    for (b, band) in g.bands.iter().enumerate() {
+        for (r, row) in band.rows.iter().enumerate() {
+            json["bands"][b]["rows"][r]["at"] = serde_json::json!({ "from": at.offset(row.mark.start), "to": at.offset(row.mark.end) });
+        }
+    }
+    Ok(json)
 }
 
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
@@ -1896,6 +1932,31 @@ mod native_tests {
         }
     }
 
+    /// What the editor draws a flow by is the terminal's graph, whole, for every sample; each row's
+    /// `at` is the text its mark is, in UTF-16 offsets.
+    #[test]
+    fn graph_is_the_terminals_with_offsets() {
+        for s in holon_author::samples::samples() {
+            let g = holon_author::graph::graph(s.text, false).unwrap();
+            let json = graph_json(s.text, false).unwrap();
+            assert_eq!(serde_json::from_value::<holon_author::graph::Graph>(json.clone()).unwrap(), g, "{}", s.name);
+            let units: Vec<u16> = s.text.encode_utf16().collect();
+            let lines: Vec<&str> = s.text.split('\n').collect();
+            for (b, band) in g.bands.iter().enumerate() {
+                for (r, row) in band.rows.iter().enumerate() {
+                    let at = &json["bands"][b]["rows"][r]["at"];
+                    let written = String::from_utf16(&units[at["from"].as_u64().unwrap() as usize..at["to"].as_u64().unwrap() as usize]).unwrap();
+                    // Over lines, it starts as its first line goes on.
+                    let (start, end) = (row.mark.start, row.mark.end);
+                    let rest = lines[start.line as usize - 1].chars().skip(start.col as usize - 1);
+                    let marked: String = if start.line == end.line { rest.take((end.col - start.col) as usize).collect() } else { rest.collect() };
+                    assert!(written.starts_with(marked.trim_end_matches('\r')) && (start.line != end.line || written == marked), "{}: {} {written:?} {marked:?}", s.name, row.name);
+                }
+            }
+        }
+        assert!(graph_json("flow(", false).is_err());
+    }
+
     /// Each node's range, in UTF-16 offsets past an emoji, is the text it is written as; an
     /// argument's range is inside its call's; every range is inside the text.
     #[test]
@@ -1954,6 +2015,17 @@ mod wasm_tests {
     }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
+
+    /// The graph crosses as the terminal's: read back, it is the same graph, by statement and by
+    /// node.
+    #[wasm_bindgen_test]
+    fn graph_crosses_js_boundary() {
+        let text = holon_author::samples::sample("approved-payout").unwrap().text;
+        for every in [false, true] {
+            let crossed: holon_author::graph::Graph = serde_wasm_bindgen::from_value(holon_graph(text, every).unwrap()).unwrap();
+            assert_eq!(crossed, holon_author::graph::graph(text, every).unwrap());
+        }
+    }
 
     /// The inspector's forms and example for a name, as the workbench's: `route` has the forms
     /// that write it and a sample's lines; a word that isn't a name has nothing.

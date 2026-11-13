@@ -39,7 +39,7 @@
 // there. Which model plays is the app's list too: POST /new takes one of the models it offers, and
 // any other name is answered 400.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   gemini_api_key   a Gemini API key, free from aistudio.google.com (Get API key)
 // Without it, or past the free tier's limit (a few calls a minute, chat and moves together), the
 // rules play for the Sphinx and the chat says it is resting. gemini-4-argon needs a paid plan. On

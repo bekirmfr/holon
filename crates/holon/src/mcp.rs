@@ -31,9 +31,10 @@ const USAGE: &str = "usage: holon mcp [--server PORT|URL]
 
   An MCP server on stdin and stdout, for an agent's host (Claude Code, an IDE) to start: tools
   to look up the language, check a flow, deploy it, call it, list its runs and explain one, read
-  a deployment's history, and see what a restore would change (only ever a dry run). Its tools
-  never approve what a flow may do: a deploy that needs approval is a proposal, which waits in
-  the editor's Approvals for a person. It signs in as an agent, so the server holds it to
+  a deployment's history, see what a restore would change (only ever a dry run), and decide a
+  step of an approval written for an agent. Its tools never approve what a flow may do: a deploy
+  that needs approval is a proposal, which waits in the editor's Approvals for a person, and a
+  person's step of an approval is a person's. It signs in as an agent, so the server holds it to
   proposing too.
 
   --server PORT|URL        which holon server to ask (see below)
@@ -60,9 +61,10 @@ is decided later, and a decline comes with a reason: with a shell, run `holon wa
 background (it ends when a person decides, exit 0 approved, 1 declined with the reason); without \
 one, `deployments` with the slug and `wait` holds until they do. Read the outcome before you \
 deploy again. A run that \
-waits at an approval (`await approval(…)`) goes on when people decide it, in the editor's \
-Approvals or with `holon decide`; no tool decides one: `runs` shows which run waits, and who has \
-approved it so far, for you to tell the user.";
+waits at an approval (`await approval(…)`) goes on when its steps are decided: a person's step by \
+a person, in the editor's Approvals or with `holon decide`; a step written for an agent by an \
+agent bound to its role, with `decide`. `runs` shows which run waits, who has approved each step \
+so far, and which steps are yours: tell the user about the rest.";
 
 // ── reaching a server ───────────────────────────────────────────────────────────────────────
 
@@ -262,9 +264,28 @@ fn tool_list() -> Value {
         {
             "name": "runs",
             "title": "List a flow's runs",
-            "description": "A deployed flow's latest runs, one line each: what started it, its answer, how long it took, and why it failed. Then the runs waiting now: at an approval, with who has approved it so far (a person decides it; no tool does), or at an event.",
+            "description": "A deployed flow's latest runs, one line each: what started it, its answer, how long it took, and why it failed. Then the runs waiting now: at an approval, with who has approved each step so far, and the steps yours to decide (`decide` takes a step written for an agent; a person decides theirs), or at an event.",
             "inputSchema": { "type": "object", "properties": { "slug": slug, "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "how many, newest last (default 10)" } }, "required": ["slug"] },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "decide",
+            "title": "Decide an agent's step of an approval",
+            "description": "Approve, or decline with a reason, a step written for an agent (`{ role: \"classifier\", kind: \"agent\" }`) of an approval a run waits at, as you: the step named, or the one open step you may take, which `runs` lists as yours. You take it only bound to its role where the approval is, and once; a note (any JSON, up to 16 KiB) goes to the run with your decision. A person's step it never decides: it says who does, and where, for you to tell the user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "run": { "type": "string", "description": "the run, by its id or the first characters of it, as `runs` lists it" },
+                    "name": { "type": "string", "description": "the approval's name, as the flow writes it: payout, for approval(\"payout\", …)" },
+                    "approve": { "type": "boolean", "description": "true approves; false declines, with a reason, and ends the approval" },
+                    "reason": { "type": "string", "description": "why, kept with the run; a decline needs one" },
+                    "slot": { "type": "integer", "minimum": 0, "description": "the step, from 0 as the steps are written; leave out for the one open step that is yours" },
+                    "note": { "description": "any JSON given to the run with the decision, up to 16 KiB: what you found (a label, a confidence)" }
+                },
+                "required": ["slug", "run", "name", "approve"]
+            },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
         },
         {
             "name": "logs",
@@ -415,6 +436,7 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect, ctx: &Ctx) 
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "whoami" => whoami(&*connect()?),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
+        "decide" => decide(&*connect()?, args),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
         "logs" => logs(&*connect()?, arg(args, "slug")?, args),
         "state" => state(&*connect()?, arg(args, "slug")?, args),
@@ -496,7 +518,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     let secrets_note = if missing.is_empty() {
         String::new()
     } else {
-        format!("\nSecrets not set yet (an admin sets them in the editor, under the deployment's ⚙): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
+        format!("\nSecrets not set yet (an admin sets them in the editor, in the flow's Settings): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
     };
     // Its text goes with it, comments and all, so the person who opens it reads what was written.
     body["document"] = saved_document(&plan, text);
@@ -696,7 +718,7 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
     }
     let reads: Vec<String> = strings(&manifest, "capabilities").iter().filter_map(|c| c.strip_prefix("SecretRead(\"")?.strip_suffix("\")").map(str::to_string)).collect();
     if !reads.is_empty() {
-        let named: Vec<String> = reads.iter().map(|r| if secrets.iter().any(|s| s.as_str() == Some(r)) { format!("{r} (set)") } else { format!("{r} (not set: an admin sets it under the deployment's ⚙)") }).collect();
+        let named: Vec<String> = reads.iter().map(|r| if secrets.iter().any(|s| s.as_str() == Some(r)) { format!("{r} (set)") } else { format!("{r} (not set: an admin sets it in the flow's Settings)") }).collect();
         out.push(format!("The secrets it reads: {}", named.join(", ")));
     }
     let waits = waits_for(d, saved(slug));
@@ -904,11 +926,62 @@ fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
         out.push(String::new());
         out.push("Waiting now:".into());
         out.extend(points);
-        if waiting.iter().flat_map(|r| r["waiting"].as_array().cloned().unwrap_or_default()).any(|w| w["people"].as_u64().unwrap_or(0) > 0) {
-            out.push(format!("An approval is a person's to decide, and no tool decides it: tell the user which run waits, and that they decide it in the editor (Approvals, Runs waiting) or with `holon decide {slug} <run> <name> --approve` (or --decline --reason …)."));
+        let yours = crate::decidecmd::yours_lines(&waiting);
+        if !yours.is_empty() {
+            out.push(String::new());
+            out.push("Yours to decide, with `decide`:".into());
+            out.extend(yours);
+        }
+        if waiting.iter().flat_map(|r| r["waiting"].as_array().cloned().unwrap_or_default()).any(|w| w["steps"].is_string()) {
+            out.push(format!("A person's step is a person's to decide: tell the user which run waits, and that they decide it in the editor (Approvals, Runs waiting) or with `holon decide {slug} <run> <name> --approve` (or --decline --reason …)."));
         }
     }
     Ok(out.join("\n"))
+}
+
+/// Decide a step written for an agent of an approval a run waits at, as the agent signs in (the
+/// plan's D42): the step named (`slot`), or the one open step it may take, the route choosing. A
+/// person's step it decides nothing of, and says who decides it and where; whatever else stands
+/// in the way (a role not held, the host's settings), the route says.
+fn decide(api: &dyn Api, args: &Value) -> Result<String, String> {
+    let (slug, run, name) = (arg(args, "slug")?, arg(args, "run")?, arg(args, "name")?);
+    let approve = args.get("approve").and_then(Value::as_bool).ok_or("`approve` is missing: true approves, false declines with a reason")?;
+    let reason = args.get("reason").and_then(Value::as_str).map(str::trim).filter(|r| !r.is_empty());
+    if !approve && reason.is_none() {
+        return Err("a decline says why: give `reason`".into());
+    }
+    let runs = list_of(json_of(api, "GET", &format!("/deployments/{}/runs", seg(slug)), None)?, Some("runs"));
+    let run_id = crate::decidecmd::pick(&runs, run)?;
+    let short = crate::decidecmd::short(&run_id);
+    let point = runs.iter().find(|r| r["run_id"] == run_id.as_str()).and_then(|r| r["waiting"].as_array()?.iter().find(|w| w["name"] == name).cloned());
+    let Some(point) = point.filter(|w| w["steps"].is_string()) else {
+        return Err(format!("run {short} of {slug:?} isn't waiting at an approval {name:?}: `runs` says what it waits at"));
+    };
+    let slots = point["slots"].as_array().cloned().unwrap_or_default();
+    let slot = args.get("slot").and_then(Value::as_u64);
+    // The step asked for, or with none named and none yours, the steps open now.
+    let asked: Vec<&Value> = match slot {
+        Some(n) => slots.get(n as usize).into_iter().collect(),
+        None if point["yours"].as_array().is_some_and(|y| !y.is_empty()) => Vec::new(),
+        None => slots.iter().filter(|s| s["open"] == true).collect(),
+    };
+    if !asked.is_empty() && asked.iter().all(|s| s["kind"] == "person") {
+        let each: Vec<String> = asked
+            .iter()
+            .map(|s| match s["role"].as_str() {
+                Some(role) => format!("{}, by a person bound to {role} where the flow is", crate::decidecmd::step_numbered(s)),
+                None => format!("{}, by a person holding run.decide on {slug:?}", crate::decidecmd::step_numbered(s)),
+            })
+            .collect();
+        let which = if slot.is_some() { "that step is" } else { "the steps open now are" };
+        return Err(format!(
+            "Nothing decided: of {name:?}, {which} a person's to take, not an agent's: {}. They decide it in the editor's Approvals (Runs waiting) or with `holon decide {slug} {short} {name} --approve` (or --decline --reason …): tell the user run {short} waits for them.",
+            each.join("; ")
+        ));
+    }
+    let body = json!({ "name": name, "approve": approve, "reason": reason, "slot": slot, "note": args.get("note") });
+    let d = json_of(api, "POST", &format!("/deployments/{}/runs/{}/decide", seg(slug), seg(&run_id)), Some(Body::Json(body)))?;
+    Ok(crate::decidecmd::decided_said(slug, &run_id, &d))
 }
 
 /// `slug`'s log lines, as `holon logs` prints them: oldest first, at a level or louder, up to a run's end
@@ -1490,7 +1563,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use crate::tests::{body_bytes, req_as, test_state, with_people, Signed};
-    use crate::{route, AppState};
+    use crate::{route, AppState, Deployment};
 
     /// `deploy`, with nothing said for the person who reviews it.
     fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, String> {
@@ -1977,16 +2050,87 @@ mod tests {
         json_of(&other, "POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true, "reason": "matches the invoice" })))).unwrap();
 
         let listed = tool_as(&agent, "runs", json!({ "slug": "payouts" })).unwrap();
-        assert!(listed.contains(&format!("run {} (action pay, since ", &run_id[..12])), "{listed}");
-        assert!(listed.contains("waits at approval \"payout\", 2 people's, 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
-        assert!(listed.contains("no tool decides it") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
+        assert!(listed.contains(&format!("run {} (action pay, started by ada, since ", &run_id[..12])), "{listed}");
+        assert!(listed.contains("waits at approval \"payout\" (2 people): 1 of 2: dan (\"matches the invoice\") approved, until "), "{listed}");
+        assert!(listed.contains("A person's step is a person's to decide") && listed.contains("holon decide payouts <run> <name> --approve"), "{listed}");
         assert!(tool_as(&agent, "deployments", json!({})).unwrap().contains("1 waiting (`runs` says for what)"));
-        // The agent's own decision is refused before the route: deciding is a person's.
+        // The agent's own decision is refused: no role it holds there decides one.
         let (status, body) = agent.send("POST", &decide, Some(Body::Json(json!({ "name": "payout", "approve": true })))).unwrap();
         assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
-        assert!(String::from_utf8_lossy(&body).contains("approving, granting, starting, stopping and deleting are a person's"), "{}", String::from_utf8_lossy(&body));
+        assert!(String::from_utf8_lossy(&body).contains("no role claude holds on "), "{}", String::from_utf8_lossy(&body));
         let waiting = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap();
-        assert_eq!(waiting["runs"][0]["waiting"][0]["approved"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
+        assert_eq!(waiting["runs"][0]["waiting"][0]["decisions"].as_array().unwrap().len(), 1, "still dan's alone: {waiting}");
+    }
+
+    /// **Guards:** the `decide` tool takes a step written for an agent, as the agent signs in, and
+    /// never a person's (D42): an agent's step open and its own, decided, with its note given to
+    /// the run; a person's step, open or not, named or the only ones open, decides nothing and says
+    /// who does and where; an agent bound to no role there, a step already taken, a decline without
+    /// a reason, a run or a point not waiting, each refused saying why.
+    /// **Why:** an agent may sign off what its role is for, and nothing past it: the record of who
+    /// approved is the evidence, and a person's step taken by a tool would be a forged one.
+    #[test]
+    fn the_decide_tool_takes_an_agents_step_and_never_a_persons() {
+        use crate::accounts::Kind;
+        use crate::bindings::{RoleText, Scope, Selector, Subject};
+        let mut state = test_state();
+        let p = with_people(&mut state);
+        let accounts = state.access.accounts().unwrap();
+        let dee = accounts.accept(&accounts.invite("dee", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+        accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
+        let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+        for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person)] {
+            accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
+        }
+        for (who, role) in [("scout", "classifier"), ("dee", "reviewer")] {
+            accounts.bind(Subject::Principal(who.into()), role, Scope::Flows(Selector::Slug("payouts".into())), None, "ada", None).unwrap();
+        }
+        let (person, claude, scout, dee) = (Signed { state: &state, token: &p.ada }, Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &scout }, Signed { state: &state, token: &dee });
+        let text = "import { action, approval, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"reviewer\" }] })\n  state.decided = decision\n  return decision.approved\n})\n";
+        let plan = agent::plan(text).unwrap();
+        for u in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
+        }
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        assert!(tool_as(&person, "run", json!({ "slug": "payouts", "action": "pay", "input": { "amount": 900 } })).unwrap().starts_with("action pay is waiting: run "));
+        let run_id = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap()["runs"][0]["run_id"].as_str().unwrap().to_string();
+        let short = &run_id[..12];
+        let listed = tool_as(&scout, "runs", json!({ "slug": "payouts" })).unwrap();
+        assert!(listed.contains(&format!("Yours to decide, with `decide`:\nrun {short}, \"payout\": classifier (slot 0)")), "{listed}");
+
+        let ask = |run: &str, name: &str, approve: bool, more: Value| {
+            let mut args = json!({ "slug": "payouts", "run": run, "name": name, "approve": approve });
+            args.as_object_mut().unwrap().extend(more.as_object().cloned().unwrap_or_default());
+            args
+        };
+        let persons = |which: &str| format!("Nothing decided: of \"payout\", {which} a person's to take, not an agent's: reviewer (slot 1), by a person bound to reviewer where the flow is. They decide it in the editor's Approvals (Runs waiting) or with `holon decide payouts {short} payout --approve` (or --decline --reason …): tell the user run {short} waits for them.");
+        let note = json!({ "label": "invoice", "confidence": 0.93 });
+        // In order: each asks the tool as an agent, and is answered (Ok) or refused (Err), saying so.
+        let rows: Vec<(&Signed, Value, Result<String, String>)> = vec![
+            (&scout, ask(short, "payout", true, json!({ "slot": 1 })), Err(persons("that step is"))),
+            (&claude, ask(short, "payout", true, json!({})), Err("refused (claude may not do that: no role claude holds on \"payouts\" holds run.decide)".into())),
+            (&scout, ask(short, "payout", false, json!({})), Err("a decline says why: give `reason`".into())),
+            (&scout, ask("ffff", "payout", true, json!({})), Err("no run ffff is waiting".into())),
+            (&scout, ask(short, "paid", true, json!({})), Err(format!("run {short} of \"payouts\" isn't waiting at an approval \"paid\""))),
+            (&scout, ask(short, "payout", true, json!({ "note": note })), Ok(format!("Approved \"payout\" as classifier for run {short} of payouts. It waits for reviewer."))),
+            (&scout, ask(short, "payout", true, json!({})), Err(persons("the steps open now are"))),
+            (&scout, ask(short, "payout", true, json!({ "slot": 1 })), Err(persons("that step is"))),
+            (&scout, ask(short, "payout", true, json!({ "slot": 0 })), Err("answered 409: scout already approved slot 0 (classifier) of \"payout\"".into())),
+        ];
+        for (i, (who, args, want)) in rows.into_iter().enumerate() {
+            let got = tool_as(who, "decide", args.clone());
+            match (&got, &want) {
+                (Ok(said), Ok(w)) => assert_eq!(said, w, "row {i}: {args}"),
+                (Err(said), Err(w)) => assert!(said.contains(w.as_str()), "row {i}: {args}: {said}"),
+                _ => panic!("row {i}: {args}: {got:?}, wanted {want:?}"),
+            }
+        }
+        // dee takes the reviewer's step: the run is given both, the agent's note with its own.
+        json_of(&dee, "POST", &format!("/deployments/payouts/runs/{run_id}/decide"), Some(Body::Json(json!({ "name": "payout", "approve": true })))).unwrap();
+        let decided = state.deployments.lock().unwrap()["payouts"].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
+        let d: Value = serde_json::from_str(&holon_core::stringify_json(&decided).unwrap()).unwrap();
+        assert_eq!((&d["approved"], &d["by"], &d["decisions"][0]["note"]), (&json!(true), &json!(["scout", "dee"]), &note), "{d}");
     }
 
     fn tool_as(api: &(dyn Api + Sync), name: &str, args: Value) -> Result<String, String> {
@@ -2005,32 +2149,83 @@ mod tests {
         call_tool(name, &args, &connect, &Ctx::default())
     }
 
-    /// Which sites' pages a flow answers (`browsers`) is a person's to widen: a page from a new one
-    /// reads what the flow answers, in its visitor's browser. An agent's version that keeps them,
-    /// or answers fewer, deploys; one that adds a site waits for a person.
+    /// What a flow lets out through its settings is a person's to widen: the sites whose pages read
+    /// what it answers (`browsers`), in their visitors' browsers, and the values its records keep (a
+    /// key it no longer taints is recorded, where an agent may read it). An agent's version that
+    /// keeps them, or narrows them, deploys; one that widens them waits for a person as a proposal,
+    /// and the deployment keeps them as the person left them. A person's review says the change.
     #[test]
-    fn an_agent_doesnt_open_a_flow_to_new_sites() {
+    fn an_agent_doesnt_widen_what_a_flow_lets_out() {
         let mut state = test_state();
         let p = with_people(&mut state);
         let (agent, person) = (Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &p.ada });
-        let text = "import { flow, route } from \"holon\"\n\nflow(\"sites\", { port: 8232, browsers: \"https://app.example\" })\n\nroute.get(\"/hi\", () => \"hi\")\n";
-        let plan = agent::plan(text).unwrap();
-        for unit in &plan.units {
-            json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        // Each row's flow on a port of its own: a stopped deployment keeps its port.
+        let text = |slug: &str, settings: &str, says: &str| {
+            let port = if slug == "sites" { 8232 } else { 8233 };
+            format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{slug}\", {{ port: {port}{settings} }})\n\nroute.get(\"/hi\", () => \"{says}\")\n")
+        };
+        // A person's deploy of `text`, approving what it needs; its preview.
+        let deployed_by_person = |text: &str, slug: &str| {
+            let plan = agent::plan(text).unwrap();
+            for unit in &plan.units {
+                json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+            }
+            let mut body = json!({ "slug": slug, "unit": plan.unit, "document": plan.document });
+            if let Some(b) = &plan.browsers {
+                body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
+            }
+            let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(body.clone()))).unwrap();
+            body["acknowledge"] = preview["needs_approval"].clone();
+            json_of(&person, "POST", "/deploy", Some(Body::Json(body))).unwrap();
+            preview
+        };
+        /// A setting as deployed (`base`), widened and narrowed; what the agent is told of the wider
+        /// one, the review's `(setting, now, then)`, and the setting as the deployment holds it.
+        struct Row {
+            slug: &'static str,
+            base: &'static str,
+            wider: &'static str,
+            narrower: &'static str,
+            words: &'static str,
+            review: (&'static str, &'static str, &'static str),
+            held: fn(&Deployment) -> Vec<String>,
         }
-        let ask = |browsers: Value, acknowledge: Value| Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document, "browsers": browsers })));
-        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", ask(json!(["https://app.example"]), preview["needs_approval"].clone())).unwrap();
-        assert!(deploy(&agent, &text.replace("\"hi\"", "\"hello\""), Some("sites")).unwrap().starts_with("Deployed \"sites\""), "the same sites");
-        let wider = deploy(&agent, &text.replace(r#"browsers: "https://app.example""#, r#"browsers: ["https://app.example", "https://other.example"]"#), Some("sites")).unwrap();
-        assert!(wider.starts_with("Not deployed yet") && wider.contains("answer web pages from https://other.example"), "{wider}");
-        let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap();
-        assert!(any["proposal"]["needs"].as_array().unwrap().contains(&json!("Browser(\"*\")")), "proposed: {any}");
-        let browsers = |state: &AppState| state.deployments.lock().unwrap().get("sites").map(|d| d.browsers.clone());
-        assert_eq!(browsers(&state), Some(vec!["https://app.example".to_string()]), "as the person left it");
-        json_of(&agent, "POST", "/deploy", ask(json!([]), json!([]))).unwrap();
-        assert_eq!(browsers(&state), Some(vec![]), "answering fewer is the agent's to do");
-        assert_eq!(person.send("POST", "/deployments/sites/stop", None).unwrap().0, 200);
+        let rows = [
+            Row {
+                slug: "sites",
+                base: r#", browsers: "https://app.example""#,
+                wider: r#", browsers: ["https://app.example", "https://other.example"]"#,
+                narrower: "",
+                words: "answer web pages from https://other.example",
+                review: ("answers pages from", "https://app.example", "https://app.example https://other.example"),
+                held: |d| d.browsers.clone(),
+            },
+            Row {
+                slug: "keys",
+                base: r#", taint: ["x-api-key", "number"]"#,
+                wider: r#", taint: ["x-api-key"]"#,
+                narrower: r#", taint: ["x-api-key", "number", "card"]"#,
+                words: "record the values of \"number\" again, which it keeps out of its records now",
+                review: ("keeps out of its records", "x-api-key number", "x-api-key"),
+                held: |d| d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
+            },
+        ];
+        for Row { slug, base, wider, narrower, words, review: (setting, now, then), held } in rows {
+            let held = |state: &AppState| state.deployments.lock().unwrap().get(slug).map(held).unwrap();
+            deployed_by_person(&text(slug, base, "hi"), slug);
+            let as_left = held(&state);
+            assert!(deploy(&agent, &text(slug, base, "hello"), Some(slug)).unwrap().starts_with(&format!("Deployed \"{slug}\"")), "{slug}: kept as it is");
+            let proposed = deploy(&agent, &text(slug, wider, "hello"), Some(slug)).unwrap();
+            assert!(proposed.starts_with("Not deployed yet") && proposed.contains(words), "{slug}: {proposed}");
+            assert_eq!(held(&state), as_left, "{slug}: as the person left it");
+            assert!(deploy(&agent, &text(slug, narrower, "hello"), Some(slug)).unwrap().starts_with(&format!("Deployed \"{slug}\"")), "{slug}: narrowed");
+            assert_ne!(held(&state), as_left, "{slug}: narrowing it is the agent's to do");
+            // A person widens it, and the review says how.
+            deployed_by_person(&text(slug, base, "hi"), slug);
+            let preview = deployed_by_person(&text(slug, wider, "hi"), slug);
+            assert_eq!(preview["settings"], json!([{ "name": setting, "now": now, "then": then }]), "{slug}");
+            assert_eq!(person.send("POST", &format!("/deployments/{slug}/stop"), None).unwrap().0, 200);
+        }
     }
 
     /// An agent's new code never inherits a secret a person let the old code read (redaction
@@ -2343,7 +2538,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "whoami", "deployments", "flows", "runs", "logs", "state", "explain", "history", "restore"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "whoami", "deployments", "flows", "runs", "decide", "logs", "state", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

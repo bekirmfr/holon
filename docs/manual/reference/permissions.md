@@ -37,7 +37,7 @@ the editor show).
 | `QueueSend("q")` | send messages to the queue "q" | `q.send({ data, group })` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
-| `Approval("a/2")` | wait for 2 people's approval "a" and continue later | `await approval("a", { people: 2 })` |
+| `Approval("a/person*2")` | wait for approval "a" by 2 people, and continue later | `await approval("a", { people: 2 })` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes,
 `WebSocket("/path")` for each websocket, `Clock` for an `every`, `FileArrival` for each folder a
@@ -174,7 +174,7 @@ next deploy. Until then the route and `holon mcp`'s `logs` tool answer that agen
 ## Who may run an action
 
 An action is never reached from the network: the flow's port answers only its routes. It runs
-when someone runs it by its name, from the editor's [tools panel](../guides/editor.md#the-tools-panel), the
+when someone runs it by its name, from the editor's [Try a request](../guides/editor.md#the-bottom-pane), the
 [flow's page](../guides/editor.md#a-flows-page), or
 `POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
 (nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may

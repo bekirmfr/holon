@@ -23,11 +23,13 @@ const USAGE: &str = "usage: holon deploy <file> [options]
   --slug NAME              deploy under NAME instead of the flow's own name
   --approve                approve, as you, what it asks for that isn't granted yet, and say
                            what that was
+  --note TEXT              kept with the grant, on its deploy in the flow's history: why it
+                           was approved, what was checked
   --server PORT|URL        which holon server to ask (see below)
 
 examples:
   holon deploy shop.holon.ts
-  holon deploy shop.holon.ts --approve
+  holon deploy shop.holon.ts --approve --note \"checked the new host with Ada\"
   holon deploy shop.holon.ts --slug shop-staging --server https://holon.example.com
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -41,12 +43,14 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let mut approve = false;
     let mut manifest = false;
     let mut as_json = false;
+    let mut note: Option<String> = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server_arg = args.next().cloned(),
             "--slug" => slug_arg = args.next().cloned(),
             "--approve" => approve = true,
+            "--note" => note = args.next().cloned(),
             "--manifest" => manifest = true,
             "--json" => as_json = true,
             "--help" | "-h" => {
@@ -96,7 +100,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let server = target.server.clone();
     let api = Person { server: target.server, token: target.token };
 
-    let staged = match stage(&api, &plan, &slug) {
+    let mut staged = match stage(&api, &plan, &slug) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("holon deploy: {e}");
@@ -172,6 +176,9 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 1;
     }
 
+    if let Some(note) = note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        staged.body["note"] = json!(note);
+    }
     if let Err(e) = commit(&api, &plan, staged, plan.document.clone()) {
         eprintln!("holon deploy: {e}");
         return 1;

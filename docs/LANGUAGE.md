@@ -464,13 +464,65 @@ order carries no meaning beyond names being defined before use. `{ ...order, pai
 `with_field` over an existing record (§5.5).
 
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
-`approval{name: payout, expires: 86400, people: 2}`, for people rather than a request: no token is
-handed out for it and no route resumes it. Two different people signed in to Holon approve it (or
-one declines), and the run gets `{approved, by}`. Its permission, `Approval("payout/2")`, names
-how many. Where it goes next is the target design,
-[`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8: an approval in steps,
-each filled by a principal holding a role, in order and by different principals (not the one who
-started the run), of which `people: N` stays the short form of one step.
+`approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no
+token is handed out for it and no route resumes it. Two different people signed in to Holon approve
+it (or one declines), and the run gets `{approved, by, decisions}`: who approved, and every decision
+taken, a decline included, as `{slot, who, kind, role, at, approved, reason, note, binding,
+access}` (`slot` 0 and no `role` for `people`; `note` any JSON the decider sent with it; `binding`
+and `access` what let them, below), with `declined_by` and
+`reason` when declined, or `expired: true` when nobody decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
+one step of two people.
+
+An approval in steps names who takes each step, by the role they hold where the approval is (the
+target design, [`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8):
+
+```ts
+  const decision = await approval("payout", {
+    expires: "1d",
+    steps: [
+      { role: "classifier", kind: "agent" },
+      { role: "reviewer" },
+      { role: "approver", people: 2 },
+    ],
+  })
+```
+
+Each step is taken after the one before. `order: "any"` takes them in any order; a list inside
+`steps` is a stage, its steps taken in any order and the stages in turn: `steps: [[{ role: "a" },
+{ role: "b" }], { role: "c" }]`. A step with no role is anyone holding `run.decide` there, a
+person; an agent's step (`kind: "agent"`) names its role, and a service never takes one. Up to 5
+steps, each taken by 1 to 5 different principals (`people`). `people: N` is the short form of one
+step with no role, and `people` beside `steps` is refused, as are an empty stage, a stage of one
+step and `order` with stages, each saying what to write.
+
+The steps lower to one canonical text, which the permission names: stages joined by `>`, a stage's
+steps by `+`, a step its kind, `:role` and `*N`. Here,
+`approval{…, steps: "agent:classifier>person:reviewer>person:approver*2"}` and
+`Approval("payout/agent:classifier>person:reviewer>person:approver*2")`. A version that changes
+the steps changes the permission, so it asks anew, as weakening an approval should (§8.2).
+`holon fmt` writes one form for each steps: `people: N`; a flat `steps` when every stage is one
+step; a flat `steps` with `order: "any"` for one stage; nested lists otherwise, a stage of one step
+unwrapped.
+
+The host decides each step in its order (§8.3, §8.4): a step opens once every stage before it is
+filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
+role, directly or through a group, on the host, the flow or the approval itself, and holding
+`run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
+step of an approval, once, and not of a run they started; one decline ends it. A decision names
+its step (`slot`), or takes the one open step its decider may fill. The host's approval settings
+say two things more, for every flow (§8.4, `holon access approvals`): with `exclude_deployer`,
+whoever deployed the version a run is on decides none of its steps; with `agents` off, no agent
+decides one, and a flow whose approval has an agent's step doesn't deploy.
+
+Each decision keeps what let its decider (§8.6): `binding`, the id of the binding they took the
+step through (`holon access show` lists it), and `access`, the version of the access document it
+was read in. The run is given them, so the resumed part's log entry, the run's export and `holon
+verify` carry them: an auditor checks the order, the kinds, the different principals and their
+bindings offline, against `holon access show N`. On the server's machine, `holon decide` signs in
+as the account that set the server up, one principal with its session. The approved-payout
+sample pays in three steps: an agent bound to `classifier` takes the first with a note (`holon
+decide --note`, or `holon mcp`'s `decide`), a person bound to `reviewer` the second, and you,
+bound to `approver`, the third, each bound on its tag.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
@@ -1013,7 +1065,7 @@ messages run one at a time, in the order they came, and `close` runs once, after
 The host holds the connections, never a run: each run is over in milliseconds, and what outlives
 it is in the collection and the channel. A page from another site can't open one: its `Origin`
 must be the flow's own host or one `browsers` names. The limits `max_websockets`,
-`max_message_bytes` and `messages_per_second` (under ⚙) bound what the flow holds and what each
+`max_message_bytes` and `messages_per_second` (in its deploy settings) bound what the flow holds and what each
 connection sends; one past them is closed with the code that says why, and its `close` runs all
 the same. A websocket is a permission, `WebSocket("/room/:name")`, as the channel and the
 collection are.
@@ -1415,7 +1467,7 @@ flow's, one for every handler: the clock counts, and `GET /count` reads the coun
 `export const reset = action((input) => { … })` is run by hand, by its name, and the network never
 reaches it: the port answers only the routes. It is exported because it is what reaches the flow
 from outside; an `action(…)` that isn't exported is refused, as nothing could reach it. A person
-runs it from the editor's server panel or the deployed page, or a script with `POST
+runs it from the editor's Try a request or the deployed page, or a script with `POST
 /trigger/ticker/reset` on the holon server (as an editor or an admin); `input` is the JSON they
 sent, `{}` for nothing, so `{"to": 0}` and nothing both set the count back to 0. What it returns is
 the answer to whoever ran it: `state.ticks` on the right is the count at the start of the run
@@ -1661,7 +1713,7 @@ what the flow deploys as; its options are the deploy settings (`Settings`):
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days, the limits `keep_runs` and `keep_run_days`; either alone works |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s" }` | Any other limit of the deploy settings, by its name there (`docs/manual/reference/permissions.md`): a `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. Below the host's default asks nobody; above it asks for approval, `Limit(run_budget_ms=60000)`, up to the host's ceiling. A `js()` function's fuel and memory are its own options, not a limit |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`; one may be written alone, `browsers: "*"` |
-| `taint: ["x-api-key", "number"]` | Keys whose values the host never keeps of the flow's runs |
+| `taint: ["x-api-key", "number"]` | Keys whose values the host never keeps of the flow's runs, each once, as written. They are a frozen `taint` param of its server unit, written only when there is one, so a version that drops a key is a different unit; a flow without handlers has no server and so none. The editor's deploy settings list them, beside the four every flow taints; a person's review of a version that drops one says so, and an agent's waits for a person, `Untaint("number")` |
 | `tags: ["payments"]` | The flow's tags, each lowercase letters, digits and `-`, 1 to 40 of them; kept sorted, once each. They are a frozen `tags` param of its server unit, written only when there is one, so an untagged flow's hash is as it was, and a version that adds a tag is a different unit. Each is an item of its manifest, `Tag("payments")`, which a person approves and the policy never grants: a binding on the tag (`holon bind editor --to bob --tag payments`) covers every flow deployed with it, while it is |
 
 **Handlers start runs.** A flow has one or more, each a call at the top level whose function is

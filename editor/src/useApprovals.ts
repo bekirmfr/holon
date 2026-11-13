@@ -1,14 +1,13 @@
 // What waits for a person (approvals.ts), kept fresh: the saved flows and the proposals read every 4 s while
 // Approvals or the overview is shown (every 30 s otherwise, for the nav's count), each
 // deployment's events (for an agent's asks) while Approvals is, the runs waiting in the deployments
-// that have any (Runs waiting lists them; the nav counts the approvals among them) with whether
-// whoever is signed in decides each approval point among them, and the versions of a deployment
-// that has a newer save, so its review has a number.
+// that have any (Runs waiting lists them, each approval with the steps whoever is signed in may
+// take; the nav counts them), and the versions of a deployment that has a newer save, so its
+// review has a number.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
-import { isApproval, pointKey } from "./decisions";
-import { getEvents, getVersions, listFlows, listProposals, listWaitingRuns, mayI, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal, type WaitingRun } from "./server";
+import { getEvents, getVersions, listFlows, listProposals, listWaitingRuns, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal, type WaitingRun } from "./server";
 
 /** A run waiting in a deployment. */
 export type WaitingRunOf = { slug: string; run: WaitingRun };
@@ -31,26 +30,12 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
   const [runs, setRuns] = useState<WaitingRunOf[] | null>(null);
-  // Whether whoever is signed in decides each approval point a run waits at (pointKey).
-  const [decides, setDecides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const now = useRef(deployments);
   now.current = deployments;
 
   const readRuns = useCallback(() => {
     const waiting = now.current.filter((d) => (d.waiting ?? 0) > 0);
-    Promise.all(waiting.map((d) => listWaitingRuns(d.slug).then((rs) => rs.map((run) => ({ slug: d.slug, run })), () => []))).then(async (all) => {
-      const runs = all.flat();
-      // The server says who decides each point: bound on the host, on the flow, or at the point.
-      const points = [...new Map(runs.flatMap(({ slug, run }) => run.waiting.filter(isApproval).map((w) => [pointKey(slug, w.name), { slug, name: w.name }] as const))).entries()];
-      const asked = points.map(([key, { slug, name }]) =>
-        mayI(["run.decide"], { flow: slug, approval: name }).then(
-          (may) => [key, may["run.decide"] === true] as const,
-          () => [key, false] as const,
-        ),
-      );
-      setDecides(new Map(await Promise.all(asked)));
-      setRuns(runs);
-    });
+    Promise.all(waiting.map((d) => listWaitingRuns(d.slug).then((rs) => rs.map((run) => ({ slug: d.slug, run })), () => []))).then((all) => setRuns(all.flat()));
   }, []);
   const refresh = useCallback(() => {
     listFlows()
@@ -115,5 +100,5 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, proposals, runs, decides, keep, refresh };
+  return { approvals, queue, flows, proposals, runs, keep, refresh };
 }

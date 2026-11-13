@@ -9,7 +9,7 @@
 // (VITE_HOLON_SERVER names another). Everyone signs in (crates/holon/src/access.rs): every request
 // carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
-import { browsersOf } from "./DeployBar";
+import { browsersOf } from "./DeploySettings";
 import { signedIn, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
@@ -27,8 +27,9 @@ export type Role = "viewer" | "editor" | "admin" | "agent";
 /** What a principal is (accounts.rs): a person signs in with a password or a provider; an agent
  *  (an AI, through holon mcp) and a service (a script, CI) sign in with their own tokens. */
 export type Kind = "person" | "agent" | "service";
-/** Who this browser is signed in as: the session token the server gave, and who it is. */
-export type Session = { token: string; name: string; kind?: Kind; role: Role };
+/** Who this browser is signed in as: the session token the server gave, and who it is; `at`,
+ *  when this browser signed in (absent in a session kept from before it was noted). */
+export type Session = { token: string; name: string; kind?: Kind; role: Role; at?: number };
 const SESSION_KEY = "holon.session";
 let memorySession: Session | null = null;
 
@@ -54,10 +55,16 @@ export function setSession(session: Session | null): void {
 
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 means the
- *  sign-in has ended: it is forgotten, and the editor asks to sign in again. */
+ *  sign-in has ended: it is forgotten, and the editor asks to sign in again. A request that gets
+ *  no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getSession()?.token ?? signedIn()?.idToken;
-  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init);
+  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
+    (e: unknown) => {
+      window.dispatchEvent(new Event("holon:unanswered"));
+      throw e;
+    },
+  );
   if (res.status === 401 && token) {
     setSession(null);
     signOut();
@@ -87,7 +94,7 @@ export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig
 type SignedInAs = { token: string; name: string; kind: Kind; role: Role };
 const keep = async (res: Response) => {
   const s = await asJson<SignedInAs>(res);
-  setSession(s);
+  setSession({ ...s, at: Date.now() });
   return s;
 };
 /** The first admin, with the code the server printed; signed in. */
@@ -144,6 +151,8 @@ export type Principal = {
   owner: string | null;
   owner_disabled: boolean;
   invited: boolean;
+  /** When it was last seen (epoch seconds): its last request let in; absent or null, never. */
+  last_seen?: number | null;
   tokens?: TokenEntry[];
 };
 /** Where a binding holds (bindings.rs): the host, one flow, or one approval point of one. */
@@ -154,7 +163,8 @@ export type HeldBinding = { id: number; role: string; allows: string[]; scope: S
 export type RoleEntry = { name: string; about: string | null; allows: string[]; kinds: Kind[]; builtin: boolean; bound: number };
 export const listRoles = async () => (await asJson<{ roles: RoleEntry[] }>(await api(`${BASE}/roles`))).roles;
 /** An agent's or a service's token: what it is for, never its value. */
-export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string };
+/** An agent's or a service's token, never its value: `last_used` (epoch seconds), absent until a request came with it. */
+export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string; last_used?: number };
 export type OidcSettings = { issuer: string; client_id: string };
 const principalAt = (name: string) => `${BASE}/people/${encodeURIComponent(name)}`;
 const patch = (url: string, body: unknown) => api(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -180,10 +190,11 @@ export async function revokeToken(principal: string, id: string): Promise<void> 
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
  *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may
- *  hold in all, in bytes (`cap`, null: uncapped). */
+ *  hold in all, in bytes (`cap`, null: uncapped). Its `path` only to whoever may bind resources
+ *  (web-console-L4.md §12 Q4). */
 export type FolderEntry = {
   name: string;
-  path: string;
+  path?: string;
   access: "read" | "read-write";
   keep: "bytes" | "hash" | `bytes for ${string}`;
   cap: number | null;
@@ -194,7 +205,7 @@ export type FolderEntry = {
   deployment: string | null;
 };
 /** A folder to bind: its cap as bytes or a size (`10M`). */
-export type FolderBinding = Omit<FolderEntry, "cap"> & { cap: number | string | null };
+export type FolderBinding = Omit<FolderEntry, "cap" | "path"> & { path: string; cap: number | string | null };
 export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
 export const bindFolder = async (f: FolderBinding) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
 /** A folder on the server's machine, as its admin page's "browse…" lists it (pick.rs). */
@@ -212,7 +223,8 @@ export async function unbindFolder(name: string, deployment: string | null): Pro
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
 /** A database an admin bound (holon-server's databases.rs): a name flows use (`database shop`),
- *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only. */
+ *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only.
+ *  Where it is (`path`, `connection`, `address`) only to whoever may bind resources (Q4). */
 export type DatabaseEntry = {
   name: string;
   engine: "sqlite" | "postgres" | "mysql" | "mongodb";
@@ -387,6 +399,12 @@ export type QueueSending = { queue: string; address?: string; sent: number; gave
 export async function queueStates(slug: string): Promise<{ listening: QueueListening[]; sending: QueueSending[] }> {
   return asJson(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/queues`));
 }
+/** A deployment's channels (`GET /deployments/<slug>/channels`, channels.rs): each one it has
+ *  sent on or been subscribed to, with how many packs it keeps and how many subscribe now. */
+export type ChannelCount = { name: string; kept: number; subscribers: number };
+export async function channelCounts(slug: string): Promise<ChannelCount[]> {
+  return (await asJson<{ channels: ChannelCount[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/channels`))).channels;
+}
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
 /** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry
@@ -550,6 +568,8 @@ export async function deployUnit(
   document?: FlowDocument,
   /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
   requirements?: Requirements,
+  /** What the person deploying it says: kept with the grant, on its event (events.rs). */
+  note?: string,
 ): Promise<DeployResult> {
   const res = await api(`${BASE}/deploy`, {
     method: "POST",
@@ -562,8 +582,9 @@ export async function deployUnit(
       ...(requirements !== undefined ? { requirements } : {}),
       // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
-      // The web pages from other sites it answers (⚙), when it says any.
+      // The web pages from other sites it answers (its Settings), when it says any.
       ...(document?.server ? { browsers: browsersOf(document.server) } : {}),
+      ...(note?.trim() ? { note: note.trim() } : {}),
     }),
   });
   return asJson<DeployResult>(res);
@@ -679,7 +700,8 @@ export async function getAuthConfig(): Promise<AuthConfig | null> {
 }
 
 /** One thing done on the server: a save, deploy, run, pause, stop, grant or delete, and by whom. */
-export type ActivityEntry = { at: number; action: string; target: string; by?: string };
+/** One thing done; a deploy's with its note, when one was kept with its grant. */
+export type ActivityEntry = { at: number; action: string; target: string; by?: string; note?: string };
 
 /** `GET /activity`: what was done, newest first. */
 export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
@@ -702,6 +724,10 @@ export type Summary = {
     status: "running" | "paused" | "stopped";
     runs: number[];
     failed: number[];
+    /** How long its runs in the window took, the middle of them: null with none. */
+    p50_ms: number | null;
+    /** When its newest run on record started, in the window or before it: null with none. */
+    last_ms: number | null;
     /** Its unrecorded handlers' runs, all told: never logged, so in no hour. */
     unrecorded: { runs: number; failed: number };
     on_record: number;
@@ -752,8 +778,12 @@ export const getProposal = async (id: number) => asJson<Proposal>(await api(`${B
 /** Decline a waiting proposal, with a reason its author reads. */
 export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
 /** Whether agents may propose a deployment's versions. */
-export const setAgentsPropose = async (slug: string, on: boolean) =>
-  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, { agents_propose: on }));
+export const setAgentsPropose = async (slug: string, on: boolean) => changeSettings(slug, { agents_propose: on });
+/** `POST /deployments/<slug>/settings`: what a deployer changes in place, none of it widening what
+ *  it may do: whether agents may propose its versions, and limits lowered (fewer runs kept among
+ *  them). A limit raised is refused: that is a new version, which a person approves. */
+export const changeSettings = async (slug: string, change: { agents_propose?: boolean; lower?: Record<string, number> }) =>
+  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, change));
 
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
 export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
@@ -814,11 +844,15 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** Whether a handler's runs may ever be kept out of its log (`Unrecorded(…)`). */
+  allow_unrecorded?: boolean;
   /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
    *  proposal (off: it is refused, and nothing is saved). */
   agents_propose?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
+  /** The policy file's text as it was read (null: there is none, and the defaults hold). */
+  text?: string | null;
 };
 
 export async function getPermissions(): Promise<HostPolicy> {
@@ -863,26 +897,41 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** The number of the version deployed now (`v3`), as its versions count them. */
+  version?: number | null;
 };
+
+/** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
+ *  it, as what, when, and what they noted. */
+export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string; note?: unknown };
+
+/** One step of an approval as it stands (durable.rs `SlotState`): its number and stage, the role
+ *  and kind it takes, how many different principals, who approved it, and whether it is open. */
+export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; by: string[]; open: boolean };
 
 /** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;
   route: string | null;
+  /** Who started it: the person or agent who ran its action or sent its request through the
+   *  server; absent for a clock's, a file's, a request on its own port. */
+  by?: string | null;
   parked_at: number;
-  /** Each point it waits at; an approval's with how many people it needs and who approved so far. */
-  waiting: { name: string; expires_at: number; people?: number; approved?: { by: string; at: number; reason?: string }[] }[];
+  /** Each point it waits at; an approval's with its steps (`steps`, `said` in words), each as it
+   *  stands, the decisions taken on it so far, and the open steps whoever asked may take. */
+  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[] }[];
   delivered: string[];
 };
 
-/** What a decision did (`POST …/runs/<run_id>/decide`): the approval still waits for more people,
- *  or the run was given it (`run_error` when its part then failed). */
-export type Decided = { name: string; people: number; approved_by: string[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
+/** What a decision did (`POST …/runs/<run_id>/decide`): the step it took, each step as it now
+ *  stands, and whether the approval still waits or the run was given it (`run_error` when its
+ *  part then failed). */
+export type Decided = { name: string; slot: number; slots: WaitingSlot[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
 
-/** Approve, or decline with a reason, the approval `name` a run waits at: a person's to do. */
-export const decideRun = async (slug: string, runId: string, name: string, approve: boolean, reason: string) =>
-  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, approve, reason: reason.trim() || undefined }));
+/** Approve, or decline with a reason, step `slot` of the approval `name` a run waits at. */
+export const decideRun = async (slug: string, runId: string, name: string, slot: number, approve: boolean, reason: string) =>
+  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, slot, approve, reason: reason.trim() || undefined }));
 
 /** `GET /deployments/<slug>/collections/<name>`: one item (`key`) or a page of items in key order
  *  (`prefix`, `after`, `limit`), as of `root` (one the deployment's log shows) or live. `next`:
@@ -1010,6 +1059,9 @@ export type LogEntry = {
   at_ms: number;
   duration_ms: number;
   kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed" | "queue" | "websocket";
+  /** Who ran its action, or sent its request through the server (the editor's, an agent's call);
+   *  absent for a request on its own port, a clock's, a file's. */
+  by?: string;
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;
@@ -1033,6 +1085,10 @@ export type LogEntry = {
   reads?: { path: number[]; request: WValue; answer: WValue | null; file?: { hash: string; size: number; blob?: string } }[];
   /** How many times it ran again because what it read changed before it could commit. */
   retries?: number;
+  /** The keys it claimed before calling out (key-claims-L4.md), one per key per attempt: how long
+   *  it waited for another run, whether what it read had changed (it ran again), and how long it
+   *  held the key, from taken to let go (absent for one it never held). Absent when none. */
+  claims?: LoggedClaim[];
   /** The run's id, the nonce in it, and the grant it was held to (hex; empty for no run). */
   run_id?: string;
   nonce?: string;
@@ -1047,6 +1103,9 @@ export type LogEntry = {
    *  Absent when it didn't commit, and in runs from before rc.30. */
   state_after?: string;
 };
+
+/** A key a run claimed before calling out: `charges[k2]`, or `charges[*]` for a listing. */
+export type LoggedClaim = { key: string; waited_ms: number; overtaken: boolean; held_ms?: number };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,
  *  its response, and when, in microseconds from the run's start. */
@@ -1107,9 +1166,10 @@ export async function replayVersion(slug: string, unit: string, runs = 20): Prom
 }
 
 /** `GET /deployments/<slug>/export` — the deployment's runs as one file (its log, exactly as
- *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`. */
-export async function downloadRuns(slug: string): Promise<void> {
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export`);
+ *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`; with `run`,
+ *  that run alone (its line, naming the hash of the one before it), as `<slug>-run-<n>.json`. */
+export async function downloadRuns(slug: string, run?: number): Promise<void> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export${run === undefined ? "" : `?run=${run}`}`);
   // A server from before exports answers the route with a bare 404 (a missing deployment's has a
   // reason): say which it is.
   if (res.status === 404 && !(await res.clone().text()).trim()) {
@@ -1119,7 +1179,7 @@ export async function downloadRuns(slug: string): Promise<void> {
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${slug}-runs.json`;
+  a.download = run === undefined ? `${slug}-runs.json` : `${slug}-run-${run}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1228,6 +1288,8 @@ export type DeploymentEvent = {
   from?: string;
   /** What an ask (an agent's restore, saved for a person to approve) would restore of its point. */
   restores?: ("code" | "state")[];
+  /** A deploy's: what the person who deployed it said, kept with the grant it made. */
+  note?: string;
 };
 
 /** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before
@@ -1324,12 +1386,12 @@ export async function listDeployments(): Promise<DeploymentEntry[]> {
   return deployments;
 }
 
-/** `DELETE /deployments/<slug>` — stop a deployment. Sufficient on its own: the scheduler only
- *  ever acts on what's currently in the table, and its routes and actions start 404ing
- *  immediately afterward. */
-export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
+/** `DELETE /deployments/<slug>` — remove a stopped deployment. Its routes and actions start
+ *  404ing at once; its run records are kept first, as an export `holon verify` checks, and
+ *  `records` says where on the host (null for a server keeping them in memory only). */
+export async function deleteDeployment(slug: string): Promise<DeploymentEntry & { records: string | null }> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}`, { method: "DELETE" });
-  return asJson<DeploymentEntry>(res);
+  return asJson<DeploymentEntry & { records: string | null }>(res);
 }
 
 /** One `(capability, payload)` pair a trigger actually performed — mirrors `PerformedEntry`. */
@@ -1408,9 +1470,9 @@ export type FlowDocument = {
   /** What its composites are called, by hash (docUnits.ts): a unit keeps no name, so a holon
    *  inside another would otherwise show as its hash once reopened. Absent in older flows. */
   names?: Record<string, string>;
-  /** The flow's deploy settings (DeployBar): the port for a flow with routes. Absent in older
+  /** The flow's deploy settings (DeploySettings.tsx): the port for a flow with routes. Absent in older
    *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
-  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[] };
+  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[]; taint?: string[] };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

@@ -17,7 +17,7 @@ The editor checks the chain as it shows the log. In view mode, above the run lis
 
 A deployment keeps its newest 500 runs by default (`holon serve --keep-runs N`). Older ones are
 trimmed, and the chain is checked from the oldest kept run. How many, and for how long, is a
-deploy setting of its own: under ⚙, **runs the log keeps** and **days the log keeps runs**, or
+deploy setting of its own: in the editor's Settings, **runs the log keeps** and **days the log keeps runs**, or
 the flow's `keep` line, which they follow (`keep 5 runs for 1d`, `keep 500 runs`, `keep runs for
 30d`). Fewer than the host's default is the author's to choose; more asks for approval, as it is
 the host's disk (the sample **rolling-log** keeps 5, a day at most). The states a trimmed run
@@ -54,6 +54,12 @@ it needs nothing else to be checked. Options:
 | `--server PORT\|URL` | which server: with several running here, a port; a server elsewhere, its URL, with an API token in `HOLON_TOKEN` |
 | `--max-files-bytes N` | ship at most `N` (`64K`, `10M`, `2G`) of the file texts runs read, the oldest runs' first |
 | `--without-files` | ship none of them |
+| `--run N` | run N alone, to `<slug>-run-N.json` |
+
+**One run** (`--run N`, or **Check offline…** on a run's page): its line exactly as written, which
+names the hash of the line before it, and the units and files it ran and read. `holon verify` runs
+it again to its entry and checks its hash, and says the hash of the line before it, which only the
+log has. Whether that line is the one a witness holds a head after takes the whole export.
 
 ## Verifying
 

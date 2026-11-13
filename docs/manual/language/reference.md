@@ -99,7 +99,7 @@ as; its options are the deploy settings:
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days; either alone works. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s", max_requests: 100 }` | Any other limit of the deploy settings, by its name there (see [Permissions](../reference/permissions.md#limits)). A `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. More than the host's default asks for approval. |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`. One origin may be written alone, `browsers: "*"`. |
-| `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs (see **Tainted keys**, below). |
+| `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs, each once (see **Tainted keys**, below). The editor's deployment settings list them under "keeps out of its records", where a key is added or removed. |
 | `tags: ["payments"]` | The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound on a tag acts on every flow deployed with it ([People and access](../guides/people.md)). A version that adds a tag asks for approval, and the review says who the tag lets in. |
 
 **Tainted keys.** The values of the keys a flow taints are kept out of everything the server keeps
@@ -582,7 +582,8 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route); the answer is the request that brought it, or `{ expired: true }` when none came in time. The run goes on either way, so say what running out means before anything is done: `if (got.expired ?? false) return …` (an event that came has no `expired`, and an `if` on no value runs neither branch, nor what follows) |
-| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by}`, with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route) |
+| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by, decisions}`, `by` who approved and `decisions` every decision taken, a decline included (`{slot, who, kind, role, at, approved, reason, binding, access}`, `slot` 0 and no `role` for `people`; `binding` the id of the binding that let its decider, and `access` the access document's version it was read in), with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route); a decision may carry a `note`, any JSON, given to the run with it |
+| `await approval(name, { steps: [{ role: "reviewer" }, { role: "approver", people: 2 }] })` | the same, decided in steps: each step in turn (`order: "any"`: in any order; a list inside `steps`: a stage, its steps in any order), each taken by principals bound to its role where the approval is (no role: anyone holding `run.decide`, a person; `kind: "agent"` for an agent's step). Up to 5 steps. Each principal decides one step, once, and not of a run they started; one decline ends it |
 | `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
 | `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
@@ -995,11 +996,15 @@ misled, the compiler refuses instead.
   sets how long it waits.
 - **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
-  that names it is refused. People signed in to Holon decide it, never an agent, and how many is
-  part of what the flow asks for, `Approval("name/2")`: a version that asks fewer asks anew.
-  The target design, approvals in steps filled by roles in order, is
-  [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8; `people: n`
-  stays its short form.
+  that names it is refused. People signed in to Holon decide it, and who is part of what the
+  flow asks for, `Approval("name/person*2")`: a version that asks fewer asks anew. An approval in
+  steps, `steps: [{ role: "reviewer" }, { role: "approver" }]`, names who takes each step by the
+  role they hold, and its permission names the steps,
+  `Approval("name/person:reviewer>person:approver")`; `people: n` is its short form. Each step
+  is taken in turn, by a principal of its kind bound to its role where the approval is, never
+  whoever started the run, and each decision is kept with the binding that let it (`binding`,
+  `access`), in the run's log and its export. The design is
+  [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other

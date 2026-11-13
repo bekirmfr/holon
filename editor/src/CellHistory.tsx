@@ -1,11 +1,13 @@
 // A cell's history, from view mode's flow state (ViewPanes.tsx): the ⧗ beside a cell or an item
 // opens a window listing the runs that changed it, newest first, each with its value before and
 // after (cellChanges.ts), and a restore or a deploy between runs that moved it. A run's row opens
-// that run in view mode.
+// that run in view mode. A flow's State tab shows the same inline, and a cell of numbers as a line
+// over time, which History marks at the point it goes back to.
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { cellName, cellRows, shown, type CellRow } from "./cellChanges";
+import { cellPoints } from "./flowFacts";
 import { getChanges, getVersions, type CellHistory, type VersionEntry } from "./server";
 import { useFocusTrap } from "./ui/focusTrap";
 
@@ -137,5 +139,71 @@ function Row({ row, cell, onOpen }: { row: CellRow; cell: CSSProperties; onOpen?
         {row.values.join("\n")}
       </td>
     </tr>
+  );
+}
+
+/** A cell's changes, read when `on` (newest first, a page of them); null until read. */
+export function useCellHistory(slug: string, name: string, item: string | undefined, on: boolean, again: unknown = null) {
+  const [history, setHistory] = useState<CellHistory | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!on) return;
+    let live = true;
+    getChanges(slug, name, { item, limit: PAGE }).then(
+      (h) => live && (setHistory(h), setError("")),
+      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [slug, name, item, on, again]);
+  return { history, error };
+}
+
+/** A cell's value over time, as a line from its changes (cellPoints), oldest on the left; the run
+ *  `mark` (a restore's point) marked where it falls. Only a cell whose values are numbers has one. */
+export function CellLine({ history, mark = null, width = 320, height = 56 }: { history: CellHistory; mark?: number | null; width?: number; height?: number }) {
+  const points = cellPoints(history).filter((p): p is { seq: number | null; at_ms: number | null; value: number } => p.value !== null);
+  if (points.length < 2) return <span className="hl-cellline__none">{points.length === 0 ? "no number to draw: its values aren't numbers" : "one value: nothing to draw"}</span>;
+  const lo = Math.min(...points.map((p) => p.value));
+  const hi = Math.max(...points.map((p) => p.value));
+  const x = (i: number) => 4 + (i / (points.length - 1)) * (width - 8);
+  const y = (v: number) => (hi === lo ? height / 2 : height - 4 - ((v - lo) / (hi - lo)) * (height - 8));
+  // The change at the mark, or the last one before it: the value the restore puts back.
+  const at = mark === null ? -1 : points.reduce((found, p, i) => (p.seq !== null && p.seq <= mark ? i : found), -1);
+  const said = `${cellName(history)} over ${points.length} changes, from ${points[0].value} to ${points[points.length - 1].value}, between ${lo} and ${hi}${at >= 0 ? `; at the point, ${points[at].value}` : ""}`;
+  return (
+    <svg className="hl-cellline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={said}>
+      <polyline className="hl-cellline__line" points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")} />
+      {at >= 0 && (
+        <g className="hl-cellline__mark">
+          <line x1={x(at)} x2={x(at)} y1={0} y2={height} />
+          <circle cx={x(at)} cy={y(points[at].value)} r={3.5} />
+        </g>
+      )}
+    </svg>
+  );
+}
+
+/** A cell's history shown inline, under its row (the State tab): its line over time, then each
+ *  run that changed it, newest first, a run's opening it. */
+export function CellHistoryInline({ history, error, versions = [], onOpenRun }: { history: CellHistory | null; error: string; versions?: VersionEntry[]; onOpenRun?: (seq: number) => void }) {
+  if (error) return <div className="hl-flow__bad">{error}</div>;
+  if (!history) return <div className="hl-flow__note">reading the log…</div>;
+  const rows = cellRows(history, versions);
+  if (rows.length === 0) return <div className="hl-cellhistory__empty hl-flow__note">No run in the log changed it.</div>;
+  const cell: CSSProperties = { padding: "3px 8px", fontSize: 12, verticalAlign: "top" };
+  return (
+    <div className="hl-cellhistory__inline" role="group" aria-label={`the changes to ${cellName(history)}`}>
+      {cellPoints(history).some((p) => p.value !== null) && <CellLine history={history} />}
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <tbody>
+          {rows.map((r) => (
+            <Row key={r.key} row={r} cell={cell} onOpen={r.seq !== undefined && onOpenRun ? () => onOpenRun(r.seq!) : undefined} />
+          ))}
+        </tbody>
+      </table>
+      {history.more && <div className="hl-flow__note">older changes: open the run before the oldest</div>}
+    </div>
   );
 }

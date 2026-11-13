@@ -59,9 +59,72 @@ pub(crate) struct Document {
     pub(crate) groups: Vec<Group>,
     #[serde(default)]
     pub(crate) bindings: Vec<Binding>,
+    /// How this host decides approvals beyond each step's role and kind (§8.4).
+    #[serde(default)]
+    pub(crate) approvals: ApprovalSettings,
+    /// The account this machine's run file signs in as (local.rs, the plan's D45): the person who
+    /// set the server up, until an admin moves it or the account is removed; none before setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) local: Option<String>,
     /// The next binding's id: ids are never reused, so an old version's ids name what they named.
     #[serde(default)]
     next_id: u64,
+}
+
+/// How this host decides approvals beyond each step's role and kind (the design's §8.4, the
+/// plan's D41): whether whoever deployed the version a run is on decides any of its approvals,
+/// and whether agents take the steps written for them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ApprovalSettings {
+    #[serde(default)]
+    pub(crate) exclude_deployer: bool,
+    #[serde(default = "on")]
+    pub(crate) agents: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for ApprovalSettings {
+    fn default() -> Self {
+        ApprovalSettings { exclude_deployer: false, agents: true }
+    }
+}
+
+impl ApprovalSettings {
+    /// Each setting: its name, whether it is on, and what that means here.
+    pub(crate) fn each(&self) -> [(&'static str, bool, &'static str); 2] {
+        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
+        let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
+        [("exclude_deployer", self.exclude_deployer, deployer), ("agents", self.agents, agents)]
+    }
+
+    /// As a version says them.
+    pub(crate) fn said(&self) -> String {
+        self.each().map(|(_, _, said)| said).join("; ")
+    }
+
+    /// Why they refuse a deploy asking for `manifest`, if they do: an approval with a step for an
+    /// agent, while no agent decides one.
+    pub(crate) fn refuses(&self, manifest: &crate::permissions::Manifest) -> Option<String> {
+        if self.agents {
+            return None;
+        }
+        manifest.items().iter().find_map(|item| {
+            let (name, steps) = item.strip_prefix("Approval(\"")?.strip_suffix("\")")?.split_once('/')?;
+            let steps = holon_core::approval::Steps::parse(steps)?;
+            steps.slots().any(|(_, _, s)| s.kind == holon_core::approval::SlotKind::Agent).then(|| {
+                format!("this host lets no agent decide an approval, and {name:?} asks for {} (holon access approvals --agents on)", steps.said())
+            })
+        })
+    }
+}
+
+/// This host's approval settings: the access document's, the defaults on a server without
+/// accounts.
+pub(crate) fn approval_settings(state: &crate::AppState) -> ApprovalSettings {
+    state.access.accounts().map(|a| a.access_document().approvals.clone()).unwrap_or_default()
 }
 
 /// A role an admin defines (§5.1), as kept: what it allows, by the catalogue's names, and which
@@ -76,14 +139,17 @@ pub(crate) struct RoleText {
 }
 
 impl RoleText {
-    /// It, as `can` reads it; or why it isn't a role: a built-in role's name, an action the
-    /// catalogue doesn't name, none at all, or no kind to hold it.
+    /// It, as `can` reads it; or why it isn't a role: a built-in role's name, a name an approval's
+    /// steps can't name (D35), an action the catalogue doesn't name, none at all, or no kind to
+    /// hold it.
     pub(crate) fn def(&self) -> Result<RoleDef, String> {
         let name = &self.name;
         if crate::can::builtin(name).is_some() {
             return Err(format!("{name} is a built-in role: name yours otherwise"));
         }
-        crate::accounts::valid_name(name)?;
+        if !holon_core::approval::is_role(name) {
+            return Err(format!("{name:?} isn't a role's name: letters, digits, - and _, at most 64, as an approval's steps name it"));
+        }
         let allows = self.allows.iter().map(|a| Action::named(a).ok_or(format!("{a:?} isn't an action: the catalogue names them as flow.deploy, run.decide…"))).collect::<Result<Vec<_>, _>>()?;
         if allows.is_empty() {
             return Err(format!("{name} allows nothing: give it an action"));
@@ -204,11 +270,21 @@ pub(crate) struct Held {
     /// The flows its scope's tag selects, as they were deployed when it was read
     /// (`Bindings::held`); none for a scope by slug, or the host.
     pub(crate) tagged: Arc<BTreeSet<String>>,
+    /// The binding it is, and the document's version it was read in: what a decision keeps as
+    /// what let it (the plan's D43). None for what no document holds (the OS user's admin).
+    pub(crate) from: Option<Bound>,
+}
+
+/// A binding by its id, in the access document's version `access`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Bound {
+    pub(crate) binding: u64,
+    pub(crate) access: u64,
 }
 
 impl Held {
     pub(crate) fn new(role: Arc<RoleDef>, scope: Scope) -> Held {
-        Held { role, scope, tagged: Arc::default() }
+        Held { role, scope, tagged: Arc::default(), from: None }
     }
 
     /// What the OS user's run file holds (local.rs): admin, on the host, while the server runs.
@@ -336,6 +412,10 @@ impl Document {
         for g in &mut self.groups {
             g.members.retain(|m| m != name);
         }
+        // The run file is tied to no one then, not to whoever is next given the name.
+        if self.local.as_deref() == Some(name) {
+            self.local = None;
+        }
     }
 
     /// Why this isn't a document the server keeps, if it isn't: each role defined once, and a role
@@ -382,7 +462,8 @@ impl Document {
                 Subject::Group(group) => self.group(group).map(|g| g.members.as_slice()).unwrap_or_default(),
             };
             for name in names {
-                held.entry(name.clone()).or_default().push((Held::new(Arc::clone(role), b.scope.clone()), b.expires_at));
+                let from = Some(Bound { binding: b.id, access: self.version });
+                held.entry(name.clone()).or_default().push((Held { from, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
             }
         }
         held
@@ -717,6 +798,12 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `DELETE /bindings/<id>` (`?why=`): 204; 409 for the last admin's (D15);
 /// - `GET /access/versions`: each version's number, when, by whom, what and why, newest first;
 /// - `GET /access` (`?version=n`): that version, whole; the newest without;
+/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, why?}`): how this host decides
+///   approvals (`ApprovalSettings`), each one given changed, as a new version;
+/// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
+///   and whether it does now (`tied`: none while they are disabled), with the version;
+/// - `PUT /access/local` (`{account, why?}`): ties it to that person, as a new version: a
+///   handover; answered as the GET is;
 /// - `GET /roles`: every role, the built-in ones first, with how many bindings hold it;
 /// - `PUT /roles/<name>` (`{about?, allows, kinds, why?}`): an admin's role, defined or changed;
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
@@ -729,7 +816,7 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
     if url == "/auth/me/can" && method == "GET" {
         return Some(me_can(request, caller));
     }
-    let ours = ["/bindings", "/access", "/access/versions", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
+    let ours = ["/bindings", "/access", "/access/versions", "/access/approvals", "/access/local", "/roles", "/groups"].contains(&url.as_str()) || ["/bindings/", "/roles/", "/groups/"].iter().any(|p| url.starts_with(p));
     if !ours {
         return None;
     }
@@ -739,6 +826,11 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
     let now = crate::deploy::epoch_now();
     let document = accounts.access_document();
     let recorded = |what: &str, target: &str| state.activity.record(what, target, Some(by));
+    // The run file's tie (D45): whom the document names, whether it holds now, and the version.
+    let tie = || {
+        let d = accounts.access_document();
+        serde_json::json!({ "local": d.local, "tied": accounts.tied(), "version": d.version })
+    };
     Some(match (method, url.as_str()) {
         ("GET", "/bindings") => {
             let (who, role, flow) = (request.get_param("who"), request.get_param("role"), request.get_param("flow"));
@@ -797,6 +889,59 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Err(r) => r,
             },
         },
+        ("PUT", "/access/approvals") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Change {
+                #[serde(default)]
+                exclude_deployer: Option<bool>,
+                #[serde(default)]
+                agents: Option<bool>,
+                #[serde(default)]
+                why: Option<String>,
+            }
+            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"why\": \"…\"}, either or both") {
+                Ok(c) => c,
+                Err(r) => return Some(r),
+            };
+            let mut settings = document.approvals.clone();
+            settings.exclude_deployer = change.exclude_deployer.unwrap_or(settings.exclude_deployer);
+            settings.agents = change.agents.unwrap_or(settings.agents);
+            let said = settings.said();
+            match accounts.set_approvals(settings, by, change.why.as_deref()) {
+                Ok(changed) => {
+                    if changed {
+                        recorded("set the approvals", &said);
+                    }
+                    let document = accounts.access_document();
+                    Response::json(&serde_json::json!({ "approvals": document.approvals, "version": document.version }))
+                }
+                Err(e) => err(400, e),
+            }
+        }
+        ("PUT", "/access/local") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Change {
+                account: String,
+                #[serde(default)]
+                why: Option<String>,
+            }
+            let change: Change = match body(request, "the run file's account is {\"account\": \"bob\", \"why\": \"…\"}") {
+                Ok(c) => c,
+                Err(r) => return Some(r),
+            };
+            match accounts.set_local(&change.account, by, change.why.as_deref()) {
+                Ok(changed) => {
+                    if changed {
+                        recorded("tied the run file", &change.account);
+                    }
+                    Response::json(&tie())
+                }
+                Err(e) => err(400, e),
+            }
+        }
+        ("GET", "/access/local") => Response::json(&tie()),
         ("GET", "/roles") => {
             let builtin = crate::can::BUILTIN.iter().map(|d| role_listed(d, d.builtin.map(about), document.bound(Some(&d.name), None)));
             let custom = document.roles.iter().filter_map(|r| Some(role_listed(&r.def().ok()?, r.about.as_deref(), document.bound(Some(&r.name), None))));
@@ -954,6 +1099,11 @@ mod tests {
         at(role, Scope::Host)
     }
 
+    /// `held` through the binding `id` of the version `access`.
+    fn via(held: Held, id: u64, access: u64) -> Held {
+        Held { from: Some(Bound { binding: id, access }), ..held }
+    }
+
     /// Each version is kept with who made it, when and what it changed; the newest is read back,
     /// and every one is in the history as it was.
     #[test]
@@ -967,7 +1117,7 @@ mod tests {
         access.keep(two.clone()).unwrap();
         let three = next(&access.document(), "ada", "bound viewer to bob on this host", |d| d.set_host_role("bob", "viewer", "ada", 3));
         access.keep(three.clone()).unwrap();
-        assert_eq!(&*access.held("bob", 4), [at_host(Role::Viewer)], "in place of editor");
+        assert_eq!(&*access.held("bob", 4), [via(at_host(Role::Viewer), 2, 3)], "in place of editor, through binding 2 of version 3");
         assert_eq!(three.bindings.iter().map(|b| b.id).collect::<Vec<_>>(), [0, 2], "ids aren't reused");
         let mut same = three.clone();
         same.set_host_role("bob", "viewer", "ada", 4);
@@ -981,7 +1131,7 @@ mod tests {
             (2, "bound editor to bob on this host"),
             (1, "bound admin to ada on this host"),
         ]);
-        assert_eq!(&*again.held("ada", 4), [at_host(Role::Admin)]);
+        assert_eq!(&*again.held("ada", 4), [via(at_host(Role::Admin), 0, 3)]);
         assert!(again.held("cy", 4).is_empty());
     }
 
@@ -1018,8 +1168,8 @@ mod tests {
         d.bind(Subject::Principal("bob".into()), "editor", flow.clone(), Some(100), "ada", 1);
         d.bind(Subject::Principal("bob".into()), "viewer", Scope::Host, None, "ada", 1);
         access.keep(d.after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        assert_eq!(&*access.held("bob", 99), [at(Role::Editor, flow), at_host(Role::Viewer)]);
-        assert_eq!(&*access.held("bob", 100), [at_host(Role::Viewer)], "expired at 100");
+        assert_eq!(&*access.held("bob", 99), [via(at(Role::Editor, flow), 0, 1), via(at_host(Role::Viewer), 1, 1)]);
+        assert_eq!(&*access.held("bob", 100), [via(at_host(Role::Viewer), 1, 1)], "expired at 100");
         assert_eq!(access.document().bindings.len(), 2, "kept until unbound");
     }
 
@@ -1036,7 +1186,7 @@ mod tests {
         access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
         let approver = Arc::new(RoleDef::custom("payout-approver", &[Action::RunView, Action::RunDecide], &[Kind::Person]));
         for name in ["bob", "cy"] {
-            assert_eq!(&*access.held(name, 2), [Held::new(Arc::clone(&approver), flow.clone())], "{name}");
+            assert_eq!(&*access.held(name, 2), [via(Held::new(Arc::clone(&approver), flow.clone()), 0, 1)], "{name}: through the group's binding");
         }
         assert_eq!(access.document().reaching("bob").map(|(b, g)| (b.id, g)).collect::<Vec<_>>(), [(0, Some("payments"))]);
         d.forget("cy");
@@ -1065,6 +1215,9 @@ mod tests {
         assert_eq!(refused(&|d| d.roles.push(role("editor", &["run.view"], &[Kind::Person]))), "editor is a built-in role: name yours otherwise");
         assert_eq!(refused(&|d| d.roles.push(role("r", &["run.fly"], &[Kind::Person]))), "\"run.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…");
         assert_eq!(refused(&|d| d.roles.push(role("r", &[], &[Kind::Person]))), "r allows nothing: give it an action");
+        for name in ["ops.lead", "a@b", "", &"r".repeat(65)] {
+            assert_eq!(refused(&|d| d.roles.push(role(name, &["run.view"], &[Kind::Person]))), format!("{name:?} isn't a role's name: letters, digits, - and _, at most 64, as an approval's steps name it"));
+        }
         assert_eq!(refused(&|d| d.roles.push(role("r", &["run.view"], &[]))), "no kind may hold r: give it person, agent or service");
         assert_eq!(refused(&|d| d.roles.extend([role("r", &["run.view"], &[Kind::Person]), role("r", &["run.view"], &[Kind::Person])])), "the role r is defined twice");
         assert_eq!(refused(&|d| d.groups.push(Group { name: "g".into(), about: None, members: vec!["nobody".into()] })), "no principal \"nobody\": a group's members are principals here");
@@ -1092,7 +1245,7 @@ mod tests {
     /// one flow binds at that flow only.
     #[test]
     fn a_binding_gives_only_what_its_author_holds_there() {
-        let by = |held: Vec<Held>| Caller { name: Some("ada".into()), kind: Some(Kind::Person), holds: Some(held.into()) };
+        let by = |held: Vec<Held>| Caller { name: Some("ada".into()), kind: Some(Kind::Person), holds: Some(held.into()), local: None };
         let status = |r: Result<(), Response>| r.err().map(|r| r.status_code);
         let (d, e) = (Scope::Flows(Selector::Slug("d".into())), Scope::Flows(Selector::Slug("e".into())));
         let ok = Scope::Approval { flow: Selector::Slug("d".into()), name: "ok".into() };

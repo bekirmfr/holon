@@ -121,6 +121,23 @@ describe("a restore's words", () => {
     expect(same.changes).toEqual(["state: as version 1 left it, the same as now"]);
   });
 
+  it("sums it up in four tagged lines, and says what it leaves as it is", () => {
+    const n = (value: number) => ({ type: "Number" as const, value });
+    const state = { from: "version 1", changed: ["tea"], added: [], removed: [], runs_since: 12, effects_since: { HttpRequest: 3 }, values: { tea: { now: n(40), then: n(3) } } };
+    const versions = [version(2, { current: true }), version(1)];
+    const both = restoreReport("p", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: true }, preview: { code: 1, needs_approval: ["Clock"], state } }], (i) => `tick ${i}`, versions);
+    expect(both.summary).toEqual([
+      { tag: "code", line: "v1's, deployed again as v3" },
+      { tag: "grant", line: "asks for more than today's (tick Clock), so a person approves" },
+      { tag: "state", line: "tea: 40 → 3, in a new session" },
+      { tag: "since", line: "12 runs since; their records stay" },
+    ]);
+    expect(both.banner).toEqual(["3 calls out made since stay made."]);
+    const code = restoreReport("p", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: false }, preview: { code: 1, needs_approval: [] } }], undefined, versions);
+    expect(code.summary?.map((s) => s.line)).toEqual(["v1's, deployed again as v3", "nothing new beside today's", "the same", "the runs since stay on record"]);
+    expect(code.banner?.[0]).toContain("not the world");
+  });
+
   it("diffs the code deployed now with the restored version's, the grant, and each state key", async () => {
     const values = { total: { now: { type: "Number" as const, value: 40 }, then: { type: "Number" as const, value: 4.5 } }, seen: { now: { type: "Boolean" as const, value: true }, then: null } };
     const state = { from: "version 1", changed: ["total"], added: [], removed: ["seen"], runs_since: 1, effects_since: {}, values };

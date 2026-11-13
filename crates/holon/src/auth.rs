@@ -50,14 +50,15 @@ fn bindings(name: &str, accounts: &Accounts) -> serde_json::Value {
     accounts.reaching(name).iter().map(each).collect()
 }
 
-/// A principal as the People page shows it: what is bound to it, and its role on the host; never
-/// its password hash; an agent's or a service's tokens with it, never their hashes.
+/// A principal as the People page shows it: what is bound to it, its role on the host, and when it
+/// was last seen; never its password hash; an agent's or a service's tokens with it, each with when
+/// it was last used, never their hashes.
 fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
     let owner_disabled = p.owner.as_deref().and_then(|o| accounts.principal(o)).is_some_and(|o| o.disabled);
     let mut v = serde_json::json!({
         "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name), "bindings": bindings(&p.name, accounts),
         "display": p.display, "email": p.email,
-        "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by,
+        "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by, "last_seen": p.last_seen,
         "owner": p.owner, "owner_disabled": owner_disabled,
         "invited": accounts.invited(&p.name),
     });
@@ -98,8 +99,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if !url.starts_with("/auth/") && !url.starts_with("/admin/") && url != "/people" && !url.starts_with("/people/") {
         return None;
     }
+    // Where a folder or a database is, only to whoever may bind one (web console L4, Q4).
+    let sees_where = crate::can::can(caller, crate::can::Action::ResourceBind, &crate::can::Resource::Host).is_ok();
     // The folders an admin binds (folders.rs): a server without accounts has them too.
-    if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // What the host stores, and how often it sweeps (storage.rs); the content store's sweep (sweep.rs).
@@ -110,7 +113,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         return Some(response);
     }
     // And the databases (databases.rs).
-    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // And the mail resources (mails.rs).
@@ -203,13 +206,14 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
+        // Through the run file, `local` says so: the OS user, `local:<user>` (D45).
         ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
             Some(p) => Response::json(&serde_json::json!({
                 "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
-                "email": p.email, "owner": p.owner, "display": p.display,
+                "email": p.email, "owner": p.owner, "display": p.display, "local": caller.local,
             })),
-            // The OS user, through the run file (`local:<user>`): admin on the host, bound nowhere.
-            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role() })),
+            // The run file tied to no account (`local:<user>`): admin on the host, bound nowhere.
+            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role(), "local": caller.local })),
         },
         ("GET", "/auth/owned") => Response::json(&accounts.principals().iter().filter(|p| p.owner.as_deref() == Some(me)).map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/auth/password") => {

@@ -1,6 +1,6 @@
 // The console at phone width and in the Terminal interface (gaps-web.md G33, G34; styles.css's
 // breakpoints, look.ts's data-ui): at 390 px the overview, a version's review, the editor and a
-// flow's history each fit across, with no sideways scroll, the nav is a drawer the top bar's menu
+// flow's history and Status each fit across, with no sideways scroll, the nav is a drawer the top bar's menu
 // opens, and the editor shows one pane at a time. `t` switches to Terminal (mono, square, a status
 // bar) and back, kept with the account. HOLON_E2E_SHOTS=<dir> also takes screenshots of each.
 
@@ -103,6 +103,10 @@ test.describe("at 390 px", () => {
       await expect(page.getByRole("complementary", { name: "Inspector" })).toBeVisible();
       await expect(page.getByRole("region", { name: "Text" })).toBeHidden();
       await fitsAcross(page);
+      await panes.getByRole("button", { name: "bottom" }).click();
+      await expect(page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Try a request" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "Inspector" })).toBeHidden();
+      await fitsAcross(page);
 
       // A flow's history: its timeline, a table that scrolls inside itself if it must.
       await page.goto(`/#${live}.history`);
@@ -110,6 +114,13 @@ test.describe("at 390 px", () => {
       await expect(page.getByRole("region", { name: "history" })).toContainText("deployed version 1");
       await fitsAcross(page);
       await shot(page, "phone-history");
+
+      // Its Status: the runs hour by hour as wide as there is room for.
+      await page.goto(`/#${live}`);
+      const day = page.getByRole("region", { name: "last 24 hours" });
+      await expect(day.getByRole("img")).toBeVisible();
+      expect(await day.evaluate((s) => s.querySelector(".hl-spark")!.getBoundingClientRect().right - s.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+      await fitsAcross(page);
     } finally {
       const headers = { Authorization: `Bearer ${adminToken}` };
       await page.request.delete(`${SERVER}/deployments/${live}`, { headers });

@@ -313,7 +313,9 @@ holon remove <slug> --yes
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
 or from the state session N left (`holon state <slug> --sessions` lists them). `pause` holds its
 runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment for good:
-its runs' log, its timeline, its state and its secrets (`holon export` first keeps its runs).
+its state, its sessions and its secrets. Its runs' log and timeline are kept: written first, beside
+the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
+where). The slug deployed again starts a new log, and the old one stays as it was.
 Editors and admins.
 
 ### `holon call`
@@ -429,25 +431,35 @@ its `logs` tool answers, and otherwise is refused.
 
 ```
 holon decide <slug> [--json]
-holon decide <slug> <run> <name> --approve [--reason TEXT]
-holon decide <slug> <run> <name> --decline --reason TEXT
+holon decide <slug> <run> <name> --approve [--reason TEXT] [--slot N] [--note JSON]
+holon decide <slug> <run> <name> --decline --reason TEXT [--slot N] [--note JSON]
 ```
 
 Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
 the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
 run (the first 12 characters of its id), what started it and since when, then an approval with
-how many people it asks and who has approved it so far, or an event, and until when:
+who decides it and each step as it stands, who approved it so far or whether it is open, or an
+event, and until when:
 
 ```
-run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout", 2 people's, 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout" (2 people): 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+run 0c2e81f4a9d3 (action pay, since 2026-11-09T14:50:12) waits at approval "release" (an agent holding classifier, then a person holding reviewer): classifier scout approved; reviewer open, until 2026-11-09T15:50:12
+
+Yours to decide:
+  run 0c2e81f4a9d3, "release": reviewer (slot 1)
 ```
 
 Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
-reason optional, or `--decline`, which needs one. It says what the decision did: still waiting for
-more people, approved by whom, or declined; the run goes on with the decision once it is made.
-Each person counts once; one decline ends it. Only a person decides: an editor or an admin
-signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
-`holon mcp`, which signs in as an agent.
+reason optional, or `--decline`, which needs one. You take the open step you may fill: of your
+kind, bound to its role where the flow is; when you may fill several, `--slot N` names one (from
+0, as the steps are written, and as *Yours to decide* numbers them). `--note` sends any JSON with
+the decision, up to 16 KiB, which the run is given with it. It says what the decision did: the
+step it took, what the approval still waits for, approved by whom, or declined; the run goes on
+with the decision once it is made. Each decides one step, once, and not of a run they started;
+one decline ends it, and the host's [approval settings](#holon-access) may keep out whoever
+deployed the version, and agents. A person decides a person's step, signed in, as you are on
+your own machine. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
+(or `holon mcp`'s `decide`), never a person's; a service's token is refused.
 
 ### `holon wait`
 
@@ -681,9 +693,9 @@ admin defined, each with who may hold it, how many bindings hold it, and what it
 makes a role of your own, or a new version of one, which changes each binding of it: `--allow`
 names actions from the catalogue (`run.view,run.decide`; a mistake lists them), `--kinds` who may
 hold it (`person`, the default; `agent`, `service`). Whatever role it holds, an agent never
-approves a deploy, starts, stops, deletes or restores a flow, writes a secret, decides an approval,
-operates the host, or reads or changes people, roles or resources; a service never decides an
-approval. `remove` takes a role nothing binds any more.
+approves a deploy, starts, stops, deletes or restores a flow, writes a secret, takes a person's
+step of an approval, operates the host, or reads or changes people, roles or resources; a service
+never decides an approval. `remove` takes a role nothing binds any more.
 
 ```sh
 holon roles define payout-approver --allow run.view,run.decide --about "decides payouts"
@@ -731,12 +743,41 @@ holon unbind 12 --why "back from leave"
 ```
 holon access [versions] [--json]
 holon access show [--version N] [--json]
+holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT] [--json]
+holon access local [--as NAME] [--why TEXT] [--json]
 ```
 
 Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
 version, newest first, with when, by whom, what it changed and why; `show` prints one whole, the
-newest by default: its roles, groups and bindings, each binding with its id, where it holds, until
-when and who made it. It holds no password or token, so it can be handed to an auditor.
+newest by default: its approval settings, roles, groups and bindings, each binding with its id,
+where it holds, until when and who made it. It holds no password or token, so it can be handed to
+an auditor.
+
+`approvals` shows how this server decides approvals beyond each step's role, and with a flag sets
+it, as a new version (holding `people.assign` on the host):
+
+```
+exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
+agents            on   agents take the steps written for them
+(version 7)
+```
+
+`--exclude-deployer on` keeps whoever deployed the version a run is on from deciding any of its
+approvals, whatever they hold (off by default). `--agents off` lets no agent decide one: a flow
+whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
+already waiting (on by default). Who started a run never decides its approvals, whatever these
+say.
+
+`local` says who this machine's run file signs in as: the person who set the server up, so the
+commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to
+another person here who isn't disabled, as a new version (holding `people.assign` on the host):
+
+```
+this machine's run file signs in as bob (version 9)
+```
+
+Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
+`local:<user>`, and decides no approval.
 
 ## Runs
 
@@ -744,7 +785,7 @@ when and who made it. It holds no password or token, so it can be handed to an a
 
 ```
 holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
-                    [--max-files-bytes N | --without-files]
+                    [--run N] [--max-files-bytes N | --without-files]
 ```
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
@@ -753,7 +794,10 @@ verify`. From the server you run on this machine, signed in as you; with several
 token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
-read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.md).
+read; `--without-files` ships none. `--run N` writes run N alone, to `<slug>-run-N.json`: its line
+as written, which names the hash of the line before it, and what it ran and read. `holon verify`
+runs it again and checks its hash; tying it to a witnessed head newer than it takes the whole
+export. See [Checking runs](../guides/checking-runs.md).
 
 ### `holon verify`
 

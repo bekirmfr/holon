@@ -46,3 +46,6 @@ export function matches(
   const text = [sample.title, sample.name, sample.description, ...sample.shows, sample.tryIt ?? "", ...chips, ...may].join("\n").toLowerCase();
   return words.every((w) => text.includes(w));
 }
+
+/** The command that writes `sample` to a file of its own, from a terminal. */
+export const newCommand = (sample: { name: string }): string => `holon new ${sample.name}.holon.ts --sample ${sample.name}`;

@@ -259,6 +259,13 @@ admin binds it (`POST /bindings`):
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
 answers one whole. Each change is also in the activity log.
 
+`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "why": "…"}`, either or
+both; `people.assign` on the host) sets how the host decides approvals beyond each step's role,
+as a new version: with `exclude_deployer`, whoever deployed the version a run is on decides none
+of its approvals; with `agents` false, no agent decides one, and a deploy whose approval has a
+step for an agent is refused. They are `false` and `true` by default, and `GET /access` has them,
+`approvals`.
+
 An admin also defines roles of their own, and groups:
 
 - **A role** (`PUT /roles/<name>`, `{"allows": ["run.view", "run.decide"], "kinds": ["person"],
@@ -308,17 +315,26 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
   `Authorization: Bearer <token>`, and act as themselves, by their name. Each has an **owner**, a
   person, who makes and revokes its tokens, as an admin may (an owner who isn't an admin, in the
   editor's *Your agents and services*). Tokens are shown once and kept only
-  as hashes; revoking one, or disabling its agent or service, stops it at once. Only a person
-  decides an approval. A person who still owns an agent or a service can't be removed until it has
+  as hashes; revoking one, or disabling its agent or service, stops it at once. A service never
+  decides an approval, and an agent takes only a step written for an agent. A person who still owns
+  an agent or a service can't be removed until it has
   another owner. An accounts file from before `access.json` keeps its principals but not their
   roles: each holds none until the run file's admin gives it one (`holon people set NAME --role
   ROLE`), and the server names them when it starts. Its API tokens from before principals, which
   had no owner, are not read: add each as an agent or a service, and make it a token.
-- Commands on this machine (`holon export`, `holon folder`) sign in through the run file in
-  `~/.holon/run/`, as `local:<your user>`, while that server runs.
+- Commands on this machine (`holon export`, `holon folder`, `holon decide`) sign in through the
+  run file in `~/.holon/run/`, while that server runs, as the person who set the server up: their
+  name, what is bound to them, and admin on the host. The access document keeps the tie
+  (`local`); `holon access local` (`GET /access/local`) says it, and whether it holds now, and
+  `--as NAME` (`PUT /access/local`, `people.assign` on the host) moves it to another person who
+  isn't disabled, as a version. Removing that person clears it.
+  Before setup, or tied to no one (its person removed or disabled), the run file is
+  `local:<your user>`, admin on the host, and decides no approval. Each activity entry made
+  through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
-  yours the first time, `<your user>-agent`, owned by you, even before anyone has set the server up
-  (it is set up by the first person, as ever); its token is kept in `tokens.json`.
+  yours the first time, `<your user>-agent`, even before anyone has set the server up (it is set
+  up by the first person, as ever), owned by you: by `<your user>` until then, and by the person
+  who sets it up from then on; its token is kept in `tokens.json`.
 
 ### Signing in through an identity provider
 
@@ -334,7 +350,7 @@ signing in.
 
 ## Secrets
 
-Secrets are set per deployment, by an admin, in the editor (**⚙ → secrets**); see
+Secrets are set per deployment, by an admin, in the editor (**Settings → secrets**); see
 [Deploying](../guides/deploying.md#secrets). The server keeps them in `secrets.json`, each value
 sealed with AES-256-GCM, the deployment, name and version bound in.
 

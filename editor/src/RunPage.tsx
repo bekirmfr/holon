@@ -1,34 +1,42 @@
-// One run's record, at `#<slug>.run-<n>` (gaps-web.md G15c): how it ended, its steps timed by the
-// server, what came in and went out, what it read, what it did outside the flow and what the log
-// holds of it; checked offline with `holon verify`, or stepped through in the editor.
+// One run's record, at `#<slug>.run-<n>` (gaps-web.md G15c, web-console-L4.md §8.2): how it ended,
+// its steps timed by the server, what came in and went out, what it read, the secrets it read and
+// where they went, what it did outside the flow and what the log holds of it, witnessed or not;
+// checked offline with `holon verify`, or stepped through in the editor.
 
 import { LogsPane } from "./LogsPane";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useDialog } from "./Dialog";
 import { formatValue } from "./diagnostics";
 import type { WValue } from "./holon";
+import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
-import { field, outside, runLabel, runOutcome, text } from "./runs";
-import { downloadRuns, getDeployedDocument, getLog, type FlowDocument, type LogEntry } from "./server";
+import { field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
+import { downloadRuns, getDeployedDocument, getLog, getSummary, type FlowDocument, type LogEntry } from "./server";
+import { useKeys } from "./ui/Keys";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)} ms` : `${t.toFixed(0)} µs`);
 
-/** The log's entry for run `seq`, and the canvas of the version it ran on (for its steps' names). */
+/** The log's entry for run `seq`, the canvas of the version it ran on (for its steps' names), and
+ *  the runs kept just before and after it (`,` and `.` go there). */
 function useRun(slug: string, seq: number) {
   const [run, setRun] = useState<LogEntry | null | undefined>(undefined);
   const [head, setHead] = useState("");
   const [doc, setDoc] = useState<FlowDocument | null>(null);
+  const [beside, setBeside] = useState<{ before: number | null; after: number | null }>({ before: null, after: null });
   useEffect(() => {
     let stale = false;
     setRun(undefined);
-    getLog(slug, seq > 0 ? seq - 1 : undefined)
+    setBeside({ before: null, after: null });
+    // From the run before it on: the log answers the runs after the seq it is given.
+    getLog(slug, seq > 1 ? seq - 2 : undefined)
       .then(({ entries, head: h }) => {
         if (stale) return;
         const found = entries.find((e) => e.seq === seq) ?? null;
         setRun(found);
         setHead(h);
+        setBeside({ before: entries.filter((e) => e.seq < seq).pop()?.seq ?? null, after: entries.find((e) => e.seq > seq)?.seq ?? null });
         if (found?.unit) getDeployedDocument(slug, found.unit).then((d) => !stale && setDoc(d), () => undefined);
       })
       .catch(() => !stale && setRun(null));
@@ -36,12 +44,31 @@ function useRun(slug: string, seq: number) {
       stale = true;
     };
   }, [slug, seq]);
-  return { run, head, doc };
+  return { run, head, doc, beside };
+}
+
+/** The witness the host's heads go to, read once (`/summary`'s `witness`); undefined until read. */
+function useWitness(): Witness | undefined {
+  const [witness, setWitness] = useState<Witness | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    getSummary(1).then(
+      (s) => live && setWitness(s.chain.witness ?? null),
+      () => live && setWitness(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return witness;
 }
 
 export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; navigate: (r: Route) => void }) {
-  const { run, head, doc } = useRun(slug, seq);
+  const { run, head, doc, beside } = useRun(slug, seq);
+  const witness = useWitness();
   const dialog = useDialog();
+  const go = (to: number | null) => (to === null ? false : navigate({ kind: "run", slug, seq: to }));
+  useKeys("run", { ",": () => go(beside.before), ".": () => go(beside.after) });
   const steps = useMemo(() => {
     if (!run) return [];
     const timings = nodeTimings(run, doc?.trace);
@@ -56,21 +83,27 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
   const o = runOutcome(run);
   const { sent, did } = outside(run);
   const span = Math.max(1, ...steps.map((s) => s.end_us));
+  // This run alone (web-console-L4.md Q3): its line names the hash of the one before it, so it is
+  // checked by itself; tying it to the newest head takes the whole log.
   const checkOffline = async () => {
     const yes = await dialog.confirm(
       `Check run #${seq} offline`,
-      "Export the runs",
+      "Export this run",
       <div className="hl-run__offline">
-        <p>The export holds its log exactly as written and every unit its runs ran. Anywhere, without this server:</p>
+        <p>The export holds this run&apos;s line exactly as written, which names the hash of the line before it, and the units it ran. Anywhere, without this server:</p>
+        <pre>holon verify {slug}-run-{seq}.json</pre>
+        <p>It runs the run again and compares what it produces with what its line says, and checks the line&apos;s hash.</p>
+        <p>To check it against the newest head as well, export the whole log (Runs, Export, or <code>holon export {slug}</code>):</p>
         <pre>
           holon verify {slug}-runs.json{head ? ` --head ${head}` : ""}
         </pre>
-        <p>It checks the chain up to that head, then runs each run again and compares what it produces with what the log says: run #{seq} among them.</p>
       </div>,
     );
-    if (yes) await downloadRuns(slug).catch(() => undefined);
+    if (yes) await downloadRuns(slug, seq).catch((e: unknown) => dialog.notice(e instanceof Error ? e.message : String(e)));
   };
   const exchanges = (run.rounds ?? []).flatMap((r) => r.exchanges);
+  const secrets = secretUses(run);
+  const seen = witnessed(run.at_ms + run.duration_ms, witness ?? null);
   return (
     <article className="hl-run" aria-label={`run ${seq}`}>
       <header className="hl-run__head">
@@ -117,7 +150,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         <Section title="In">
           {run.url && <Line name="request">{`${run.method ?? ""} ${run.url}`}</Line>}
           {run.request && <Value v={run.request} />}
-          {!run.url && !run.request && <p className="hl-flow__note">started by {run.kind}</p>}
+          <Line name="started by">{startedBy(run.kind, run.by)}</Line>
         </Section>
         <Section title="Out">
           {run.response_body !== null ? <Line name={`answered ${run.status ?? ""}`}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}
@@ -137,12 +170,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
               {r.file ? `${r.file.hash.slice(0, 12)} · ${r.file.size} bytes` : `${show(r.request)} → ${show(r.answer)}`}
             </Line>
           ))}
-          {Object.entries(run.secrets ?? {}).map(([name, mark]) => (
-            <Line key={name} name={`secret ${name}`}>
-              {mark}
-            </Line>
-          ))}
-          {run.sourced.length === 0 && (run.reads ?? []).length === 0 && Object.keys(run.secrets ?? {}).length === 0 && <p className="hl-flow__note">nothing from outside</p>}
+          {run.sourced.length === 0 && (run.reads ?? []).length === 0 && <p className="hl-flow__note">nothing from outside</p>}
         </Section>
         <Section title="Did outside">
           {exchanges.map((x, i) => (
@@ -159,6 +187,32 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         </Section>
       </div>
 
+      {secrets.length > 0 && (
+        <Section title="Secrets it read">
+          <table className="hl-table" aria-label="secrets it read">
+            <thead>
+              <tr>
+                <th>Secret</th>
+                <th>Version</th>
+                <th>Where it went</th>
+              </tr>
+            </thead>
+            <tbody>
+              {secrets.map((s) => (
+                <tr key={s.name}>
+                  <td className="hl-flow__what">{s.name}</td>
+                  <td title="its version and fingerprint: which value it had, never the value">
+                    {[s.version, s.fingerprint].filter(Boolean).join(" ") || "—"}
+                  </td>
+                  <td>{s.to.length > 0 ? s.to.join(", ") : <span className="hl-table__dim">nowhere outside: no request it sent held it</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hl-flow__note">The log keeps which value it had, by its version and fingerprint, never the value.</p>
+        </Section>
+      )}
+
       <Section title="Log lines">
         <LogsPane slug={slug} run={seq} navigate={navigate} />
       </Section>
@@ -171,6 +225,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
           {run.unit && <Fact name="unit">{run.unit}</Fact>}
           {(run.parked ?? []).length > 0 && <Fact name="waits at">{(run.parked ?? []).join(", ")}</Fact>}
           {head && <Fact name="log head">{head}</Fact>}
+          <Fact name="witnessed">{witness === undefined ? "…" : seen.said}</Fact>
         </dl>
       </Section>
     </article>

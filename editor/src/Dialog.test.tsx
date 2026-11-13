@@ -1,7 +1,8 @@
 // A question in the page answers to keys as well as clicks: Enter answers with what has the focus,
 // Esc cancels, and a yes/no question takes y and n, shown as chips that stay out of the buttons'
 // names. Keys that answer it don't reach the page beneath; typing in a prompt still reaches its
-// field. (Tab staying in it is every modal's: modals.test.tsx.)
+// field. A choice takes each answer's letter, and a notice has one button, and its letter. (Tab
+// staying in it is every modal's: modals.test.tsx.)
 
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -91,6 +92,13 @@ const KINDS: { kind: string; open: (d: Dialogs) => Promise<unknown>; answers: Re
     answers: { "what changes": UNANSWERED, Cancel: false, "Approve and deploy": true },
   },
   { kind: "prompt", open: (d) => d.prompt("Name this flow:", "  hello ", "Name it"), answers: { field: "hello", Cancel: null, "Name it": "hello" } },
+  {
+    kind: "choice",
+    open: (d) => d.choose("Close it?", ["Keep it open", "Discard", "Save and close"]),
+    answers: { "Keep it open": 0, Discard: 1, "Save and close": 2 },
+  },
+  { kind: "notice", open: (d) => d.notice("Your password is changed."), answers: { OK: undefined } },
+  { kind: "notice with a review", open: (d) => d.notice("The chain of shop's runs", "Close", review), answers: { "what changes": UNANSWERED, Close: undefined } },
 ];
 
 describe("dialog keys", () => {
@@ -149,6 +157,37 @@ describe("dialog keys", () => {
     });
     await press("Enter", {}, field);
     await expect(name).resolves.toBe("shout");
+  });
+
+  it("gives each of a choice's answers its letter, the last answered by Enter too, Esc none", async () => {
+    const d = mount();
+    const three = ["Keep it open", "Discard", "Save and close"];
+    const { answer: kept } = await ask(() => d.choose("Close it?", three));
+    expect(buttons().map((b) => b.querySelector("kbd")?.textContent)).toEqual(["k", "d", "s"]);
+    await press("k");
+    await expect(kept).resolves.toBe(0);
+    const { answer: saved } = await ask(() => d.choose("Close it?", three));
+    await press("Enter");
+    await expect(saved).resolves.toBe(2);
+    const { answer: none } = await ask(() => d.choose("Close it?", three));
+    await press("Escape");
+    await expect(none).resolves.toBeNull();
+  });
+
+  it("shows a notice with its one button, closed by its letter, Enter or Esc", async () => {
+    const d = mount();
+    const { answer: lettered } = await ask(() => d.notice("The chain of shop's runs", "Close"));
+    expect(buttons().map(nameOf)).toEqual(["Close"]);
+    expect(buttons().map((b) => b.querySelector("kbd")?.textContent)).toEqual(["c"]);
+    await press("c");
+    await expect(lettered).resolves.toBeUndefined();
+    expect(dialog()).toBeNull();
+    for (const key of ["Enter", "Escape"]) {
+      const { answer } = await ask(() => d.notice("Your password is changed."));
+      expect(buttons().map(nameOf)).toEqual(["OK"]);
+      await press(key);
+      await expect(answer).resolves.toBeUndefined();
+    }
   });
 
   it("is a modal dialog named by its question", async () => {

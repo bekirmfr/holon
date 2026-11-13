@@ -96,7 +96,10 @@ pub(crate) struct LeftOut {
 
 /// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file;
 /// with the texts of the files they read that their log keeps by hash, up to `?max_files_bytes=N`
-/// in all (oldest run first), or none with `?without_files=1`.
+/// in all (oldest run first), or none with `?without_files=1`. With `?run=N`, run N alone (web
+/// console L4, Q3): its line as written, which names the hash of the line before it, and what it
+/// ran and read; checked offline as any export, it runs again to its entry, and its hash is the
+/// head. Not its timeline: its events are the whole log's.
 pub(crate) fn handle_get_export(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -113,16 +116,37 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
+    let run = match request.get_param("run").map(|v| v.parse::<u64>()) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => return err(400, "run is a run's number"),
+    };
     let (log, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
         Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     // The lines and their head under one lock, so the export's chain ends at its head.
     let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    let (lines, head, events, events_head, file) = match run {
+        None => (lines, head, events, events_head, format!("{slug}-runs.json")),
+        Some(n) => match lines.into_iter().find(|l| seq_of(l) == Some(n)) {
+            Some(line) => (vec![line.clone()], line_hash(&line), Vec::new(), String::new(), format!("{slug}-run-{n}.json")),
+            None => return err(404, format!("{slug:?}'s log holds no run {n}")),
+        },
+    };
     match export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, budget) {
-        Ok(export) => Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\"")),
+        Ok(export) => Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{file}\"")),
         Err(e) => err(500, e),
     }
+}
+
+/// The run a log's line is of, read without the rest of it.
+fn seq_of(line: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Seq {
+        seq: u64,
+    }
+    serde_json::from_str::<Seq>(line).ok().map(|s| s.seq)
 }
 
 /// An export of `lines` (a log's, as written), ending at `head`: every unit their runs ran, from
@@ -254,8 +278,10 @@ pub(crate) struct Report {
     pub(crate) runs: usize,
     pub(crate) first: Option<u64>,
     pub(crate) last: Option<u64>,
-    /// Whether the oldest run follows one no longer in the export (the log was trimmed).
+    /// Whether the oldest run follows one no longer in the export (the log was trimmed, or it is
+    /// one run's), and the hash of the line it names before it.
     pub(crate) trimmed: bool,
+    pub(crate) after: String,
     /// Lines that aren't a run (1-based): cut short by a crash, or changed into something else.
     pub(crate) bad_lines: Vec<usize>,
     /// Runs that don't follow the line before them.
@@ -392,6 +418,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         };
         if head.is_empty() {
             report.trimmed = !entry.prev.is_empty();
+            report.after = entry.prev.clone();
         } else if (chained || !entry.prev.is_empty()) && entry.prev != head {
             report.breaks.push(entry.seq);
         }
@@ -1653,7 +1680,9 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     } else {
         format!("chain: BROKEN at run {}: changed, removed or inserted outside holon", list(&r.breaks))
     };
-    if r.trimmed {
+    if r.trimmed && r.runs == 1 {
+        chain += &format!(" (run {} alone: the line before it hashes to {}, which only the log has)", r.first.unwrap_or(0), short(&r.after));
+    } else if r.trimmed {
         chain += &format!(" (from run {}; older runs were trimmed)", r.first.unwrap_or(0));
     }
     out += &format!("  {chain}\n");
@@ -1830,12 +1859,20 @@ pub(crate) fn export(args: &[String]) -> i32 {
     let mut server = None;
     let mut files: Option<String> = None;
     let (mut to, mut name, mut out) = (None, None, None);
+    let mut run: Option<u64> = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--to" => to = args.next().cloned(),
             "--as" => name = args.next().cloned(),
+            "--run" => match args.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(n) => run = Some(n),
+                None => {
+                    eprintln!("holon export: --run takes a run's number (holon runs <slug> lists them)");
+                    return 2;
+                }
+            },
             "--without-files" => files = Some("without_files=1".into()),
             "--max-files-bytes" => match args.next().and_then(|v| budget_of(v)) {
                 Some(n) => files = Some(format!("max_files_bytes={n}")),
@@ -1861,6 +1898,8 @@ pub(crate) fn export(args: &[String]) -> i32 {
         eprintln!("{EXPORT_USAGE}");
         return 2;
     };
+    // One run's file is named for it.
+    let name = name.or_else(|| run.map(|n| format!("{slug}-run-{n}.json")));
     let out = match export_path(&slug, to.as_deref(), name.as_deref(), out.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -1876,7 +1915,8 @@ pub(crate) fn export(args: &[String]) -> i32 {
         }
     };
     let server = target.server.as_str();
-    let url = format!("{server}/deployments/{slug}/export{}", files.map_or(String::new(), |q| format!("?{q}")));
+    let query: Vec<String> = files.into_iter().chain(run.map(|n| format!("run={n}"))).collect();
+    let url = format!("{server}/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
     let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
     if let Some(token) = &target.token {
         request = request.set("Authorization", &format!("Bearer {token}"));
@@ -1933,7 +1973,10 @@ pub(crate) fn export(args: &[String]) -> i32 {
         1 => " and its 1 event".to_string(),
         n => format!(" and its {n} events"),
     };
-    println!("wrote {path}: {} runs of {slug:?}{events}, head {head}", export.lines.len());
+    match run {
+        Some(n) => println!("wrote {path}: run {n} of {slug:?}, its hash {head}"),
+        None => println!("wrote {path}: {} runs of {slug:?}{events}, head {head}", export.lines.len()),
+    }
     if let Some(l) = &export.files_left_out {
         let s = if l.files == 1 { "" } else { "s" };
         println!("left out the text of {} file{s} its runs read ({} bytes): holon verify --files <folder> checks those runs", l.files, l.bytes);
@@ -1988,7 +2031,9 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
   only by hash (a big file, or part of one); it says what it left out.
 
   --to FOLDER              the folder to write in (default this one; made if it isn't there)
-  --as NAME                the file's name (default <slug>-runs.json)
+  --as NAME                the file's name (default <slug>-runs.json, <slug>-run-N.json)
+  --run N                  run N alone: its line as written, which names the hash of the one
+                           before it, and the units and files it ran and read
   --max-files-bytes N      ship the files' texts up to N bytes in all (64K, 10M, 2G), the
                            oldest runs' first
   --without-files          ship none of them: holon verify checks those runs with --files
@@ -1997,6 +2042,7 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
 examples:
   holon export shop
   holon export shop --to backups --as shop-2026-11.json
+  holon export shop --run 42
   holon export file-audit --max-files-bytes 10M
 
   From the holon serve you run on this machine, signed in as you; with several running,

@@ -162,7 +162,7 @@ function BoundaryNode({ id, data }: NodeProps<Node<BoundaryData>>) {
     const name = await dialog?.prompt(ask, initial);
     if (!name || name === except) return null;
     if (data.ports.some((p) => p.name === name)) {
-      await dialog?.confirm(`"${name}" is already one of its ${kind}s.`, "OK");
+      await dialog?.notice(`"${name}" is already one of its ${kind}s.`);
       return null;
     }
     return name;

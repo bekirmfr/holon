@@ -45,11 +45,11 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "WebSocket" => ("triggers", "websocket", arg, s("hold connections")),
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
+        "Untaint" => ("other", "tainted key", arg, s("recorded again")),
         "AgentReadsLogs" => ("other", "log", s("its lines"), s("read by agents")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
-        "Approval" => match arg.split_once('/') {
-            Some((name, "1")) => ("triggers", "approval", name.to_string(), s("a person approves")),
-            Some((name, people)) => ("triggers", "approval", name.to_string(), format!("{people} people approve")),
+        "Approval" => match arg.split_once('/').and_then(|(name, steps)| Some((name, holon_core::approval::Steps::parse(steps)?))) {
+            Some((name, steps)) => ("triggers", "approval", name.to_string(), format!("approved by {}", steps.said())),
             None => ("triggers", "approval", arg, s("people approve")),
         },
         "FileArrival" => ("resources", "folder", arg, s("watch")),
@@ -282,13 +282,21 @@ pub(crate) fn with_restore(touches: &mut Value, since: &[LogEntry], state: &Valu
     }
 }
 
-/// The deploy settings that differ between the version deployed now (`now`) and the one a dry run
-/// would deploy (`then`): the sites whose pages it answers.
-pub(crate) fn settings(now: &[String], then: &[String]) -> Value {
-    let sites = |b: &[String]| if b.is_empty() { "none".to_string() } else { b.join(" ") };
+/// The deploy settings that differ between the version deployed now and the one a dry run would
+/// deploy, each pair `[now, then]`: the sites whose pages it answers, and the keys it keeps out of
+/// its records (`taint`), beside those every flow does.
+pub(crate) fn settings(browsers: [&[String]; 2], taint: [&[String]; 2]) -> Value {
+    let said = |b: &[String], none: &str| if b.is_empty() { none.to_string() } else { b.join(" ") };
     let mut out = vec![];
-    if now != then {
-        out.push(json!({ "name": "answers pages from", "now": sites(now), "then": sites(then) }));
+    if let [now, then] = browsers
+        && now != then
+    {
+        out.push(json!({ "name": "answers pages from", "now": said(now, "none"), "then": said(then, "none") }));
+    }
+    if let [now, then] = taint
+        && now != then
+    {
+        out.push(json!({ "name": "keeps out of its records", "now": said(now, "none of its own"), "then": said(then, "none of its own") }));
     }
     Value::Array(out)
 }
@@ -461,6 +469,12 @@ mod tests {
         assert_eq!(part("Limit(fuel=5000)"), ("limits", "limit", "fuel".into(), "5000".into()));
         assert_eq!(part("NetworkIngress"), ("triggers", "requests", String::new(), "receive".into()));
         assert_eq!(part("SecretAnswer(\"maps_key\")"), ("resources", "secret", "maps_key".into(), "answer its callers with it".into()));
+        assert_eq!(part("Approval(\"payout/person*2\")"), ("triggers", "approval", "payout".into(), "approved by 2 people".into()));
+        assert_eq!(part("Approval(\"payout/person\")"), ("triggers", "approval", "payout".into(), "approved by a person".into()));
+        assert_eq!(
+            part("Approval(\"payout/agent:classifier>person:approver\")"),
+            ("triggers", "approval", "payout".into(), "approved by an agent holding classifier, then a person holding approver".into())
+        );
     }
 
     /// A secret's row says where the code sends it, and what is answered to it, read first.
@@ -527,7 +541,7 @@ mod tests {
         };
         let since = [ran(&["HttpRequest(\"b.example\")", "StateWrite(\"count\")"]), ran(&["HttpRequest(\"b.example\")"])];
         with_restore(&mut rows, &since, &json!({ "changed": ["count"], "added": [], "removed": [] }));
-        let said = text(&lines(&rows, &settings(&[], &["https://shop.example".to_string()])));
+        let said = text(&lines(&rows, &settings([&[], &["https://shop.example".to_string()]], [&[], &[]])));
         assert_eq!(
             said,
             [

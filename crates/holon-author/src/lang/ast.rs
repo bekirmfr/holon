@@ -5,14 +5,14 @@
 //! `Respond`, a ternary and an `if` are both `If`, and a `let` given a new value is a new `Bind`.
 
 /// A place in the text: 1-based line and column, the column counted in characters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Pos {
     pub line: u32,
     pub col: u32,
 }
 
 /// From a start to an exclusive end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,
@@ -386,9 +386,9 @@ pub enum ExprKind {
     /// `switch (subject) { case …: return value … default: return els }`. `open` is the brace's
     /// span.
     Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
-    /// `await event("name", { expires: "1h" })`; with `people`, `await approval("name", { people: 2 })`,
-    /// which people decide.
-    Await { name: Name, expires: Option<Box<Expr>>, people: Option<u32> },
+    /// `await event("name", { expires: "1h" })`; with `approval`, `await approval("name", { people: 2 })`,
+    /// which people decide, by its steps.
+    Await { name: Name, expires: Option<Box<Expr>>, approval: Option<holon_core::approval::Steps> },
     /// `(params) => body`, written in place for a higher-order leaf: `map`, `fold`, `filter`, …
     Lambda { params: Vec<Name>, body: Box<Expr> },
     /// `( expr )`, kept: parentheses are the author saying "two nodes" where an operator chain

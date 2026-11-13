@@ -5,10 +5,13 @@
 // after. A row picked shows what can be restored to it: its code, its state, or both; ↺ on a row
 // restores what it can. Each restore is a dry run first, its result shown in the dry-run window
 // (DryRun.tsx): what it changes, and what the code needs that today's grant doesn't cover, to
-// approve as a deploy's is; nothing changes until it is approved.
+// approve as a deploy's is; nothing changes until it is approved. Beside a row picked, a cell of
+// its state picked shows its value over time, the point going back puts back marked.
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
+import { CellLine, useCellHistory } from "./CellHistory";
+import { isCollectionCell } from "./replay";
+import { getDeploymentState, getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
 import { runLabel } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import {
@@ -30,6 +33,7 @@ import {
   type TimelineItem,
 } from "./timeline";
 import { useDryRun } from "./DryRun";
+import { gateOf, type Answer } from "./useCan";
 
 const POLL_MS = 3000;
 const dim = "var(--faint)";
@@ -52,7 +56,20 @@ const KIND_COLOR: Record<string, string> = { deploy: "var(--accent)", restore: "
 /** The History tab: the timeline, filtered by its kinds and by words; a row picked shows its
  *  details beside it and the Go back card above, and ↺ on a row goes back to it. `codeText`
  *  prints a version, for a restore's diff; `onRestored`: a restore changed the deployment. */
-export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: string; codeText: CodeText; onRestored: () => void; onOpenRun: (seq: number) => void }) {
+export function HistoryTab({
+  slug,
+  codeText,
+  onRestored,
+  onOpenRun,
+  mayRestore = true,
+}: {
+  slug: string;
+  codeText: CodeText;
+  onRestored: () => void;
+  onOpenRun: (seq: number) => void;
+  /** Whether whoever is signed in may go back (`flow.restore`), or why not. */
+  mayRestore?: Answer;
+}) {
   const history = useHistory(slug);
   const { entries } = useFlowLog(slug);
   const currentUnit = history.versions.find((v) => v.current)?.unit;
@@ -91,6 +108,7 @@ export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: st
           targetFor={targetFor}
           busy={restorer.busy}
           onRestore={restorer.restore}
+          may={mayRestore}
           error={history.error}
         />
         <div className="hl-history__details">
@@ -115,9 +133,55 @@ export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: st
               ))}
             </dl>
           )}
+          {picked && <CellOverTime slug={slug} mark={markOf(targetFor(picked), history.versions)} />}
         </div>
       </div>
     </section>
+  );
+}
+
+/** The run a target's state comes from, to mark on a cell's line: a run's own, or the first run a
+ *  version ran; null when it has none. */
+function markOf(target: Target, versions: VersionEntry[]): number | null {
+  const p = target.why.state === null ? target.state : null;
+  if (!p) return null;
+  if ("run" in p) return p.run;
+  return versions.find((v) => v.number === p.version)?.first_seq ?? null;
+}
+
+/** A cell of its state, picked, as a line over time from its changes (CellHistory.tsx), the point
+ *  going back puts back marked. */
+function CellOverTime({ slug, mark }: { slug: string; mark: number | null }) {
+  const [cells, setCells] = useState<string[]>([]);
+  const [cell, setCell] = useState("");
+  useEffect(() => {
+    let live = true;
+    getDeploymentState(slug).then(
+      (s) => live && setCells(Object.keys(s).filter((k) => !isCollectionCell(k)).sort()),
+      () => live && setCells([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [slug]);
+  const { history, error } = useCellHistory(slug, cell, undefined, cell !== "");
+  if (cells.length === 0) return null;
+  return (
+    <div className="hl-history__cell" aria-label="a cell over time">
+      <label>
+        a cell over time{" "}
+        <select className="hl-flow__filter" value={cell} onChange={(e) => setCell(e.target.value)} aria-label="cell">
+          <option value="">pick one…</option>
+          {cells.map((c) => (
+            <option key={c} value={c}>
+              state.{c}
+            </option>
+          ))}
+        </select>
+      </label>
+      {cell !== "" && (error ? <span style={{ color: bad }}>{error}</span> : history ? <CellLine history={history} mark={mark} /> : <span style={{ color: dim }}>reading the log…</span>)}
+      {cell !== "" && mark !== null && <span style={{ color: dim, fontSize: 11 }}>marked: run #{mark}, the state going back puts back</span>}
+    </div>
   );
 }
 
@@ -207,15 +271,14 @@ export function backTitle(t: Target): string {
   return `go back to ${t.label}: ${said.join(", and ")}`;
 }
 
-/** The ↺ on a row: go back to it. */
-export function BackButton({ target, busy, onBack }: { target: Target; busy: boolean; onBack: () => void }) {
-  const can = restoreParts(target, everything(target)).length > 0;
+/** The ↺ on a row: go back to it, for whoever may (`may`). */
+export function BackButton({ target, busy, onBack, may = true }: { target: Target; busy: boolean; onBack: () => void; may?: Answer }) {
+  const can = restoreParts(target, everything(target)).length > 0 && may === true;
   return (
     <button
       className="hl-history__back"
       style={{ ...small, padding: "0px 4px", fontSize: 10, opacity: can && !busy ? 1 : 0.4, cursor: can && !busy ? "pointer" : "default" }}
-      disabled={!can || busy}
-      title={backTitle(target)}
+      {...gateOf(may, { disabled: !can || busy, title: backTitle(target) })}
       aria-label={`restore to ${target.label}`}
       onClick={(ev) => {
         ev.stopPropagation();
@@ -235,6 +298,7 @@ export function HistoryList({
   targetFor,
   busy,
   onRestore,
+  may = true,
   error,
 }: {
   /** All of it, newest first, its runs too. */
@@ -246,6 +310,8 @@ export function HistoryList({
   targetFor: (item: TimelineItem) => Target;
   busy: boolean;
   onRestore: (target: Target, what: { code: boolean; state: boolean }) => void;
+  /** Whether whoever is signed in may go back, or why not. */
+  may?: Answer;
   error: string;
 }) {
   const [shown, setShown] = useState<Set<TimelineFilter>>(() => new Set(TIMELINE_FILTERS.map(([f]) => f).filter((f) => f !== "runs")));
@@ -284,6 +350,7 @@ export function HistoryList({
           target={pickedTarget}
           busy={busy}
           onRestore={(what) => onRestore(pickedTarget, what)}
+          may={may}
         />
       )}
       {error && <div style={{ color: bad, padding: "3px 8px" }}>{error}</div>}
@@ -297,7 +364,7 @@ export function HistoryList({
               item={item}
               active={item.key === pickedKey}
               onClick={() => onPick(item)}
-              back={<BackButton target={target} busy={busy} onBack={() => onRestore(target, everything(target))} />}
+              back={<BackButton target={target} busy={busy} onBack={() => onRestore(target, everything(target))} may={may} />}
             />
           );
         })}
@@ -357,6 +424,7 @@ function HistoryRow({ item, active, onClick, back }: { item: TimelineItem; activ
       <span style={{ flex: 1, minWidth: 0, color: ink, overflowWrap: "anywhere" }}>
         {e.what}
         {item.version?.current ? <span style={{ color: good }}> (now)</span> : null}
+        {e.note && <span className="hl-history__note">: “{e.note}”</span>}
       </span>
       {by(e.by)}
       {end}
@@ -369,10 +437,12 @@ function RestoreBar({
   target,
   busy,
   onRestore,
+  may = true,
 }: {
   target: Target;
   busy: boolean;
   onRestore: (what: { code: boolean; state: boolean }) => void;
+  may?: Answer;
 }) {
   const { code, state } = target.why;
   const codeFrom = target.code ? `${pointLabel(target.code)}'s code` : "its code";
@@ -419,7 +489,7 @@ function RestoreBar({
             ))}
         </ul>
       )}
-      <button className="hl-history__restore-go" disabled={chosen.why !== null || busy} onClick={() => onRestore(chosen.what)}>
+      <button className="hl-history__restore-go" {...gateOf(may, { disabled: chosen.why !== null || busy })} onClick={() => onRestore(chosen.what)}>
         Go back…
       </button>
     </section>
@@ -435,6 +505,7 @@ export function itemDetails(item: TimelineItem, target: Target): [string, string
   if (item.kind === "event") {
     const e = item.event;
     fields.push(["what", e.what], ["kind", e.kind], ["when", when(e.at_ms)], ["by", e.by ?? "the host"], ["before run", `#${e.run_seq}`]);
+    if (e.note) fields.push(["note", e.note]);
     if (e.session !== undefined) fields.push(["session", String(e.session)]);
     if (e.name) fields.push(["about", e.name]);
     if (e.kind === "ask" && e.from) fields.push(["asks", `${e.from}'s ${(e.restores ?? []).join(" and ")}, for a person to restore`]);

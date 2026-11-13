@@ -6,8 +6,8 @@
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { FlowDocument, LogEntry } from "./server";
-import type { FlowSettings } from "./DeployBar";
-import { DEFAULT_SETTINGS } from "./DeployBar";
+import type { FlowSettings } from "./DeploySettings";
+import { DEFAULT_SETTINGS } from "./DeploySettings";
 import { documentKey, structuralKey } from "./flowDoc";
 import { restoreDocument } from "./docUnits";
 import { sourceOf } from "./holonText";
@@ -15,6 +15,7 @@ import { primitiveCatalog, type Evaluator } from "./holon";
 import { withTriggers } from "./canvasOps";
 import type { History } from "./history";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
+import { levelOf, type CanvasLevel } from "./canvasLevel";
 
 type Viewport = { x: number; y: number; zoom: number };
 
@@ -43,6 +44,8 @@ export type FlowMeta = {
   inspectNode: string | null;
   /** The text pane (useTextPane.ts). */
   text: TextState;
+  /** The canvas's level: its statements, or its nodes (canvasLevel.ts). */
+  level: CanvasLevel;
 };
 
 /** The flow's text as the pane holds it (docs/L4s/text-pane-L4.md). */
@@ -110,7 +113,20 @@ export function settingsOf(server: FlowDocument["server"]): FlowSettings {
     ...(server?.requirements ? { requirements: server.requirements } : {}),
     ...(server?.browsers ? { browsers: server.browsers } : {}),
     ...(server?.tags?.length ? { tags: server.tags } : {}),
+    ...(server?.taint?.length ? { taint: server.taint } : {}),
   };
+}
+
+/** A flow's settings once a typed text, whose document's settings are `server`, is applied over
+ *  `was`, the flow's before: everything the text says (port, browsers, tags, taint, optional,
+ *  keep), and what only the deploy settings say (the other limits, the exceptions) as it was. */
+export function settingsSaid(server: FlowDocument["server"], was: FlowSettings): FlowSettings {
+  const { requirements: said, ...rest } = settingsOf(server);
+  const { optional: _, limits: before, ...unsaid } = was.requirements ?? {};
+  const optional = said?.optional;
+  const limits = { ...Object.fromEntries(Object.entries(before ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said?.limits };
+  const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
+  return { ...rest, ...(Object.keys(requirements).length > 0 ? { requirements } : {}) };
 }
 
 /** A fresh flow's meta, in edit mode. */
@@ -128,6 +144,7 @@ export function blankMeta(name: string | null): FlowMeta {
     step: null,
     inspectNode: null,
     text: noText(),
+    level: levelOf(name),
   };
 }
 

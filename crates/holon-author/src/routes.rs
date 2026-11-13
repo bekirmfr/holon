@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use holon_core::{parse_hash, parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Resolver, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
 use serde::Serialize;
 
-use crate::builder::call_outputs;
+use crate::builder::{call_outputs, UnitSettings};
 use crate::canvas::{Node, PlacedBody, Wire};
 use crate::wire::WType;
 
@@ -833,35 +833,22 @@ fn caller_unit(handler: Hash, inputs: &[Port], outputs: &[Port], params: Vec<Par
     }
 }
 
-/// The keys a flow taints: those its handlers' triggers carry (`taint`, joined by spaces), each
-/// once, in the order first met. A key one trigger carries is tainted for every run.
-pub fn flow_taint(nodes: &[Node]) -> Vec<&str> {
-    let mut keys: Vec<&str> = Vec::new();
-    for n in nodes.iter().filter(|n| crate::templates::HANDLERS.iter().any(|h| n.is_template(h))) {
-        for key in n.param("taint").split_whitespace() {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-    }
-    keys
-}
-
 /// A server unit over the given endpoints, clock handlers, file handlers and actions, in that order, with `port` when it
 /// has a route, and the keys the flow taints (joined by single spaces, set only when there is one,
 /// so a flow without hashes as it always did; core reads them, `Server::taint`), and its tags,
-/// the same way (`Server::tags`). Core's `read_server` re-checks everything on deploy.
-pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>, taint: &[&str], tags: &[String]) -> Unit {
+/// the same way (`Server::tags`), both from its settings. Core's `read_server` re-checks
+/// everything on deploy.
+pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>, settings: UnitSettings) -> Unit {
     let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
     let mut params = vec![frozen("declare", "server")];
     if let Some(port) = port {
         params.push(frozen("port", &port.to_string()));
     }
-    if !taint.is_empty() {
-        params.push(frozen("taint", &taint.join(" ")));
+    if !settings.taint.is_empty() {
+        params.push(frozen("taint", &settings.taint.join(" ")));
     }
-    if !tags.is_empty() {
-        params.push(frozen("tags", &tags.join(" ")));
+    if !settings.tags.is_empty() {
+        params.push(frozen("tags", &settings.tags.join(" ")));
     }
     Unit { body: UnitBody::Composite { children: handlers, edges: vec![] }, params, inputs: vec![], outputs: vec![] }
 }
@@ -1096,7 +1083,7 @@ mod tests {
 
     #[test]
     fn a_server_is_a_wireless_composite_of_endpoints_with_its_port() {
-        let u = server_unit(vec![[1; 32], [2; 32]], Some(8080), &[], &[]);
+        let u = server_unit(vec![[1; 32], [2; 32]], Some(8080), UnitSettings::default());
         assert_eq!(u.body, UnitBody::Composite { children: vec![[1; 32], [2; 32]], edges: vec![] });
         let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
         assert_eq!(u.params, [frozen("declare", "server"), frozen("port", "8080")]);

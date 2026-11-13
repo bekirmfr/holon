@@ -67,9 +67,9 @@ tools show the same rows, worked out by the server.
 Only a person can approve. An agent's deploy that needs approval is saved instead, for you to
 open and deploy ([Working with agents](agents.md)).
 
-## Deploy settings (⚙)
+## Deploy settings
 
-**⚙** in the deploy bar opens the deployment's settings:
+**Settings**, in the editor's bottom pane (**b**), are the deployment's settings:
 
 | Setting | |
 |---|---|
@@ -90,7 +90,7 @@ A limit above the host's default needs approval; one above the host's ceiling ca
 ## Secrets
 
 A flow imports the secrets it reads (`import stripe_webhook_secret from
-"secret:stripe_webhook_secret"`); their values are set per deployment, by an admin, under **⚙ →
+"secret:stripe_webhook_secret"`); their values are set per deployment, by an admin, under **Settings →
 secrets**. The flow must have a name first. Each secret has a source:
 
 - **value**: typed in, sealed on the server (AES-256-GCM, its key in the OS key store by default).
@@ -147,7 +147,7 @@ run.
 
 One key for several flows is bound once, for the server, as a folder or a database is: under
 **admin → resources → secrets**, or `holon secret bind stripe_key`. Every deployment that reads a
-secret of that name and has none of its own reads the server's; its ⚙ says "the server's", and
+secret of that name and has none of its own reads the server's; its Settings say "the server's", and
 setting one there overrides it for that deployment.
 
 An admin can say where the server's may go: hosts and databases (`holon secret bind stripe_key
@@ -195,11 +195,11 @@ Add the options you usually start it with. If something else starts the server f
 shortcut, a startup task, a service), add `--dotenv …` there. A file that doesn't exist yet reads
 as empty, so you can name it before you create it.
 
-**Pointing a secret at it.** Under **⚙ → secrets**, choose **env** for the secret, then the
+**Pointing a secret at it.** Under **Settings → secrets**, choose **env** for the secret, then the
 variable from the list: every `HOLON_SECRET_…` name in the file and in the server's environment,
 never their values. The one the secret's name suggests is chosen for you
 (`HOLON_SECRET_GEMINI_API_KEY` for `secret:gemini_api_key`: the name in capitals, after
-`HOLON_SECRET_`). Opening ⚙ reads the file again, so a line you just added is in the list. Choose
+`HOLON_SECRET_`). Opening Settings reads the file again, so a line you just added is in the list. Choose
 **another name…** to type one the list doesn't have. The list is shown to admins only, as only an
 admin sets secrets.
 
@@ -214,7 +214,7 @@ there yourself, and it is in the list within a minute.
 - The server reads the file when it starts, then again every minute. An edit reaches the runs
   within a minute.
 - If the editor answers "HOLON_SECRET_… isn't set in the server's environment or its dotenv
-  file", the server hasn't read your edit yet: close ⚙ and open it again, which reads the file,
+  file", the server hasn't read your edit yet: leave Settings and open it again, which reads the file,
   and set it again.
 - If the same name is also an environment variable of the server, that one wins, as with other
   `.env` tools.
@@ -252,7 +252,7 @@ route.post("/digest", async (req) => {
 })
 ```
 
-The approval dialog marks it optional, and **⚙ → permissions** grants it or not. Without it,
+The approval dialog marks it optional, and **Settings → permissions** grants it or not. Without it,
 `slack_webhook_path` has no value, the post isn't sent, and the route still answers.
 
 ## New versions

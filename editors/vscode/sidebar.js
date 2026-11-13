@@ -217,15 +217,20 @@ function runItem(slug, e) {
   return item;
 }
 
-/** A run parked for an event, which only the flow's own link answers, or at an approval, which people
- *  signed in decide (`people` is set only on an approval); so this only says what it waits for. */
+/** A run parked for an event, which only the flow's own link answers, or at an approval, which whoever
+ *  is bound to each step decides (`slots`, its steps, is set only on an approval); so this only says what
+ *  it waits for: the short form's people approved so far, or the steps taken. */
 function waitingItem(run) {
   const at = run.waiting ?? [];
-  const waits = at.map((w) => (w.people ? `approval ${w.name}, ${(w.approved ?? []).length} of ${w.people}` : w.name)).join(", ");
+  const taken = (w) => {
+    const one = w.slots.length === 1 && w.slots[0].role === undefined ? w.slots[0] : null;
+    return one ? `${one.by.length} of ${one.people}` : `${w.slots.filter((s) => s.by.length >= s.people).length} of ${w.slots.length} steps`;
+  };
+  const waits = at.map((w) => (w.slots ? `approval ${w.name}, ${taken(w)}` : w.name)).join(", ");
   const item = new vscode.TreeItem(`${run.route ?? run.kind} (${run.run_id})`, vscode.TreeItemCollapsibleState.None);
   item.description = `waits for ${waits}`;
-  item.tooltip = at.some((w) => w.people)
-    ? "People signed in decide an approval, in the editor's Approvals or with holon decide; an agent never does."
+  item.tooltip = at.some((w) => w.slots)
+    ? "Whoever is bound to each step decides it, in turn: a person in the editor's Approvals or with holon decide, an agent its own step with holon decide or holon mcp's decide tool."
     : "The flow answers this through the link it gave the run. Holon can't answer it from here.";
   item.iconPath = new vscode.ThemeIcon("watch");
   return item;

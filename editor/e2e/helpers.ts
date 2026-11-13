@@ -44,6 +44,15 @@ export async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): a flow
+ *  opens at its Statements. Pressed as such: beside the text and the Inspector at the tests'
+ *  width, the canvas's head can lie under another pane's edge. */
+export async function nodesLevel(page: Page) {
+  const nodes = page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name: "Nodes", exact: true });
+  await nodes.dispatchEvent("click");
+  await expect(nodes).toHaveAttribute("aria-pressed", "true");
+}
+
 /** The Flows page's row of the flow `name`, saved or deployed. */
 export function flowRow(page: Page, name: string): Locator {
   return page.getByRole("region", { name: "flows" }).getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
@@ -68,21 +77,28 @@ export async function still(locator: Locator) {
     .toBe(true);
 }
 
-/** Open the deployment settings panel if it is closed. */
+/** The deployment settings: the bottom pane's Settings tab, in Edit. */
+export function deploySettings(page: Page): Locator {
+  return page.getByRole("tabpanel", { name: "Deployment settings" });
+}
+
+/** Show the deployment settings: the bottom pane (shown if hidden), on its Settings tab. */
 export async function openDeployPanel(page: Page) {
-  const panel = page.getByRole("complementary", { name: "Deployment settings" });
+  const panel = deploySettings(page);
   if (!(await panel.isVisible())) {
-    await page.getByRole("button", { name: "open deployment settings" }).click();
+    const off = page.locator(".hl-canvas").getByRole("button", { name: "bottom off" });
+    if (await off.isVisible()) await off.dispatchEvent("click");
+    await page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Settings" }).dispatchEvent("click");
     await panel.waitFor({ state: "visible", timeout: 5_000 });
   }
 }
 
-/** Deploy the open flow through the deployment settings panel and the consent screen; its port
+/** Deploy the open flow through its deployment settings and the consent screen; its port
  *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
  *  panel. Answers the port it serves on (null for a flow without routes). */
 export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
@@ -101,11 +117,11 @@ export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Loc
   return port;
 }
 
-/** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
- *  its port. */
+/** Wait until text typed into the Text pane has compiled: its deployment settings then say its
+ *  port. */
 export async function settingsSayPort(page: Page, port: string) {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
 
@@ -130,6 +146,12 @@ export async function dropFromPalette(page: Page, entry: string) {
 export async function viewNewestRun(page: Page) {
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
+}
+
+/** View runs' bottom pane's tab (ViewPanes.tsx): Runs, the list (its name carries how many), or
+ *  Run, the run picked, with Details, Errors and Timeline. */
+export async function viewTab(page: Page, name: "Runs" | "Run") {
+  await page.locator(".hl-view__bottom").getByRole("tab", { name: name === "Run" ? "Run" : /^Runs/, exact: name === "Run" }).click();
 }
 
 /** What the editor says once, in the corner (ui/Toast.tsx): saved, updated, not saved. */

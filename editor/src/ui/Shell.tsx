@@ -1,18 +1,19 @@
 // The console's frame (gaps-web.md §3, G4), as the Console design draws it: the side nav with every
 // page, its icon and its key, the host card under it (the run log's state), and the top bar over
-// the page: where you are (the crumbs), the command palette, the interface, the look and who is
-// signed in; in the Terminal interface, a status bar under the
+// the page: where you are (the crumbs), the command palette, the interface, the look, the keys
+// and who is signed in (the account dialog); in the Terminal interface, a status bar under the
 // page (G33). Narrow, the nav is a rail of icons, and on a phone a drawer the top bar opens (G34).
 // The pages themselves are App's; this only goes to them.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { AccountMenu, type Me } from "../AuthGate";
+import { AccountButton, type Me } from "../AuthGate";
 import { THEMES, type Theme, type Ui } from "../look";
 import { pageOf, type AppPage } from "../Pages";
 import { crumbs, follow, format, labelOf, type Route } from "../routes";
-import { getSummary, getVersion, hostAddress, type Summary } from "../server";
+import { ServerError, getSummary, getVersion, hostAddress, type Summary } from "../server";
+import type { HostPages } from "../useCan";
 
-type Entry = { label: string; to: Route; icon: keyof typeof ICON; key?: number };
+type Entry = { label: string; to: Route; icon: keyof typeof ICON; key?: number | string };
 
 /** The nav's icons: 24-unit strokes, drawn at 16 px. */
 const ICON = {
@@ -37,8 +38,8 @@ function Icon({ name }: { name: keyof typeof ICON }) {
   );
 }
 
-/** The nav's groups, in order: the work, the host's own pages (an admin's; another person sees
- *  only what they own), and help. The numbers are keymap.ts's PAGE_KEYS. */
+/** The nav's groups, in order: the work, the host's own pages (each to whoever may view it; a
+ *  person who may not see everyone, what they own), and help. The keys are keymap.ts's anywhere keys. */
 const WORK: Entry[] = [
   { label: "Overview", to: { kind: "overview" }, icon: "overview", key: 1 },
   { label: "Approvals", to: { kind: "approvals", tab: "deploys" }, icon: "approvals", key: 2 },
@@ -51,30 +52,50 @@ const HOST: Entry[] = [
   { label: "People and access", to: { kind: "people", tab: null }, icon: "people", key: 7 },
   { label: "Policy", to: { kind: "policy" }, icon: "policy", key: 8 },
 ];
-/** A person who isn't an admin: the agents and services they own, on People and access's page. */
+/** A person who may not see everyone: the agents and services they own, on People and access's page. */
 const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: null }, icon: "people", key: 7 };
-/** The host's pages `me` is shown: an admin's all of them, another person's what they own. */
-const hostEntries = (me: Me): Entry[] => (me.role === "admin" ? HOST : me.kind === "person" ? [OWNED] : []);
+/** The host's pages the nav lists, as `can` answers who may view them (useCan.tsx's hostPagesOf). */
+export const hostEntries = (pages: HostPages): Entry[] => [
+  ...(pages.resources ? [HOST[0]] : []),
+  ...(pages.people === "everyone" ? [HOST[1]] : pages.people === "owned" ? [OWNED] : []),
+  ...(pages.policy ? [HOST[2]] : []),
+];
 const HELP: Entry[] = [
-  { label: "Getting started", to: { kind: "start" }, icon: "start" },
-  { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs" },
+  { label: "Getting started", to: { kind: "start" }, icon: "start", key: "s" },
+  { label: "Docs", to: { kind: "docs", page: null, anchor: null }, icon: "docs", key: "d" },
 ];
 
-/** The keys worth knowing where `r` is, for the status bar (keymap.ts has them all). */
+/** The keys worth knowing where `r` is, for the status bar (keymap.ts has them all): a page's
+ *  own first, its `d` among them where it isn't the docs. */
 export function hintsAt(r: Route): [string, string][] {
   switch (r.kind) {
     case "editor":
       return r.view
-        ? [["j k", "step"], [", .", "runs"], ["e", "edit"]]
-        : [["ctrl+s", "save"], ["ctrl+d", "deploy"], ["c x i", "panes"]];
+        ? [["j k", "step"], [", .", "runs"], ["e", "edit"], ["[ ]", "tabs"]]
+        : [["ctrl+s", "save"], ["ctrl+d", "deploy"], ["c x i b", "panes"], ["l", "level"], ["[ ]", "tabs"]];
     case "review":
-      return [["[ ]", "the queue"], ["esc", "back"]];
+      return [["[ ]", "the queue"], ["d", "the diff"], ["w", "whole"], ["esc", "back"]];
+    case "flows":
+      return [["j k", "select"], ["enter", "open"], ["1–8", "pages"]];
+    case "approvals":
+      return [["j k", "select"], ["a", "approve"], ["d", "decline"], ["[ ]", "tabs"]];
     case "flow":
+      return r.tab === "runs" ? [["j k", "select"], ["enter", "open"], ["e", "edit"], ["[ ]", "tabs"], ["esc", "up"]] : [["e", "edit"], ["[ ]", "tabs"], ["esc", "up"], ["F6", "panes"]];
     case "run":
-      return [["esc", "up"], ["F6", "panes"]];
+      return [[", .", "runs"], ["[ ]", "tabs"], ["esc", "up"]];
     default:
-      return [["1–8", "pages"], ["F6", "panes"]];
+      return [["1–8", "pages"], ["s d", "start, docs"], ["F6", "panes"]];
   }
+}
+
+/** What waits for a person: versions to approve (Approvals' Deploys) and the runs' approvals
+ *  theirs to decide. */
+export type Waiting = { changes: number; runs: number };
+
+/** What waits, as the status bar says it: "waits: 2 changes, 2 runs". */
+export function waitsSaid({ changes, runs }: Waiting): string {
+  const parts = [changes > 0 && `${changes} change${changes === 1 ? "" : "s"}`, runs > 0 && `${runs} run${runs === 1 ? "" : "s"}`].filter(Boolean);
+  return `waits: ${parts.length > 0 ? parts.join(", ") : "nothing"}`;
 }
 
 
@@ -83,14 +104,16 @@ export function Shell({
   page,
   navigate,
   me,
+  pages,
   onNew,
   onFind,
-  onWelcome,
+  onStart,
+  onKeys,
   theme,
   onTheme,
   ui,
   onUi,
-  waiting = 0,
+  waiting = { changes: 0, runs: 0 },
   children,
 }: {
   route: Route;
@@ -98,27 +121,33 @@ export function Shell({
   page: AppPage;
   navigate: (r: Route) => void;
   me: Me;
+  /** The host's pages `me` is shown (useCan.tsx's useHostPages). */
+  pages: HostPages;
   onNew: () => void;
   /** Open the command palette. */
   onFind: () => void;
-  onWelcome: () => void;
+  /** Open Getting started. */
+  onStart: () => void;
+  /** Show the keys. */
+  onKeys: () => void;
   theme: Theme;
   onTheme: (t: Theme) => void;
   ui: Ui;
   onUi: (u: Ui) => void;
-  /** How many things wait for a person (approvals.ts): Approvals' count. */
-  waiting?: number;
+  /** What waits for a person (approvals.ts): Approvals' count, all told. */
+  waiting?: Waiting;
   children: ReactNode;
 }) {
-  const host = hostEntries(me);
+  const host = hostEntries(pages);
+  const waits = waiting.changes + waiting.runs;
   const groups: [string, Entry[]][] = [["work", WORK], ...(host.length > 0 ? ([["host", host]] as [string, Entry[]][]) : []), ["help", HELP]];
   const version = useVersion();
   // A flow's page is one of the flows'.
   const at = page === "flow" ? "flows" : page;
   const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
-  // People and access is, for a person who isn't an admin, what they own.
-  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && me.role !== "admin" ? OWNED.label : labelOf(r));
+  // People and access is, for someone who may not see everyone, what they own.
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && pages.people === "owned" ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);
@@ -151,9 +180,9 @@ export function Shell({
                 <a href={format(e.to)} className="hl-nav__link" aria-current={e === current ? "page" : undefined} title={e.label} onClick={follow(e.to, navigate)}>
                   <Icon name={e.icon} />
                   <span className="hl-nav__label">{e.label}</span>
-                  {e.to.kind === "approvals" && waiting > 0 && (
-                    <span className="hl-nav__badge" title={`${waiting} waiting for a person`}>
-                      {waiting}
+                  {e.to.kind === "approvals" && waits > 0 && (
+                    <span className="hl-nav__badge" title={`${waits} waiting for a person`}>
+                      {waits}
                     </span>
                   )}
                   {e.key !== undefined && (
@@ -211,7 +240,10 @@ export function Shell({
                 </button>
               ))}
             </span>
-            <AccountMenu me={me} onWelcome={onWelcome} />
+            <button className="hl-top__keys" onClick={onKeys} aria-label="keys" title="every key (?)">
+              ?
+            </button>
+            <AccountButton me={me} onStart={onStart} />
           </span>
         </header>
         {children}
@@ -224,15 +256,15 @@ export function Shell({
 /** The Terminal interface's status bar: the flows and how many are live, what waits for a person,
  *  the run log's newest head and whether it is intact, and the keys worth knowing here. The host's
  *  summary is read again every 15 s while it shows. */
-function StatusBar({ route, waiting }: { route: Route; waiting: number }) {
-  const { summary } = useSummary(15_000);
+function StatusBar({ route, waiting }: { route: Route; waiting: Waiting }) {
+  const { summary } = useSummary(15_000, 15_000);
   const newest = summary?.latest[0] && summary.deployments.find((d) => d.slug === summary.latest[0].slug);
   const head = newest?.head ?? summary?.deployments[0]?.head;
   const breaks = summary ? (summary.chain.checked ? summary.chain.checked.breaks.length : summary.chain.breaks) : 0;
   return (
     <footer className="hl-status" aria-label="status">
       <span>{summary ? `${summary.deployments.length} flow${summary.deployments.length === 1 ? "" : "s"} · ${summary.totals.running} live` : "…"}</span>
-      <span className={waiting > 0 ? "hl-status__warn" : undefined}>waits: {waiting}</span>
+      <span className={waiting.changes + waiting.runs > 0 ? "hl-status__warn" : undefined}>{waitsSaid(waiting)}</span>
       {summary && (
         <span>
           chain{" "}
@@ -272,49 +304,81 @@ function useVersion(): string | null | undefined {
   return version;
 }
 
-/** The host's summary, read now and again every `every` ms while it shows (null until it comes),
- *  whether it is being read, and a way to read it again at once. */
-function useSummary(every: number): { summary: Summary | null; reading: boolean; refresh: () => void } {
+/** The host's summary, read now and again every `every` ms while it answers and every `retry` ms
+ *  while it doesn't (null until one comes; a failed read keeps the last), whether the last read got
+ *  an answer, a refusal included (undefined before the first), whether it is being read, and a way
+ *  to read it again at once. */
+function useSummary(
+  every: number,
+  retry: number,
+): { summary: Summary | null; answers: boolean | undefined; reading: boolean; refresh: () => void } {
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [answers, setAnswers] = useState<boolean | undefined>(undefined);
   const [reading, setReading] = useState(false);
   const [asked, setAsked] = useState(0);
   useEffect(() => {
     let on = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const read = () => {
       setReading(true);
       getSummary(1)
         .then(
-          (s) => on && setSummary(s),
-          () => undefined,
+          (s) => {
+            if (!on) return;
+            setSummary(s);
+            setAnswers(true);
+            timer = setTimeout(read, every);
+          },
+          (e: unknown) => {
+            if (!on) return;
+            // A refusal (say, signed out) is an answer; only a request that got none is not.
+            const answered = e instanceof ServerError;
+            setAnswers(answered);
+            timer = setTimeout(read, answered ? every : retry);
+          },
         )
         .finally(() => on && setReading(false));
     };
     read();
-    const timer = setInterval(read, every);
     return () => {
       on = false;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [every, asked]);
-  return { summary, reading, refresh: () => setAsked((n) => n + 1) };
+  }, [every, retry, asked]);
+  return { summary, answers, reading, refresh: () => setAsked((n) => n + 1) };
 }
 
-/** Which host the console is on: its address (and whether it answers), whether its run log is
- *  intact, how many runs it holds and the newest head, as of when it was last read; the refresh
- *  reads it again now. The version is the brand's. */
+/** Which host the console is on: its address (and whether it answers, as of its last read, or
+ *  of the version's before one), whether its run log is intact, how many runs it holds and the
+ *  newest head, as of when it was last read (dimmed while it doesn't answer); the refresh reads it
+ *  again now. The version is the brand's. */
 function HostCard({ version }: { version: string | null | undefined }) {
-  const { summary, reading, refresh } = useSummary(60_000);
+  const { summary, answers, reading, refresh } = useSummary(60_000, 10_000);
+  const up = answers ?? (version === null ? false : version ? true : undefined);
+  // A page's request that got no answer: read the host now, not at the next turn of the clock.
+  useEffect(() => {
+    const unanswered = () => !reading && answers !== false && refresh();
+    window.addEventListener("holon:unanswered", unanswered);
+    return () => window.removeEventListener("holon:unanswered", unanswered);
+  }, [reading, answers, refresh]);
   const breaks = summary ? (summary.chain.checked ? summary.chain.checked.breaks.length : summary.chain.breaks) : 0;
   const newest = summary?.latest[0] && summary.deployments.find((d) => d.slug === summary.latest[0].slug);
   const head = newest?.head ?? summary?.deployments[0]?.head;
+  const asOf = summary && new Date(summary.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return (
-    <section className="hl-host" aria-label="host">
+    <section className={`hl-host${up === false ? " hl-host--down" : ""}`} aria-label="host">
       <span className="hl-host__row">
         <b className="hl-host__address">{hostAddress()}</b>
-        <span className={`hl-host__dot hl-host__dot--${version === null ? "bad" : version ? "ok" : "wait"}`} aria-hidden="true" />
+        <span
+          className={`hl-host__dot hl-host__dot--${up === false ? "bad" : up ? "ok" : "wait"}`}
+          title={up === false ? "not answering" : up ? "answering" : "asking…"}
+          aria-hidden="true"
+        />
       </span>
       <span className="hl-host__row hl-host__asof">
-        <span>{version === null ? "can't be reached" : summary ? `as of ${new Date(summary.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "…"}</span>
+        <span title={up === false && asOf ? `what shows below was read at ${asOf}` : undefined}>
+          {up === false ? "can't be reached" : asOf ? `as of ${asOf}` : "…"}
+        </span>
         <button className="hl-host__refresh" onClick={refresh} disabled={reading} aria-label="refresh the host card" title="read the host's summary again now">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" className={reading ? "hl-host__spin" : undefined}>
             <path d="M20 11a8 8 0 1 0-2.3 5.7" />

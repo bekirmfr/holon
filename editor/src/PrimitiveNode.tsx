@@ -247,7 +247,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
     if (!name || name === old) return;
     const ports = side === "inputs" ? inputs : outputs;
     if (ports.some((p) => p.name === name)) {
-      await dialog.confirm(`"${name}" is already one of this node's ${side}.`, "OK");
+      await dialog.notice(`"${name}" is already one of this node's ${side}.`);
       return;
     }
     updateNodeData(id, { [side]: ports.map((p) => (p.name === old ? { ...p, name } : p)) });
@@ -352,6 +352,84 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
       }),
     );
   };
+
+  // Its params, one to a row as label and field. A node with no inputs to show has them beside its
+  // outputs, in the column the inputs would take, so a wide node (a request) isn't widened by them.
+  const beside = (hiddenInputs || inputs.length === 0) && !variadic;
+  const paramGrid = params.length > 0 && (
+    <div className="hl-node__params">
+      {params.map((p) => {
+        if (p.kind === "Open") {
+          return (
+            <span className="hl-node__param" key={p.name}>
+              {p.name}
+              <span>·</span>
+            </span>
+          );
+        }
+        // `const` and `default` both pick their literal from the same three forms
+        // (`primitives.rs`'s shared `parse_literal`) — same dropdown, same CONST_TYPES
+        // list, and now the same action too: setLiteralType correctly retypes whatever
+        // `Any`-typed slots each one actually declares (zero inputs for `const`, one for
+        // `default`), so there's no longer a reason to route them differently here.
+        const isLiteralTypeParam =
+          (name === "const" || name === "default") && p.name === "type";
+        const choices = body.kind === "Primitive" ? (PARAM_CHOICES[name]?.[p.name] ?? familyValues(name, p.name)) : undefined;
+        return (
+          <label className="hl-node__param" key={p.name}>
+            {p.name}{" "}
+            {(body.kind === "Template" || name === "http_request") && p.name === "method" ? (
+              <select
+                className="nodrag"
+                style={fieldStyle}
+                value={p.value}
+                disabled={readOnly}
+                onChange={(e) => setParam(p.name, e.target.value)}
+              >
+                {METHODS.map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
+              </select>
+            ) : choices ? (
+              <select
+                className="nodrag"
+                style={fieldStyle}
+                value={p.value}
+                disabled={readOnly}
+                onChange={(e) => setParam(p.name, e.target.value)}
+              >
+                {choices.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            ) : isLiteralTypeParam ? (
+              <select
+                className="nodrag"
+                style={fieldStyle}
+                value={p.value}
+                disabled={readOnly}
+                onChange={(e) => setLiteralType(e.target.value as ConstType)}
+              >
+                {CONST_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="nodrag"
+                style={{ ...fieldStyle, width: (body.kind === "Template" && p.name === "path") || (name === "http_request" && p.name === "host") ? 120 : 64 }}
+                value={p.value}
+                readOnly={readOnly}
+                onChange={(e) => setParam(p.name, e.target.value)}
+              />
+            )}
+          </label>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div
@@ -461,82 +539,11 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         </NodeToolbar>
       )}
 
-      {params.length > 0 && (
-        <div className="hl-node__params">
-          {params.map((p) => {
-            if (p.kind === "Open") {
-              return (
-                <span className="hl-node__param" key={p.name}>
-                  {p.name} ·
-                </span>
-              );
-            }
-            // `const` and `default` both pick their literal from the same three forms
-            // (`primitives.rs`'s shared `parse_literal`) — same dropdown, same CONST_TYPES
-            // list, and now the same action too: setLiteralType correctly retypes whatever
-            // `Any`-typed slots each one actually declares (zero inputs for `const`, one for
-            // `default`), so there's no longer a reason to route them differently here.
-            const isLiteralTypeParam =
-              (name === "const" || name === "default") && p.name === "type";
-            const choices = body.kind === "Primitive" ? (PARAM_CHOICES[name]?.[p.name] ?? familyValues(name, p.name)) : undefined;
-            return (
-              <label className="hl-node__param" key={p.name}>
-                {p.name}{" "}
-                {(body.kind === "Template" || name === "http_request") && p.name === "method" ? (
-                  <select
-                    className="nodrag"
-                    style={fieldStyle}
-                    value={p.value}
-                    disabled={readOnly}
-                    onChange={(e) => setParam(p.name, e.target.value)}
-                  >
-                    {METHODS.map((m) => (
-                      <option key={m}>{m}</option>
-                    ))}
-                  </select>
-                ) : choices ? (
-                  <select
-                    className="nodrag"
-                    style={fieldStyle}
-                    value={p.value}
-                    disabled={readOnly}
-                    onChange={(e) => setParam(p.name, e.target.value)}
-                  >
-                    {choices.map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                  </select>
-                ) : isLiteralTypeParam ? (
-                  <select
-                    className="nodrag"
-                    style={fieldStyle}
-                    value={p.value}
-                    disabled={readOnly}
-                    onChange={(e) => setLiteralType(e.target.value as ConstType)}
-                  >
-                    {CONST_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="nodrag"
-                    style={{ ...fieldStyle, width: (body.kind === "Template" && p.name === "path") || (name === "http_request" && p.name === "host") ? 120 : 64 }}
-                    value={p.value}
-                    readOnly={readOnly}
-                    onChange={(e) => setParam(p.name, e.target.value)}
-                  />
-                )}
-              </label>
-            );
-          })}
-        </div>
-      )}
+      {!beside && paramGrid}
 
       <div className="hl-node__body">
         <div className="hl-node__col hl-node__col--in">
+          {beside && paramGrid}
           {!hiddenInputs && inputs.map((port) => (
             <div className="hl-port" key={port.name} style={port.name === "trigger" ? { opacity: 0.55 } : undefined} title={port.name === "trigger" ? "what starts it: a route's request, or what it runs after" : undefined}>
               <Handle

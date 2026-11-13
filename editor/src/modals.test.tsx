@@ -17,6 +17,7 @@ import { join, relative } from "node:path";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { AccountDialog } from "./AuthGate";
 import { CellHistoryButton } from "./CellHistory";
 import { DialogProvider, useDialog } from "./Dialog";
 import { useDryRun, type DryRunReport } from "./DryRun";
@@ -41,6 +42,8 @@ vi.mock("./server", async (actual) => ({
     more: true,
   }),
   getVersions: async () => [],
+  whoAmI: async () => ({ name: "ada", kind: "person", role: "admin" }),
+  mayI: async () => ({}),
   browseFolders: async () => ({
     path: "/srv/data",
     parent: "/srv",
@@ -130,6 +133,13 @@ const RECORD: WValue = {
 const MODALS: { modal: string; file: string; page: () => ReactNode }[] = [
   { modal: "confirm", file: "Dialog.tsx", page: () => <DialogProvider><Asks ask={(d) => d.confirm('Delete the saved flow "shop"?', "Delete")} /></DialogProvider> },
   { modal: "prompt", file: "Dialog.tsx", page: () => <DialogProvider><Asks ask={(d) => d.prompt("Name this flow:", "shop", "Name it")} /></DialogProvider> },
+  { modal: "choice", file: "Dialog.tsx", page: () => <DialogProvider><Asks ask={(d) => d.choose("Close it?", ["Keep it open", "Discard", "Save and close"])} /></DialogProvider> },
+  { modal: "notice", file: "Dialog.tsx", page: () => <DialogProvider><Asks ask={(d) => d.notice("Your password is changed.")} /></DialogProvider> },
+  {
+    modal: "account",
+    file: "AuthGate.tsx",
+    page: () => <DialogProvider><Opens modal={(close) => <AccountDialog me={{ name: "ada", kind: "person", role: "admin" }} onStart={() => {}} onClose={close} />} /></DialogProvider>,
+  },
   { modal: "cell history", file: "CellHistory.tsx", page: () => <CellHistoryButton slug="shop" name="count" onOpenRun={() => {}} /> },
   { modal: "dry run", file: "DryRun.tsx", page: () => <DryRunPage /> },
   { modal: "folder picker", file: "FolderPicker.tsx", page: () => <Opens modal={(close) => <FolderPicker start="" onChoose={close} onClose={close} />} /> },

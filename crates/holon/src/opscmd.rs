@@ -37,9 +37,10 @@ const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
     --session N            from the state session N left (holon state <slug> --sessions)
   pause                    hold its runs; its state is kept
   stop                     end it; run starts it again
-  remove                   delete a stopped deployment for good: its runs' log, its timeline,
-                           its state and its secrets (holon export keeps its runs first).
-                           --yes says you mean it
+  remove                   delete a stopped deployment for good: its state, its sessions and
+                           its secrets. Its runs' log and timeline are kept on the host, as an
+                           export holon verify checks; the slug deployed again starts a new
+                           log. --yes says you mean it
 
 examples:
   holon pause shop
@@ -260,7 +261,7 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
         }
         "remove" => {
             if !args.flag("--yes") {
-                eprintln!("{who}: this deletes {slug:?} for good: its runs' log, its timeline, its state and its secrets (holon export {slug} keeps its runs first). Run it again with --yes to go ahead.");
+                eprintln!("{who}: this deletes {slug:?} for good: its state, its sessions and its secrets (its runs' log and timeline are kept on the host, for holon verify). Run it again with --yes to go ahead.");
                 return 2;
             }
             cmdline::json(&who, &args, "DELETE", &path, None)
@@ -270,6 +271,9 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
     match answer {
         Ok(d) if action == "remove" => {
             println!("{slug}: removed{}", if d["status"].is_string() { ", its secrets forgotten" } else { "" });
+            if let Some(at) = d["records"].as_str() {
+                println!("its run records: {at} (holon verify checks it)");
+            }
             0
         }
         Ok(d) => {
@@ -706,12 +710,12 @@ mod tests {
     #[test]
     fn one_deployment_says_why_it_needs_attention_and_what_waits() {
         let d = json!({ "slug": "approval", "status": "running", "port": 8120, "unit": "abcdef0123456789", "trigger_count": 4, "error_count": 0, "session": 2, "sessions": 2, "deployed_at_epoch_seconds": 0, "has_state": true });
-        let waiting = [json!({ "run_id": "rt_1", "kind": "request", "route": "POST /orders", "parked_at": 0, "waiting": [{ "name": "payout", "expires_at": 60, "people": 1 }] })];
+        let waiting = [json!({ "run_id": "rt_1", "kind": "request", "route": "POST /orders", "parked_at": 0, "waiting": [{ "name": "payout", "expires_at": 60, "steps": "person", "said": "a person", "slots": [{ "slot": 0, "stage": 0, "kind": "person", "people": 1, "by": [], "open": true }], "decisions": [] }] })];
         let lines = detail_lines(&d, &waiting);
         assert_eq!(lines[0], "approval: running");
         assert!(lines.contains(&"  unit       abcdef012345".to_string()), "{lines:?}");
         assert!(lines.contains(&"  state      holon state approval".to_string()), "{lines:?}");
-        assert!(lines.contains(&"    run rt_1 (POST /orders, since 1970-01-01T00:00:00) waits at approval \"payout\", 1 person's, none approved yet, until 1970-01-01T00:01:00".to_string()), "{lines:?}");
+        assert!(lines.contains(&"    run rt_1 (POST /orders, since 1970-01-01T00:00:00) waits at approval \"payout\" (a person): open, until 1970-01-01T00:01:00".to_string()), "{lines:?}");
     }
 
     #[test]

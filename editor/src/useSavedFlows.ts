@@ -13,7 +13,7 @@ import { holonIndex, interfaceLoss } from "./holonUsage";
 import { getFlow, listDeployments, listFlows, saveFlow, type FlowDocument } from "./server";
 import { savedKeyOf } from "./tabs";
 import type { Evaluator } from "./holon";
-import type { FlowSettings } from "./DeployBar";
+import type { FlowSettings } from "./DeploySettings";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Notify } from "./ui/Toast";
 
@@ -96,13 +96,14 @@ export function useSavedFlows({
     [savedFlowTimes, ev, dialog],
   );
 
-  const onSave = useCallback(async () => {
+  // Saving answers its name and what it was saved as (tabs.ts's savedKey), or null when it wasn't.
+  const onSave = useCallback(async (): Promise<{ name: string; key: string } | null> => {
     let name = flowName;
     if (!name) {
       name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
-      if (!name) return;
+      if (!name) return null;
       // A draft named now (New opens untitled) mustn't quietly replace a flow saved under that name.
-      if (savedFlowTimes.has(name) && !(await dialog.confirm(`A flow named "${name}" is saved already. Replace it with this one?`, "Replace"))) return;
+      if (savedFlowTimes.has(name) && !(await dialog.confirm(`A flow named "${name}" is saved already. Replace it with this one?`, "Replace"))) return null;
       setFlowName(name);
     }
     let carried: ReturnType<typeof documentUnits>;
@@ -110,7 +111,7 @@ export function useSavedFlows({
       carried = documentUnits(nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
     } catch (e) {
       notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
-      return;
+      return null;
     }
     const doc: FlowDocument = {
       nodes: nodes as unknown[],
@@ -120,15 +121,21 @@ export function useSavedFlows({
       server: settings,
       ...(source !== null ? { source } : {}),
     };
-    if (!(await placedElsewhereOk(name, doc))) return;
+    if (!(await placedElsewhereOk(name, doc))) return null;
+    const saved = name;
     const key = savedKeyOf(nodes, edges, settings, source);
-    saveFlow(name, doc)
-      .then((entry) => {
+    return saveFlow(name, doc).then(
+      (entry) => {
         setSavedKey(key);
         setSavedOnServer(true);
         notify(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
-      })
-      .catch((e: unknown) => notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad"));
+        return { name: saved, key };
+      },
+      (e: unknown) => {
+        notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
+        return null;
+      },
+    );
   }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,

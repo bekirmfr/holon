@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::builder::FlowDocument;
 use crate::lang;
 
-/// A secret a sample needs set under ⚙ before it works.
+/// A secret a sample needs set (in the flow's Settings) before it works.
 #[derive(Serialize, Clone, Debug)]
 pub struct SampleSecret {
     pub name: &'static str,
@@ -133,7 +133,7 @@ static SAMPLES: &[Sample] = &[
         shows: &["secrets", "secret sources", "secret versions", "optional permissions", "secure_equals", "guard", "hmac_sha256", "default"],
         port: Some("8109"),
         secrets: &[
-            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸ (a dry run says what it would do first, its diff each version's fingerprint)", from: None },
+            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back in the flow's Settings (a dry run says what it would do first, its diff each version's fingerprint)", from: None },
             SampleSecret { name: "receipt_key", what: "the key receipts are signed with", from: Some("env:HOLON_SECRET_RECEIPT_KEY") },
         ],
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
@@ -151,7 +151,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "merchant_key", what: "the key merchants send in x-merchant-key, six characters or more", from: None }],
         optional: &[],
         browsers: None,
-        try_it: r#"curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}' http://127.0.0.1:8200/cards answers a token; open the run, and its request shows ‹taint:x-merchant-key› and ‹taint:number› where they were"#,
+        try_it: r#"curl -H "x-merchant-key: <merchant_key>" -d '{"number":"4111111111111111","expiry":"12/30"}' http://127.0.0.1:8200/cards answers a token; open the run, and its request shows ‹taint:number› where the number was and the key as the secret it is (a run sent another key shows ‹taint:x-merchant-key›); the deployment settings list both keys under "keeps out of its records""#,
         text: include_str!("../samples/card-vault.holon.ts"),
     },
     Sample {
@@ -379,7 +379,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "maps_browser_key", what: "the publishable key the page uses (6 characters or more)", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it (its approval lists answering with the secret), set the key under the gear, then curl http://127.0.0.1:8163/config; the run log shows the key as its placeholder",
+        try_it: "deploy it (its approval lists answering with the secret), set the key in the flow's Settings, then curl http://127.0.0.1:8163/config; the run log shows the key as its placeholder",
         text: include_str!("../samples/browser-key.holon.ts"),
     },
     Sample {
@@ -391,7 +391,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "demo_key", what: "any made-up value (6 characters or more); it is sent to httpbin.dev", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, set the key under the gear, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
+        try_it: "deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
         text: include_str!("../samples/echoed-key.holon.ts"),
     },
     Sample {
@@ -403,7 +403,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "client_secret", what: "secret, the demo server's published secret for its client m2m; it is sent to demo.duendesoftware.com", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, set the secret under the gear, then curl http://127.0.0.1:8166/token answers {\"issued\":200,\"api\":200,\"authenticated\":true}; holon export client-credentials, then holon verify on it says where the token went",
+        try_it: "deploy it, set the secret in the flow's Settings, then curl http://127.0.0.1:8166/token answers {\"issued\":200,\"api\":200,\"authenticated\":true}; holon export client-credentials, then holon verify on it says where the token went",
         text: include_str!("../samples/client-credentials.holon.ts"),
     },
     Sample {
@@ -427,7 +427,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "license_key", what: "lic-demo-1234, the licence the vendor table holds; it is sent to the database \"vendor\"", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "first bind the database (an admin): holon database add vendor ~/holon-vendor.db --schema \"create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)\"; deploy it, set the key under the gear, then curl http://127.0.0.1:8165/license answers {\"plan\":\"team\",\"seats\":5}",
+        try_it: "first bind the database (an admin): holon database add vendor ~/holon-vendor.db --schema \"create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)\"; deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8165/license answers {\"plan\":\"team\",\"seats\":5}",
         text: include_str!("../samples/license-check.holon.ts"),
     },
     Sample {
@@ -601,7 +601,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "chat-proxy",
         title: "Chat proxy (a streamed reply)",
-        description: "Asks Claude (the Messages API, streamed) what is posted, and forwards the answer to the caller as it arrives: the call's `stream: true` and the route's `respond(sent.body, { stream: true })` say so, and the page shows the words as they come. The flow still gets the whole answer once it ends, and stores the prompt with what was said (a js node reads the text out of the events). A call the API refuses (a bad key, a limit) forwards nothing: the reply is its answer, with its status, and the page says so. POST /room pipes the answer to the channel room instead (`room.pipe(anthropic.post(…))`): whoever watches GET /room/live gets its pieces as they arrive, then the whole of it once the run is over. The key is a secret; an answer has the run's 25 seconds (run_budget_ms under ⚙ for longer ones).",
+        description: "Asks Claude (the Messages API, streamed) what is posted, and forwards the answer to the caller as it arrives: the call's `stream: true` and the route's `respond(sent.body, { stream: true })` say so, and the page shows the words as they come. The flow still gets the whole answer once it ends, and stores the prompt with what was said (a js node reads the text out of the events). A call the API refuses (a bad key, a limit) forwards nothing: the reply is its answer, with its status, and the page says so. POST /room pipes the answer to the channel room instead (`room.pipe(anthropic.post(…))`): whoever watches GET /room/live gets its pieces as they arrive, then the whole of it once the run is over. The key is a secret; an answer has the run's 25 seconds (run_budget_ms in Settings for longer ones).",
         shows: &["streamed replies", "http_stream", "pipe", "channels", "server-sent events", "secrets", "js node", "collections"],
         port: Some("8127"),
         secrets: &[SampleSecret { name: "anthropic_api_key", what: "an Anthropic API key (sk-ant-…), from console.anthropic.com", from: None }],
@@ -613,7 +613,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "room",
         title: "Room (a chat over WebSockets)",
-        description: "A chat page over WebSockets: a page opens one on /room/<name>, and each of the connection's blocks is a run. open keeps who joined by the connection's id (conn), tells the room and subscribes the connection to the channel room, so every pack sent on it reaches every page in the room; message says each text the page sends to the room under its sender's name; close runs once the connection has ended, forgets them and says who left. A page from another site can't open one, and each connection may send ten messages a second (max_websockets, max_message_bytes and messages_per_second under ⚙).",
+        description: "A chat page over WebSockets: a page opens one on /room/<name>, and each of the connection's blocks is a run. open keeps who joined by the connection's id (conn), tells the room and subscribes the connection to the channel room, so every pack sent on it reaches every page in the room; message says each text the page sends to the room under its sender's name; close runs once the connection has ended, forgets them and says who left. A page from another site can't open one, and each connection may send ten messages a second (max_websockets, max_message_bytes and messages_per_second in Settings).",
         shows: &["websockets", "channels", "collections", "HTML response (an envelope with headers)"],
         port: Some("8132"),
         secrets: &[],
@@ -696,14 +696,14 @@ static SAMPLES: &[Sample] = &[
     },
     Sample {
         name: "approved-payout",
-        title: "Approved payout (two people approve it; a waiting run checks what it read)",
-        description: "Asks for a payout from an account: the route answers at once (202) and starts the payout's run, which waits for two different people to approve it, a day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. It is tagged payments, so whoever is bound on the tag acts on it, and the review says who the tag lets in. People signed in decide it, in the editor's Approvals or with holon decide; each counts once, and one decline, with a reason, ends it with nothing paid. Approved, the run reads the balance as it is now and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
-        shows: &["start", "approval", "two-person approval", "tags", "durable runs", "databases", "checks at commit", "running again"],
+        title: "Approved payout (an agent classifies it, a person reviews it, another approves it; a waiting run checks what it read)",
+        description: "Asks for a payout from an account: the route answers at once (202) and starts the payout's run, which waits at an approval in three steps, in turn, a day at most: an agent bound to classifier takes the first, with a note the run is given (a label and a confidence), a person bound to reviewer the second, and one bound to approver the third, each a different principal of the step's kind, never whoever started the run. It is tagged payments, so the roles are bound on the tag, and the review says who the tag lets in. They decide in the editor's Approvals or with holon decide, the agent with its token or holon mcp's decide tool; one decline, with a reason, ends it with nothing paid. Every decision is kept with the binding that let it and the access version it was read in, in the run's log and its export. Approved, the run reads the balance as it is now, pays with who approved it and the classifier's note, and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
+        shows: &["start", "approval", "approval in steps", "an agent's step", "roles", "tags", "durable runs", "databases", "checks at commit", "running again"],
         port: Some("8153"),
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for two people); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); two people approve it: you, with holon decide approved-payout <run> payout --approve (holon decide approved-payout lists the run), and someone you invited and bound on the tag (holon people add bob --person; holon bind editor --to bob --tag payments), in the editor's Approvals, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
+        try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; and say who takes each step: holon roles define classifier --allow run.decide --kinds agent; holon roles define reviewer --allow run.decide; holon roles define approver --allow run.decide; holon people add scout --agent; holon people token scout; holon people add bob --person --role viewer; holon bind classifier --to scout --tag payments; holon bind reviewer --to bob --tag payments; holon bind approver --to <you> --tag payments (on the server's machine holon signs in as you, who set the server up). Deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 (202, it waits for the classifier); curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); holon decide approved-payout lists the run and its steps; scout classifies it with its token in HOLON_TOKEN: holon decide approved-payout <run> payout --approve --note '{\"label\":\"invoice\",\"confidence\":0.93}'; then bob reviews it, signed in to the editor, in Approvals, and you approve it on the server's machine with HOLON_TOKEN unset: holon decide approved-payout <run> payout --approve, which pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
         text: include_str!("../samples/approved-payout.holon.ts"),
     },
     Sample {
@@ -947,7 +947,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's server panel (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under ⚙ → agents may run, deploy and approve it",
+        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's Try a request (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under agents may run in the editor's Settings, deploy and approve it",
         text: include_str!("../samples/ticker.holon.ts"),
     },
     Sample {
@@ -1212,7 +1212,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags());
+            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
             for e in &server.endpoints {
                 let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
                 let params: BTreeMap<String, Value> = e.path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(|k| (k.to_string(), text("tea"))).collect();
@@ -1244,7 +1244,7 @@ mod tests {
             let mut store = MapResolver::new();
             crate::text::restore(&lowered.doc, &mut store, &Names::new());
             let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.tags()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
             for unit in store.units() {
                 if let Err(errors) = holon_core::validate(unit, &store) {
                     panic!("{}: {:?} refused: {errors:?}", s.name, holon_core::hash_unit(unit).map(holon_core::hex));

@@ -56,12 +56,13 @@ Open http://127.0.0.1:7420. The editor asks for the **setup code** the server pr
 and a password (at least ten characters). The code works once: whoever enters it first is the
 server's admin, which is why it is printed only where the server runs.
 
-The editor opens on the **welcome** page. It has the same steps as this page, and short docs.
+The editor opens on **Getting started**. It has the same steps as this page, each with the
+command that does it from a terminal, and short docs.
 
 ## 4. Deploy a sample
 
-Press **flows** in the header. Under **samples** there is one flow for each thing Holon can do.
-Find **Hello API** and press **open**. It opens in its own tab, as an unsaved copy:
+Press **Library** in the nav. Under **Samples** there is one flow for each thing Holon can do.
+Find the **Hello API** sample and press **Open**. It opens in its own tab, as an unsaved copy:
 
 - the **canvas** shows the flow as a graph: a request node, the text it builds, and a respond
   node;
@@ -99,8 +100,9 @@ curl http://127.0.0.1:8101/hello/ada
 Hello, ada
 ```
 
-The flow has its own server, on its own port. You can also send a request from the editor: the
-**server** panel at the bottom left lists the routes, and **test** opens a request tester.
+The flow has its own server, on its own port. You can also send a request from the editor:
+**Try a request**, in its bottom pane, lists the routes and sends them requests. From a terminal,
+`holon call hello-api GET /hello/ada` does the same.
 
 ## 6. Look at the run
 

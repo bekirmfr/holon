@@ -1,8 +1,9 @@
-// Ctrl+K (or /): everything there is to open and do, found by typing a few letters of it, and
-// `:` commands typed out (commands.ts). Up and Down pick, Enter does it, Esc closes.
+// Ctrl+K (or /): everything there is to open and do, found by typing a few letters of it, a run
+// by its number, and `:` commands typed out (commands.ts). Up and Down pick, Enter does it, Esc
+// closes.
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { COLON_HELP, parseColon, ranked, type ColonCommand, type Command } from "../commands";
+import { COLON_HELP, matches, parseColon, type ColonCommand, type Command } from "../commands";
 import { Kbd } from "./Kbd";
 import { useFocusTrap } from "./focusTrap";
 
@@ -11,10 +12,13 @@ const SHOWN = 60;
 
 export function CommandPalette({
   commands,
+  byNumber,
   onColon,
   onClose,
 }: {
   commands: Command[];
+  /** The runs a number typed names: that run of each deployed flow. */
+  byNumber?: (seq: number) => Command[];
   /** Do a `:` command; why it couldn't, else null. */
   onColon: (c: ColonCommand) => string | null;
   onClose: () => void;
@@ -27,7 +31,7 @@ export function CommandPalette({
   useFocusTrap(box, true, () => field.current);
   const list = useId();
   const colon = query.startsWith(":");
-  const shown = useMemo(() => (colon ? [] : ranked(commands, query).slice(0, SHOWN)), [commands, query, colon]);
+  const shown = useMemo(() => (colon ? [] : matches(commands, query, byNumber).slice(0, SHOWN)), [commands, query, colon, byNumber]);
   useEffect(() => {
     setAt(0);
     setWhy("");

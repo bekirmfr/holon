@@ -57,7 +57,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   to an account (`Accounts::by_email`), whose role applies; a token that doesn't say signs no
   one in, and is told why.
 - **The OS user running the server** signs in through the run file `local::publish` writes
-  (`~/.holon/run/<port>.json`, owner-only): an `hl_` token, an admin's, for this run only.
+  (`~/.holon/run/<port>.json`, owner-only): an `hl_` token for this run only. It is the account
+  that set the server up, the access document's `local` (`Accounts::tied`, the approval-steps
+  plan's D45): that name, what is bound to it, then admin on the host (`access.rs`
+  `authenticate`), with `Caller.local` the OS user, which each activity entry it makes says
+  (`via`, `activity::Via`). Tied to none (before setup, its account disabled or removed), it is
+  `local:<user>`, admin alone, and decides no approval (`durable::decider`; `can::holding` skips
+  what no binding of the document holds).
 - **Roles** (can.rs): the catalogue of actions (`Action`, the access design's §4) and the
   built-in roles made from it (`BUILTIN`, §5.1): `viewer` reads flows, runs, state, a secret's
   names and the policy, and exports runs; `editor` also saves, deploys and approves, restores,
@@ -80,8 +86,10 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   decides: an agent replaces only a flow it saved (flows.rs asks it with the saved flow), runs an
   action and reads log lines only where the flow's grant lets agents (`AgentRuns`,
   `AgentReadsLogs`: deploy.rs and logs.rs ask), and never approves or starts what it deploys
-  (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); only a person decides an approval
-  (durable.rs's `decider`); a person manages the tokens of an agent or a service they own.
+  (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); a service never decides an
+  approval, and an agent takes only a step written for an agent (durable.rs's `Decider`), each
+  decision kept with the binding that let it; a person manages the tokens of an agent or a service
+  they own.
 
 ### 2.2 The request gate (http.rs)
 
@@ -141,7 +149,8 @@ exceptions are ever granted. At deploy (deploy.rs):
    needs approval; when an agent changes the code, every `SecretRead` needs a person again, or is
    withheld if optional (`approval_needed`), an `Unrecorded` whose handler's code changed is
    withheld (its runs logged) until a person grants it back, and a new `Browser(origin)` needs a
-   person too.
+   person too, as does a taint key the deployment has and the version drops (`Untaint(key)`,
+   `deploy::untainted`): the values under it would be recorded, where an agent may read them.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
 
@@ -199,8 +208,8 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
   never kept.
 - **What a flow taints is redacted like a secret, not refused**: the flow's `taint` keys (a
-  frozen param on each handler's trigger node, gathered onto the server unit's by
-  `routes::flow_taint`, so the unit's hash covers them: `Server.taint`) and every run's
+  deploy setting, `Settings.taint`, frozen on its server unit by `routes::server_unit`, so the
+  unit's hash covers them: `Server.taint`) and every run's
   `ALWAYS_TAINTED` (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`).
   `data::tainted` collects their values from all the run's entry holds (`LogEntry::values_mut`
   and `texts_mut`, the list `Redactor::entry` walks: the request or input, the outputs, the
@@ -365,7 +374,10 @@ What is not defended, or only partly:
   time with wrong codes.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **The run file is the OS user's admin**: an agent with a shell, running as that user, can read
-  it and act as them, as it can read the data folder and the secrets key. `holon mcp` never signs
+  it and act as them, as the account that set the server up, taking the approval steps bound to
+  it, as it can read the data folder and the secrets key. The activity log says each entry it made
+  came through the run file (`via`); a host where someone else has that shell moves the tie
+  (`holon access local --as`) or leaves the account's steps to another. `holon mcp` never signs
   in with it, but only another OS user, or a server elsewhere, keeps such an agent to its token.
 - **A folder's confinement off Linux is checked by names**: on macOS and Windows another process
   writing in the folder can swap a link between the check and the open (on Linux, without

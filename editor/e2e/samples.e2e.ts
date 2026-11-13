@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, notices, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, viewTab } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -22,6 +22,8 @@ test("the library lists every sample", async ({ page }) => {
   await page.goto("/");
   await gotoPage(page, "library");
   const samples = page.getByRole("region", { name: "samples" });
+  // The list comes from the wasm bridge once it has loaded: wait for it, as allInnerTexts doesn't.
+  await expect(samples.getByRole("article")).toHaveCount(SAMPLE_TITLES.length);
   const listed = await samples.getByRole("article").getByRole("heading").allInnerTexts();
   // Every sample samples.rs has, and nothing else.
   expect(SAMPLE_TITLES.length).toBeGreaterThan(5);
@@ -31,7 +33,7 @@ test("the library lists every sample", async ({ page }) => {
 test("shared-key reads the server's secret, which may go only where an admin said: sent elsewhere, the deploy is refused", async ({ page }) => {
   await openSample(page, "One key for every flow, capped");
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
   // The text changed to send it elsewhere: the deploy is refused, saying why.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
@@ -42,16 +44,18 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
-  // The admin's list says where it may go.
+  // The admin's table says where it may go, in its column.
   await gotoPage(page, "resources");
   await resourcesTab(page, "Secrets");
-  await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
+  const secret = page.getByLabel("server secret ops_api_key");
+  await expect(page.getByRole("table", { name: "the server's secrets" }).getByText("may go to", { exact: true })).toBeVisible();
+  await expect(secret.getByRole("cell", { name: "https://httpbin.dev", exact: true })).toBeVisible();
 });
 
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains
-  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙
+  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port in Settings
   // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
@@ -116,7 +120,36 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   // View mode is read only: no palette.
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // The palette is the Nodes level's.
+  await expect(page.locator(".hl-palette")).toHaveCount(0);
+  await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toBeVisible();
+});
+
+test("Replay the draft on a deployed sample: its newest runs, run again on the text as it is now, each same or differs", async ({ page, request }) => {
+  await openSample(page, "Hello API");
+  const port = await deploy(page);
+  for (const name of ["Ada", "Bo"]) expect((await request.get(`http://127.0.0.1:${port}/hello/${name}`)).status()).toBe(200);
+  // Changed in the text, not deployed: the draft answers "Hi", where the runs were answered "Hello".
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/hello-api.holon.ts", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("`Hello, ", "`Hi, ").replace("port: 8101", `port: ${port}`));
+  const bottom = page.getByRole("region", { name: "bottom" });
+  await bottom.getByRole("tab", { name: "Replay the draft" }).click();
+  const replay = bottom.getByRole("tabpanel", { name: "Replay the draft" });
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^\d+ replayed · 0 same · \d+ differs?$/, { timeout: 15_000 });
+  const rows = replay.getByRole("table", { name: "replayed runs" }).locator("tbody tr");
+  await expect(rows.first()).toContainText("GET /hello/:name");
+  await expect(rows.first()).toContainText("differs");
+  // A run's number goes to it in view mode.
+  await expect(rows.first().getByRole("link")).toHaveText(/^#\d+$/);
+  // Back as deployed, every run is the same again.
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port: 8101", `port: ${port}`));
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^(\d+) replayed · \1 same$/, { timeout: 15_000 });
 });
 
 test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
@@ -144,6 +177,7 @@ test("a deployment whose port another program holds says, in view mode, it isn't
 
 test("the Inspector shows the selected node in edit mode: its ports, and its unit inside", async ({ page }) => {
   await openSample(page, "Hello API");
+  await nodesLevel(page);
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   await expect(inspector).toContainText("select a node on the canvas");
   // Selected by its click event, as every other node in the suite is: a pointer click waits for
@@ -168,6 +202,7 @@ test("slugs runs its holons, and view mode shows inside one", async ({ page, req
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Hello Holon World", author: "Ada Lovelace" } });
   expect(await answer.json()).toMatchObject({ title: "hello-holon-world", author: "ada-lovelace", receipt: "unsigned" });
   await viewNewestRun(page);
+  await nodesLevel(page);
   await page.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   const side = page.getByRole("complementary", { name: "Inspector" });
   await side.getByRole("button", { name: "Node", exact: true }).click();
@@ -190,6 +225,7 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
 
 test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -209,6 +245,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
 
 test("an edited holon applies as a new version of itself, and the flow runs it", async ({ page, request }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -237,6 +274,7 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
 
 test("a port added inside a holon takes its first wire's type, and the flow's node gains it", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
+  await nodesLevel(page);
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
@@ -282,6 +320,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   const saveWith = async (name: string, entry: string) => {
     await gotoPage(page, "new");
     await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+    await nodesLevel(page);
     await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -294,6 +333,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await saveWith(user, `flow:${shout}`);
   // A draft named on save as a flow saved already asks before replacing it; cancelled, it stays untitled.
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await ask.locator("input").fill(shout);
@@ -341,6 +381,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
     await page.keyboard.press("Enter");
   };
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await dropFromPalette(page, "uppercase");
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -363,6 +404,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
 
   // In another flow, from the palette's marketplace: seen what it may do, placed.
   await gotoPage(page, "new");
+  await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toContainText(shout);
   await dropFromPalette(page, `market:${listed.id}`);
   await expect(ask).toContainText("It only computes");
@@ -442,7 +484,7 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await viewNewestRun(page);
   await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
-  // Its action, run by hand from the server panel with what to send, sets the count: the clock
+  // Its action, run by hand from Try a request with what to send, sets the count: the clock
   // goes on from there.
   await page.getByLabel("what to send reset").fill('{"to": 1000}');
   await page.getByRole("button", { name: "run", exact: true }).click();
@@ -491,9 +533,10 @@ test("shop runs billing's actions: an order calls billing and stores what it ans
   await expect(page.getByRole("region", { name: "it may" })).toContainText("run the action charge of the flow billing");
   // A billing that isn't running can't be called: the call answers why, and the order isn't stored.
   await page.goto("/#billing");
-  const head = page.getByLabel("flow billing");
-  await head.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(head.locator(".hl-flow__status")).toContainText("stopped");
+  await page.goto("/#billing.settings");
+  await page.getByRole("region", { name: "lifecycle" }).getByRole("button", { name: "Stop…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Stop" }).click();
+  await expect(page.getByLabel("flow billing").locator(".hl-flow__head .hl-chip").first()).toHaveText("stopped");
   const lost = `${id}-lost`;
   expect((await request.post(at(shop, "/orders"), { data: { id: lost, amount: 1 } })).status()).toBe(502);
   expect((await request.get(at(shop, `/orders/${lost}`))).status()).toBe(404);
@@ -504,7 +547,7 @@ test("drop-board's file handlers run beside its routes: a file dropped in, and o
   const { join } = await import("node:path");
   await openSample(page, "Drop board (files on a live page)");
   const port = await deploy(page);
-  // The server panel lists its file handlers beside its routes.
+  // Try a request lists its file handlers beside its routes.
   await expect(page.getByText("board deleted", { exact: true })).toBeVisible();
   const board = await browser.newPage();
   const subscribed = board.waitForResponse((r) => new URL(r.url()).pathname === "/live");
@@ -549,7 +592,7 @@ test("price-rollback: an earlier version's code restored from its page's history
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port: 8160", `port: ${port}`).replace("const fee = 0.5", "const fee = 5"));
-  // Compiled: the canvas is no longer what is deployed. (Its port already was: ⚙ saying so
+  // Compiled: the canvas is no longer what is deployed. (Its port already was: Settings saying so
   // doesn't show the new text has landed.)
   await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
   await settingsSayPort(page, String(port));
@@ -918,6 +961,7 @@ test("cache-aside answers a name it has from its collection without the fetch, w
   expect(await got.text()).toContain("x-1");
   // The replay takes the branch the run took, which the run's timeline confirms.
   await viewNewestRun(page);
+  await nodesLevel(page);
   const skipped = page.locator('.hl-node[data-run="skipped"]');
   await expect(skipped.filter({ hasText: "http_request" })).toHaveCount(1);
   await skipped.filter({ hasText: "http_request" }).locator(".hl-node__title").click();
@@ -929,7 +973,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   const env = (await (await request.get(`${SERVER}/admin/secrets/env`, { headers: { Authorization: `Bearer ${adminToken}` } })).json()) as { names: string[]; dotenv: string };
   expect(env.names).toContain("HOLON_SECRET_GEMINI_API_KEY");
   expect(env.names).not.toContain("VAULT_TOKEN");
-  // A line added while the server runs is offered the next time ⚙ opens, with no restart.
+  // A line added while the server runs is offered the next time Settings opens, with no restart.
   const added = `HOLON_SECRET_E2E_${Date.now().toString(36).toUpperCase()}`;
   appendFileSync(env.dotenv, `${added}=e2e-added-value\n`);
 
@@ -940,7 +984,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
     route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
   );
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
   // The variable the secret's name suggests is chosen; the one just added is there too.
   const names = settings.locator("select", { has: page.locator("option", { hasText: "another name…" }) });
@@ -1037,7 +1081,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
   // which asks nobody.
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   const runs = settings.getByLabel("runs the log keeps");
   await expect(runs).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
@@ -1139,7 +1183,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });
 
-test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
+test("guarded-api's token rolls back in Settings once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
   const asAdmin = { Authorization: `Bearer ${adminToken}` };
   const set = (value: string) => request.post(`${SERVER}/deployments/guarded-api/secrets/api_token`, { data: { value }, headers: asAdmin });
   expect((await set(`e2e-token-one-${Date.now()}`)).ok()).toBe(true);
@@ -1150,7 +1194,7 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
 
   await openSample(page, "Token-guarded API");
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await settings.getByTitle("versions and changes; roll back to an older version").first().click();
   const rollBack = settings.getByTitle(`make version ${before} current again`);
   // The dry run: what it would do, never the value; cancelled, nothing changed.
@@ -1183,6 +1227,7 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   expect((await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "div", a: 1, b: 0 } })).status()).toBe(400);
   // The division ran; the other three arms didn't.
   await viewNewestRun(page);
+  await nodesLevel(page);
   const skipped = page.locator('.hl-node[data-run="skipped"]');
   await expect(skipped).toHaveCount(3);
   for (const leaf of ["add", "subtract", "multiply"]) {
@@ -1201,6 +1246,7 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   const values = text.locator(".hl-text__value");
   await expect(values.first()).toHaveText("1");
   await expect(values.nth(1)).toHaveText("0");
+  await viewTab(page, "Run");
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
@@ -1349,8 +1395,10 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   // made by its schema.
   await gotoPage(page, "resources");
   await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
-  await expect(page.getByLabel("shop's tables")).toContainText("tables: orders");
-  await expect(page.getByLabel("shop's tables")).not.toContainText("holon_commits");
+  // Its tables (the matrix beside them is "shop's tables and the flows that use them").
+  const tables = page.getByLabel("shop's tables", { exact: true });
+  await expect(tables).toContainText("tables: orders");
+  await expect(tables).not.toContainText("holon_commits");
   const scratch = join(FOLDERS, `scratch-${Date.now()}.db`);
   await page.getByLabel("database name").fill("scratch");
   await page.getByLabel("database path").fill(scratch);
@@ -1367,17 +1415,14 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await gotoPage(page, "policy");
   await expect(page.getByRole("button", { name: "read the policy again" })).toBeVisible();
   await expect(page.getByLabel("limits")).toBeVisible();
-  // Who may touch the shop, under Resources: orders-api, by table, with a link to its page,
+  // Who touches the shop, under Resources: its matrix of tables and flows (in place of who may
+  // touch what, for a database), orders-api reading and writing orders, with a link to its page,
   // where its grant changes.
   await gotoPage(page, "resources");
-  await resourcesTab(page, "Who may touch what");
-  const shop = page.getByLabel("database shop", { exact: true });
-  await expect(shop).toContainText("orders-api");
-  await expect(shop).toContainText("writes orders");
-  await page.getByLabel("show what").selectOption("folders");
-  await expect(shop).toHaveCount(0);
-  await page.getByLabel("show what").selectOption("databases");
-  await shop.getByRole("button", { name: "card →" }).first().click();
+  await resourcesTab(page, "Databases");
+  const shop = page.getByLabel("shop's tables and the flows that use them");
+  await expect(shop.getByRole("row").filter({ hasText: /^orders/ })).toContainText("read and write");
+  await shop.getByRole("link", { name: "orders-api" }).click();
   await expect(page).toHaveURL(/#orders-api\.settings$/);
   await expect(page.getByRole("region", { name: "permissions" }).getByRole("button", { name: "Revoke" }).first()).toBeInViewport();
 });
@@ -1474,7 +1519,8 @@ test("approval-mail mails a payout's approval link, its page's button approves i
   await gotoPage(page, "resources");
   await resourcesTab(page, "Mail");
   await expect(page.getByText(/^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_OPS_SMTP\) · as Treasury <treasury@acme\.com> · to \*@acme\.com$/)).toBeVisible();
-  await expect(page.getByText("used by approval-mail (who may touch what says how)")).toBeVisible();
+  // Who uses it, and how, under its row.
+  await expect(page.getByLabel("used by").filter({ has: page.getByRole("link", { name: "approval-mail" }) })).toContainText("approval-mail mails approvals@acme.com, addresses it computes");
   await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
 });

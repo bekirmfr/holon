@@ -106,6 +106,13 @@ export function routeOf(a: Approval): Route | null {
   }
 }
 
+/** The versions a review goes from and to: "v3 → v4", or "new, v1" for a first deploy. */
+export function versionsSaid(a: Reviewable): string {
+  if (a.version === null) return "a new version";
+  if (a.kind === "first") return "new, v1";
+  return a.version > 1 ? `v${a.version - 1} → v${a.version}` : `v${a.version}`;
+}
+
 /** One in words, as `holon mcp` says it. */
 export function said(a: Approval, when: (seconds: number) => string): string {
   switch (a.kind) {
