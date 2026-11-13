@@ -299,9 +299,6 @@ function Canvas({
     return live.current.nodes.map((n) => ({ ...n, position: at.get(n.id) ?? n.position }));
   }, [getInternalNode]);
   const tidyCanvas = useCallback(() => setNodes(tidied()), [setNodes, tidied]);
-  const fitCanvas = useCallback(() => {
-    fitView({ padding: 0.1, duration: 200 });
-  }, [fitView]);
   // The text a save keeps with the flow (the pane's, as typed, while it stands for the canvas).
   const source = useMemo(() => sourceToSave(flow.text, syncKeyOf(nodes, edges, settings, flowName)), [flow.text, nodes, edges, settings, flowName]);
   const dirty = useMemo(
@@ -1382,7 +1379,6 @@ function Canvas({
           onUndo={undo}
           onRedo={redo}
           onTidy={tidyCanvas}
-          onFit={fitCanvas}
         />
         <ReactFlow<PrimitiveNodeType>
           {...GESTURES}

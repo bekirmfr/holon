@@ -309,7 +309,6 @@ export function CanvasHead({
   onUndo,
   onRedo,
   onTidy,
-  onFit,
 }: {
   level: CanvasLevel;
   onLevel: (l: CanvasLevel) => void;
@@ -322,8 +321,6 @@ export function CanvasHead({
   onRedo: () => void;
   /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
   onTidy: () => void;
-  /** Fits the whole flow in the view. */
-  onFit: () => void;
 }) {
   const seg = (l: CanvasLevel, label: string, title: string) => (
     <button
@@ -364,11 +361,9 @@ export function CanvasHead({
       )}
       <Kbd k="l" />
       <span style={{ flex: 1 }} />
+      {/* Fitting the flow in the view is the canvas's own control, at its corner. */}
       {level !== "statements" && (
         <span className="hl-canvas__controls">
-          <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
-            ⤢
-          </button>
           {editing && level === "nodes" && (
             <>
               <button onClick={onUndo} disabled={!canUndo} title="undo (Ctrl+Z)" style={historyBtn(canUndo)}>
