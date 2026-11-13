@@ -26,8 +26,12 @@
 // asks for, and the review says who the tag lets in.
 //
 // Before it works, an admin says who takes each step: the three roles, an agent, a person (who is
-// printed the link they join with) and you, each bound on the tag. On the server's machine holon
-// signs in as you, the account that set the server up:
+// printed the link they join with) and you, each bound on the tag. Deployed before they are, its
+// review marks its approval as one no one here can decide yet (classifier: no agent holds it
+// here), and the editor asks again before deploying it. Bound so, with you its one approver, it
+// still notes that a run you start yourself can't be decided (you take no step of it), without
+// asking: the runs its route starts can be. On the server's machine holon signs in as you, the
+// account that set the server up:
 //   holon roles define classifier --allow run.decide --kinds agent
 //   holon roles define reviewer --allow run.decide
 //   holon roles define approver --allow run.decide

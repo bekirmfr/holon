@@ -1,7 +1,9 @@
 // What a flow touches, as a dry run shows it (a deploy's consent, a restore's dry run): the rows
 // the server works out (crates/holon/src/touches.rs), said as `holon editor` and the CLI say them:
 // grouped, a row each, marked with what the change does to it, a note on what the server has for
-// it, why it isn't ready, and what a restore does to it.
+// it, why it isn't ready, and what a restore does to it. And the approvals its runs would wait at
+// that no one here can decide yet: deploying names those no run of could be decided, and asks
+// again.
 
 /** One use of a thing a flow touches: its capability item and what it does with it. */
 export type TouchUse = { item: string; what: string; words: string; change: Change; approval: boolean; optional: boolean };
@@ -17,6 +19,10 @@ export type Touch = {
   uses: TouchUse[];
   /** Why this server isn't ready for it. */
   ready: string | null;
+  /** An approval it isn't ready for: which of its runs would wait there undecided, every run (a
+   *  step no one here may take, or too few), or some runs (those a principal starts who would take
+   *  no step of them; a run a route, a schedule or a file starts has no starter). */
+  waits?: "every run" | "some runs" | null;
   /** What this server has for it (a secret's version and source). */
   has: string | null;
   /** A restore: how many times the runs since did it, which a restore doesn't undo. */
@@ -66,6 +72,33 @@ export function touchLines(touches: Touch[] = [], settings: SettingChange[] = []
 /** Dry-run lines as plain text: a heading as it is, a row after its sign, its note after a dash. */
 export function touchText(lines: TouchLine[]): string[] {
   return lines.map((l) => (l.mark === "head" ? l.text : `  ${SIGN[l.mark]}${l.text}${l.note ? ` — ${l.note}` : ""}`));
+}
+
+/** Whether `row` is an approval no one here can decide yet, as the server works it out
+ *  (deploy.rs `approvals_unready`: a step no principal of its kind here may take, or too few, or
+ *  none once whoever starts the run is set aside): its runs, or those someone starts, would wait
+ *  there until someone is bound. */
+export function cannotDecide(row: Touch): boolean {
+  return row.kind === "approval" && row.change !== "gone" && row.ready !== null;
+}
+
+/** What deploying asks again, before it deploys, when its runs would wait at approvals no one here
+ *  can decide (the access plan's D3), naming each with why; null when none would. `action` is the
+ *  button that asked first ("Approve and deploy", "Propose"). The server deploys it either way:
+ *  someone may be bound after. An approval only the runs someone starts would wait at (they may
+ *  take no step of their own run, and no one else holds it) is marked, and not asked about again:
+ *  the runs a route, a schedule or a file starts can be decided, as a payout's are when its only
+ *  approver is the admin who set the server up. */
+export function askAgain(name: string, touches: Touch[] = [], action: string): string | null {
+  const rows = touches.filter((t) => cannotDecide(t) && t.waits === "every run");
+  if (rows.length === 0) return null;
+  return [
+    `Runs of "${name}" would wait at ${rows.length === 1 ? "an approval" : "approvals"} no one here can decide yet:`,
+    "",
+    ...rows.map((t) => `• ${t.name}: ${t.ready}`),
+    "",
+    `They wait there until someone here may take each step (People and access, or holon bind, binds them). ${action} it anyway?`,
+  ].join("\n");
 }
 
 function rowLine(row: Touch): TouchLine {

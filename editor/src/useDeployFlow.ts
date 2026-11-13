@@ -4,7 +4,8 @@
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
 // And running, pausing or stopping it once deployed. Whoever the server wouldn't let deploy it is
 // told why before anything is staged; whoever may deploy it but not approve what it asks proposes
-// it, for someone who may (can.ts), and is told it waits in Approvals.
+// it, for someone who may (can.ts), and is told it waits in Approvals. One whose runs would wait
+// at an approval no one here can decide yet is asked again, naming it (touches.ts askAgain).
 
 import { createElement, useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
@@ -18,7 +19,7 @@ import { changeDeployment, deployUnit, getDeployedDocument, previewDeploy, type 
 import { browsersOf, type FlowSettings } from "./DeployBar";
 import { canOn, refusal } from "./can";
 import { useToast } from "./ui/Toast";
-import { touchLines } from "./touches";
+import { askAgain, touchLines } from "./touches";
 import type { useDialog } from "./Dialog";
 import { codeHunk, touchHunks, type Hunk } from "./hunks";
 import { Review } from "./Review";
@@ -165,6 +166,8 @@ export function useDeployFlow({
       const review = hunks.length > 0 ? createElement(Review, { hunks }) : null;
       const shown = existing ? createElement("div", { style: { display: "grid", gap: 10 } }, createElement(ReplayRuns, { slug: name, unit: hash }), review) : review;
       if (!(await dialog.confirm(lines.join("\n"), action, shown ?? undefined))) return;
+      const again = askAgain(name, preview.touches, action);
+      if (again && !(await dialog.confirm(again, `${action} anyway`))) return;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return;

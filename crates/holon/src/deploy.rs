@@ -751,9 +751,14 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     }
     let items = manifest.items();
     // Its approvals whose steps can't all be taken here (§9), whoever deploys it set aside where
-    // the host says so: a person who approves now; someone later, for a proposal.
+    // the host says so: a person who approves now; someone later, for a proposal. And which of
+    // their runs would wait there undecided.
+    let mut waits = BTreeMap::new();
     if let Some(server) = &server {
-        unready.extend(approvals_unready(state, &body.slug, server, &items, &resolver, (!proposes).then_some(name)));
+        for (item, (why, runs)) in approvals_unready(state, &body.slug, server, &items, &resolver, (!proposes).then_some(name)) {
+            unready.insert(item.clone(), why);
+            waits.insert(item, runs);
+        }
     }
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     // What it touches, beside what it touches now, and the settings that change.
@@ -770,7 +775,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
     // Where each secret it reads is sent (secret → destinations).
     let sent = holon_core::sent_secrets(root_unit, &resolver);
-    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready });
+    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
     let settings = match &asked_now {
         Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
         None => serde_json::json!([]),
@@ -812,8 +817,11 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
 /// disabled; one principal a step, as many as the step's `people`. Whoever deploys it takes none
 /// on a host that keeps them out (`approvals.exclude_deployer`), nor whoever starts a run, which,
 /// for an approval in one of its actions, may be anyone who may run that action. None worked out
-/// on a server without accounts.
-fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver, deployer: Option<&str>) -> BTreeMap<String, String> {
+/// on a server without accounts. With why, which of its runs would wait there undecided: `every
+/// run` (a step no one here may take, or too few), or `some runs` (those a principal starts who
+/// would then take no step of them: a run a route, a schedule or a file starts has no starter, and
+/// can be decided), which deploying in the editor doesn't ask about again.
+fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver, deployer: Option<&str>) -> BTreeMap<String, (String, &'static str)> {
     use crate::accounts::Kind;
     use holon_core::approval::{SlotKind, Steps};
     let Some(accounts) = state.access.accounts() else { return BTreeMap::new() };
@@ -847,7 +855,7 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
             })
             .collect();
         if let Some(why) = untaken(&takes, None) {
-            unready.insert(item.clone(), why);
+            unready.insert(item.clone(), (why, "every run"));
             continue;
         }
         // Whoever may start a run that waits there, set aside.
@@ -859,7 +867,7 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
         });
         for i in starters.collect::<BTreeSet<_>>() {
             if let Some(why) = untaken(&takes, Some(i)) {
-                unready.insert(item.clone(), format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()));
+                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()), "some runs"));
                 break;
             }
         }
@@ -1655,7 +1663,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             let policy = state.policy();
             let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed, tags: tag_holders(state, &tagged) };
             // Its code isn't worked out again here: where its secrets go isn't said.
-            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default(), unready: &Default::default() });
+            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default(), unready: &Default::default(), waits: &Default::default() });
             answer["settings"] = serde_json::json!([]);
         }
         if let Some((snapshot, label, since)) = &put_back {

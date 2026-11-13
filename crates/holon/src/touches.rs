@@ -110,7 +110,8 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
 /// withholds, what it can run without, where the code sends each secret it reads (core's
 /// `sent_secrets`; empty when not worked out), and what isn't ready for a reason worked out
 /// apart, by item, with why: another flow's action whoever deploys may not run, an approval's
-/// step no one here can take.
+/// step no one here can take; and for such an approval, which of its runs would wait there
+/// undecided (`every run`, or `some runs`: those whoever starts takes no step of).
 pub(crate) struct Ask<'a> {
     pub(crate) now: Option<&'a [String]>,
     pub(crate) then: &'a [String],
@@ -119,6 +120,7 @@ pub(crate) struct Ask<'a> {
     pub(crate) optional: &'a [String],
     pub(crate) sent: &'a BTreeMap<String, BTreeSet<String>>,
     pub(crate) unready: &'a BTreeMap<String, String>,
+    pub(crate) waits: &'a BTreeMap<String, &'static str>,
 }
 
 /// What a secret's read does, with where the code sends it, as the approval says it: "read, and
@@ -192,7 +194,8 @@ impl Server<'_> {
 /// What a flow touches, as a dry run shows it: one row per thing (a folder, a host, a key…), in
 /// the order of [`GROUPS`], each with what it does with it (`uses`), what the change does to it
 /// (`change`: `new`, `gone`, `same`, or `changed` when only some of its uses are new or gone),
-/// whether this server is ready for it (`ready`: why not), and what the server has for it.
+/// whether this server is ready for it (`ready`: why not; for an approval, which of its runs would
+/// wait there undecided, `waits`), and what the server has for it.
 pub(crate) fn touches(server: &Server, ask: &Ask) -> Value {
     let mut items: Vec<&String> = ask.then.iter().collect();
     for i in ask.now.into_iter().flatten() {
@@ -232,6 +235,7 @@ pub(crate) fn touches(server: &Server, ask: &Ask) -> Value {
             let row_change = if changes.iter().all(|c| *c == changes[0]) { changes[0] } else { "changed" };
             let kept: Vec<(String, String)> = uses.iter().filter(|(item, _)| ask.then.contains(item)).cloned().collect();
             let (ready, has) = if kept.is_empty() { (None, None) } else { server.ready(kind, &name, &kept, ask) };
+            let waits = ready.as_ref().and_then(|_| kept.iter().find_map(|(item, _)| ask.waits.get(item)));
             json!({
                 "group": GROUPS.get(at).map_or("other", |(g, _)| *g),
                 "kind": kind,
@@ -246,6 +250,7 @@ pub(crate) fn touches(server: &Server, ask: &Ask) -> Value {
                     "optional": ask.optional.contains(item),
                 })).collect::<Vec<_>>(),
                 "ready": ready,
+                "waits": waits,
                 "has": has,
             })
         })
@@ -499,7 +504,7 @@ mod tests {
         let then = s(&["SecretAnswer(\"maps_key\")", "SecretRead(\"maps_key\")", "SecretRead(\"client_secret\")", "SecretRead(\"license_key\")"]);
         let to = |d: &[&str]| d.iter().map(|d| d.to_string()).collect::<BTreeSet<_>>();
         let sent = BTreeMap::from([("client_secret".to_string(), to(&["auth.example", "answer:api.example"])), ("license_key".to_string(), to(&["db:vendor"]))]);
-        let rows = touches(&server, &Ask { now: Some(&then), then: &then, needs: &[], withheld: &[], optional: &[], sent: &sent, unready: &BTreeMap::new() });
+        let rows = touches(&server, &Ask { now: Some(&then), then: &then, needs: &[], withheld: &[], optional: &[], sent: &sent, unready: &BTreeMap::new(), waits: &BTreeMap::new() });
         let said = text(&lines(&rows, &json!([])));
         let row = |name: &str| said.iter().find(|l| l.contains(&format!("secret {name}:"))).cloned().unwrap_or_else(|| panic!("{name} in {said:#?}"));
         assert!(row("client_secret").contains("secret client_secret: read, and send it to https://auth.example; what is answered to it goes to https://api.example"), "{said:#?}");
@@ -522,7 +527,7 @@ mod tests {
         let s = |v: &[&str]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>();
         let now = s(&["NetworkIngress", "Tag(\"old\")", "Tag(\"ops\")"]);
         let then = s(&["NetworkIngress", "Tag(\"ops\")", "Tag(\"payments\")"]);
-        let rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &s(&["Tag(\"payments\")"]), withheld: &[], optional: &[], sent: &BTreeMap::new(), unready: &BTreeMap::new() });
+        let rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &s(&["Tag(\"payments\")"]), withheld: &[], optional: &[], sent: &BTreeMap::new(), unready: &BTreeMap::new(), waits: &BTreeMap::new() });
         let said = text(&lines(&rows, &json!([])));
         let at = said.iter().position(|l| l == "Who may act on it").unwrap_or_else(|| panic!("{said:#?}"));
         assert_eq!(
@@ -544,7 +549,7 @@ mod tests {
         let then = s(&["NetworkIngress", "StateWrite(\"count\")", "HttpRequest(\"b.example\")", "HttpRequest(\"c.example\")", "SecretRead(\"api_key\")", "SecretRead(\"other\")", "FileRead(\"inbox\")", "FileWrite(\"inbox\")"]);
         // c.example is granted now, and asked again (an agent changed the code that calls it).
         let needs = s(&["HttpRequest(\"b.example\")", "HttpRequest(\"c.example\")", "FileWrite(\"inbox\")"]);
-        let mut rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &needs, withheld: &[], optional: &[], sent: &BTreeMap::new(), unready: &BTreeMap::new() });
+        let mut rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &needs, withheld: &[], optional: &[], sent: &BTreeMap::new(), unready: &BTreeMap::new(), waits: &BTreeMap::new() });
         // Two runs since the point: one called b.example and wrote the key, which isn't counted
         // (putting the state back is what a restore does to it); the other called it again.
         let ran = |caps: &[&str]| LogEntry {

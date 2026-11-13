@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Deploying a flow whose approval no one here can decide asks again, naming it.** The deploy
+  preview already marked such an approval **!** (a step no principal of its kind here may take, or
+  too few, or none once whoever starts the run is set aside), but deploying went on as for any
+  other row, and a flow could be deployed whose runs would wait at an approval nobody could
+  decide. Now the editor's deploy dialog, and Approve and deploy on a version's review, ask again,
+  naming each approval and why (`touches.ts` `askAgain`); the version deploys if you go on (the
+  server doesn't refuse it: someone may be bound after), and its runs wait there until someone is.
+  The review lists those approvals first, under *Can't be decided here*. It asks only when no run
+  could be decided there: each approval row of the preview now says which of its runs would wait
+  undecided (`waits`: `every run`, or `some runs`, those a principal starts who takes no step of
+  them), and an approval whose only approver is the admin, as the approved-payout sample binds
+  it, is marked but not asked about, since the runs its route starts can be decided.
 - **The editor's buttons follow what the server would answer you.** A viewer saw **Pause**,
   **Revoke**, **run** and the rest as an admin did, and learned only on pressing one that it was
   refused; the host's pages were shown by the built-in role alone (an admin's, or People and

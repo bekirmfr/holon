@@ -48,9 +48,11 @@ closes with its ×.
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
 - **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
   agent's proposal with its why and note, and **Decline with a reason…**), and **Runs waiting**.
-  **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
-  flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
-  and Approve, keep it saved, or decline it. **Runs waiting** lists, across flows, the runs
+  **Review** opens one: what it may do (first, under *Can't be decided here*, each approval its
+  runs would wait at that no one here can decide yet, saying why), its changes, *If approved*, *On
+  recent runs* (a deployed flow's new version replayed on its last runs,
+  [Replayed on recent runs](deploying.md#replayed-on-recent-runs)), and Approve (asked again,
+  naming them, when an approval can't be decided here), keep it saved, or decline it. **Runs waiting** lists, across flows, the runs
   waiting at an `approval` that you may see or decide (one bound only at an approval point sees
   the runs waiting there, though no flow), and what each shows: what the flow named (`shows`),
   else what the run was started with (*started with*), redacted as its log is. An approval in
@@ -180,7 +182,13 @@ canvas differs from what is deployed), the deployment's state and port, **pause*
 permissions and which actions agents may run. Deploying shows what the flow may do and asks you
 to approve what isn't granted yet; if you may deploy the flow but not approve what it asks
 (`flow.approve-deploy`), the button says **Propose**, and the version waits in Approvals for
-someone who may, as the editor then says. [Deploying and permissions](deploying.md) covers it in full.
+someone who may, as the editor then says. When its runs would wait at an approval no one here can
+decide yet (its row marked **!**: a step no one here may take), deploying asks again, naming each:
+it deploys if you go on, and its runs wait there until someone is bound to take each step. An
+approval only the runs someone starts couldn't be decided at (`a run ada starts…`: they take no
+step of their own run, and no one else holds it) is marked, without asking: the runs a route
+starts can be.
+[Deploying and permissions](deploying.md) covers it in full.
 
 A flow with no route, clock, file handler or action starts nothing, so **deploy** is greyed and
 says why: add one. An action is the one a person runs by hand.

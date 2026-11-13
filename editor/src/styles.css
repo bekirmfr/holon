@@ -374,6 +374,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__group { margin-bottom: 12px; }
 .hl-review-page__group h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--body); }
 .hl-review-page__group--approve h3 { color: var(--warn); }
+.hl-review-page__group--undecided h3 { color: var(--bad-ink); }
 .hl-review-page__group--gone h3 { color: var(--faint); }
 .hl-review-page__group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
 .hl-review-page__said { color: var(--ink); }

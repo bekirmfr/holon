@@ -6,7 +6,8 @@
 // them, for each way of being bound. And the buttons follow `can` (can.ts): a viewer's flow page
 // has each that changes something disabled, saying why in the server's words, until a binding
 // lets them, which the page then follows; someone who may deploy a flow but not approve what it
-// asks proposes it, told why, and it waits in Approvals.
+// asks proposes it, told why, and it waits in Approvals. And a flow whose approval no one here can
+// decide says so in its consent and its review, and deploying it asks again, naming it.
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -340,5 +341,81 @@ test("someone who may deploy a flow but not approve what it asks proposes it fro
     await expect(page.getByText(slug).first()).toBeVisible();
   } finally {
     await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
+  }
+});
+
+test("a flow whose approval no one here can decide says so, and deploying it asks again, naming it: from the editor and from the review", async ({ page, adminToken }) => {
+  const n = Date.now().toString(36);
+  const slug = `undecided-${n}`;
+  const [first, second] = [`nobody-${n}`, `nobody-else-${n}`];
+  const text = (steps: string) =>
+    `import { action, approval, flow } from "holon"\n\nflow("${slug}")\n\nexport const ask = action(async () => {\n  const decision = await approval("ok", { steps: [${steps}] })\n  return decision.approved\n})\n`;
+  const sent: number[] = [];
+  page.on("response", (r) => {
+    if (r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy") sent.push(r.status());
+  });
+  try {
+    await page.goto("/");
+    await gotoPage(page, "new");
+    const canvas = page.locator(".hl-canvas");
+    await canvas.getByRole("button", { name: "text off" }).click();
+    const typed = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await typed.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text(`{ role: "${first}" }`));
+    await expect(page.locator('[aria-label="action ask"]')).toBeVisible({ timeout: 15_000 });
+
+    // The consent shows its approval's row, not ready, saying why; approving it asks again,
+    // naming it, and cancelled there nothing is deployed. (Named the first time.)
+    const deploy = async (named = true) => {
+      await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
+      if (!named) {
+        await page.locator('[aria-modal="true"]').locator("input").fill(slug);
+        await page.keyboard.press("Enter");
+      }
+      const consent = page.getByRole("dialog");
+      await expect(consent).toContainText(`approval ok: approved by a person holding ${first}`);
+      await expect(consent).toContainText(`${first}: no person holds it here`);
+      await consent.getByRole("button", { name: "Approve and deploy", exact: true }).click();
+      const again = page.getByRole("dialog");
+      await expect(again).toContainText(`Runs of "${slug}" would wait at an approval no one here can decide yet:`);
+      await expect(again).toContainText(`• ok: ${first}: no person holds it here`);
+      return again;
+    };
+    await (await deploy(false)).getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(sent, "cancelled: nothing deployed").toEqual([]);
+    await (await deploy()).getByRole("button", { name: "Approve and deploy anyway", exact: true }).click();
+    await expect.poll(() => sent).toEqual([200]);
+    await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+
+    // A version saved with a second step no one holds either: its review puts the approval first,
+    // under what can't be decided here, and approving it asks again.
+    await typed.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text(`{ role: "${first}" }, { role: "${second}" }`));
+    // Compiled: what it may do names the second step.
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${first}, then a person holding ${second}, and continue later`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    // Saved a second after the deploy at least: both are kept in seconds, and a version saved in
+    // the second it was deployed reads as the one deployed.
+    await page.waitForTimeout(1_100);
+    const saved = page.waitForResponse((r) => r.request().method() !== "GET" && new URL(r.url()).pathname.startsWith("/flows"));
+    await canvas.getByRole("button", { name: "save", exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    await page.goto(`/#approvals.${slug}.v2`);
+    const undecided = page.getByRole("group", { name: "Can't be decided here" });
+    await expect(undecided).toContainText(`approval ok: +approved by a person holding ${first}, then a person holding ${second}, −approved by a person holding ${first}`);
+    await expect(undecided).toContainText(`${first}: no person holds it here`);
+    const decide = page.getByRole("complementary", { name: "decision" });
+    await decide.getByRole("checkbox").check();
+    await decide.getByRole("button", { name: "Approve and deploy", exact: true }).click();
+    const again = page.getByRole("dialog");
+    await expect(again).toContainText(`Runs of "${slug}" would wait at an approval no one here can decide yet:`);
+    await again.getByRole("button", { name: "Approve and deploy anyway", exact: true }).click();
+    await expect.poll(() => sent).toEqual([200, 200]);
+    await expect(page.getByRole("status").filter({ hasText: `Deployed ${slug} v2.` })).toBeVisible();
+  } finally {
+    await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
+    await control(adminToken, `/flows/${slug}`, undefined, "DELETE");
   }
 });
