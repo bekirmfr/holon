@@ -374,9 +374,15 @@ export type Choice = { need: number } | { done: WValue | null };
 
 /** Core's choice rule: what a `guard` or `coalesce` needs next, given the inputs seen so far
  *  (`undefined`: not evaluated yet, `null`: absent), or its output once decided; `null` for a
- *  leaf that isn't a choice. A replay walks a run by it, as core evaluates one. */
+ *  leaf that isn't a choice. A replay walks a run by it, as core evaluates one.
+ *
+ *  Decided absent, core's `Done(None)` crosses the bridge as `{ done: undefined }`; it is `null`
+ *  here, as absent is everywhere in the editor and in a run's log (core's `None`, the server's
+ *  JSON `null`). Left undefined, a replayed guard that gave nothing read as differing from the
+ *  log's null, and every run that stopped at one, a waiting run's, replayed as different. */
 export function choiceNext(name: string, seen: (WValue | null | undefined)[]): Choice | null {
-  return (choice_next(name, seen.map((v) => (v === undefined ? null : { value: v }))) as Choice | undefined) ?? null;
+  const choice = (choice_next(name, seen.map((v) => (v === undefined ? null : { value: v }))) as Choice | undefined) ?? null;
+  return choice && "done" in choice ? { done: choice.done ?? null } : choice;
 }
 
 /** Whether a manifest item is required or optional (core's rule), and what that means. */

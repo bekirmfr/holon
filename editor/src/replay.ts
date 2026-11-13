@@ -15,6 +15,7 @@
 
 import { asksHostPrimitives, choiceNext, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
+import { stable } from "./textSync";
 
 export type ReplayNode = {
   id: string;
@@ -718,6 +719,43 @@ export function whyNotRun(nodes: ReplayNode[], by: string | null): string {
  *  `null` when it can't tell: no timeline, a run that waited (what waits on an event isn't run,
  *  but a replay has nothing to wait for), or one logged before choices were lazy (its timeline
  *  lists every node, taken or not). */
+/** What a run gave, as a verdict reads it: its kind, the route or action it ran, what it answered
+ *  (nothing, until it answers) and the waiting points it is parked at. */
+export type VerdictRun = { kind: string; route: string | null; outputs: (WValue | null)[]; parked?: string[] | null };
+
+/**
+ * Whether a replay reproduces the run: true, false, or null when nothing tells.
+ *
+ * - A request, or an action with a `respond`, that answered: the replay's respond gives the same
+ *   answer.
+ * - A run parked at a waiting point (an `await`, an approval) hasn't answered: each node it ran
+ *   gives what its log says. The replay goes on past the waiting point, which nobody has decided
+ *   and so gives nothing, down to a respond the run never reached, which falls back to its
+ *   `missing` answer (404 "not found"); held to the answer, every waiting run read as different.
+ * - A clock's tick, a file handler's run, an action that only writes: each node gives what the log
+ *   says, as a waiting run.
+ *
+ * And it differs whenever it ran other nodes than the run did (`ranSame`, from `sameNodesRan`).
+ */
+export function replayVerdict(entry: VerdictRun, run: Pick<Replay, "order" | "traces">, nodes: ReplayNode[], recorded: Map<string, (WValue | null)[]>, ranSame: boolean | null): boolean | null {
+  if (ranSame === false) return false;
+  const respond = run.order.find((id) => {
+    const n = nodes.find((x) => x.id === id);
+    return n?.data.name === "respond" && n.data.body.kind === "Template";
+  });
+  // An action's run is answered as a request is: by its respond.
+  const action = entry.kind === "trigger" && !!entry.route;
+  const waiting = (entry.parked?.length ?? 0) > 0;
+  if (!waiting && (entry.kind === "request" || action) && respond && entry.outputs.length > 0) {
+    return JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(entry.outputs[0]);
+  }
+  if (waiting || ((entry.kind === "tick" || entry.kind === "file" || (action && !respond)) && entry.route)) {
+    const ran = [...recorded].filter(([id]) => run.traces.has(id));
+    if (ran.length > 0) return ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
+  }
+  return null;
+}
+
 export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {
   if (timings.size === 0 || waited) return null;
   if (run.notRun.size > 0 && group.every((id) => timings.has(id))) return null;

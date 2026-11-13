@@ -23,6 +23,7 @@ import {
   recordedReads,
   recordedResponses,
   replay,
+  replayVerdict,
   runGroup,
   sameNodesRan,
   stateAtStep,
@@ -30,7 +31,6 @@ import {
   wireKey,
   type ReplayNode,
 } from "./replay";
-import { stable } from "./textSync";
 import { printHolon } from "./holonText";
 import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
@@ -161,26 +161,10 @@ export function useViewMode(input: ViewModeInput) {
       },
     );
     const diagnosis = diagnose(ns, es, selectedRun, run);
-    let verdict: boolean | null = null;
-    const respond = run.order.find((id) => {
-      const n = ns.find((x) => x.id === id);
-      return n?.data.name === "respond" && n.data.body.kind === "Template";
-    });
-    // An action's run is answered as a request is: by its respond.
-    const action = selectedRun.kind === "trigger" && !!selectedRun.route;
-    if ((selectedRun.kind === "request" || action) && respond && selectedRun.outputs.length > 0) {
-      verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
-    }
-    // A clock's tick, a file handler's run or an action that only writes answers nobody: it
-    // reproduces when each node gives what the log says it gave.
-    if ((selectedRun.kind === "tick" || selectedRun.kind === "file" || (action && !respond)) && selectedRun.route) {
-      const recorded = [...nodeOutputs(selectedRun, viewTrace)].filter(([id]) => run.traces.has(id));
-      if (recorded.length > 0) verdict = recorded.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
-    }
     // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
     // can tell.
-    const group = runGroup(ns, es, selectedRun);
-    if (sameNodesRan(group, run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0) === false) verdict = false;
+    const ranSame = sameNodesRan(runGroup(ns, es, selectedRun), run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0);
+    const verdict = replayVerdict(selectedRun, run, ns, nodeOutputs(selectedRun, viewTrace), ranSame);
     return { ...run, verdict, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
