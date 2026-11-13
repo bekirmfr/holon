@@ -238,7 +238,9 @@ export type AccessDocument = AccessVersion & {
   roles: { name: string; about?: string; allows: string[]; kinds: Kind[] }[];
   groups: { name: string; about?: string; members: string[] }[];
   bindings: Omit<BindingEntry, "expired">[];
-  approvals: { exclude_deployer: boolean; agents: boolean; starter: boolean };
+  /** How this host decides approvals; `changes`, how many people approve an access change that
+   *  gives more (none: it applies at once). */
+  approvals: { exclude_deployer: boolean; agents: boolean; starter: boolean; changes: number | null };
   local?: string;
 };
 export const getAccessVersion = async (n: number) => asJson<AccessDocument>(await api(`${BASE}/access?version=${n}`));

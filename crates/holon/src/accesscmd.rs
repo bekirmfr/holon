@@ -96,7 +96,7 @@ examples:
 const ACCESS_USAGE: &str = "usage: holon access [versions]
        holon access show [--version N]
        holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
-                              [--why TEXT]
+                              [--changes N|off] [--why TEXT]
        holon access local [--as NAME] [--why TEXT]
        (each with [--json] [--server PORT|URL])
 
@@ -116,6 +116,8 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
                            has a step that lets them (starter: true) doesn't deploy (on by
                            default: a person who started a run may take a step that says so; an
                            agent never decides a run it started)
+    --changes N            an access change that gives more waits until N people other than its
+                           author approve it, 1 to 5 (off by default: it applies at once)
     --why TEXT             why, kept with the version
   local                    the account this machine's run file signs in as: the person who set
                            the server up, until an admin ties it to another
@@ -357,7 +359,7 @@ pub(crate) fn unbind(args: &[String]) -> i32 {
 pub(crate) fn access(args: &[String]) -> i32 {
     const WHO: &str = "holon access";
     let usage = usage(ACCESS_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--starter", "--as", "--why"], &["--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--starter", "--changes", "--as", "--why"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -376,9 +378,24 @@ pub(crate) fn access(args: &[String]) -> i32 {
                     }
                 }
             }
+            match args.value("--changes") {
+                None => {}
+                Some("off") => {
+                    change.insert("changes".into(), Value::Null);
+                }
+                Some(n) => match n.parse::<u8>() {
+                    Ok(n @ 1..=5) => {
+                        change.insert("changes".into(), n.into());
+                    }
+                    _ => {
+                        eprintln!("{WHO}: --changes is how many people approve an access change, 1 to 5, or off: not {n:?}");
+                        return 2;
+                    }
+                },
+            }
             let answer = if change.is_empty() {
                 if args.value("--why").is_some() {
-                    eprintln!("{WHO}: --why says why a setting changes: give --exclude-deployer, --agents or --starter too");
+                    eprintln!("{WHO}: --why says why a setting changes: give --exclude-deployer, --agents, --starter or --changes too");
                     return 2;
                 }
                 cmdline::json(WHO, &args, "GET", "/access", None).map(|v| json!({ "approvals": v["approvals"], "version": v["version"] }))
@@ -629,11 +646,11 @@ fn version_lines(v: &Value) -> Vec<String> {
 }
 
 /// One version whole: who made it, then its roles (an admin's), groups and bindings.
-/// A version's approval settings, a line each: the setting as its flag says it, on or off, and
-/// what that means.
+/// A version's approval settings, a line each: the setting as its flag says it, its value (on or
+/// off, or how many), and what that means.
 fn approval_lines(v: &Value) -> Vec<String> {
     let settings: crate::bindings::ApprovalSettings = serde_json::from_value(v.clone()).unwrap_or_default();
-    table(&settings.each().map(|(name, on, said)| vec![name.replace('_', "-"), if on { "on" } else { "off" }.into(), said.into()]))
+    table(&settings.each().map(|(name, value, said)| vec![name.replace('_', "-"), value, said]))
 }
 
 /// Who this machine's run file signs in as, in a version's `local` (the plan's D45).
@@ -764,6 +781,7 @@ mod tests {
             "exclude-deployer  off  whoever deployed the version a run is on may decide its approvals",
             "agents            on   agents take the steps written for them",
             "starter           on   a person who started a run may take a step of it that says so",
+            "changes           off  an access change applies at once",
             "",
             "group     bound  members",
             "payments  1      bob",
@@ -775,10 +793,11 @@ mod tests {
         assert_eq!(local_line(&Value::Null), "this machine's run file is tied to no account: it operates the host, and decides no approval");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
-        assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false })), [
+        assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false, "changes": 2 })), [
             "exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals",
             "agents            off  no agent decides an approval",
             "starter           off  whoever started a run takes no step of it",
+            "changes           2    an access change that gives more waits until 2 people other than its author approve it",
         ]);
     }
 }

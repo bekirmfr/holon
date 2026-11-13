@@ -275,6 +275,8 @@ export function changesOf(before: AccessDocument | null, after: AccessDocument):
     for (const key of ["exclude_deployer", "agents", "starter"] as const) {
       if (before.approvals[key] !== after.approvals[key]) out.push({ of: "approvals", change: "changed", said: `${key} ${after.approvals[key] ? "on" : "off"}` });
     }
+    const [changes, was] = [after.approvals.changes ?? null, before.approvals.changes ?? null];
+    if (changes !== was) out.push({ of: "approvals", change: "changed", said: `changes ${changes ?? "off"}` });
   }
   const [local, then] = [after.local ?? null, before?.local ?? null];
   if (local !== then) {

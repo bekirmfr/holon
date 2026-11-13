@@ -2477,7 +2477,8 @@ export const pay = action(async (order) => {
 /// `exclude_deployer`, whoever deployed the version a run is on fills none of its steps; with
 /// `agents` off, a flow whose approval has an agent's step neither previews nor deploys, and an
 /// agent fills no step of a run already waiting. A change is a version, with who and why, by
-/// someone holding people.assign; one changing nothing makes none.
+/// someone holding people.assign; one changing nothing makes none. How many approve an access
+/// change that gives more is one to five, or none (null).
 /// **Why:** separation of duties is the host's to set, not the flow's: whoever writes and deploys
 /// a flow can't write themselves into deciding it, and the record says who set it, and when.
 #[test]
@@ -2532,7 +2533,7 @@ export const pay = action(async (order) => {
     for (exclude_deployer, agents, ada_refused, scout_refused) in rows {
         let row = format!("exclude_deployer {exclude_deployer}, agents {agents}");
         let (code, said) = set(&ada, json!({ "exclude_deployer": exclude_deployer, "agents": agents, "why": row }));
-        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents, "starter": true })), "{row}: {said}");
+        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents, "starter": true, "changes": null })), "{row}: {said}");
         let refused = (!agents).then_some(agents_off);
         let (code, preview) = ask(&ada, "POST", "/deploy/preview", json!({ "slug": "payouts", "unit": unit }));
         assert_eq!((code, preview["refused"].as_str()), (200, refused), "{row}: {preview}");
@@ -2556,7 +2557,7 @@ export const pay = action(async (order) => {
     let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
     assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
     let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
-    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so";
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once";
     assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
     assert_eq!(decide(&scout).1["outcome"], "waiting");
     assert_eq!(decide(&ada).1["outcome"], "approved");
@@ -2565,7 +2566,39 @@ export const pay = action(async (order) => {
     assert_eq!(set(&bob, json!({ "agents": false })).0, 403);
     let (code, said) = set(&ada, json!({ "deployer": true }));
     assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
-    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true }));
+    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true, "changes": null }));
+
+    // How many people approve an access change that gives more: one to five, said in the
+    // version; null, none. Each row: what is sent, and what is kept or why it is refused.
+    let refused = |n: u8| format!("changes is how many people approve an access change that gives more, 1 to 5, not {n}: null lets one apply at once");
+    let rows: [(Value, Result<Value, String>, &str); 6] = [
+        (json!(2), Ok(json!(2)), "an access change that gives more waits until 2 people other than its author approve it"),
+        (json!(1), Ok(json!(1)), "an access change that gives more waits until 1 person other than its author approves it"),
+        (json!(5), Ok(json!(5)), "an access change that gives more waits until 5 people other than its author approve it"),
+        (json!(null), Ok(Value::Null), "an access change applies at once"),
+        (json!(0), Err(refused(0)), ""),
+        (json!(6), Err(refused(6)), ""),
+    ];
+    for (sent, kept, said) in rows {
+        let before = ask(&ada, "GET", "/access", Value::Null).1;
+        let (code, answer) = set(&ada, json!({ "changes": sent, "why": "how many approve" }));
+        match kept {
+            Ok(kept) => {
+                assert_eq!((code, &answer["approvals"]["changes"]), (200, &kept), "{sent}: {answer}");
+                let what = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0]["what"].as_str().unwrap().to_string();
+                assert!(what.ends_with(&format!("; {said}")), "{sent}: {what}");
+            }
+            Err(why) => {
+                assert_eq!((code, answer["error"].as_str()), (400, Some(why.as_str())), "{sent}");
+                assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["version"], before["version"], "{sent}: no version");
+            }
+        }
+    }
+    // Not a number, it is refused as the body; left out, it stays as it is.
+    let (code, said) = set(&ada, json!({ "changes": "two" }));
+    assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
+    set(&ada, json!({ "changes": 3 }));
+    assert_eq!(set(&ada, json!({ "agents": true, "exclude_deployer": true })).1["approvals"]["changes"], json!(3));
 }
 
 /// **Guards:** the run file decides as the account that set the server up (the plan's D45): it

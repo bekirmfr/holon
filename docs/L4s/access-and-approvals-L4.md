@@ -200,10 +200,12 @@ at deploy, is the thing being governed. Slugs stay for one-off bindings.
   accounts book): roles, groups, bindings, host settings (§8.4). Versioned like a deployment: every
   change makes a new version with who, when and why, kept for good.
 - **The activity log** names each change ("ada bound payout-approver to bob on payments").
-- **Changing access can need approval.** A host setting `access_changes: { people: 2 }`: a change
-  to roles or bindings is kept as a proposal (the same `proposals.rs` shape as an agent's deploy)
-  until that many people holding `people.assign` approve it, none of them its author. Off by
-  default; on, it covers granting `admin` and anything touching `run.decide`.
+- **Changing access can need approval.** A host setting `access_changes: { people: 2 }`, kept as
+  `approvals.changes: 2` beside the approval settings of §8.4 (`holon access approvals --changes
+  2`, 1 to 5, or `off`): a change to roles or bindings is kept as a proposal (the same
+  `proposals.rs` shape as an agent's deploy) until that many people holding `people.assign`
+  approve it, none of them its author. Off by default; on, it covers granting `admin` and
+  anything touching `run.decide`.
 - **No one locks the host out.** The last binding of `admin` to an enabled person can't be removed;
   the OS user's run-file admin always works.
 

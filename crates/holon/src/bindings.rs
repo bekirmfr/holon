@@ -73,9 +73,11 @@ pub(crate) struct Document {
 
 /// How this host decides approvals beyond each step's role and kind (the design's §8.4, the
 /// plan's D41): whether whoever deployed the version a run is on decides any of its approvals,
-/// whether agents take the steps written for them, and whether a step that says so
+/// whether agents take the steps written for them, whether a step that says so
 /// (`starter: true`) may take whoever started the run (the access plan's D10: off, none does,
-/// and a version with one is refused).
+/// and a version with one is refused), and how many people approve an access change that gives
+/// more (`changes`, 1 to 5, the design's `access_changes: { people: N }`; none, off: it applies
+/// at once).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ApprovalSettings {
     #[serde(default)]
@@ -84,6 +86,8 @@ pub(crate) struct ApprovalSettings {
     pub(crate) agents: bool,
     #[serde(default = "on")]
     pub(crate) starter: bool,
+    #[serde(default)]
+    pub(crate) changes: Option<u8>,
 }
 
 fn on() -> bool {
@@ -92,17 +96,29 @@ fn on() -> bool {
 
 impl Default for ApprovalSettings {
     fn default() -> Self {
-        ApprovalSettings { exclude_deployer: false, agents: true, starter: true }
+        ApprovalSettings { exclude_deployer: false, agents: true, starter: true, changes: None }
     }
 }
 
 impl ApprovalSettings {
-    /// Each setting: its name, whether it is on, and what that means here.
-    pub(crate) fn each(&self) -> [(&'static str, bool, &'static str); 3] {
+    /// Each setting: its name, its value as its flag says it (on or off, or how many), and what
+    /// that means here.
+    pub(crate) fn each(&self) -> [(&'static str, String, String); 4] {
+        let on = |b: bool| if b { "on" } else { "off" }.to_string();
         let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
         let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
         let starter = if self.starter { "a person who started a run may take a step of it that says so" } else { "whoever started a run takes no step of it" };
-        [("exclude_deployer", self.exclude_deployer, deployer), ("agents", self.agents, agents), ("starter", self.starter, starter)]
+        let changes = match self.changes {
+            Some(1) => "an access change that gives more waits until 1 person other than its author approves it".to_string(),
+            Some(n) => format!("an access change that gives more waits until {n} people other than its author approve it"),
+            None => "an access change applies at once".to_string(),
+        };
+        [
+            ("exclude_deployer", on(self.exclude_deployer), deployer.into()),
+            ("agents", on(self.agents), agents.into()),
+            ("starter", on(self.starter), starter.into()),
+            ("changes", self.changes.map_or_else(|| "off".into(), |n| n.to_string()), changes),
+        ]
     }
 
     /// As a version says them.
@@ -128,6 +144,12 @@ impl ApprovalSettings {
                 .then(|| format!("this host lets no step take whoever started the run, and {name:?} asks for {said} (holon access approvals --starter on)"))
         })
     }
+}
+
+/// A field a request may set to null, told apart from one it leaves out: `Some(None)` when it is
+/// null, `None` (`#[serde(default)]`) when it isn't there.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// This host's approval settings: the access document's, the defaults on a server without
@@ -430,8 +452,12 @@ impl Document {
     /// Why this isn't a document the server keeps, if it isn't: each role defined once, and a role
     /// (`RoleText::def`); each group named once, as a name is written, its members principals
     /// here; each binding of a role here, to a group here or to a principal here whose kind may
-    /// hold it. `kind_of` says which principals are here, and their kind.
+    /// hold it; as many to approve an access change as one to five, if any. `kind_of` says which
+    /// principals are here, and their kind.
     pub(crate) fn check(&self, kind_of: impl Fn(&str) -> Option<Kind>) -> Result<(), String> {
+        if let Some(n) = self.approvals.changes.filter(|n| !(1..=5).contains(n)) {
+            return Err(format!("changes is how many people approve an access change that gives more, 1 to 5, not {n}: null lets one apply at once"));
+        }
         let mut roles = HashSet::new();
         for r in &self.roles {
             r.def()?;
@@ -807,7 +833,7 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `DELETE /bindings/<id>` (`?why=`): 204; 409 for the last admin's (D15);
 /// - `GET /access/versions`: each version's number, when, by whom, what and why, newest first;
 /// - `GET /access` (`?version=n`): that version, whole; the newest without;
-/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, starter?, why?}`): how this host decides
+/// - `PUT /access/approvals` (`{exclude_deployer?, agents?, starter?, changes?, why?}`): how this host decides
 ///   approvals (`ApprovalSettings`), each one given changed, as a new version;
 /// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
 ///   and whether it does now (`tied`: none while they are disabled), with the version;
@@ -908,10 +934,13 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 agents: Option<bool>,
                 #[serde(default)]
                 starter: Option<bool>,
+                // Left out: as it is; null: none, an access change applies at once.
+                #[serde(default, deserialize_with = "present")]
+                changes: Option<Option<u8>>,
                 #[serde(default)]
                 why: Option<String>,
             }
-            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"starter\": false, \"why\": \"…\"}, any of them") {
+            let change: Change = match body(request, "approvals are {\"exclude_deployer\": true, \"agents\": false, \"starter\": false, \"changes\": 2, \"why\": \"…\"}, any of them (changes null for none)") {
                 Ok(c) => c,
                 Err(r) => return Some(r),
             };
@@ -919,6 +948,7 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
             settings.exclude_deployer = change.exclude_deployer.unwrap_or(settings.exclude_deployer);
             settings.agents = change.agents.unwrap_or(settings.agents);
             settings.starter = change.starter.unwrap_or(settings.starter);
+            settings.changes = change.changes.unwrap_or(settings.changes);
             let said = settings.said();
             match accounts.set_approvals(settings, by, change.why.as_deref()) {
                 Ok(changed) => {
