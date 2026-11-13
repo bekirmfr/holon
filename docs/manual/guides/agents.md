@@ -170,7 +170,12 @@ pages it doesn't answer yet) is proposed to you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a
 person approves it again. A secret the flow marks optional doesn't hold it up: the version
 deploys with that secret withheld (its reads refused), and you grant it back from the
-deployment's permissions once you've read the change. An agent never restarts a deployment a
+deployment's permissions once you've read the change. So is a version whose changed code sends
+something out of the flow (to a host, a mail, a channel, a queue, another flow, a process, a
+folder or a database), or feeds code that does (a key it writes that another handler sends on),
+or changes what a route answers from a database or a folder the host binds: you let the old
+code send there, not what the agent put in its place. Those rows say *asked again*. A version that runs another
+flow's action the agent may not run itself waits for you too, if you may run it. An agent never restarts a deployment a
 person paused or stopped; its `deploy` answers that a person runs it first.
 
 ## A good loop

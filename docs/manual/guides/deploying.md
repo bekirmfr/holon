@@ -57,7 +57,13 @@ collection), and its limits. Each thing is one row, marked **+** new, **-** no l
 version doesn't touch it), **~** changed (some of its uses are new or gone, each marked), or **·**
 as now. A row marked **!** is one this server isn't ready for, and says why: a secret not set, a
 folder or database not bound here (or bound read-only, and the flow writes it), a flow it calls
-that isn't deployed here, a host or limit this server's policy refuses. A row that is ready says
+that isn't deployed here, or whose action you may not run yourself (a call runs it under that
+flow's grant, with what this flow sends, so someone who may run it deploys the version), a host or
+limit this server's policy refuses, an approval whose steps no one here can take (`approver: 1
+person holds it here; it needs 2`, or `a run pat starts can't be decided`: whoever starts a run
+decides none of its steps, nor, where the host says so, whoever deploys the version). A row
+marked **+** that says *asked again* is granted now, and asked of a person again: an agent
+changed the code that uses it. A row that is ready says
 what the server has for it: a secret's version and where it comes from (`set, v3
 (env:HOLON_SECRET_SIGNING_KEY)`), a folder or a database bound. Below the rows, **Its settings**
 lists the deploy settings that change: how often it runs, the sites whose pages it answers.

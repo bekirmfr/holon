@@ -21,6 +21,7 @@ describe("what a flow touches", () => {
       { group: "resources", kind: "secret", name: "other", change: "new", uses: [use('SecretRead("other")', "read", "new")], ready: "not set: the steps that read it get nothing until it is", has: null },
       { group: "outside", kind: "host", name: "a.example", change: "gone", uses: [use('HttpRequest("a.example")', "call", "gone")], ready: null, has: null },
       { group: "outside", kind: "host", name: "b.example", change: "new", uses: [use('HttpRequest("b.example")', "call", "new", true)], ready: null, has: null, since: 2 },
+      { group: "outside", kind: "host", name: "c.example", change: "same", uses: [use('HttpRequest("c.example")', "call", "same", true)], ready: null, has: null },
       { group: "state", kind: "key", name: "count", change: "same", uses: [use('StateWrite("count")', "write", "same")], ready: null, has: null, restores: "changes" },
       { group: "other", kind: "randomness", name: "", change: "same", uses: [use("Random", "use", "same")], ready: null, has: null },
     ];
@@ -34,6 +35,7 @@ describe("what a flow touches", () => {
       "What it reaches outside",
       "  - host a.example: call — no longer",
       "  + host b.example: call — approved by confirming; done 2 times by the runs since, not undone",
+      "  + host c.example: call — asked again: approved by confirming",
       "What it keeps",
       "  · key count: write — putting the state back changes it",
       "Also",

@@ -172,9 +172,19 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 1;
     }
 
-    if let Err(e) = commit(&api, &plan, staged, plan.document.clone()) {
-        eprintln!("holon deploy: {e}");
-        return 1;
+    match commit(&api, &plan, staged, plan.document.clone()) {
+        Err(e) => {
+            eprintln!("holon deploy: {e}");
+            return 1;
+        }
+        // Kept for someone else to deploy: what it needs is beyond whoever signed in.
+        Ok(Some(proposal)) => {
+            let waits: Vec<&str> = proposal["needs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            println!("proposed {slug:?} ({}) on {server}: it waits for someone who may approve {}", &plan.unit[..12], waits.join(", "));
+            println!("  they deploy it from the editor's flows page, or decline it with a reason");
+            return 0;
+        }
+        Ok(None) => {}
     }
 
     println!("deployed {slug:?} ({}) on {server}", &plan.unit[..12]);
@@ -247,14 +257,15 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
 }
 
 /// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):
-/// approving what it needs, as whoever `token` signs in as.
-pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document: Value) -> Result<(), String> {
+/// approving what it needs, as whoever `token` signs in as. The proposal it was kept as instead,
+/// when what it needs is beyond them (proposals.rs).
+pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document: Value) -> Result<Option<Value>, String> {
     let Staged { mut body, needs, .. } = staged;
     let mut acknowledge = plan.may.clone();
     acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
     body["acknowledge"] = json!(acknowledge);
     body["document"] = document;
-    post_json(api, "/deploy", &body).map(|_| ())
+    post_json(api, "/deploy", &body).map(|answer| answer.get("proposal").cloned())
 }
 
 /// A server reached as a person: whoever the token signs in as, not as an agent (mcp.rs), so a

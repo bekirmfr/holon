@@ -183,6 +183,24 @@ exceptions are ever granted. At deploy (deploy.rs):
    withheld (its runs logged) until a person grants it back, and a new `Browser(origin)` needs a
    person too, as does a taint key the deployment has and the version drops (`Untaint(key)`,
    `deploy::untainted`): the values under it would be recorded, where an agent may read them.
+   Nor does an agent's changed code send out of the flow what a person let the old code send
+   (`deploy::resent`, the launch review's H9): each handler whose code changed, and each fed by
+   one (a key, collection, table or folder one writes and the other reads, an action of its own
+   it starts, a queue it handles, a folder it watches), asks again for each item it sends out
+   through (a host, a mail, a channel, a queue, another flow, a process, a folder or a table
+   others read), and a route or websocket among them that reads what the host binds (a
+   database's tables, a folder's files), for the item it answers through; what `auto` grants is
+   not asked again. What a route answers from the flow's own state isn't: an agent bound to the
+   flow reads that state anyway. Before, only its secrets
+   were: an agent posting whole CRM rows instead of a count to the same granted host deployed
+   unseen.
+   A version that runs another flow's action (`RunsAction("payments/payout")`) is deployed only
+   by someone who may run it (`deploy::borrowed`, `run.call` on it, and for an agent the other
+   flow's `AgentRuns`), new or granted already: a call runs it under the other flow's grant with
+   what the caller sends, so deploying the caller is running it (H1). A person who may not is
+   refused (403); an agent's version waits as a proposal for someone who may. Before, only the
+   caller's grant was asked, so an editor bound on one tag drove any flow's actions through a
+   flow of their own.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
 
@@ -502,6 +520,13 @@ What is not defended, or only partly:
   `a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on` (a list and a
   record answered 255 deep, a level down in the response, and the text of one 256 deep; a level
   more, or 10,000, a 422; on a 2 MiB thread through the server).
+- **What a version runs and sends**: `a_flow_call_runs_only_what_whoever_deploys_it_may_run` (an
+  editor on another tag refused, first or granted already, and told why in the review; an agent's
+  version proposed, approved only by someone who may run it; deployed once the other flow lets
+  agents run it), `an_agents_change_to_what_a_flow_sends_out_waits_for_a_person` (a changed
+  sender, a handler feeding one through the state, a route answering from a bound folder; a
+  route answering from the flow's state or nothing kept, and the same code, deploy; what `auto`
+  grants isn't asked again).
 - **Reading it back**: `json_holding_a_value_as_deep_as_one_may_be_reads_back` (and JSON 100,000
   deep refused before anything recurses), `a_log_holding_a_value_as_deep_as_one_may_be_reopens_whole`,
   and `a_durable_run_waits_resumes_by_token_and_expires` (a waiting run holding one survives a

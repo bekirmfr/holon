@@ -70,7 +70,9 @@ export function touchText(lines: TouchLine[]): string[] {
 
 function rowLine(row: Touch): TouchLine {
   const approval = row.uses.some((u) => u.approval);
-  let mark: Mark = row.change === "new" ? (approval ? "approve" : "new") : row.change === "gone" ? "gone" : row.change === "changed" ? "changed" : "same";
+  // Granted now, and asked again (an agent changed the code that uses it): approved as if new.
+  const again = row.change === "same" && approval;
+  let mark: Mark = row.change === "new" || again ? (approval ? "approve" : "new") : row.change === "gone" ? "gone" : row.change === "changed" ? "changed" : "same";
   // A use is marked when it changes and the row as a whole doesn't say so.
   const sign = (u: TouchUse) => (mark !== "changed" ? "" : u.change === "new" ? "+" : u.change === "gone" ? "−" : "");
   const said = row.uses.filter((u) => u.what !== "").map((u) => `${sign(u)}${u.what}${u.optional ? " (optional)" : ""}`);
@@ -81,7 +83,8 @@ function rowLine(row: Touch): TouchLine {
     kind === "tag" ? tagged : ALONE[kind] ?? (kind === "network" && name === "" ? "the network" : kind === "other" || kind === "network" || kind === "limit" ? name : name === "" ? `${kind}s` : `${kind} ${name}`);
   const text = kind === "limit" ? `${thing} = ${said.join(", ")}` : said.length === 0 ? thing : `${thing}: ${said.join(", ")}`;
   const notes: string[] = [];
-  if (mark === "approve") notes.push("approved by confirming");
+  if (again) notes.push("asked again: approved by confirming");
+  else if (mark === "approve") notes.push("approved by confirming");
   else if (mark === "new") notes.push("new");
   else if (mark === "changed" && approval) notes.push("the new use approved by confirming");
   if (row.ready) {

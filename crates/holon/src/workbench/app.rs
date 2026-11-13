@@ -1096,7 +1096,13 @@ impl App {
         let Some(c) = self.client.as_ref() else { return };
         let needs = staged.needs.len();
         match c.commit(&plan, staged, &text) {
-            Ok(()) => {
+            // Kept for someone who may approve what it needs.
+            Ok(Some(proposal)) => {
+                let waits: Vec<&str> = proposal["needs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                self.refresh();
+                self.say(format!("proposed \"{slug}\" ({}): it waits for someone who may approve {}", &plan.unit[..12], waits.join(", ")));
+            }
+            Ok(None) => {
                 if let Some(t) = tab.and_then(|i| self.tabs.get_mut(i)) {
                     t.slug = Some(slug.clone());
                     t.deployed = Some(plan.may.clone());

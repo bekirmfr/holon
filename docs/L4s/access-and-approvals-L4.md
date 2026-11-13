@@ -457,6 +457,14 @@ One commit each; the first two change no behaviour.
    listing, timeline and evidence; `holon decide --slot --note`; the MCP `decide` tool for agent
    slots.
 6. **Deploy review.** Steps against the deployed version, not ready, who gains access through tags.
+   *Done:* an approval's row is new, gone or changed against the version deployed (its
+   capability names its steps); one whose steps can't all be taken here is not ready, saying
+   why (`deploy::approvals_unready`: a step's holders of its kind, where the approval is as the
+   version's tags would make it, one principal a step; whoever deploys it set aside where
+   `exclude_deployer` says so, and, for an approval in an action, each who may run the action,
+   as its starter); a tag's row says who it lets in (step 3d). With it, the launch review's H1
+   (a flow call is deployed only by someone who may run the action it calls) and H9 (an agent's
+   change to what a flow sends out waits for a person).
 7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`.
 8. **Governed access changes.** `access_changes: { people: N }` through proposals.
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and

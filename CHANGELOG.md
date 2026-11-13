@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **A version runs and sends only what someone who may has looked at, and the deploy review says
+  which approvals can't be decided here.**
+  - **A flow that runs another flow's action is deployed only by someone who may run it.** A
+    call runs the other flow's action under that flow's grant, with what the caller sends, and
+    only the caller's grant was asked: an editor bound on the `marketing` tag deployed a flow of
+    their own that drove `payments`' payout with any amount. Now deploying a version that runs
+    another flow's action takes `run.call` on it (for an agent, the other flow letting agents run
+    it too), whether the call is new or granted already: anyone else is refused (403, naming the
+    action), an agent's version waits as a proposal for someone who may, and the review marks the
+    row (`! flow payments: run payout — bob may not run it: someone who may deploys this version`).
+  - **An agent's change to what a flow sends out waits for a person.** Only the secrets a version
+    read were asked again: an agent's version posting whole CRM rows instead of a count to the
+    same granted host deployed without anyone looking. Now each handler whose code an agent
+    changed, and each fed by one (through a key, collection, table or folder one writes and the
+    other reads, an action of its own it starts, a queue it handles, a folder it watches), asks a
+    person again for what it sends out through (a host, a mail, a channel, a queue, another flow,
+    a process, a folder or a database), and a route among them that reads a database or folder
+    the host binds, for its answers. The review says `asked again` on those rows. What the host
+    grants without asking isn't asked again, nor what a route answers from the flow's own state.
+  - **The deploy review says when an approval can't be decided here.** A row for an approval
+    whose steps can't all be taken is marked not ready, saying why: `approver: 1 person holds it
+    here; it needs 2`, `classifier: no agent holds it here`, `its steps take 2 different
+    principals, one a step, and fewer can here`, or `a run pat starts can't be decided` when the
+    only one who may take a step may also start the run (whoever starts a run decides none of
+    it). Holders are counted where the approval is as the version's tags would make it, not
+    disabled, and without whoever deploys it on a host that keeps them out.
+  - `holon deploy` and `holon editor` say when a deploy was kept as a proposal, rather than
+    saying it deployed.
 - **Signing in, setting up and reading units hold against what the launch review found.**
   - **A flood of sign-ins under ever new names no longer takes the server down.** Each waited its
     turn for a password check, up to 30 seconds, until the 512 requests the server answers at

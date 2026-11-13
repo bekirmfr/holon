@@ -247,6 +247,11 @@ admin binds it (`POST /bindings`):
   The lists (flows, deployments, proposals, the overview, the activity) keep the flows its holder
   may view. A flow they saved that no one has deployed is theirs wherever they hold the action, so
   they draft one, and deploy it where they may.
+- **A flow that runs another flow's action** (`import { payout } from "flow:payments"`) is
+  deployed only by someone who may run that action themselves (`run.call` on it, and for an
+  agent, the other flow letting agents run it): its call runs the action under that flow's grant,
+  with what the caller sends. Anyone else is refused (403, saying which action), whether the call
+  is new or granted already; an agent's version waits for someone who may, as a proposal.
 - **At an approval point** (`{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`), it
   decides that point and nothing else, not even viewing the runs: bind `viewer` on the flow with
   it for that.

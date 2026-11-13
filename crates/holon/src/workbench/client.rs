@@ -231,8 +231,9 @@ impl Client {
         deploycmd::stage(self.api.as_ref(), plan, slug)
     }
 
-    /// Deploy what was staged, approving what it needs as us, with its text as written.
-    pub(crate) fn commit(&self, plan: &agent::Plan, staged: Staged, text: &str) -> Result<(), String> {
+    /// Deploy what was staged, approving what it needs as us, with its text as written; the
+    /// proposal it was kept as instead, when what it needs is beyond us.
+    pub(crate) fn commit(&self, plan: &agent::Plan, staged: Staged, text: &str) -> Result<Option<Value>, String> {
         deploycmd::commit(self.api.as_ref(), plan, staged, crate::mcp::saved_document(plan, text))
     }
 

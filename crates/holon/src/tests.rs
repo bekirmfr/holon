@@ -12,6 +12,7 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+mod deploy_review;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
