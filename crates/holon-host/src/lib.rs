@@ -561,6 +561,130 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     builder.create(path)
 }
 
+/// Make `path` readable and writable by its owner only.
+#[cfg(unix)]
+pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+/// Make `path` readable and writable by its owner only: a protected DACL (nothing inherited from
+/// the folder) granting full control to the owner and to SYSTEM, and nobody else.
+#[cfg(windows)]
+pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW};
+
+    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)".encode_utf16().chain(Some(0)).collect();
+    let wide: Vec<u16> = verbatim(path)?.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: both strings are NUL-terminated and outlive the calls; `sd` is allocated by the
+    // first call and freed with LocalFree, as its documentation asks.
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, std::ptr::null_mut()) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ok = SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, sd);
+        let error = io::Error::last_os_error();
+        LocalFree(sd as _);
+        if ok == 0 {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// `path` as Windows takes a name of any length (`\\?\C:\…`, `\\?\UNC\server\share\…`): a call
+/// given the plain name refuses one past 260 characters, as Rust's own file calls don't.
+#[cfg(windows)]
+pub fn verbatim(path: &Path) -> io::Result<std::path::PathBuf> {
+    let full = std::path::absolute(path)?;
+    let s = full.as_os_str().to_string_lossy();
+    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+        return Ok(full);
+    }
+    let mut out = std::ffi::OsString::from(if s.starts_with(r"\\") { r"\\?\UNC\" } else { r"\\?\" });
+    out.push(if let Some(share) = s.strip_prefix(r"\\") { std::ffi::OsStr::new(share) } else { full.as_os_str() });
+    Ok(out.into())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn restrict_to_owner(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Whether `path` is its owner's alone: no permission for group or others (`mode & 0o077 == 0`),
+/// or on Windows a protected DACL (nothing inherited from the folder) whose every entry is the
+/// file's owner or SYSTEM, as [`restrict_to_owner`] leaves it.
+#[cfg(unix)]
+pub fn is_owners_alone(path: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(fs::metadata(path)?.permissions().mode() & 0o077 == 0)
+}
+
+/// Whether `path` is its owner's alone: no permission for group or others (`mode & 0o077 == 0`),
+/// or on Windows a protected DACL (nothing inherited from the folder) whose every entry is the
+/// file's owner or SYSTEM, as [`restrict_to_owner`] leaves it.
+#[cfg(windows)]
+pub fn is_owners_alone(path: &Path) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, GetFileSecurityW, OWNER_SECURITY_INFORMATION};
+
+    let wide: Vec<u16> = verbatim(path)?.as_os_str().encode_wide().chain(Some(0)).collect();
+    let what = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let mut needed = 0u32;
+    // SAFETY: a first call with no buffer asks for the size; the second is given a buffer of it.
+    // The SDDL string is allocated by the conversion and freed with LocalFree, as it asks.
+    let sddl = unsafe {
+        GetFileSecurityW(wide.as_ptr(), what, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut sd = vec![0u8; needed as usize];
+        if GetFileSecurityW(wide.as_ptr(), what, sd.as_mut_ptr().cast(), needed, &mut needed) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut text: *mut u16 = std::ptr::null_mut();
+        if ConvertSecurityDescriptorToStringSecurityDescriptorW(sd.as_mut_ptr().cast(), SDDL_REVISION_1, what, &mut text, std::ptr::null_mut()) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        LocalFree(text as _);
+        s
+    };
+    Ok(sddl_is_owners_alone(&sddl))
+}
+
+/// What [`is_owners_alone`] reads in a descriptor written as SDDL: `O:<owner>D:P(…)(…)`, the DACL
+/// protected and each entry allowing the owner (its SID, or `OW`, OWNER RIGHTS, as
+/// [`restrict_to_owner`] writes it) or SYSTEM only.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sddl_is_owners_alone(sddl: &str) -> bool {
+    let Some(rest) = sddl.strip_prefix("O:") else { return false };
+    let Some((owner, dacl)) = rest.split_once("D:") else { return false };
+    let Some(flags_end) = dacl.find('(') else { return false };
+    if !dacl[..flags_end].contains('P') {
+        return false;
+    }
+    dacl[flags_end..]
+        .split(['(', ')'])
+        .filter(|ace| !ace.is_empty())
+        .all(|ace| {
+            let fields: Vec<&str> = ace.split(';').collect();
+            fields.len() >= 6 && fields[0] == "A" && (fields[5] == owner || fields[5] == "OW" || fields[5] == "SY")
+        })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn is_owners_alone(_path: &Path) -> io::Result<bool> {
+    Ok(true)
+}
+
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
@@ -577,6 +701,9 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
             options.mode(0o600);
         }
         let mut file = options.open(&tmp)?;
+        // Where there are no modes, a DACL: else the file inherits its folder's.
+        #[cfg(not(unix))]
+        restrict_to_owner(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)?;
@@ -1419,6 +1546,20 @@ mod registry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A descriptor as `restrict_to_owner` leaves it is its owner's alone; one that inherits, or
+    /// lets anyone else in, is not.
+    #[test]
+    fn an_owner_only_descriptor_is_told_from_one_that_lets_others_in() {
+        let me = "S-1-5-21-1-2-3-1001";
+        assert!(sddl_is_owners_alone(&format!("O:{me}D:P(A;;FA;;;{me})(A;;FA;;;SY)")));
+        assert!(sddl_is_owners_alone("O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)"), "an owner SDDL writes short");
+        assert!(sddl_is_owners_alone(&format!("O:{me}D:P(A;;FA;;;OW)(A;;FA;;;SY)")), "as restrict_to_owner writes it");
+        assert!(!sddl_is_owners_alone(&format!("O:{me}D:AI(A;ID;FA;;;{me})(A;ID;FA;;;SY)")), "inherited from the folder");
+        assert!(!sddl_is_owners_alone(&format!("O:{me}D:P(A;;FA;;;{me})(A;;FR;;;BU)")), "users may read");
+        assert!(!sddl_is_owners_alone(&format!("O:{me}D:P(A;;FA;;;{me})(D;;FA;;;BU)")), "a deny entry is not ours");
+        assert!(!sddl_is_owners_alone(&format!("O:{me}D:")), "no DACL entries and not protected");
+    }
     use holon_core::{Edge, MapResolver, Port, Type, BOUNDARY};
 
     /// A recording host: captures what *would* be performed, so the loop is testable

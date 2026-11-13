@@ -682,16 +682,19 @@ impl Sweeps {
         let census = self.census.lock().unwrap();
         let puts = state.store.2.count();
         let at = (census.at_ms > 0).then_some(census.at_ms);
-        let mut logs = None;
+        let (mut logs, mut console) = (None, None);
         let mut left = Count::default();
         if let Some(dir) = state.deployments_path.beside("logs") {
-            // Counted now: one file a deployment, and its sealed segments beside it (their bytes,
-            // not more logs). What crashes left is removed by the census only.
+            // Counted now: a deployment's run log and events, and its sealed segments beside them
+            // (their bytes, not more logs); its console lines apart (logs.rs). What crashes left is
+            // removed by the census only.
+            let mut lines = Count::default();
             logs = std::fs::read_dir(&dir).ok().map(|entries| {
                 let mut c = Count::default();
                 for e in entries.flatten() {
                     let name = e.file_name();
                     match (name.to_str(), e.metadata()) {
+                        (Some(n), Ok(m)) if m.is_file() && crate::logs::is_console_file(n) => lines.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl") => c.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
                         (Some(n), Ok(m)) if m.is_dir() && n.ends_with(".sealed") => {
@@ -708,6 +711,7 @@ impl Sweeps {
                 }
                 c
             });
+            console = logs.is_some().then_some(lines);
         }
         serde_json::json!({
             "at_ms": at,
@@ -723,6 +727,7 @@ impl Sweeps {
                 })
             }),
             "logs": logs,
+            "console": console,
             "file_texts": census.file_texts.map(|h| serde_json::json!({ "texts": h.texts, "chunks": h.chunks, "bytes": h.bytes })),
             "leftovers": { "removed": census.leftovers, "waiting": left },
         })
@@ -988,6 +993,9 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     }
     if k["logs"].is_object() {
         lines.push(format!("  logs         {} logs, {} on disk", n(&k["logs"]["files"]), size(&k["logs"]["on_disk"])));
+    }
+    if k["console"].is_object() {
+        lines.push(format!("  console      {} files, {} on disk", n(&k["console"]["files"]), size(&k["console"]["on_disk"])));
     }
     if k["file_texts"].is_object() {
         lines.push(format!("  file texts   {} texts, {}", n(&k["file_texts"]["texts"]), size(&k["file_texts"]["bytes"])));

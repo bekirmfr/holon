@@ -332,7 +332,7 @@ impl Exporter {
         let receipt: serde_json::Value = serde_json::from_str(receipt).unwrap_or_else(|_| serde_json::Value::String(receipt.to_string()));
         let line = serde_json::json!({ "batch": batch, "receipt": receipt }).to_string() + "\n";
         use std::io::Write;
-        let mut receipts = std::fs::OpenOptions::new().append(true).create(true).open(dir.join("receipts.jsonl"))?;
+        let mut receipts = crate::sealing::append_private(&dir.join("receipts.jsonl"))?;
         receipts.write_all(line.as_bytes())?;
         // An append-only handle; the sync opens the file to write, as Windows asks.
         crate::recorder::sync_file(&dir.join("receipts.jsonl"))

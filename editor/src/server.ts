@@ -435,6 +435,7 @@ export type HostView = {
     at_ms: number | null;
     store: { values: number; bytes: number; on_disk: number; put_since: number } | null;
     logs: Counted3 | null;
+    console: Counted3 | null;
     file_texts: { texts: number; chunks: number; bytes: number } | null;
     leftovers: { removed: Counted3; waiting: Counted3 };
   };

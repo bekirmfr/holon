@@ -1758,6 +1758,7 @@ dependencies = [
  "blake3",
  "flate2",
  "holon-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -281,6 +281,9 @@ fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
         // Written through a handle of its own, made to write (Windows syncs no file opened only to
         // read), with its original's permissions, a read-only one's too.
         let mut copy = std::fs::File::create(to)?;
+        // Where there are no modes, a DACL: else the copy inherits its new folder's.
+        #[cfg(not(unix))]
+        crate::sealing::restrict_to_owner(to)?;
         std::io::copy(&mut std::fs::File::open(from)?, &mut copy)?;
         copy.set_permissions(std::fs::metadata(from)?.permissions())?;
         copy.sync_all()

@@ -302,7 +302,8 @@ pub(crate) fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf>
 }
 
 /// `path` opened for appending, made if it isn't there, for its owner only (`0o600` where the
-/// system has modes): the server's own logs (its activity, the witness's queue).
+/// system has modes, an owner-only DACL on Windows): the server's own logs (its activity, the
+/// witness's queue and receipts, console lines).
 pub(crate) fn append_private(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
@@ -311,7 +312,12 @@ pub(crate) fn append_private(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)
+    let new = !path.exists();
+    let file = options.open(path)?;
+    if new {
+        restrict_to_owner(path)?;
+    }
+    Ok(file)
 }
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -342,59 +348,11 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// Make `path` readable and writable by its owner only.
-#[cfg(unix)]
-pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-/// Make `path` readable and writable by its owner only: a protected DACL (nothing inherited from
-/// the folder) granting full control to the owner and to SYSTEM, and nobody else.
-#[cfg(windows)]
-pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW};
-
-    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)".encode_utf16().chain(Some(0)).collect();
-    let wide: Vec<u16> = verbatim(path)?.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    // SAFETY: both strings are NUL-terminated and outlive the calls; `sd` is allocated by the
-    // first call and freed with LocalFree, as its documentation asks.
-    unsafe {
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, std::ptr::null_mut()) == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let ok = SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, sd);
-        let error = std::io::Error::last_os_error();
-        LocalFree(sd as _);
-        if ok == 0 {
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-/// `path` as Windows takes a name of any length (`\\?\C:\…`, `\\?\UNC\server\share\…`): a call
-/// given the plain name refuses one past 260 characters, as Rust's own file calls don't.
-#[cfg(windows)]
-fn verbatim(path: &Path) -> std::io::Result<std::path::PathBuf> {
-    let full = std::path::absolute(path)?;
-    let s = full.as_os_str().to_string_lossy();
-    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
-        return Ok(full);
-    }
-    let mut out = std::ffi::OsString::from(if s.starts_with(r"\\") { r"\\?\UNC\" } else { r"\\?\" });
-    out.push(if let Some(share) = s.strip_prefix(r"\\") { std::ffi::OsStr::new(share) } else { full.as_os_str() });
-    Ok(out.into())
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
+/// Make `path` readable and writable by its owner only (`0o600`, or a protected owner-only DACL on
+/// Windows): kept in `holon-host`, whose store writes files too.
+pub(crate) use holon_host::restrict_to_owner;
+#[cfg(all(test, windows))]
+use holon_host::verbatim;
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     holon_core::hex(bytes)

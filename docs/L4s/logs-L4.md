@@ -73,7 +73,8 @@ record as any value is.
 ## 4. Where lines go
 
 One **file per deployment**, not per version, in a folder beside the deployments file
-(`<deployments>.logs/<slug>.jsonl`), a line of JSON each:
+(`<deployments>.logs/<slug>.console.jsonl`, not `<slug>.jsonl`, which is the deployment's run log
+in the same folder), a line of JSON each:
 
 ```json
 {"at": 1794257758123, "level": "warn", "unit": "c59829c4", "run": 17, "text": "retry 3"}
@@ -83,8 +84,8 @@ One **file per deployment**, not per version, in a folder beside the deployments
   in it. `unit` is the first 8 hex of the version that wrote it. `at` is in ms and rises with each
   line a deployment writes (a line's time is never earlier than the one before's), so a reader
   that has the last one it saw reads on from there and misses none.
-- **Rolling, with a hard cap.** At 2 MB `<slug>.jsonl` becomes `<slug>.1.jsonl` and then
-  `<slug>.2.jsonl`; the oldest of the three is deleted. The size and the number of files are the
+- **Rolling, with a hard cap.** At 2 MB `<slug>.console.jsonl` becomes `<slug>.console.1.jsonl` and
+  then `<slug>.console.2.jsonl`; the oldest of the three is deleted. The size and the number of files are the
   server's settings (`--log-size`, default 2M and at least 64K; `--log-files`, 1 to 10, default 3).
 - **Written lazily.** Lines are buffered and written about once a second, on a thread of their own:
   a run never waits for its lines, and a crash can lose the last second. A file that can't be
