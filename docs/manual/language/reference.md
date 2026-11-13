@@ -1038,7 +1038,15 @@ everything.
 ## Mistakes
 
 `holon check`, the editor and `holon lsp` report each mistake at its line and column, with the
-expression underlined:
+expression underlined. This flow uses a name it never binds:
+
+```ts broken
+import { flow, route } from "holon"
+
+flow("broken", { port: 8200 })
+
+route.get("/a", () => nope)
+```
 
 ```
 $ holon check broken.holon.ts

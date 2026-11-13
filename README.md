@@ -61,12 +61,12 @@ $ holon check hook.holon.ts
 stripe-to-slack: 18 nodes, 19 wires
 a server on :8103
   POST /stripe
-unit d20899a82d8d8870…
+unit 1b47339cc8a66087…
 it may:
   read the clock
   call https://hooks.slack.com
   receive requests
-  read the secret "slack_webhook_path"
+  read the secret "slack_webhook_path", and send it to https://hooks.slack.com
   read the secret "stripe_webhook_secret"
 ```
 

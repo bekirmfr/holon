@@ -61,14 +61,17 @@ it ran on, and a holon placed in a flow is pinned to its version until you updat
 ## The manifest: what a flow may do
 
 Because every capability is a node, Holon can list what a flow may do by reading its graph. That
-list is the flow's **manifest**, and `holon check` prints it as `it may:`:
+list is the flow's **manifest**, and `holon check` prints it as `it may:`. The Stripe → Slack
+sample's:
 
 ```
+$ holon check stripe-to-slack.holon.ts
+…
 it may:
   read the clock
   call https://hooks.slack.com
   receive requests
-  read the secret "slack_webhook_path"
+  read the secret "slack_webhook_path", and send it to https://hooks.slack.com
   read the secret "stripe_webhook_secret"
 ```
 

@@ -67,5 +67,7 @@ propose, and find out what happened. For how Holon is built, see the design docu
 ## Conventions
 
 Code blocks marked `ts` are whole flows, in TypeScript: a test compiles every one of them, so
-they work as written. Blocks of output (from `holon check` and the like) are real output, with long hashes
-shortened.
+they work as written (one marked `ts broken` is shown for its mistake, and a test holds that it
+has one). Blocks of output are real output, with long hashes shortened; one from `holon check`
+starts with the command, and a test runs it and compares, where a line `…` stands for lines left
+out.
