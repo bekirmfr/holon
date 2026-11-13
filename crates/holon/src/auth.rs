@@ -74,16 +74,21 @@ fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Resp
     crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
 }
 
-/// Why `caller` may not make `name`'s sign-in or tokens, if they may not: they would act as
-/// `name`, so they hold everything `name` holds, as they would to have given it (D19).
-fn may_act_as(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
-    let Some(p) = accounts.principal(name) else { return Ok(()) };
+/// What `name` holds that `caller` doesn't, in words, if anything (D19).
+fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String> {
+    let p = accounts.principal(name)?;
     let document = accounts.access_document();
-    match crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now()) {
-        Some((b, a)) => Err(err(
-            403,
-            format!("{name} holds {} {}, which holds {} there, which you don't: you make the sign-in or the tokens only of someone who holds no more than you", b.role, b.scope.said(), a.name()),
-        )),
+    let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now())?;
+    Some(format!("{name} holds {} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+}
+
+/// Why `caller` may not change `name`, if they may not: its sign-in (a reset, its email), its
+/// tokens, its owner, its role, whether it is enabled, or that it is there. Whoever does could act
+/// as `name` or take from them, so they hold everything `name` holds, as they would to have given
+/// it (D19, both ways).
+fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
+    match holds_more(caller, accounts, name) {
+        Some(more) => Err(err(403, format!("{more}: you change, or act as, only someone who holds no more than you"))),
         None => Ok(()),
     }
 }
@@ -286,6 +291,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 settings: Option<OidcSettings>,
             }
             return respond(body::<Set>(request).and_then(|s| {
+                // The provider says who each person here is: whoever sets it could be any of them.
+                if let Some(more) = accounts.principals().iter().filter(|p| p.kind == Kind::Person).find_map(|p| holds_more(caller, accounts, &p.name)) {
+                    return Err(err(403, format!("{more}: a provider says who each person here is, so it is set only by someone who holds what each of them holds")));
+                }
                 let what = if s.settings.is_some() { "set signing in through a provider" } else { "turned off signing in through a provider" };
                 let issuer = s.settings.as_ref().map(|o| o.issuer.clone()).unwrap_or_default();
                 accounts.set_oidc(s.settings).map_err(fail)?;
@@ -298,6 +307,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some((name, tokens)) = rest.split_once('/')
                 && (tokens == "tokens" || tokens.starts_with("tokens/"))
             {
+                // Its owner makes and revokes its tokens, as the design has it; anyone else only
+                // holding what it holds.
+                let owned = accounts.principal(name).and_then(|p| p.owner).as_deref() == Some(me);
                 return respond(match (method, tokens.strip_prefix("tokens/")) {
                     ("GET", None) => Ok(Response::json(&accounts.tokens(name))),
                     ("POST", None) => {
@@ -305,21 +317,20 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         struct New {
                             label: String,
                         }
-                        // Its owner makes its tokens, as the design has it; anyone else acts as
-                        // it only holding what it holds.
-                        let owner = accounts.principal(name).and_then(|p| p.owner);
                         body::<New>(request).and_then(|n| {
-                            if owner.as_deref() != Some(me) {
-                                may_act_as(caller, accounts, name)?;
+                            if !owned {
+                                may_change(caller, accounts, name)?;
                             }
                             let (token, entry) = accounts.create_token(name, &n.label, by).map_err(fail)?;
                             state.activity.record("made a token for", name, Some(by));
                             Ok(Response::json(&serde_json::json!({ "token": token, "entry": entry })))
                         })
                     }
-                    ("DELETE", Some(id)) => accounts.revoke_token(name, id).map_err(|e| err(404, e)).map(|_| {
-                        state.activity.record("revoked a token of", name, Some(by));
-                        Response::empty_204()
+                    ("DELETE", Some(id)) => (if owned { Ok(()) } else { may_change(caller, accounts, name) }).and_then(|_| {
+                        accounts.revoke_token(name, id).map_err(|e| err(404, e)).map(|_| {
+                            state.activity.record("revoked a token of", name, Some(by));
+                            Response::empty_204()
+                        })
                     }),
                     _ => Ok(Response::empty_404()),
                 });
@@ -327,7 +338,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some(name) = rest.strip_suffix("/reset")
                 && method == "POST"
             {
-                if let Err(r) = may_act_as(caller, accounts, name) {
+                if let Err(r) = may_change(caller, accounts, name) {
                     return Some(r);
                 }
                 return respond(accounts.reset(name).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
@@ -338,6 +349,11 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             let name = rest;
             if name.contains('/') {
                 return Some(Response::empty_404());
+            }
+            if matches!(method, "DELETE" | "PATCH")
+                && let Err(r) = may_change(caller, accounts, name)
+            {
+                return Some(r);
             }
             if method == "DELETE" {
                 return respond(accounts.remove(name, by).map_err(fail).map(|_| {

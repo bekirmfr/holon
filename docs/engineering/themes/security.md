@@ -53,9 +53,20 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **An identity provider** (OpenID Connect, optional, set by an admin): an ID token is accepted as
   a bearer only if it is signed with an RSA or EC algorithm (`ALGORITHMS`: never `none`, never
   HMAC) by a key the provider publishes, for this issuer and client id, unexpired (60 s leeway);
-  its email, only when the provider says it verified it (`email_verified` true), is then matched
-  to an account (`Accounts::by_email`), whose role applies; a token that doesn't say signs no
-  one in, and is told why.
+  it is then matched to an account (`Accounts::through_provider`), whose role applies: by its
+  issuer and subject (`Principal::provider`) once it has signed in, and the first time by its
+  email, only when the provider says it verified it (`email_verified` true); a token that doesn't
+  say signs no one in, and is told why. An email set later, or one the provider gives another
+  subject, isn't a way in: another subject with a matched person's email is refused, until an
+  admin sets that email again (`set_email` clears the match). Setting the provider takes holding
+  what each person holds (`POST /admin/oidc`, auth.rs), since it says who each of them is.
+- **Who may change whom** (D19 both ways, the roles-and-bindings plan): a binding gives, and is
+  taken away, only by someone who holds what it gives where it is (`may_bind`, the unbind route);
+  a member is added to or taken out of a bound group, and a defined role changed, only by someone
+  holding what it gives before and after; and whoever changes a principal (`PATCH`, `DELETE`, its
+  reset, making or revoking its tokens) holds all it holds (`auth::may_change`), since they could
+  then act as it, its owner making and revoking its tokens aside. A role holding `people.manage`
+  or `people.assign` without the rest doesn't make, become or lock out an admin.
 - **The OS user running the server** signs in through the run file `local::publish` writes
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token for this run only. It is the account
   that set the server up, the access document's `local` (`Accounts::tied`, the approval-steps
@@ -404,8 +415,11 @@ What is not defended, or only partly:
   `the_control_plane_admits_so_many_requests_at_once`,
   `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
   `a_token_the_provider_signed_for_this_client_says_who` and
-  `signed_in_through_a_provider_is_matched_by_email` (an email not said to be verified signs no
-  one in).
+  `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
+  verified signs no one in; another subject with a matched email is no one),
+  `a_provider_sign_in_is_the_subject_its_email_first_matched`, `no_one_gives_or_changes_more_than_they_hold`
+  and `every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold` (a sweep of the
+  route table: every route that changes a principal or what it holds has a case, or says why not).
 - **Files**: holon-host's `the_store_writes_its_files_and_folders_for_its_owner_only` (a unit, a
   value, their folders, one made above them, a file readable by others written again `0o600`),
   `the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt`.

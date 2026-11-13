@@ -128,9 +128,13 @@ pub(crate) struct Principal {
     /// A person's argon2id hash; absent until an invite is accepted, and for an agent or a service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     password: Option<String>,
-    /// Who a person is at the identity provider, when signing in through one.
+    /// The email a person is first matched by when signing in through an identity provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) email: Option<String>,
+    /// Who they are at the identity provider, once they have signed in through it: matched from
+    /// then on, and their email no longer (`Accounts::through_provider`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider: Option<ProviderId>,
     #[serde(default)]
     pub(crate) disabled: bool,
     pub(crate) created_at: u64,
@@ -154,6 +158,7 @@ impl Principal {
             display: None,
             password: None,
             email: None,
+            provider: None,
             disabled: false,
             created_at: epoch_now(),
             created_by: by.map(String::from),
@@ -161,6 +166,14 @@ impl Principal {
             prefs: serde_json::Value::Null,
         }
     }
+}
+
+/// Who someone is at an identity provider: its issuer, and the subject it names them by, which
+/// it never gives anyone else (an email can change hands, or be set by whoever manages people).
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct ProviderId {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
 }
 
 /// The most a person's preferences may take, as JSON.
@@ -756,11 +769,33 @@ impl Accounts {
         Some(Who { name: p.name.clone(), kind: p.kind })
     }
 
-    /// The person someone the identity provider vouches for is, by their email.
-    pub(crate) fn by_email(&self, email: &str) -> Option<Who> {
-        let book = hold(&self.book);
-        let p = book.users.iter().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == Some(email))?;
-        Some(Who { name: p.name.clone(), kind: p.kind })
+    /// The person `issuer`'s `subject` is: the one who signed in as it before, or else the one
+    /// whose `email` (as the provider verified it) it is, who hasn't signed in through `issuer` as
+    /// anyone yet, and does as this subject from now on. Err with the person `email` matched who
+    /// signs in as someone else there, if they did.
+    pub(crate) fn through_provider(&self, issuer: &str, subject: &str, email: Option<&str>) -> Result<Who, Option<String>> {
+        fn at<'a>(p: &'a Principal, issuer: &str) -> Option<&'a str> {
+            p.provider.as_ref().filter(|id| id.issuer == issuer).map(|id| id.subject.as_str())
+        }
+        let found = |p: &Principal| Who { name: p.name.clone(), kind: p.kind };
+        {
+            let book = hold(&self.book);
+            let people = || book.users.iter().filter(|p| p.kind == Kind::Person);
+            if let Some(p) = people().find(|p| at(p, issuer) == Some(subject)) {
+                return if p.disabled { Err(None) } else { Ok(found(p)) };
+            }
+            let Some(p) = email.and_then(|e| people().find(|p| !p.disabled && p.email.as_deref() == Some(e))) else { return Err(None) };
+            if at(p, issuer).is_some() {
+                return Err(Some(p.name.clone()));
+            }
+        }
+        let id = ProviderId { issuer: issuer.into(), subject: subject.into() };
+        self.change(|book| {
+            let p = book.users.iter_mut().find(|p| p.kind == Kind::Person && !p.disabled && p.email.as_deref() == email && at(p, issuer).is_none()).ok_or_else(String::new)?;
+            p.provider = Some(id);
+            Ok(found(p))
+        })
+        .map_err(|_| None)
     }
 
     /// What `name` holds now (bindings.rs): nothing, if nothing is bound to it or all of it has
@@ -1109,13 +1144,17 @@ impl Accounts {
         })
     }
 
-    /// A person's email, matched when they sign in through a provider.
+    /// A person's email, matched when they first sign in through a provider. Another one is
+    /// matched anew: who they were there no longer signs in as them.
     pub(crate) fn set_email(&self, name: &str, email: Option<String>) -> Result<(), String> {
         let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
         self.change(|book| {
             let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
             if p.kind != Kind::Person && email.is_some() {
                 return Err(format!("{name} is {}: only a person signs in with an email", p.kind.said()));
+            }
+            if p.email != email {
+                p.provider = None;
             }
             p.email = email;
             Ok(())
@@ -1618,6 +1657,34 @@ mod tests {
         a.invite("bob", "editor", None, "ada").unwrap();
         assert_eq!(a.tied(), None, "a new bob isn't the run file");
         a.add("ci", Kind::Service, "editor", "bma", "local:bma").unwrap();
+    }
+
+    /// A provider's subject is the person its verified email matched the first time it signed in
+    /// there, and no one else's: another issuer matches by email anew, a disabled person is no
+    /// one, and an email set again is matched anew.
+    #[test]
+    fn a_provider_sign_in_is_the_subject_its_email_first_matched() {
+        let (a, _) = set_up();
+        a.accept(&a.invite("cy", "viewer", Some("cy@example.com".into()), "ada").unwrap(), PW).unwrap();
+        let who = |issuer: &str, subject: &str, email: Option<&str>| a.through_provider(issuer, subject, email).map(|w| w.name);
+        let at = |issuer: &str, subject: &str| Some(ProviderId { issuer: issuer.into(), subject: subject.into() });
+        assert_eq!(who("https://a", "s1", Some("eve@example.com")), Err(None));
+        assert_eq!(who("https://a", "s1", None), Err(None));
+        assert_eq!(who("https://a", "s1", Some("cy@example.com")), Ok("cy".into()));
+        assert_eq!(a.principal("cy").unwrap().provider, at("https://a", "s1"));
+        assert_eq!(who("https://a", "s1", Some("other@example.com")), Ok("cy".into()), "by its subject");
+        assert_eq!(who("https://a", "s2", Some("cy@example.com")), Err(Some("cy".into())), "cy's email, another subject");
+        assert_eq!(who("https://b", "s9", Some("cy@example.com")), Ok("cy".into()), "another issuer, matched anew");
+        assert_eq!(who("https://b", "s9", None), Ok("cy".into()));
+        a.set_disabled("cy", true).unwrap();
+        assert_eq!(who("https://b", "s9", None), Err(None), "disabled");
+        a.set_disabled("cy", false).unwrap();
+        a.set_email("cy", Some("cy@example.com".into())).unwrap();
+        assert_eq!(a.principal("cy").unwrap().provider, at("https://b", "s9"), "the same email");
+        a.set_email("cy", Some("cy@example.org".into())).unwrap();
+        assert_eq!(a.principal("cy").unwrap().provider, None, "another email");
+        assert_eq!(who("https://b", "s9", None), Err(None));
+        assert_eq!(who("https://b", "s3", Some("cy@example.org")), Ok("cy".into()));
     }
 
     #[test]

@@ -526,8 +526,19 @@ Where part 2 differs:
   setting someone with a role (`POST`, `PATCH /people`) is binding it on the host; a member added
   to a group gets each of its bindings; resetting a password or making a token lets its maker act
   as that principal, so they hold all it holds (`bindings::beyond`), save its owner making its
-  tokens (§3). Removing, disabling and unbinding give nothing, and aren't asked. The test is
-  `no_one_gives_more_than_they_hold`.
+  tokens (§3). The test is `no_one_gives_or_changes_more_than_they_hold`.
+- **D19 both ways** (2026-11-12, the launch review's B4). Removing, disabling and unbinding were
+  first left unasked, as giving nothing. But changing a principal can make its changer it: a
+  custom role holding `people.manage` set an admin's email and signed in as them through a
+  provider it set, or made itself a service's owner and then its tokens, or disabled every admin.
+  So whoever changes a principal in any way (`PATCH`, `DELETE`, its reset, making or revoking its
+  tokens) holds all it holds (`auth::may_change`); a binding is taken away, a member taken out of
+  a bound group, and a defined role changed only by someone holding what it gives; and setting the
+  provider (`POST /admin/oidc`) takes holding what each person holds. A provider's sign-in is
+  matched by its verified email once, then by its issuer and subject (`Principal::provider`), so
+  an email set later, or reused at the provider, isn't someone else's way in. The class test is
+  `every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold`: a sweep of the route
+  table's every route that changes a principal or what it holds, each with a case or a reason.
 - **The versions' words**: `defined the role watcher: run.view, held by a person`,
   `changed the role …`, `removed the role watcher`; `made the group ops: bob`,
   `changed the group ops: bob, cy`, `removed the group ops`; `bound watcher to the group ops on

@@ -157,7 +157,12 @@ for them (`editor on payout via payments`); `holon people` lists the same. Appro
 Approve and Decline wherever the server says you may decide.
 
 No one gives more than they hold: you define a role, bind it, or add someone to a group bound it
-only holding all it allows there yourself. Whatever an agent is bound, it never approves, starts,
+only holding all it allows there yourself. Nor do you take more than you hold: you change or
+unbind a role, or take someone out of a group bound it, only holding what it allows there. And
+you change someone (their email, role, owner, password, tokens, whether they are enabled or
+there) only holding all they hold, since you could then act as them: a role that manages people
+doesn't make its holder an admin. Setting the identity provider says who everyone is, so it takes
+holding what each person holds: an admin sets it. Whatever an agent is bound, it never approves, starts,
 stops, deletes or restores, sets a secret, decides a person's step of an approval, or manages
 people; a service never decides an approval. `holon unbind ID` takes a binding away, and an
 expired one holds nothing.
@@ -215,6 +220,8 @@ What was done stays under the name that did it, after any of these.
 ## Signing in through your identity provider
 
 People can also sign in through Keycloak, Okta, Auth0 or Entra ID: an admin registers the server
-there and sets it in **People and access** (or `holon oidc set`). Someone signing in is matched to
-the person here with the email the provider vouches for, so set each person's email
+there and sets it in **People and access** (or `holon oidc set`). The first time someone signs in
+there, they are matched to the person here with the email the provider vouches for, so set each
+person's email; from then on they are who the provider names them by, whatever their email
+becomes. Setting someone's email again matches them anew the next time
 ([Signing in through an identity provider](../reference/server.md#signing-in-through-an-identity-provider)).

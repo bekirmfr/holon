@@ -253,7 +253,8 @@ admin binds it (`POST /bindings`):
 - **A binding that has expired** holds nothing. It stays listed, `expired: true`, until it is
   unbound.
 - A binding gives only what its author holds where it is made, and is refused where its role holds
-  nothing (a viewer at an approval point).
+  nothing (a viewer at an approval point). It is taken away only by someone who holds what it
+  gives there (403 saying what): a role that assigns people doesn't unbind an admin.
 
 `GET /bindings` (`?who=&role=&flow=`) lists what is bound, and `DELETE /bindings/<id>` (`?why=`)
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
@@ -280,11 +281,17 @@ An admin also defines roles of their own, and groups:
   it out of its groups.
 - A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
   them first.
-- **No one gives more than they hold**, whichever way they give it: binding a role, inviting,
-  adding or setting someone with one, adding a member to a group that is bound, or resetting
-  someone's password or making their tokens (they would act as them). So a role that manages
-  people without holding everything an admin does can't make an admin. An agent's or a
-  service's owner still makes its tokens.
+- **No one gives or takes more than they hold**, whichever way: binding or unbinding a role,
+  inviting, adding or setting someone with one, adding a member to a group that is bound or
+  taking one out, or changing a role that is defined (holding what it allows before and after).
+  **Nor changes anyone who holds more**: whoever changes a principal (`PATCH` or
+  `DELETE /people/<name>`, its email, owner, role or whether it is enabled; resetting its password;
+  making or revoking its tokens) holds all it holds, since they could then act as it, or is
+  refused (403, `ada holds admin on this host, which holds flow.edit there, which you don't: you
+  change, or act as, only someone who holds no more than you`). So a role that manages people
+  without holding everything an admin does can't make, become or lock out an admin. An agent's
+  or a service's owner still makes and revokes its tokens. Setting the identity provider takes
+  holding what each person holds.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
   or manages people, roles, resources or the host.
@@ -341,12 +348,16 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
 An admin can turn on OpenID Connect on People and access, with the provider's issuer URL and a
 client id (a public client; the editor signs in with the authorization code flow and PKCE). The
 issuer, and every address its discovery document gives, must be https (plain http only to this
-machine), since the keys that check its tokens come from there. A person signs in through the
-provider when a person here has their email, and the provider says it verified that email
-(`email_verified` true in its ID token): one that doesn't say so signs no one in, since some
-providers let a person type any email. A token for several audiences must say it was issued to
-this client (`azp`). People are still added here, with a role; the provider only proves who is
-signing in.
+machine), since the keys that check its tokens come from there. The first time someone signs in
+through the provider, they are the person here with their email, when the provider says it
+verified that email (`email_verified` true in its ID token): one that doesn't say so signs no one
+in, since some providers let a person type any email. From then on they are the subject the
+provider names them by (`sub`, with its issuer), and no one else is: another subject with that
+email is refused, saying whose email it is, until an admin sets that person's email again, which
+matches them anew. A token for several audiences must say it was issued to this client (`azp`).
+People are still added here, with a role; the provider only proves who is signing in. Since the
+provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
+person holds: an admin.
 
 ## Secrets
 

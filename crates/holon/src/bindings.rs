@@ -956,6 +956,11 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 && method == "DELETE"
             {
                 let Ok(id) = id.parse::<u64>() else { return Some(err(404, format!("no binding {id}"))) };
+                // Taking a binding away is giving it back: only by someone holding what it gives.
+                let taken = document.bindings.iter().find(|b| b.id == id && b.live(now)).and_then(|b| Some((b, document.role(&b.role)?)));
+                if let Some((b, a)) = taken.and_then(|(b, role)| Some((b, gives(&role, &b.scope).into_iter().find(|(a, on)| can(caller, *a, on).is_err())?.0))) {
+                    return Some(err(403, format!("{} holds {} {}, which you don't: a binding is taken away only by someone who holds what it gives", b.role, a.name(), b.scope.said())));
+                }
                 return Some(match accounts.unbind(id, by, why.as_deref()) {
                     Ok(binding) => {
                         recorded(&format!("unbound {} from", binding.role), &format!("{} {}", binding.who.said(), binding.scope.said()));
@@ -1021,6 +1026,11 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
     if let Some(a) = role.allows().into_iter().find(|a| can(caller, *a, &on_the_host(*a)).is_err()) {
         return err(403, format!("{name} would allow {}, which you don't hold on this host: a role allows only what its author holds", a.name()));
     }
+    // Changing it takes from each holder what it no longer allows: only by someone holding that.
+    let before = accounts.access_document().role(name).filter(|r| r.builtin.is_none());
+    if let Some(a) = before.and_then(|r| r.allows().into_iter().find(|a| can(caller, *a, &on_the_host(*a)).is_err())) {
+        return err(403, format!("{name} allows {}, which you don't hold on this host: a role is changed only by someone who holds what it allows", a.name()));
+    }
     let by = caller.name.as_deref().unwrap_or("");
     match accounts.define_role(text, by, def.why.as_deref()) {
         Ok(changed) => {
@@ -1056,11 +1066,21 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
     let document = accounts.access_document();
     let before = document.group(name).map(|g| g.members.as_slice()).unwrap_or_default();
     let bound: Vec<&Binding> = document.bindings.iter().filter(|b| b.who == Subject::Group(name.into())).collect();
-    for m in group.members.iter().filter(|m| !before.contains(m)) {
+    // A member added gets each of its bindings, and one taken out loses them: either only by
+    // someone who holds them (D19, both ways).
+    let added = group.members.iter().filter(|m| !before.contains(m)).map(|m| (m, true));
+    let taken = before.iter().filter(|m| !group.members.contains(m)).map(|m| (m, false));
+    for (m, joins) in added.chain(taken) {
         let Some(kind) = accounts.principal(m).map(|p| p.kind) else { continue };
         if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now()) {
-            let gives = format!("{} {}, which holds {} there", b.role, b.scope.said(), a.name());
-            return err(403, format!("adding {m} to {name} gives them {gives}, which you don't: a binding gives only what its author holds where it is made"));
+            let held = format!("{} {}, which holds {} there", b.role, b.scope.said(), a.name());
+            return err(
+                403,
+                match joins {
+                    true => format!("adding {m} to {name} gives them {held}, which you don't: a binding gives only what its author holds where it is made"),
+                    false => format!("taking {m} out of {name} takes from them {held}, which you don't: a binding is taken away only by someone who holds what it gives"),
+                },
+            );
         }
     }
     let by = caller.name.as_deref().unwrap_or("");

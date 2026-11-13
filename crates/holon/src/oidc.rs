@@ -11,10 +11,10 @@
 //! hasn't expired (a minute's leeway for clocks). The issuer, and every address its discovery
 //! document gives, is https, or plain http to this machine only (`secure`): keys that crossed a
 //! network unprotected could be anyone's.
-//! Who it is (its email, only when the provider says it verified it: `email_verified` true) is
-//! then matched to an account
-//! (access.rs), whose role says what they may do. Signing in proves who someone is; their
-//! account decides what they may do.
+//! Who it is is then matched to an account (`Accounts::through_provider`): by its subject, with
+//! this issuer, once it has signed in; the first time, by its email, only when the provider says
+//! it verified it (`email_verified` true). Signing in proves who someone is; their account decides
+//! what they may do.
 
 use crate::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -132,9 +132,9 @@ impl Oidc {
             None if several => return Err("for several audiences, without saying which it was issued to (azp)".into()),
             _ => {}
         }
-        // Only an email the provider says it verified: an account is matched by its email
-        // (access.rs), so one a person merely typed at the provider would sign them in as whoever
-        // has it. A provider that doesn't say (no `email_verified`) signs nobody in by email.
+        // Only an email the provider says it verified: an account is first matched by its email
+        // (accounts.rs), so one a person merely typed at the provider would sign them in as
+        // whoever has it. A provider that doesn't say (no `email_verified`) signs nobody in by email.
         let verified = claims.email_verified == Some(true);
         let email = claims.email.map(|e| e.to_lowercase());
         let (email, unverified) = if verified { (email, None) } else { (None, email) };

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A role that manages people no longer makes its holder an admin.** No one gave more than they
+  held, but anyone holding `people.manage` changed anyone: an admin's email (and, setting the
+  identity provider to one they ran, signed in as them), a service's owner (and then made its
+  tokens), or disabled, demoted and removed every admin. Now whoever changes a principal
+  (`PATCH` or `DELETE /people/<name>`, its email, owner, role, display or whether it is enabled,
+  its password reset, making or revoking its tokens) holds all it holds, or is refused (403, `ada
+  holds admin on this host, which holds flow.edit there, which you don't: you change, or act as,
+  only someone who holds no more than you`); its owner still makes and revokes an agent's or a
+  service's tokens. Taking is held to it as giving is: a binding is unbound, a member taken out
+  of a bound group, and a defined role changed only by someone holding what it gives. Setting the
+  identity provider takes holding what each person holds, since it says who each of them is.
+  And a provider's sign-in is matched by the email it verified only the first time: from then on
+  by its issuer and subject, so another subject given that email is refused, saying whose it is,
+  until an admin sets that person's email again. A sweep of the route table holds every route
+  that changes a principal or what it holds to the rule, with a case for each.
 - **A flow's taint keys are a deploy setting, listed in the editor.** `taint: [...]` stays in the
   text's `flow(...)` line, beside `tags`, and is held in the flow's deploy settings and frozen on
   its server unit from there: the route nodes have no `taint` param any more. The editor's
