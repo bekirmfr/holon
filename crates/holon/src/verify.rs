@@ -22,8 +22,8 @@
 //! A run that failed is run again too: what it computed before it failed, and what its writes made
 //! of its state, are checked as any run's; its status may be its failure's. Some runs can't be run
 //! again at all: one that panicked (its record says what it did by then isn't in it, and is checked
-//! to), one whose such node the log keeps no outputs for (too large, or too deep), one that failed,
-//! and run again gets further (a limit of the server's stopped it, or dropped what it did), one
+//! to), one whose such node the log keeps no outputs for (computed from a secret, which it never
+//! keeps; too large; or too deep), one that failed, and run again gets further (a limit of the server's stopped it, or dropped what it did), one
 //! that read a file whose text neither the export nor `--files` holds (its folder keeps only
 //! hashes). They are counted, not failed, and an export with any checks only so far: `holon
 //! verify` exits 3, not 0. One that failed may say less than it does run again, never other: the
@@ -46,6 +46,10 @@ pub(crate) use replay::replay;
 
 /// What an export says it is.
 pub(crate) const FORMAT: &str = "holon-runs/1";
+
+/// Why a run isn't run again when a node it needs computed something from a secret: the log keeps
+/// none of that (`firing::without_secret_derived`), and only the secret's value could make it again.
+pub(crate) const WITHHELD_NODE: &str = "it computed a value from a secret, which the log never keeps: only the secret could compute it again";
 
 /// A deployment's runs, as `GET /deployments/<slug>/export` writes them.
 #[derive(Serialize, Deserialize)]
@@ -1300,9 +1304,16 @@ fn rerun(
 
     match differs.is_empty() {
         true => Rerun::Matched,
-        false if !observer.unrecorded.is_empty() => Rerun::Skipped(
-            "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
-        ),
+        // The log keeps no outputs for a node that may compute with a secret, by the rule the
+        // server withholds them by (`firing::without_secret_derived`); for others, they were too
+        // large or too deep to keep. Each is a different thing to be told.
+        false if !observer.unrecorded.is_empty() => {
+            let fed = taint::SecretFed::of(root, resolver);
+            Rerun::Skipped(match observer.unrecorded.iter().any(|p| fed.derives(p)) {
+                true => WITHHELD_NODE.into(),
+                false => "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
+            })
+        }
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
@@ -1414,8 +1425,8 @@ struct Asserting {
     recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
     /// The nodes stood in for.
     stood_in: BTreeSet<Vec<u32>>,
-    /// The nodes that needed standing in for and that the log keeps no outputs for (larger than
-    /// the log keeps, or deeper than it records).
+    /// The nodes that needed standing in for and that the log keeps no outputs for (computed from
+    /// a secret, larger than the log keeps, or deeper than it records).
     unrecorded: BTreeSet<Vec<u32>>,
     marks: Marks,
 }

@@ -7048,6 +7048,56 @@ route.post("/go", async (req) => {{
     assert!(verify::describe(&report, None).contains(&format!("run 0 SENT the secret \"token\" to {other}, where its approval doesn't show it going")));
 }
 
+/// **Guards:** what `holon verify` makes of runs that read a secret. A step fed the secret can't be
+/// computed again (the log holds its placeholder, never its value), so what the log kept for it
+/// stands in: a token check and a receipt signed with the secret are taken from the log, the rest
+/// of the run is checked, and the report counts the steps taken. A step computed from the secret
+/// (a Basic header built from it, a true or false about it) leaves nothing to stand in, as the log
+/// never keeps it: the run isn't run again, and the report says that is why, not a size or a
+/// depth the log didn't keep.
+///
+/// **Why:** such a run was reported as one whose node was "too large, or too deep", which sends
+/// whoever reads it looking for a limit to raise, where only the secret could check it.
+///
+/// **If it fails:** a run verify can't check reads as a different gap than it is; or a step with
+/// the secret is computed again from its placeholder, and an honest run reads as changed.
+#[test]
+fn a_run_that_read_a_secret_is_checked_but_its_steps_with_the_secret_and_says_which() {
+    let state = claims_state("");
+    let text = r#"import { flow, hmac_sha256, route, secure_equals, status } from "holon"
+import api_token from "secret:api_token"
+
+flow("keyed", { port: 18153 })
+
+route.get("/me", (req) => {
+  const ok = secure_equals(req.headers.authorization, `Bearer ${api_token}`)
+  const receipt = hmac_sha256(api_token, req.path)
+  return (ok ? { receipt } : undefined) ?? status(401)
+})
+
+route.get("/basic", (req) => {
+  return { header: `Basic ${btoa(`user:${api_token}`)}`, long: api_token.length > 20 }
+})
+"#;
+    let slug = deploy_text_to(&state, text, &[]);
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_token"), serde_json::to_vec(&serde_json::json!({ "value": "a-dummy-token-for-tests" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    assert_eq!(data_call(&state, &slug, "GET", "/me", "").0, 401);
+    assert_eq!(data_call(&state, &slug, "GET", "/basic", "").0, 200);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(matches!(report.reruns[0].1, verify::Rerun::Matched), "{text}");
+    assert!(report.given.get(&0).is_some_and(|&n| n >= 2), "the token check and the receipt are taken from the log: {text}");
+    match &report.reruns[1].1 {
+        verify::Rerun::Skipped(why) => assert_eq!(why, verify::WITHHELD_NODE, "{text}"),
+        other => panic!("a run computed from the secret is not run again: {other:?}\n{text}"),
+    }
+    assert!(!text.contains("too large"), "{text}");
+    assert!(text.lines().last().is_some_and(|l| l.starts_with("INCOMPLETE")), "{text}");
+}
+
 /// The server's own secret, bound once for every deployment that reads it, with where it may go:
 /// a flow that sends it there deploys and runs with it; one that sends it elsewhere is refused at
 /// deploy, unless it has its own of that name; and a cap narrowed after deploy holds from the next

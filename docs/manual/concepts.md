@@ -142,12 +142,13 @@ Each deployment keeps a log of its runs. A run's entry holds everything it read 
 request, the clock, randomness, the state it read, every response it got) and everything it did,
 with the version and the grant it ran under.
 
-Evaluation is pure, so this is enough to **replay** a run exactly, node by node: the editor's view
-mode does it to show you the value each node made, and says whether the replay reproduces the run.
+Evaluation is pure, so this is enough to **replay** a run exactly, node by node, but for a step
+with a secret (below): the editor's view mode does it to show you the value each node made, and
+says whether the replay reproduces the run.
 
 The log is a **hash chain**: each entry includes the hash of the one before, and the newest hash
 is the log's **head**. A run changed or taken out afterwards breaks the chain. `holon export`
-writes a deployment's runs to one file, and `holon verify` checks the chain and runs every run
+writes a deployment's runs to one file, and `holon verify` checks the chain and runs each run
 again offline, through the same core, on any machine. On its own, the chain shows a run changed
 by someone who didn't chain the lines again: an export checks against itself, so whoever holds
 the server's data could rewrite it whole, or drop its newest runs. A **witness** (another
@@ -156,8 +157,12 @@ the log tamper-evident even to them: a run changed or taken out no longer reache
 witness holds. A log keeps its newest runs (500 by default); what a head proves starts at the
 oldest it still has. See [Checking runs](guides/checking-runs.md).
 
-Secrets never enter the log: their values are redacted from everything it holds. A run that used a
-secret can be shown, but not run again offline.
+Secrets never enter the log: their values are redacted from everything it holds. So a step that
+computed with a secret can't be run again offline. `holon verify` takes what the log says that
+step gave (a token check passed, a receipt signed with the key) and checks the rest of the run
+against it. A run that computed a value from a secret, which the log never keeps (a Basic header
+built from it, a true or false about it), isn't run again at all, and verify says so. See
+[Verifying](guides/checking-runs.md#verifying).
 
 ## People, roles and agents
 
