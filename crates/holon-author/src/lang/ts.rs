@@ -24,17 +24,25 @@ use oxc_span::{GetSpan, SourceType};
 
 use super::ast::*;
 use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED, ROUTE_WAITS, SOCKET_WAITS};
+use super::nesting;
 use crate::templates;
 
 type R<T> = Result<T, LowerError>;
 
 /// Read and lower a `.holon.ts` text.
 pub fn compile(src: &str) -> R<Lowered> {
-    lower(&parse(src)?)
+    nesting::check(src)?;
+    nesting::on_deep_stack(|| lower(&read(src)?))
 }
 
 /// Read a `.holon.ts` text into the syntax tree the lowering reads.
 pub fn parse(src: &str) -> R<File> {
+    nesting::check(src)?;
+    nesting::on_deep_stack(|| read(src))
+}
+
+/// [`parse`], for a text counted already, on a stack with room for it.
+fn read(src: &str) -> R<File> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
     let lines = Lines::new(src);
@@ -1351,10 +1359,10 @@ impl<'s, 't> Reader<'s, 't> {
                     // What follows runs where the statement didn't return: not where whether it
                     // did has no value, as an `if` on an absent condition (§6.4).
                     if let Ret::When(e) = &r {
-                        self.frame.guards.push(Guard::Live(no_case(e)));
+                        self.hold(Guard::Live(no_case(e)), self.span(s.span()))?;
                     }
                     if let Some(made) = made {
-                        self.go_on_if_arrived(&made, stmts);
+                        self.go_on_if_arrived(&made, stmts)?;
                     }
                     r
                 }
@@ -2135,17 +2143,23 @@ impl<'s, 't> Reader<'s, 't> {
         if self.frame.tied.contains(&key) {
             return twice();
         }
-        self.update_write(key, value, at, key_span, stmts, start);
-        Ok(())
+        self.update_write(key, value, at, key_span, stmts, start)
     }
 
-    fn update_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) {
+    /// What `key` holds now, `value` where this point is reached and what it held before
+    /// otherwise: each write under a condition chooses inside the one before it, so a key written
+    /// under conditions again and again holds a value nested as deep as it is written, refused past
+    /// [`WRITTEN_DEPTH`].
+    fn update_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         let i = self.frame.writes.iter().position(|(k, ..)| *k == key);
         let old = i.map(|i| self.frame.writes[i].1.clone());
         let value = match conj(self.frame.guards[start..].iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) {
             Some(live) => choose(&Choice::If(live), vec![Some(value)], old.clone(), old, at).expect("a value"),
             None => value,
         };
+        if nests_past(&value, WRITTEN_DEPTH) {
+            return fail(at, format!("state.{key}'s value, each write under a condition chosen inside the one before, nests more than {WRITTEN_DEPTH} levels deep: work it out first, and write it once"));
+        }
         match i {
             Some(i) => self.frame.writes[i] = (key.clone(), value.clone(), key_span),
             None => self.frame.writes.push((key.clone(), value.clone(), key_span)),
@@ -2154,6 +2168,7 @@ impl<'s, 't> Reader<'s, 't> {
             stmts.retain(|s| !matches!(&s.kind, StmtKind::StateWrite { key: k, .. } if k.text == key));
             stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: None });
         }
+        Ok(())
     }
 
     /// Every branch's condition and every `return` not taken, that the statement being read
@@ -2207,7 +2222,7 @@ impl<'s, 't> Reader<'s, 't> {
         let b = paths.pop().expect("an else");
         let a = paths.pop().expect("a then");
         let ret = ret_if(&cond, &a.ret, &b.ret);
-        self.join(&Choice::If(cond), vec![a], b, stmts, start, at);
+        self.join(&Choice::If(cond), vec![a], b, stmts, start, at)?;
         Ok(ret)
     }
 
@@ -2359,7 +2374,7 @@ impl<'s, 't> Reader<'s, 't> {
         // A returns only where a return in it answers: a throw in it is caught.
         let returns = if a.exits == 0 { Ret::Never } else { a.ret.clone() };
         let ret = ret_if(&ok, &returns, &b.ret);
-        self.join(&Choice::If(ok), vec![a], b, stmts, start, at);
+        self.join(&Choice::If(ok), vec![a], b, stmts, start, at)?;
         Ok(ret)
     }
 
@@ -2399,16 +2414,29 @@ impl<'s, 't> Reader<'s, 't> {
     /// arrived, as the rest of JavaScript's is skipped once a statement throws: a call bound after
     /// a failure isn't made, a function after it isn't entered (§8). `before`: the names the block
     /// had made before the statement; a value that can't fail holds nothing back.
-    fn go_on_if_arrived(&mut self, before: &BTreeSet<String>, stmts: &[Stmt]) {
-        let Some(t) = self.frame.trying.last() else { return };
+    fn go_on_if_arrived(&mut self, before: &BTreeSet<String>, stmts: &[Stmt]) -> R<()> {
+        let Some(t) = self.frame.trying.last() else { return Ok(()) };
         let new: Vec<(String, Option<Expr>)> = t.made.iter().filter(|(n, _)| !before.contains(n)).cloned().collect();
         for (name, cond) in new {
             let fails = stmts.iter().any(|s| matches!(&s.kind, StmtKind::Bind { name: n, value } if n.text == name && !never_fails(value)));
             if fails {
                 let span = stmts.iter().rev().find_map(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name).then_some(s.span)).expect("found above");
-                self.frame.guards.push(Guard::Arrived(arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref())));
+                self.hold(Guard::Arrived(arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref())), span)?;
             }
         }
+        Ok(())
+    }
+
+    /// A condition the statements after this one run under, beside those they had: a `return`
+    /// before them not taken, a value a `try` block made arriving. Each is joined to the others,
+    /// one `&&` inside the next, wherever a statement after it is read, so they are refused past
+    /// [`nesting::MAX_NESTING`].
+    fn hold(&mut self, guard: Guard, at: Span) -> R<()> {
+        if self.frame.guards.len() >= nesting::MAX_NESTING {
+            return fail(at, format!("more than {} conditions hold here (returns before it not taken, values a try block made): split this into functions", nesting::MAX_NESTING));
+        }
+        self.frame.guards.push(guard);
+        Ok(())
     }
 
     /// A binding no `try` block tests: one it reads, as a join reads what it chooses among.
@@ -2569,7 +2597,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// After branches (`arms`, then `els`): each name and state key one of them changed holds
     /// what `choice` picks among them. A branch that returned leaves no name behind, but its
     /// writes were made.
-    fn join(&mut self, choice: &Choice, arms: Vec<Path>, els: Path, stmts: &mut Vec<Stmt>, start: usize, at: Span) {
+    fn join(&mut self, choice: &Choice, arms: Vec<Path>, els: Path, stmts: &mut Vec<Stmt>, start: usize, at: Span) -> R<()> {
         let mut paths = arms;
         paths.push(els);
         let goes_on: Vec<bool> = paths.iter().map(|p| !matches!(p.ret, Ret::Always)).collect();
@@ -2627,9 +2655,10 @@ impl<'s, 't> Reader<'s, 't> {
             }
             let els = picks.pop().expect("an else");
             if let Some(value) = choose(choice, picks, els, old, at) {
-                self.update_write(key, value, at, key_span, stmts, start);
+                self.update_write(key, value, at, key_span, stmts, start)?;
             }
         }
+        Ok(())
     }
 
     /// `switch (x) { case …: … }` as `match` (§5): each case's names, writes and answer chosen by
@@ -2709,7 +2738,7 @@ impl<'s, 't> Reader<'s, 't> {
             }
         }
         let els = default_path.unwrap_or_else(|| Path { scopes: self.scopes.clone(), writes: self.frame.writes.clone(), ret: Ret::Never, exits: 0 });
-        self.join(&Choice::Match(subject, case_patterns), case_paths, els, stmts, start, at);
+        self.join(&Choice::Match(subject, case_patterns), case_paths, els, stmts, start, at)?;
         Ok(ret)
     }
 
@@ -2752,6 +2781,10 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     fn push_exit(&mut self, kind: ExitKind, span: Span) -> R<()> {
+        // The returns are folded into one answer, each chosen inside the one after it.
+        if self.frame.exits.len() >= nesting::MAX_NESTING {
+            return fail(span, format!("more than {} returns in one handler or function, its answer chosen among them one inside another: choose with a switch, or split it into functions", nesting::MAX_NESTING));
+        }
         if self.after_value().is_some() {
             return fail(span, "a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value");
         }
@@ -6096,6 +6129,31 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
         }
         ExprKind::Await { expires: Some(x), .. } => walk(x, f),
         _ => {}
+    }
+}
+
+/// How deep a state key's value may nest once written under conditions again and again: room for
+/// a value as deep as a text may write one ([`nesting::MAX_NESTING`] levels, two to a level for
+/// `-x`), and as many writes again.
+const WRITTEN_DEPTH: usize = 4 * nesting::MAX_NESTING;
+
+/// Whether `e` nests more than `levels` deep: walked no deeper than that, so asking costs no more
+/// stack than `levels` do.
+fn nests_past(e: &Expr, levels: usize) -> bool {
+    let Some(below) = levels.checked_sub(1) else { return true };
+    let past = |x: &Expr| nests_past(x, below);
+    match &e.kind {
+        ExprKind::Interpolated(parts) => parts.iter().any(|p| matches!(p, Part::Expr(x) if past(x))),
+        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } | ExprKind::Leaf { args, .. } => args.iter().any(|a| past(&a.value)),
+        ExprKind::TextOrList { subject, args, .. } => past(subject) || args.iter().any(|a| past(&a.value)),
+        ExprKind::Field { base: x, .. } | ExprKind::Not(x) | ExprKind::Truthy(x) | ExprKind::Paren(x) | ExprKind::Lambda { body: x, .. } => past(x),
+        ExprKind::Index { base: a, key: b } | ExprKind::Binary { lhs: a, rhs: b, .. } => past(a) || past(b),
+        ExprKind::Record { spread, fields } => spread.as_deref().is_some_and(past) || fields.iter().any(|(_, v)| past(v)),
+        ExprKind::List(items) => items.iter().any(past),
+        ExprKind::If { cond, then, els } => past(cond) || past(then) || els.as_deref().is_some_and(past),
+        ExprKind::Match { subject, arms, els, .. } => past(subject) || arms.iter().any(|a| a.patterns.iter().any(past) || past(&a.value)) || els.as_deref().is_some_and(past),
+        ExprKind::Await { expires: Some(x), .. } => past(x),
+        _ => false,
     }
 }
 

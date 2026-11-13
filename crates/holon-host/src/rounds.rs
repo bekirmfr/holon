@@ -8,9 +8,14 @@
 //! outputs and effects were computed with answers missing and are discarded.
 //!
 //! The run is bounded by its [`Limits`]: an outbound-request budget (which also bounds the
-//! rounds, since every round after the first needs a request) and a wall-clock budget. Past
-//! either, the run fails and nothing is performed. A single request that breaks a limit does not
-//! fail the run: its node gets an error response and the flow decides.
+//! rounds, since every round after the first needs a request), a wall-clock budget, checked
+//! between rounds, and a budget of steps each round may take (`max_steps`: every node evaluated,
+//! every item a function is applied to, `Observer::step`), which bounds what a round computes
+//! whatever its graph, a budget of fuel its js and module calls burn in all (`max_fuel`,
+//! `Observer::take_fuel`), and a budget of the memory it comes to hold (`max_memory`: the bytes
+//! its thread made since the round began and keeps, `holon_core::memory`, looked at every step).
+//! Past any, the run fails and nothing is performed. A single request that breaks a limit does
+//! not fail the run: its node gets an error response and the flow decides.
 //!
 //! Every exchange (the node, its request, its response, and when) is recorded per round, so a run
 //! can be replayed offline by answering from the record instead of the network.
@@ -24,7 +29,10 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use holon_core::{eval_observed, hash_value, Answer, Capability, Hash, Observer, Resolver, Slot, Unit, Value};
+use holon_core::{
+    eval_observed, hash_value, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS,
+    MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING,
+};
 
 use crate::{perform_effects, Host, SourcedResolver};
 
@@ -49,6 +57,19 @@ pub struct Limits {
     /// How long a run's commit may wait for the commit locks on the shared resources it read or
     /// writes, which other runs' commits hold for milliseconds.
     pub commit_wait: Duration,
+    /// Steps each round may take (`Observer::step`): counted, so the same round takes the same
+    /// number wherever it runs, and a round past it fails the run however fast the machine.
+    pub max_steps: u64,
+    /// Fuel (instructions) each round's js and module calls may burn in all
+    /// (`Observer::take_fuel`): each call runs on its own budget or what is left of this, the
+    /// less, so the same round burns the same wherever it runs, and a round that wants more fails
+    /// the run.
+    pub max_fuel: u64,
+    /// Bytes each round may come to hold (`holon_core::memory::held`, checked at every step):
+    /// what it made and kept, its values and what is recorded of them. Not counted the same on
+    /// every build, so a round past it fails the run where it is, and a check that runs it again
+    /// can't tell how it would have ended.
+    pub max_memory: u64,
 }
 
 impl Limits {
@@ -72,6 +93,9 @@ impl Limits {
             max_redirects: 10,
             claim_wait: Duration::from_secs(10),
             commit_wait: Duration::from_secs(2),
+            max_steps: DEFAULT_MAX_STEPS,
+            max_fuel: DEFAULT_MAX_FUEL,
+            max_memory: DEFAULT_MAX_MEMORY,
         }
     }
 
@@ -89,6 +113,9 @@ impl Limits {
             max_redirects: 20,
             claim_wait: Duration::from_secs(60),
             commit_wait: Duration::from_secs(30),
+            max_steps: MAX_STEPS_CEILING,
+            max_fuel: MAX_FUEL_CEILING,
+            max_memory: MAX_MEMORY_CEILING,
         }
     }
 }
@@ -137,6 +164,12 @@ pub enum RunError {
     Overtaken,
     /// A key it read is held by another run for longer than it may wait.
     Busy { key: String },
+    /// A round took more steps than its limit (`max_steps`).
+    StepBudget { max: u64 },
+    /// A round's js and module calls wanted more fuel than its limit (`max_fuel`).
+    FuelBudget { max: u64 },
+    /// A round came to hold more memory than its limit (`max_memory`).
+    MemoryBudget { max: u64 },
 }
 
 impl RunError {
@@ -146,9 +179,16 @@ impl RunError {
             RunError::TimeBudget { budget } => format!("the run took longer than {budget:?}"),
             RunError::Overtaken => "what the run read changed before it could call out; it ran again".to_string(),
             RunError::Busy { key } => format!("busy: {key} is held by another run"),
+            RunError::StepBudget { max } => format!("{STEP_BUDGET}{max} steps in one round (max_steps)"),
+            RunError::FuelBudget { max } => format!("{STEP_BUDGET}{max} instructions of js and module code in one round (max_fuel)"),
+            RunError::MemoryBudget { max } => format!("{STEP_BUDGET}{max} bytes of memory in one round (max_memory)"),
         }
     }
 }
+
+/// What the error of a run whose round took more steps, more of its modules' fuel or more memory
+/// than its limit starts with.
+pub const STEP_BUDGET: &str = "the run took more than ";
 
 /// What a run produced: its outputs (all absent if it failed), the requests each round made,
 /// why it failed, if it did, and the waiting points it is waiting at, if any. Effects were
@@ -255,9 +295,24 @@ pub fn run_rounds(
     };
     loop {
         observer.round(rounds.len());
-        let mut asking =
-            Asking { inner: &mut *observer, answers: &answers, pending: Vec::new(), waits: &mut *waits, waiting: Vec::new() };
+        let mut asking = Asking {
+            inner: &mut *observer,
+            answers: &answers,
+            pending: Vec::new(),
+            waits: &mut *waits,
+            waiting: Vec::new(),
+            budget: Budget::new(limits.max_steps).with_fuel(limits.max_fuel).with_memory(limits.max_memory),
+        };
         let outputs = eval_observed(root, inputs, &resolver, &mut asking).into_vec();
+        if asking.budget.exhausted {
+            return fail(rounds, RunError::StepBudget { max: limits.max_steps });
+        }
+        if asking.budget.out_of_fuel {
+            return fail(rounds, RunError::FuelBudget { max: limits.max_fuel });
+        }
+        if asking.budget.out_of_memory {
+            return fail(rounds, RunError::MemoryBudget { max: limits.max_memory });
+        }
         let (pending, waiting) = (asking.pending, asking.waiting);
         if pending.is_empty() {
             // A run still waiting performs nothing yet: what it does is decided when it finishes.
@@ -333,6 +388,8 @@ struct Asking<'a, O: Observer, W: Waits> {
     pending: Vec<(Vec<u32>, Value)>,
     waits: &'a mut W,
     waiting: Vec<Waiting>,
+    /// The round's steps, its modules' fuel and the memory it holds, counted afresh each round.
+    budget: Budget,
 }
 
 /// A text field of a request record.
@@ -347,6 +404,24 @@ fn text_field<'v>(request: &'v Value, key: &str) -> Option<&'v str> {
 }
 
 impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
+    fn step(&mut self) -> bool {
+        self.budget.step()
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        self.budget.take_steps(want)
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.budget.give_back(steps);
+    }
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        self.budget.take_fuel(want)
+    }
+    fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+        self.budget.give_back_fuel(unburned, short);
+    }
+    fn held_at_most(&self) -> i64 {
+        self.budget.held_at_most()
+    }
     fn enter(&mut self, path: &[u32]) {
         self.inner.enter(path);
     }
@@ -622,6 +697,168 @@ mod tests {
         let resumed = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &first.rounds);
         assert!(resumed.waiting.is_empty());
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("tok-paid")), (Capability::NetworkEgress, txt("ok"))]);
+    }
+
+    /// Guards: every node a round evaluates is a step, counted afresh each round: the least
+    /// `max_steps` the two-round flow finishes with is its last round's 8 nodes, not the two
+    /// rounds' sum; one fewer fails it with `StepBudget`, performing nothing.
+    /// Why: a node outside any function is a step too. Composites can share a child, so a unit
+    /// of few nodes can evaluate a great many; and a round only grows, so counting per round is
+    /// what `holon verify`, evaluating once with every answer, counts again.
+    /// If it fails: `Asking::step` (or `take_steps`) isn't the round's budget, the budget isn't
+    /// made afresh each round, or `run_rounds` doesn't read `exhausted` after the round.
+    #[test]
+    fn every_node_a_round_evaluates_is_a_step_counted_per_round() {
+        let mut r = MapResolver::new();
+        let flow = chained(&mut r);
+        let run = |max_steps: u64| {
+            let (echo, mut host) = (Echo::default(), Performed::default());
+            let limits = Limits { max_steps, ..Limits::request_run() };
+            let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            (out, host.0)
+        };
+        let least = (1..100).find(|&m| run(m).0.error.is_none()).expect("it finishes");
+        assert_eq!(least, 8, "the last round's nodes, each a step");
+        let (out, performed) = run(least - 1);
+        assert_eq!(out.error, Some(RunError::StepBudget { max: least - 1 }));
+        assert_eq!(out.outputs, vec![None]);
+        assert!(performed.is_empty(), "nothing performed");
+        assert!(out.error.unwrap().message().starts_with(STEP_BUDGET));
+    }
+
+    /// `chained`, its first answer's body passed through a module on the way to the second
+    /// request: the module runs in the second round and again in the third.
+    fn chained_through_a_module(r: &mut MapResolver) -> Unit {
+        let mut flow = chained(r);
+        let module = Unit {
+            body: UnitBody::Module { bytes: b"passes its input on".to_vec() },
+            params: vec![Param::frozen("fuel", "100")],
+            inputs: vec![Port { name: "in".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let UnitBody::Composite { children, edges } = &mut flow.body else { unreachable!() };
+        children.push(r.insert(module).unwrap()); // 8
+        let i = edges.iter().position(|x| *x == e(2, 0, 4, 0)).unwrap();
+        edges.splice(i..=i, [e(2, 0, 8, 0), e(8, 0, 4, 0)]);
+        flow
+    }
+
+    /// Runs modules by passing their input on, burning `cost` a call (all it is given if that's
+    /// less, out of fuel), and counts its calls.
+    struct Burning<'a>(&'a MapResolver, u64, std::cell::Cell<usize>);
+    impl Resolver for Burning<'_> {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.0.resolve(hash)
+        }
+        fn run_module(&self, _bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> holon_core::ModuleRun {
+            self.2.set(self.2.get() + 1);
+            match limits.fuel < self.1 {
+                true => holon_core::ModuleRun { outputs: Err("out of fuel".into()), burned: limits.fuel, out_of_fuel: true },
+                false => holon_core::ModuleRun { outputs: Ok(vec![inputs[0].clone()]), burned: self.1, out_of_fuel: false },
+            }
+        }
+    }
+
+    /// Runs modules by passing their input on, and keeps a mebibyte of its own at each call: what
+    /// a round that calls one holds.
+    struct Keeping<'a>(&'a MapResolver, std::cell::RefCell<Vec<Vec<u8>>>);
+    const KEEPS: usize = 1 << 20;
+    impl Resolver for Keeping<'_> {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.0.resolve(hash)
+        }
+        fn run_module(&self, _bytes: &[u8], _limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> holon_core::ModuleRun {
+            self.1.borrow_mut().push(vec![1; KEEPS]);
+            holon_core::ModuleRun { outputs: Ok(vec![inputs[0].clone()]), burned: 0, out_of_fuel: false }
+        }
+    }
+
+    /// Guards: what a round holds is held to the limits' `max_memory`, counted afresh each
+    /// round: the flow whose module keeps a mebibyte in each of two rounds finishes within one
+    /// and a half a round, though it holds two by its end; within half of one it fails with
+    /// `MemoryBudget`, performing nothing. Within a `map`, the round stops at the item past it,
+    /// not at the map's end: the module mapped over 32 items is called twice.
+    /// Why: a round past its memory must fail the run, not answer from what it computed before
+    /// it was stopped; and each round starts from what the rounds before it left, so counting
+    /// from the run's start would fail a run whose rounds are each within it. A map takes its
+    /// steps a batch at a time: looked at only between batches, a round's memory could go past
+    /// its grant 256 items' worth.
+    /// If it fails: `Asking`'s budget isn't held to `max_memory` (`with_memory`), isn't made
+    /// afresh each round, or `run_rounds` doesn't read `out_of_memory` after the round; on the
+    /// map, `Asking` doesn't say what its budget may hold (`Observer::held_at_most`), so `Asks`
+    /// doesn't look at each item.
+    #[test]
+    fn what_a_round_holds_is_held_to_max_memory_afresh_each_round() {
+        let mut r = MapResolver::new();
+        let flow = chained_through_a_module(&mut r);
+        // The same module, mapped over a list.
+        let module = Unit { body: UnitBody::Module { bytes: b"passes its input on".to_vec() }, params: vec![Param::frozen("fuel", "100")], ..leaf("module", vec![], 1, Type::Any) };
+        let module = r.insert(module).unwrap();
+        let map = r.insert(Unit { params: vec![Param::frozen("fn", module.iter().map(|b| format!("{b:02x}")).collect::<String>())], ..leaf("map", vec![], 1, Type::list_any()) }).unwrap();
+        let mapped = Unit {
+            body: UnitBody::Composite { children: vec![map], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: vec![Port { name: "xs".into(), ty: Type::list_any() }],
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
+        };
+        let engine = Keeping(&r, std::cell::RefCell::new(Vec::new()));
+        let run_on = |flow: &Unit, inputs: &[Option<Value>], max_memory: u64| {
+            engine.1.borrow_mut().clear();
+            let (echo, mut host) = (Echo::default(), Performed::default());
+            let limits = Limits { max_memory, ..Limits::request_run() };
+            let out = run_rounds(flow, inputs, &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            (out, host.0)
+        };
+        let run = |max_memory: u64| run_on(&flow, &[], max_memory);
+        let (out, performed) = run(KEEPS as u64 * 3 / 2);
+        assert_eq!(out.error, None, "a round's memory is enough");
+        assert_eq!(engine.1.borrow().len(), 2, "the module kept a mebibyte in each of two rounds");
+        assert_eq!(performed, vec![(Capability::NetworkEgress, txt("/first/next"))]);
+        let (out, performed) = run(KEEPS as u64 / 2);
+        assert_eq!(out.error, Some(RunError::MemoryBudget { max: KEEPS as u64 / 2 }));
+        assert_eq!(out.outputs, vec![None]);
+        assert!(performed.is_empty(), "nothing performed");
+        let message = out.error.unwrap().message();
+        assert!(message.starts_with(STEP_BUDGET) && message.contains("max_memory"), "{message}");
+
+        let items = Some(Value::List(vec![txt("x"); 32]));
+        let (out, _) = run_on(&mapped, std::slice::from_ref(&items), KEEPS as u64 * 3 / 2);
+        assert_eq!(out.error, Some(RunError::MemoryBudget { max: KEEPS as u64 * 3 / 2 }));
+        assert_eq!(engine.1.borrow().len(), 2, "the map stopped at the item past the round's memory");
+        let (out, _) = run_on(&mapped, &[items], KEEPS as u64 * 64);
+        assert_eq!((out.error, engine.1.borrow().len()), (None, 32), "within it, every item");
+    }
+
+    /// Guards: a round's module calls draw on fuel of its own, the limits' `max_fuel`, afresh
+    /// each round: the flow whose module runs once in each of two rounds finishes on one call's
+    /// fuel, not two; an instruction less fails it with `FuelBudget`, performing nothing.
+    /// Why: per round is what `holon verify`, evaluating once with every answer, burns again; and
+    /// a round past its fuel must fail the run, not leave a node absent and answer as if it
+    /// had computed.
+    /// If it fails: `Asking::take_fuel` (or `give_back_fuel`) isn't the round's budget, the budget
+    /// isn't made afresh with `max_fuel`, or `run_rounds` doesn't read `out_of_fuel`.
+    #[test]
+    fn every_module_call_a_round_makes_burns_that_rounds_fuel() {
+        const COST: u64 = 40;
+        let mut r = MapResolver::new();
+        let flow = chained_through_a_module(&mut r);
+        let engine = Burning(&r, COST, std::cell::Cell::new(0));
+        let run = |max_fuel: u64| {
+            let (echo, mut host) = (Echo::default(), Performed::default());
+            let limits = Limits { max_fuel, ..Limits::request_run() };
+            let out = run_rounds(&flow, &[], &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            (out, host.0)
+        };
+        let (out, performed) = run(COST);
+        assert_eq!(out.error, None, "one call's fuel a round is enough");
+        assert_eq!(engine.2.replace(0), 2, "the module ran in two rounds");
+        assert_eq!(performed, vec![(Capability::NetworkEgress, txt("/first/next"))]);
+        let (out, performed) = run(COST - 1);
+        assert_eq!(out.error, Some(RunError::FuelBudget { max: COST - 1 }));
+        assert_eq!(out.outputs, vec![None]);
+        assert!(performed.is_empty(), "nothing performed");
+        let message = out.error.unwrap().message();
+        assert!(message.starts_with(STEP_BUDGET) && message.contains("max_fuel"), "{message}");
     }
 
     #[test]

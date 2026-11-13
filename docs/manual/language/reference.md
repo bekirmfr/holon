@@ -57,6 +57,11 @@ so does a division by zero, so that `??` is reached; no setting tells TypeScript
 comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
 the same flow.
 
+**How deep.** A text nests at most 128 levels: each bracket, operator and block inside another is
+one, and a flow written to be read nests a few dozen. A deeper one is refused where it passes the
+bound, before anything reads it, and so is a handler whose answer is chosen among more than 128
+returns: name a part of it, with a `const` or a function.
+
 ## Imports and settings
 
 An import names something the flow uses from outside a run. Its source says what it is:
@@ -932,7 +937,11 @@ those fields (several).
   starts fresh; nothing survives between calls. So a call depends only on its inputs, and a run
   replays exactly.
 - **Budgets:** `fuel` is instructions per call (default 200M), `memory` the memory per call
-  (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them.
+  (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them. A run's
+  calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
+  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails and
+  performs nothing. A call's own memory is its `memory`, freed as it answers; what it answers
+  counts toward the run's `max_memory`.
 - **Failures:** an exception, or a call that runs out of fuel, gives no value, and the run
   records why: `explain` shows it under the statement. A syntax error is found by `holon check`.
 - **Its text is its identity,** exactly as written: `holon fmt` lays the body out with the rest, so
@@ -971,7 +980,9 @@ misled, the compiler refuses instead.
   compared. `none()` is a value, and unrelated.
 - **Reads at the start, writes at the end.** `state.x`, `coll[k]` and `dir[name]` are the values as
   the run began. Writes are performed when the run finishes, and only if granted. A run never sees
-  its own writes. When two runs change the same item at once, one is run again, so none is lost.
+  its own writes. When two runs change the same item at once, one is run again, so none is lost;
+  for now, except a run that waited at an `await`: its writes land over what was written while
+  it waited.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
   continues with the answer. One bound on a statement of its own (`const page = await
   api.get(…)`) is made when the run reaches the statement, whatever reads `page`, and not when it
@@ -1027,7 +1038,15 @@ everything.
 ## Mistakes
 
 `holon check`, the editor and `holon lsp` report each mistake at its line and column, with the
-expression underlined:
+expression underlined. This flow uses a name it never binds:
+
+```ts broken
+import { flow, route } from "holon"
+
+flow("broken", { port: 8200 })
+
+route.get("/a", () => nope)
+```
 
 ```
 $ holon check broken.holon.ts
@@ -1060,3 +1079,4 @@ broken.holon.ts:5:23: unknown name "nope"
 | two routes share a value | the shared binding |
 | two routes clash; not a method; not a route path | the route |
 | this isn't wired to the route's request (or the handler's trigger) | the statement |
+| nests more than 128 levels deep; more than 128 returns, or conditions, one after another | where it passes the bound |

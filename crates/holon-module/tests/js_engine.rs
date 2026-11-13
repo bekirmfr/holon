@@ -10,6 +10,10 @@ use holon_module::{Engine, RunError};
 
 const ENGINE: &[u8] = include_bytes!("../../../fixtures/modules/js-engine/js-engine.wasm");
 
+// Counts what each thread holds, as the server does: what a round's `max_memory` reads.
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 fn n(x: f64) -> Value {
     Value::Number(x)
 }
@@ -181,6 +185,43 @@ fn what_a_call_costs() {
     );
     let loop_1e5 = measure("a loop of 100k", "() => { let s = 0; for (let i = 0; i < 100000; i++) s += i; return s }", vec![]);
     assert!(trivial.fuel > 0 && heavy.fuel > trivial.fuel && loop_1e5.fuel > heavy.fuel);
+}
+
+/// Guards: of a call, only what it answers is counted as the caller's memory (what a round's
+/// `max_memory` reads, `holon_core::memory::held`): the engine's first call, which compiles it
+/// and translates its functions for the process, and a second, each come to hold their answer of
+/// 64 KiB and no more; a call that throws, nothing.
+/// Why: a round's first `js()` call made the process's compiled engine, several megabytes kept
+/// for every run after, and the call's own memory is its `memory`, freed as it answers; counted
+/// as the round's, a request well within its grant failed. What it answers the round keeps, and
+/// a function mapped over many items answers many times: left uncounted, a round holds gigabytes
+/// of answers within its grant.
+/// If it fails: `Engine::run_metered` doesn't run the call in `holon_core::memory::uncounted`
+/// (the first call keeps megabytes), or leaves the answer it copies out uncounted (it keeps
+/// less than its answer).
+#[test]
+fn a_call_comes_to_hold_what_it_answers_and_nothing_else() {
+    const ANSWER: i64 = 64 << 10;
+    let engine = Engine::new();
+    let limits = ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 };
+    let held = |source: &str| {
+        let before = holon_core::memory::held();
+        let answered = engine.run_metered(ENGINE, &limits, &[Some(t(source)), Some(Value::List(vec![n(ANSWER as f64)]))]);
+        let kept = holon_core::memory::held() - before;
+        (answered.0.map(|(outputs, _)| outputs), kept)
+    };
+    let repeats = "(k) => 'x'.repeat(k)";
+    for call in ["first", "second"] {
+        let (answered, kept) = held(repeats);
+        let text = match answered.as_deref() {
+            Ok([Some(Value::Record(r))]) => r.get("value").cloned(),
+            other => panic!("{call}: {other:?}"),
+        };
+        assert_eq!(text, Some(t(&"x".repeat(ANSWER as usize))), "{call}");
+        assert!((ANSWER..ANSWER + 4096).contains(&kept), "{call} call: kept {kept} bytes for an answer of {ANSWER}");
+    }
+    let (answered, kept) = held("(k) => { throw new Error('no') }");
+    assert!(answered.is_ok() && kept < 4096, "a throw: kept {kept} bytes");
 }
 
 /// A call with the source alone compiles it and runs nothing: `check`'s question.

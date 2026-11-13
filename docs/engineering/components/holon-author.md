@@ -272,7 +272,8 @@ holon-author golden` writes it afresh.
 - **Golden** (`golden.rs`): `the_evaluator_gives_what_its_golden_record_holds`;
   `keeping_each_composites_shape_changes_nothing_the_evaluator_gives`; the tripwire
   `the_compute_heavy_flows_functions_all_run_down_a_plan` (at least 5 of `CRUNCH`'s functions pass
-  `would_plan`). `tests/manual.rs`: `every_flow_in_the_manual_compiles`.
+  `would_plan`). `tests/manual.rs` (the README and docs/manual): `every_flow_in_the_docs_compiles`,
+  `every_holon_check_the_docs_show_is_what_it_prints`.
 
 Beyond the crate, `editor/src/samples.test.ts` builds every sample through the wasm core and
 `editor/e2e/sweep.e2e.ts` deploys every one and sends it a request ([editor](editor.md)); CI's `native` job runs

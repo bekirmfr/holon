@@ -371,10 +371,12 @@ impl Scanner {
         }
     }
 
-    /// Code to the text's end, or (`inside` a template's `${…}`) to the `}` that closes it:
-    /// whether it was closed.
-    fn code(&mut self, inside: bool) -> bool {
-        let mut depth = 0usize;
+    /// Code to the text's end: each template's text where it comes, and each of its `${…}` as code
+    /// again, to the `}` that closes it. The `${…}`s open are kept here, each with the `{`s open in
+    /// it, not on the stack: a text may nest templates deeper than a stack has room for.
+    fn code(&mut self) {
+        // The `{`s open in each `${…}` open, the innermost last.
+        let mut open: Vec<usize> = vec![];
         while let Some(c) = self.peek(0) {
             let from = self.here();
             match c {
@@ -400,12 +402,20 @@ impl Scanner {
                     self.emit(from, Lex::Comment, !closed);
                 }
                 '"' | '\'' => self.string(c),
-                '`' => self.template(),
+                '`' => {
+                    self.bump();
+                    if self.template(from) {
+                        open.push(0);
+                    }
+                }
                 '/' if self.regex_may_start() => self.regex(),
-                '}' if inside && depth == 0 => {
+                '}' if open.last() == Some(&0) => {
                     self.bump();
                     self.emit(from, Lex::Interp, false);
-                    return true;
+                    open.pop();
+                    if self.template(self.here()) {
+                        open.push(0);
+                    }
                 }
                 c if c.is_ascii_digit() || (c == '.' && self.peek(1).is_some_and(|d| d.is_ascii_digit())) => self.number(),
                 c if c.is_alphabetic() || c == '_' || c == '$' => {
@@ -416,10 +426,12 @@ impl Scanner {
                 }
                 _ => {
                     let n = PUNCTUATION.iter().find(|p| p.chars().enumerate().all(|(k, pc)| self.peek(k) == Some(pc))).map_or(1, |p| p.len());
-                    match c {
-                        '{' => depth += 1,
-                        '}' => depth = depth.saturating_sub(1),
-                        _ => {}
+                    if let Some(depth) = open.last_mut() {
+                        match c {
+                            '{' => *depth += 1,
+                            '}' => *depth = depth.saturating_sub(1),
+                            _ => {}
+                        }
                     }
                     for _ in 0..n {
                         self.bump();
@@ -428,7 +440,6 @@ impl Scanner {
                 }
             }
         }
-        false
     }
 
     /// `\` and the character it escapes (not a line's end).
@@ -464,17 +475,20 @@ impl Scanner {
         }
     }
 
-    /// A template literal from its backtick: its text, its escapes, and each `${…}` read as code;
-    /// to its closing backtick, or the text's end.
-    fn template(&mut self) {
-        let mut from = self.here();
-        self.bump();
+    /// A template literal's text from `from`, its backtick or the end of a `${…}` in it, its
+    /// escapes apart: to its closing backtick, the text's end, or its next `${`, after which code
+    /// is read: whether it stopped at one.
+    fn template(&mut self, mut from: (usize, Pos)) -> bool {
         loop {
             match self.peek(0) {
-                None => return self.emit(from, Lex::Str, true),
+                None => {
+                    self.emit(from, Lex::Str, true);
+                    return false;
+                }
                 Some('`') => {
                     self.bump();
-                    return self.emit(from, Lex::Str, false);
+                    self.emit(from, Lex::Str, false);
+                    return false;
                 }
                 Some('\\') => {
                     self.emit(from, Lex::Str, true);
@@ -487,10 +501,7 @@ impl Scanner {
                     self.bump();
                     self.bump();
                     self.emit(open, Lex::Interp, false);
-                    if !self.code(true) {
-                        return;
-                    }
-                    from = self.here();
+                    return true;
                 }
                 Some(_) => self.bump(),
             }
@@ -563,7 +574,7 @@ impl Scanner {
 /// The text's words, in order.
 fn scan(source: &str) -> Vec<Lexeme> {
     let mut s = Scanner { chars: source.chars().collect(), i: 0, at: Pos { line: 1, col: 1 }, out: vec![] };
-    s.code(false);
+    s.code();
     s.out
 }
 

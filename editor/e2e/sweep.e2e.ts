@@ -15,10 +15,8 @@
 // editor shows.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, HOLON, OWN_PORTS, SAMPLE_SHIFT, SAMPLES, SAMPLES_RS, SERVER, test } from "./fixtures";
+import { readFileSync } from "node:fs";
+import { expect, HOLON, movedSample, OWN_PORTS, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
 
 /** Each sample's name, its port (none for a flow only a clock or a file starts) and its file, as
  *  samples.rs lists them. */
@@ -44,7 +42,6 @@ test("every sample deploys from its text and answers", async ({ adminToken }) =>
   expect(taken, "move the tests' flow to a port no sample has").toEqual([]);
   const control = (path: string, method = "GET") =>
     fetch(`${SERVER}${path}`, { method, headers: { Authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
-  const copies = mkdtempSync(join(tmpdir(), "holon-e2e-sweep-"));
   const failed: string[] = [];
   for (const { name, port, file } of SAMPLE_LIST) {
     if (NEEDS[name] && !process.env[NEEDS[name]]) {
@@ -53,16 +50,10 @@ test("every sample deploys from its text and answers", async ({ adminToken }) =>
     }
     await test.step(name, async () => {
       try {
-        let text = readFileSync(join(SAMPLES, file), "utf8");
+        // The flow's port, in its `flow(…)` line, as Settings moves it.
+        const { path: copy, port: shifted } = movedSample(file);
         const moved = port && Number(port) + SAMPLE_SHIFT;
-        if (moved) {
-          // The flow's port, in its `flow(…)` line, as Settings moves it.
-          const shifted = text.replace(new RegExp(`^(flow\\(.*\\bport: )${port}\\b`, "m"), `$1${moved}`);
-          expect(shifted, "its port is in its flow(…) line").not.toBe(text);
-          text = shifted;
-        }
-        const copy = join(copies, file);
-        writeFileSync(copy, text);
+        expect(shifted, "its port is in its flow(…) line, as samples.rs says").toBe(moved || null);
         execFileSync(HOLON, ["deploy", copy, "--server", SERVER, "--slug", name, "--approve"], { env: { ...process.env, HOLON_TOKEN: adminToken }, stdio: "pipe" });
         try {
           const listed = (await (await control("/deployments")).json()) as { deployments: { slug: string; port: number | null }[] };

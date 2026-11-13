@@ -92,11 +92,22 @@ pub(crate) fn length_range(len: usize, start: usize, count: usize) -> std::ops::
 /// `xs.toSpliced(start, count, ...items)`: `count` items (truncated, clamped to what is left; the
 /// rest when unwired) from relative `start` replaced by `items`.
 pub(crate) fn to_spliced(mut xs: Vec<Value>, start: f64, count: Option<f64>, items: Vec<Value>) -> Vec<Value> {
-    let from = relative(start, xs.len());
-    let left = xs.len() - from;
-    let count = count.map_or(left, |c| c.trunc().clamp(0.0, left as f64) as usize);
-    xs.splice(from..from + count, items);
+    let removed = spliced(xs.len(), start, count);
+    xs.splice(removed, items);
     xs
+}
+
+/// The items `to_spliced` removes from a list `len` long.
+fn spliced(len: usize, start: f64, count: Option<f64>) -> std::ops::Range<usize> {
+    let from = relative(start, len);
+    let left = len - from;
+    let count = count.map_or(left, |c| c.trunc().clamp(0.0, left as f64) as usize);
+    from..from + count
+}
+
+/// How long `to_spliced` makes a list `len` long, `added` items put in.
+pub(crate) fn spliced_len(len: usize, start: f64, count: Option<f64>, added: usize) -> usize {
+    (len - spliced(len, start, count).len()).saturating_add(added)
 }
 
 /// `xs.with(i, v)`: the item at position `i` replaced; none out of range (a RangeError in
@@ -149,6 +160,49 @@ pub(crate) fn flat_depth(depth: &str) -> Option<f64> {
 
 /// FlattenIntoArray: an item that is a list, at a depth above 0, is spread one level less deep;
 /// any other item is kept.
+/// How long `flat` makes `xs`, or nothing past `most`: counted without copying anything.
+pub(crate) fn flat_len(xs: &[Value], depth: f64, most: usize) -> Option<usize> {
+    let mut n = 0usize;
+    for x in xs {
+        n += match x {
+            Value::List(ys) if depth > 0.0 => flat_len(ys, depth - 1.0, most)?,
+            _ => 1,
+        };
+        if n > most {
+            return None;
+        }
+    }
+    Some(n)
+}
+
+/// Whether what `v` holds beyond its own place, as its representation lays it out (a text's and
+/// bytes' bytes, a list's items each a value wide, a record's entries), is at most `most` bytes:
+/// what a copy of it costs. Stops counting past `most`.
+pub(crate) fn size_within(v: &Value, most: usize) -> bool {
+    fn take(left: &mut usize, n: usize) -> bool {
+        match left.checked_sub(n) {
+            Some(rest) => {
+                *left = rest;
+                true
+            }
+            None => false,
+        }
+    }
+    fn size(v: &Value, left: &mut usize) -> bool {
+        const WIDE: usize = std::mem::size_of::<Value>();
+        match v {
+            Value::Text(s) => take(left, s.len()),
+            Value::Bytes(b) => take(left, b.len()),
+            Value::List(xs) => take(left, WIDE.saturating_mul(xs.len())) && xs.iter().all(|x| size(x, left)),
+            Value::Record(fs) => fs.iter().all(|(k, x)| take(left, k.len().saturating_add(2 * WIDE)) && size(x, left)),
+            Value::Sum { payload, .. } | Value::Effect { payload, .. } => take(left, WIDE) && size(payload, left),
+            Value::Number(_) | Value::Boolean(_) => true,
+        }
+    }
+    let mut left = most;
+    size(v, &mut left)
+}
+
 pub(crate) fn flat(xs: Vec<Value>, depth: f64) -> Vec<Value> {
     fn spread(xs: Vec<Value>, depth: f64, out: &mut Vec<Value>) {
         for x in xs {

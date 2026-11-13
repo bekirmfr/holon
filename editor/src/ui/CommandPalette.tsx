@@ -5,6 +5,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { COLON_HELP, matches, parseColon, type ColonCommand, type Command } from "../commands";
 import { Kbd } from "./Kbd";
+import { useFocusTrap } from "./focusTrap";
 
 /** At most this many entries are shown: typing finds the rest. */
 const SHOWN = 60;
@@ -25,11 +26,12 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [at, setAt] = useState(0);
   const [why, setWhy] = useState("");
+  const box = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
+  useFocusTrap(box, true, () => field.current);
   const list = useId();
   const colon = query.startsWith(":");
   const shown = useMemo(() => (colon ? [] : matches(commands, query, byNumber).slice(0, SHOWN)), [commands, query, colon, byNumber]);
-  useEffect(() => field.current?.focus(), []);
   useEffect(() => {
     setAt(0);
     setWhy("");
@@ -61,7 +63,7 @@ export function CommandPalette({
 
   return (
     <div className="hl-modal hl-modal--top" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="hl-modal__box hl-cmd" role="dialog" aria-modal="true" aria-label="command palette">
+      <div ref={box} className="hl-modal__box hl-cmd" role="dialog" aria-modal="true" aria-label="command palette">
         <input
           ref={field}
           className="hl-cmd__field"

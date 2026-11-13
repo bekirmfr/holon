@@ -44,6 +44,18 @@ export async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** A new untitled draft from the menu, once its tab is the one shown. New opens the tab a render
+ *  after the click (App.tsx's pendingNew), so a step taken at once can act on the tab shown before
+ *  it: a click on its canvas level acts on that tab's, not the draft's. The draft is the tab
+ *  shown, untitled, and with the tab bar shown before it, one tab more than there was. */
+export async function newFlow(page: Page) {
+  const tabs = page.getByRole("tablist", { name: "open tabs" }).locator(".hl-tab:not(.hl-tab--home)");
+  const before = await tabs.count();
+  await gotoPage(page, "new");
+  if (before > 0) await expect(tabs).toHaveCount(before + 1);
+  await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+}
+
 /** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): where a flow
  *  opens, unless this browser kept another level for it. Pressed as such: beside the text and the
  *  Inspector at the tests' width, the canvas's head can lie under another pane's edge. */

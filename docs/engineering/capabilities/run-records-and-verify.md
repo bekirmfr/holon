@@ -123,8 +123,9 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 
 1. **The chain**, as the server checks it: bad lines, breaks, whether the oldest line names one
    not there (`trimmed`), and whether the last line's hash is the export's head. `--head <hex>`
-   checks a head a witness holds is in the export (`witnessed`), so no run up to it was changed or
-   removed.
+   checks a head a witness holds is in the export (`witnessed`), so no run from the export's
+   oldest to it was changed or removed; of runs a trimmed log no longer holds it says nothing,
+   and `describe` says so.
 2. **The units**, each against its hash.
 3. **Every run again** (`rerun`): the same unit, request, state, clock and random, its outbound
    answers and collection reads from the entry, through the same core and rounds, compared with
@@ -134,7 +135,10 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    computed, and what its writes made of its state (none, where its error says the commit refused
    them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
    kept for such a node, failed and gets further run again, a file read whose text neither the
-   export nor `--files DIR` holds) are counted, not failed (`Rerun::Skipped`). A request no route
+   export nor `--files DIR` holds) are counted, not failed (`Rerun::Skipped`). A run stopped for
+   its memory (`max_memory`) is one of these: what a round holds isn't counted alike on every
+   build (`holon_core::memory`), and verify runs it again with the ceiling's 4 GiB, so it gets
+   further. A request no route
    took and a run turned away (`firing::TURNED_AWAY`) ran nothing: their entries must say so
    (`Rerun::NothingRan`), and the state checks pass over them.
 4. **The states** (`check_states`): each run began from the state the run before it left, and left
@@ -153,18 +157,25 @@ export.
 
 ### A replay of another version
 
-`replay` runs a version that isn't the run's own on the last runs of a deployment (20 unless
-`runs` says, at most 200), as `rerun` does but through the version's handler for the entry's
-route, clock, file or action, and compares status, outputs, effects, the packs sent as it waits and
-where it waits. A new version moves nodes, so nothing is matched by path: a request is answered by
-the run's answer to the same request (`ByRequest`), a read by the run's read of the same request
-(`ByRead`). What the run never asked can't be answered offline: the run is `cant_tell`, never
-sent. A pure leaf fed a placeholder is computed twice, with two placeholders (`Fed`): if what it
-gives depends on which, it computed with the secret's value, and the run is `cant_tell`; if not,
-it passed it along or picked past it, and stands. The run id isn't compared: another version's
-differs by design. The file texts come from the export machinery (`export_of`), so a file holding
-a secret isn't read back, as in an export. The editor shows it on a version's review and in the
-deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.
+`replay` runs a version that isn't the run's own on the last runs of a deployment (20 unless `runs`
+says, at most 200), as `rerun` does but through the version's handler for the entry's route, clock,
+file or action, and compares status, outputs, effects, the packs sent as it waits and where it
+waits. A new version moves nodes, so nothing is matched by path: a request is answered by the run's
+answer to the same request (`ByRequest`), a read by the run's read of the same request (`ByRead`).
+What the run never asked can't be answered offline: the run is `cant_tell`, never sent. A pure leaf
+fed a placeholder is computed twice, with two placeholders (`Fed`): if what it gives depends on
+which, it computed with the secret's value, and the run is `cant_tell`; if not, it passed it along
+or picked past it, and stands. What `Fed` computes stands in for the node, so the round's budget
+never counts it: it computes on a budget of its own, made afresh each round, of twice the round's
+steps, fuel and memory, and a version that wants more is `cant_tell` too. Each round is held to
+`rerun_limits()` (no clock or count of requests, as in `rerun`) but `within` the steps, fuel and
+memory the deployment's permit grants: a replay needs no approval, and runs a version anyone who may
+read the deployment stages on up to 200 runs, so it computes no more than a person approved for the
+deployment's own runs. A version asking for more has it once deployed; replayed, a run that needs it
+differs ("it doesn't finish within what the deployment is granted"). The run id isn't compared:
+another version's differs by design. The file texts come from the export machinery (`export_of`), so
+a file holding a secret isn't read back, as in an export. The editor shows it on a version's review
+and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.
 
 ## 3. Why it is this way
 

@@ -22,11 +22,10 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
 
 1. **hyper** reads the request on a shared tokio runtime (`dataplane.rs`); the CORS origin is
    checked once and passed down (12.3).
-2. **Here or on the pool** (`runs_here_for`, `dataplane.rs`): a run stays on the tokio worker that
-   read it only when it can never wait: its handler is `unrecorded`, it reads only its request, the
-   clock and random numbers (`READS_HERE`), and its flow is already in memory
-   (`FlowCache::holds`). Everything else runs on the blocking pool (`spawn_blocking`, up to 512
-   threads). See [Resilience](resilience.md#g2-a-deployment-cant-slow-another) for why the rule is this narrow.
+2. **On the pool** (`answer`, `dataplane.rs`): every run goes to the blocking pool
+   (`spawn_blocking`, up to 512 threads), however short; the workers only move bytes. A short
+   route was answered on its worker once (12.1) and is no more: see
+   [Nothing computes on a data-plane worker](#nothing-computes-on-a-data-plane-worker-2026-11-13).
 3. **A snapshot of the deployment** under the table lock (taken about 5 times a request).
 4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; each
    composite's shape and its children, resolved, are kept beside them (`Shapes::kept`). Values read
@@ -78,7 +77,7 @@ numbers from PL, IP and RA.
 | C3 b–e `43ebafc` | A state head file per deployment | A write rewrote the whole deployments file | live `/hit` 74 → 986 |
 | C2 e `b1259e3` | Strict by default, with a group commit | "Answered means recorded" (Q6) | check `hello` 13,583 → 9,531 strict, 14,464 lazy: strict costs its fsync |
 | 9b `e40e7b5` | `unrecorded` | A health check needs no record | live 6,649 at one connection, 20,830 at 64 |
-| 12.1 `c5e5556` | A short run answered on the worker that read it | The hop to the pool was 41 µs, 26% of an unrecorded request (RP §4.5) | 1 connection 6,555–6,850 → 8,520–8,945; later narrowed (R2) |
+| 12.1 `c5e5556` | A short run answered on the worker that read it | The hop to the pool was 41 µs, 26% of an unrecorded request (RP §4.5) | 1 connection 6,555–6,850 → 8,520–8,945; narrowed (R2), then taken out (B5, [below](#nothing-computes-on-a-data-plane-worker-2026-11-13)) |
 | 12.2 `cef16d2` | No timeline for an unrecorded run | The timer was 13 µs, 8% | check 26,521 → 37,531 at one thread |
 | 12.4a `b17cbbb` | Hex from a table; a permit's name built once | `format!` per byte was 24–28% of a short run | profile `hello` 25.7 → 19.3 µs; live 64 connections 26,628–26,887 → 35,060–35,935 |
 | 12.4b `0fdf913` | A value cache (64 MiB, values up to 1 MiB) | The store's lock and a file read per collection node: 15% | live `/notes` 6,976–7,250 → 10,489–10,936 |
@@ -123,6 +122,9 @@ The audit's fixes took some of this back on purpose and gave some more:
   +10–18%, the `notes` listing's one-connection p99 130–157 → 29–30 ms.
 - Before, a deployment busy reading could take an unrelated route from about 25,000 requests a
   second to 30–400 (R2); now 18,801–19,183 under reads and writes.
+- Nothing computes on a data-plane worker (B5): every run pays the pool's hop, 20–30 µs at one
+  connection on a trivial route; one long run had left the whole server deaf
+  ([below](#nothing-computes-on-a-data-plane-worker-2026-11-13)).
 
 ## 4. Reach and limits
 
@@ -362,6 +364,137 @@ rounds, requests a second, with the server's CPU a request; no errors:
 - **`hello` and `calc` within noise.** The kept children made one call of a 25-node function ×0.58
   in process (`5f29d1d`); whole requests at this load are bound by the HTTP and the host.
 
+### The step budget (2026-11-12)
+
+A round asks for a step before each node and each application of a `map`'s or `fold`'s function,
+against `max_steps` (B5, [permissions](../../manual/reference/permissions.md)). Inside a function
+the observer is `Asks`, a `dyn Observer`, so each step was a virtual call through it: about 25
+instructions a step, `crunch` ×1.025. `Asks` now takes 256 steps at a time from the round's
+budget (`Observer::take_steps`), counts them down itself and gives back what it didn't use, so the
+count stays exact and the call is made once a batch. Callgrind in WSL as
+[above](#small-values-are-copied-2026-11-07), `0650d3d` against the change; instructions, so
+WSL's slower sync ([below](#limits)) doesn't enter them. Instructions a run:
+
+| Route | before | a call a step | a batch at a time |
+|---|---:|---:|---:|
+| `crunch`, 1,000 items | 25.00 M | 25.63 M (×1.025) | 25.13 M (×1.005) |
+| `hello` | 94.2 K | 93.8 K | 94.5 K (×1.00) |
+
+In time, a release build took 10 to 20 million plain steps a second (a nested `range` loop, three
+steps an item) and about 3 million that each build a record, so the default of 10 million is a
+second or a few of computing.
+
+In time, the editor's design mode (holon-wasm's `Evaluator.eval`, built as the editor ships it:
+release, no wasm-opt; run in Node) and the same workloads natively (eval under `Budgeted`, as the
+design mode evaluates), on a laptop's i7-1360P, each pinned to one performance core at high
+priority. Before and after in turn, the order turning each round: wasm in one Node process, 15
+rounds, twice (both shown); native one process a run, 15 rounds. Medians of the rounds:
+
+| Workload | wasm, before | a call a step | a batch at a time | native, before | a batch at a time |
+|---|---:|---:|---:|---:|---:|
+| `hello` | 13.5 / 12.4 µs | ×0.99 / ×0.99 | ×1.01 / ×0.99 | 4.3 µs | ×1.03 |
+| `crunch`, 100 items | 237 / 235 µs | ×1.07 / ×1.06 | ×1.04 / ×1.01 | 208 µs | ×1.01 |
+| `crunch`, 1,000 items | 1.90 / 2.00 ms | ×1.10 / ×1.04 | ×1.04 / ×1.00 | 1.87 ms | ×1.02 |
+| `crunch`, 5,000 items | 10.4 / 9.6 ms | ×1.09 / ×1.07 | ×1.08 / ×1.04 | 9.73 ms | ×1.04 |
+| nested loop, 1,000 × 1,000 | 164 / 169 ms | ×1.16 / ×1.16 | ×1.10 / ×1.08 | 140 ms | ×1.01 |
+
+A round's ratio still ranges ±10–20% pinned, so a median is good to a few percent. `crunch` costs
+0–4% in time either way. A loop of bare additions, three steps an item and little else, costs 8–10%
+in wasm and about 1% natively: V8 makes the count down a step dearer than the native build does.
+Unpinned, the scheduler moved the process between the laptop's performance and efficiency cores,
+and the same workload's time varied 1.6× from one run to the next.
+
+### The memory budget (2026-11-12)
+
+A round is held to the bytes it may come to hold (`max_memory`, B5): the server, the editor's wasm
+and the tests install `holon_core::memory::Counting` as their global allocator, which adds each
+allocation's size to a thread-local count and takes each free's off, and the round's `Budgeted`
+reads that count at every step (`Asks`, at every item). So each allocation and each free costs an
+add to a thread-local, and each step a read and a compare. Callgrind in WSL as
+[above](#the-step-budget-2026-11-12), `778096c` against the change; instructions a run:
+
+| Route | before | after |
+|---|---:|---:|
+| `crunch`, 1,000 items | 25.21 M | 26.03 M (×1.033) |
+| `hello` | 96.6 K | 95.6 K (×0.99) |
+
+`crunch` builds a record for each item, so it allocates for each, and pays most. In time, the
+native evaluator as above (`evalbench`, eval under `Budgeted`, before and after in turn, pinned,
+15 rounds, twice) came out ×1.02 to ×1.14 by the medians, but on a machine at 90% CPU from other
+work, each round's ratio ranging 0.81 to 1.78: not a measurement to a few percent. The editor's
+wasm wasn't timed.
+
+### Nothing computes on a data-plane worker (2026-11-13)
+
+Every run goes to the blocking pool, however short. The shortcut of 12.1, a short route answered
+on the tokio worker that read its request, is gone (B5; `answer`, `dataplane.rs`). It is the first
+thing a search for request latency finds, so this says why it went and what bringing it back
+would take.
+
+**What it broke.** The data plane's workers, one a core, accept every listener's connections and
+move their bytes. Of the idle ones, one at a time watches the network (holds tokio's I/O driver);
+the others sleep until a task is queued for them, and tokio wakes one only when the worker that
+woke has more than one task to share. A request arrives at the worker watching, so a run answered
+there ran on the one thread watching. The routes kept on the worker (R2) never wait, but they may
+compute: a route that waits on nothing is held only to its round's `max_steps` and `max_fuel`,
+about 0.5–1 s by default in a release build and 10–20 s at the ceilings (before B5, without end).
+While one computed, no connection was accepted and no byte read on any of the server's ports: one
+request any caller could send stopped every flow on the server from answering. Live, on a release
+build: a route folding 10,000 × 3,000 numbers (about 3 s alone), and a third of the way in, at
+once, another deployment's unrecorded route, its recorded route, and a request to the busy port
+declaring a body past the limit (refused 413 before its body is read):
+
+| Runs at once | inline (`8647768`) | every run on the pool |
+|---|---|---|
+| 1 | each 1.65 s, all three answered as the run ended | 1–25 ms |
+| 24 | 1.8–7.7 s | 1–29 ms |
+
+**What it saved.** The hop: a task to the blocking pool and its answer back, about 20–30 µs here
+(41 µs when 12.1 measured it). `holon load`, five rounds a build, each started fresh in a turning
+order, on a 16-core Windows desktop with other work on it (30–100% CPU), medians, requests a
+second:
+
+| Route | Connections | inline | pool | pool ÷ inline |
+|---|---:|---:|---:|---:|
+| `GET /hi/:name`, unrecorded, answers the name | 1 | 10,187 (p50 75 µs) | 7,602 (p50 106 µs) | 0.75 |
+| `POST /sum`, unrecorded, a fold of 1,000 | 1 | 2,577 | 2,480 | 0.96 |
+| `GET /hi/:name` | 16 | 64,005 | 63,981 | 1.00 |
+| `POST /sum` | 16 | 36,701 | 33,766 | 0.92 |
+| `GET /hi/:name` | 64 | 63,936 | 72,220 | 1.13 |
+| `GET /hello/:name`, recorded, never inline: the rounds' noise | 16 | 2,283 | 2,454 | 1.07 |
+
+An earlier set (a build with the shortcut switched off, five and eight rounds) gave 0.78 at one
+connection (p50 58 → 77 µs) and 1.09, 1.12 and 1.18 for the three loaded rows. So a trivial route
+called one request at a time pays about a quarter; at 16 connections it is even within the rounds'
+spread; at 64 the pool is ahead, since a run inline, however short, keeps its worker from the
+network while it runs.
+
+**Ways around it, weighed and left:**
+
+- **Room for all but one worker** (a semaphore of workers − 1 inline runs, the first fix tried):
+  the worker left over sleeps, and the one watching is the one that took the run. With 1, 2, 4 or
+  8 long runs, far fewer than the workers, every request beside them still waited for the first
+  to end.
+- **`block_in_place`** around a run inline, tokio's way to hand a worker's role to another thread
+  while it computes: a request beside one long run in 1–2 ms, but beside 24 at once 130 ms to
+  1.1 s, the hand-over waiting for a core while every core computed; and every run inline pays a
+  thread's wake-up. (12.1 had tried it for another reason: [below](#tried-and-left).)
+- **A capped attempt:** a few milliseconds of steps, fuel and memory inline, for small bodies
+  only, and past them the run stopped and run again on the pool. Sound, and it keeps the
+  microseconds, but each long request still leaves the server deaf for the cap, the loaded rows
+  above stay where inline is, and an attempt stopped must leave no count, no line and no
+  `console.log`. Not worth it for a lone caller's microseconds.
+- **Only routes that can't loop** (no `map`, fold, `range`, `js()` or module call): bounded by the
+  request's size rather than its steps, so one step over a large body (up to 10 MiB at the default
+  limit) holds the watch for as long as that step takes.
+- **Waking an idle worker before computing:** tokio has no call for it, and the tricks that make it
+  see work to share depend on its version.
+
+**To win the microseconds back,** make the hop cheaper, or the run, but don't skip it: nothing may
+compute on a worker. `nothing_a_run_computes_holds_up_the_data_plane`
+(`crates/holon/tests/data_plane.rs`, against the real server) fails, with a single long run, if
+anything does.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
@@ -416,6 +549,10 @@ rounds, requests a second, with the server's CPU a request; no errors:
 
 ### Tried and left
 
+- **A short route answered on the worker that read it** (12.1, taken out by B5): about 20–30 µs at
+  one connection, and one run computing a while left every listener deaf; a semaphore,
+  `block_in_place`, a capped attempt and only routes that can't loop were weighed
+  ([above](#nothing-computes-on-a-data-plane-worker-2026-11-13)).
 - **Answering on the worker by `block_in_place`** (12.1, R2): gained nothing, cost `/notes` 12%;
   the waiting is on the log's lock, not the store.
 - **Dropping each step's output from recorded runs** (Q16, `49c12ea`): lazy `hello` 20,652 →

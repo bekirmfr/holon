@@ -63,6 +63,13 @@ mod fork;
 mod kind;
 mod lists;
 mod memo;
+/// The bytes a thread holds, counted by its allocator: a round's memory budget.
+pub mod memory;
+/// Counts the bytes each thread holds in this crate's tests, as the server does, so a test of a
+/// round's memory budget sees what the round holds.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: crate::memory::Counting<std::alloc::System> = crate::memory::Counting(std::alloc::System);
 mod promote;
 mod records;
 mod hash;
@@ -92,12 +99,13 @@ pub mod approval;
 pub mod sql;
 /// What a document database leaf's templates say (docs/L4s/databases-L4.md §3, slice 7).
 pub mod documents;
-pub use primitives::{content_type, MAX_AWAIT_SECONDS, MAX_RANGE};
+pub use primitives::{content_type, MAX_AWAIT_SECONDS, MAX_BYTES, MAX_ITEMS, MAX_RANGE};
+pub use texts::MAX_TEXT;
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot};
+pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Budgeted, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS, MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, sourced_value, takes_trigger, ASKS_HOST, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
@@ -116,7 +124,7 @@ pub use kind::{
     Effects, Kind,
 };
 pub use module::{
-    module_limits, module_limits_of, validate_module, ModuleError, ModuleLimits, DEFAULT_MODULE_FUEL,
+    module_limits, module_limits_of, validate_module, ModuleError, ModuleLimits, ModuleRun, DEFAULT_MODULE_FUEL,
     DEFAULT_MODULE_MEMORY, FUEL_LIMIT, FUEL_PARAM, MEMORY_LIMIT, MEMORY_PARAM,
 };
 pub use resolve::{MapResolver, Resolver};

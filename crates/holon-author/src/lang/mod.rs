@@ -13,6 +13,7 @@ pub mod ast;
 pub mod format;
 pub mod layout;
 pub mod lower;
+pub mod nesting;
 pub mod print;
 pub mod ts;
 

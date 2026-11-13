@@ -15,7 +15,7 @@ pub fn eval_eager(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolve
     match &unit.body {
         UnitBody::Primitive { name } => vec![primitive(name, unit, inputs, resolver)],
         UnitBody::Composite { children, edges } => composite(children, edges, unit.outputs.len(), inputs, resolver),
-        UnitBody::Module { bytes } => crate::eval::run_module_outputs(bytes, unit, inputs, resolver).0,
+        UnitBody::Module { bytes } => crate::eval::run_module_outputs(bytes, unit, inputs, resolver, &mut crate::NoObserver).0,
     }
 }
 

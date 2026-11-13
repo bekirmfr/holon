@@ -286,6 +286,13 @@ out is made once, and nothing waits for a key it doesn't touch.**
   four tests that judged by elapsed time judge by what was out at once. One of them failed on CI
   (998 ms, its bound 780) with the `semantics.rs` sweep on every core beside it. The model, and
   the tests still ordered by a sleep, are open.
+- A shape beside it (2026-11-13, found in #84): a test that counts what another thread did
+  during X, with nothing making X wait for it.
+  `a_rewrite_hides_no_value_it_keeps_and_keeps_one_put_again` (`holon-host/src/packs.rs`)
+  asserted its reader read at least once during a rewrite, and failed once under a full
+  workspace run; its `settle` now waits for the reader's next read (6350baf5).
+  Open: the sweep for the shape (a spawned reader or writer, an `AtomicBool` stop, a count
+  asserted above 0 at the end), each made to wait by construction.
 
 **14. For every trigger with a far side, each item starts one run, in order, whatever is sent
 again, dropped or cut; and what a run sends after it goes once its record is on disk, once.**
@@ -419,6 +426,10 @@ Done in part (ee5a768c, 2026-11-11), for the control plane's bodies: every one i
 deadline (`every_body_the_control_plane_reads_is_read_by_the_deadline`), and one that stops or
 trickles gives its place back
 (`a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline`).
+Open, a case of the last clause (2026-11-13, found by `editor/e2e/host.e2e.ts`): a SQLite
+database's file stays open after its binding is removed, so on Windows its folder can't be
+deleted until the server restarts; likely an unbind in `databases.rs` that keeps a connection.
+The e2e test puts its files in the e2e server's own folders, emptied at start, to get by.
 
 ## 5. Redundant now
 

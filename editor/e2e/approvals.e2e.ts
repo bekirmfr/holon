@@ -3,12 +3,12 @@
 // may do and shows its text; Approve deploys it once the person says they read it.
 
 import { expect, test } from "./fixtures";
-import { gotoPage } from "./helpers";
+import { newFlow } from "./helpers";
 
 test("a flow saved and never deployed waits under Deploys; reviewed, ticked and approved, it is deployed", async ({ page }) => {
   const name = `review-${Date.now().toString(36)}`;
   await page.goto("/");
-  await gotoPage(page, "new");
+  await newFlow(page);
   const canvas = page.locator(".hl-canvas");
   await canvas.getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();

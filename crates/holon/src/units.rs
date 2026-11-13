@@ -296,11 +296,6 @@ impl FlowCache {
         kept.shrink(None);
     }
 
-    /// Whether the closure of `root` is kept in memory, without loading it or counting it as used.
-    pub(crate) fn holds(&self, root: &Hash) -> bool {
-        self.0.lock().unwrap().closures.contains_key(root)
-    }
-
     /// The closure kept for `root`, now the most recently used.
     fn get(&self, root: &Hash) -> Option<Loaded> {
         let mut kept = self.0.lock().unwrap();

@@ -131,6 +131,62 @@
   did and sent the start of what it does again, and the status it answered either that or a
   failure's. One that says other differs (exit 1). A panicked run's entry must say it did
   nothing, and the state check no longer takes the empty state it records as where it began.
+- **A run's computing is bounded: `max_steps`.** A run's time budget was read only between its
+  outbound calls, so one request whose handler computed and called nothing out
+  (`range(10000).map(i => range(10000).reduce(…))`) held a server worker for as long as it took.
+  Now each node a run evaluates, and each item a function is applied to, is a step, and a run
+  that takes more than `max_steps` between two outbound calls (10 million by default, about a
+  second or a few of computing) fails, answering 500 and performing nothing. It is a limit like
+  the others: a flow asks for more with `limits: { max_steps: n }`, which a person approves, up
+  to 200 million. Steps are counted, not timed, and `holon verify` runs a run again with up to
+  200 million, so it finishes every run that finished; a policy may lower that ceiling, not raise
+  it. The editor's design mode stops at the
+  default too, rather than hang the tab.
+- **A run's `js()` calls are bounded together, not only each one: `max_fuel`.** A `js()`
+  function's fuel bounds one call, and a function mapped over a request's items is as many calls
+  as items: each call within its 200 million instructions, `range(10000).map(score)` computed for
+  minutes in one request. Now a run's calls between two of its outbound calls run on `max_fuel`
+  instructions in all (4 billion by default, two to five seconds by what the code does; chess's
+  costliest move burns 0.93 billion): each call gets its own fuel or what is left, the less, and a
+  run that wants more fails, answering 500 and performing nothing. A call that fails after
+  computing (a throw, a trap) is charged what it ran. It is a limit like `max_steps`: a flow asks
+  for more with `limits: { max_fuel: n }`, which a person approves, up to 20 billion, which
+  `holon verify` runs a run again with; a policy may lower that ceiling, not raise it. The editor's
+  design mode stops at the default too, and a replay computing with a secret (twice, with two
+  placeholders, outside the round's count) is held to twice a round's steps and fuel, where before
+  nothing bounded it.
+- **A replay computes no more than the deployment is granted.** Replaying a version on a
+  deployment's recent runs needs no approval, runs it on up to 200 runs, and nothing bounded its
+  computing but each `js()` call's fuel. Now each round is held to the deployment's own
+  `max_steps` and `max_fuel`, not the higher ceilings `holon verify` runs a run again with; a
+  version that asks for more has it once deployed, and replayed, a run that needs it says
+  `it doesn't finish within what the deployment is granted`, with the limit it ran past.
+- **A run's memory is bounded: `max_memory`.** Steps and fuel bound what a run computes, not
+  what it keeps: a request copying a 64 KiB body into each of ten thousand items held gigabytes
+  within its steps, and `range(40).reduce((s) => s + s, "x")` doubled a text past what the
+  machine has. Either aborted the server, every deployment with it. Now the server counts the
+  bytes each run makes as it makes them, and a run that comes to hold more than `max_memory`
+  between two outbound calls (256 MiB by default) fails, answering 500 and performing nothing. It
+  is a limit like `max_steps`: a flow asks for more with `limits: { max_memory: n }`, which a
+  person approves, up to 4 GiB; a policy may lower that ceiling, not raise it. What a run holds
+  isn't counted alike on every build, so `holon verify` reads a run stopped for it as not run
+  again to its end (exit 3), not as changed. A `js()` call's own memory is still its `memory`.
+- **No leaf makes a value past the most one may be, before it makes it.** A run's memory is
+  looked at between steps, so one step must not make gigabytes: `+`, `concat` and `join` give
+  nothing past 16,777,216 UTF-16 units (`join` with a long separator between many items made
+  gigabytes from megabytes), `bytes_concat` past 64 MiB, `append`, `cons`, `extend`,
+  `to_spliced` and `flat` past 1,048,576 items, `fill` past 64 MiB of copies of its value, and
+  `split`, `json_parse`, `csv_parse`, `xml_parse` and `bytes_to_list` when they would read more
+  than 1,048,576 values out of one text or bytes. `pad`, `gunzip` and a number's text (`js_string`)
+  make what they make with less held on the way.
+- **One request no longer stops every flow on the server from answering.** A short route (one
+  that is unrecorded and reads only its request, the clock and random numbers) ran on the thread
+  that read its request, which was also the one watching the network for every flow's port. A
+  route that computed a while held it: a fold of 3 s kept another deployment's requests, and a
+  413 on its own port, waiting 1.65 s, until it ended. Every run now goes to the server's pool of
+  run threads, and a request beside 24 such runs is answered in milliseconds. A trivial route
+  called one request at a time takes about 20–30 µs longer; under load it is about even, and
+  ahead at 64 connections.
 
 ## 0.1.0-rc.35
 

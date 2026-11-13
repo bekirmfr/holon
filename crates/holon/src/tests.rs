@@ -12,6 +12,8 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+/// No page of another site may frame the control plane.
+mod frames;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
@@ -4109,62 +4111,6 @@ route.websocket(\"/room/:name\", {{
     assert!(gone.to_string().contains("bob") && gone.to_string().contains("1006"), "bob's close ran, as a dropped connection's: {gone}");
 }
 
-/// A route whose runs can never wait (unrecorded and granted, reading only its request, the clock
-/// and random numbers, its flow in memory) is answered on the data plane's own worker, without the
-/// hop onto the blocking pool (docs/L4s/request-path-L4.md §4.5 a): through a real socket it
-/// answers as any route does, CORS and all. Any other keeps the hop, since a worker that waits holds
-/// up every connection on it (docs/L4s/resilience-audit-L4.md, R2): a lazy one (its log's lock), one
-/// reading a collection (the store's lock while a write syncs) or a folder, a strict one, one that
-/// calls out; and a light one too until its flow is loaded.
-#[test]
-fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
-    let mut state = test_state();
-    state.listeners = Some(Mutex::new(BTreeMap::new()));
-    let port = free_port();
-    let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport notes from \"collection:notes\"\nimport docs from \"folder:docs\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"light\", {{ port: {port}, browsers: \"https://a.example\" }})\n\nroute.get(\"/health\", () => \"ok\", {{ log: \"unrecorded\" }})\n\nroute.get(\"/notes\", () => notes.list({{ limit: 50 }}), {{ log: \"lazy\" }})\n\nroute.post(\"/notes\", (req) => {{\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n}})\n\nroute.get(\"/uuid\", async () => (await httpbin.get(\"/uuid\")).body)\n\nroute.get(\"/file\", () => docs.get(\"a.txt\"), {{ log: \"lazy\" }})\n"
-    );
-    let dir = std::env::temp_dir().join(format!("holon-light-docs-{}-{}", std::process::id(), rand::random::<u32>()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let docs = serde_json::json!({ "name": "docs", "path": dir.display().to_string(), "access": "read" });
-    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&docs).unwrap())).status_code, 200);
-    let slug = deploy_plain_text(&state, &text);
-    // The pages it answers are a deploy setting, which this deploy leaves out.
-    state.deployments.lock().unwrap().get_mut(&slug).unwrap().browsers = vec!["https://a.example".to_string()];
-    sync_listeners(&state);
-    let here = Mutex::new(dataplane::Here::default());
-    let light = |method: &str, url: &str| dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data(method, url, vec![]), &here);
-    // Its flow let go of by the flow cache: the pool, which loads it.
-    state.store.3.set_budget(0);
-    assert!(!light("GET", "/health"), "its flow not in memory: the pool");
-    state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
-    let unit = state.deployments.lock().unwrap()[&slug].unit;
-    assert!(crate::units::closure(&state.store, unit).is_ok(), "loaded, as a run on the pool loads it");
-    assert!(light("GET", "/health"), "unrecorded, reading only its request, loaded: here");
-    assert!(light("GET", "/health"), "and again, from what it worked out");
-    assert!(!light("GET", "/notes?x=1"), "lazy, reading a collection: the pool");
-    assert!(!light("GET", "/file"), "a folder may take as long as it likes: the pool");
-    assert!(!light("POST", "/notes") && !light("GET", "/uuid") && !light("GET", "/nowhere"), "strict, calling out, or no route: the pool");
-
-    let body = r#"{"id":"a","text":"hi"}"#;
-    let posted = raw_http(port, format!("POST /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
-    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
-    let health = raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    assert!(health.starts_with("HTTP/1.1 200") && health.ends_with("ok"), "{health}");
-    let listed = raw_http(port, b"GET /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://a.example\r\nConnection: close\r\n\r\n");
-    assert!(listed.starts_with("HTTP/1.1 200") && listed.contains(r#"{"a":"hi"}"#), "{listed}");
-    assert!(listed.to_ascii_lowercase().contains("access-control-allow-origin: https://a.example"), "CORS as for any route: {listed}");
-    // Many at once, each answered.
-    std::thread::scope(|s| {
-        for _ in 0..16 {
-            s.spawn(|| assert!(raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200")));
-        }
-    });
-    assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["GET /health"].runs, 17);
-    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// **Guards:** a panic ends the run it was in and nothing else, whatever started the run and
 /// wherever in it the panic is (docs/engineering/themes/resilience.md, G3).
 ///
@@ -4178,12 +4124,12 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
 /// dropped with no answer.
 ///
 /// The test asks for the panic (`panic_for_tests`): in a run itself, where every run passes
-/// (`fire_with_state`), and in a request's handler before its run (answered where its connection
-/// is, dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
+/// (`fire_with_state`), and in a request's handler before its run (on the blocking pool,
+/// dataplane.rs). Each way a run starts is a row. Calm, it runs. Faulted, whatever drives it
 /// comes back, a caller is told 500, and the deployment beside it runs all the same. Calm again,
 /// it runs: nothing that drives runs was ended. A run that panicked is on record as one that
 /// failed. The rows are every way a run starts that a test drives without a far side: a request
-/// answered on its connection's worker and one on the pool, an action, a clock, a file, and a
+/// to an unrecorded route and one to a recorded route, an action, a clock, a file, and a
 /// waiting run going on at its deadline. A feed's, a queue's, a mailbox's and a socket's runs
 /// pass the same function.
 #[test]
@@ -4283,8 +4229,8 @@ on.file.created(inbox, (f) => {{
         None
     };
     let rows = [
-        Row { what: "a request answered on its connection's worker", counts: None, logged: None, before: None, start: &light, all: false },
-        Row { what: "a request answered on the pool", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
+        Row { what: "a request to an unrecorded route", counts: None, logged: None, before: None, start: &light, all: false },
+        Row { what: "a request to a recorded route", counts: Some(0), logged: Some("request"), before: None, start: &hit, all: false },
         Row { what: "an action", counts: Some(1), logged: Some("trigger"), before: None, start: &bump, all: false },
         Row { what: "a clock", counts: Some(2), logged: Some("tick"), before: None, start: &ticked, all: true },
         Row { what: "a file", counts: Some(3), logged: Some("file"), before: None, start: &filed, all: true },
@@ -4295,11 +4241,6 @@ on.file.created(inbox, (f) => {{
     type Applies<'a> = &'a dyn Fn(&Row) -> bool;
     let (every_row, requests): (Applies, Applies) = (&|_| true, &|row| row.what.starts_with("a request"));
     let faults = [("in its run", vec!["a run of faulty"], every_row), ("in its request's handler", vec!["/faulty-light", "/faulty-hit"], requests)];
-
-    // Loaded by a first run, so the light route is answered on the worker from here on.
-    assert_eq!(light("faulty", ports[0].1), Some(200));
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "faulty", &fake_data("GET", "/faulty-light/x", vec![]), &here), "answered on the worker");
 
     let ran = |row: &Row, name: &str, was: &[u64], told: Option<u16>| match row.counts {
         Some(at) => seen(name)[at] > was[at],
@@ -4372,8 +4313,8 @@ on.file.created(inbox, (f) => {{
 /// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
 /// the exit with what it did on no record; or the run going on refused its own end.
 ///
-/// Each way a run starts that a test drives without a far side is a row: a request answered on
-/// its connection's worker and one on the pool, a WebSocket opened, an action over the control
+/// Each way a run starts that a test drives without a far side is a row: a request to an
+/// unrecorded route and one to a recorded route, a WebSocket opened, an action over the control
 /// plane (`admitted`), a clock, a file and a waiting run at its deadline. Before the stop each
 /// runs; after it none does, and a caller is told 503. A feed's, a queue's, a mailbox's and a
 /// socket message's runs ask `takes_runs` as the clock's and the file's do: the sweep at the end
@@ -4473,8 +4414,8 @@ on.file.created(inbox, (f) => {{
         None
     };
     let rows = [
-        Row { what: "a request answered on its connection's worker", counts: None, start: &light },
-        Row { what: "a request answered on the pool", counts: Some("hits"), start: &hit },
+        Row { what: "a request to an unrecorded route", counts: None, start: &light },
+        Row { what: "a request to a recorded route", counts: Some("hits"), start: &hit },
         Row { what: "a WebSocket opened", counts: None, start: &socket },
         Row { what: "an action over the control plane", counts: Some("bumps"), start: &bump },
         Row { what: "a clock", counts: Some("ticks"), start: &tick },
@@ -4493,8 +4434,6 @@ on.file.created(inbox, (f) => {{
         let told = (row.start)();
         assert!(ran(row, was, told), "{}: it runs ({told:?})", row.what);
     }
-    let here = Mutex::new(dataplane::Here::default());
-    assert!(dataplane::runs_here_for(&state.store, &state.deployments, "stopping", &fake_data("GET", "/light/x", vec![]), &here), "answered on the worker");
     assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
 
     // A run going on, its call out, as the server is told to stop.
@@ -6534,6 +6473,65 @@ route.post(\"/sign\", (req) => {answer})
     assert_eq!(r["runs"][0]["why"][0], "it answers 503 where it answered 200", "{r}");
 }
 
+/// Guards: a replay computes a node fed a secret, a token or a tainted value (`Fed`: twice, with
+/// the placeholder and with another) on a budget of its own, made afresh each round, of twice the
+/// round's steps, fuel and memory: a version that computes more with one than that in a round
+/// can't be told, and its replay ends; one within it in each of its rounds is computed and
+/// compared. For steps (a function mapped over items with the key), for fuel (a `js()` function
+/// given the key) and for memory (the key joined to a kilobyte for each of many items), in a run
+/// of two rounds (an outbound call).
+/// Why: what `Fed` computes stands in for the node, so the round's budget never counts it.
+/// Without a budget of its own, a version that maps over many items with a secret, or loops in a
+/// js function given one, holds the server's replay for as long as it computes.
+/// If it fails: `Fed::asserted` (verify/replay.rs) evaluates with plain `eval`, or not on its
+/// budget, or `replay_one` doesn't read `too_much`; on "steps, two rounds", `Fed::round` doesn't
+/// make its budget afresh.
+#[test]
+fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
+    let state = claims_state("");
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": "whsec_test_123456" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    // The key reaches each computing node from outside it (`k`), so the node is fed it.
+    let signer = |n: &str| {
+        format!(
+            "import {{ flow, hmac_sha256, js, range, route }} from \"holon\"\nimport signing_key from \"secret:signing_key\"\nimport host from \"host:127.0.0.1:9\"\n\nflow(\"signer\", {{ port: 18199 }})\n\nconst spin = js(function count(key, n) {{\n  let s = 0\n  for (let i = 0; i < n; i++) {{\n    s = s + 1\n  }}\n  return s\n}})\n\nroute.post(\"/sign\", async (req) => {{\n  const k = {{ key: signing_key }}\n  const got = (await host.get(\"/x\")).status ?? 0\n  return {{ got, n: {n} }}\n}})\n"
+        )
+    };
+    deploy_text(&state, &signer("hmac_sha256(k.key, req.body)"), "127.0.0.1:9");
+    assert_eq!(data_call(&state, "signer", "POST", "/sign", "hello").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/signer/export", vec![])))).unwrap();
+    let again = verify::rerun_limits();
+    let (mapped, spun) = ("range(1000).map((i) => k.key).length", "spin(k.key, 1000)");
+    let held = "range(1000).map((i) => k.key + \"x\".repeat(1000)).length";
+    let replay = |n: &str, limits: &holon_host::Limits| {
+        let unit = stage_text(&state, &signer(n));
+        let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
+        let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
+        let r = verify::replay(&export, unit, &resolver, 1, limits);
+        (r.differ, r.cant_tell, r.runs[0].why.join("; "))
+    };
+    let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";
+    let too_much = |r: &(usize, usize, String)| r.1 == 1 && r.2.contains("more than a replay does in a round");
+    let rows: [(&str, &str, holon_host::Limits, bool); 7] = [
+        ("steps, within", mapped, again.clone(), true),
+        ("steps, past", mapped, holon_host::Limits { max_steps: 100, ..again.clone() }, false),
+        // Within a round's budget in each round, past it in the two together.
+        ("steps, two rounds", mapped, holon_host::Limits { max_steps: 4500, ..again.clone() }, true),
+        ("fuel, within", spun, again.clone(), true),
+        ("fuel, past", spun, holon_host::Limits { max_fuel: 1000, ..again.clone() }, false),
+        ("memory, within", held, again.clone(), true),
+        ("memory, past", held, holon_host::Limits { max_memory: 256 << 10, ..again.clone() }, false),
+    ];
+    for (name, n, limits, within) in rows {
+        let r = replay(n, &limits);
+        if within {
+            assert!(computed(r.clone()), "{name}: computed, and compared: {r:?}");
+        } else {
+            assert!(too_much(&r), "{name}: {r:?}");
+        }
+    }
+}
+
 #[test]
 fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
     let state = claims_state("");
@@ -7899,6 +7897,346 @@ fn every_run_an_entry_can_say_it_was_comes_to_a_verdict_and_the_exit_says_the_wo
         ("the same, answering another status", on(2, Box::new(|v| over(v, 404))), vec![m, m, d], 1),
     ];
     judge(&export, &values, rows);
+}
+
+/// Guards: a round that takes more steps than its grant's `max_steps` fails, answers 500 and
+/// performs nothing; a flow that asks for more steps (`limits: { max_steps }`) waits for a person
+/// to approve them and then gets them; and `holon verify` reads the failed run as not run again
+/// to its end (exit 3), the runs either side of it as matched.
+/// Why: without the budget one request (`range(10000).map(.. range(10000) ..)`) holds a worker
+/// for as long as it computes, and enough of them stall the server. The budget is the server's
+/// only bound on a round's work, and verify must not read a run it stopped as one forged.
+/// If it fails: on the 200, the step check (`Asking::step` in rounds.rs, `told`/`at_item` in
+/// eval.rs) isn't counting or isn't read after the round; on the write, the failure comes after
+/// the effects; on the verdict, verify's limits (verify.rs `rerun`) aren't the ceiling's steps,
+/// or a StepBudget line isn't one that says less.
+#[test]
+fn a_round_past_its_steps_fails_performs_nothing_and_a_flow_may_ask_for_more() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000").unwrap());
+    let text = |limits: &str| {
+        format!(
+            "import {{ flow, range, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"steps\", {{ port: 8307{limits} }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  state.total = total\n  return `total ${{total}}`\n}})\n"
+        )
+    };
+    // As the command line deploys a text: the limits it asks for beside its unit.
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "steps", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"total\")"]);
+    let deployed = deploy(&text(""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    let total = || body_json(route(&state, &req("GET", "/deployments/steps/state", vec![])))["state"]["total"]["value"].clone();
+    let loop_of = |n: u32| data_call(&state, "steps", "POST", "/loop", &format!("{{\"n\":{n}}}"));
+
+    // Within its steps (10 × 10 items, a few hundred): answered and written.
+    assert_eq!(loop_of(10).0, 200);
+    assert_eq!(total(), serde_json::json!(2025.0));
+    // Past them (100 × 100 items): failed, as a stopped run, with nothing written.
+    let (status, _, _) = loop_of(100);
+    assert_eq!(status, 500);
+    assert_eq!(total(), serde_json::json!(2025.0), "a run past its steps wrote");
+    let entries = log_entries(&state, "steps");
+    let error = entries.last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with(holon_host::STEP_BUDGET) && error.contains("5000"), "{error}");
+    assert_eq!(entries.last().unwrap()["performed"], serde_json::json!([]), "{error}");
+
+    // A flow that asks for more steps waits for them to be approved, then has them.
+    let more = text(", limits: { max_steps: 100000 }");
+    let asked = deploy(&more, &ack);
+    assert_eq!(asked.status_code, 400);
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(max_steps=100000)"));
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().push("Limit(max_steps=100000)".into());
+    assert_eq!(deploy(&more, &approved).status_code, 200);
+    assert_eq!(loop_of(100).0, 200);
+    assert_eq!(total(), serde_json::json!(24502500.0));
+
+    // Verify runs each run again: the stopped one is skipped, not called forged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/steps/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    let came: Vec<&str> = report
+        .reruns
+        .iter()
+        .map(|(_, r)| match r {
+            verify::Rerun::Matched => "matched",
+            verify::Rerun::Differs(_) => "differs",
+            verify::Rerun::Skipped(_) => "skipped",
+            verify::Rerun::NothingRan(_) => "nothing ran",
+        })
+        .collect();
+    assert_eq!(came, ["matched", "skipped", "matched"], "{text}");
+    let file = unique_temp_path("steps-export");
+    std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
+    assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
+    let _ = std::fs::remove_file(&file);
+}
+
+/// Guards: a round whose `js()` calls burn more than its grant's `max_fuel` in all fails,
+/// answers 500 and performs nothing, though each call is within its own fuel; a flow that asks
+/// for more (`limits: { max_fuel }`) waits for a person to approve it and then has it; and
+/// `holon verify` reads the failed run as not run again to its end (exit 3), the runs either side
+/// of it as matched.
+/// Why: a call's fuel bounds one call, and a `js()` function mapped over a request's items is as
+/// many calls as items: without the round's pool, one request computes for as long as it has
+/// items. The pool is what bounds it, and verify must not read a run it stopped as one forged.
+/// If it fails: on the 200, the round's fuel (`Asking::take_fuel` in rounds.rs,
+/// `run_module_outputs` in eval.rs) isn't charged or isn't read after the round, or the policy's
+/// `max_fuel` isn't the permit's; on the write, the failure comes after the effects; on the
+/// verdict, verify's limits (verify.rs `rerun_limits`) aren't the ceiling's fuel.
+#[test]
+fn a_round_past_its_fuel_fails_performs_nothing_and_a_flow_may_ask_for_more() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_fuel = 50000000").unwrap());
+    let text = |limits: &str| {
+        format!(
+            "import {{ flow, js, range, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"fuel\", {{ port: 8308{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n).map(double)\n  const sum = doubled.reduce((acc, x) => acc + x, 0)\n  state.total = sum\n  return `total ${{sum}}`\n}})\n"
+        )
+    };
+    // As the command line deploys a text: the limits it asks for beside its unit.
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "fuel", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"total\")", "Limit(module_fuel=20000000)", "Limit(module_memory=16777216)"]);
+    let deployed = deploy(&text(""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    let total = || body_json(route(&state, &req("GET", "/deployments/fuel/state", vec![])))["state"]["total"]["value"].clone();
+    let twice = |n: u32| data_call(&state, "fuel", "POST", "/twice", &format!("{{\"n\":{n}}}"));
+
+    // Two calls, well within the round's 50M: answered and written.
+    assert_eq!(twice(2).0, 200);
+    assert_eq!(total(), serde_json::json!(2.0));
+    // Ten calls, each within its own 20M, past the round's 50M in all: failed, nothing written.
+    let (status, _, _) = twice(10);
+    assert_eq!(status, 500);
+    assert_eq!(total(), serde_json::json!(2.0), "a run past its fuel wrote");
+    let entries = log_entries(&state, "fuel");
+    let error = entries.last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with(holon_host::STEP_BUDGET) && error.contains("50000000") && error.contains("max_fuel"), "{error}");
+    assert_eq!(entries.last().unwrap()["performed"], serde_json::json!([]), "{error}");
+
+    // A flow that asks for more fuel waits for it to be approved, then has it.
+    let more = text(", limits: { max_fuel: 300000000 }");
+    let asked = deploy(&more, &ack);
+    assert_eq!(asked.status_code, 400);
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(max_fuel=300000000)"));
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().push("Limit(max_fuel=300000000)".into());
+    assert_eq!(deploy(&more, &approved).status_code, 200);
+    assert_eq!(twice(10).0, 200);
+    assert_eq!(total(), serde_json::json!(90.0));
+
+    // Verify runs each run again with the ceiling's fuel: the stopped one is skipped, not called
+    // forged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/fuel/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    let came: Vec<&str> = report
+        .reruns
+        .iter()
+        .map(|(_, r)| match r {
+            verify::Rerun::Matched => "matched",
+            verify::Rerun::Differs(_) => "differs",
+            verify::Rerun::Skipped(_) => "skipped",
+            verify::Rerun::NothingRan(_) => "nothing ran",
+        })
+        .collect();
+    assert_eq!(came, ["matched", "skipped", "matched"], "{text}");
+    let file = unique_temp_path("fuel-export");
+    std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
+    assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
+    let _ = std::fs::remove_file(&file);
+}
+
+/// Guards: a round that comes to hold more than its grant's `max_memory` fails, answers 500 and
+/// performs nothing, whatever it holds when it finishes: a request copying its body into each of
+/// many items does, the same with a few items is answered and written; a flow that asks for more
+/// (`limits: { max_memory }`) waits for a person to approve it and then has it; and `holon verify`
+/// reads the failed run as not run again to its end (exit 3), the runs either side of it as
+/// matched. What a `js()` call holds and what the engine keeps of it don't count as the run's:
+/// two of its answers are within the grant, its module compiled in that run.
+/// Why: steps and fuel bound what a round computes, not what it keeps: a request that makes a
+/// copy of a body for each of ten thousand items holds gigabytes within its steps, and the
+/// process aborts, every deployment with it. What a round holds isn't counted alike on every
+/// build, so verify must read a run stopped for it as one it can't take to its end, not forged.
+/// The process keeps a compiled module for every run after, and a call's own memory is its
+/// `module_memory`; counted as a run's, a first call fails a run well within its grant.
+/// If it fails: on the 200, the round's memory (`Asking`'s budget in rounds.rs, `with_memory`)
+/// isn't held to the permit's `max_memory`, isn't read after the round, or the policy's isn't the
+/// permit's; on the write, the failure comes after the effects; on the verdict, verify's limits
+/// (verify.rs `rerun_limits`) aren't the ceiling's memory; on the answers, `run_metered`
+/// (holon-module) counts what the call holds or the engine keeps.
+#[test]
+fn a_round_past_its_memory_fails_performs_nothing_and_a_flow_may_ask_for_more() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_memory = 4194304").unwrap());
+    let text = |limits: &str| {
+        format!(
+            "import {{ flow, js, range, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"memory\", {{ port: 8310{limits} }})\n\nconst big = js(function xs(n) {{\n  return \"x\".repeat(n)\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n).map((i) => body.text + i)\n  state.count = copies.length\n  return `count ${{copies.length}}`\n}})\n\nroute.post(\"/answers\", (req) => {{\n  const answers = range(req.json.n).map((i) => big(65536 + i))\n  return `count ${{answers.length}}`\n}})\n"
+        )
+    };
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "memory", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"count\")", "Limit(module_fuel=200000000)", "Limit(module_memory=16777216)"]);
+    let deployed = deploy(&text(""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    let count = || body_json(route(&state, &req("GET", "/deployments/memory/state", vec![])))["state"]["count"]["value"].clone();
+    // A 64 KiB body copied into each of `n` items.
+    let body = "x".repeat(64 << 10);
+    let copies = |n: u32| data_call(&state, "memory", "POST", "/copies", &format!("{{\"n\":{n},\"text\":\"{body}\"}}"));
+
+    // Ten copies, well within the round's 4 MiB: answered and written.
+    assert_eq!(copies(10).0, 200);
+    assert_eq!(count(), serde_json::json!(10.0));
+    // A hundred, past it: failed, nothing written.
+    let (status, _, _) = copies(100);
+    assert_eq!(status, 500);
+    assert_eq!(count(), serde_json::json!(10.0), "a run past its memory wrote");
+    let entries = log_entries(&state, "memory");
+    let error = entries.last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with(holon_host::STEP_BUDGET) && error.contains("4194304") && error.contains("max_memory"), "{error}");
+    assert_eq!(entries.last().unwrap()["performed"], serde_json::json!([]), "{error}");
+    // Two of a js() function's answers, 64 KiB each, within it, though its module is compiled
+    // in this run.
+    let (status, _, _) = data_call(&state, "memory", "POST", "/answers", "{\"n\":2}");
+    assert_eq!(status, 200, "{}", log_entries(&state, "memory").last().unwrap()["error"]);
+
+    // A flow that asks for more memory waits for it to be approved, then has it.
+    let more = text(", limits: { max_memory: 67108864 }");
+    let asked = deploy(&more, &ack);
+    assert_eq!(asked.status_code, 400);
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(max_memory=67108864)"));
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().push("Limit(max_memory=67108864)".into());
+    assert_eq!(deploy(&more, &approved).status_code, 200);
+    assert_eq!(copies(100).0, 200);
+    assert_eq!(count(), serde_json::json!(100.0));
+
+    // Verify runs each run again with the ceiling's memory: the stopped one is skipped, not called
+    // forged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/memory/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    let came: Vec<&str> = report
+        .reruns
+        .iter()
+        .map(|(_, r)| match r {
+            verify::Rerun::Matched => "matched",
+            verify::Rerun::Differs(_) => "differs",
+            verify::Rerun::Skipped(_) => "skipped",
+            verify::Rerun::NothingRan(_) => "nothing ran",
+        })
+        .collect();
+    assert_eq!(came, ["matched", "skipped", "matched", "matched"], "{text}");
+    let file = unique_temp_path("memory-export");
+    std::fs::write(&file, serde_json::to_vec(&export).unwrap()).unwrap();
+    assert_eq!(verify::run(std::slice::from_ref(&file)), 3, "{text}");
+    let _ = std::fs::remove_file(&file);
+}
+
+/// Guards: a replay holds each round to the steps and the fuel the deployment is granted, for
+/// each of those budgets: a version that computes more than the grant in a round is replayed as
+/// not finishing, saying it is the grant that stopped it and which limit; the deployment's own
+/// version within its grant replays the same; and once a person grants more, the same version
+/// finishes.
+/// Why: a replay needs no approval, and runs a version on up to 200 runs at once. Held to the
+/// ceilings, a version anyone may stage computed far more, on the server, than any run a person
+/// approved.
+/// If it fails: the replay route doesn't hold its rounds `within` the deployment's permit
+/// (verify/replay.rs), or a failed round's reason isn't said.
+#[test]
+fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
+    let text = |times: u32, limits: &str| {
+        format!(
+            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times}\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
+        )
+    };
+    let deploy = |text: &str, acknowledge: &serde_json::Value| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut body = serde_json::json!({ "acknowledge": acknowledge });
+        if let Some(requirements) = &plan.requirements {
+            body["requirements"] = requirements.clone();
+        }
+        deploy_json(&state, "budget", parse_hash(&plan.unit).unwrap(), body)
+    };
+    let ack = serde_json::json!(["NetworkIngress", "Limit(module_fuel=20000000)", "Limit(module_memory=16777216)"]);
+    let deployed = deploy(&text(1, ""), &ack);
+    let code = deployed.status_code;
+    assert_eq!(code, 200, "{}", body_json(deployed));
+    // A run of each route, well within the grant.
+    assert_eq!(data_call(&state, "budget", "POST", "/loop", "{\"n\":10}").0, 200);
+    assert_eq!(data_call(&state, "budget", "POST", "/twice", "{\"n\":2}").0, 200);
+    let body = "x".repeat(64 << 10);
+    assert_eq!(data_call(&state, "budget", "POST", "/copies", &format!("{{\"n\":10,\"text\":\"{body}\"}}")).0, 200);
+    let replay = |text: &str| {
+        let unit = stage_text(&state, text);
+        let r = body_json(route(&state, &req("GET", &format!("/deployments/budget/replay?unit={}", to_hex(&unit)), vec![])));
+        let by_route: BTreeMap<String, (String, String)> = r["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| (run["route"].as_str().unwrap().to_string(), (run["outcome"].as_str().unwrap().to_string(), run["why"][0].as_str().unwrap_or_default().to_string())))
+            .collect();
+        by_route
+    };
+    // Ten times the items: past the steps (100 × 100), the fuel (20 calls) and the memory (a
+    // hundred copies of 64 KiB) the grant gives.
+    let heavier = text(10, "");
+    let rows = [("max_steps", "POST /loop", "5000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
+    let held = replay(&heavier);
+    let own = replay(&text(1, ""));
+    for (limit, label, granted) in rows {
+        let (outcome, why) = &held[label];
+        assert_eq!(outcome, "differs", "{limit}: {why}");
+        assert!(why.starts_with("it doesn't finish within what the deployment is granted: the run took more than ") && why.contains(granted) && why.contains(limit), "{limit}: {why}");
+        assert_eq!(own[label].0, "same", "{limit}: its own version, within its grant: {:?}", own[label]);
+    }
+
+    // Granted more by a person, the same version finishes.
+    let more = text(1, ", limits: { max_steps: 100000, max_fuel: 300000000, max_memory: 67108864 }");
+    let mut approved = ack.clone();
+    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=100000)".into()]);
+    let r = deploy(&more, &approved);
+    let code = r.status_code;
+    assert_eq!(code, 200, "{}", body_json(r));
+    let held = replay(&heavier);
+    for (limit, label, _) in rows {
+        assert_eq!(held[label], ("differs".to_string(), "its answer".to_string()), "{limit}: granted more, it finishes");
+    }
 }
 
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,

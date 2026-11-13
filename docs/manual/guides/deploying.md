@@ -30,14 +30,14 @@ it would start nothing.
 > - read the clock
 > - call https://hooks.slack.com
 > - receive requests
-> - read the secret "slack_webhook_path"
+> - read the secret "slack_webhook_path", and send it to https://hooks.slack.com
 > - read the secret "stripe_webhook_secret"
 >
 > What it touches (+ new, - no longer, ~ changed, ! not ready on this server):
 > What starts it
 > &nbsp;&nbsp;+ requests: receive — approved by confirming
 > Folders, databases and secrets
-> &nbsp;&nbsp;! secret slack_webhook_path: read — not set: the steps that read it get nothing until it is
+> &nbsp;&nbsp;! secret slack_webhook_path: read, and send it to https://hooks.slack.com — not set: the steps that read it get nothing until it is
 > &nbsp;&nbsp;! secret stripe_webhook_secret: read — not set: the steps that read it get nothing until it is
 > What it reaches outside
 > &nbsp;&nbsp;+ host hooks.slack.com: call — approved by confirming
@@ -287,6 +287,12 @@ with why, rather than as one that differs: one where the version sends a request
 something, that run didn't; one where it reads the clock or a random number that run didn't; one
 where a node computes with a secret or a token, which the log never holds (a node that only passes
 one along, or picks a field past it, computes the same and is told); one that failed then.
+
+A replay computes no more than the deployment is granted: each part of a run between two of its
+outbound calls within the deployment's `max_steps`, `max_fuel` and `max_memory`, as its own runs are
+([Permissions](../reference/permissions.md)), since a replay needs no approval. A version that
+asks for more has it once deployed; replayed, a run that needs it differs, `it doesn't finish
+within what the deployment is granted`, with the limit it ran past.
 `GET /deployments/<slug>/replay?unit=<hash>&runs=N` answers the same for any version staged
 (`POST /unit`) or proposed, for anyone who may read the deployment. From a file,
 [`holon replay`](../reference/cli.md#holon-replay) stages and replays it; an agent has the
@@ -356,7 +362,8 @@ wrote a file.
 On the deployed page, a deployment's **permissions ▸** shows what is granted. While it runs, you
 can narrow it:
 
-- **revoke** an item: from now on, the server refuses that effect. Revoking something optional
+- **revoke** an item: from the next run on, the server refuses that effect (a run already going
+  keeps the grant it began with, until it ends). Revoking something optional
   makes those parts absent, and the flow carries on. Revoking something required **pauses** the
   deployment, unless **keep running when something required is revoked** is ticked: then those
   calls fail and the rest runs. What starts its runs always pauses it when revoked, ticked or
