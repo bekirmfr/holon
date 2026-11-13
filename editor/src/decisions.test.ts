@@ -1,7 +1,7 @@
 // An approval a run waits at, as the editor says it and which steps whoever is signed in takes
 // (decisions.ts).
 import { describe, expect, it } from "vitest";
-import { approvalSaid, decidedSaid, decisionSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, decidedSaid, decisionSaid, shownSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import type { WValue } from "./holon";
 import type { Decided, WaitingRun } from "./server";
 
@@ -91,5 +91,23 @@ describe("an approval, said", () => {
     expect(decisionSaid(record([["approved", no], ["by", by()], ["declined_by", t("bob")], ["reason", t("not this vendor")]]))).toBe("declined by bob: not this vendor");
     expect(decisionSaid(record([["approved", no], ["by", by("ada")], ["expired", { type: "Boolean", value: true }]]))).toBe("ran out undecided, approved by ada before");
     expect(decisionSaid(record([["method", t("GET")]]))).toBeNull();
+  });
+});
+
+describe("what an approval shows those who decide it", () => {
+  // Each row: what the server lists (what the flow named, else the run's input), and what Runs
+  // waiting says of it.
+  const rows: [string, Partial<WaitingPoint>, { label: string; text: string } | null][] = [
+    ["a record of plain values, a field each", { shows: { amount: 30, payee: "acme", urgent: true, memo: null } }, { label: "shows", text: "amount 30 · payee acme · urgent true · memo null" }],
+    ["the run's input, when the flow names nothing", { input: { amount: 30 } }, { label: "started with", text: "amount 30" }],
+    ["what the flow named, over the input", { shows: { amount: 30 }, input: { amount: 30, card: "x" } }, { label: "shows", text: "amount 30" }],
+    ["anything deeper, as JSON", { shows: { lines: [1, 2], to: { iban: "DE00" } } }, { label: "shows", text: '{"lines":[1,2],"to":{"iban":"DE00"}}' }],
+    ["a text, as it is: withheld, or too large", { shows: "‹withheld: computed from a secret›" }, { label: "shows", text: "‹withheld: computed from a secret›" }],
+    ["a value named null, as null", { shows: null }, { label: "shows", text: "null" }],
+    ["an empty record, as JSON", { input: {} }, { label: "started with", text: "{}" }],
+    ["nothing, for a run a clock started", {}, null],
+  ];
+  it.each(rows)("%s", (_, listed, said) => {
+    expect(shownSaid({ ...alone(1), ...listed })).toEqual(said);
   });
 });

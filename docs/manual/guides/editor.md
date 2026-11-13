@@ -42,7 +42,9 @@ closes with its ×.
   **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
   flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
   and Approve, keep it saved, or decline it. **Runs waiting** lists the runs waiting at an
-  `approval`, each step and who has taken it so far: **Approve**, or **Decline…** with a reason,
+  `approval`, each step and who has taken it so far, and what it shows: what the flow named
+  (`shows`), else what the run was started with (*started with*), redacted as its log is.
+  **Approve**, or **Decline…** with a reason,
   on the steps you may take (*Approve as reviewer…* when there are several). Each principal takes
   one step, once, never of a run they started, and the host's [approval
   settings](people.md#who-decides-an-approval) can keep out whoever deployed the version, and

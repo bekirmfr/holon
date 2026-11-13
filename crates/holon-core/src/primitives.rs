@@ -1827,12 +1827,16 @@ pub(crate) fn await_request(params: &[Param]) -> Option<Value> {
 
 /// What an `approval` node asks the host: `{await: <name>, expires: <seconds>, steps: <steps>}`,
 /// an `await`'s request with who decides it, as the canonical text
-/// ([`Steps`](crate::approval::Steps)). `None` for a bad name, an `expires` as an `await`'s, or
-/// steps that aren't canonical.
-pub(crate) fn approval_request(params: &[Param]) -> Option<Value> {
+/// ([`Steps`](crate::approval::Steps)), and `shows`, what those who decide it see of the run, when
+/// its port is wired. `None` for a bad name, an `expires` as an `await`'s, or steps that aren't
+/// canonical.
+pub(crate) fn approval_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
     let Some(Value::Record(mut r)) = await_request(params) else { return None };
     let steps = crate::approval::Steps::parse(param(params, "steps")?)?;
     r.insert("steps".to_string(), Value::Text(steps.text()));
+    if let Some(Some(shows)) = inputs.first() {
+        r.insert("shows".to_string(), shows.clone());
+    }
     Some(Value::Record(r))
 }
 
@@ -1843,7 +1847,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 }
 
 /// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
-/// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
+/// headers and body, what an approval shows, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
 /// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
 /// end, the position a search starts from, a `split`'s limit, a `pad`'s fill, a `csv_format`'s
 /// columns, a date leaf's offset, a business-day leaf's holidays and an `xml_text`'s path. Inside a composite, such a port that *is* wired holds the node back while its value is
@@ -1856,6 +1860,7 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "http_stream"
             | "flow_call"
             | "flow_start"
+            | "approval"
             | "collection_list"
             | "file_list"
             | "file_lines"

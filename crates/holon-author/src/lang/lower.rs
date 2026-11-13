@@ -106,6 +106,7 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
             ("http_request" | "http_stream", "headers" | "body")
                 | ("http_upload", "headers")
                 | ("flow_call" | "flow_start", "input")
+                | ("approval", "shows")
                 | ("collection_list" | "file_list", "prefix" | "after")
                 | ("file_lines", "from")
                 | ("to_number", "radix")
@@ -2081,7 +2082,7 @@ impl<'a> Lowerer<'a> {
                 self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
-            ExprKind::Await { name, expires, approval } => {
+            ExprKind::Await { name, expires, approval, shows } => {
                 if self.socket {
                     return err(e.span, SOCKET_WAITS);
                 }
@@ -2095,7 +2096,14 @@ impl<'a> Lowerer<'a> {
                 match approval {
                     Some(steps) => {
                         params.push(("steps".into(), steps.text()));
-                        self.node("approval", &params, e.span)
+                        match shows {
+                            // What those who decide it see of the run: its `shows` port.
+                            Some(shows) => {
+                                let shown = self.expr(shows)?;
+                                self.node_with("approval", &params, &[("shows", shown)], e.span)
+                            }
+                            None => self.node("approval", &params, e.span),
+                        }
                     }
                     None => self.node("await", &params, e.span),
                 }
@@ -4635,7 +4643,7 @@ route.post("/hook", async (req) => {
         for people in ["0", "6", "1.5", "\"2\""] {
             assert!(refused(&format!("  const d = await approval(\"payout\", {{ people: {people} }})")).starts_with("people is how many different people approve"), "{people}");
         }
-        assert!(refused("  const d = await approval(\"payout\", { who: \"ada\" })").contains("approval's options are expires, people, steps and order, not \"who\""));
+        assert!(refused("  const d = await approval(\"payout\", { who: \"ada\" })").contains("approval's options are expires, people, steps, order and shows, not \"who\""));
         let event = src("  const d = await event(\"paid\", { people: 2 })", "").replace("approval, flow", "approval, event, flow");
         assert!(ts::compile(&event).unwrap_err().message.contains("event's options are expires, not \"people\""));
         assert!(refused("  const d = approval(\"payout\")").starts_with("an approval is waited for"));

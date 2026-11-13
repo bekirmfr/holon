@@ -3392,6 +3392,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     return Err(format!("an approval's steps {steps:?} aren't steps: person, or person*2 for 2 people"));
                 };
                 options.extend(approval_options(&steps));
+                // What those who decide it see of the run, when the flow names it.
+                if let Some(v) = self.arg(node, "shows")? {
+                    options.push(format!("shows: {}", wrap(v, COND)));
+                }
                 let options = if options.is_empty() { String::new() } else { format!(", {{ {} }}", options.join(", ")) };
                 self.awaits = true;
                 Ok((format!("await approval({}{options})", quote(node.param("name"))), UNARY))
@@ -4842,12 +4846,16 @@ export const t = action((input) => {
         }
     }
 
-    /// An approval prints as it is written, its options only where they aren't the defaults.
+    /// An approval prints as it is written, its options only where they aren't the defaults, what
+    /// it shows last.
     #[test]
     fn approvals_print_back() {
         for options in [
             "",
             ", { people: 2 }",
+            ", { shows: order }",
+            ", {\n    people: 2,\n    shows: { amount: order.amount, payee: order.payee },\n  }",
+            ", {\n    expires: \"1d\",\n    steps: [{ role: \"reviewer\" }, { role: \"approver\" }],\n    shows: { amount: order.amount, to: `${order.payee} (${order.account})` },\n  }",
             ", { expires: \"1d\" }",
             ", { expires: \"1h\", people: 3 }",
             ", {\n    expires: \"1d\",\n    steps: [\n      { role: \"classifier\", kind: \"agent\" },\n      { role: \"reviewer\" },\n      { role: \"approver\", people: 2 },\n    ],\n  }",

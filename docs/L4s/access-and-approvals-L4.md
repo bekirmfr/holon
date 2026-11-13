@@ -364,6 +364,15 @@ escalation (a slot unfilled for 4 h opens to a wider role) are a later step (§1
 `approval: { order, slots: [{ role, kind, people, by: [...], open }], expires_at }`. Runs waiting
 (the Approvals page) reads it across flows.
 
+*Done (the launch review's H6):* a decider sees what they approve. An approval point lists `shows`,
+what its flow named (`await approval("payout", { shows: { amount, payee } })`, the leaf's optional
+`shows` input), or else `input`, what the run was started with (an action's argument, a request
+without its headers, what a source delivered; nothing for a clock). Either is kept at park as the
+run's log keeps it: redacted by the log's redactor (a tainted field `‹taint:card›`), withheld whole
+when a secret may have made it, its size past 16 KiB, sealed on disk with the run. The route takes
+`run.view` on the flow or `run.decide` on its approvals: one who only decides sees the runs waiting
+at an approval they may decide, those points alone, nothing delivered, and no other run.
+
 ## 9. At deploy
 
 The deploy preview (`POST /deploy/preview`) adds, for each approval point:
@@ -390,6 +399,7 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /bindings` · `POST` · `DELETE /bindings/<id>` | `people.view` / `people.assign` | bindings |
 | `GET /access/versions` · `GET /access?version=n` | `people.view` | access history |
 | `GET /auth/me/can?actions=&flow=` | — | what the caller may do, for the editor |
+| `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals | §8.7 |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
 
 `/admin/accounts…` and `/admin/tokens…` go (replaced). A change to access that needs approval

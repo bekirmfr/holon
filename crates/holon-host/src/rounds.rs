@@ -171,6 +171,11 @@ pub struct Waiting {
     /// An approval's steps, the canonical text (`person*2`, `holon_core::approval::Steps`): who
     /// decides it. None for an event, which a token delivers.
     pub approval: Option<String>,
+    /// What an approval shows those who decide it, when its `shows` is wired: as the run computed
+    /// it, for the host to keep out what a secret made.
+    pub shows: Option<Value>,
+    /// The node that waits there, for what fed its `shows` (`holon_core::taint`).
+    pub path: Vec<u32>,
 }
 
 /// A host's answer when a run is about to send its first outbound requests (`Waits::claim`,
@@ -374,7 +379,11 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
                     _ => None,
                 };
                 let expires = number("expires").unwrap_or(holon_core::MAX_AWAIT_SECONDS);
-                self.waiting.push(Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string) });
+                let shows = match request {
+                    Value::Record(r) => r.get("shows").cloned(),
+                    _ => None,
+                };
+                self.waiting.push(Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string), shows, path: path.to_vec() });
             }
             // An event not yet delivered is not yet: what waits on it waits too.
             return event.map_or(Answer::NotYet, Answer::Value);
@@ -614,7 +623,7 @@ mod tests {
         let (echo, mut host) = (Echo::default(), Performed::default());
         let mut waits = Delivered::default();
         let first = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &[]);
-        assert_eq!(first.waiting, vec![Waiting { name: "paid".into(), expires: 60, approval: None }]);
+        assert_eq!(first.waiting.iter().map(|w| (w.name.as_str(), w.expires, w.approval.as_deref(), w.shows.as_ref())).collect::<Vec<_>>(), vec![("paid", 60, None, None)]);
         assert!(host.0.is_empty(), "a waiting run performs nothing");
         assert!(matches!(&first.outputs[0], Some(Value::Effect { payload, .. }) if **payload == txt("tok-paid")), "its interim output is there");
 
@@ -745,7 +754,7 @@ mod tests {
         assert!(out.waiting.is_empty());
         assert_eq!(out.outputs, vec![Some(txt("skipped"))]);
         let out = run(true);
-        assert_eq!(out.waiting, vec![Waiting { name: "paid".into(), expires: 60, approval: None }]);
+        assert_eq!(out.waiting.iter().map(|w| (w.name.as_str(), w.expires, w.approval.as_deref(), w.shows.as_ref())).collect::<Vec<_>>(), vec![("paid", 60, None, None)]);
         assert_eq!(out.outputs, vec![None], "waiting, not fallen through to the else");
     }
 

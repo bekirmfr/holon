@@ -50,6 +50,20 @@ export function approvalSaid(w: WaitingPoint): string {
   return `approval "${w.name}" (${w.said ?? w.steps}): ${slots.map((s) => `${stepName(s)} ${state(s)}`).join("; ")}`;
 }
 
+/** What an approval shows those who decide it, in words: what its flow named (`shows`), or else
+ *  what its run was started with; a record of plain values as `amount 30 · payee acme`, anything
+ *  else as JSON. Null when it shows nothing. */
+export function shownSaid(w: WaitingPoint): { label: string; text: string } | null {
+  const named = w.shows !== undefined;
+  const value = named ? w.shows : w.input;
+  if (value === undefined) return null;
+  const plain = (v: unknown) => v === null || ["string", "number", "boolean"].includes(typeof v);
+  const one = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
+  const record = typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0 && Object.values(value).every(plain);
+  const text = record ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k} ${one(v)}`).join(" · ") : one(value);
+  return { label: named ? "shows" : "started with", text };
+}
+
 /** What the approval still waits for once `step` is approved: more people for it, or the steps
  *  left; null when it is then decided. */
 export function waitsAfter(w: WaitingPoint, step: WaitingStep): string | null {

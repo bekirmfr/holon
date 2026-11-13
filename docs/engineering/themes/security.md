@@ -120,8 +120,12 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   `AgentReadsLogs`: deploy.rs and logs.rs ask), and never approves or starts what it deploys
   (deploy.rs asks `flow.approve-deploy` and `flow.lifecycle`); a service never decides an
   approval, and an agent takes only a step written for an agent (durable.rs's `Decider`), each
-  decision kept with the binding that let it; a person manages the tokens of an agent or a service
-  they own.
+  decision kept with the binding that let it; one who decides a flow's approvals without viewing
+  its runs lists only the runs waiting at one they may decide, those points alone (the runs
+  route's `Rule::Either`, `handle_get_runs`), each with what it shows, kept at park as the log
+  keeps it: redacted by the log's redactor, withheld when a secret may have made it, sized past
+  16 KiB, sealed with the run (`durable::shown_of`, the launch review's H6); a person manages the
+  tokens of an agent or a service they own.
 
 ### 2.2 The request gate (http.rs)
 
@@ -483,7 +487,11 @@ What is not defended, or only partly:
   `a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state`,
   `a_secret_goes_only_where_its_approval_shows_it_going`, `a_waiting_runs_record_is_sealed_on_disk`
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
-  `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails).
+  `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails),
+  `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
+  tainted field redacted, a value made from a secret withheld, past 16 KiB its size, sealed on
+  disk and listed again after a reload),
+  `whoever_decides_an_approval_sees_what_it_shows_and_nothing_else_of_the_flows_runs`.
 - **Tainted values**: `a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`
   (a request's every part, a call's request and answer and the cookie it sets, a WebSocket's
   message, an action's input, a row written and read back, every always-tainted key; none in the

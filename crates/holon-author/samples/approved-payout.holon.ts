@@ -6,7 +6,8 @@
 // day at most: an agent classifies the payout, with a note the run is given (its label, its
 // confidence), a person reviews it, and another approves it. Each step is taken by whoever is
 // bound to its role on the flow, of its kind, each a different principal, and never by whoever
-// started the run; one decline, with a reason, ends it. They decide in the editor's Approvals
+// started the run; one decline, with a reason, ends it. Each sees what they decide: the account,
+// the amount and the balance the run read (its shows). They decide in the editor's Approvals
 // (Runs waiting) or with holon decide, the agent with its own token or holon mcp's decide tool.
 // The run holds nothing on the account meanwhile: a deposit goes ahead while it waits. Approved,
 // it reads the balance as it is now, sends the payout (to httpbin.org, standing in for a bank)
@@ -44,7 +45,8 @@
 // Try it: deploy it, then
 //   curl -X POST -d '{"amount":30}' http://127.0.0.1:8153/payout/1    waits for the classifier
 //   curl -X POST -d '{"amount":50}' http://127.0.0.1:8153/deposit/1   150, while the payout waits
-//   holon decide approved-payout                                      the run, its steps, whose
+//   holon decide approved-payout                                      the run, its steps, whose,
+//                                                                     and what it shows
 // scout classifies it, with its token in HOLON_TOKEN, and a note:
 //   holon decide approved-payout <run> payout --approve --note '{"label":"invoice","confidence":0.93}'
 // then bob reviews it, signed in to the editor, in Approvals, and you approve it on the server's
@@ -72,10 +74,11 @@ route.post("/payout/:account", (req) => {
 export const payout = action(async (asked) => {
   const account = bank.one("select id, balance from accounts where id = $1", asked.account)
   // The run waits here for each step in turn, a day at most: an agent bound to classifier, then
-  // a person bound to reviewer, then one bound to approver.
+  // a person bound to reviewer, then one bound to approver. Each sees the payout it decides.
   const decision = await approval("payout", {
     steps: [{ role: "classifier", kind: "agent" }, { role: "reviewer" }, { role: "approver" }],
     expires: "1d",
+    shows: { account: account.id, amount: asked.amount, balance: account.balance },
   })
   // Declined (with why), or nobody decided in time: nothing is sent or written.
   if (!decision.approved) {

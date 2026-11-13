@@ -3775,7 +3775,7 @@ impl<'s, 't> Reader<'s, 't> {
         let js::Expression::StringLiteral(name) = self.unwrap(args[0]) else {
             return fail(self.span(args[0].span()), format!("an {word}'s name is written in quotes: {shape}"));
         };
-        let (mut expires, mut people, mut steps, mut order) = (None, None, None, None);
+        let (mut expires, mut people, mut steps, mut order, mut shows) = (None, None, None, None, None);
         if let Some(o) = args.get(1) {
             let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
                 return fail(self.span(o.span()), format!("{word}'s options are an object: {shape}"));
@@ -3803,9 +3803,13 @@ impl<'s, 't> Reader<'s, 't> {
                         order = Some((any, at));
                         continue;
                     }
+                    "shows" if approval => {
+                        shows = Some(Box::new(self.expr(value)?));
+                        continue;
+                    }
                     "expires" => {}
                     _ => {
-                        let options = if approval { "expires, people, steps and order" } else { "expires" };
+                        let options = if approval { "expires, people, steps, order and shows" } else { "expires" };
                         return fail(at, format!("{word}'s options are {options}, not \"{key}\""));
                     }
                 }
@@ -3819,7 +3823,7 @@ impl<'s, 't> Reader<'s, 't> {
             }
         }
         let approval = if approval { Some(approval_of(people, steps, order)?) } else { None };
-        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, approval }, span })
+        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, approval, shows }, span })
     }
 
     /// An approval's `steps`: a list, each item a step (`{ role: "reviewer" }`) or a stage of two
@@ -6094,7 +6098,11 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
                 walk(e, f);
             }
         }
-        ExprKind::Await { expires: Some(x), .. } => walk(x, f),
+        ExprKind::Await { expires, shows, .. } => {
+            for x in [expires, shows].into_iter().flatten() {
+                walk(x, f);
+            }
+        }
         _ => {}
     }
 }

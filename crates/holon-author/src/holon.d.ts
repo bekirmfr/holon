@@ -271,13 +271,14 @@ declare module "holon" {
 
   /** Parks the run until people approve it in Holon, or one declines, or its deadline: in an
    *  action, not a route. `people: 2` is two different people; `steps`, each step in turn (in any
-   *  order with `order: "any"`), taken by principals holding its role. */
+   *  order with `order: "any"`), taken by principals holding its role; `shows`, what they see of
+   *  the run (else what it was started with). */
   export function approval(name: string, options?: ApprovalOptions): Promise<Decision>
-  /** An approval's options: how many people decide it, or its steps (up to 5). A list in
-   *  `steps` is a stage, its steps taken in any order. */
+  /** An approval's options: how many people decide it, or its steps (up to 5), and what it shows
+   *  those who decide it. A list in `steps` is a stage, its steps taken in any order. */
   export type ApprovalOptions =
-    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }
-    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any" }
+    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5; shows?: any }
+    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any"; shows?: any }
   /** One step of an approval. */
   export interface Step {
     /** The role its principals hold where the approval is; left out, anyone holding run.decide

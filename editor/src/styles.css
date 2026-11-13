@@ -1157,6 +1157,8 @@ h1, h2, h3 { color: var(--ink); }
 .hl-flow__more, .hl-library a, .hl-table a { color: var(--accent); text-decoration: none; }
 .hl-flow__more:hover, .hl-table a:hover { text-decoration: underline; }
 .hl-flow__note { font-size: var(--fs-xs); color: var(--muted); }
+/* What an approval shows those who decide it: what they approve, so it reads as the row does. */
+.hl-flow__shown { margin-top: 2px; font-size: var(--fs-sm); color: var(--ink); overflow-wrap: anywhere; }
 .hl-flow__none { color: var(--muted); font-size: var(--fs-sm); }
 .hl-flow__said, .hl-flow__facts, .hl-flow__may, .hl-flow__versions, .hl-flow__grant, .hl-flow__changes, .hl-flow__check { font-size: var(--fs-sm); }
 .hl-flow__facts { gap: 6px; }

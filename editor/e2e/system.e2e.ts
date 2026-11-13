@@ -127,6 +127,13 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
   expect(asked.status).toBe(202);
   expect(((await asked.json()) as { waiting: string }).waiting).toBe("classifier, then reviewer, then approver");
   const run = await parked(earlier);
+  // Each who decides it sees what it pays: the account, the amount and the balance the run read
+  // (the approval's shows), the agent and the reviewer as the admin does.
+  const shows = async (token: string) =>
+    ((await (await control(token, "/deployments/approved-payout/runs")).json()) as { runs: (Run & { waiting: { name: string; shows?: unknown }[] })[] }).runs
+      .find((r) => r.run_id === run)
+      ?.waiting.find((w) => w.name === "payout")?.shows;
+  for (const token of [adminToken, scoutToken, reviewerToken]) expect(await shows(token)).toEqual({ account: 1, amount: 30, balance: before });
   // Only whoever is bound to the open step's role takes it: not the admin, the approver, before
   // the review, and not the reviewer before the classifier.
   expect((await decide(adminToken, run, { approve: true })).status).toBe(403);

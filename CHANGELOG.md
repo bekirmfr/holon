@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Those who decide an approval see what they approve, and nothing else of the flow's runs.**
+  An approval listed its steps and who had taken them, never what the run would do: a reviewer
+  approved a payout without seeing its amount or payee. Now `await approval("payout", { shows:
+  { amount, payee } })` names what it shows, any value the run has before it waits (the
+  `approval` leaf's optional `shows` input); with no `shows`, it shows what the run was started
+  with (an action's argument, a request without its headers, what a source delivered; nothing
+  for a clock). Either is kept when the run parks as its log keeps it: a field tainted by a
+  secret's mark redacted (`‹taint:card›`), a value a secret may have made withheld whole, one
+  past 16 KiB its size instead, sealed on disk with the run. Runs waiting in the editor's
+  Approvals and the flow's Waiting list, `holon decide` and `holon mcp`'s `runs` show it under
+  the approval (`it shows {"amount":30,"payee":"acme"}`). Listing a flow's runs took `run.view`;
+  now `run.decide` on its approvals lists the runs waiting at an approval the caller may decide,
+  those points alone, with nothing delivered. The approved-payout sample shows the account, the
+  amount and the balance it read.
 - **A version runs and sends only what someone who may has looked at, and the deploy review says
   which approvals can't be decided here.**
   - **A flow that runs another flow's action is deployed only by someone who may run it.** A

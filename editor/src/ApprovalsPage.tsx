@@ -7,7 +7,7 @@
 
 import { routeOf, said, type Approval } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, decidedSaid, isApproval, stepName, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, decidedSaid, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
@@ -231,7 +231,20 @@ function RunsWaiting({
                 </td>
                 <td title={`run ${run.run_id}`}>{run.route ?? run.kind}</td>
                 <td>
-                  {run.waiting.map((w) => `${isApproval(w) ? approvalSaid(w) : w.name} (until ${when(w.expires_at)})`).join(", ")}
+                  {run.waiting.map((w) => {
+                    // What it shows those who decide it: what they approve.
+                    const shown = isApproval(w) ? shownSaid(w) : null;
+                    return (
+                      <div key={w.name}>
+                        {`${isApproval(w) ? approvalSaid(w) : w.name} (until ${when(w.expires_at)})`}
+                        {shown && (
+                          <div className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
+                            {shown.label}: {shown.text}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                   {run.delivered.length > 0 && <span className="hl-flow__note"> · has {run.delivered.join(", ")}</span>}
                 </td>
                 <td>{when(run.parked_at)}</td>

@@ -387,8 +387,8 @@ pub enum ExprKind {
     /// span.
     Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
     /// `await event("name", { expires: "1h" })`; with `approval`, `await approval("name", { people: 2 })`,
-    /// which people decide, by its steps.
-    Await { name: Name, expires: Option<Box<Expr>>, approval: Option<holon_core::approval::Steps> },
+    /// which people decide, by its steps, seeing `shows` of the run (`shows: { amount }`).
+    Await { name: Name, expires: Option<Box<Expr>>, approval: Option<holon_core::approval::Steps>, shows: Option<Box<Expr>> },
     /// `(params) => body`, written in place for a higher-order leaf: `map`, `fold`, `filter`, …
     Lambda { params: Vec<Name>, body: Box<Expr> },
     /// `( expr )`, kept: parentheses are the author saying "two nodes" where an operator chain

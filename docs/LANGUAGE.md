@@ -524,6 +524,17 @@ sample pays in three steps: an agent bound to `classifier` takes the first with 
 decide --note`, or `holon mcp`'s `decide`), a person bound to `reviewer` the second, and you,
 bound to `approver`, the third, each bound on its tag.
 
+Those who decide an approval see what they approve. `shows:` names it, any value the run has
+before it waits: `shows: { account: account.id, amount: asked.amount }` is the leaf's optional
+`shows` input (`approval{…}` with `shows` wired), and the request carries it. With no `shows` they
+see what the run was started with: the action's argument, a request's record without its headers,
+or what a source delivered; a run a clock started shows nothing. Either is kept when the run parks,
+as its log keeps it: a field tainted by a secret's mark redacted as the log redacts it
+(`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB its size instead.
+Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
+decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
+`run.view` lists only the runs waiting at an approval they may decide, those points alone.
+
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
 `progress`); the rest when it finishes. The resumed part runs again from the start and settles the

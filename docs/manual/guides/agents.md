@@ -110,7 +110,8 @@ answers, oldest first, a line each (when, level, the run, the text), at a level 
 answers that agents may not read them, and so it does once you revoke it.
 
 A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
-`runs` shows which run waits and who has approved each step so far, and the agent tells you. You
+`runs` shows which run waits, who has approved each step so far and what the approval shows
+(its `shows`, or the run's input), and the agent tells you. You
 decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide).
 An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
 }`): bind a role of your own to the agent where the flow is (`holon roles define classifier

@@ -438,11 +438,14 @@ Decides an approval a run waits at (`await approval("payout", { people: 2 })` in
 the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
 run (the first 12 characters of its id), what started it and since when, then an approval with
 who decides it and each step as it stands, who approved it so far or whether it is open, or an
-event, and until when:
+event, and until when; under an approval, what it shows those who decide it, what its flow
+named (`shows`) or else what the run was started with, as the run's log keeps it:
 
 ```
 run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout" (2 people): 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+  it shows {"amount":30,"payee":"acme"}
 run 0c2e81f4a9d3 (action pay, since 2026-11-09T14:50:12) waits at approval "release" (an agent holding classifier, then a person holding reviewer): classifier scout approved; reviewer open, until 2026-11-09T15:50:12
+  its run was started with {"amount":30}
 
 Yours to decide:
   run 0c2e81f4a9d3, "release": reviewer (slot 1)

@@ -880,8 +880,10 @@ export type WaitingRun = {
   route: string | null;
   parked_at: number;
   /** Each point it waits at; an approval's with its steps (`steps`, `said` in words), each as it
-   *  stands, the decisions taken on it so far, and the open steps whoever asked may take. */
-  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[] }[];
+   *  stands, the decisions taken on it so far, the open steps whoever asked may take, and what it
+   *  shows those who decide it: what its flow named (`shows`), or else the run's `input`, each as
+   *  the run's log keeps it. */
+  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[]; shows?: unknown; input?: unknown }[];
   delivered: string[];
 };
 

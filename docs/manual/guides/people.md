@@ -125,8 +125,10 @@ holon bind editor --to bob --flow payout --why "owns the payout flow"
 holon bind editor --to dee --approval payout:ok --until 7d --why "covers for bob"
 ```
 
-A binding at an approval point decides it and nothing else, not even viewing the flow's runs, so
-`holon bind` says what to add (`holon bind viewer --to dee --flow payout`). A role of your own
+A binding at an approval point decides it and nothing else: `holon decide payout` lists Dee the
+runs waiting there, and what each shows, but no other run, and the editor lists only the flows
+one may view, so `holon bind` says what to add (`holon bind viewer --to dee --flow payout`). A
+role of your own
 allows only the actions you choose, from the catalogue `holon roles define` lists when you get one
 wrong:
 

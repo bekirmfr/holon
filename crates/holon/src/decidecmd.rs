@@ -207,7 +207,8 @@ pub(crate) fn short(run_id: &str) -> &str {
 
 /// What runs wait at, a line a point: the run, what started it and since when, then an approval
 /// with who decides it and each step as it stands, who approved it (and why) or whether it is
-/// open; or an event; and until when.
+/// open; or an event; and until when. Under an approval, what it shows those who decide it: what
+/// its flow named (`shows`), or the run's input.
 pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
     let mut lines = Vec::new();
     for r in runs {
@@ -222,6 +223,11 @@ pub(crate) fn waiting_lines(runs: &[Value]) -> Vec<String> {
                 Some(steps) => format!("approval {name:?} ({}): {}", w["said"].as_str().unwrap_or(steps), steps_said(w)),
             };
             lines.push(format!("run {id} ({what}, since {since}) waits at {point}, until {until}"));
+            if !w["shows"].is_null() {
+                lines.push(format!("  it shows {}", w["shows"]));
+            } else if !w["input"].is_null() {
+                lines.push(format!("  its run was started with {}", w["input"]));
+            }
         }
     }
     lines
@@ -292,7 +298,7 @@ mod tests {
             "route": "action pay",
             "parked_at": 0,
             "waiting": [
-                { "name": "payout", "expires_at": 86400, "steps": "person*2", "said": "2 people", "slots": [slot(0, None, "person", 2, &["dan"], true)], "decisions": [dan] },
+                { "name": "payout", "expires_at": 86400, "steps": "person*2", "said": "2 people", "slots": [slot(0, None, "person", 2, &["dan"], true)], "decisions": [dan], "shows": { "amount": 30, "payee": "acme" } },
                 {
                     "name": "release",
                     "expires_at": 86400,
@@ -300,6 +306,7 @@ mod tests {
                     "said": "an agent holding classifier, then 2 people holding reviewer, then a person holding approver",
                     "slots": [slot(0, Some("classifier"), "agent", 1, &["scout"], false), slot(1, Some("reviewer"), "person", 2, &["dan"], true), slot(2, Some("approver"), "person", 1, &[], false)],
                     "decisions": [{ "slot": 0, "who": "scout", "kind": "agent", "at": 3, "approved": true }, dan],
+                    "input": { "amount": 30 },
                 },
                 { "name": "paid", "expires_at": 60 }
             ],
@@ -309,7 +316,9 @@ mod tests {
             waiting_lines(&runs),
             [
                 "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at approval \"payout\" (2 people): 1 of 2: dan (\"matches the invoice\") approved, until 1970-01-02T00:00:00",
+                "  it shows {\"amount\":30,\"payee\":\"acme\"}",
                 "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at approval \"release\" (an agent holding classifier, then 2 people holding reviewer, then a person holding approver): classifier scout approved; reviewer 1 of 2: dan (\"matches the invoice\") approved; approver not open yet, until 1970-01-02T00:00:00",
+                "  its run was started with {\"amount\":30}",
                 "run 7b379ca1dd65 (action pay, since 1970-01-01T00:00:00) waits at event \"paid\", until 1970-01-01T00:01:00",
             ]
         );

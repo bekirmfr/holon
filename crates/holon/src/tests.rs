@@ -12,6 +12,7 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+mod approval_shows;
 mod deploy_review;
 mod scopes;
 mod tags;
@@ -5488,7 +5489,7 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
     let hash = "0".repeat(64);
     let mut sent = 0;
-    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..))) {
+    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..) | Rule::Either(..))) {
         // ci's tokens, the deployment d, its secret k.
         let people = row.path.starts_with("/people/");
         let path = row

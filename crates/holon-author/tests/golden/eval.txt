@@ -8862,183 +8862,204 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == approved-payout · action payout · input 0
-  [0, 9] Text("/anything/payouts")
-  [0, 10] Record({})
-  [0, 11] Text("application/json")
-  [0, 12] Record({"content-type": Text("application/json")})
-  [0, 13] Record({})
+  [0, 16] Text("/anything/payouts")
+  [0, 17] Record({})
+  [0, 18] Text("application/json")
+  [0, 19] Record({"content-type": Text("application/json")})
+  [0, 20] Record({})
   [0, 1] List([])
   [0, 0] Record({})
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] ·
-  [0, 17] ·
-  [0, 5] ·
-  [0, 18] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] Number(0.0)
+  [0, 21] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25] ·
+  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 28] ·
-  [0, 29] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 25] ·
   [0, 26] ·
+  [0, 27] ·
+  [0, 28] Number(0.0)
+  [0, 29] ·
   [0, 30] ·
   [0, 31] ·
   [0, 32] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 35] ·
+  [0, 36] ·
   [0, 33] ·
-  [0, 34] ·
   [0, 37] ·
   [0, 38] ·
-  [0, 35] ·
   [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 42] ·
+  [0, 44] ·
   [0, 45] ·
+  [0, 42] ·
   [0, 46] ·
-  [0, 43] ·
-  [0, 51] ·
-  [0, 52] Boolean(false)
-  [0, 53] Boolean(true)
-  [0, 59] ·
-  [0, 60] ·
-  [0, 61] ·
-  [0, 62] ·
-  [0, 63, 0] Record({})
-  [0, 63, 1] Number(200.0)
-  [0, 63, 2] Record({"status": Number(200.0)})
-  [0, 63, 3] ·
-  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] ·
+  [0, 48] ·
+  [0, 49] ·
+  [0, 52] ·
+  [0, 53] ·
+  [0, 50] ·
+  [0, 58] ·
+  [0, 59] Boolean(false)
+  [0, 60] Boolean(true)
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69] ·
+  [0, 70, 0] Record({})
+  [0, 70, 1] Number(200.0)
+  [0, 70, 2] Record({"status": Number(200.0)})
+  [0, 70, 3] ·
+  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 1
-  [0, 9] Text("/anything/payouts")
-  [0, 10] Record({})
-  [0, 11] Text("application/json")
-  [0, 12] Record({"content-type": Text("application/json")})
-  [0, 13] Record({})
+  [0, 16] Text("/anything/payouts")
+  [0, 17] Record({})
+  [0, 18] Text("application/json")
+  [0, 19] Record({"content-type": Text("application/json")})
+  [0, 20] Record({})
   [0, 1] List([])
   [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] Number(5.0)
-  [0, 17] ·
-  [0, 5] ·
-  [0, 18] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] Number(0.0)
+  [0, 21] ·
   [0, 22] ·
-  [0, 23] ·
+  [0, 23] Number(5.0)
   [0, 24] ·
-  [0, 25] ·
+  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
-  [0, 8] ·
-  [0, 28] ·
-  [0, 29] ·
+  [0, 8] Number(5.0)
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 25] ·
   [0, 26] ·
+  [0, 27] ·
+  [0, 28] Number(0.0)
+  [0, 29] ·
   [0, 30] ·
-  [0, 31] Number(5.0)
+  [0, 31] ·
   [0, 32] ·
-  [0, 33] ·
-  [0, 34] ·
-  [0, 37] ·
-  [0, 38] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
   [0, 35] ·
+  [0, 36] ·
+  [0, 33] ·
+  [0, 37] ·
+  [0, 38] Number(5.0)
   [0, 39] ·
-  [0, 40] Number(5.0)
+  [0, 40] ·
   [0, 41] ·
-  [0, 42] ·
+  [0, 44] ·
   [0, 45] ·
+  [0, 42] ·
   [0, 46] ·
-  [0, 43] ·
-  [0, 51] ·
-  [0, 52] Boolean(false)
-  [0, 53] Boolean(true)
-  [0, 59] ·
-  [0, 60] ·
-  [0, 61] ·
-  [0, 62] ·
-  [0, 63, 0] Record({})
-  [0, 63, 1] Number(200.0)
-  [0, 63, 2] Record({"status": Number(200.0)})
-  [0, 63, 3] ·
-  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] Number(5.0)
+  [0, 48] ·
+  [0, 49] ·
+  [0, 52] ·
+  [0, 53] ·
+  [0, 50] ·
+  [0, 58] ·
+  [0, 59] Boolean(false)
+  [0, 60] Boolean(true)
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69] ·
+  [0, 70, 0] Record({})
+  [0, 70, 1] Number(200.0)
+  [0, 70, 2] Record({"status": Number(200.0)})
+  [0, 70, 3] ·
+  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 2
-  [0, 9] Text("/anything/payouts")
-  [0, 10] Record({})
-  [0, 11] Text("application/json")
-  [0, 12] Record({"content-type": Text("application/json")})
-  [0, 13] Record({})
+  [0, 16] Text("/anything/payouts")
+  [0, 17] Record({})
+  [0, 18] Text("application/json")
+  [0, 19] Record({"content-type": Text("application/json")})
+  [0, 20] Record({})
   [0, 1] List([])
   [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] ·
-  [0, 17] ·
-  [0, 5] ·
-  [0, 18] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] Number(0.0)
+  [0, 21] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25] ·
+  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 28] ·
-  [0, 29] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 25] ·
   [0, 26] ·
+  [0, 27] ·
+  [0, 28] Number(0.0)
+  [0, 29] ·
   [0, 30] ·
   [0, 31] ·
   [0, 32] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 35] ·
+  [0, 36] ·
   [0, 33] ·
-  [0, 34] ·
   [0, 37] ·
   [0, 38] ·
-  [0, 35] ·
   [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 42] ·
+  [0, 44] ·
   [0, 45] ·
+  [0, 42] ·
   [0, 46] ·
-  [0, 43] ·
-  [0, 51] ·
-  [0, 52] Boolean(false)
-  [0, 53] Boolean(true)
-  [0, 59] ·
-  [0, 60] ·
-  [0, 61] ·
-  [0, 62] ·
-  [0, 63, 0] Record({})
-  [0, 63, 1] Number(200.0)
-  [0, 63, 2] Record({"status": Number(200.0)})
-  [0, 63, 3] ·
-  [0, 63, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 63] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] ·
+  [0, 48] ·
+  [0, 49] ·
+  [0, 52] ·
+  [0, 53] ·
+  [0, 50] ·
+  [0, 58] ·
+  [0, 59] Boolean(false)
+  [0, 60] Boolean(true)
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69] ·
+  [0, 70, 0] Record({})
+  [0, 70, 1] Number(200.0)
+  [0, 70, 2] Record({"status": Number(200.0)})
+  [0, 70, 3] ·
+  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == atlas-notes · POST /notes/:owner · input 0

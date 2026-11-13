@@ -146,8 +146,8 @@ fn a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else() {
 }
 
 /// dee, `editor` at `d`'s approval point `payout` only: decides it, and nothing else: not another
-/// point, not `e`'s, and she doesn't view the flow's runs or list the flows (D25). A role that
-/// holds nothing at an approval point isn't bound there.
+/// point, not `e`'s; of the flow's runs, only those waiting at that point are listed to dee, and
+/// the flows aren't (D25). A role that holds nothing at an approval point isn't bound there.
 #[test]
 fn a_binding_at_an_approval_point_decides_that_point_only() {
     let (state, t, run, _) = server();
@@ -159,10 +159,13 @@ fn a_binding_at_an_approval_point_decides_that_point_only() {
     assert_eq!(refusal(decide("d", "other")), none_on("dee", "for \"d\"'s approval \"other\"", "run.decide"));
     assert_eq!(refusal(decide("e", "payout")), none_on("dee", "on \"e\"", "run.decide"));
     assert_eq!(dee("POST", &format!("/deployments/d/runs/{run}/decide"), json!([])).0, 400, "a malformed body before a refusal");
+    // The run waiting at the point is listed to dee; once decided, it waits at none of dee's.
+    assert_eq!(listed(&state, &t.dee, "/deployments/d/runs", Some("runs"), "run_id"), std::slice::from_ref(&run));
     let (code, said) = decide("d", "payout");
     assert_eq!(code, 200, "{said}");
     assert!(said.contains(r#""outcome":"approved""#), "{said}");
-    assert_eq!(refusal(dee("GET", "/deployments/d/runs", Value::Null)), none_on("dee", "on \"d\"", "run.view"));
+    assert!(listed(&state, &t.dee, "/deployments/d/runs", Some("runs"), "run_id").is_empty());
+    assert_eq!(refusal(dee("GET", "/deployments/e/runs", Value::Null)), none_on("dee", "on \"e\"", "run.view"));
     assert_eq!(refusal(dee("GET", "/deployments", Value::Null)), none_on("dee", "on any flow", "flow.view"));
 
     let viewer = send(&state, &t.ada, "POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "viewer", "scope": point }));

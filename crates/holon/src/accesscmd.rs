@@ -311,10 +311,10 @@ pub(crate) fn bind(args: &[String]) -> i32 {
     let until = b["expires_at"].as_u64().map(|at| format!(", until {}", when(Some(at)))).unwrap_or_default();
     println!("bound {role} to {} {}{until} (binding {}, version {})", subject(&b["who"]), place(&b["scope"]), b["id"], v["version"]);
     if let Some((flow, point)) = args.value("--approval").and_then(|a| a.split_once(':'))
-        && !sees_runs(WHO, &args, &who, flow)
+        && !sees_flow(WHO, &args, &who, flow)
     {
         let to = if who["group"].is_string() { format!("--group {}", who["group"].as_str().unwrap_or_default()) } else { format!("--to {}", who["principal"].as_str().unwrap_or_default()) };
-        println!("{} decides {flow}'s approval {point:?} but can't see its runs: holon bind viewer {to} --flow {flow}", subject(&who));
+        println!("{} decides {flow}'s approval {point:?}, but the editor lists the flow only to those who may view it: holon bind viewer {to} --flow {flow}", subject(&who));
     }
     0
 }
@@ -563,13 +563,14 @@ pub(crate) fn bindings_said(bindings: &Value) -> String {
     if said.is_empty() { "-".into() } else { said.join(", ") }
 }
 
-/// Whether `who` (a principal or a group) views `flow`'s runs by what is bound to it now: a
-/// binding on the host or on the flow, of a role allowing `run.view`. A group's are its own; a
-/// principal's, its groups' too. Unknown (the caller may not read who holds what) counts as yes:
-/// nothing is said.
-fn sees_runs(who_says: &str, args: &cmdline::Args, who: &Value, flow: &str) -> bool {
+/// Whether `who` (a principal or a group) views `flow` by what is bound to it now: a binding on
+/// the host or on the flow, of a role allowing `flow.view`, as the editor's list of flows asks
+/// (deciding the approval lists the runs waiting there, through `holon decide`, and no more). A
+/// group's are its own; a principal's, its groups' too. Unknown (the caller may not read who
+/// holds what) counts as yes: nothing is said.
+fn sees_flow(who_says: &str, args: &cmdline::Args, who: &Value, flow: &str) -> bool {
     let views = |b: &Value, allows: &[String]| {
-        b["expired"] != true && (b["scope"] == "host" || b["scope"]["flows"]["slug"] == flow) && allows.iter().any(|a| a == "run.view")
+        b["expired"] != true && (b["scope"] == "host" || b["scope"]["flows"]["slug"] == flow) && allows.iter().any(|a| a == "flow.view")
     };
     let reads = cmdline::json(who_says, args, "GET", "/auth/me/can?actions=people.view,role.view", None);
     if !reads.is_ok_and(|can| can["people.view"] == true && can["role.view"] == true) {

@@ -142,14 +142,15 @@ test("roles, groups and bindings are made and read back from the command line, a
   expect(ok(adminToken, ["roles"])).toMatch(new RegExp(`^${role} \\(decides payouts\\)\\s+person\\s+0\\s+run\\.view, run\\.decide$`, "m"));
   ok(adminToken, ["people", "add", person, "--person", "--role", "viewer"]);
 
-  // Bound at an approval point for a week: a viewer on the host sees the runs, so nothing more is
-  // said. A group bound there sees nothing else, and is told what would let it.
+  // Bound at an approval point for a week: a viewer on the host sees the flow, so nothing more is
+  // said. A group bound there lists only the runs waiting at it, not the flow in the editor, and
+  // is told what would let it.
   const direct = ok(adminToken, ["bind", role, "--to", person, "--approval", "payout:ok", "--until", "7d", "--why", "covers this week"]);
   expect(direct).toMatch(new RegExp(`^bound ${role} to ${person} for "payout"'s approval "ok", until \\S+ \\(binding \\d+, version \\d+\\)\\n$`));
   ok(adminToken, ["groups", "add", group, person, "--about", "e2e"]);
   expect(ok(adminToken, ["groups"])).toMatch(new RegExp(`^${group} \\(e2e\\)\\s+0\\s+${person}$`, "m"));
   const toGroup = ok(adminToken, ["bind", role, "--group", group, "--approval", "payout:ok"]);
-  expect(toGroup).toContain(`the group ${group} decides payout's approval "ok" but can't see its runs: holon bind viewer --group ${group} --flow payout`);
+  expect(toGroup).toContain(`the group ${group} decides payout's approval "ok", but the editor lists the flow only to those who may view it: holon bind viewer --group ${group} --flow payout`);
   const listed = ok(adminToken, ["people"]).split("\n").find((l) => l.startsWith(`${person} `)) ?? "";
   expect(listed).toMatch(new RegExp(`^${person}\\s+person\\s+viewer, `));
   for (const holds of [`${role} at payout:ok until `, `${role} at payout:ok via ${group}`]) expect(listed).toContain(holds);
