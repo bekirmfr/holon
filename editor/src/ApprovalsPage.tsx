@@ -505,7 +505,9 @@ function RunsWaiting({
                   ))}
                   {run.delivered.length > 0 && <div className="hl-flow__note">has {run.delivered.join(", ")}</div>}
                 </td>
-                <td className={run.by ? undefined : "hl-table__dim"}>{startedBy(run.kind, run.by)}</td>
+                <td className={run.by ? undefined : "hl-table__dim"} title={run.by ?? undefined}>
+                  {startedBy(run.kind, run.by)}
+                </td>
                 <td>
                   {run.waiting.map((w) => (
                     <div key={w.name}>{isApproval(w) ? approvalSaid(w) : "its event"}</div>

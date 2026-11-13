@@ -3,6 +3,7 @@
 
 import type { WValue } from "./holon";
 import type { LogEntry } from "./server";
+import { shortIds } from "./shortIds";
 
 /** A record's field, or null. */
 export const field = (v: WValue | null | undefined, k: string): WValue | null =>
@@ -47,9 +48,10 @@ export const runLabel = (e: LogEntry) =>
 
 /** Who or what started a run, from its kind and its `by` (a waiting run's, or a log entry's):
  *  the person or agent who ran its action or sent its request through the server, else what does
- *  on its own (its clock, its port, a file, a mail, a feed, a queue). */
+ *  on its own (its clock, its port, a file, a mail, a feed, a queue). A run another flow's run
+ *  started names that run by its first eight: the whole `by` is for a title. */
 export function startedBy(kind: string, by: string | null | undefined): string {
-  if (by) return by;
+  if (by) return shortIds(by);
   switch (kind) {
     case "request":
       return "a request on its port";

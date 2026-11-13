@@ -150,7 +150,9 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         <Section title="In">
           {run.url && <Line name="request">{`${run.method ?? ""} ${run.url}`}</Line>}
           {run.request && <Value v={run.request} />}
-          <Line name="started by">{startedBy(run.kind, run.by)}</Line>
+          <Line name="started by">
+            <span title={run.by ?? undefined}>{startedBy(run.kind, run.by)}</span>
+          </Line>
         </Section>
         <Section title="Out">
           {run.response_body !== null ? <Line name={`answered ${run.status ?? ""}`}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}

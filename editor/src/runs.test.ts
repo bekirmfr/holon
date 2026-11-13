@@ -51,4 +51,9 @@ describe("runs", () => {
     expect(startedBy("tick", null)).toBe("its clock");
     expect(startedBy("trigger", null)).toBe("its action (who ran it isn't on record)");
   });
+
+  it("names a run another flow's run started by that run's first eight", () => {
+    const run = "68251d6b4058e2118585013a5ca37d32a88c49e7a3b6fed4b89c96acbd9b058a";
+    expect(startedBy("trigger", `flow approved-payout, run ${run}`)).toBe("flow approved-payout, run 68251d6b…");
+  });
 });
