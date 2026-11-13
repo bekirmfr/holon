@@ -78,6 +78,7 @@ import {
 import { expandComposite } from "./composites";
 import { CanvasHead, FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { StatementFrames } from "./StatementFrames";
+import { GESTURES } from "./canvasGestures";
 import { StatementGraph } from "./StatementGraph";
 import { InspectorText } from "./InspectorText";
 import { useCanvasLevel } from "./useCanvasLevel";
@@ -1384,6 +1385,7 @@ function Canvas({
           onFit={fitCanvas}
         />
         <ReactFlow<PrimitiveNodeType>
+          {...GESTURES}
           colorMode={dark ? "dark" : "light"}
           nodes={drawnNodes}
           onNodeClick={(e, n) => {
@@ -1411,8 +1413,10 @@ function Canvas({
           // reach for first, especially on Windows. React Flow itself skips this handling while a
           // text input/select inside a node has focus, so editing a const's value or type is safe.
           deleteKeyCode={viewing ? null : ["Backspace", "Delete"]}
-          // At Grouped the nodes stand where their statements put them.
-          nodesDraggable={!viewing && !grouped}
+          // A node dragged moves, in View runs too: there the flow shown is the deployed version's,
+          // set aside on going back to Edit, so a move is for looking and is never saved. At
+          // Grouped the nodes stand where their statements put them.
+          nodesDraggable={!grouped}
           nodesConnectable={!viewing}
         >
           <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />

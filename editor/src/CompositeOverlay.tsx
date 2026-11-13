@@ -31,6 +31,7 @@ import {
   type NodeProps,
   type NodeTypes,
 } from "@xyflow/react";
+import { GESTURES } from "./canvasGestures";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { NodeActions, useNodeActions } from "./NodeDocs";
 import {
@@ -352,6 +353,7 @@ function Level({
     <NodeActions.Provider value={actions}>
       <div style={{ position: "absolute", inset: 0 }} onDragOver={(e) => editable && e.preventDefault()} onDrop={onDrop}>
         <ReactFlow
+          {...GESTURES}
           colorMode={dark ? "dark" : "light"}
           nodes={frame.nodes}
           edges={frame.edges}
