@@ -31,7 +31,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
-use holon_core::{decode_value, encode_value, validate_module, Hash, ModuleError, ModuleLimits, Resolver, Unit, Value};
+use holon_core::{decode_value, encode_value, validate_module, Hash, ModuleError, ModuleLimits, ModuleRun, Resolver, Unit, Value};
 use wasmi_core::LimiterError;
 use wasmi::{Config, CustomFuelCosts, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
 
@@ -142,6 +142,17 @@ impl Default for Engine {
     }
 }
 
+/// A call's outputs and what it cost, or why it gave none.
+pub type Measured = Result<(Vec<Option<Value>>, Cost), RunError>;
+
+/// A call's answer as the module wrote it, read: one output per element of the list it is.
+fn decoded(out: &[u8], cost: Cost) -> Measured {
+    match decode_value(out).map_err(|e| RunError::BadOutput(format!("{e:?}")))? {
+        Value::List(items) => Ok((items.into_iter().map(present).collect(), cost)),
+        other => Err(RunError::BadOutput(format!("a {:?}, not a list", other.ty()))),
+    }
+}
+
 impl Engine {
     pub fn new() -> Engine {
         let mut config = Config::default();
@@ -163,20 +174,47 @@ impl Engine {
 
     /// [`run`](Self::run), and what the call cost: the fuel it burned and the memory it ended
     /// with, in bytes. What a run records beside a module's outputs, and how a budget is chosen.
-    pub fn run_measured(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<(Vec<Option<Value>>, Cost), RunError> {
-        validate_module(bytes).map_err(RunError::NotAModule)?;
-        let module = self.compile(bytes)?;
+    pub fn run_measured(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Measured {
+        self.run_metered(bytes, limits, inputs).0
+    }
 
+    /// [`run_measured`](Self::run_measured), and the fuel the call burned whether it answered or
+    /// not: what a round that pools its modules' fuel is charged (`Observer::take_fuel`). A
+    /// module that never started (not admitted, not compiled) burned none.
+    ///
+    /// What the call holds (its store and memory, freed as it ends) and what the engine keeps of it
+    /// (the module compiled, each function translated as a call first reaches it: the process's,
+    /// whichever round first wanted it) isn't counted against a round's memory
+    /// (`holon_core::memory`); what it answers is, as it is read.
+    pub fn run_metered(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> (Measured, u64) {
+        let (answered, burned) = holon_core::memory::uncounted(|| self.run_raw(bytes, limits, inputs), |(answered, _)| answered.as_ref().map_or(0, |(out, _)| out.capacity()));
+        (answered.and_then(|(out, cost)| decoded(&out, cost)), burned)
+    }
+
+    /// [`run_metered`](Self::run_metered), its answer the bytes the module wrote.
+    fn run_raw(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> (Result<(Vec<u8>, Cost), RunError>, u64) {
+        let module = match validate_module(bytes).map_err(RunError::NotAModule).and_then(|()| self.compile(bytes)) {
+            Ok(module) => module,
+            Err(e) => return (Err(e), 0),
+        };
         let budget = Budget { bytes: usize::try_from(limits.memory).unwrap_or(usize::MAX), refused: false };
         let mut store = Store::new(&self.wasmi, budget);
         store.limiter(|b| b);
-        store.set_fuel(limits.fuel).map_err(|e| RunError::Compile(e.to_string()))?;
+        if let Err(e) = store.set_fuel(limits.fuel) {
+            return (Err(RunError::Compile(e.to_string())), 0);
+        }
+        let answered = self.call(&module, &mut store, limits, inputs);
+        (answered, limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0)))
+    }
 
+    /// One call of `module` in `store`, its fuel set: what [`run_metered`](Self::run_metered) does
+    /// once the module is compiled. Its answer as the module wrote it, and what it cost.
+    fn call(&self, module: &Module, store: &mut Store<Budget>, limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<(Vec<u8>, Cost), RunError> {
         let linker = Linker::<Budget>::new(&self.wasmi);
-        let instance = linker.instantiate_and_start(&mut store, &module).map_err(|e| self.failed(e, &store, limits, RunError::Instantiate))?;
-        let memory = instance.get_memory(&store, "memory").ok_or(RunError::NotAModule(ModuleError::MissingExport("memory")))?;
-        let alloc = instance.get_typed_func::<i32, i32>(&store, "alloc").map_err(|e| RunError::Compile(e.to_string()))?;
-        let run = instance.get_typed_func::<(i32, i32), i64>(&store, "run").map_err(|e| RunError::Compile(e.to_string()))?;
+        let instance = linker.instantiate_and_start(&mut *store, module).map_err(|e| self.failed(e, &*store, limits, RunError::Instantiate))?;
+        let memory = instance.get_memory(&*store, "memory").ok_or(RunError::NotAModule(ModuleError::MissingExport("memory")))?;
+        let alloc = instance.get_typed_func::<i32, i32>(&*store, "alloc").map_err(|e| RunError::Compile(e.to_string()))?;
+        let run = instance.get_typed_func::<(i32, i32), i64>(&*store, "run").map_err(|e| RunError::Compile(e.to_string()))?;
 
         // Inputs: one list, every input present (eval is strict; an engine asked with a hole
         // passes it on as `none`, which a module may read as it likes).
@@ -184,21 +222,21 @@ impl Engine {
         let input = encode_value(&Value::List(items)).map_err(|e| RunError::BadOutput(format!("inputs: {e:?}")))?;
         let len = i32::try_from(input.len()).map_err(|_| RunError::BadOutput("inputs too long".into()))?;
 
-        let ptr = alloc.call(&mut store, len).map_err(|e| self.failed(e, &store, limits, RunError::Trap))?;
-        memory.write(&mut store, ptr as u32 as usize, &input).map_err(|e| RunError::Trap(format!("alloc gave an address outside memory: {e}")))?;
-        let packed = match run.call(&mut store, (ptr, len)) {
+        let ptr = alloc.call(&mut *store, len).map_err(|e| self.failed(e, &*store, limits, RunError::Trap))?;
+        memory.write(&mut *store, ptr as u32 as usize, &input).map_err(|e| RunError::Trap(format!("alloc gave an address outside memory: {e}")))?;
+        let packed = match run.call(&mut *store, (ptr, len)) {
             Ok(p) => p,
             Err(e) => {
-                let mut failure = self.failed(e, &store, limits, RunError::Trap);
+                let mut failure = self.failed(e, &*store, limits, RunError::Trap);
                 // A module may export `last_panic() -> i64` (address and length of a message it
                 // kept before trapping): then the trap is named by it. Rust's `panic = "abort"`
                 // is an `unreachable`, so this is how a module written in Rust says what went wrong.
-                if let (RunError::Trap(text), Ok(last)) = (&failure, instance.get_typed_func::<(), i64>(&store, "last_panic"))
-                    && let Ok(packed) = last.call(&mut store, ())
+                if let (RunError::Trap(text), Ok(last)) = (&failure, instance.get_typed_func::<(), i64>(&*store, "last_panic"))
+                    && let Ok(packed) = last.call(&mut *store, ())
                 {
                     let (p, n) = (((packed as u64) >> 32) as u32 as usize, (packed as u64 & 0xffff_ffff) as u32 as usize);
                     let mut msg = vec![0u8; n.min(4096)];
-                    if n > 0 && memory.read(&store, p, &mut msg).is_ok() {
+                    if n > 0 && memory.read(&*store, p, &mut msg).is_ok() {
                         failure = RunError::Trap(format!("{text}: {}", String::from_utf8_lossy(&msg)));
                     }
                 }
@@ -211,7 +249,7 @@ impl Engine {
         // past its memory (up to 4 GiB) is a bad answer, not that much of the host's.
         let out = out_ptr
             .checked_add(out_len)
-            .and_then(|end| memory.data(&store).get(out_ptr..end))
+            .and_then(|end| memory.data(&*store).get(out_ptr..end))
             .ok_or_else(|| RunError::BadOutput(format!("the answer ({out_len} bytes at {out_ptr}) lies outside memory")))?
             .to_vec();
         if store.data().refused {
@@ -219,11 +257,8 @@ impl Engine {
             // without the memory it wanted, so the budget is the failure to name.
             return Err(RunError::OutOfMemory { memory: limits.memory });
         }
-        let cost = Cost { fuel: limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0)), memory: memory.size(&store) * 65_536 };
-        match decode_value(&out).map_err(|e| RunError::BadOutput(format!("{e:?}")))? {
-            Value::List(items) => Ok((items.into_iter().map(present).collect(), cost)),
-            other => Err(RunError::BadOutput(format!("a {:?}, not a list", other.ty()))),
-        }
+        let cost = Cost { fuel: limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0)), memory: memory.size(&*store) * 65_536 };
+        Ok((out, cost))
     }
 
     fn compile(&self, bytes: &[u8]) -> Result<Module, RunError> {
@@ -300,13 +335,14 @@ impl<R: Resolver> Resolver for WithEngine<'_, R> {
         self.real.sourced(unit)
     }
 
-    fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
-        match self.engine.run(bytes, limits, inputs) {
-            Ok(outs) => Ok(outs),
+    fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> ModuleRun {
+        let (answered, burned) = self.engine.run_metered(bytes, limits, inputs);
+        match answered {
+            Ok((outs, _)) => ModuleRun { outputs: Ok(outs), burned, out_of_fuel: false },
             Err(e) => {
-                let reason = e.to_string();
+                let (reason, out_of_fuel) = (e.to_string(), matches!(e, RunError::OutOfFuel { .. }));
                 *self.last.borrow_mut() = Some(e);
-                Err(reason)
+                ModuleRun { outputs: Err(reason), burned, out_of_fuel }
             }
         }
     }
@@ -405,6 +441,60 @@ mod tests {
             (func (export "run") (param i32 i32) (result i64) unreachable))"#;
         let err = Engine::new().run(&wat::parse_str(trapping).unwrap(), &ModuleLimits::default(), &[]).unwrap_err();
         assert!(matches!(err, RunError::Trap(_)), "{err}");
+    }
+
+    /// Guards: a call says what fuel it burned whatever it came to (an answer, a trap, an answer
+    /// past its memory, memory refused, fuel run out), and the resolver passes it on, with
+    /// whether the call ran out: the same burned however much it was given, more for more work,
+    /// all it was given (near enough) when it ran out, and none when it never started.
+    /// Why: a round's fuel is charged what each call burned. A call that fails after computing
+    /// still computed; were it charged nothing, a body that throws at the end of its work could be
+    /// called without end within one round.
+    /// If it fails: `run_metered` reads the fuel only when the call answers, or
+    /// `WithEngine::run_module` drops it or names the wrong failure as running out.
+    #[test]
+    fn a_call_says_what_fuel_it_burned_whatever_it_came_to() {
+        // Turns `k` times, then ends as `end` says.
+        let spin = |k: u32, end: &str| {
+            wat::parse_str(format!(
+                r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64) (local $i i32)
+                    (local.set $i (i32.const {k}))
+                    (block (loop (br_if 1 (i32.eqz (local.get $i))) (local.set $i (i32.sub (local.get $i) (i32.const 1))) (br 0)))
+                    {end}))"#
+            ))
+            .unwrap()
+        };
+        let answers = "(i64.or (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32)) (i64.extend_i32_u (local.get $len)))";
+        let ends = [
+            ("an answer", answers),
+            ("a trap", "unreachable"),
+            ("an answer past its memory", "i64.const 0xffffffff"),
+            ("memory refused", "(drop (memory.grow (i32.const 1000))) (i64.const 0)"),
+        ];
+        let engine = Engine::new();
+        let limits = |fuel: u64| ModuleLimits { fuel, memory: 1 << 20 };
+        let inputs = [Some(n(1.0))];
+        for (what, end) in ends {
+            let burned = |k: u32, fuel: u64| engine.run_metered(&spin(k, end), &limits(fuel), &inputs).1;
+            let (few, many) = (burned(10, 1_000_000), burned(1000, 1_000_000));
+            assert!(few > 0, "{what}: burned nothing");
+            assert!(many >= few + 1000, "{what}: a thousand turns more burned {} more", many - few);
+            assert_eq!(burned(1000, 2_000_000), many, "{what}: what it burned depends on what it was given");
+            let ran = WithEngine::new(&MapResolver::new(), &engine).run_module(&spin(1000, end), &limits(1_000_000), &inputs);
+            assert_eq!((ran.burned, ran.out_of_fuel), (many, false), "{what}, through the resolver");
+            assert_eq!(ran.outputs.is_ok(), what == "an answer", "{what}");
+        }
+        let (answered, burned) = engine.run_metered(&spin(1000, answers), &limits(1_000_000), &inputs);
+        assert_eq!(answered.unwrap().1.fuel, burned, "an answer's cost is what it burned");
+        // Out of fuel: all it had, near enough, and the resolver says it ran out.
+        let ran = WithEngine::new(&MapResolver::new(), &engine).run_module(&spin(1_000_000, answers), &limits(10_000), &inputs);
+        assert!(ran.out_of_fuel && (9_900..=10_000).contains(&ran.burned), "{ran:?}");
+        // Never started: not a module.
+        let (refused, burned) = engine.run_metered(b"not a module", &limits(10_000), &inputs);
+        assert!(matches!(refused, Err(RunError::NotAModule(_))) && burned == 0, "{refused:?} burned {burned}");
     }
 
     #[test]

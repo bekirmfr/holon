@@ -165,11 +165,172 @@ pub trait Observer {
     fn reads_produced(&self) -> bool {
         true
     }
+    /// One step of the evaluation: a node about to be evaluated (fired, decided, held or stood
+    /// in for), or a `map`'s or `fold`'s function about to be applied to an item. `false` stops
+    /// it there: that node or item gives absent, as does every one after it that is asked, so
+    /// what a host allows a round (`max_steps`) bounds its work, whatever the graph computes.
+    /// Asked before a node is held or stood in for, so a run again that stands in for a node
+    /// counts no more than the run it checks did. Yes (the default) counts nothing.
+    fn step(&mut self) -> bool {
+        true
+    }
+    /// Up to `want` steps taken at once, asked when the first of them is wanted, by an evaluation
+    /// that takes them one at a time and gives back what it doesn't use
+    /// ([`give_back`](Observer::give_back)): how a `map`'s or `fold`'s applications count without
+    /// a `dyn` call each. Fewer when fewer are left; none is that first step refused, as a
+    /// [`step`](Observer::step) answering `false`. The default takes one, as a step.
+    fn take_steps(&mut self, _want: u32) -> u32 {
+        u32::from(self.step())
+    }
+    /// Steps taken ([`take_steps`](Observer::take_steps)) and not used, given back.
+    fn give_back(&mut self, _steps: u32) {}
+    /// The most this thread may hold ([`memory::held`](crate::memory::held)) for a step to be
+    /// taken: an evaluation that takes steps a batch at a time checks it at each of them, and
+    /// past it asks [`step`](Observer::step), which refuses. None (the default) holds a step to
+    /// nothing.
+    fn held_at_most(&self) -> i64 {
+        i64::MAX
+    }
+    /// Fuel for a module call (instructions): up to `want`, its own budget, of what is left of
+    /// the round's. A host that pools a round's fuel gives what it has left when that is less,
+    /// and none once it has none, and the call is then not made. The default gives `want`: each
+    /// call its own budget, nothing pooled.
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        want
+    }
+    /// A module call given fuel ([`take_fuel`](Observer::take_fuel)) is done, and `unburned` of
+    /// it comes back. `short`: it ran out on less than its own budget, so the round's fuel ran
+    /// out, not the call's, and the round fails, as a step past its budget fails it.
+    fn give_back_fuel(&mut self, _unburned: u64, _short: bool) {}
+}
+
+/// The steps ([`Observer::step`]) a round may take when its host says nothing else: a second or a
+/// few of computing (a release build took 10 to 20 million plain steps a second, and 3 million
+/// that each build a record). The host's `max_steps` limit; a flow may ask for more, to
+/// [`MAX_STEPS_CEILING`].
+pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
+/// The most steps any grant gives a round. `holon verify` runs a run again held to it, so a run
+/// within any grant's steps is run again in full.
+pub const MAX_STEPS_CEILING: u64 = 200_000_000;
+/// The fuel (instructions, [`Observer::take_fuel`]) a round's module and `js()` calls may burn in
+/// all when its host says nothing else: two to five seconds of a native engine's computing on a
+/// laptop, by what the code does (chess's rules run 2G a second, a `js()` loop 1G; the costliest
+/// round of the samples, chess's first move of a game, three calls of its rules, burns 0.93G).
+/// The host's `max_fuel` limit; a flow may ask for more, to [`MAX_FUEL_CEILING`].
+pub const DEFAULT_MAX_FUEL: u64 = 4_000_000_000;
+/// The most fuel any grant gives a round. `holon verify` runs a run again held to it, so a run
+/// within any grant's fuel is run again in full.
+pub const MAX_FUEL_CEILING: u64 = 20_000_000_000;
+/// The bytes a round may come to hold ([`memory::held`](crate::memory::held), what it made and
+/// kept: its values, what its host records of them) when its host says nothing else. The host's
+/// `max_memory` limit; a flow may ask for more, to [`MAX_MEMORY_CEILING`].
+pub const DEFAULT_MAX_MEMORY: u64 = 256 << 20;
+/// The most memory any grant gives a round.
+pub const MAX_MEMORY_CEILING: u64 = 4 << 30;
+
+/// Observes nothing but the steps, the modules' fuel and the memory held, against budgets: plain
+/// [`eval`] held to `left` steps, `fuel` instructions of module calls, and what the thread may
+/// hold.
+pub struct Budgeted {
+    pub left: u64,
+    /// Whether it ran out: what it computed is then absent where it stopped.
+    pub exhausted: bool,
+    /// The fuel its module calls may still burn, all told.
+    pub fuel: u64,
+    /// Whether a module call ran out of it: that call, and any after it, gave nothing.
+    pub out_of_fuel: bool,
+    /// The most the thread may hold ([`memory::held`](crate::memory::held)) for a step to be
+    /// taken: what it held when the budget was made, and the bytes the evaluation may keep.
+    pub at_most: i64,
+    /// Whether a step found it held more: that step, and every one after it, was refused.
+    pub out_of_memory: bool,
+}
+
+impl Budgeted {
+    /// `steps` steps, and the fuel and the memory a round gets when its host says nothing else.
+    pub fn new(steps: u64) -> Budgeted {
+        Budgeted { left: steps, exhausted: false, fuel: DEFAULT_MAX_FUEL, out_of_fuel: false, at_most: i64::MAX, out_of_memory: false }
+            .with_memory(DEFAULT_MAX_MEMORY)
+    }
+
+    /// The same, its module calls held to `fuel` instructions all told.
+    pub fn with_fuel(self, fuel: u64) -> Budgeted {
+        Budgeted { fuel, ..self }
+    }
+
+    /// The same, held to keeping `bytes` more than the thread holds now.
+    pub fn with_memory(self, bytes: u64) -> Budgeted {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        Budgeted { at_most: crate::memory::held().saturating_add(bytes), ..self }
+    }
+
+    /// Whether the thread holds more than it may: once it has, for good, so a round stopped for
+    /// its memory doesn't go on as what it drops frees some.
+    #[inline]
+    fn over_memory(&mut self) -> bool {
+        if !self.out_of_memory && crate::memory::held() > self.at_most {
+            self.out_of_memory = true;
+        }
+        self.out_of_memory
+    }
+}
+
+impl Observer for Budgeted {
+    fn step(&mut self) -> bool {
+        if self.over_memory() {
+            return false;
+        }
+        match self.left.checked_sub(1) {
+            Some(left) => {
+                self.left = left;
+                true
+            }
+            None => {
+                self.exhausted = true;
+                false
+            }
+        }
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        if self.over_memory() {
+            return 0;
+        }
+        if self.left == 0 && want > 0 {
+            self.exhausted = true;
+        }
+        let taken = self.left.min(u64::from(want));
+        self.left -= taken;
+        taken as u32
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.left += u64::from(steps);
+    }
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        if self.fuel == 0 && want > 0 {
+            self.out_of_fuel = true;
+        }
+        let taken = self.fuel.min(want);
+        self.fuel -= taken;
+        taken
+    }
+    fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+        self.fuel += unburned;
+        self.out_of_fuel |= short;
+    }
+    fn held_at_most(&self) -> i64 {
+        self.at_most
+    }
+    fn reads_produced(&self) -> bool {
+        false
+    }
 }
 
 /// Observes nothing: what plain [`eval`] uses.
 pub struct NoObserver;
 impl Observer for NoObserver {
+    fn take_steps(&mut self, want: u32) -> u32 {
+        want
+    }
     fn reads_produced(&self) -> bool {
         false
     }
@@ -543,7 +704,7 @@ fn eval_as(
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
         // when it can't, the observer hears why, at this node.
         (_, UnitBody::Module { bytes }) => {
-            let (outs, reason) = run_module_outputs(bytes, unit, &owned(inputs), resolver);
+            let (outs, reason) = run_module_outputs(bytes, unit, &owned(inputs), resolver, observer);
             if let Some(reason) = reason {
                 observer.failed(path, &reason);
             }
@@ -649,7 +810,17 @@ fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Pa
 /// writes its answer's bytes as it likes, so an effect among them would be a write or a call no
 /// leaf of the flow asked for; the whole answer is refused. Shared with the eager oracle
 /// (`eager.rs`).
-pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> (Vec<Option<Value>>, Option<String>) {
+///
+/// The call's fuel is its own budget or what `observer` has left of the round's, the less
+/// ([`Observer::take_fuel`]), and what it didn't burn goes back. A call that runs out on the
+/// round's fuel gives nothing, with no reason of its own: the round fails, and says why.
+pub(crate) fn run_module_outputs(
+    bytes: &[u8],
+    unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    observer: &mut impl Observer,
+) -> (Vec<Option<Value>>, Option<String>) {
     let n = unit.outputs.len();
     if inputs.len() != unit.inputs.len() || inputs.iter().any(Option::is_none) {
         return (vec![None; n], None);
@@ -658,7 +829,15 @@ pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Val
         Ok(l) => l,
         Err(e) => return (vec![None; n], Some(e.to_string())),
     };
-    match resolver.run_module(bytes, &limits, inputs) {
+    let fuel = observer.take_fuel(limits.fuel);
+    if fuel == 0 {
+        return (vec![None; n], None);
+    }
+    let ran = resolver.run_module(bytes, &crate::ModuleLimits { fuel, ..limits }, inputs);
+    let short = ran.out_of_fuel && fuel < limits.fuel;
+    observer.give_back_fuel(fuel.saturating_sub(ran.burned), short);
+    match ran.outputs {
+        _ if short => (vec![None; n], None),
         Ok(outs) if outs.iter().flatten().any(crate::primitives::contains_effect) => {
             (vec![None; n], Some("its answer holds an effect: a module computes values, and only a leaf builds an effect".into()))
         }
@@ -1788,6 +1967,9 @@ impl<'r> Prepared<'r> {
     /// its path. Inlined, so it adds no frame to the recursion through `fire`.
     #[inline(always)]
     fn told<O: Observer>(&self, ci: usize, observer: &mut O, path: &mut Vec<u32>, eval: impl FnOnce(&mut O, &mut Vec<u32>) -> Slots) -> Slots {
+        if !observer.step() {
+            return smallvec![Slot::Absent; self.resolved[ci].outputs.len()];
+        }
         path.push(ci as u32);
         observer.enter(path);
         let outs = eval(observer, path);
@@ -2255,7 +2437,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
 
     let mut out = Vec::with_capacity(len);
     let (mut pending, mut absent) = (false, false);
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // Every item is applied, even after one comes out absent, so each item's requests are asked
     // in the same round rather than one round per item. A result goes a level down, into the
     // list: one already as deep as a value may nest makes the map give nothing
@@ -2277,7 +2459,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
             refs.extend(extra.iter().map(|v| v.as_deref()));
             for (k, x) in xs.iter().enumerate() {
                 refs[0] = Some(x);
-                tally(at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path)));
+                tally(at_item(k, &mut asks, path, |asks, path| eval_as(leaf, kind, &refs, resolver, asks, path)));
             }
         }
         // A composite over items lent: run, each item put in place.
@@ -2287,7 +2469,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
             args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
             for (k, x) in xs.iter().enumerate() {
                 args[0] = Some(Cow::Borrowed(x));
-                tally(at_item(k, path, |path| prepared.run(unit.outputs.len(), &mut args, resolver, &mut asks, path)));
+                tally(at_item(k, &mut asks, path, |asks, path| prepared.run(unit.outputs.len(), &mut args, resolver, asks, path)));
             }
         }
         _ => {
@@ -2331,7 +2513,7 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // Item `k`'s answer: true or false, or the slot that stops the leaf.
     let mut answer = |k: usize, item: &Value| {
         let mut args: Args = SmallVec::with_capacity(1 + extra.len());
@@ -2409,7 +2591,7 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let list = take_given(&mut list[0]).expect("checked present");
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let order = {
         let Value::List(xs) = list.as_ref() else { unreachable!("checked to be a list") };
         let mut compared = 0;
@@ -2458,7 +2640,7 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let (mut groups, mut pending, mut absent) = (std::collections::BTreeMap::<String, Vec<Value>>::new(), false, false);
     for (k, item) in items.enumerate() {
         let key = {
@@ -2505,7 +2687,7 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
     let (first, extra) = inputs.split_at_mut(1);
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     let mut applied = 0;
     let mut answer = |key: &str, value: &Value| -> Result<Option<Value>, Slot> {
         let key = Value::Text(key.to_string());
@@ -2580,7 +2762,7 @@ impl<'r> Ready<'r> {
 /// `k`, its one output (or absent, as [`eval_one`]). A composite runs as `eval_at` would run it.
 /// What `args` gives (a `fold`'s accumulator), the function may build on.
 fn apply<'r>(unit: &Ready<'r>, args: &mut Args<'_>, resolver: &'r impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
-    at_item(k, path, |path| match unit {
+    at_item(k, asks, path, |asks, path| match unit {
         Ready::Other(unit, kind) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => eval_given(unit, kind, args, resolver, asks, path),
         Ready::Other(unit, kind) => eval_as(unit, kind, &refs(args), resolver, asks, path),
         Ready::Composite(unit, prepared) => {
@@ -2595,23 +2777,90 @@ fn apply<'r>(unit: &Ready<'r>, args: &mut Args<'_>, resolver: &'r impl Resolver,
 }
 
 /// What `eval` makes of item `k`'s application: evaluated at the node's path then `k`, its one
-/// output (or absent, as [`eval_one`]).
-fn at_item(k: usize, path: &mut Vec<u32>, eval: impl FnOnce(&mut Vec<u32>) -> Slots) -> Slot {
+/// output (or absent, as [`eval_one`]). A step ([`Observer::step`]), as a node is.
+fn at_item(k: usize, asks: &mut Asks, path: &mut Vec<u32>, eval: impl FnOnce(&mut Asks, &mut Vec<u32>) -> Slots) -> Slot {
     let Ok(k) = u32::try_from(k) else { return Slot::Absent };
+    if !asks.step() {
+        return Slot::Absent;
+    }
     path.push(k);
-    let mut outs = eval(path);
+    let mut outs = eval(asks, path);
     path.pop();
     if outs.len() == 1 { outs.pop().unwrap() } else { Slot::Absent }
 }
 
 /// The observer inside a `map`/`fold` application: it passes on what is asked (requests, reads,
-/// waiting points) and nothing of the steps. One type however deep the nesting, so a function
-/// that maps again evaluates under the same observer type.
-struct Asks<'a>(&'a mut dyn Observer);
+/// waiting points), the steps and the modules' fuel, and nothing else of the evaluation. One type
+/// however deep the nesting, so a function that maps again evaluates under the same observer
+/// type. The steps it takes from the observer outside a batch at a time
+/// ([`Observer::take_steps`]), so each is a count down here, not a `dyn` call, and it gives back
+/// what it didn't use when it is done: the count stays exact. What the thread holds it checks at
+/// each step against what `outside` allows ([`Observer::held_at_most`]), so a batch of steps
+/// can't keep a function making more than the round may hold.
+struct Asks<'a> {
+    outside: &'a mut dyn Observer,
+    /// Steps taken from `outside` and not used yet.
+    taken: u32,
+    /// What `outside` allows the thread to hold for a step to be taken.
+    at_most: i64,
+}
+
+/// The steps [`Asks`] takes from the observer outside at a time.
+const STEPS_TAKEN: u32 = 256;
+
+impl<'a> Asks<'a> {
+    fn new(outside: &'a mut dyn Observer) -> Asks<'a> {
+        let at_most = outside.held_at_most();
+        Asks { outside, taken: 0, at_most }
+    }
+}
+
+impl Drop for Asks<'_> {
+    fn drop(&mut self) {
+        if self.taken > 0 {
+            self.outside.give_back(self.taken);
+        }
+    }
+}
 
 impl Observer for Asks<'_> {
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
-        self.0.answer(path, request)
+        self.outside.answer(path, request)
+    }
+    #[inline]
+    fn step(&mut self) -> bool {
+        if crate::memory::held() > self.at_most {
+            // Past what the round may hold: `outside` refuses the step, and says why.
+            return self.outside.step();
+        }
+        if self.taken == 0 {
+            self.taken = self.outside.take_steps(STEPS_TAKEN);
+            if self.taken == 0 {
+                return false;
+            }
+        }
+        self.taken -= 1;
+        true
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        if self.taken == 0 {
+            return self.outside.take_steps(want);
+        }
+        let taken = self.taken.min(want);
+        self.taken -= taken;
+        taken
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.taken += steps;
+    }
+    fn take_fuel(&mut self, want: u64) -> u64 {
+        self.outside.take_fuel(want)
+    }
+    fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+        self.outside.give_back_fuel(unburned, short);
+    }
+    fn held_at_most(&self) -> i64 {
+        self.at_most
     }
     fn reads_produced(&self) -> bool {
         false
@@ -2650,7 +2899,7 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
 
     let (head, extra) = inputs.split_at_mut(2);
     let mut acc = take_given(&mut head[0]).map(Cow::into_owned).expect("checked present");
-    let mut asks = Asks(observer);
+    let mut asks = Asks::new(observer);
     // A list given to the fold gives each item to its application too.
     let Some(items) = Items::of(take_given(&mut head[1])) else { return Slot::Absent };
     for (k, elem) in items.enumerate() {
@@ -2663,7 +2912,7 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
                 refs.push(Some(&acc));
                 refs.push(Some(&*elem));
                 refs.extend(extra.iter().map(|v| v.as_deref()));
-                at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path))
+                at_item(k, &mut asks, path, |asks, path| eval_as(leaf, kind, &refs, resolver, asks, path))
             }
             _ => {
                 let mut args: Args = SmallVec::with_capacity(2 + extra.len());
@@ -3618,6 +3867,226 @@ mod tests {
             inputs,
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         }
+    }
+
+    /// Guards: each application of a higher-order leaf's function is a step even when the function
+    /// is a leaf itself (or a module), with no node of its own to count: for every leaf in
+    /// `PASSES_EXTRA`, a budget of no steps runs out at its first item.
+    /// Why: the steps of a function that is a composite come from its nodes as well, so only this
+    /// case shows the application itself counted. Without it a `js()` function, or a leaf, applied
+    /// to each of 10000 items, nested, would run past `max_steps` with nothing counted.
+    /// If it fails: the named leaf applies its function without going through `at_item`, which
+    /// asks for the step; route it through `at_item` or `apply`.
+    #[test]
+    fn an_application_of_a_function_with_no_nodes_is_a_step_still() {
+        let mut r = MapResolver::new();
+        let same = r.insert(Unit { params: vec![Param::frozen("type", "Number"), Param::frozen("value", "0")], ..prim("default", 1, Type::Any) }).unwrap();
+        let add = r.insert(prim("add", 2, Type::Any)).unwrap();
+        let items = list((0..8).map(|i| num(i as f64)).collect());
+        for &name in crate::PASSES_EXTRA {
+            let f = if crate::catalog::function_takes(name) == 2 { &add } else { &same };
+            let (unit, inputs) = match name {
+                "fold" => (
+                    Unit {
+                        body: UnitBody::Primitive { name: "fold".into() },
+                        params: vec![Param::frozen("fn", hex(f))],
+                        inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }],
+                        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+                    },
+                    vec![Some(num(0.0)), Some(items.clone())],
+                ),
+                "json_parse" => (json_leaf(name, f, 0, &[]), vec![Some(txt("[0,1,2,3,4,5,6,7]"))]),
+                "json_stringify" => (json_leaf(name, f, 0, &[]), vec![Some(items.clone())]),
+                _ => (over(name, f, 0), vec![Some(items.clone())]),
+            };
+            let mut counted = Budgeted::new(u64::MAX);
+            eval_observed(&unit, &inputs, &r, &mut counted);
+            assert!(u64::MAX - counted.left >= 1, "{name} took no step");
+            let mut none = Budgeted::new(0);
+            eval_observed(&unit, &inputs, &r, &mut none);
+            assert!(none.exhausted, "{name} applied its function with no step left");
+        }
+    }
+
+    /// Guards: what a round holds is checked at every step, a node's and each application of a
+    /// function's, against what its budget allows: a chain of nodes each doubling a text, a `map`
+    /// whose function keeps a copy of a large text for each item, and a `fold` whose accumulator
+    /// grows by one each item stop within a step or two of passing it, saying `out_of_memory`,
+    /// and every step after is refused, though what they made is freed; a budget that holds what
+    /// they make gives what no budget does.
+    /// Why: steps and fuel bound a round's time, not what it keeps. A request that grows a value
+    /// (`s = s + s`, a list of copies of a body) would hold the server's memory until the process
+    /// aborts, every deployment with it. `Asks` takes steps 256 at a time, so a function applied
+    /// to each item must be checked at each, not at each batch.
+    /// If it fails: `Budgeted::step` or `take_steps` doesn't read `memory::held` against
+    /// `at_most`, isn't refused for good once over, or `Asks::step` doesn't check it at each item.
+    #[test]
+    fn a_round_holds_no_more_than_its_memory_allows_at_any_step() {
+        const KB: usize = 1 << 10;
+        let mut r = MapResolver::new();
+        // Eight nodes, each joining what came before to itself: 64 KiB doubled to 16 MiB.
+        let concat2 = r.insert(prim("concat", 2, Type::Any)).unwrap();
+        let mut edges = vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 0, 0, 1)];
+        for i in 1..8 {
+            edges.extend([edge(i - 1, 0, i, 0), edge(i - 1, 0, i, 1)]);
+        }
+        edges.push(edge(7, 0, BOUNDARY, 0));
+        let doubling = composite(vec![Port { name: "x".into(), ty: Type::Any }], Type::Any, vec![concat2; 8], edges);
+        // A map keeping, for each of 32 items, a list of it and a copy of a 512 KiB text.
+        let list2 = r.insert(prim("list", 2, Type::Any)).unwrap();
+        let mut copies = over("map", &list2, 1);
+        copies.inputs[0].ty = Type::list_any();
+        // A fold adding the 512 KiB text to its accumulator at each of 32 items.
+        let concat3 = r.insert(prim("concat", 3, Type::Any)).unwrap();
+        let growing = Unit {
+            body: UnitBody::Primitive { name: "fold".into() },
+            params: vec![Param::frozen("fn", hex(&concat3))],
+            inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }, Port { name: "extra".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let half = txt(&"x".repeat(512 * KB));
+        let items = list(vec![txt(""); 32]);
+        // Each with the most steps it may take in 4 MiB: the nodes up to the one making 4 MiB and
+        // the next; the map's and the fold's a step of their own and eight items of 512 KiB.
+        let cases: [(&str, &Unit, Vec<Option<Value>>, u64); 3] = [
+            ("nodes", &doubling, vec![Some(txt(&"x".repeat(64 * KB)))], 7),
+            ("map", &copies, vec![Some(items.clone()), Some(half.clone())], 1 + 8 + 2),
+            ("fold", &growing, vec![Some(txt("")), Some(items), Some(half)], 1 + 8 + 2),
+        ];
+        for (what, unit, inputs, most) in cases {
+            // Within 64 MiB: what no budget gives, every step taken.
+            let mut b = Budgeted::new(u64::MAX).with_memory(64 << 20);
+            let out = eval_observed(unit, &inputs, &r, &mut b).into_vec();
+            let all = u64::MAX - b.left;
+            assert!(!b.out_of_memory, "{what}: within its memory");
+            assert_eq!(out, eval(unit, &inputs, &r).into_vec(), "{what}: the same as with no budget");
+            assert!(out[0].is_some() && all > most, "{what}: {all} steps");
+            // Within 4 MiB: a step or two past what fits, then nothing more.
+            let mut b = Budgeted::new(u64::MAX).with_memory(4 << 20);
+            let out = eval_observed(unit, &inputs, &r, &mut b).into_vec();
+            let steps = u64::MAX - b.left;
+            assert!(b.out_of_memory && !b.exhausted, "{what}: past its memory, said");
+            assert_eq!(out, vec![None], "{what}: nothing comes of a round stopped");
+            assert!(steps <= most, "{what}: {steps} of {all} steps taken");
+            assert!(!b.step() && b.take_steps(1) == 0, "{what}: once over, refused for good");
+        }
+    }
+
+    /// A resolver whose modules answer their first input and burn `cost` instructions a call, or
+    /// all they are given when that is less (then they ran out). It counts its calls.
+    struct Burning {
+        units: MapResolver,
+        cost: u64,
+        calls: std::cell::Cell<u64>,
+    }
+    impl Resolver for Burning {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.units.resolve(hash)
+        }
+        fn run_module(&self, _bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> crate::ModuleRun {
+            self.calls.set(self.calls.get() + 1);
+            if limits.fuel < self.cost {
+                return crate::ModuleRun { outputs: Err(format!("out of fuel ({} instructions)", limits.fuel)), burned: limits.fuel, out_of_fuel: true };
+            }
+            crate::ModuleRun { outputs: Ok(vec![inputs[0].clone()]), burned: self.cost, out_of_fuel: false }
+        }
+    }
+
+    /// A module unit of `inputs` inputs and one output, with its own budget of `fuel`.
+    fn burner(inputs: usize, fuel: u64) -> Unit {
+        let minimal = r#"(module (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 0)
+            (func (export "run") (param i32 i32) (result i64) i64.const 0))"#;
+        Unit {
+            body: UnitBody::Module { bytes: wat::parse_str(minimal).unwrap() },
+            params: vec![Param::frozen("fuel", fuel.to_string())],
+            inputs: (0..inputs).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(),
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        }
+    }
+
+    /// The round's fuel ([`Budgeted`]), and how many modules said why they gave nothing.
+    struct Pooled {
+        budget: Budgeted,
+        reasons: usize,
+    }
+    impl Observer for Pooled {
+        fn take_fuel(&mut self, want: u64) -> u64 {
+            self.budget.take_fuel(want)
+        }
+        fn give_back_fuel(&mut self, unburned: u64, short: bool) {
+            self.budget.give_back_fuel(unburned, short);
+        }
+        fn failed(&mut self, _path: &[u32], _reason: &str) {
+            self.reasons += 1;
+        }
+    }
+
+    /// Guards: every module call a round makes, wherever it sits (the unit itself, a composite's
+    /// child, the function each leaf in `PASSES_EXTRA` applies to each item), runs on its own
+    /// budget or what is left of the round's fuel, the less, and the round is charged what it
+    /// burned. Fuel of exactly what the calls burn gives what unbounded fuel gives; one
+    /// instruction less runs out, with no reason of the call's own; none left makes no call. A
+    /// call that runs out of its own budget leaves the round standing, and says why.
+    /// Why: `module_fuel` bounds one call. Without a pool, a `js()` function applied to each of
+    /// 10000 items, each call within its own 200M, computes for minutes in one request; a call
+    /// charged less than it burned is one the pool never stops.
+    /// If it fails: the named place runs its module some way other than `run_module_outputs`, or
+    /// an observer between it and the round's (`Asks`) doesn't pass `take_fuel` and
+    /// `give_back_fuel` on.
+    #[test]
+    fn every_module_call_runs_on_the_rounds_fuel_and_is_charged_what_it_burned() {
+        const COST: u64 = 7;
+        let mut units = MapResolver::new();
+        let one = units.insert(burner(1, 100)).unwrap();
+        let two = units.insert(burner(2, 100)).unwrap();
+        let items = list((0..8).map(|i| num(i as f64)).collect());
+        let x = || vec![Port { name: "x".into(), ty: Type::Any }];
+        let through = vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }];
+        let mut cases: Vec<(&str, Unit, Vec<Option<Value>>)> =
+            vec![("the unit itself", burner(1, 100), vec![Some(num(1.0))]), ("a composite's child", composite(x(), Type::Any, vec![one], through), vec![Some(num(1.0))])];
+        for &name in crate::PASSES_EXTRA {
+            let f = if crate::catalog::function_takes(name) == 2 { &two } else { &one };
+            let (unit, inputs) = match name {
+                "fold" => (
+                    Unit {
+                        body: UnitBody::Primitive { name: "fold".into() },
+                        params: vec![Param::frozen("fn", hex(f))],
+                        inputs: vec![Port { name: "init".into(), ty: Type::Any }, Port { name: "list".into(), ty: Type::list_any() }],
+                        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+                    },
+                    vec![Some(num(0.0)), Some(items.clone())],
+                ),
+                "json_parse" => (json_leaf(name, f, 0, &[]), vec![Some(txt("[0,1,2,3,4,5,6,7]"))]),
+                "json_stringify" => (json_leaf(name, f, 0, &[]), vec![Some(items.clone())]),
+                _ => (over(name, f, 0), vec![Some(items.clone())]),
+            };
+            cases.push((name, unit, inputs));
+        }
+        let r = Burning { units, cost: COST, calls: std::cell::Cell::new(0) };
+        let run = |unit: &Unit, inputs: &[Option<Value>], fuel: u64| {
+            r.calls.set(0);
+            let mut pooled = Pooled { budget: Budgeted::new(u64::MAX).with_fuel(fuel), reasons: 0 };
+            let outs = eval_observed(unit, inputs, &r, &mut pooled).into_vec();
+            (outs, pooled, r.calls.get())
+        };
+        for (place, unit, inputs) in &cases {
+            let (free, unbounded, calls) = run(unit, inputs, u64::MAX);
+            assert!(calls >= 1, "{place} made no call");
+            let burned = u64::MAX - unbounded.budget.fuel;
+            assert_eq!(burned, COST * calls, "{place}: the round was charged other than its calls burned");
+            let (outs, exact, _) = run(unit, inputs, burned);
+            assert_eq!((outs, exact.budget.fuel, exact.budget.out_of_fuel), (free, 0, false), "{place}, with exactly the fuel it burns");
+            let (_, short, _) = run(unit, inputs, burned - 1);
+            assert!(short.budget.out_of_fuel, "{place} burned past the round's fuel");
+            assert_eq!(short.reasons, 0, "{place}: a call cut short by the round's fuel gave a reason of its own");
+            let (_, none, made) = run(unit, inputs, 0);
+            assert!(none.budget.out_of_fuel && made == 0, "{place} ran a module with no fuel left");
+        }
+        // Out of its own budget: the call's failure, not the round's. It gives nothing and says
+        // why, and the round goes on, charged what the call burned.
+        let (outs, starved, calls) = run(&burner(1, COST - 1), &[Some(num(1.0))], 1000);
+        assert_eq!((outs, starved.budget.out_of_fuel, starved.budget.fuel, starved.reasons, calls), (vec![None], false, 1000 - (COST - 1), 1, 1));
     }
 
     /// The leaves that test each item read their function's answer as JavaScript's ToBoolean,

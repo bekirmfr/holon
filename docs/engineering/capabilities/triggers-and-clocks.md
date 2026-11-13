@@ -59,8 +59,8 @@ A server deployment with a `port` gets a listener of its own on `--data-host` (d
 (`dataplane::start_listener`: hyper on a shared tokio runtime, at most `max_connections`). A port
 another program holds is said on the deployment (`listen_error`). `serve_flow` matches the request
 to a route (`match_route`), answers 503 for a deployment not running, and fires the endpoint with
-the request record, the clock and random numbers sourced. Whether it runs on the worker or the
-blocking pool is `runs_here_for` ([G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)).
+the request record, the clock and random numbers sourced. It runs on the blocking pool, however
+short: nothing computes on a data-plane worker ([G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)).
 `POST /deployments/<slug>/request` (the editor's "send live") goes through the same `serve_data`
 over the control plane.
 
@@ -238,8 +238,11 @@ syncs the same way but has no one to answer.
 
 - **A clock pass waits for its slowest tick.** `run_due_clock_ticks` joins every tick of a pass
   before the next pass begins, so one slow tick delays every other deployment's next tick, and
-  expiry, until it ends. Each due tick is a thread of its own, unbounded (the code names it: a
-  bounded pool is the fix if fan-out grows).
+  expiry, until it ends. Since B5 that has an end: what a tick computes is held to its round's
+  `max_steps`, `max_fuel` and `max_memory` (about a second by default, 10–20 s at the ceilings),
+  and its calls to their timeouts; before, a tick that looped without end stopped every clock and
+  every deadline on the server. Each due tick is a thread of its own, unbounded (the code names
+  it: a bounded pool is the fix if fan-out grows).
 - **Clocks drift and skip.** The next tick is due a period after the pass's `now`, checked once a
   second; periods are whole seconds; a tick late by more than a period is one tick, not several.
 - **Files are polled**, every second where the OS gives notices and every 30 s regardless: a dropped
@@ -261,7 +264,8 @@ In `crates/holon/src/tests.rs`:
 - Routes: `a_server_deployment_answers_on_its_own_port_within_limits`,
   `a_server_deployment_whose_port_is_taken_says_it_is_not_answering`,
   `listening_beyond_loopback_warns_that_it_is_plain_http`,
-  `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (G2).
+  and, against the real server in `crates/holon/tests/data_plane.rs`,
+  `nothing_a_run_computes_holds_up_the_data_plane` (G2).
 - Clocks: `clock_ticks_fire_when_due_and_not_before`,
   `multiple_due_clock_deployments_all_fire_in_one_pass`, `clock_tick_with_state_persists_across_ticks`,
   `a_clock_runs_history_never_shows_a_secret`, `delete_deployment_stops_future_clock_ticks`,

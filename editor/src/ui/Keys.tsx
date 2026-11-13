@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { KEYMAP, type KeyIn, type KeyScope } from "../keymap";
 import { Kbd } from "./Kbd";
+import { useFocusTrap } from "./focusTrap";
 
 /** A key as bindings name it: modifiers first (`ctrl+s`, `shift+F6`), a printed character as
  *  typed (`?`, `N`, `,`), others by name (`Escape`, `ArrowLeft`). Cmd counts as Ctrl. */
@@ -153,6 +154,8 @@ export function shownKeys(keys: readonly string[]): string[] {
 
 /** The `?` dialog: every key, by where it works. */
 export function KeysDialog({ onClose }: { onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || e.key === "?") {
@@ -167,7 +170,7 @@ export function KeysDialog({ onClose }: { onClose: () => void }) {
   const scopes = [...new Set(KEYMAP.map((b) => b.scope))];
   return (
     <div className="hl-modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="hl-modal__box hl-keys" role="dialog" aria-modal="true" aria-label="keys">
+      <div ref={box} className="hl-modal__box hl-keys" role="dialog" aria-modal="true" aria-label="keys">
         <div className="hl-modal__head">
           <span>Keys</span>
           <button className="hl-modal__close" aria-label="close" onClick={onClose}>

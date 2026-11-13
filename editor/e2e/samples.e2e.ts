@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, viewTab } from "./helpers";
+import { flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, viewTab } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -75,7 +75,7 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
 
 test("a flow nothing would start can't deploy; given an action, it deploys and runs by hand", async ({ page }) => {
   await page.goto("/");
-  await gotoPage(page, "new");
+  await newFlow(page);
   const canvas = page.locator(".hl-canvas");
   // A leaf under no handler: nothing would start a run of it.
   await dropFromPalette(page, "uppercase");
@@ -318,8 +318,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   const ask = page.locator('[aria-modal="true"]');
   /** A new flow, `entry` dropped from the palette onto it, saved as `name` (asked on save). */
   const saveWith = async (name: string, entry: string) => {
-    await gotoPage(page, "new");
-    await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+    await newFlow(page);
     await nodesLevel(page);
     await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
@@ -332,7 +331,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await saveWith(shout, "uppercase");
   await saveWith(user, `flow:${shout}`);
   // A draft named on save as a flow saved already asks before replacing it; cancelled, it stays untitled.
-  await gotoPage(page, "new");
+  await newFlow(page);
   await nodesLevel(page);
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -380,7 +379,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
     await ask.locator("input").fill(text);
     await page.keyboard.press("Enter");
   };
-  await gotoPage(page, "new");
+  await newFlow(page);
   await nodesLevel(page);
   await dropFromPalette(page, "uppercase");
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
@@ -403,7 +402,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   const listed = Object.values(listings).find((l) => l.name === shout)!;
 
   // In another flow, from the palette's marketplace: seen what it may do, placed.
-  await gotoPage(page, "new");
+  await newFlow(page);
   await nodesLevel(page);
   await expect(page.locator(".hl-palette")).toContainText(shout);
   await dropFromPalette(page, `market:${listed.id}`);
@@ -429,7 +428,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   const { join } = await import("node:path");
   const name = `texty-${Date.now().toString(36)}`;
   await page.goto("/");
-  await gotoPage(page, "new");
+  await newFlow(page);
   const canvas = page.locator(".hl-canvas");
   await canvas.getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();

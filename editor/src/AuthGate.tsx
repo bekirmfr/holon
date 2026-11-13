@@ -12,6 +12,7 @@ import { useDialog } from "./Dialog";
 import { lettersOf } from "./keymap";
 import { Kbd } from "./ui/Kbd";
 import { keyOf } from "./ui/Keys";
+import { useFocusTrap } from "./ui/focusTrap";
 
 /** Who is signed in, for the editor: a person, or (signed in with its token) an agent or a service. */
 export type Me = { name: string; kind: Kind; role: Role };
@@ -267,6 +268,8 @@ const hostOf = (url: string) => {
  *  their password changed, Getting started, or signing out. Each button has a letter. */
 export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () => void; onClose: () => void }) {
   const dialog = useDialog();
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   const [who, setWho] = useState<{ display?: string | null; email?: string | null; owner?: string | null; kind?: Kind } | null>(null);
   const [may, setMay] = useState<Record<string, true | string> | string | null>(null);
   useEffect(() => {
@@ -333,7 +336,7 @@ export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () =>
   const name = who?.display || me.name;
   return (
     <div className="hl-modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="hl-modal__box hl-account" role="dialog" aria-modal="true" aria-label="account">
+      <div ref={box} className="hl-modal__box hl-account" role="dialog" aria-modal="true" aria-label="account">
         <div className="hl-modal__head">
           <span>Account</span>
           <button className="hl-modal__close" aria-label="close" onClick={onClose}>

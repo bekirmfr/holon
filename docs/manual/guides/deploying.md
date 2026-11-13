@@ -287,6 +287,12 @@ with why, rather than as one that differs: one where the version sends a request
 something, that run didn't; one where it reads the clock or a random number that run didn't; one
 where a node computes with a secret or a token, which the log never holds (a node that only passes
 one along, or picks a field past it, computes the same and is told); one that failed then.
+
+A replay computes no more than the deployment is granted: each part of a run between two of its
+outbound calls within the deployment's `max_steps`, `max_fuel` and `max_memory`, as its own runs are
+([Permissions](../reference/permissions.md)), since a replay needs no approval. A version that
+asks for more has it once deployed; replayed, a run that needs it differs, `it doesn't finish
+within what the deployment is granted`, with the limit it ran past.
 `GET /deployments/<slug>/replay?unit=<hash>&runs=N` answers the same for any version staged
 (`POST /unit`) or proposed, for anyone who may read the deployment. From a file,
 [`holon replay`](../reference/cli.md#holon-replay) stages and replays it; an agent has the

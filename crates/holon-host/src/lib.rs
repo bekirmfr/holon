@@ -25,11 +25,17 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Counts the bytes each thread holds in this crate's tests, as the server does, so a test of a
+/// round's memory budget sees what the round holds.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 pub mod collection;
 pub mod packs;
 mod rounds;
 mod state;
-pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
+pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits, STEP_BUDGET};
 pub use state::{InsertError, LoadError, State};
 
 use holon_core::{
@@ -369,7 +375,7 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
             .map(|(_, value, _)| *value)
     }
 
-    fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
+    fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> holon_core::ModuleRun {
         self.real.run_module(bytes, limits, inputs)
     }
 }

@@ -287,10 +287,46 @@ fn effect(sink: String, payload: Value) -> Option<Value> {
     nests_within(&payload, MAX_VALUE_DEPTH - 1).then(|| Value::Effect { sink, payload: Box::new(payload) })
 }
 
+/// Whether the list leaf `op` builds of `inputs` (present, in port order) is within
+/// [`MAX_ITEMS`] items, and what `fill` copies of its value within [`MAX_BYTES`]: found from
+/// their lengths before anything is copied. A list grown by joining others doubles a step, and a
+/// value filled into each item of a list is that many copies of it. Every other leaf that makes
+/// a list makes it no longer than one it was given, or than `MAX_ITEMS` ([`MAX_ITEMS`]'s leaves);
+/// a text joined of others is checked as it is joined ([`texts::within`]).
+fn sized(op: Op, inputs: &[&Value], params: &[Param]) -> bool {
+    let len = |i: usize| match inputs.get(i) {
+        Some(Value::List(xs)) => xs.len(),
+        _ => 0,
+    };
+    let number = |i: usize| inputs.get(i).and_then(|v| as_number(v));
+    match op {
+        Op::Append => len(0).saturating_add(1) <= MAX_ITEMS,
+        Op::Cons => len(1).saturating_add(1) <= MAX_ITEMS,
+        Op::Extend => len(0).saturating_add(len(1)) <= MAX_ITEMS,
+        Op::ToSpliced => match number(1) {
+            Some(start) => lists::spliced_len(len(0), start, number(2), len(3)) <= MAX_ITEMS,
+            None => true,
+        },
+        Op::Flat => match (inputs, param(params, "depth").and_then(lists::flat_depth)) {
+            ([Value::List(xs)], Some(depth)) => lists::flat_len(xs, depth, MAX_ITEMS).is_some(),
+            _ => true,
+        },
+        Op::Fill => match (inputs, number(2)) {
+            ([Value::List(xs), v, ..], start) => {
+                let slots = lists::slice_range(xs.len(), start.unwrap_or(0.0), number(3)).len();
+                slots == 0 || lists::size_within(v, MAX_BYTES / slots)
+            }
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
 /// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read):
-/// nothing where what it would build nests past [`MAX_VALUE_DEPTH`] ([`fits`]).
+/// nothing where what it would build nests past [`MAX_VALUE_DEPTH`] ([`fits`]), or is longer than
+/// a list may be or copies more than a leaf may ([`sized`]).
 pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
-    if !fits(op, inputs.iter().copied()) {
+    if !fits(op, inputs.iter().copied()) || !sized(op, inputs, params) {
         return None;
     }
     match op {
@@ -423,10 +459,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // ── text ──
         Op::Concat => {
-            // Measured first, so the text is made once at its length rather than grown.
-            let mut len = 0;
+            // Measured first, so the text is made once at its length rather than grown, and
+            // nothing past MAX_TEXT units is.
+            let mut len = 0usize;
             for v in inputs {
-                len += as_text(v)?.len();
+                len = len.saturating_add(as_text(v)?.len());
+            }
+            if !texts::within(len, || inputs.iter().map(|v| as_text(v).map_or(0, texts::units)).sum()) {
+                return None;
             }
             let mut s = String::with_capacity(len);
             for v in inputs {
@@ -671,6 +711,15 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let mut len = sep.len().saturating_mul(items.len().saturating_sub(1));
             for v in items {
                 len = len.saturating_add(as_text(v)?.len());
+            }
+            // The separator once between each two items: a long one between many items is
+            // gigabytes, so nothing past MAX_TEXT units, before it is made.
+            let units = || {
+                let between = texts::units(sep).saturating_mul(items.len().saturating_sub(1));
+                items.iter().map(|v| as_text(v).map_or(0, texts::units)).fold(between, usize::saturating_add)
+            };
+            if !texts::within(len, units) {
+                return None;
             }
             let mut s = String::with_capacity(len);
             for (k, v) in items.iter().enumerate() {
@@ -981,15 +1030,27 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Number(b.len() as f64))
         }
         Op::BytesConcat => {
-            let mut out = Vec::new();
+            let mut len = 0usize;
+            for v in inputs {
+                let Value::Bytes(b) = v else { return None };
+                len = len.saturating_add(b.len());
+            }
+            if len > MAX_BYTES {
+                return None;
+            }
+            let mut out = Vec::with_capacity(len);
             for v in inputs {
                 let Value::Bytes(b) = v else { return None };
                 out.extend_from_slice(b);
             }
             Some(Value::Bytes(out))
         }
+        // A number for each byte, each a value: nothing past MAX_ITEMS of them.
         Op::BytesToList => {
             let [Value::Bytes(b)] = inputs else { return None };
+            if b.len() > MAX_ITEMS {
+                return None;
+            }
             Some(Value::List(b.iter().map(|x| Value::Number(f64::from(*x))).collect()))
         }
         Op::ListToBytes => {
@@ -1398,8 +1459,9 @@ pub(crate) fn compute_given<'v>(op: Op, name: &str, mut inputs: Given<'v>, param
             _ => unreachable!("checked to be a text"),
         }
     }
-    // What it would build nests within the bound, before anything is taken ([`fits`]).
-    if !fits(op, inputs.iter().map(|v| v.as_ref())) {
+    // What it would build nests within the bound, and is within the lengths a value may have,
+    // before anything is taken ([`fits`], [`sized`]).
+    if !fits(op, inputs.iter().map(|v| v.as_ref())) || !sized(op, &inputs.iter().map(|v| v.as_ref()).collect::<smallvec::SmallVec<[&Value; 4]>>(), params) {
         return Err(inputs);
     }
     let is = |i: usize, f: fn(&Value) -> bool| inputs.get(i).is_some_and(|v| f(v));
@@ -1469,9 +1531,14 @@ pub(crate) fn compute_given<'v>(op: Op, name: &str, mut inputs: Given<'v>, param
             fs.remove(as_text(&key).expect("checked to be a text"));
             Ok(Value::Record(fs))
         }
-        // The first text grows by the others: one allocation, sized once.
+        // The first text grows by the others: one allocation, sized once, and nothing past
+        // MAX_TEXT units.
         Op::Concat if inputs.iter().all(|v| text(v)) => {
             let more: usize = inputs.iter().skip(1).map(|v| as_text(v).map_or(0, str::len)).sum();
+            let first = inputs.first().and_then(|v| as_text(v)).map_or(0, str::len);
+            if !texts::within(first.saturating_add(more), || inputs.iter().map(|v| as_text(v).map_or(0, texts::units)).sum()) {
+                return Err(inputs);
+            }
             let mut parts = inputs.into_iter();
             let mut s = parts.next().map_or_else(String::new, string);
             s.reserve(more);
@@ -1648,6 +1715,18 @@ pub const MAX_LIST_LIMIT: u64 = 1000;
 
 /// The largest `n` a `range` counts to.
 pub const MAX_RANGE: u64 = 10_000;
+
+/// The most items a list built of others has (`append`, `cons`, `extend`, `to_spliced`, `flat`),
+/// and the most values one call reads out of a text or bytes (`split`, `json_parse`, `csv_parse`,
+/// `xml_parse`, `bytes_to_list`, and every JSON the host reads): past it, nothing, found before the
+/// values are made or as soon as they pass it. A million values are 32 MiB, and reading them out
+/// of a text takes up to three times that while it lasts: what one step of a round may make,
+/// before the round's memory (`max_memory`) is looked at again.
+pub const MAX_ITEMS: usize = 1 << 20;
+
+/// The most bytes joined bytes have (`bytes_concat`), as many as `gunzip` may make, and the most
+/// one `fill` copies of its value: past it, nothing, before anything is copied.
+pub const MAX_BYTES: usize = crate::compress::MAX_INFLATED;
 
 /// What a `collection_get` asks the host: `{collection: <name>, get: <key>}`.
 pub(crate) fn collection_get_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
@@ -2174,12 +2253,91 @@ fn compare(a: f64, b: f64, op: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::texts::MAX_TEXT;
 
     fn num(n: f64) -> Value { Value::Number(n) }
     fn txt(s: &str) -> Value { Value::Text(s.into()) }
     fn boo(x: bool) -> Value { Value::Boolean(x) }
     fn list(xs: Vec<Value>) -> Value { Value::List(xs) }
     fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
+
+    /// Guards: every leaf whose inputs don't bound how long what it makes is makes it up to the
+    /// most a value may be and gives nothing past it, for each kind: a text joined of others (`+`,
+    /// `concat`, `join`'s separator between many items) to `MAX_TEXT` units, counting a unit of
+    /// three bytes as one; joined bytes to `MAX_BYTES`; a list built of others (`append`, `cons`,
+    /// `extend`, `to_spliced`, `flat`), and the values read out of a text or bytes (`split`,
+    /// `json_parse`, `csv_parse`, `xml_parse`, `bytes_to_list`), to `MAX_ITEMS`; and what `fill`
+    /// copies of its value, to `MAX_BYTES`.
+    /// Why: a call makes all it makes before the round's memory is looked at again. Joined to
+    /// itself a value doubles a step; a long separator between many items, or a value filled into
+    /// each of many, is gigabytes from a few megabytes; a megabyte of commas is a million values.
+    /// If it fails: the named leaf doesn't check its length before it makes it (`texts::within`,
+    /// `sized`, or its own count), or counts it one off; "given", it doesn't where it builds in
+    /// place of an input it was given (`compute_given`).
+    #[test]
+    fn no_leaf_makes_a_value_past_the_most_one_may_be() {
+        // How long a value is: a text in units, bytes and a list by their length.
+        let length = |v: &Value| match v {
+            Value::Text(s) => crate::texts::units(s),
+            Value::Bytes(b) => b.len(),
+            Value::List(xs) => xs.len(),
+            other => panic!("{other:?}"),
+        };
+        let a = |n: usize| txt(&"a".repeat(n));
+        let euros = |n: usize| txt(&"\u{20ac}".repeat(n));
+        let numbers = |n: usize| list(vec![num(0.0); n]);
+        let commas = |n: usize| txt(&",".repeat(n));
+        let json = |values: usize| txt(&format!("[{}0]", "0,".repeat(values - 2)));
+        let xml = |values: usize| txt(&format!("<a>{}</a>", "<b/>".repeat((values - 2) / 2)));
+        let attributes = |values: usize| txt(&format!("<a{}/>", (2..values).map(|i| format!(" a{i}=''")).collect::<String>()));
+        let texts = |values: usize| txt(&format!("<a>{}x</a>", "x<b/>".repeat((values - 3) / 3)));
+        let closed = |elements: usize| txt(&format!("<a>{}x</a>", "<b/>".repeat(elements)));
+        let (t, b, n) = (MAX_TEXT, MAX_BYTES, MAX_ITEMS);
+        // Each leaf, its params, its inputs making the most, its inputs making one more, and how
+        // long what it makes at the most is.
+        type Row = (&'static str, Vec<Param>, Vec<Value>, Vec<Value>, usize);
+        let rows: Vec<Row> = vec![
+            ("add", vec![], vec![a(t - 1), txt("b")], vec![a(t - 1), txt("bc")], t),
+            ("add", vec![], vec![num(1.0), euros(t - 1)], vec![num(12.0), euros(t - 1)], t),
+            ("concat", vec![], vec![a(t - 2), txt("bc")], vec![a(t - 2), txt("bcd")], t),
+            ("concat", vec![], vec![euros(t - 1), txt("b")], vec![euros(t), txt("b")], t),
+            ("join", vec![], vec![list(vec![txt(""); 4097]), a(4096)], vec![list(vec![txt(""); 4098]), a(4096)], t),
+            ("bytes_concat", vec![], vec![Value::Bytes(vec![0; b - 1]), Value::Bytes(vec![1])], vec![Value::Bytes(vec![0; b - 1]), Value::Bytes(vec![1, 2])], b),
+            ("append", vec![], vec![numbers(n - 1), num(1.0)], vec![numbers(n), num(1.0)], n),
+            ("cons", vec![], vec![num(1.0), numbers(n - 1)], vec![num(1.0), numbers(n)], n),
+            ("extend", vec![], vec![numbers(n - 1), numbers(1)], vec![numbers(n - 1), numbers(2)], n),
+            ("to_spliced", vec![], vec![numbers(n - 1), num(0.0), num(1.0), numbers(2)], vec![numbers(n - 1), num(0.0), num(1.0), numbers(3)], n),
+            ("flat", vec![p("depth", "1")], vec![list(vec![numbers(n - 1), numbers(1)])], vec![list(vec![numbers(n - 1), numbers(2)])], n),
+            ("split", vec![], vec![commas(n - 1), txt(",")], vec![commas(n), txt(",")], n),
+            ("split", vec![], vec![a(n), txt("")], vec![a(n + 1), txt("")], n),
+            // The list and its items: one value fewer items.
+            ("json_parse", vec![], vec![json(n)], vec![json(n + 1)], n - 1),
+            // A row of fields: the row and its fields.
+            ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![commas(n - 2)], vec![commas(n - 1)], 1),
+            // Rows of a field each, each line ended.
+            ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![txt(&"a\n".repeat(n / 2))], vec![txt(&"a\n".repeat(n / 2 + 1))], n / 2),
+            // An element of elements, each its list and its name.
+            ("xml_parse", vec![], vec![xml(n)], vec![xml(n + 2)], n / 2),
+            // An element of attributes: its name and its record.
+            ("xml_parse", vec![], vec![attributes(n)], vec![attributes(n + 1)], 2),
+            // An element of texts, each before an element, and one last.
+            ("xml_parse", vec![], vec![texts(n)], vec![texts(n + 3)], (n - 3) / 3 * 2 + 2),
+            // The last text, read as the root closes.
+            ("xml_parse", vec![], vec![closed((n - 3) / 2)], vec![closed((n - 3) / 2 + 1)], (n - 3) / 2 + 2),
+            ("bytes_to_list", vec![], vec![Value::Bytes(vec![0; n])], vec![Value::Bytes(vec![0; n + 1])], n),
+            // 64 copies of a text: as many bytes as joined bytes may be.
+            ("fill", vec![], vec![numbers(64), a(b / 64)], vec![numbers(64), a(b / 64 + 1)], 64),
+        ];
+        for (name, params, most, past, long) in rows {
+            let at = compute(name, &most.iter().collect::<Vec<_>>(), &params).unwrap_or_else(|| panic!("{name}: nothing at the most"));
+            assert_eq!(length(&at), long, "{name}: what it makes at the most");
+            assert_eq!(compute(name, &past.iter().collect::<Vec<_>>(), &params), None, "{name}: one past the most");
+            // Given its inputs, a leaf builds in place of one of them, and is held the same.
+            let given = |inputs: Vec<Value>| compute_given(Op::of(name).unwrap(), name, inputs.into_iter().map(Cow::Owned).collect(), &params).ok();
+            assert_eq!(given(most).as_ref().map(length), Some(long), "{name}: given, what it makes at the most");
+            assert_eq!(given(past), None, "{name}: given, one past the most");
+        }
+    }
 
     #[test]
     fn json_literals_for_const_and_default() {

@@ -53,7 +53,7 @@ export const KEYMAP = [
   { keys: ["n", "N"], scope: "review", does: "the next, or previous, part that changes something" },
   { keys: ["Space"], scope: "review", does: "open or close the part" },
   { keys: ["w", "d"], scope: "review", does: "the whole flow; the diff (the review's d, not the docs)" },
-  { keys: ["Enter"], scope: "dialog", does: "its highlighted button" },
+  { keys: ["Enter"], scope: "dialog", does: "the button that has the focus (it opens on the highlighted one)" },
   { keys: ["Escape"], scope: "dialog", does: "cancel, or close" },
   { keys: ["y", "n"], scope: "dialog", does: "yes or no; any other button, the letter shown on it" },
 ] as const satisfies readonly Binding[];
