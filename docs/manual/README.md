@@ -2,7 +2,7 @@
 
 Holon runs small services (APIs, webhooks, scheduled jobs, runs that wait for a person) written as
 **flows**. Agents or people write them; Holon shows what each flow may do before it runs, runs
-only that, and keeps a record of every run that anyone can check.
+only that, and keeps a record of its runs that anyone can check.
 
 This manual is for people who use Holon: to write flows, run a server, approve what agents
 propose, and find out what happened. For how Holon is built, see the design documents listed in

@@ -1,6 +1,6 @@
 # Holon
 
-**Agents propose. Holon shows what they may do, runs only that, and keeps a record of every run.**
+**Agents propose. Holon shows what they may do, runs only that, and keeps a record anyone can check.**
 
 [![ci](https://github.com/bekirmfr/holon/actions/workflows/ci.yml/badge.svg)](https://github.com/bekirmfr/holon/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/bekirmfr/holon?include_prereleases&label=release)](https://github.com/bekirmfr/holon/releases)
@@ -15,13 +15,17 @@ agents or by people. Before a flow runs, and every time it runs:
   from the flow itself, not declared by its author, so it can't be understated.
 - **It runs only that.** The host's policy sets what may ever be granted, and a person approves
   what a deployment may do. An effect outside the grant is refused when a run tries it, whatever
-  the flow says. A grant can be narrowed while the flow runs.
-- **It keeps a record of every run,** on disk before it answers, except handlers a person
-  approved as unrecorded, which change nothing (their runs are counted, failed or not).
-  The request, the state it read, the clock, randomness and every response it got, with the
-  version and grant it ran under. Evaluation is pure, so a run
-  replays exactly, node by node, and anyone can check a deployment's runs offline. The record
-  is a hash chain, so a run changed or taken out afterwards shows.
+  the flow says. A grant can be narrowed while the flow runs: each run from then on has the
+  narrower one (a run already going keeps the grant it began with).
+- **It keeps a record of its runs:** the request, the state it read, the clock, randomness and
+  every response it got, with the version and grant it ran under. A run's record is on disk
+  before it answers, unless its handler says `lazy` (on disk within a second after) or a person
+  approved it as `unrecorded` (counted, failed or not, and not kept: what it writes, calls or
+  sends is in no run). A log keeps its newest 500 runs unless told to keep more. Evaluation is
+  pure, so a run replays exactly, node by node, and anyone can check a deployment's runs
+  offline. The record is a hash chain: with a witness holding its heads elsewhere, a run changed
+  or taken out afterwards shows; without one, an export checks against itself, and whoever holds
+  the server's data could rewrite it whole.
 
 > **Status:** pre-release (0.1.0 release candidates). It runs on one machine for one team; see
 > [Status](#status).

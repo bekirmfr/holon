@@ -94,10 +94,11 @@ Three things decide what a deployment may actually do:
    about to be sent, a secret read, a state key written. An effect outside the grant is refused,
    whatever the flow says, and the grant is checked again whenever the server loads.
 
-A grant can be narrowed while the flow runs. Revoking something required pauses the deployment
-(or, if you choose, keeps it running with those calls failing); revoking something optional just
-makes those parts absent. See [Deploying and permissions](guides/deploying.md) and the full list
-of [permissions](reference/permissions.md).
+A grant can be narrowed while the flow runs: each run from then on has the narrower one, and a run
+already going keeps the grant it began with until it ends. Revoking something required pauses the
+deployment (or, if you choose, keeps it running with those calls failing); revoking something
+optional just makes those parts absent. See [Deploying and permissions](guides/deploying.md) and
+the full list of [permissions](reference/permissions.md).
 
 ## Deployments
 
@@ -125,7 +126,9 @@ A **run** is one evaluation of the flow: one request answered, one clock tick, o
 - **writes** at its end: state, collections and files are committed together, or not at all.
 
 Runs of one deployment can happen side by side. A run that read a collection key someone else
-wrote meanwhile is run again, so none is lost.
+wrote meanwhile is run again, so none is lost. A run that waited at an `await` is the exception,
+for now: it goes on from the state as it began, and its writes land over whatever was written
+while it waited.
 
 A run can also **wait**: `await` parks it, sometimes for days, until a later request delivers the
 event it waits for, or it expires. A parked run keeps the version it started on.
@@ -142,9 +145,13 @@ mode does it to show you the value each node made, and says whether the replay r
 The log is a **hash chain**: each entry includes the hash of the one before, and the newest hash
 is the log's **head**. A run changed or taken out afterwards breaks the chain. `holon export`
 writes a deployment's runs to one file, and `holon verify` checks the chain and runs every run
-again offline, through the same core, on any machine. A **witness** (another server that is sent
-each head as it is made) makes the log tamper-evident even to someone who holds the server's
-data. See [Checking runs](guides/checking-runs.md).
+again offline, through the same core, on any machine. On its own, the chain shows a run changed
+by someone who didn't chain the lines again: an export checks against itself, so whoever holds
+the server's data could rewrite it whole, or drop its newest runs. A **witness** (another
+server, sent the heads every 5 seconds, which wait on the server's disk while it is down) makes
+the log tamper-evident even to them: a run changed or taken out no longer reaches a head the
+witness holds. A log keeps its newest runs (500 by default); what a head proves starts at the
+oldest it still has. See [Checking runs](guides/checking-runs.md).
 
 Secrets never enter the log: their values are redacted from everything it holds. A run that used a
 secret can be shown, but not run again offline.

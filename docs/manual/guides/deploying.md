@@ -362,7 +362,8 @@ wrote a file.
 On the deployed page, a deployment's **permissions ▸** shows what is granted. While it runs, you
 can narrow it:
 
-- **revoke** an item: from now on, the server refuses that effect. Revoking something optional
+- **revoke** an item: from the next run on, the server refuses that effect (a run already going
+  keeps the grant it began with, until it ends). Revoking something optional
   makes those parts absent, and the flow carries on. Revoking something required **pauses** the
   deployment, unless **keep running when something required is revoked** is ticked: then those
   calls fail and the rest runs. What starts its runs always pauses it when revoked, ticked or

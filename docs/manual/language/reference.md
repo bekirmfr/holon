@@ -980,7 +980,9 @@ misled, the compiler refuses instead.
   compared. `none()` is a value, and unrelated.
 - **Reads at the start, writes at the end.** `state.x`, `coll[k]` and `dir[name]` are the values as
   the run began. Writes are performed when the run finishes, and only if granted. A run never sees
-  its own writes. When two runs change the same item at once, one is run again, so none is lost.
+  its own writes. When two runs change the same item at once, one is run again, so none is lost;
+  for now, except a run that waited at an `await`: its writes land over what was written while
+  it waited.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
   continues with the answer. One bound on a statement of its own (`const page = await
   api.get(…)`) is made when the run reaches the statement, whatever reads `page`, and not when it
