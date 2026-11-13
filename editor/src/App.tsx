@@ -1316,7 +1316,7 @@ function Canvas({
       className={[
         "hl-canvas",
         viewing ? "hl-canvas--viewing" : "",
-        bottomShown ? "hl-canvas--bottom" : "",
+        bottomShown ? "hl-canvas--bottom" : "hl-canvas--bottom-folded",
         inspectorOpen ? "" : "hl-canvas--inspector-closed",
         textPane.open ? "hl-canvas--text" : "",
         canvasShown || !textPane.open ? "" : "hl-canvas--no-canvas",
@@ -1337,9 +1337,9 @@ function Canvas({
           panes={[
             { key: "c", name: "canvas", on: canvasShown || !textPane.open, toggle: toggleCanvas },
             { key: "x", name: "text", on: textPane.open, toggle: toggleText },
-            { key: "i", name: "inspector", on: inspectorOpen, toggle: () => onInspectorOpen(!inspectorOpen) },
+            // The Inspector and the bottom pane are folded and opened on themselves (› and ×, and
+            // the strip each folds to), where they are; i and b still do it from anywhere.
             ...(viewing ? [{ key: "v", name: "values", on: paneShown("values"), toggle: () => showPane("values", !paneShown("values")) }] : []),
-            { key: "b", name: "bottom", on: bottomShown, toggle: () => onBottomShown(!bottomShown) },
           ]}
           flowName={viewing ?? flowName}
           saved={flow.saved}
@@ -1493,7 +1493,17 @@ function Canvas({
           ) : undefined
         }
       />
-      {bottomShown && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} />}
+      {bottomShown && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} onClose={() => onBottomShown(false)} />}
+      {/* Hidden, the bottom pane folds to a strip along the bottom, as the Inspector does along
+          its side: a click opens it again. */}
+      {!bottomShown && (
+        <button className="hl-bottom__fold" onClick={() => onBottomShown(true)} title="open the bottom pane (b)" aria-label="open the bottom pane">
+          ⌃ {viewing ? "Runs" : "Problems · Try · Replay · Settings"}
+          <kbd className="hl-pane-key" aria-hidden="true">
+            b
+          </kbd>
+        </button>
+      )}
       {/* In Edit, the bottom pane's tabs (web-console-L4.md §5.4): kept while hidden, so what was
           typed into them stays. */}
       {!viewing && (

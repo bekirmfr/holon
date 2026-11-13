@@ -195,9 +195,12 @@ export function BottomPane({
   onRestored,
   codeText,
   keys = true,
+  onClose,
 }: {
   slug: string;
   selected: LogEntry | null;
+  /** Hides the pane (b); it folds to a strip along the bottom that opens it again. */
+  onClose?: () => void;
   /** Whether its keys are on: off while a page covers the canvas. */
   keys?: boolean;
   onSelect: (e: LogEntry | null) => void;
@@ -299,6 +302,9 @@ export function BottomPane({
       <div className="hl-bottom__head">
         <span className="hl-view__title">
           Runs<span className="hl-bottom__count">{entries.length}</span>
+          <kbd className="hl-pane-key" aria-hidden="true">
+            b
+          </kbd>
         </span>
         <div className="hl-view__said">
           {selected && (
@@ -313,9 +319,11 @@ export function BottomPane({
           )}
           {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
         </div>
-        <kbd className="hl-pane-key" aria-hidden="true">
-          b
-        </kbd>
+        {onClose && (
+          <button className="hl-panel-header__btn" onClick={onClose} title="hide the bottom pane (b)" aria-label="hide the bottom pane">
+            ×
+          </button>
+        )}
       </div>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
       {listenError && (
@@ -1245,6 +1253,9 @@ export function Inspector({
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
         <button className="hl-inspector__fold" onClick={() => onOpen(true)} title="open the Inspector" aria-label="open the Inspector">
           ‹ Inspector
+          <kbd className="hl-pane-key" aria-hidden="true">
+            i
+          </kbd>
         </button>
       </div>
     );
@@ -1252,10 +1263,11 @@ export function Inspector({
   return (
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
       <div className="hl-panel-header">
-        <span className="hl-panel-header__title">inspector</span>
+        <span className="hl-panel-header__title hl-panel-header__title--keyed">inspector</span>
         <kbd className="hl-pane-key" aria-hidden="true">
           i
         </kbd>
+        <span style={{ flex: 1 }} />
         <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
       </div>
       <Tabs tabs={tabs} tab={tab} onTab={setTab} />

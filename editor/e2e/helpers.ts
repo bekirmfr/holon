@@ -94,7 +94,7 @@ export function deploySettings(page: Page): Locator {
 export async function openDeployPanel(page: Page) {
   const panel = deploySettings(page);
   if (!(await panel.isVisible())) {
-    const off = page.locator(".hl-canvas").getByRole("button", { name: "bottom off" });
+    const off = page.locator(".hl-canvas").getByRole("button", { name: "open the bottom pane" });
     if (await off.isVisible()) await off.dispatchEvent("click");
     await page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Settings" }).dispatchEvent("click");
     await panel.waitFor({ state: "visible", timeout: 5_000 });

@@ -152,16 +152,17 @@ test("the editor's tabs: Home, a tab per flow, + and ×; a closed tab opens agai
   await expect(tabs).toHaveCount(0);
 });
 
-test("the bar's panes: c, x and i show or hide the canvas, the text and the Inspector, kept with the account", async ({ page, request, adminToken }) => {
+test("the panes: c and x in the bar show or hide the canvas and the text, i folds the Inspector to a strip that opens it, kept with the account", async ({ page, request, adminToken }) => {
   await openSample(page, "Hello API");
   const canvas = page.locator(".hl-canvas");
   const panes = canvas.getByRole("group", { name: "panes" });
-  await expect(panes.getByRole("button", { name: "inspector on" })).toBeVisible();
+  // The Inspector and the bottom pane are folded and opened on themselves, not from the bar.
+  await expect(panes.getByRole("button", { name: /^(inspector|bottom) / })).toHaveCount(0);
   await page.locator(".hl-canvas__flow").click({ position: { x: 5, y: 5 } });
   // i folds the Inspector; c hides the canvas, and the text takes its room.
   await page.keyboard.press("i");
   await expect(page.getByRole("complementary", { name: "Inspector" })).toHaveCount(0);
-  await expect(panes.getByRole("button", { name: "inspector off" })).toBeVisible();
+  await expect(canvas.getByRole("button", { name: "open the Inspector" })).toBeVisible();
   await page.keyboard.press("c");
   await expect(page.getByRole("region", { name: "Text" })).toBeVisible();
   await expect(page.locator(".hl-canvas__flow")).toBeHidden();
@@ -175,8 +176,13 @@ test("the bar's panes: c, x and i show or hide the canvas, the text and the Insp
   await expect(page.locator(".hl-canvas__flow")).toBeHidden();
   await panes.getByRole("button", { name: "text on" }).click();
   await expect(page.locator(".hl-canvas__flow")).toBeVisible();
-  await panes.getByRole("button", { name: "inspector off" }).click();
+  await canvas.getByRole("button", { name: "open the Inspector" }).click();
   await expect(page.getByRole("complementary", { name: "Inspector" })).toBeVisible();
+  // The bottom pane folds on its own ×, to a strip along the bottom that opens it again.
+  await canvas.getByRole("region", { name: "bottom" }).getByRole("button", { name: "hide the bottom pane" }).click();
+  await expect(canvas.getByRole("region", { name: "bottom" })).toBeHidden();
+  await canvas.getByRole("button", { name: "open the bottom pane" }).click();
+  await expect(canvas.getByRole("region", { name: "bottom" })).toBeVisible();
   await saved(request, adminToken, (p) => p.includes('"hidden":[]'));
 });
 
