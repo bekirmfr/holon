@@ -409,8 +409,10 @@ What is not defended, or only partly:
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
   never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
-  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
-  they compute from it as clean. What a run's timing says isn't covered: a flow that does more
+  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
+  call's answer give out what they compute from it as clean. Fed a part of it (a slice, a
+  character), a one-way leaf's answer is derived: a hash of one character names it, and a
+  comparison of a prefix says how the secret begins. So is where `sort` or `unique` places it. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.
 - **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
   route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,

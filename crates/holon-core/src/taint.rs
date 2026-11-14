@@ -13,8 +13,10 @@
 //!   effect it reaches is refused if it would keep it (a state, collection or channel write, as a
 //!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
-//! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), `jwt_verify`
-//! for its key (the token's payload comes out, nothing of the key), and an outbound request's
+//! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) fed the secret
+//! whole, `jwt_verify` for a key that is (the token's payload comes out, nothing of the key; fed
+//! a part of the secret, or anything else computed from it, each is derived, since a hash of one
+//! character names it), and an outbound request's
 //! response or a database read's rows (what the far side said, not what was sent). Nothing else
 //! does: a Boolean computed from a secret (`k.startsWith(p)`) says something of it, so it is
 //! derived, as is whatever it chooses (`c ? a : b`, a write under `if (c)`). A leaf that isn't
@@ -43,14 +45,18 @@ pub enum Taint {
 }
 
 /// Leaves whose output is computed one way from their inputs: nothing of a secret is recovered
-/// from it.
+/// from it, when it is the secret whole they are fed (literal). Fed something computed from it
+/// (derived: a slice, a character), what comes out is derived too: a hash of one character names
+/// the character, and a comparison of a prefix says how the secret begins.
 const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
 /// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
 /// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
-/// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
-/// isn't the secret. So are the record leaves that move values between records and lists
+/// items by their places are here; those that take a text too (`at`, `slice`) are not, since a
+/// part of a text isn't the secret, nor those that place items by what they hold (`sort`,
+/// `unique`): where a secret lands among the others, or whether it is left out as another's
+/// like, says how it compares with them. So are the record leaves that move values between records and lists
 /// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which is derived.
 /// `add` joins texts as `concat` does (a number it adds is no secret's text); the other text
 /// leaves (`trim`, `replace`, `pad`, …) make a text from part of theirs, which is derived. An
@@ -58,7 +64,7 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 /// derived.
 const PASSES_LITERALLY: &[&str] = &[
     "const", "select", "cons", "head", "tail", "concat", "add", "list", "get", "append", "extend", "join", "pair", "some",
-    "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
+    "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "flat",
     "values", "from_entries", "merge",
     "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
@@ -286,10 +292,17 @@ impl<R: Resolver> Walk<'_, R> {
                     .map(|_| match name.as_str() {
                         "secret" if reads => Taint::Literal,
                         n if ANSWERED.contains(&n) && answering => Taint::Literal,
-                        n if ONE_WAY.contains(&n) || ANSWERED.contains(&n) => Taint::Clean,
+                        n if ANSWERED.contains(&n) => Taint::Clean,
+                        // One way of a secret whole: nothing of it comes back. Of a part of it,
+                        // or of anything else computed from it, what comes out says that part:
+                        // `sha256(k.slice(i, i + 1))` is the character, by a table of 256, and
+                        // `secure_equals(k.slice(0, n), p)` whether `p` is how it begins.
+                        n if ONE_WAY.contains(&n) && most <= Taint::Literal => Taint::Clean,
+                        n if ONE_WAY.contains(&n) => Taint::Derived,
                         // The token's payload comes out, nothing of the key: a shared secret's
-                        // taint stops here, as at hmac_sha256; the token's goes on, decoded.
-                        "jwt_verify" if inputs.first().is_some_and(|t| *t > Taint::Clean) => Taint::Derived,
+                        // taint stops here, as at hmac_sha256; the token's goes on, decoded. A key
+                        // or a clock computed from a secret is a part of it, as above.
+                        "jwt_verify" if inputs.first().is_some_and(|t| *t > Taint::Clean) || most == Taint::Derived => Taint::Derived,
                         "jwt_verify" => Taint::Clean,
                         n if PASSES_LITERALLY.contains(&n) => passed(),
                         _ if most == Taint::Clean => Taint::Clean,
@@ -1004,6 +1017,62 @@ mod tests {
         default.inputs[0].ty = Type::Boolean;
         default.outputs[0].ty = Type::Boolean;
         assert_eq!(fed_on(&default, 0), vec![Taint::Derived]);
+    }
+
+    /// As [`fed_on`], the input fed a part of the secret (`k.trim()`: something computed from it)
+    /// in place of the secret whole.
+    fn fed_a_part_on(unit: &Unit, port: usize) -> Vec<Taint> {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let part = leaf(&mut r, "trim", vec![Param::frozen("side", "both")]);
+        let node = r.insert(unit.clone()).unwrap();
+        let mut edges: Vec<Edge> = vec![e(0, 0, 1, 0)];
+        edges.extend((0..unit.inputs.len() as u32).map(|i| if i as usize == port { e(1, 0, 2, i) } else { e(BOUNDARY, i, 2, i) }));
+        edges.extend((0..unit.outputs.len() as u32).map(|o| e(2, o, BOUNDARY, o)));
+        let root = Unit { body: UnitBody::Composite { children: vec![secret, part, node], edges }, params: vec![], inputs: unit.inputs.clone(), outputs: unit.outputs.clone() };
+        let fed = SecretFed::of(&root, &r);
+        (0..unit.outputs.len()).map(|o| fed.output(&[2], o)).collect()
+    }
+
+    /// Guards: whatever a leaf is fed of something computed from a secret (a slice of it, a
+    /// character), on any of its inputs, comes out of it derived, never clean: the one-way leaves
+    /// and `jwt_verify`'s key and clock too. Only what a call's far side answers is clean.
+    /// Why: a one-way leaf's answer was clean whatever it was fed, so
+    /// `secure_equals(k.slice(0, n), req.query.p)` answered anyone whether `p` is how the secret
+    /// begins, and `sha256(k.slice(i, i + 1))` a hash that names its character by a table of 256,
+    /// with no approval asked: the secret, read off a character at a time, as a Boolean once let
+    /// it be. A hash of a secret whole gives nothing of it back; of a part, it gives the part.
+    /// If it fails: a leaf hands on what is computed from a secret as clean. Make it derived
+    /// where the walk gives its outputs, unless nothing of what it is fed can come out of it, and
+    /// then name it here with why.
+    #[test]
+    fn no_output_fed_a_part_of_a_secret_is_clean_but_what_the_far_side_answers() {
+        let mut clean: BTreeSet<String> = BTreeSet::new();
+        for &name in crate::GENESIS {
+            let Some(unit) = interface_of(name) else { continue };
+            for port in 0..unit.inputs.len() {
+                if fed_a_part_on(&unit, port).contains(&Taint::Clean) {
+                    clean.insert(format!("{name}.{}", unit.inputs[port].name));
+                }
+            }
+        }
+        // What the far side answered (the host finds a credential it answers with by its value).
+        let named: BTreeSet<String> = ANSWERED.iter().flat_map(|&n| interface_of(n).unwrap().inputs.into_iter().map(move |p| format!("{n}.{}", p.name))).collect();
+        assert_eq!(clean, named);
+
+        // The flows this closes, as a person writes them: each answer is the secret's to approve.
+        for leaf_name in ONE_WAY {
+            let unit = interface_of(leaf_name).unwrap();
+            for port in 0..unit.inputs.len() {
+                assert_eq!(fed_a_part_on(&unit, port), vec![Taint::Derived], "{leaf_name}, a part of the secret at {}", unit.inputs[port].name);
+                assert_eq!(fed_on(&unit, port), vec![Taint::Clean], "{leaf_name}, the secret whole at {}", unit.inputs[port].name);
+            }
+        }
+        // Where a secret lands in a sorted list, or whether `unique` leaves it out, says how it
+        // compares with the others.
+        for placed in ["sort", "unique"] {
+            assert_eq!(fed_on(&interface_of(placed).unwrap(), 0), vec![Taint::Derived], "{placed}");
+        }
     }
 
     /// Guards: a leaf that passes its inputs on as they are ([`PASSES_LITERALLY`]) says of each

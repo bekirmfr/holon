@@ -431,6 +431,27 @@ mod tests {
         );
     }
 
+    /// A hash or a comparison of a part of a secret answers with the secret, as the part would:
+    /// `secure_equals(k.slice(0, n), p)` says how it begins, `sha256(k.slice(0, 1))` its first
+    /// character by a table of 256. Of the secret whole, neither does.
+    #[test]
+    fn check_says_a_route_answers_with_a_secret_it_hashes_or_compares_a_part_of() {
+        let may = |imports: &str, route: &str| {
+            let text = format!("import {{ flow, route, {imports} }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"part\", {{ port: 8103 }})\n\n{route}\n");
+            let r = check("part.holon.ts", &text);
+            assert_eq!(r.code, 0, "{r:?}");
+            let at = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+            r.out[at + 1..].to_vec()
+        };
+        let answers = ["  receive requests", "  answer its callers with the secret \"k\", or with what is computed from it", "  read the secret \"k\""];
+        let reads = ["  receive requests", "  read the secret \"k\""];
+        assert_eq!(may("secure_equals, text_length", "route.get(\"/b\", (req) => secure_equals(k.slice(0, text_length(req.query.p)), req.query.p))"), answers);
+        assert_eq!(may("sha256", "route.get(\"/h\", () => sha256(k.slice(0, 1)))"), answers);
+        assert_eq!(may("hmac_sha256", "route.get(\"/m\", (req) => hmac_sha256(k.slice(0, 4), req.query.p))"), answers);
+        assert_eq!(may("secure_equals", "route.get(\"/w\", (req) => secure_equals(k, req.query.p))"), reads);
+        assert_eq!(may("sha256", "route.get(\"/s\", () => sha256(k))"), reads);
+    }
+
     /// The canvas marks every sink a secret reaches, by node: the request it is sent in, the state
     /// write the host refuses, the route's answer; a node that only computes with it (stripe's
     /// verify, an hmac inside) isn't marked.
