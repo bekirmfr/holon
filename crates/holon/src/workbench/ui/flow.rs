@@ -429,8 +429,9 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
     let (_, _, lanes) = &g.rows[i];
     let Some(row) = g.row(i) else { return Line::default() };
     let reached = (row.line..=row.last).any(|n| g.reached.contains(&n));
-    // Its data purple, a call outside teal, wherever they show; what the newest run reached green.
-    let kind = kind_colour(Kind::of_row(row));
+    // Its data purple, a call outside teal, a wait amber, wherever they show; what the newest run
+    // reached green.
+    let kind = kind_colour(row.kind);
     let dot = if reached { GOOD } else if row.head { ACCENT } else if let Some(k) = kind { k } else if row.effect { Color::White } else { Color::Gray };
     let (before, after) = lanes.split_once('●').unwrap_or((lanes, ""));
     let mut spans = vec![dim(format!("{:>4} ", row.line)), Span::styled(before.to_string(), Style::new().fg(Color::Indexed(244))), Span::styled("●", Style::new().fg(dot)), Span::styled(format!("{after}  "), Style::new().fg(Color::Indexed(244)))];

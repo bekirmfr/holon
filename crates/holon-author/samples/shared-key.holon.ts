@@ -6,7 +6,7 @@
 // go. This flow sends it to httpbin.dev, so it deploys and reads the server's. A flow that sent it
 // anywhere else would be refused at deploy ("the server's secret "ops_api_key" may go only to
 // https://httpbin.dev, and this flow sends it to ..."), unless it had its own ops_api_key under
-// its settings (the gear); and a run's request with it to another host isn't sent.
+// its Settings; and a run's request with it to another host isn't sent.
 //
 // Before it works, an admin binds the key (or under admin, resources, secrets):
 //   printf 'ops-demo-key-123' | holon secret bind ops_api_key --to httpbin.dev

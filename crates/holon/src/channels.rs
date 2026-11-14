@@ -28,6 +28,17 @@ use tokio::sync::mpsc;
 
 use crate::*;
 
+/// `GET /deployments/<slug>/channels`: each channel the deployment has sent on or been subscribed
+/// to, with how many packs it keeps and how many subscribe now; none of the packs.
+pub(crate) fn handle_get_channels(state: &AppState, slug: &str) -> rouille::Response {
+    let channels = match state.deployments.lock().unwrap().get(slug) {
+        Some(d) => Arc::clone(&d.channels),
+        None => return err(404, format!("no deployment {slug:?}")),
+    };
+    let shown: Vec<serde_json::Value> = channels.counts().into_iter().map(|(name, kept, subscribers)| serde_json::json!({ "name": name, "kept": kept, "subscribers": subscribers })).collect();
+    rouille::Response::json(&serde_json::json!({ "channels": shown }))
+}
+
 /// What a run's failure says when its packs were past its limits (it did nothing).
 pub(crate) const SEND_FAILED: &str = "packs not sent: ";
 
@@ -249,6 +260,19 @@ impl Channels {
         if !sent.is_empty() {
             self.sent_waiting.lock().unwrap().insert(run_id.to_string(), sent);
         }
+    }
+
+    /// Each channel by name: how many packs it keeps, and its subscribers now (`GET
+    /// /deployments/<slug>/channels`). Counted under the lock a send takes, as lengths only.
+    pub(crate) fn counts(&self) -> Vec<(String, usize, usize)> {
+        let mut by_name = self.by_name.lock().unwrap();
+        by_name
+            .iter_mut()
+            .map(|(name, c)| {
+                c.subscribers.retain(|s| !s.packs.is_closed());
+                (name.clone(), c.kept.len(), c.subscribers.len())
+            })
+            .collect()
     }
 
     /// How many subscribers `name` has now.

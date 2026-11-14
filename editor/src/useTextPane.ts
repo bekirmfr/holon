@@ -15,7 +15,7 @@ import type { Evaluator, WValue } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { TextLinked, TextNote } from "./TextPane";
 import { valueChip } from "./diagnostics";
-import { compileHolon, printHolon, type TextRange } from "./holonText";
+import { compileHolon, printedName, printHolon, type TextRange } from "./holonText";
 import { dimmed, pickAt } from "./textLink";
 import { carryOver, commentCount, syncedFromCanvas, type Graph, type Synced } from "./textSync";
 import { settingsSaid, syncKeyOf, type FlowMeta, type TextState } from "./tabs";
@@ -52,6 +52,7 @@ export function useTextPane({
   viewing,
   run,
   onPick,
+  onCursorNodes,
 }: {
   flow: FlowMeta;
   setFlow: (update: (m: FlowMeta) => FlowMeta) => void;
@@ -69,12 +70,15 @@ export function useTextPane({
   run: TextRun | null;
   /** In view mode, the node the cursor picked (for the side pane). */
   onPick: (id: string) => void;
+  /** The nodes the cursor picked, to bring into the canvas's view. */
+  onCursorNodes?: (ids: string[]) => void;
 }) {
   const text = flow.text;
   const setText = useCallback((update: (t: TextState) => TextState) => setFlow((m) => ({ ...m, text: update(m.text) })), [setFlow]);
   const [status, setStatus] = useState("");
   const [revealSerial, setRevealSerial] = useState(0);
   const [revealId, setRevealId] = useState<string | null>(null);
+  const [revealNear, setRevealNear] = useState(false);
   const [width, setWidthState] = useState(() => {
     try {
       return Number(localStorage.getItem(WIDTH_KEY)) || 420;
@@ -117,7 +121,7 @@ export function useTextPane({
   const syncedNow = useCallback(() => {
     const { flow: f, key: k } = now.current;
     if (synced.current?.key === k) return synced.current;
-    const base = f.text.key === k && f.text.synced !== null ? f.text.synced : printHolon(f.name, canvasDoc(), ev);
+    const base = f.text.key === k && f.text.synced !== null ? f.text.synced : printHolon(printedName(f.name, f.text.synced, ev), canvasDoc(), ev);
     const c = compileHolon(base, ev);
     const canvas: Graph = { nodes: live.current.nodes, edges: live.current.edges };
     synced.current = { key: k, synced: syncedFromCanvas(canvas, { nodes: c.doc.nodes, edges: c.doc.edges } as Graph, c.names), lines: c.lines, spans: c.spans };
@@ -133,7 +137,7 @@ export function useTextPane({
     let value: string | null = remembered ?? null;
     if (value === null) {
       try {
-        value = printHolon(flow.name, canvasDoc(), ev);
+        value = printHolon(printedName(flow.name, text.synced, ev), canvasDoc(), ev);
       } catch (e) {
         setStatus(`the canvas can't be written as text yet: ${message(e)}`);
       }
@@ -250,7 +254,7 @@ export function useTextPane({
     const rangeOf = (id: string) => link.spans.get(id);
     const marks = selectedIds === "" ? [] : selectedIds.split(" ").flatMap((id) => rangeOf(id) ?? []);
     const reveal = revealId ? (rangeOf(revealId) ?? null) : null;
-    if (!viewing || !run) return { marks, dims: [], step: null, reveal, revealSerial, notes: [] };
+    if (!viewing || !run) return { marks, dims: [], step: null, reveal, revealSerial, revealNear, notes: [] };
     const ran = new Set(run.order);
     const atStep = run.step === null ? undefined : run.order[run.step];
     // Notes for what is named (one value each: a route's `req` is a whole request), the node at
@@ -266,32 +270,41 @@ export function useTextPane({
       const said = outputs.length === 1 ? valueChip(outputs[0] ?? null) : outputs.map((v, i) => `${ports[i]?.name ?? i}: ${valueChip(v ?? null)}`).join("  ");
       return [{ at: r.to, text: said, none: outputs.every((v) => v === null) }];
     });
-    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, reveal, revealSerial, notes };
-  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes, revealId, revealSerial]);
+    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, reveal, revealSerial, revealNear, notes };
+  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes, revealId, revealSerial, revealNear]);
 
   // The cursor picks the node under it: selected on the canvas, or in view mode shown in the
   // side pane (of several written as one, the outermost that ran: lowering makes it last, as the
-  // `equals` of a match arm's `"add"` comes after its const).
+  // `equals` of a match arm's `"add"` comes after its const). In view mode a selection picks
+  // nothing: a row picked on the canvas selects its mark, and shows its own node (useCanvasLevel's
+  // onPicked), not the one the selection's end lands on.
   const onCursor = useCallback(
-    (offset: number) => {
+    (offset: number, anchor = offset) => {
       if (!link) return;
+      if (viewing && anchor !== offset) return;
       const ids = pickAt(link.spans, offset);
       if (ids.length === 0) return;
       if (viewing) {
         const ran = ids.filter((id) => run?.order.includes(id));
-        onPick(ran[ran.length - 1] ?? ids[ids.length - 1]);
+        const id = ran[ran.length - 1] ?? ids[ids.length - 1];
+        onPick(id);
+        onCursorNodes?.([id]);
         return;
       }
       const picked = new Set(ids);
       setNodes((ns) => ns.map((n) => (Boolean(n.selected) === picked.has(n.id) ? n : { ...n, selected: picked.has(n.id) })));
+      onCursorNodes?.(ids);
     },
-    [link, viewing, run, onPick, setNodes],
+    [link, viewing, run, onPick, setNodes, onCursorNodes],
   );
 
   const toggle = useCallback(() => setText((t) => ({ ...t, open: !t.open })), [setText]);
 
-  const revealNode = useCallback((id: string) => {
+  /** Scrolls the text to a node's range: centred, or `near` (a node clicked on the canvas) only
+   *  when it is out of view. */
+  const revealNode = useCallback((id: string, near = false) => {
     setRevealId(id);
+    setRevealNear(near);
     setRevealSerial((s) => s + 1);
   }, []);
 

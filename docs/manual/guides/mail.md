@@ -90,12 +90,14 @@ or `text`, a quoted recipient that isn't an address, more than 50.
 
 The recipients are part of what the flow may do. Each one written as text in quotes is granted by
 name; one the flow computes (from a request, a database) is granted as "an address it computes",
-which the binding's `--to` holds:
+which the binding's `--to` holds. The Approval mail sample has one of each:
 
 ```
-it may:
-  send mail through "ops" to support@acme.com
+$ holon check approval-mail.holon.ts
+…
   send mail through "ops" to an address it computes, within its binding's
+  send mail through "ops" to approvals@acme.com
+…
 ```
 
 - A deploy is refused while the mail isn't bound, or while a recipient the text names is outside

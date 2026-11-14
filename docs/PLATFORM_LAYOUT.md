@@ -4,7 +4,7 @@
 tracked in §7, and §7's M3 is what comes next; §4 and §5 are the designs the runtime was built to.
 **Goal:** one product (the `holon` command, its editor, and the agent surface) on one engine,
 proven by someone outside doing a real job with it. What it is for is in `README.md`: agents
-propose, Holon shows what they may do, runs only that, and keeps a record of every run.
+propose, Holon shows what they may do, runs only that, and keeps a record anyone can check.
 
 **What changed on 2026-10-25.** Until then this plan split the work into a shared platform and
 thin **packs**, so that each **front door** (`holon-hooks` first, then `holon-agents`,

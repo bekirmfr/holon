@@ -11,7 +11,7 @@
 //   holon database add vendor ~/holon-vendor.db --schema "create table if not exists licenses
 //     (license_key text primary key, plan text not null, seats integer not null);
 //     insert or ignore into licenses values ('lic-demo-1234', 'team', 5)"
-// and the deployment's settings (the gear) set the secret:
+// and the flow's Settings set the secret:
 //   license_key   lic-demo-1234, the licence the table holds
 //
 // Try it: deploy it, set the key, then

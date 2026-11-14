@@ -1,10 +1,12 @@
 // A review in hunks (hunks.ts): a header row for each, ▾ open or ▸ closed with its summary, then
 // its rows with their line numbers and a sign, grounds by what each does. Keys while it has the
 // focus: n / N the next or previous hunk that changes something, space opens or closes it, w the
-// whole text (every fold open), d back to the diff. A deploy's consent shows one (useDeployFlow.ts).
+// whole text (every fold open), d back to the diff (keymap.ts's review keys). A deploy's consent
+// shows one (useDeployFlow.ts).
 
 import { useRef, useState, type KeyboardEvent } from "react";
 import { isFold, nextHunk, type Hunk, type Row } from "./hunks";
+import { keyOf, keysFor } from "./ui/Keys";
 
 export function Review({ hunks, label = "what changes" }: { hunks: Hunk[]; label?: string }) {
   const [open, setOpen] = useState(() => hunks.map((h) => h.opens));
@@ -18,13 +20,17 @@ export function Review({ hunks, label = "what changes" }: { hunks: Hunk[]; label
     heads.current[i]?.focus();
     heads.current[i]?.scrollIntoView({ block: "nearest" });
   };
+  const keys = keysFor("review", {
+    n: () => go(nextHunk(hunks, at, 1)),
+    N: () => go(nextHunk(hunks, at, -1)),
+    Space: () => toggle(at),
+    w: () => setWhole(true),
+    d: () => setWhole(false),
+  });
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === "n" || e.key === "N") go(nextHunk(hunks, at, e.key === "n" ? 1 : -1));
-    else if (e.key === " ") toggle(at);
-    else if (e.key === "w") setWhole(true);
-    else if (e.key === "d") setWhole(false);
-    else return;
+    const act = keys[keyOf(e)];
+    if (!act) return;
+    act(e.nativeEvent);
     e.preventDefault();
   };
 

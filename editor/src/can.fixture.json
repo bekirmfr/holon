@@ -411,6 +411,7 @@
     "GET /bindings": "people.view",
     "GET /deployments": "flow.view",
     "GET /deployments/{slug}/changes": "flow.view",
+    "GET /deployments/{slug}/channels": "state.view",
     "GET /deployments/{slug}/collections/{name}": "state.view",
     "GET /deployments/{slug}/document": "flow.view",
     "GET /deployments/{slug}/events": "flow.view",

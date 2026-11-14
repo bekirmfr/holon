@@ -41,6 +41,8 @@ use recorder::{line_hash, LogEntry};
 
 mod replay;
 pub(crate) use replay::handle_get_replay;
+#[cfg(test)]
+pub(crate) use replay::replay;
 
 /// What an export says it is.
 pub(crate) const FORMAT: &str = "holon-runs/1";
@@ -94,7 +96,10 @@ pub(crate) struct LeftOut {
 
 /// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file;
 /// with the texts of the files they read that their log keeps by hash, up to `?max_files_bytes=N`
-/// in all (oldest run first), or none with `?without_files=1`.
+/// in all (oldest run first), or none with `?without_files=1`. With `?run=N`, run N alone (web
+/// console L4, Q3): its line as written, which names the hash of the line before it, and what it
+/// ran and read; checked offline as any export, it runs again to its entry, and its hash is the
+/// head. Not its timeline: its events are the whole log's.
 pub(crate) fn handle_get_export(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -111,16 +116,37 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
+    let run = match request.get_param("run").map(|v| v.parse::<u64>()) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => return err(400, "run is a run's number"),
+    };
     let (log, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
         Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     // The lines and their head under one lock, so the export's chain ends at its head.
     let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    let (lines, head, events, events_head, file) = match run {
+        None => (lines, head, events, events_head, format!("{slug}-runs.json")),
+        Some(n) => match lines.into_iter().find(|l| seq_of(l) == Some(n)) {
+            Some(line) => (vec![line.clone()], line_hash(&line), Vec::new(), String::new(), format!("{slug}-run-{n}.json")),
+            None => return err(404, format!("{slug:?}'s log holds no run {n}")),
+        },
+    };
     match export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, budget) {
-        Ok(export) => Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\"")),
+        Ok(export) => Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{file}\"")),
         Err(e) => err(500, e),
     }
+}
+
+/// The run a log's line is of, read without the rest of it.
+fn seq_of(line: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Seq {
+        seq: u64,
+    }
+    serde_json::from_str::<Seq>(line).ok().map(|s| s.seq)
 }
 
 /// An export of `lines` (a log's, as written), ending at `head`: every unit their runs ran, from
@@ -252,8 +278,10 @@ pub(crate) struct Report {
     pub(crate) runs: usize,
     pub(crate) first: Option<u64>,
     pub(crate) last: Option<u64>,
-    /// Whether the oldest run follows one no longer in the export (the log was trimmed).
+    /// Whether the oldest run follows one no longer in the export (the log was trimmed, or it is
+    /// one run's), and the hash of the line it names before it.
     pub(crate) trimmed: bool,
+    pub(crate) after: String,
     /// Lines that aren't a run (1-based): cut short by a crash, or changed into something else.
     pub(crate) bad_lines: Vec<usize>,
     /// Runs that don't follow the line before them.
@@ -390,6 +418,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         };
         if head.is_empty() {
             report.trimmed = !entry.prev.is_empty();
+            report.after = entry.prev.clone();
         } else if (chained || !entry.prev.is_empty()) && entry.prev != head {
             report.breaks.push(entry.seq);
         }
@@ -1167,7 +1196,7 @@ fn rerun(
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
         marks: marks.clone(),
     };
-    let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
+    let limits = rerun_limits();
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
@@ -1287,6 +1316,22 @@ fn rerun(
             }
         }
         false => Rerun::Differs(differs.join(", ")),
+    }
+}
+
+/// The limits a run is run again with, here and by `replay`: no clock or count of requests to
+/// stop it, and the most steps, fuel and memory any grant gives a round (`max_steps`,
+/// `max_fuel`, `max_memory`), so a run within its own runs again in full, and one stopped by its
+/// own gets further, as a run past its budget does.
+pub(crate) fn rerun_limits() -> Limits {
+    let ceilings = Limits::ceilings();
+    Limits {
+        run_budget: Duration::from_secs(3600),
+        max_requests: usize::MAX,
+        max_steps: ceilings.max_steps,
+        max_fuel: ceilings.max_fuel,
+        max_memory: ceilings.max_memory,
+        ..Limits::clock_run()
     }
 }
 
@@ -1635,7 +1680,9 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     } else {
         format!("chain: BROKEN at run {}: changed, removed or inserted outside holon", list(&r.breaks))
     };
-    if r.trimmed {
+    if r.trimmed && r.runs == 1 {
+        chain += &format!(" (run {} alone: the line before it hashes to {}, which only the log has)", r.first.unwrap_or(0), short(&r.after));
+    } else if r.trimmed {
         chain += &format!(" (from run {}; older runs were trimmed)", r.first.unwrap_or(0));
     }
     out += &format!("  {chain}\n");
@@ -1689,12 +1736,18 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         (Some(seq), Some(h)) => out += &format!("  witnessed head {}: event {seq}, so no event up to it was changed or removed\n", short(h)),
         _ => {}
     }
+    // A witnessed head is the hash of one line, which chains back through every run before it, but
+    // only the runs here can be checked against it: what it proves is named from the oldest of
+    // them, and a log trimmed to its newest runs says nothing of the ones before.
+    let from = r.first.unwrap_or(0);
+    let older = if r.trimmed { " (older runs were trimmed: it says nothing of them)" } else { "" };
     match (&r.witnessed, head) {
         (Some(None), Some(_)) if r.witnessed_event.is_some() => {}
         (Some(Some(seq)), Some(h)) if r.breaks.iter().any(|b| b <= seq) => {
-            out += &format!("  witnessed head {}: run {seq}, but the chain breaks before it, so runs up to it were changed\n", short(h))
+            out += &format!("  witnessed head {}: run {seq}, but the chain breaks before it, so runs from {from} to {seq} were changed{older}\n", short(h))
         }
-        (Some(Some(seq)), Some(h)) => out += &format!("  witnessed head {}: run {seq}, so no run up to it was changed or removed\n", short(h)),
+        (Some(Some(seq)), Some(h)) if *seq == from => out += &format!("  witnessed head {}: run {seq}, so it wasn't changed or removed{older}\n", short(h)),
+        (Some(Some(seq)), Some(h)) => out += &format!("  witnessed head {}: run {seq}, so no run from {from} to {seq} was changed or removed{older}\n", short(h)),
         (Some(None), Some(h)) => {
             out += &format!(
                 "  witnessed head {}: NOT FOUND: a run up to it was changed or removed, or it is older than the oldest run here\n",
@@ -1812,12 +1865,20 @@ pub(crate) fn export(args: &[String]) -> i32 {
     let mut server = None;
     let mut files: Option<String> = None;
     let (mut to, mut name, mut out) = (None, None, None);
+    let mut run: Option<u64> = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--to" => to = args.next().cloned(),
             "--as" => name = args.next().cloned(),
+            "--run" => match args.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(n) => run = Some(n),
+                None => {
+                    eprintln!("holon export: --run takes a run's number (holon runs <slug> lists them)");
+                    return 2;
+                }
+            },
             "--without-files" => files = Some("without_files=1".into()),
             "--max-files-bytes" => match args.next().and_then(|v| budget_of(v)) {
                 Some(n) => files = Some(format!("max_files_bytes={n}")),
@@ -1843,6 +1904,8 @@ pub(crate) fn export(args: &[String]) -> i32 {
         eprintln!("{EXPORT_USAGE}");
         return 2;
     };
+    // One run's file is named for it.
+    let name = name.or_else(|| run.map(|n| format!("{slug}-run-{n}.json")));
     let out = match export_path(&slug, to.as_deref(), name.as_deref(), out.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -1858,7 +1921,8 @@ pub(crate) fn export(args: &[String]) -> i32 {
         }
     };
     let server = target.server.as_str();
-    let url = format!("{server}/deployments/{slug}/export{}", files.map_or(String::new(), |q| format!("?{q}")));
+    let query: Vec<String> = files.into_iter().chain(run.map(|n| format!("run={n}"))).collect();
+    let url = format!("{server}/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
     let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
     if let Some(token) = &target.token {
         request = request.set("Authorization", &format!("Bearer {token}"));
@@ -1915,7 +1979,10 @@ pub(crate) fn export(args: &[String]) -> i32 {
         1 => " and its 1 event".to_string(),
         n => format!(" and its {n} events"),
     };
-    println!("wrote {path}: {} runs of {slug:?}{events}, head {head}", export.lines.len());
+    match run {
+        Some(n) => println!("wrote {path}: run {n} of {slug:?}, its hash {head}"),
+        None => println!("wrote {path}: {} runs of {slug:?}{events}, head {head}", export.lines.len()),
+    }
     if let Some(l) = &export.files_left_out {
         let s = if l.files == 1 { "" } else { "s" };
         println!("left out the text of {} file{s} its runs read ({} bytes): holon verify --files <folder> checks those runs", l.files, l.bytes);
@@ -1970,7 +2037,9 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
   only by hash (a big file, or part of one); it says what it left out.
 
   --to FOLDER              the folder to write in (default this one; made if it isn't there)
-  --as NAME                the file's name (default <slug>-runs.json)
+  --as NAME                the file's name (default <slug>-runs.json, <slug>-run-N.json)
+  --run N                  run N alone: its line as written, which names the hash of the one
+                           before it, and the units and files it ran and read
   --max-files-bytes N      ship the files' texts up to N bytes in all (64K, 10M, 2G), the
                            oldest runs' first
   --without-files          ship none of them: holon verify checks those runs with --files
@@ -1979,6 +2048,7 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
 examples:
   holon export shop
   holon export shop --to backups --as shop-2026-11.json
+  holon export shop --run 42
   holon export file-audit --max-files-bytes 10M
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -1989,6 +2059,42 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest
+    /// run in the export to the head's, and, when the log was trimmed to its newest runs, that it
+    /// says nothing of the older ones; whether the chain holds there or breaks.
+    /// Why: a witnessed head is the hash of one line, chained back through every run before it,
+    /// but only the runs an export holds can be checked against it. "No run up to it was changed"
+    /// read as every run since the deployment began, where a trimmed export (the newest 500 by
+    /// default) can't say so of any run before its first (launch review B6).
+    /// If it fails: verify says more than the export holds, and a reader takes a trimmed export
+    /// as proof of runs it doesn't have (the message shows the line).
+    #[test]
+    fn what_a_witnessed_head_proves_is_named_from_the_oldest_run_here() {
+        let head = "ab".repeat(32);
+        // Trimmed, the oldest run here, the head's run, where the chain breaks.
+        for (trimmed, first, seq, breaks) in [(false, 0, 2, vec![]), (true, 500, 742, vec![]), (true, 500, 742, vec![600]), (false, 0, 5, vec![3]), (true, 742, 742, vec![])] {
+            let r = Report {
+                deployment: "shop".into(),
+                runs: (seq - first + 1) as usize,
+                first: Some(first),
+                last: Some(seq),
+                trimmed,
+                breaks: breaks.clone(),
+                head_matches: true,
+                events_head_matches: true,
+                witnessed: Some(Some(seq)),
+                ..Default::default()
+            };
+            let said = describe(&r, Some(&head));
+            let line = said.lines().find(|l| l.contains("witnessed head")).unwrap_or_else(|| panic!("no witnessed line in:\n{said}"));
+            let covered = if first == seq { format!("run {seq}, so it wasn't") } else { format!("runs from {first} to {seq} were") };
+            let covered = if first == seq || !breaks.is_empty() { covered } else { format!("no run from {first} to {seq} was") };
+            assert!(line.contains(&covered), "trimmed {trimmed}, runs {first} to {seq}, breaks {breaks:?}: {line}");
+            assert_eq!(line.contains("older runs were trimmed: it says nothing of them"), trimmed, "{line}");
+            assert!(!line.contains("up to it"), "{line}");
+        }
+    }
 
     #[test]
     fn a_files_budget_is_bytes_or_k_m_g() {

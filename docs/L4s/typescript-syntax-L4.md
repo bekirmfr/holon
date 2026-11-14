@@ -802,10 +802,10 @@ while (x > 1) {
 - **`N` is part of the unit**: `flow(…, { loops: { turns: 5000 } })`, default 1000. It is a constant
   in the graph, not a host limit: raising it changes the hash (a new version) and asks for nothing,
   as no capability changes. A single `range` is at most 10000 (`primitives.rs:734`); more turns are
-  two folds nested, which the compiler writes. Nothing else bounds the cost today: the run's
-  budget, `run_budget_ms`, is checked between rounds (`rounds.rs:257-271`), so a loop that calls
-  nothing out runs all its turns whatever the budget, and `fold` has no step budget
-  (`eval.rs:1340-1370`). A step budget in core, counted per turn, is part of the slice.
+  two folds nested, which the compiler writes. The step budget (`max_steps`, built) bounds the
+  cost: each turn is a step, and so is each node a turn evaluates (`Observer::step`, counted per
+  round in `rounds.rs`), so a loop that calls nothing out stops at the budget, failing the run,
+  whatever its turns. The run's time budget, `run_budget_ms`, is still read only between rounds.
 - **The cost:** turns after the loop ends still run, as pass-throughs, and `range` builds its list
   (`primitives.rs:381-387`). For large `N`, `fold` should stop once its accumulator says done: a
   change to `fold`, not a new node.

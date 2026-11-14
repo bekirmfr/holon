@@ -15,7 +15,7 @@ pub fn eval_eager(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolve
     match &unit.body {
         UnitBody::Primitive { name } => vec![primitive(name, unit, inputs, resolver)],
         UnitBody::Composite { children, edges } => composite(children, edges, unit.outputs.len(), inputs, resolver),
-        UnitBody::Module { bytes } => crate::eval::run_module_outputs(bytes, unit, inputs, resolver).0,
+        UnitBody::Module { bytes } => crate::eval::run_module_outputs(bytes, unit, inputs, resolver, &mut crate::NoObserver).0,
     }
 }
 
@@ -28,8 +28,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         "group_by" => group_by(inputs, &unit.params, resolver),
         "json_parse" | "json_stringify" if unit.params.iter().any(|p| p.name() == "fn" && p.value().is_some_and(|f| !f.is_empty())) => json(name, inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
-        "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "approval" | "collection_get" | "collection_list" | "file_read" | "file_read_bytes" | "file_list" | "file_handle" | "file_lines" | "file_slice"
-        | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
+        _ if crate::ASKS_HOST.contains(&name) => None,
         _ if crate::SOURCED.contains(&name) => crate::sourced_value(unit, resolver.sourced(unit)),
         "coalesce" => inputs.iter().flatten().next().cloned(),
         // In order, to the input that decides (`false` for `and`, `true` for `or`) or the last:

@@ -41,7 +41,7 @@
 #![allow(clippy::collapsible_if, clippy::manual_is_multiple_of)]
 
 use holon_core::{
-    eval, eval_observed, eval_one, hash_unit, hex, interface_of, Answer, Edge, Hash, ModuleLimits, Observer, Param, Port, Resolved, Resolver, Shape,
+    eval, eval_observed, eval_one, hash_unit, hex, interface_of, Answer, Edge, Hash, ModuleLimits, ModuleRun, Observer, Param, Port, Resolved, Resolver, Shape,
     Shapes, Slot, Type, Unit, UnitBody, Value, BOUNDARY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -191,11 +191,12 @@ impl Resolver for Res {
     fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
         self.shapes.as_ref()?.resolved(unit)
     }
-    fn run_module(&self, bytes: &[u8], _limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
-        match bytes.first() {
+    fn run_module(&self, bytes: &[u8], _limits: &ModuleLimits, inputs: &[Option<Value>]) -> ModuleRun {
+        let outputs = match bytes.first() {
             Some(0) => Err(format!("trapped on {} inputs", inputs.len())),
             _ => Ok(vec![Some(list(inputs.iter().flatten().cloned().collect())), None, Some(num(bytes.len() as f64))]),
-        }
+        };
+        ModuleRun { outputs, burned: 1, out_of_fuel: false }
     }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateHeight, separateColumns, tidyPositions, type TidyNode } from "./canvasTidy";
+import { compilerLaid, estimateHeight, separateColumns, tidyPositions, type TidyNode } from "./canvasTidy";
 import { TIDY } from "./graphLayout";
 
 const node = (id: string, height = 46): TidyNode => ({ id, position: { x: 0, y: 0 }, measured: { width: 232, height } });
@@ -32,6 +32,17 @@ describe("tidyPositions", () => {
     const notYet = { id: "b", position: { x: 0, y: 0 } };
     const at = tidyPositions([drawn, notYet], [{ source: "a", target: "b" }]);
     expect(at.get("b")!.x - at.get("a")!.x).toBe(300 + TIDY.columnGap);
+  });
+
+  it("spaces each column by its own widest node, not the widest on the canvas", () => {
+    // request (wide) → field (narrow) → respond: the gap after field is field's width, not request's.
+    const sized = (id: string, width: number) => ({ id, position: { x: 0, y: 0 }, measured: { width, height: 60 } });
+    const at = tidyPositions(
+      [sized("request", 370), sized("field", 70), sized("respond", 300)],
+      [{ source: "request", target: "field" }, { source: "field", target: "respond" }],
+    );
+    expect(at.get("field")!.x - at.get("request")!.x).toBe(370 + TIDY.columnGap);
+    expect(at.get("respond")!.x - at.get("field")!.x).toBe(70 + TIDY.columnGap);
   });
 
   it("ignores edges to nodes that are not on the canvas", () => {
@@ -84,5 +95,21 @@ describe("separateColumns", () => {
     expect(out.get("c")!.y).toBe(1000);
     expect(out.get("d")!.y).toBe(50);
     expect(out.get("b")!.x).toBe(0);
+  });
+});
+
+describe("compilerLaid", () => {
+  const at = (x: number, y: number) => ({ position: { x, y } });
+
+  it("knows the compiler's grid, and that a tidied or moved canvas has left it", () => {
+    expect(compilerLaid([at(40, 40), at(300, 40), at(560, 200)])).toBe(true);
+    expect(compilerLaid([at(40, 40), at(312, 47)])).toBe(false);
+    const tidied = tidyPositions([node("a"), node("b")], [{ source: "a", target: "b" }]);
+    expect(compilerLaid([...tidied.values()].map((p) => ({ position: p })))).toBe(false);
+  });
+
+  it("leaves a lone node alone", () => {
+    expect(compilerLaid([at(40, 40)])).toBe(false);
+    expect(compilerLaid([])).toBe(false);
   });
 });

@@ -29,7 +29,7 @@ route.post("/sign", (req) => {
 granted at deploy like any other;
 `import receipt_key from "secret:receipt_key" with { optional: "true" }` lets the deploy leave it
 out, its reads then without a value. A secret not imported is an unknown name, like any other. The
-value is set for the deployment (the editor's ⚙, `holon secret set`), or once for the server
+value is set for the deployment (the flow's Settings, `holon secret set`), or once for the server
 (`holon secret bind`), never in the flow.
 
 - `secrets.rs`: the store (`SecretStore`), a deployment's values in memory (`Vault`, `Resolved`),
@@ -143,7 +143,7 @@ value is set for the deployment (the editor's ⚙, `holon secret set`), or once 
 - **Samples**: `guarded-api` (sources, versions, rollback), `sign-payload` (verify with a secret),
   `stripe-to-slack`, `echoed-key`, `client-credentials`, `license-check` (where each goes),
   `browser-key` (`SecretAnswer`), `shared-key` (the server's, capped). All deploy and answer in
-  `sweep.e2e.ts`; `shared-key` (its refusal) and `guarded-api` (versions under ⚙) have tests in
+  `sweep.e2e.ts`; `shared-key` (its refusal) and `guarded-api` (versions in Settings) have tests in
   `samples.e2e.ts`, as does an env secret picked from `HOLON_SECRET_…` names with its dotenv file.
   What the approval says beside each secret is `touches.rs`'s `a_secret_s_row_says_where_it_goes`,
   and the canvas's marks `commands.rs`'s, on these samples' texts.

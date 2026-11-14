@@ -8,7 +8,7 @@ import type { Edge } from "@xyflow/react";
 import { BOUNDARY, buildPreimage, Evaluator, type WEdge, type WEncapSpec, type WPort, type WUnit, type WValue } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { encapErrorNodeIndices, isWEncapError } from "./diagnostics";
-import { isTemplate, templateDefaults, templateInterface } from "./templates";
+import { isTemplate, startsIt, templateDefaults, templateInterface } from "./templates";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
 import type { EndpointDraft, LogWord } from "./endpoint";
@@ -364,9 +364,17 @@ export function untiedSinks(nodes: PrimitiveNodeType[], edges: Edge[]): Set<stri
   return new Set(nodes.filter((n) => takesTrigger(n) && !fed.has(n.id)).map((n) => n.id));
 }
 
-/** Trigger wires drawn lighter than data wires: many sinks run from one trigger. */
-export function lighterTriggers(edges: Edge[]): Edge[] {
-  return edges.map((e) => (e.targetHandle === TRIGGER ? { ...e, style: { ...e.style, strokeWidth: 1, strokeDasharray: "4 3", opacity: e.style?.opacity ?? 0.55 } } : e));
+/** Trigger wires drawn lighter than data wires: many sinks run from one trigger. A `respond`'s
+ *  request is one (templates.ts's startsIt), given `nodes`. One a failed run draws as its failure
+ *  (animated, in its colour) stays as plain to see, dashed. */
+export function lighterTriggers(edges: Edge[], nodes: { id: string; data: { name: string; body: { kind: string } } }[] = []): Edge[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return edges.map((e) => {
+    const target = byId.get(e.target);
+    if (!(e.targetHandle === TRIGGER || (target && startsIt(target, e.targetHandle)))) return e;
+    if (e.animated) return { ...e, style: { ...e.style, strokeDasharray: "6 3" } };
+    return { ...e, style: { ...e.style, strokeWidth: 1, strokeDasharray: "4 3", opacity: e.style?.opacity ?? 0.55 } };
+  });
 }
 
 /**

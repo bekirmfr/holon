@@ -289,28 +289,52 @@ pub(crate) fn handle_post_decline(state: &AppState, id: &str, request: &Request,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SettingsBody {
-    agents_propose: bool,
+    /// Whether agents may propose its versions.
+    #[serde(default)]
+    agents_propose: Option<bool>,
+    /// Limits to lower in place, by name (`keep_runs` and `keep_run_days` among them): each to at
+    /// most what it is now. Raising one widens what it may do, so it is a new version, which a
+    /// person approves (docs/L4s/web-console-L4.md §8.4).
+    #[serde(default)]
+    lower: BTreeMap<String, u64>,
 }
 
-/// `POST /deployments/<slug>/settings`, `{ "agents_propose" }`: whether agents may propose its
-/// versions. Off, an agent's deploy of it is refused (deploy.rs). Kept as an event.
+/// `POST /deployments/<slug>/settings`, `{ "agents_propose", "lower" }`, each optional: the
+/// settings a deployer changes in place, none of which widens what it may do. Whether agents may
+/// propose its versions (off, an agent's deploy of it is refused, deploy.rs), kept as an event;
+/// and limits lowered, as its grant's (grants.rs), which a deploy that asks for them could have
+/// set without anyone's approval. The limits first: one that would be raised changes nothing.
 pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Request, by: Option<&str>) -> Response {
     let body: SettingsBody = match read_body(request).map(|b| serde_json::from_slice(&b)) {
         Ok(Ok(b)) => b,
         Ok(Err(e)) => return err(400, format!("not a valid settings JSON: {e}")),
         Err(r) => return r,
     };
+    if body.agents_propose.is_none() && body.lower.is_empty() {
+        return err(400, "nothing to change: send agents_propose, or limits to lower");
+    }
+    if !state.deployments.lock().unwrap().contains_key(slug) {
+        return err(404, format!("no deployment {slug:?}"));
+    }
+    if !body.lower.is_empty() {
+        let change = crate::permissions::ChangeRequest { lower: body.lower, ..Default::default() };
+        if let Err(r) = crate::grants::change_grant(state, slug, &change, by) {
+            return r;
+        }
+    }
     let entry = {
         let mut deployments = state.deployments.lock().unwrap();
         let Some(dep) = deployments.get_mut(slug) else { return err(404, format!("no deployment {slug:?}")) };
-        if dep.agents_propose_off != body.agents_propose {
-            return Response::json(&crate::deploy::deployment_entry(slug, dep));
+        if let Some(on) = body.agents_propose
+            && dep.agents_propose_off == on
+        {
+            dep.agents_propose_off = !on;
+            let what = if on { "agents may propose versions" } else { "agents may no longer propose versions" };
+            let seq = dep.log.next_seq();
+            dep.events.push("settings", what.into(), by, seq, crate::events::Detail::default());
         }
-        dep.agents_propose_off = !body.agents_propose;
-        let what = if body.agents_propose { "agents may propose versions" } else { "agents may no longer propose versions" };
-        let seq = dep.log.next_seq();
-        dep.events.push("settings", what.into(), by, seq, crate::events::Detail::default());
         crate::deploy::deployment_entry(slug, dep)
     };
     persist_deployments(&state.deployments_path, &state.deployments);

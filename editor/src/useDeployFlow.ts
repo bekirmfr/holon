@@ -1,13 +1,14 @@
-// Deploying the open flow: one action for the whole flow, named after it (DeployBar in the
-// header). It deploys as the server its handlers derive (routes, clocks, file handlers, actions);
+// Deploying the open flow: one action for the whole flow, named after it (the editor's bar,
+// beside save). It deploys as the server its handlers derive (routes, clocks, file handlers, actions);
 // a flow with none starts nothing, and doesn't deploy. Before anything is sent, the person sees
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
-// And running, pausing or stopping it once deployed. Whoever the server wouldn't let deploy it is
-// told why before anything is staged; whoever may deploy it but not approve what it asks proposes
-// it, for someone who may (can.ts), and is told it waits in Approvals. One whose runs would wait
-// at an approval no one here can decide yet is asked again, naming it (touches.ts askAgain).
+// Running, pausing or stopping it once deployed is its page's (FlowPage.tsx). Whoever the server
+// wouldn't let deploy it is told why before anything is staged; whoever may deploy it but not
+// approve what it asks proposes it, for someone who may (can.ts), and is told it waits in
+// Approvals. One whose runs would wait at an approval no one here can decide yet is asked again,
+// naming it (touches.ts askAgain).
 
-import { createElement, useCallback, useMemo, useState, type MutableRefObject } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
@@ -15,8 +16,8 @@ import { bindingsOf, documentText, printHolon } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
-import { changeDeployment, deployUnit, getDeployedDocument, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
-import { browsersOf, type FlowSettings } from "./DeployBar";
+import { deployUnit, getDeployedDocument, listProposals, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
+import { browsersOf, type FlowSettings } from "./DeploySettings";
 import { canOn, refusal } from "./can";
 import { useToast } from "./ui/Toast";
 import { askAgain, touchLines } from "./touches";
@@ -63,14 +64,31 @@ export function useDeployFlow({
   deployments: DeploymentEntry[];
   refreshDeployments: () => void;
   setError: (msg: string) => void;
-  onDeployed?: () => void;
+  onDeployed?: (name: string) => void;
 }) {
   const [deployBusy, setDeployBusy] = useState(false);
   const toast = useToast();
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
   const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
+  // The version the flow as it is now waits as, when it is proposed already (a proposal of the same
+  // unit, waiting for a person): not a change to deploy, but one to approve. Read again after a deploy.
+  const waitKey = outOfDate && flowName && derived.serverHash ? `${flowName} ${derived.serverHash}` : null;
+  const [waits, setWaits] = useState<{ key: string; version: number | null } | null>(null);
+  useEffect(() => {
+    if (!waitKey || deployBusy) return;
+    const [slug, unit] = waitKey.split(" ");
+    let live = true;
+    listProposals().then(
+      (ps) => live && setWaits({ key: waitKey, version: ps.find((p) => p.state === "waiting" && p.slug === slug && p.unit === unit)?.version ?? null }),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [waitKey, deployBusy]);
+  const waitingVersion = waits && waits.key === waitKey ? waits.version : null;
 
-  // The secrets the flow reads, by name: what ⚙ lets you set. From its derived manifest, so a
+  // The secrets the flow reads, by name: what Settings lets you set. From its derived manifest, so a
   // secret inside a placed holon counts; plus its own `secret` nodes, for while it doesn't derive.
   const secretNames = useMemo(
     () =>
@@ -114,7 +132,7 @@ export function useDeployFlow({
       if (derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.feeds.length + derived.queues.length + derived.websockets.length + derived.actions.length === 0) {
         throw new Error(live.current.nodes.length === 0 ? "nothing to deploy: the canvas is empty" : "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action");
       }
-      if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
+      if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it in Settings, in the bottom pane)`);
       hash = derived.serverHash;
     } catch (err) {
       setError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
@@ -156,7 +174,7 @@ export function useDeployFlow({
       hunks.push(...touches);
       if (touches.length === 0 && preview.already_granted.length > 0) lines.push("", "Already granted:", ...preview.already_granted.map(said));
       if (touches.length === 0 && preview.missing_secrets.length > 0) {
-        lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`);
+        lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set them in Settings → secrets, in the bottom pane; until then those nodes stay empty)`);
       }
       const pages = browsersOf(settings);
       if (pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
@@ -193,7 +211,7 @@ export function useDeployFlow({
       refreshDeployments();
       // Proposed (as the dialog said, or as the server decided): nothing deployed yet.
       if (done.proposal) toast(`Proposed version ${done.proposal.version ?? "?"} of "${name}": it waits in Approvals for someone who may approve it.`, "info");
-      else onDeployed?.();
+      else onDeployed?.(name);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -215,16 +233,5 @@ export function useDeployFlow({
     }
   }
 
-  const onFlowAction = useCallback(
-    (action: "run" | "pause" | "stop") => {
-      if (!flowName) return;
-      setError("");
-      changeDeployment(flowName, action)
-        .then(() => refreshDeployments())
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-    },
-    [flowName, refreshDeployments, setError],
-  );
-
-  return { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction };
+  return { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow };
 }

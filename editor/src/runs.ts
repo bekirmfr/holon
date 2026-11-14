@@ -3,6 +3,7 @@
 
 import type { WValue } from "./holon";
 import type { LogEntry } from "./server";
+import { shortIds } from "./shortIds";
 
 /** A record's field, or null. */
 export const field = (v: WValue | null | undefined, k: string): WValue | null =>
@@ -45,6 +46,32 @@ export const runLabel = (e: LogEntry) =>
                 ? `${queueRun(e.sourced.find(([cap]) => cap.startsWith("QueueMessage(")))}${e.route ? ` (${e.route})` : ""}`
                 : (e.route ?? "trigger");
 
+/** Who or what started a run, from its kind and its `by` (a waiting run's, or a log entry's):
+ *  the person or agent who ran its action or sent its request through the server, else what does
+ *  on its own (its clock, its port, a file, a mail, a feed, a queue). A run another flow's run
+ *  started names that run by its first eight: the whole `by` is for a title. */
+export function startedBy(kind: string, by: string | null | undefined): string {
+  if (by) return shortIds(by);
+  switch (kind) {
+    case "request":
+      return "a request on its port";
+    case "tick":
+      return "its clock";
+    case "file":
+      return "a file in its folder";
+    case "mail":
+      return "a mail";
+    case "feed":
+      return "a feed's event";
+    case "queue":
+      return "a queue's message";
+    case "resume":
+      return "what it waited for";
+    default:
+      return "its action (who ran it isn't on record)";
+  }
+}
+
 /** Compact capability badges derived from a run's log entry. */
 export function runActions(e: LogEntry): { label: string; title: string; color: string }[] {
   const acts: { label: string; title: string; color: string }[] = [];
@@ -69,4 +96,26 @@ export function runOutcome(e: LogEntry): Outcome {
  *  writes, messages, files). */
 export function outside(e: LogEntry): { sent: number; did: number } {
   return { sent: (e.rounds ?? []).reduce((n, r) => n + r.exchanges.length, 0), did: e.performed.length };
+}
+
+/** What a run's claims say (key-claims-L4.md §5), each as `holon explain` says it: a key it held
+ *  until it was done and for how long, one it waited for and found changed (it ran again), or one
+ *  held by another run it waited for, turned away as busy or not. */
+export function claimNotes(e: LogEntry): { said: string; tone: "ok" | "again" | "busy" }[] {
+  const busy = e.error?.startsWith("busy:") ?? false;
+  const ms = (n: number) => `${Math.round(n)} ms`;
+  let retry = 0;
+  return (e.claims ?? []).map((c) => {
+    if (c.overtaken) {
+      retry++;
+      return {
+        said: `claimed ${c.key} before calling out: waited ${ms(c.waited_ms)} for another run, then found what it read had changed and ran again from there (retry ${retry} of ${e.retries ?? retry}), having sent nothing`,
+        tone: "again",
+      };
+    }
+    if (c.held_ms !== undefined) return { said: `claimed ${c.key} before calling out: waited ${ms(c.waited_ms)}, held it ${ms(c.held_ms)} until it was done`, tone: "ok" };
+    return busy
+      ? { said: `waited ${ms(c.waited_ms)} for ${c.key}, held by another run, and was turned away as busy`, tone: "busy" }
+      : { said: `waited ${ms(c.waited_ms)} for ${c.key}, held by another run`, tone: "again" };
+  });
 }

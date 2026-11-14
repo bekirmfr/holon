@@ -104,7 +104,8 @@ holon check <file>
 Compiles the flow and prints what it is:
 
 ```
-hello: 6 nodes, 6 wires
+$ holon check hello-api.holon.ts
+hello-api: 6 nodes, 6 wires
 a server on :8101
   GET /hello/:name
 unit 7714237e7d00edfc…
@@ -316,7 +317,9 @@ holon remove <slug> --yes
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
 or from the state session N left (`holon state <slug> --sessions` lists them). `pause` holds its
 runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment for good:
-its runs' log, its timeline, its state and its secrets (`holon export` first keeps its runs).
+its state, its sessions and its secrets. Its runs' log and timeline are kept: written first, beside
+the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
+where). The slug deployed again starts a new log, and the old one stays as it was.
 Editors and admins.
 
 ### `holon call`
@@ -861,7 +864,7 @@ holon access decline 5 --reason "dee is on leave until March"
 
 ```
 holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
-                    [--max-files-bytes N | --without-files]
+                    [--run N] [--max-files-bytes N | --without-files]
 ```
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
@@ -869,7 +872,10 @@ verify`. From the server you run on this machine, signed in as you; with several
 `--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
-read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.md).
+read; `--without-files` ships none. `--run N` writes run N alone, to `<slug>-run-N.json`: its line
+as written, which names the hash of the line before it, and what it ran and read. `holon verify`
+runs it again and checks its hash; tying it to a witnessed head newer than it takes the whole
+export. See [Checking runs](../guides/checking-runs.md).
 
 ### `holon verify`
 

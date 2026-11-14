@@ -23,9 +23,10 @@ fn null() -> Value {
 }
 
 /// Parse a JSON document. `None` for anything that isn't exactly one well-formed value
-/// (surrounding whitespace allowed).
+/// (surrounding whitespace allowed), or that holds more than [`MAX_ITEMS`](crate::MAX_ITEMS)
+/// values, found as soon as it passes them: each is made, and `[0,0,…]` is a value for two bytes.
 pub fn parse(text: &str) -> Option<Value> {
-    let mut p = Parser { s: text.as_bytes(), i: 0 };
+    let mut p = Parser { s: text.as_bytes(), i: 0, made: 0 };
     let v = p.value(0)?;
     p.ws();
     (p.i == p.s.len()).then_some(v)
@@ -34,6 +35,8 @@ pub fn parse(text: &str) -> Option<Value> {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    /// The values made so far.
+    made: usize,
 }
 
 impl Parser<'_> {
@@ -48,6 +51,10 @@ impl Parser<'_> {
     }
 
     fn value(&mut self, depth: usize) -> Option<Value> {
+        self.made += 1;
+        if self.made > crate::MAX_ITEMS {
+            return None;
+        }
         self.ws();
         match *self.s.get(self.i)? {
             b'{' => self.object(depth + 1),

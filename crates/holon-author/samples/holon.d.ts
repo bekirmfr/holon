@@ -521,6 +521,9 @@ declare module "holon" {
     max_response_bytes?: number
     max_header_bytes?: number
     max_redirects?: number
+    max_steps?: number
+    max_fuel?: number
+    max_memory?: number
     max_await_seconds?: number | Duration
     max_waiting_runs?: number
     max_call_depth?: number
@@ -1617,7 +1620,7 @@ declare module "holon" {
   /**
    * `secret() -> out: Text  {name: api_key}`
    *
-   * A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.
+   * A secret's value, by the name set on the node, from the deployment's secrets (set in the flow's Settings). Never logged: it shows as ‹secret:name›. Reading it is a permission.
    */
   export function secret(...args: any[]): any
 

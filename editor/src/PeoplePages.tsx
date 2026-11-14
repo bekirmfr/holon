@@ -39,7 +39,9 @@ import {
 } from "./access";
 import { useDialog } from "./Dialog";
 import { gate, useCan } from "./can";
-import { about, HostPage, input, messageOf, primary, quiet, row, small } from "./HostPages";
+import { HostPage, messageOf } from "./HostPages";
+import { about, input, primary, quiet, row, small } from "./hostStyles";
+import { seenSaid } from "./lastSeen";
 import { format, PEOPLE_LABELS, PEOPLE_TABS, type PeopleTab, type Route } from "./routes";
 import {
   addPrincipal,
@@ -179,7 +181,19 @@ function MadeTokenBox({ made, onDone }: { made: MadeToken; onDone: () => void })
   );
 }
 
-/** `p`'s tokens, each revoked from its row; or that it has none, so it can't sign in yet. */
+/** When a principal was last seen or a token last used (`what`), as a column of its row: how long
+ *  ago, the exact time as its title (lastSeen.ts). */
+function Seen({ what, at }: { what: "last seen" | "last used"; at: number | null | undefined }) {
+  const said = seenSaid(at, Date.now());
+  return (
+    <span className="hl-seen" title={said.title}>
+      {what} {said.text}
+    </span>
+  );
+}
+
+/** `p`'s tokens, each revoked from its row, with when each was last used; or that it has none, so
+ *  it can't sign in yet. */
 function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: Act }) {
   const tokens = p.tokens ?? [];
   if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
@@ -191,6 +205,7 @@ function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof
           <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
             a token of {p.name}, made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
           </span>
+          <Seen what="last used" at={t.last_used} />
           <button
             style={small}
             aria-label={`revoke ${p.name}'s token ${t.label}`}
@@ -437,6 +452,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
               {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
             </span>
+            <Seen what="last seen" at={p.last_seen} />
             <button
               style={small}
               title="the email they sign in with through the identity provider"
@@ -540,6 +556,7 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
               {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
+            <Seen what="last seen" at={p.last_seen} />
             <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setMade)}>
               make token
             </button>
@@ -935,6 +952,7 @@ function PrincipalView({ name, me, a }: { name: string; me: string; a: Access })
     p.disabled && "disabled",
     p.owner_disabled && "its owner is disabled",
     `added ${utc(p.created_at)}${p.created_by ? ` by ${p.created_by}` : ""}`,
+    `last seen ${seenSaid(p.last_seen, Date.now()).text}`,
   ].filter(Boolean);
   return (
     <section aria-label={`${p.name}'s page`}>

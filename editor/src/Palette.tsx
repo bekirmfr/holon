@@ -186,7 +186,7 @@ export function Palette({
       {/* ── MARKETPLACE ───────────────────────────────────────────────── */}
       <button
         style={headStyle}
-        title={market.url ? `holons published to ${market.url}` : "set a marketplace on the flows page"}
+        title={market.url ? `holons published to ${market.url}` : "set a marketplace in the Library's Marketplace tab"}
         onClick={() => toggle("marketplace")}
       >
         marketplace {chevron(sections.has("marketplace"))}
@@ -195,7 +195,7 @@ export function Palette({
         <div className="hl-palette__list" style={{ flex: "none", maxHeight: 160 }}>
           {!market.url && (
             <div style={{ color: "var(--faint)", fontSize: 11, padding: "2px 8px" }}>
-              set one on the flows page
+              set one in the Library's Marketplace tab
             </div>
           )}
           {market.error && (

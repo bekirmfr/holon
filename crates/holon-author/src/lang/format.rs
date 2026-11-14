@@ -23,35 +23,44 @@ use oxc_span::{ContentEq, GetSpan, SourceType};
 
 use super::ast::{Pos, Span};
 use super::lower::LowerError;
-use super::ts;
+use super::{nesting, ts};
 
 /// The width a line is laid out to.
 const WIDTH: u16 = 100;
 
-/// The stack the layout runs on. Oxfmt's formatter recurses once for each level of the text's
-/// nesting, and in a debug build a level takes tens of KiB: chess, the largest sample, needs about
-/// 1.2 MiB, more than the 1 MiB a Windows program's main thread has (a release build needs a
-/// fiftieth of that). oxc's own tests give it 16 MiB.
-const LAYOUT_STACK: usize = 16 << 20;
-
 /// `src` laid out as `holon fmt` writes it, or why it can't be: the mistake that keeps it from
-/// compiling, said at its place.
+/// compiling, said at its place. Counted for its nesting first, then laid out on a stack with room
+/// for it, whatever thread fmt is called on: Oxfmt's formatter, the parses and the walks recurse
+/// once for each level, and in a debug build a level of the layout takes tens of KiB (chess, the
+/// largest sample, needs about 1.2 MiB, more than the 1 MiB a Windows program's main thread has).
 pub fn format(src: &str) -> Result<String, LowerError> {
     let src = src.replace("\r\n", "\n");
-    let before = ts::compile(&src)?;
-    let rewritten = rewrite(&src)?;
-    let out = lay_out(&rewritten)?;
-    let wrong = |e: LowerError| mistake(format!("fmt wrote a text that doesn't compile ({e}), so it leaves this one as it is: a mistake in fmt"));
+    nesting::check(&src)?;
+    nesting::on_deep_stack(|| formatted(&src))
+}
+
+fn formatted(src: &str) -> Result<String, LowerError> {
+    let before = ts::compile(src)?;
+    let rewritten = rewrite(src)?;
+    let out = laid_out(&rewritten)?;
+    // Laid out, a text can nest a level or two deeper than it was written: fmt puts parentheses
+    // around what it breaks over lines (`return (…)`), after a `**`, around a sign after a sign.
+    if nesting::check(&out).is_err() {
+        let at = nesting::deepest_at(src);
+        let message = format!("laid out as fmt writes it, with the parentheses it adds, this would nest more than {} levels deep: name a part of it, with a const or a function", nesting::MAX_NESTING);
+        return Err(LowerError { span: Span { start: at, end: at }, message });
+    }
+    let wrong =|e: LowerError| mistake(format!("fmt wrote a text that doesn't compile ({e}), so it leaves this one as it is: a mistake in fmt"));
     ts::compile(&out).map_err(wrong)?;
     if !same_program(&rewritten, &out) {
         return Err(mistake("fmt's layout would change the code, so it leaves the text as it is: a mistake in fmt".into()));
     }
     // A `js()` body's text is its node's identity, so the flow is compared with each body as written.
-    let after = ts::compile(&with_bodies(&out, &src)).map_err(wrong)?;
+    let after = ts::compile(&with_bodies(&out, src)).map_err(wrong)?;
     if before.name != after.name || unplaced(&before.doc) != unplaced(&after.doc) {
         return Err(mistake("fmt's layout would change what this flow does, so it leaves the text as it is: a mistake in fmt".into()));
     }
-    if comments(&src) != comments(&out) {
+    if comments(src) != comments(&out) {
         return Err(mistake("fmt's layout would lose a comment, so it leaves the text as it is: a mistake in fmt".into()));
     }
     Ok(out)
@@ -61,22 +70,11 @@ pub fn format(src: &str) -> Result<String, LowerError> {
 /// (lang/print.rs), whose bodies are its nodes' identity, so the text lowers to the same units.
 pub fn format_keeping_bodies(src: &str) -> Result<String, LowerError> {
     let src = src.replace("\r\n", "\n");
-    format(&src).map(|out| with_bodies(&out, &src))
+    nesting::check(&src)?;
+    nesting::on_deep_stack(|| formatted(&src).map(|out| with_bodies(&out, &src)))
 }
 
-/// The layout, with no check that it is the same flow, on a thread of its own with the stack it
-/// needs, whatever thread fmt is called on (the CLI's main thread, the language server's). wasm has
-/// no threads: there it runs on the module's stack, in a release build.
-fn lay_out(src: &str) -> Result<String, LowerError> {
-    if cfg!(target_arch = "wasm32") {
-        return laid_out(src);
-    }
-    std::thread::scope(|s| match std::thread::Builder::new().name("fmt layout".into()).stack_size(LAYOUT_STACK).spawn_scoped(s, || laid_out(src)) {
-        Ok(layout) => layout.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-        Err(e) => Err(mistake(format!("fmt can't start a thread to lay the text out on ({e})"))),
-    })
-}
-
+/// The layout, with no check that it is the same flow.
 fn laid_out(src: &str) -> Result<String, LowerError> {
     let allocator = Allocator::default();
     let options = JsFormatOptions {

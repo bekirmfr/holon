@@ -23,6 +23,7 @@ import init, {
   primitive_docs,
   variadic_primitives,
   passes_extra_primitives,
+  asks_host_primitives,
   always_tainted,
   is_taint_key,
   family_params,
@@ -274,6 +275,15 @@ export function passesExtraPrimitives(): Set<string> {
 }
 
 /**
+ * The leaves that ask the host (core's `catalog::ASKS_HOST`): an outbound call, a call to another
+ * flow, a waiting point, and every collection, file and database read. A replay answers each from
+ * the run's record. Call after {@link ensureReady}.
+ */
+export function asksHostPrimitives(): Set<string> {
+  return new Set(asks_host_primitives() as string[]);
+}
+
+/**
  * What is wrong with `key` as one more of a flow's taint keys (`taint: [...]`), beside `listed`,
  * or null when nothing is: core's rule (`is_taint_key`), and a key every flow keeps out already
  * (`alwaysTainted`) or one listed, named either case, as the host matches them. Call after
@@ -364,9 +374,15 @@ export type Choice = { need: number } | { done: WValue | null };
 
 /** Core's choice rule: what a `guard` or `coalesce` needs next, given the inputs seen so far
  *  (`undefined`: not evaluated yet, `null`: absent), or its output once decided; `null` for a
- *  leaf that isn't a choice. A replay walks a run by it, as core evaluates one. */
+ *  leaf that isn't a choice. A replay walks a run by it, as core evaluates one.
+ *
+ *  Decided absent, core's `Done(None)` crosses the bridge as `{ done: undefined }`; it is `null`
+ *  here, as absent is everywhere in the editor and in a run's log (core's `None`, the server's
+ *  JSON `null`). Left undefined, a replayed guard that gave nothing read as differing from the
+ *  log's null, and every run that stopped at one, a waiting run's, replayed as different. */
 export function choiceNext(name: string, seen: (WValue | null | undefined)[]): Choice | null {
-  return (choice_next(name, seen.map((v) => (v === undefined ? null : { value: v }))) as Choice | undefined) ?? null;
+  const choice = (choice_next(name, seen.map((v) => (v === undefined ? null : { value: v }))) as Choice | undefined) ?? null;
+  return choice && "done" in choice ? { done: choice.done ?? null } : choice;
 }
 
 /** Whether a manifest item is required or optional (core's rule), and what that means. */

@@ -1085,7 +1085,7 @@ messages run one at a time, in the order they came, and `close` runs once, after
 The host holds the connections, never a run: each run is over in milliseconds, and what outlives
 it is in the collection and the channel. A page from another site can't open one: its `Origin`
 must be the flow's own host or one `browsers` names. The limits `max_websockets`,
-`max_message_bytes` and `messages_per_second` (under ⚙) bound what the flow holds and what each
+`max_message_bytes` and `messages_per_second` (in its deploy settings) bound what the flow holds and what each
 connection sends; one past them is closed with the code that says why, and its `close` runs all
 the same. A websocket is a permission, `WebSocket("/room/:name")`, as the channel and the
 collection are.
@@ -1487,7 +1487,7 @@ flow's, one for every handler: the clock counts, and `GET /count` reads the coun
 `export const reset = action((input) => { … })` is run by hand, by its name, and the network never
 reaches it: the port answers only the routes. It is exported because it is what reaches the flow
 from outside; an `action(…)` that isn't exported is refused, as nothing could reach it. A person
-runs it from the editor's server panel or the deployed page, or a script with `POST
+runs it from the editor's Try a request or the deployed page, or a script with `POST
 /trigger/ticker/reset` on the holon server (as an editor or an admin); `input` is the JSON they
 sent, `{}` for nothing, so `{"to": 0}` and nothing both set the count back to 0. What it returns is
 the answer to whoever ran it: `state.ticks` on the right is the count at the start of the run
@@ -2401,7 +2401,10 @@ budgets, and a `field` per output. The engine is Boa compiled to a WebAssembly m
 imports** (`fixtures/modules/js-engine/`): the body can reach no clock, randomness, network or
 storage, which is why a `js()` function adds nothing to what a flow may do; what it adds is two
 limits, its `fuel` (instructions per call, 200M when not written) and `memory` (16 MiB), which the
-deploy asks for and the host's policy caps. `"50M"`, `"2K"`, `"16MB"` are numbers with a scale.
+deploy asks for and the host's policy caps. `"50M"`, `"2K"`, `"16MB"` are numbers with a scale. A
+run's calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
+unless the flow asks for more in its `limits`): each gets its own fuel or what is left, the less,
+and a run that wants more fails, as one past `max_steps` does.
 
 The body is read by the same TypeScript parser, as a function, and is never Holon: nothing in it is
 interpolated or renamed, so the source is part of the unit's identity, verbatim (P3 stops at the
@@ -2874,7 +2877,17 @@ until it is frozen). Nor does a value nest without end: at most 256 levels (`MAX
 list's item, a record's field and an option's value are each a level down), and a leaf that would
 build one deeper gives nothing, so a fold wrapping its accumulator (`[acc]`) stops at 256 steps.
 What walks a value recurses on a thread of a few megabytes, and an overflowed stack would end
-every run on the server, not this one. No construct performs an effect during evaluation; effects are values that the
+every run on the server, not this one. Nor does a value grow without end in one step: a leaf that
+would join a text past 16,777,216 UTF-16 units (`MAX_TEXT`: `+`, `concat`, `join`, `pad`,
+`repeat`, `replace`), bytes past 64 MiB (`MAX_BYTES`: `bytes_concat`, and what `fill` copies of
+its value), a list past 1,048,576 items (`MAX_ITEMS`: `append`, `cons`, `extend`, `to_spliced`,
+`flat`), or read more values than that out of one text or bytes (`split`, `json_parse`,
+`csv_parse`, `xml_parse`, `bytes_to_list`) gives nothing, refused before it is made. What a run
+computes is bounded by its host besides, between two of its outbound calls: `max_steps` steps
+(each node evaluated, each item a function is applied to), `max_fuel` instructions of its `js()`
+calls, and `max_memory` bytes held, counted as they are made; past any, the run fails and performs
+nothing (`docs/manual/reference/permissions.md`). No construct performs an effect during
+evaluation; effects are values that the
 host performs after the run settles. A request is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await event(…)` parks the run. None of that is visible in the language
 beyond the nodes' names.

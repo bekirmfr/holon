@@ -1,15 +1,16 @@
-// The Library (gaps-web.md G25): the manual's tutorials, the samples (one per feature, each
-// opened as an unsaved copy, or made from the command line with `holon new --sample`), and the
-// marketplace this browser publishes to and places from. Each tab is a place of its own.
+// The Library (gaps-web.md G25): the manual's tutorials (each with the samples it uses), the
+// samples (one per feature, each opened as an unsaved copy, or made from the command line with
+// `holon new <file> --sample <name>`), and the marketplace this browser publishes to and places
+// from. Each tab is a place of its own.
 
 import { useMemo, useState } from "react";
 import { describeItem } from "./holon";
-import { CAPABILITIES, capabilitiesOf, matches } from "./library";
-import { contents } from "./manual";
+import { CAPABILITIES, capabilitiesOf, matches, newCommand } from "./library";
 import { setMarketplaceUrl, type Listing } from "./marketplace";
 import { useDialog } from "./Dialog";
 import { follow, format, type LibraryTab, type Route } from "./routes";
 import type { Sample } from "./samples";
+import { tutorials } from "./tutorials";
 
 const TABS: [LibraryTab, string][] = [
   ["tutorials", "Tutorials"],
@@ -61,7 +62,7 @@ export function LibraryPage({
         })}
       </nav>
       {tab === "tutorials" ? (
-        <Tutorials navigate={navigate} />
+        <Tutorials navigate={navigate} samples={samples} onOpenSample={onOpenSample} />
       ) : tab === "samples" ? (
         <Samples samples={samples} itemsOf={itemsOf} onOpenSample={onOpenSample} textOfSample={textOfSample} />
       ) : (
@@ -71,26 +72,45 @@ export function LibraryPage({
   );
 }
 
-/** The manual's pages that teach (all but its reference), by section; each opens in Docs. */
-function Tutorials({ navigate }: { navigate: (r: Route) => void }) {
-  const sections = useMemo(() => contents().filter((s) => !/^(reference|conventions)$/i.test(s.title)), []);
+/** The manual's pages that teach (all but its reference), by section (tutorials.ts): each card
+ *  its page's first paragraph, a link to the page in Docs, and the samples it uses, each opened
+ *  as an unsaved copy. */
+function Tutorials({ navigate, samples, onOpenSample }: { navigate: (r: Route) => void; samples: Sample[]; onOpenSample: (sample: Sample) => void }) {
+  const sections = useMemo(() => tutorials(samples), [samples]);
+  const byName = new Map(samples.map((s) => [s.name, s]));
   return (
     <section className="hl-library__tutorials" aria-label="tutorials">
       {sections.map((s) => (
         <div key={s.title} className="hl-flow__section">
           <h2>{s.title}</h2>
-          <ul className="hl-library__pages">
-            {s.pages.map((p) => {
-              const to: Route = { kind: "docs", page: p.path, anchor: null };
+          <div className="hl-library__grid">
+            {s.tutorials.map((t) => {
+              const to: Route = { kind: "docs", page: t.path, anchor: null };
               return (
-                <li key={p.path}>
-                  <a href={format(to)} onClick={follow(to, navigate)}>
-                    {p.title}
-                  </a>
-                </li>
+                <article key={t.path} className="hl-library__card" aria-label={t.title}>
+                  <h3>
+                    <a href={format(to)} onClick={follow(to, navigate)}>
+                      {t.title}
+                    </a>
+                  </h3>
+                  <p title={t.first}>{t.first}</p>
+                  {t.samples.length > 0 && (
+                    <div className="hl-library__uses" role="group" aria-label={`samples ${t.title} uses`}>
+                      <span className="hl-flow__note">uses</span>
+                      {t.samples.map((name) => {
+                        const sample = byName.get(name)!;
+                        return (
+                          <button key={name} className="hl-chip hl-chip--pick" aria-label={`open ${sample.title}`} title={`${sample.description}\nopen "${name}" as an unsaved copy`} onClick={() => onOpenSample(sample)}>
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </article>
               );
             })}
-          </ul>
+          </div>
         </div>
       ))}
     </section>
@@ -166,7 +186,7 @@ function Samples({
           </div>
         </dl>
         <p className="hl-flow__note">From the command line, the same flow as a file of your own:</p>
-        <pre className="hl-library__cli">holon new --sample {s.name}</pre>
+        <pre className="hl-library__cli">{newCommand(s)}</pre>
         <button className="hl-flow__button" onClick={() => download(s)}>
           Download {s.name}.holon.ts
         </button>

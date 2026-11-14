@@ -1,6 +1,6 @@
 // End-to-end tests (e2e/*.e2e.ts): the real editor, in a browser, against a real holon-server.
 // Both are started here, apart from a developer's own: the server with throwaway state
-// (e2e/server.mjs), the editor pointed at it. Samples deploy on ports the tests set under ⚙, so
+// (e2e/server.mjs), the editor pointed at it. Samples deploy on ports the tests set in Settings, so
 // they don't clash with deployments already running; it is set up with an admin the tests sign in
 // as (e2e/fixtures.ts). Accounts have their own: a server left as installed, an editor pointed at
 // it, and a stand-in identity provider (e2e/mock-oidc.mjs). Every port is the run's slot's

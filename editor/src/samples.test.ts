@@ -29,7 +29,8 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
 import { settingsOf, settingsSaid } from "./tabs";
-import { DEFAULT_SETTINGS } from "./DeployBar";
+import { compilerLaid } from "./canvasTidy";
+import { DEFAULT_SETTINGS } from "./DeploySettings";
 import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
@@ -81,6 +82,13 @@ describe("sample flows", () => {
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
+  });
+
+  it("are laid out on the compiler's grid, so they open tidied (canvasTidy.compilerLaid)", () => {
+    for (const s of samples()) {
+      const nodes = buildSample(s, new Evaluator()).nodes as PrimitiveNodeType[];
+      if (nodes.length > 1) expect(compilerLaid(nodes), s.name).toBe(true);
+    }
   });
 
   for (const s of samples()) {
@@ -307,6 +315,17 @@ export const run = action((input) => slugify(input).toUpperCase())
     expect(untiedSinks(dropped, fixed).size).toBe(0);
     // Trigger wires are drawn lighter.
     expect(lighterTriggers(fixed).filter((e) => e.style?.opacity !== undefined).length).toBe(fixed.filter((e) => e.targetHandle === TRIGGER).length);
+    // So is what starts a respond, the request it answers, given the nodes; and a trigger wire a
+    // failed run draws as its failure stays in its colour, as plain to see, dashed.
+    const answers = new Set(dropped.filter((n) => n.data.name === "respond" && n.data.body.kind === "Template").map((n) => n.id));
+    const startsAnswer = fixed.filter((e) => answers.has(e.target) && e.targetHandle === "request");
+    expect(startsAnswer.length).toBeGreaterThan(0);
+    const drawn = lighterTriggers(fixed, dropped);
+    expect(drawn.filter((e) => e.style?.opacity !== undefined).length).toBe(fixed.filter((e) => e.targetHandle === TRIGGER).length + startsAnswer.length);
+    const failed = fixed.map((e) => (e.targetHandle === TRIGGER ? { ...e, animated: true, style: { stroke: "var(--bad)", strokeWidth: 2.6 } } : e));
+    for (const e of lighterTriggers(failed, dropped).filter((x) => x.targetHandle === TRIGGER)) {
+      expect(e.style).toEqual({ stroke: "var(--bad)", strokeWidth: 2.6, strokeDasharray: "6 3" });
+    }
     // Already migrated, it is left as it is.
     expect(withTriggers(nodes, edges, primitive_catalog() as WUnit[]).nodes).toBe(nodes);
   });

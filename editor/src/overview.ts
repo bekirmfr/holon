@@ -1,6 +1,6 @@
-// What the Overview says of the host (OverviewPage.tsx), from its summary (GET /summary): the
-// tiles' words, a flow's bars hour by hour, and the line under the title. Pure, so tested
-// without a browser.
+// What the Overview and Flows say of the host (OverviewPage.tsx, FlowsPage.tsx), from its summary
+// (GET /summary): the tiles' words, a flow's bars hour by hour, how long runs took, when a flow
+// last ran, and the line under the title. Pure, so tested without a browser.
 
 import type { Summary } from "./server";
 
@@ -12,12 +12,24 @@ export function failedShare(runs: number, failed: number): string {
   return `${pct >= 10 || Number.isInteger(pct) ? Math.round(pct) : pct.toFixed(1)}%`;
 }
 
-/** How many flows run, and how many are held: "3 flows live, 1 paused". */
-export function liveSaid(t: Summary["totals"]): string {
-  const held = t.paused + t.stopped;
-  const live = `flow${t.running === 1 ? "" : "s"} live`;
-  if (held === 0) return live;
-  return `${live}, ${held} ${t.stopped === 0 ? "paused" : t.paused === 0 ? "stopped" : "paused or stopped"}`;
+/** How many flows run, of all deployed: "7 of 9". */
+export function liveOf(t: Summary["totals"]): string {
+  return `${t.running} of ${t.running + t.paused + t.stopped}`;
+}
+
+/** How long a run took, as a table says it: "0.4 ms", "12 ms", "1.3 s", "2 min"; "–" for none. */
+export function tookSaid(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "–";
+  if (ms < 10) return `${ms.toFixed(1)} ms`;
+  if (ms < 999.5) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.round(ms / 60_000)} min`;
+}
+
+/** When a flow last ran: its newest run on record's start, from its summary; none when it has
+ *  none on record. */
+export function lastRun(slug: string, s: Summary): number | null {
+  return s.deployments.find((d) => d.slug === slug)?.last_ms ?? null;
 }
 
 /** The run log tile: whether every line names the one before, by the last check if there was

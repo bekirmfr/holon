@@ -31,6 +31,7 @@ import {
   type NodeProps,
   type NodeTypes,
 } from "@xyflow/react";
+import { GESTURES } from "./canvasGestures";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { NodeActions, useNodeActions } from "./NodeDocs";
 import {
@@ -162,7 +163,7 @@ function BoundaryNode({ id, data }: NodeProps<Node<BoundaryData>>) {
     const name = await dialog?.prompt(ask, initial);
     if (!name || name === except) return null;
     if (data.ports.some((p) => p.name === name)) {
-      await dialog?.confirm(`"${name}" is already one of its ${kind}s.`, "OK");
+      await dialog?.notice(`"${name}" is already one of its ${kind}s.`);
       return null;
     }
     return name;
@@ -352,6 +353,7 @@ function Level({
     <NodeActions.Provider value={actions}>
       <div style={{ position: "absolute", inset: 0 }} onDragOver={(e) => editable && e.preventDefault()} onDrop={onDrop}>
         <ReactFlow
+          {...GESTURES}
           colorMode={dark ? "dark" : "light"}
           nodes={frame.nodes}
           edges={frame.edges}

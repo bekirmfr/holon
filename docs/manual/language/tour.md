@@ -208,6 +208,8 @@ path. The answer is a record of `status`, `headers` and `body`. A handler that w
 The host is written in the import, never computed, because the host is the permission:
 
 ```
+$ holon check slideshow.holon.ts
+…
 it may:
   call https://httpbin.org
   receive requests
@@ -338,6 +340,8 @@ The body runs in a sandbox with no clock, no randomness, no network and no stora
 nothing outside. What the flow asks for is its budget:
 
 ```
+$ holon check stats.holon.ts
+…
 it may:
   receive requests
   run code it carries (a js node): up to 200000000 instructions and 16 MiB per call, reaching nothing outside

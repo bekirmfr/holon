@@ -92,41 +92,43 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request,
         Ok(c) => c,
         Err(e) => return err(400, format!("not a valid grant change: {e}")),
     };
+    match change_grant(state, slug, &change, by) {
+        Ok(view) => Response::json(&view),
+        Err(r) => r,
+    }
+}
+
+/// Apply `change` to the grant of `slug`, whole or not at all, as `by`: each change noted on the
+/// deployment, which is checked again and kept. The grant as it now is, or the refusal.
+pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest, by: Option<&str>) -> Result<serde_json::Value, Response> {
     let Some(unit) = state.deployments.lock().unwrap().get(slug).map(|d| d.unit) else {
-        return err(404, format!("no deployment {slug:?}"));
+        return Err(err(404, format!("no deployment {slug:?}")));
     };
-    let caps = match derived_capabilities(&state.store, unit) {
-        Ok(c) => c,
-        Err(e) => return err(500, e),
-    };
+    let caps = derived_capabilities(&state.store, unit).map_err(|e| err(500, e))?;
     let policy = state.policy();
     let reply = {
         let mut table = state.deployments.lock().unwrap();
         let Some(dep) = table.get_mut(slug) else {
-            return err(404, format!("no deployment {slug:?}"));
+            return Err(err(404, format!("no deployment {slug:?}")));
         };
         if dep.unit != unit {
-            return err(409, format!("{slug:?} was redeployed meanwhile; look at its grant again"));
+            return Err(err(409, format!("{slug:?} was redeployed meanwhile; look at its grant again")));
         }
         let manifest = dep.grant.manifest_of(caps.iter());
         let now = epoch_now();
-        match dep.grant.change(&manifest, &policy, &change, now) {
-            Ok(grant) => {
-                let made: Vec<String> = grant.changes.iter().skip(dep.grant.changes.len()).map(|c| c.change.clone()).collect();
-                dep.grant = grant;
-                for change in made {
-                    eprintln!("holon: grant of {slug:?}: {change}");
-                    dep.note("grant", change, by, Default::default());
-                }
-            }
-            Err(e) => return err(400, e),
+        let grant = dep.grant.change(&manifest, &policy, change, now).map_err(|e| err(400, e))?;
+        let made: Vec<String> = grant.changes.iter().skip(dep.grant.changes.len()).map(|c| c.change.clone()).collect();
+        dep.grant = grant;
+        for change in made {
+            eprintln!("holon: grant of {slug:?}: {change}");
+            dep.note("grant", change, by, Default::default());
         }
         recheck(dep, &caps, &policy, now);
         grant_view(dep)
     };
     persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
-    Response::json(&reply)
+    Ok(reply)
 }
 
 /// `POST /permissions/reload` — read the policy file again and hold every deployment to it: a

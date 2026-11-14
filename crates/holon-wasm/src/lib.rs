@@ -17,6 +17,11 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
+/// Counts the bytes each thread holds, so a round is held to the memory it is granted
+/// in design mode as on the server (`max_memory`, holon_core::memory).
+#[global_allocator]
+static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
+
 use holon_author::builder::{FlowDocument, UnitSettings};
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
@@ -324,6 +329,13 @@ pub fn is_taint_key(key: &str) -> bool {
 #[wasm_bindgen]
 pub fn passes_extra_primitives() -> Vec<String> {
     holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
+}
+
+/// The leaves that ask the host (core's `catalog::ASKS_HOST`): a replay answers each from what
+/// the run recorded, never recomputing it.
+#[wasm_bindgen]
+pub fn asks_host_primitives() -> Vec<String> {
+    holon_core::ASKS_HOST.iter().map(|s| s.to_string()).collect()
 }
 
 /// The values each family leaf's parameter may take (core's `catalog::FAMILIES`), by leaf, then
@@ -701,7 +713,32 @@ impl Evaluator {
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
         // With the engine: a module placed on the canvas runs for real, under its budget.
         let with_engine = holon_module::WithEngine::new(&self.resolver, holon_module::shared());
-        let out: Vec<Option<WValue>> = holon_core::eval(&unit, &core_inputs, &with_engine)
+        // Held to the steps a deployed run gets by default, the fuel its js and module calls get
+        // all told, and the memory it may hold, so a loop that doesn't end, or a value that
+        // keeps growing, stops here as it would on the server, not hangs or crashes the tab.
+        let mut budget = holon_core::Budgeted::new(holon_core::DEFAULT_MAX_STEPS)
+            .with_fuel(holon_core::DEFAULT_MAX_FUEL)
+            .with_memory(holon_core::DEFAULT_MAX_MEMORY);
+        let outputs = holon_core::eval_observed(&unit, &core_inputs, &with_engine, &mut budget);
+        if budget.exhausted {
+            return Err(JsError::new(&format!(
+                "it took more than {} steps (max_steps): a deployed run stops there too",
+                holon_core::DEFAULT_MAX_STEPS
+            )));
+        }
+        if budget.out_of_fuel {
+            return Err(JsError::new(&format!(
+                "it took more than {} instructions of js and module code (max_fuel): a deployed run stops there too",
+                holon_core::DEFAULT_MAX_FUEL
+            )));
+        }
+        if budget.out_of_memory {
+            return Err(JsError::new(&format!(
+                "it took more than {} bytes of memory (max_memory): a deployed run stops there too",
+                holon_core::DEFAULT_MAX_MEMORY
+            )));
+        }
+        let out: Vec<Option<WValue>> = outputs
             .iter()
             .map(|o| o.as_ref().map(WValue::from_core))
             .collect();
@@ -1334,6 +1371,27 @@ pub fn holon_highlight(source: &str) -> Result<JsValue, JsError> {
     to_js(&coloured)
 }
 
+/// The text's statement graph (holon-author's graph.rs, as `holon editor` draws it): `{bands:
+/// [{title, rows}], nodes}`, each row graph.rs's `Row` (its `kind`, its `fallback`, its `mark`)
+/// with `at`, its mark as `{from, to}` offsets. `every`: each node a row of its own. Throws why the
+/// text has none (a mistake).
+#[wasm_bindgen]
+pub fn holon_graph(source: &str, every: bool) -> Result<JsValue, JsError> {
+    to_js(&graph_json(source, every).map_err(|e| JsError::new(&e))?)
+}
+
+fn graph_json(source: &str, every: bool) -> Result<serde_json::Value, String> {
+    let g = holon_author::graph::graph(source, every)?;
+    let at = Offsets::new(source);
+    let mut json = serde_json::to_value(&g).map_err(|e| e.to_string())?;
+    for (b, band) in g.bands.iter().enumerate() {
+        for (r, row) in band.rows.iter().enumerate() {
+            json["bands"][b]["rows"][r]["at"] = serde_json::json!({ "from": at.offset(row.mark.start), "to": at.offset(row.mark.end) });
+        }
+    }
+    Ok(json)
+}
+
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
 /// description, shows, port?, secrets?, optional?, browsers?, tryIt, text}]` (samples.rs).
 #[wasm_bindgen]
@@ -1755,6 +1813,11 @@ fn check_variadic_primitives() {
     let mut extra = passes_extra_primitives();
     extra.sort();
     assert_eq!(extra, vec!["all", "any", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "map", "sort_by"]);
+    // The leaves a replay answers from the run's record are core's one list, the reads all in it.
+    let asks = asks_host_primitives();
+    for read in ["collection_get", "file_read", "db_query", "db_one", "db_find", "db_find_one"] {
+        assert!(asks.contains(&read.to_string()), "{read}");
+    }
     // subtract is two-input like add but must NOT be offered as growable — it's
     // not associative, core gives it no N-ary meaning.
     assert!(!names.contains(&"subtract".to_string()));
@@ -1881,6 +1944,31 @@ mod native_tests {
         }
     }
 
+    /// What the editor draws a flow by is the terminal's graph, whole, for every sample; each row's
+    /// `at` is the text its mark is, in UTF-16 offsets.
+    #[test]
+    fn graph_is_the_terminals_with_offsets() {
+        for s in holon_author::samples::samples() {
+            let g = holon_author::graph::graph(s.text, false).unwrap();
+            let json = graph_json(s.text, false).unwrap();
+            assert_eq!(serde_json::from_value::<holon_author::graph::Graph>(json.clone()).unwrap(), g, "{}", s.name);
+            let units: Vec<u16> = s.text.encode_utf16().collect();
+            let lines: Vec<&str> = s.text.split('\n').collect();
+            for (b, band) in g.bands.iter().enumerate() {
+                for (r, row) in band.rows.iter().enumerate() {
+                    let at = &json["bands"][b]["rows"][r]["at"];
+                    let written = String::from_utf16(&units[at["from"].as_u64().unwrap() as usize..at["to"].as_u64().unwrap() as usize]).unwrap();
+                    // Over lines, it starts as its first line goes on.
+                    let (start, end) = (row.mark.start, row.mark.end);
+                    let rest = lines[start.line as usize - 1].chars().skip(start.col as usize - 1);
+                    let marked: String = if start.line == end.line { rest.take((end.col - start.col) as usize).collect() } else { rest.collect() };
+                    assert!(written.starts_with(marked.trim_end_matches('\r')) && (start.line != end.line || written == marked), "{}: {} {written:?} {marked:?}", s.name, row.name);
+                }
+            }
+        }
+        assert!(graph_json("flow(", false).is_err());
+    }
+
     /// Each node's range, in UTF-16 offsets past an emoji, is the text it is written as; an
     /// argument's range is inside its call's; every range is inside the text.
     #[test]
@@ -1939,6 +2027,17 @@ mod wasm_tests {
     }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
+
+    /// The graph crosses as the terminal's: read back, it is the same graph, by statement and by
+    /// node.
+    #[wasm_bindgen_test]
+    fn graph_crosses_js_boundary() {
+        let text = holon_author::samples::sample("approved-payout").unwrap().text;
+        for every in [false, true] {
+            let crossed: holon_author::graph::Graph = serde_wasm_bindgen::from_value(holon_graph(text, every).unwrap()).unwrap();
+            assert_eq!(crossed, holon_author::graph::graph(text, every).unwrap());
+        }
+    }
 
     /// The inspector's forms and example for a name, as the workbench's: `route` has the forms
     /// that write it and a sample's lines; a word that isn't a name has nothing.

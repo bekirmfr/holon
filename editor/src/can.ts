@@ -195,6 +195,13 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/** The round what is kept was read in, followed as `useCan` follows it (the access version read
+ *  again now and then and on coming back to the window): it moves when what was kept may be out of
+ *  date, for useCan.tsx's answers to be asked again then too. */
+export function useCanRound(): number {
+  return useSyncExternalStore(subscribe, () => round);
+}
+
 /** What whoever is signed in may do on `flow` (with none: the host's actions, and the others on
  *  any flow), as the server answers; null until first read. Every action at once, read once per
  *  flow and kept, however many buttons follow it. */

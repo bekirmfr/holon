@@ -7,17 +7,13 @@
 // signed in as the e2e admin), so these run on a server no browser test has deployed to.
 
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { ADMIN, expect, PORTS, RUN_DIR, SERVER, test } from "./fixtures";
+import { ADMIN, expect, HOLON, movedSample, PORTS, RUN_DIR, SERVER, test } from "./fixtures";
 
-const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
-const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
-const SAMPLES = join(root, "crates", "holon-author", "samples");
-
-/** Deploy a sample via CLI and return the port it serves on (null for clock flows). */
+/** Deploy a sample via CLI, its port moved as every test's is (movedSample), and return the port
+ *  it serves on (null for clock flows). */
 async function cliDeploy(token: string, file: string, slug: string): Promise<number | null> {
-  execFileSync(HOLON, ["deploy", join(SAMPLES, file), "--server", SERVER, "--slug", slug, "--approve"], {
+  const sample = movedSample(file);
+  execFileSync(HOLON, ["deploy", sample.path, "--server", SERVER, "--slug", slug, "--approve"], {
     env: { ...process.env, HOLON_TOKEN: token },
     stdio: "pipe",
   });
@@ -26,7 +22,9 @@ async function cliDeploy(token: string, file: string, slug: string): Promise<num
   });
   expect(res.ok).toBe(true);
   const { deployments } = (await res.json()) as { deployments: Array<{ slug: string; port?: number }> };
-  return deployments.find((d) => d.slug === slug)?.port ?? null;
+  const port = deployments.find((d) => d.slug === slug)?.port ?? null;
+  expect(port, `${slug}'s port`).toBe(sample.port);
+  return port;
 }
 
 test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ adminToken }) => {

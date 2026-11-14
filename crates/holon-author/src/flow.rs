@@ -547,7 +547,7 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
         return Err(derived.errors.join("; "));
     }
     if !derived.endpoints.is_empty() || !derived.clocks.is_empty() || !derived.files.is_empty() || !derived.mails.is_empty() || !derived.feeds.is_empty() || !derived.queues.is_empty() || !derived.websockets.is_empty() || !derived.actions.is_empty() {
-        let hash = derived.server_hash.ok_or_else(|| format!("\"{port}\" is not a port (set it under ⚙)"))?;
+        let hash = derived.server_hash.ok_or_else(|| format!("\"{port}\" is not a port (set it in Settings)"))?;
         return Ok(parse_hash(&hash).expect("a hash made here"));
     }
     if nodes.is_empty() {

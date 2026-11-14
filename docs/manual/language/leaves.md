@@ -1267,7 +1267,7 @@ The run's 32 random bytes, the same everywhere in one run, and recorded: what pg
 secret() -> out: Text  {name: api_key}
 ```
 
-A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.
+A secret's value, by the name set on the node, from the deployment's secrets (set in the flow's Settings). Never logged: it shows as ‹secret:name›. Reading it is a permission.
 
 ### `file_arrival`
 

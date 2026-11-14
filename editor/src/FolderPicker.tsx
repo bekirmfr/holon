@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { browseFolders, pickFolder, type FolderListing } from "./server";
+import { useFocusTrap } from "./ui/focusTrap";
 
 const button: CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 12px", borderRadius: 3, cursor: "pointer" };
 const quiet: CSSProperties = { ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" };
@@ -16,6 +17,8 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
   const [error, setError] = useState("");
   // The OS's dialog is open on the server's machine, waiting for an answer.
   const [waiting, setWaiting] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
 
   // Only the latest listing asked for is shown, and it fills the path field only if nobody has
   // typed there since: the first one (the home folder) can arrive after someone started typing.
@@ -74,6 +77,7 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
 
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
       aria-label="choose a folder"

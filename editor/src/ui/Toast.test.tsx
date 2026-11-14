@@ -1,5 +1,5 @@
 // A toast says something once: a notice fades by itself, a failure stays until dismissed, the
-// same text twice is one toast, and only the newest few are shown.
+// same text twice is one toast, only the newest few are shown, and one may link to a place.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -30,7 +30,7 @@ function mount(): Notify {
   }
   root = createRoot(container);
   act(() => root!.render(<ToastProvider>{<Grab />}</ToastProvider>));
-  return (text, tone) => act(() => notify(text, tone));
+  return (text, tone, link) => act(() => notify(text, tone, link));
 }
 
 const shown = () => [...document.querySelectorAll(".hl-toast__text")].map((e) => e.textContent);
@@ -73,5 +73,15 @@ describe("toasts", () => {
     act(() => r.render(<Lone />));
     expect(() => outside!("anything")).not.toThrow();
     act(() => r.unmount());
+  });
+
+  it("links to where it can be seen, and goes once followed", () => {
+    const say = mount();
+    say("Deployed refunds.", "ok", { label: "Open the flow", to: { kind: "flow", slug: "refunds", tab: "status" } });
+    const link = document.querySelector<HTMLAnchorElement>(".hl-toast a")!;
+    expect(link.textContent).toBe("Open the flow");
+    expect(link.getAttribute("href")).toBe("#refunds");
+    act(() => link.click());
+    expect(shown()).toEqual([]);
   });
 });

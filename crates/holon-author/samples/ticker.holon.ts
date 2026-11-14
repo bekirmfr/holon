@@ -7,9 +7,10 @@
 //
 // Try it: deploy it, open http://127.0.0.1:8156/ and a new tick shows every 2 seconds;
 //   curl http://127.0.0.1:8156/count
-// answers how many so far. To set it back, run reset from the editor's server panel or the
+// answers how many so far. To set it back, run reset from the editor's Try a request or the
 // deployed page (or POST {"to": 0} to /trigger/ticker/reset on the holon server). To let an agent
-// run it (holon mcp's run tool), tick reset under the gear's "agents may run", deploy and approve.
+// run it (holon mcp's run tool), tick reset under "agents may run" in the editor's Settings,
+// deploy and approve.
 import { action, every, flow, js, respond, route } from "holon"
 import state from "state"
 import ticks from "channel:ticks"

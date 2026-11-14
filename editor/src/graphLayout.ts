@@ -4,14 +4,15 @@
 //
 // A domain is a handler's nodes: the nodes wired together. Each domain is laid out on its own, left to
 // right: each node sits in the column of its depth (the longest chain of wires into it), as late as its
-// consumers allow, so a branch stays next to what it feeds. Within a column the order comes from a few
+// consumers allow, so a branch stays next to what it feeds. A column is as wide as its widest node. Within a column the order comes from a few
 // barycentre sweeps, and the heights from a few relaxations toward the nodes each one is wired to. The
 // domains are stacked, each with room above its nodes for a label.
 
-export type LayoutNode = { height: number };
+/** A node: its height, and its width when it has one of its own (else the options' `nodeWidth`). */
+export type LayoutNode = { height: number; width?: number };
 export type LayoutWire = { from: number; to: number };
 export type LayoutOptions = {
-  /** A node's width. */
+  /** A node's width, for a node without one of its own. */
   nodeWidth: number;
   /** The gap between one column and the next, beyond the width of a node. */
   columnGap: number;
@@ -61,9 +62,17 @@ export function tidy(nodes: LayoutNode[], wires: LayoutWire[], options: LayoutOp
     );
     const minY = Math.min(...lay.ys);
     const bottom = Math.max(...ids.map((id, k) => lay.ys[k] + nodes[id].height));
+    // Each column is as wide as its widest node, then the gap: a narrow node isn't spaced as a wide one.
+    const widths: number[] = [];
+    ids.forEach((id, k) => (widths[lay.layer[k]] = Math.max(widths[lay.layer[k]] ?? 0, nodes[id].width ?? options.nodeWidth)));
+    const lefts: number[] = [];
+    for (let l = 0, x = options.pad; l < widths.length; l++) {
+      lefts.push(x);
+      x += (widths[l] ?? 0) + options.columnGap;
+    }
     ids.forEach((id, k) => {
       positions[id] = {
-        x: options.pad + lay.layer[k] * (options.nodeWidth + options.columnGap),
+        x: lefts[lay.layer[k]],
         y: top + options.label + lay.ys[k] - minY,
       };
     });

@@ -252,21 +252,21 @@ test("a viewer's flow page has each button that changes something disabled, sayi
       await expect(button).toHaveAttribute("title", title);
     };
 
-    // The header: pausing and stopping are an editor's.
+    // The header: pausing is an editor's.
     await asVic.goto(`/#${slug}`);
     const flowPage = asVic.locator(`[aria-label="flow ${slug}"]`);
     await disabled(flowPage.getByRole("button", { name: "Pause", exact: true }), reads);
-    await disabled(flowPage.getByRole("button", { name: "Stop", exact: true }), reads);
     // Status: its action is seen, not run.
     const shout = flowPage.locator('[aria-label="action shout"]');
     await disabled(shout.getByRole("button", { name: "run", exact: true }), reads);
     await expect(shout).toContainText(reads);
-    // Settings: revoking, whether agents may propose, removing it.
+    // Settings: revoking, whether agents may propose, stopping it, removing it.
     await asVic.goto(`/#${slug}.settings`);
     const revokes = flowPage.getByRole("button", { name: "Revoke", exact: true });
     await expect(revokes).not.toHaveCount(0);
     for (const revoke of await revokes.all()) await disabled(revoke, reads);
     await expect(flowPage.getByRole("checkbox", { name: "agents may propose versions" })).toBeDisabled();
+    await disabled(flowPage.getByRole("region", { name: "lifecycle" }).getByRole("button", { name: "Stop…", exact: true }), reads);
     await disabled(flowPage.getByRole("button", { name: `Remove ${slug}` }), reads);
 
     // The host's pages: the policy is a viewer's to read, not to read again; resources and
@@ -398,8 +398,8 @@ test("a flow whose approval no one here can decide says so, and deploying it ask
     await typed.click();
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text(`{ role: "${first}" }, { role: "${second}" }`));
-    // Compiled: what it may do names the second step.
-    await expect(page.getByText(`wait for approval "ok" by a person holding ${first}, then a person holding ${second}, and continue later`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    // Compiled: what it may do names the second step (in the bottom pane, closed).
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${first}, then a person holding ${second}, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
     // Saved a second after the deploy at least: both are kept in seconds, and a version saved in
     // the second it was deployed reads as the one deployed.
     await page.waitForTimeout(1_100);
@@ -466,7 +466,8 @@ test("a step whoever started the run may take says so in words, and with its one
     await typed.click();
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text(`{ role: "${role}", starter: true }`));
-    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, and continue later`, { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    // Compiled: what it may do says so (in the bottom pane, closed).
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
     // Saved a second after the deploy at least (both are kept in seconds).
     await page.waitForTimeout(1_100);
     const saved = page.waitForResponse((r) => r.request().method() !== "GET" && new URL(r.url()).pathname.startsWith("/flows"));

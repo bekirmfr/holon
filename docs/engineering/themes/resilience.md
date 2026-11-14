@@ -40,33 +40,35 @@ synced first; `lost`, read without the log's lock, keeps the usual case as cheap
 
 ### G2. A deployment can't slow another
 
-A run answers on the data plane's tokio worker only when it can never wait (`runs_here_for`,
-`dataplane.rs`): its handler is `unrecorded`, its capabilities are all in `READS_HERE`
-(`NetworkIngress`, `Clock`, `Random`), and its flow is already in memory (`FlowCache::holds`).
-Anything else runs on the blocking pool. Each deployment's log has its own lock, and the line is
-made before taking it.
+No run computes on the data plane's tokio workers: every run goes to the blocking pool (`answer`,
+`dataplane.rs`), however short, and the workers only accept connections and move bytes. Each
+deployment's log has its own lock, and the line is made before taking it.
 
-- **Why so narrow.** A worker that waits holds up every connection on it. Build step 12.1 let any
-  short read-only route run on the worker, including collection reads; a deployment busy reading
-  its notes then took an unrelated `hello` from about 25,000 requests a second to 66–403, and to
-  30 with writes (R2). An unknown capability goes to the pool.
-- **Cost.** A route that may wait pays the pool's hop: 65–145 µs at one connection, and a fifth of
-  the throughput of an unrecorded route reading state.
-- **Limits.** CPU is shared: 64 connections of `crunch` slow every route, inline or pooled
-  ("overload, not the inline path", RA §2.1).
-- **Tests.** `a_light_route_answers_on_the_data_planes_worker_as_any_route_does`,
+- **Why none.** Of the idle workers one watches the network, and the one that reads a request is
+  that one: a run on it, even one that never waits, left every listener deaf until it ended (a
+  route computing 3 s held a 413 on another port 1.65 s). Build step 12.1 answered short routes on
+  the worker; R2 narrowed that to runs that can never wait (a deployment busy reading its notes on
+  the worker had taken an unrelated `hello` from about 25,000 requests a second to 66–403, and to
+  30 with writes), which still let them compute; B5 took it out. What it saved and the ways around
+  it weighed: [performance](performance.md#nothing-computes-on-a-data-plane-worker-2026-11-13).
+- **Cost.** Every run pays the pool's hop: 20–30 µs at one connection on a trivial route, about a
+  quarter of its throughput there; under load, even or ahead.
+- **Limits.** CPU is shared: 64 connections of `crunch` slow every route ("overload", RA §2.1).
+  The pool runs as many runs as are computing, up to its 512 threads, the cores shared among
+  them; what one run may compute is its round's budgets (B5).
+- **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
 
 ### G3. A panic ends its run and nothing else
 
-A panic is caught where every run passes, `fire_with_state` (firing.rs), whatever started the
-run: it becomes a run that failed (`panicked`, its error starting `PANICKED`), logged and counted
-like another, and a caller is told 500 ("the request's handler failed"). One in a request's
-handler before its run is caught where the connection is answered: on the worker by
-`catch_unwind`, on the pool by its join error (R1; before, the connection was dropped with no
-answer). Before the first, a panic in a clock's run ended the thread that ticks every
-deployment's clocks and the deadlines of every waiting run, and one in a feed's, a queue's or a
-mailbox's run ended the thread that reads it, for good and with nothing in any log.
+A panic is caught where every run passes, `fire_with_state` (firing.rs), whatever started the run:
+it becomes a run that failed (`panicked`, its error starting `PANICKED`), logged and counted like
+another, and a caller is told 500 ("the request's handler failed"). One in a request's handler
+before its run is caught where the connection is answered, by the blocking pool's join error (R1;
+before, the connection was dropped with no answer). Before the first, a panic in a clock's run ended
+the thread that ticks every deployment's clocks and the deadlines of every waiting run, and one in a
+feed's, a queue's or a mailbox's run ended the thread that reads it, for good and with nothing in
+any log.
 
 - **Locks.** A lock held where the panic was is taken again by the next run, as the panic left
   what it guards: the server's locks are its own (`sync.rs`: std's, taken back from a panic, their

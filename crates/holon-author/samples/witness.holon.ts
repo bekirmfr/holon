@@ -5,7 +5,7 @@
 // afterwards no longer matches what was witnessed. A request without the key gets nothing kept,
 // and a 401.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   witness_key   the token servers send (their HOLON_EXPORT_HEADS_TOKEN)
 //
 // Try it: deploy it, then start a server that sends it heads, with the witness key as its token:

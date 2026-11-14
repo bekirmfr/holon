@@ -26,13 +26,21 @@ use crate::Value;
 /// units: 16 Mi, twice the longest body a request brings, so a width or a count from a request
 /// makes a leaf allocate tens of megabytes at most, not gigabytes. V8's bound, past which Node
 /// throws a RangeError, is 32 times this (2^29 − 24); one server holds many flows' runs at once.
-pub(crate) const MAX_TEXT: usize = 1 << 24;
+pub const MAX_TEXT: usize = 1 << 24;
 
 // ── units and positions ──────────────────────────────────────────────────────────────────────
 
 /// A text's length in code units: its characters, plus one more for each astral one.
 pub(crate) fn units(s: &str) -> usize {
     s.chars().count() + astral_count(s)
+}
+
+/// Whether a text `bytes` long in UTF-8 and `units` long in UTF-16 is within [`MAX_TEXT`] units:
+/// at once when its bytes are, as each unit takes a byte at least, and by counting its units
+/// only past that. What a text joined of others (`+`, `concat`, `join`) is checked with before it
+/// is made.
+pub(crate) fn within(bytes: usize, units: impl FnOnce() -> usize) -> bool {
+    bytes <= MAX_TEXT || units() <= MAX_TEXT
 }
 
 /// The astral characters: four-byte UTF-8 sequences, whose first byte is `0xF0` or above. Counted
@@ -288,10 +296,15 @@ pub(crate) fn slice(mode: &str, s: &str, a: &Value, b: Option<&Value>) -> Option
 /// `s.split(sep, limit)`: the pieces between each `sep`, `""` cutting every code unit (so
 /// `"".split("")` is `[]`). `limit` is ToUint32's (truncated, modulo 2^32) and keeps that many
 /// pieces; unwired, all. Nothing for `""` on a text with an astral character, whose pair's halves
-/// can't stand alone.
+/// can't stand alone, or for more than [`MAX_ITEMS`](crate::MAX_ITEMS) pieces, counted before any
+/// is made: a megabyte of commas is a million pieces, each a value.
 pub(crate) fn split(s: &str, sep: &str, limit: Option<f64>) -> Option<Value> {
     let limit = limit.map_or(usize::MAX, |l| l.trunc().rem_euclid(4294967296.0) as usize);
     let piece = |p: &str| Value::Text(p.to_string());
+    let pieces = if sep.is_empty() { s.chars().count() } else { s.matches(sep).count() + 1 };
+    if pieces.min(limit) > crate::MAX_ITEMS {
+        return None;
+    }
     if !sep.is_empty() {
         return Some(Value::List(s.split(sep).take(limit).map(piece).collect()));
     }
@@ -341,10 +354,22 @@ pub(crate) fn pad(side: &str, s: &str, length: f64, fill: &str) -> Option<Value>
     if length > MAX_TEXT as f64 {
         return None;
     }
+    // The fill whole as many times as it fits in the `k` units missing, then the units of it
+    // left over, written straight into the one text: made once, at its length.
     let k = length as usize - n;
-    let fills = fill.repeat(k.div_ceil(units(fill)));
-    let filler = cut(&fills, 0, k)?;
-    Some(Value::Text(if side == "end" { format!("{s}{filler}") } else { format!("{filler}{s}") }))
+    let (whole, part) = (k / units(fill), cut(fill, 0, k % units(fill))?);
+    let mut out = String::with_capacity(s.len() + fill.len() * whole + part.len());
+    if side == "end" {
+        out.push_str(s);
+    }
+    for _ in 0..whole {
+        out.push_str(fill);
+    }
+    out.push_str(part);
+    if side == "start" {
+        out.push_str(s);
+    }
+    Some(Value::Text(out))
 }
 
 /// `s.repeat(count)`: the text `count` times (truncated); `""` for 0 or `""`. Nothing for a
@@ -641,7 +666,8 @@ fn plus_text(v: &Value) -> Option<Cow<'_, str>> {
 /// `a + b + …` with something other than numbers among them: a left fold from the first operand.
 /// Two numbers add; with a text on either side, both are written as [`plus_text`] writes them and
 /// joined, so `1 + 2 + "a"` is `"3a"` and `"a" + 1 + 2` is `"a12"`. Nothing for a boolean without
-/// a text (JavaScript's `true + 1` is 2), a list or a record, or a sum past the largest number.
+/// a text (JavaScript's `true + 1` is 2), a list or a record, a sum past the largest number, or a
+/// text past [`MAX_TEXT`] units: `s = s + s` a step doubles, and would hold gigabytes in thirty.
 pub(crate) fn plus(operands: &[&Value]) -> Option<Value> {
     let (first, rest) = operands.split_first()?;
     let mut acc = (*first).clone();
@@ -649,10 +675,20 @@ pub(crate) fn plus(operands: &[&Value]) -> Option<Value> {
         acc = match (acc, x) {
             (Value::Number(a), Value::Number(b)) if (a + b).is_finite() => Value::Number(a + b),
             (Value::Text(mut s), x) => {
-                s.push_str(&plus_text(x)?);
+                let t = plus_text(x)?;
+                if !within(s.len() + t.len(), || units(&s) + units(&t)) {
+                    return None;
+                }
+                s.push_str(&t);
                 Value::Text(s)
             }
-            (a, Value::Text(t)) => Value::Text(format!("{}{t}", plus_text(&a)?)),
+            (a, Value::Text(t)) => {
+                let a = plus_text(&a)?;
+                if !within(a.len() + t.len(), || units(&a) + units(t)) {
+                    return None;
+                }
+                Value::Text(format!("{a}{t}"))
+            }
             _ => return None,
         };
     }

@@ -13,7 +13,15 @@
 //! a token (the log holds a placeholder, never the value): one that passes it along, or picks past
 //! it, gives the same with any placeholder and is computed; one whose answer depends on which
 //! placeholder computed with the value, and the run can't be told (`Fed`). Nor can a run that
-//! reads a clock or a random the run didn't, or one that failed then.
+//! reads a clock or a random the run didn't, or one that failed then. What `Fed` computes stands
+//! in for the node, so the round's budget never counts it: it computes on a budget of its own,
+//! each round twice the round's steps and fuel (it computes a node twice), and a version that
+//! wants more can't be told either.
+//!
+//! Each round is held to the steps and fuel the deployment is granted (`within`): a replay needs
+//! no approval, so it computes no more than a person approved for the deployment's own runs. A
+//! version that asks for more has it once deployed; replayed, a run that needs it doesn't finish,
+//! and says so.
 
 use super::*;
 
@@ -64,8 +72,8 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Some(Ok(n)) if (1..=MOST_RUNS).contains(&n) => n,
         Some(_) => return err(400, format!("runs: how many recent runs, 1 to {MOST_RUNS}")),
     };
-    let (log, redactor) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets)),
+    let (log, redactor, granted) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let loaded = match units::closure(store, unit) {
@@ -85,11 +93,19 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Ok(export) => export,
         Err(e) => return err(500, e),
     };
-    Response::json(&replay(&export, unit, &resolver, runs))
+    Response::json(&replay(&export, unit, &resolver, runs, &within(&granted)))
 }
 
-/// `unit` replayed on the last `runs` runs among `export`'s lines that ran.
-pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize) -> Replayed {
+/// The limits a replay holds each round to: `holon verify`'s (`rerun_limits`: no clock or count
+/// of requests to stop it, so what a run comes to doesn't hang on the machine), but the steps,
+/// fuel and memory the deployment is `granted`, never more: a replay needs no approval.
+fn within(granted: &Limits) -> Limits {
+    Limits { max_steps: granted.max_steps, max_fuel: granted.max_fuel, max_memory: granted.max_memory, ..super::rerun_limits() }
+}
+
+/// `unit` replayed on the last `runs` runs among `export`'s lines that ran, each round held to
+/// `limits` (`within` the deployment's grant).
+pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, limits: &Limits) -> Replayed {
     let entries: Vec<LogEntry> = export.lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let files = BTreeMap::new();
     let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files: &files };
@@ -99,7 +115,7 @@ pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Re
     for &i in ran.iter().rev().take(runs) {
         let entry = &entries[i];
         let earlier: Vec<&LogEntry> = entries[..i].iter().filter(|e| e.run_id == entry.run_id).collect();
-        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks) {
+        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks, limits) {
             Replay::Same(now) => ("same", Vec::new(), now),
             Replay::Differs(why, now) => ("differs", why, now),
             Replay::CantTell(why) => ("cant_tell", vec![why], None),
@@ -123,7 +139,7 @@ enum Replay {
     CantTell(String),
 }
 
-fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks) -> Replay {
+fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits) -> Replay {
     if let Some(e) = &entry.error {
         return Replay::CantTell(format!("it failed then: {e}"));
     }
@@ -214,10 +230,9 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         marks: marks.clone(),
         missed: Vec::new(),
     };
-    let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
     let mut host = RecordingHost::new();
-    let mut observer = Fed { marks, other: Marks::new(), resolver, consumed: false };
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, &limits, &mut observer, &mut waits, &[]);
+    let mut observer = Fed::new(marks, resolver, limits);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[]);
 
     if let Some(missed) = performer.missed.into_inner().unwrap().into_iter().next() {
         return Replay::CantTell(format!("it sends {missed}, which the run didn't: what it would be answered can't be told offline"));
@@ -228,6 +243,12 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     if observer.consumed {
         return Replay::CantTell("it computes with a secret, a token or a tainted value, which the log never holds".into());
     }
+    if observer.too_much {
+        let (steps, fuel, memory) = observer.each_round;
+        return Replay::CantTell(format!(
+            "it computes with a secret, a token or a tainted value more than a replay does in a round ({steps} steps, {fuel} instructions of js and module code, {memory} bytes of memory)"
+        ));
+    }
     // As `rerun` has it: the server refuses a write of a secret's value.
     let keeps = |c: &Capability| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_) | Capability::DbWrite(_) | Capability::ChannelSend(_) | Capability::FileWrite(_));
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
@@ -235,7 +256,13 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     }
     let status = (entry.kind == "request").then(|| data::respond(outcome.outputs.first().and_then(Option::as_ref)).status);
     if let Some(e) = &outcome.error {
-        return Replay::Differs(vec![format!("it doesn't finish: {e:?}")], now_status(status));
+        let why = match e {
+            holon_host::RunError::StepBudget { .. } | holon_host::RunError::FuelBudget { .. } | holon_host::RunError::MemoryBudget { .. } => {
+                format!("it doesn't finish within what the deployment is granted: {}", e.message())
+            }
+            _ => format!("it doesn't finish: {}", e.message()),
+        };
+        return Replay::Differs(vec![why], now_status(status));
     }
 
     let mut differs = Vec::new();
@@ -393,16 +420,39 @@ impl Waits for ByRead {
 /// which, it computed with the value, and what it gave isn't what the run computed with the
 /// value. One that only passes it along, or picks past it, gives the same and stands. A leaf that
 /// asks the world (a request, a read) is judged by what it is answered, not computed here.
+///
+/// What it computes stands in for the node, so the round's own budget never counts it: it
+/// computes on a budget of its own, made afresh each round (`each_round`: twice the round's steps,
+/// fuel and memory, as it computes each node twice). Past it, it computes nothing more
+/// (`too_much`).
 struct Fed<'a, R> {
     marks: &'a Marks,
     other: Marks,
     resolver: &'a R,
     consumed: bool,
+    each_round: (u64, u64, u64),
+    budget: holon_core::Budgeted,
+    too_much: bool,
+}
+
+impl<'a, R> Fed<'a, R> {
+    fn new(marks: &'a Marks, resolver: &'a R, limits: &Limits) -> Self {
+        let each_round = (limits.max_steps.saturating_mul(2), limits.max_fuel.saturating_mul(2), limits.max_memory.saturating_mul(2));
+        Fed { marks, other: Marks::new(), resolver, consumed: false, each_round, budget: budget(each_round), too_much: false }
+    }
+}
+
+/// A budget of `steps`, `fuel` and `memory`, the memory from what the thread holds now.
+fn budget((steps, fuel, memory): (u64, u64, u64)) -> holon_core::Budgeted {
+    holon_core::Budgeted::new(steps).with_fuel(fuel).with_memory(memory)
 }
 
 impl<R: holon_core::Resolver> Observer for Fed<'_, R> {
+    fn round(&mut self, _n: usize) {
+        self.budget = budget(self.each_round);
+    }
     fn asserted(&mut self, _path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
-        if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
+        if self.too_much || matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
             return None;
         }
         if !capabilities(unit, self.resolver).is_empty() {
@@ -411,8 +461,12 @@ impl<R: holon_core::Resolver> Observer for Fed<'_, R> {
         let (one, two) = (self.marks.start.as_str(), self.other.start.as_str());
         let given: Vec<Option<Value>> = inputs.iter().map(|v| v.cloned()).collect();
         let swapped: Vec<Option<Value>> = inputs.iter().map(|v| v.map(|v| swap(v, one, two))).collect();
-        let a = holon_core::eval(unit, &given, self.resolver);
-        let b = holon_core::eval(unit, &swapped, self.resolver);
+        let a = holon_core::eval_observed(unit, &given, self.resolver, &mut self.budget);
+        let b = holon_core::eval_observed(unit, &swapped, self.resolver, &mut self.budget);
+        if self.budget.exhausted || self.budget.out_of_fuel || self.budget.out_of_memory {
+            self.too_much = true;
+            return None;
+        }
         if a.iter().zip(&b).all(|(a, b)| *a == b.as_ref().map(|b| swap(b, two, one))) {
             return Some(a.into_vec());
         }

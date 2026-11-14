@@ -5,7 +5,7 @@
 // collection, state, an optional secret), and its manifest, permissions, replay and flow state
 // count all of it. A saved flow without routes is placed the same way, from the palette's flows.
 //
-// Its optional secret, set under the deployment's settings (the gear):
+// Its optional secret, set in the flow's Settings:
 //   receipt_key   signs each publish receipt; without it receipts read "unsigned"
 //
 // Try it: deploy it, then

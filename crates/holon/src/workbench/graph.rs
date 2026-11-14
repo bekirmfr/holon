@@ -14,53 +14,16 @@ use super::app::{App, List, Show, Tone};
 use super::client::{Client, Detail};
 use super::flow::{at_ms, failed, Row};
 
-/// What a statement does, as its colour says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
-    /// It only computes.
-    Compute,
-    /// It reads or writes the flow's data: its state, a collection, a database.
-    Data,
-    /// It calls outside: a request, a file, a channel, another flow.
-    Outside,
-    /// It answers the request.
-    Answer,
-}
+/// What a statement does, as its colour says: holon-author's, which the web draws by too.
+pub(crate) use holon_author::graph::Kind;
 
-impl Kind {
-    /// A leaf's kind, by its name.
-    pub(crate) fn of_leaf(leaf: &str) -> Kind {
-        if ["db_", "store_", "collection_"].iter().any(|p| leaf.starts_with(p)) {
-            Kind::Data
-        } else if ["http_", "file_", "channel_", "flow_"].iter().any(|p| leaf.starts_with(p)) || leaf == "egress" {
-            Kind::Outside
-        } else if leaf == "respond" {
-            Kind::Answer
-        } else {
-            Kind::Compute
-        }
-    }
-
-    /// A row's kind: a call outside if it makes one, else its data if it touches it, else its
-    /// answer, else it computes.
-    pub(crate) fn of_row(row: &graph::Row) -> Kind {
-        let kinds: Vec<Kind> = row.parts.iter().map(|p| Kind::of_leaf(&p.leaf)).collect();
-        [Kind::Outside, Kind::Data, Kind::Answer].into_iter().find(|k| kinds.contains(k)).unwrap_or(Kind::Compute)
-    }
-
-    /// Its tone in a pane.
-    pub(crate) fn tone(self) -> Tone {
-        match self {
-            Kind::Data => Tone::Data,
-            Kind::Outside => Tone::Outside,
-            Kind::Compute | Kind::Answer => Tone::Plain,
-        }
-    }
-
-    /// Each line's kind in a text, by its statement: what a run's timeline colours its bars by.
-    pub(crate) fn by_line(text: &str) -> std::collections::HashMap<u32, Kind> {
-        let Ok(g) = graph::graph(text, false) else { return Default::default() };
-        g.bands.iter().flat_map(|b| &b.rows).filter(|r| !r.head).flat_map(|r| (r.line..=r.last).map(move |n| (n, Kind::of_row(r)))).collect()
+/// A kind's tone in a pane.
+fn tone(k: Kind) -> Tone {
+    match k {
+        Kind::Data => Tone::Data,
+        Kind::Outside => Tone::Outside,
+        Kind::Waits => Tone::Warn,
+        Kind::Compute | Kind::Answer => Tone::Plain,
     }
 }
 
@@ -149,7 +112,7 @@ impl GraphView {
             rows.push(Row::Field("Ran".into(), format!("from {} to {}", super::flow::took(s.start_us / 1000.0), super::flow::took(s.end_us / 1000.0)), Tone::Plain));
         }
         if !row.does.is_empty() {
-            rows.push(Row::Field("Is".into(), row.does.clone(), Kind::of_row(row).tone()));
+            rows.push(Row::Field("Is".into(), row.does.clone(), tone(row.kind)));
         }
         rows
     }
@@ -209,7 +172,10 @@ impl GraphView {
         let mut rows = vec![text(Tone::Head, if row.head { band.title.clone() } else { format!("{}  ({})", row.name, band.title) })];
         rows.extend(code(&|_| vec![]));
         if !row.does.is_empty() {
-            rows.push(Row::Field("Is".into(), row.does.clone(), Kind::of_row(row).tone()));
+            rows.push(Row::Field("Is".into(), row.does.clone(), tone(row.kind)));
+        }
+        if let Some(status) = &row.fallback {
+            rows.push(Row::Field("Missing".into(), format!("answers {status} when its value is absent"), Tone::Plain));
         }
         let name = |j: usize| band.rows.get(j).map(|o| if o.head { "the trigger".to_string() } else { format!("{} (line {})", o.name, o.line) }).unwrap_or_default();
         let mut from: Vec<String> = row.from.iter().map(|&j| name(j)).collect();
@@ -225,7 +191,7 @@ impl GraphView {
             rows.push(text(Tone::Head, format!("Made of {} node{}", row.parts.len(), if row.parts.len() == 1 { "" } else { "s" })));
             for p in &row.parts {
                 let params: Vec<String> = p.params.iter().map(|(k, v)| format!("{k}={}", Value::String(v.clone()))).collect();
-                rows.push(text(Kind::of_leaf(&p.leaf).tone(), format!("{}  {}  {}", p.name, p.leaf, params.join(" ")).trim_end().to_string()));
+                rows.push(text(tone(Kind::of_leaf(&p.leaf)), format!("{}  {}  {}", p.name, p.leaf, params.join(" ")).trim_end().to_string()));
                 rows.extend(p.inputs.iter().map(|(port, src)| text(Tone::Dim, format!("    {port} ← {src}"))));
             }
         }

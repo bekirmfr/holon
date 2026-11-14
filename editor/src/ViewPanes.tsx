@@ -1,16 +1,19 @@
-// View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
-// live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons, a capability-badge column and ↺ (go back to the run; the rest of its
-// history is its page's, FlowPage.tsx). Right side: two tabs — Details (what the run
-// read and produced) and Timeline (one row per node, timed by the server). The width of the
-// split is draggable and remembered. The side pane shows the selected run's flow state as of the
-// current step, and the selected node: its params, and the inputs and outputs it had in that run
-// (replayed, replay.ts).
+// View mode's panes around the canvas of a deployed flow. The bottom pane (`b`, its frame
+// BottomPane.tsx's) shows the runs and the run picked side by side (web-console-L4.md §5.4), so
+// both are in sight while runs are picked, and a run double-clicked frames its nodes on the
+// canvas. Left, Runs: the flow log live (every request, trigger and tick), a sortable, filterable
+// run list with copy, export and compare, a capability-badge column, ↺ (go back to the run; the
+// rest of its history is its page's, FlowPage.tsx), the chain's head and ● live. Right, Run: the
+// run picked, in three tabs — Details (what the run read and produced), Errors when it failed, and
+// Timeline (one row per node, timed by the server) with the stepper. The split between them is
+// dragged and remembered. The side pane shows the selected run's
+// flow state as of the current step, and the selected node: its params, and the inputs and
+// outputs it had in that run (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { decidedLine, decisionSaid, decisionsOf } from "./decisions";
-import { field, runActions, runLabel, text } from "./runs";
+import { claimNotes, field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
 import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
@@ -23,8 +26,11 @@ import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, t
 import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
+import { useFocusTrap } from "./ui/focusTrap";
+import { useBottomHeight } from "./BottomPane";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
+import { WordSection } from "./InspectorText";
 import { fieldMarks, type MayHere } from "./mayHere";
 
 const small: CSSProperties = {
@@ -118,23 +124,9 @@ const paneStyle: CSSProperties = {
   position: "relative",
 };
 
-const HEIGHT_KEY = "holon.viewHeight";
-
-/** The bottom pane's height, remembered per browser (styles.css `--view-height`; a third of the
- *  canvas when never dragged). */
-function rememberedHeight(): number | null {
-  try {
-    const h = Number(localStorage.getItem(HEIGHT_KEY));
-    return Number.isFinite(h) && h > 0 ? h : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Where the pane's height may go: never so small the tabs vanish, never most of the window. */
-const clampHeight = (h: number) => Math.max(120, Math.min(window.innerHeight * 0.75, h));
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
+// The width of the run picked, beside the runs: dragged, and remembered in this browser.
 const SPLIT_KEY = "holon.logRightWidth";
 function rememberedSplit(): number | null {
   try {
@@ -203,9 +195,15 @@ export function BottomPane({
   onFitToNodes,
   onRestored,
   codeText,
+  keys = true,
+  onClose,
 }: {
   slug: string;
   selected: LogEntry | null;
+  /** Hides the pane (b); it folds to a strip along the bottom that opens it again. */
+  onClose?: () => void;
+  /** Whether its keys are on: off while a page covers the canvas. */
+  keys?: boolean;
   onSelect: (e: LogEntry | null) => void;
   /** A version's flow as text (its unit's), for a restore's diff. */
   codeText?: CodeText;
@@ -236,40 +234,8 @@ export function BottomPane({
   onFitToNodes: (ids: string[]) => void;
 }) {
   const { entries, chain, tallies, error } = useFlowLog(slug);
-  // The pane's height, dragged by its top edge: set on the canvas grid it is a row of
-  // (`--view-height`, styles.css), so the canvas above takes the rest.
-  const pane = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | null>(rememberedHeight);
-  useEffect(() => {
-    const grid = pane.current?.parentElement;
-    if (!grid) return;
-    if (height === null) grid.style.removeProperty("--view-height");
-    else grid.style.setProperty("--view-height", `${Math.round(height)}px`);
-    return () => {
-      grid.style.removeProperty("--view-height");
-    };
-  }, [height]);
-  const onEdge = (e: ReactPointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = pane.current?.getBoundingClientRect().height ?? height ?? 240;
-    let last = startH;
-    const move = (m: PointerEvent) => {
-      last = clampHeight(startH + startY - m.clientY);
-      setHeight(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try {
-        localStorage.setItem(HEIGHT_KEY, String(Math.round(last)));
-      } catch {
-        // Not remembered, then.
-      }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
+  // The pane's height, dragged by its top edge (BottomPane.tsx), the same as in Edit.
+  const { pane, onEdge } = useBottomHeight();
   // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
   // step) instead: live starts only when nothing is selected.
   const [live, setLive] = useState(() => selected === null);
@@ -292,6 +258,8 @@ export function BottomPane({
 
   const pick = (e: LogEntry) => {
     setLive(false);
+    // Live no longer follows: a run picked after this, even the one it followed, is a person's.
+    followed.current = null;
     onSelect(e);
   };
   // Stepping through the run, and the runs before and after it, from the keys (keymap.ts).
@@ -302,7 +270,9 @@ export function BottomPane({
     pick(there);
   };
   const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
-  useKeys({
+  useKeys(
+    "view",
+    {
     j: () => stepBy(1),
     ArrowRight: () => stepBy(1),
     k: () => stepBy(-1),
@@ -311,7 +281,9 @@ export function BottomPane({
     End: () => (order.length === 0 ? false : onStep(null)),
     ",": () => runBeside(-1),
     ".": () => runBeside(1),
-  });
+    },
+    { enabled: keys },
+  );
 
   const [chainNote, setChainNote] = useState("");
   const copyHead = () =>
@@ -328,41 +300,31 @@ export function BottomPane({
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid var(--border)", padding: "4px 8px" }}>
-        {selected && (
-          <span style={{ color: ink }}>
-            #{selected.seq} · {runLabel(selected)} · session {selected.session}
-          </span>
+      <div className="hl-bottom__head">
+        <span className="hl-view__title">
+          Runs<span className="hl-bottom__count">{entries.length}</span>
+          <kbd className="hl-pane-key" aria-hidden="true">
+            b
+          </kbd>
+        </span>
+        <div className="hl-view__said">
+          {selected && (
+            <span style={{ color: ink }}>
+              #{selected.seq} · {runLabel(selected)} · session {selected.session}
+            </span>
+          )}
+          {verdict !== null && (
+            <span style={{ color: verdict ? good : bad }}>
+              {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
+            </span>
+          )}
+          {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
+        </div>
+        {onClose && (
+          <button className="hl-panel-header__btn" onClick={onClose} title="hide the bottom pane (b)" aria-label="hide the bottom pane">
+            ×
+          </button>
         )}
-        {verdict !== null && (
-          <span style={{ color: verdict ? good : bad }}>
-            {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
-          </span>
-        )}
-        {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
-        {chain.head && (
-          <div className="hl-view__chain" style={{ display: "contents" }}>
-            {chain.breaks.length > 0 ? (
-              <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
-                ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
-              </span>
-            ) : (
-              <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
-            )}
-            <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
-            <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
-            <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
-            {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
-          </div>
-        )}
-        <div style={{ flex: 1 }} />
-        <button
-          style={{ ...small, color: live ? "var(--accent-ink)" : "var(--muted)", background: live ? good : "transparent" }}
-          onClick={() => setLive(!live)}
-          title="follow the newest run as it happens"
-        >
-          ● live
-        </button>
       </div>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
       {listenError && (
@@ -372,10 +334,10 @@ export function BottomPane({
         </div>
       )}
       <LogTab
+        open={pick}
         entries={entries}
         tallies={tallies}
         selected={selected}
-        pick={pick}
         slug={slug}
         order={order}
         nodes={nodes}
@@ -390,6 +352,32 @@ export function BottomPane({
         onFitToNodes={onFitToNodes}
         onRestored={onRestored}
         codeText={codeText}
+        tools={
+          <>
+            {chain.head && (
+              <div className="hl-view__chain" style={{ display: "contents" }}>
+                {chain.breaks.length > 0 ? (
+                  <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
+                    ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
+                  </span>
+                ) : (
+                  <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
+                )}
+                <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
+                <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
+                <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
+                {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
+              </div>
+            )}
+            <button
+              style={{ ...small, color: live ? "var(--accent-ink)" : "var(--muted)", background: live ? good : "transparent" }}
+              onClick={() => setLive(!live)}
+              title="follow the newest run as it happens"
+            >
+              ● live
+            </button>
+          </>
+        }
       />
     </div>
   );
@@ -399,10 +387,11 @@ type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
 function LogTab({
+  open,
+  tools,
   entries,
   tallies,
   selected,
-  pick,
   slug,
   order,
   nodes,
@@ -418,13 +407,16 @@ function LogTab({
   onRestored,
   codeText,
 }: {
+  /** A run picked in the list: it is shown beside it. */
+  open: (e: LogEntry) => void;
+  /** The list's own buttons, at the end of its bar: the chain, and ● live. */
+  tools: ReactNode;
   onRestored?: () => void;
   codeText?: CodeText;
   entries: LogEntry[];
   /** Its unrecorded handlers' runs, counted: a row each above the runs. */
   tallies: Record<string, Tally>;
   selected: LogEntry | null;
-  pick: (e: LogEntry) => void;
   slug: string;
   order: string[];
   nodes: ViewNode[];
@@ -443,6 +435,30 @@ function LogTab({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
+  const container = useRef<HTMLDivElement>(null);
+  // The divider between the runs and the run picked, dragged: the run's width, kept once let go.
+  const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+    const total = container.current?.getBoundingClientRect().width ?? 600;
+    const startX = ev.clientX;
+    const startW = rightWidth ?? total * 0.45;
+    let last = startW;
+    const move = (m: PointerEvent) => {
+      last = clampSplit(startW + startX - m.clientX, total);
+      setRightWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem(SPLIT_KEY, String(Math.round(last)));
+      } catch {
+        // Not remembered, then.
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
@@ -475,8 +491,7 @@ function LogTab({
 
   const [colFilter, setColFilter] = useState<Partial<Record<FilterableCol, Set<string>>>>({});
   const [openFilter, setOpenFilter] = useState<FilterableCol | null>(null);
-  const container = useRef<HTMLDivElement>(null);
-
+  
   const allColValues = useMemo<Record<FilterableCol, string[]>>(() => ({
     session: [...new Set(entries.map((e) => `s${e.session}`))].sort(),
     label: [...new Set(entries.map((e) => runLabel(e)))].sort(),
@@ -552,25 +567,6 @@ function LogTab({
     const runA = entries.find((e) => e.seq === seqs[0]);
     const runB = entries.find((e) => e.seq === seqs[1]);
     if (runA && runB) setCompareRuns([runA, runB]);
-  };
-
-  const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
-    ev.preventDefault();
-    const total = container.current?.getBoundingClientRect().width ?? 600;
-    const startX = ev.clientX;
-    const startW = rightWidth ?? total * 0.45;
-    let last = startW;
-    const move = (m: PointerEvent) => {
-      last = clampSplit(startW + startX - m.clientX, total);
-      setRightWidth(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try { localStorage.setItem(SPLIT_KEY, String(Math.round(last))); } catch {}
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   };
 
   useEffect(() => {
@@ -651,16 +647,13 @@ function LogTab({
     );
   };
 
-  const rightStyle: CSSProperties = rightWidth !== null
-    ? { width: rightWidth, flexShrink: 0 }
-    : { flex: "1 1 45%" };
-
+  const rightStyle: CSSProperties = rightWidth !== null ? { width: rightWidth, flex: "0 0 auto" } : { flex: "1 1 45%" };
   return (
     <>
-    <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-      {/* Left column: filter bar + runs */}
-      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+    <div ref={container} className="hl-view__split">
+      {/* Runs: the filter bar, its tools, and the runs. */}
+      <div role="region" aria-label="Runs" className="hl-view__panel hl-view__runs" style={{ flex: rightWidth !== null ? "1 1 0" : "1 1 55%" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <input
             placeholder="filter runs…"
             value={filter}
@@ -680,6 +673,7 @@ function LogTab({
               <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
             </>
           )}
+          {tools}
         </div>
         {restorer.modal}
         {restorer.note && (
@@ -722,7 +716,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pick(e)}
+                  onClick={() => open(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -776,15 +770,9 @@ function LogTab({
           </div>
         </div>
       </div>
-        {/* Draggable divider */}
-        <div
-          className="hl-divider"
-          style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0 }}
-          onPointerDown={onDivider}
-          title="drag to resize"
-        />
-        {/* Right pane: Details | Errors | Timeline tabs */}
-        <div style={{ ...rightStyle, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className="hl-view__divider" onPointerDown={onDivider} title="drag to resize" />
+      {/* Run: Details | Errors | Timeline, and the stepper. */}
+      <div role="region" aria-label="Run" className="hl-view__panel" style={rightStyle}>
           <Tabs
             tabs={[
               ["details", "Details"],
@@ -880,7 +868,7 @@ function LogTab({
               issues={issues}
             />
           )}
-        </div>
+      </div>
     </div>
     {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
     </>
@@ -1235,6 +1223,7 @@ export function Inspector({
   onManual,
   onSample,
   may = null,
+  statements = null,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
@@ -1249,6 +1238,9 @@ export function Inspector({
   onSample?: (name: string) => void;
   /** The node's line in the flow as text (holonText.ts), when the flow prints. */
   source?: { line: number; text: string } | null;
+  /** At the Statements level, what the cursor is on (InspectorText.tsx), in place of the node's
+   *  sections. */
+  statements?: ReactNode;
   open: boolean;
   onOpen: (open: boolean) => void;
 }) {
@@ -1256,7 +1248,7 @@ export function Inspector({
   const tab = picked !== "node" && !run ? "node" : picked;
   // View mode: the state as of the step shown, and the run as the log keeps it.
   const tabs: [InspectorTab, string][] = [
-    ["node", "Node"],
+    ["node", statements ? "At the cursor" : "Node"],
     ...(run
       ? ([
           ["state", run.step === null ? "State after the run" : `State at step ${run.step + 1}`],
@@ -1269,6 +1261,9 @@ export function Inspector({
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
         <button className="hl-inspector__fold" onClick={() => onOpen(true)} title="open the Inspector" aria-label="open the Inspector">
           ‹ Inspector
+          <kbd className="hl-pane-key" aria-hidden="true">
+            i
+          </kbd>
         </button>
       </div>
     );
@@ -1276,10 +1271,11 @@ export function Inspector({
   return (
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
       <div className="hl-panel-header">
-        <span className="hl-panel-header__title">inspector</span>
+        <span className="hl-panel-header__title hl-panel-header__title--keyed">inspector</span>
         <kbd className="hl-pane-key" aria-hidden="true">
           i
         </kbd>
+        <span style={{ flex: 1 }} />
         <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
       </div>
       <Tabs tabs={tabs} tab={tab} onTab={setTab} />
@@ -1288,6 +1284,12 @@ export function Inspector({
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : tab === "record" && run ? (
           <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
+        ) : statements ? (
+          // In View runs, the node picked below what the cursor is on: what it computed.
+          <>
+            {statements}
+            {run && node && <ComponentTab node={node} run={run} source={source ?? null} may={null} />}
+          </>
         ) : (
           <>
             {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
@@ -1297,48 +1299,6 @@ export function Inspector({
         )}
       </div>
     </div>
-  );
-}
-
-/** The name at the text's cursor, as `holon editor`'s inspector says it: its hover, the forms it
- *  is written in (from the language reference) and a sample's lines that use it. */
-function WordSection({ word, onManual, onSample }: { word: Inspected; onManual?: () => void; onSample?: (name: string) => void }) {
-  const { forms = [], example = null } = word.usage ?? {};
-  return (
-    <section className="hl-word" aria-label={`the name ${word.word}`}>
-      <div className="hl-word__head">
-        Inspector: <code>{word.word}</code>
-      </div>
-      {/* The hover writes code between backticks. */}
-      <div className="hl-word__hover">{word.hover.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}</div>
-      {forms.length > 0 && (
-        <Section title="forms">
-          <ul className="hl-word__forms">
-            {forms.map(([form, meaning]) => (
-              <li key={form}>
-                <code>{form}</code>
-                {meaning && <span className="hl-word__meaning"> {meaning}</span>}
-              </li>
-            ))}
-          </ul>
-          {onManual && (
-            <button className="hl-word__link" onClick={onManual}>
-              the language reference
-            </button>
-          )}
-        </Section>
-      )}
-      {example && (
-        <Section title={`example · ${example.sample}`}>
-          <pre className="hl-word__example">{example.lines.join("\n")}</pre>
-          {onSample && (
-            <button className="hl-word__link" onClick={() => onSample(example.sample)}>
-              open the sample
-            </button>
-          )}
-        </Section>
-      )}
-    </section>
   );
 }
 
@@ -1364,10 +1324,31 @@ function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null;
           {verdict === null ? "not checked: its version's canvas isn't shown" : verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded"}
         </div>
       </Section>
+      <Section title="claims">
+        <Claims run={run} />
+      </Section>
       <a href={`#${slug}.run-${run.seq}`} style={{ color: "var(--accent)", textDecoration: "none" }}>
         its page, to check it offline ›
       </a>
     </>
+  );
+}
+
+/** The Record tab's Claims (web-console-L4.md §5.5, key-claims-L4.md): whether the run held each
+ *  key it read before calling out until it was done, and for how long (the log's `held_ms`); one
+ *  it waited for another run to let go, or was turned away over. */
+export function Claims({ run }: { run: LogEntry }) {
+  const notes = claimNotes(run);
+  if (notes.length === 0) return <div style={{ color: dim }}>none: it held no key it read while calling out</div>;
+  const color = { ok: "var(--ok)", again: "var(--warn)", busy: FAIL };
+  return (
+    <ul className="hl-claims" aria-label="claims">
+      {notes.map((n, i) => (
+        <li key={i} style={{ color: color[n.tone] }}>
+          {n.said}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1933,7 +1914,9 @@ export function renderValueContent(v: WValue, renderer: RendererKind, portName: 
   return pre(formatValue(v));
 }
 
-function ValueModal({ value, portName, onClose }: { value: WValue; portName: string; onClose: () => void }) {
+export function ValueModal({ value, portName, onClose }: { value: WValue; portName: string; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   const [stack, setStack] = useState<Array<{ value: WValue; name: string }>>([]);
   const current = stack.length > 0 ? stack[stack.length - 1] : { value, name: portName };
   const [renderer, setRenderer] = useState<RendererKind>(() => detectRenderer(value));
@@ -1959,8 +1942,10 @@ function ValueModal({ value, portName, onClose }: { value: WValue; portName: str
 
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
+      aria-label={`value of ${current.name}`}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
     >

@@ -8,7 +8,7 @@ import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
-import { compileHolon, inspectAt, printHolon, printHolonLines, sourceLineOf } from "./holonText";
+import { compileHolon, inspectAt, printedName, printHolon, printHolonLines, sourceLineOf } from "./holonText";
 import { manifestItems } from "./holon";
 import { buildSample, samples } from "./samples";
 
@@ -144,6 +144,18 @@ route.post("/j", (req) => concat(shout(req.json.words), "-", "!"))
     expect(lines.get(field.id)).toBe(6);
     // The Inspector's line is of the canvas as it prints without a text's names: inline.
     expect(sourceLineOf(field.id, name, doc, ev)).toEqual({ line: 5, text: 'route.get("/x", (req) => `${req.params.id} likes`)' });
+  });
+
+  it("writes an unnamed draft's text again under the name it says, not an empty one", () => {
+    const ev = new Evaluator();
+    const { doc } = compileHolon(HELLO, ev);
+    // Its settings changed: the text is printed from the canvas again, the tab still unnamed.
+    const again = printHolon(printedName(null, HELLO, ev), { ...doc, server: { ...doc.server!, port: "8102" } }, ev);
+    expect(again).toContain('flow("hello-api", { port: 8102 })');
+    // A named tab's name is its own; a text that doesn't compile says none.
+    expect(printedName("other", HELLO, ev)).toBe("other");
+    expect(printedName(null, "flow(", ev)).toBeNull();
+    expect(printedName(null, null, ev)).toBeNull();
   });
 });
 

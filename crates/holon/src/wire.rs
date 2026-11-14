@@ -254,6 +254,8 @@ pub(crate) struct DeployRequestBody {
     /// in a line, and more to say (proposals.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) why: Option<String>,
+    /// More to say: a proposal's, kept with it; a deploy's, kept with the grant it makes, on its
+    /// event and in the activity (events.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<String>,
 }

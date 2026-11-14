@@ -95,7 +95,7 @@ up to `VALUE_CACHE_LARGEST`. Both count memory, not encoded bytes
 | Thread | Started by | What it does |
 |---|---|---|
 | a thread per control-plane request | `rouille::Server::new` (rouille 3.6's default executor, `Executor::Threaded`) | the control plane |
-| `holon-data` runtime, and its blocking pool | `dataplane::runtime`, with the first listener | the data plane: each request read on a worker, run there only when `runs_here_for` says it can never wait, otherwise on `spawn_blocking` |
+| `holon-data` runtime, and its blocking pool | `dataplane::runtime`, with the first listener | the data plane: each request read on a worker and run on `spawn_blocking`, however short (nothing computes on a worker: [G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)) |
 | the clock | `spawn_clock_scheduler` | every second, `run_due_clock_ticks` (the deployments due, fanned out on `thread::scope`), then `durable::expire_waiting` |
 | the file watcher | `arrivals::spawn_watcher` | every `POLL` (1 s), new files in watched folders start runs |
 | the syncer | `serve` | every `SYNC_EVERY` (1 s): writes the deployments file when tallies changed, then `recorder::sync_logs` (syncs each log, makes the cut-backs runs asked for) |
@@ -204,7 +204,7 @@ In tests.rs unless named, in-process through `route` and `serve_data` (`test_sta
 
 - **Isolation**: `a_fire_in_progress_does_not_stall_the_table`,
   `one_deployments_log_doesnt_hold_up_another`,
-  `a_light_route_answers_on_the_data_planes_worker_as_any_route_does`,
+  `nothing_a_run_computes_holds_up_the_data_plane` (`tests/data_plane.rs`, the real server),
   `a_panic_ends_its_run_and_nothing_else`.
 - **State under concurrency**: `concurrent_runs_lose_no_update`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`, `redeploy_keeps_state`.

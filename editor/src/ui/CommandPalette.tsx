@@ -1,19 +1,24 @@
-// Ctrl+K (or /): everything there is to open and do, found by typing a few letters of it, and
-// `:` commands typed out (commands.ts). Up and Down pick, Enter does it, Esc closes.
+// Ctrl+K (or /): everything there is to open and do, found by typing a few letters of it, a run
+// by its number, and `:` commands typed out (commands.ts). Up and Down pick, Enter does it, Esc
+// closes.
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { COLON_HELP, parseColon, ranked, type ColonCommand, type Command } from "../commands";
+import { COLON_HELP, matches, parseColon, type ColonCommand, type Command } from "../commands";
 import { Kbd } from "./Kbd";
+import { useFocusTrap } from "./focusTrap";
 
 /** At most this many entries are shown: typing finds the rest. */
 const SHOWN = 60;
 
 export function CommandPalette({
   commands,
+  byNumber,
   onColon,
   onClose,
 }: {
   commands: Command[];
+  /** The runs a number typed names: that run of each deployed flow. */
+  byNumber?: (seq: number) => Command[];
   /** Do a `:` command; why it couldn't, else null. */
   onColon: (c: ColonCommand) => string | null;
   onClose: () => void;
@@ -21,11 +26,12 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [at, setAt] = useState(0);
   const [why, setWhy] = useState("");
+  const box = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
+  useFocusTrap(box, true, () => field.current);
   const list = useId();
   const colon = query.startsWith(":");
-  const shown = useMemo(() => (colon ? [] : ranked(commands, query).slice(0, SHOWN)), [commands, query, colon]);
-  useEffect(() => field.current?.focus(), []);
+  const shown = useMemo(() => (colon ? [] : matches(commands, query, byNumber).slice(0, SHOWN)), [commands, query, colon, byNumber]);
   useEffect(() => {
     setAt(0);
     setWhy("");
@@ -57,7 +63,7 @@ export function CommandPalette({
 
   return (
     <div className="hl-modal hl-modal--top" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="hl-modal__box hl-cmd" role="dialog" aria-modal="true" aria-label="command palette">
+      <div ref={box} className="hl-modal__box hl-cmd" role="dialog" aria-modal="true" aria-label="command palette">
         <input
           ref={field}
           className="hl-cmd__field"

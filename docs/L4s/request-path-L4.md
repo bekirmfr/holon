@@ -1533,7 +1533,10 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
     route declared cheap an amplifier. Its tally keeps the last failure's time, status and error.
 11. **Decided: the headline** "keeps a record of every run" (`README.md:3`) becomes "keeps a record
     of every run, on disk before it answers, except handlers a person approved as unrecorded, which
-    change nothing", in build step 9b, when unrecorded handlers exist.
+    change nothing", in build step 9b, when unrecorded handlers exist. *Changed 2026-11-13
+    (launch review B6): unrecorded handlers may write and call out since 8ece60b5, `lazy` ones
+    answer before their record is on disk, and a log keeps its newest runs; the headline is now
+    "keeps a record anyone can check", the README's third point says the rest.*
 12. **Decided: requests no route took are `lazy`.** A way to make them unrecorded (a policy
     setting, or a header such as `unrouted unrecorded`), so scanners' probes stay out of the log
     too, can come later.

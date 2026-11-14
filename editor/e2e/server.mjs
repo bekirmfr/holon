@@ -104,7 +104,7 @@ const trades = fresh ? null : await wsServer(join(folders, "trades"));
 const sqsKey = { id: "AKIAE2ESTANDIN", secret: "e2e-not-a-secret/sqs+key" };
 const sqs = fresh ? null : await sqsServer(join(folders, "sqs"), ["payout-events", "payout-retries.fifo"], sqsKey.id, sqsKey.secret);
 const sqsUrl = (queue) => `http://${sqsKey.id}:${encodeURIComponent(sqsKey.secret)}@127.0.0.1:${sqs}/000000000000/${queue}?region=e2e`;
-// Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
+// Its dotenv file (secret_sources.rs): the variables Settings offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,

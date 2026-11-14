@@ -111,7 +111,12 @@ fn gunzip_within(bytes: &[u8], mut budget: usize) -> Option<Vec<u8>> {
         if u32_at(rest, end)? != crc32(&data) || u32_at(rest, end + 4)? != data.len() as u32 {
             return None;
         }
-        out.extend(data);
+        // The first member's bytes are the output, not copied into it: one copy of up to
+        // MAX_INFLATED bytes, not two.
+        match out.is_empty() {
+            true => out = data,
+            false => out.extend(data),
+        }
         rest = &rest[end + 8..];
         if rest.is_empty() {
             return Some(out);

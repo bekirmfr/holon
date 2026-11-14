@@ -12,7 +12,7 @@
 use crate::{hash_unit, EncodeError, Hash, Unit};
 use std::collections::BTreeMap;
 
-use crate::{ModuleLimits, Value};
+use crate::{ModuleLimits, ModuleRun, Value};
 
 /// Turns a content hash into the unit it identifies.
 pub trait Resolver {
@@ -20,11 +20,12 @@ pub trait Resolver {
 
     /// Run a module body (docs/L4s/wasm-module-L4.md §5): the engine stays out of core, so a
     /// resolver that has one answers here, one output per declared port, or says why it can't
-    /// (out of fuel, a trap, an answer that doesn't decode). The default can't, which makes every
-    /// module absent with that reason: "this host runs no code" shows up as a flow that produces
-    /// nothing, never as a wrong answer. A wrapper over another resolver forwards.
-    fn run_module(&self, _bytes: &[u8], _limits: &ModuleLimits, _inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
-        Err("this host runs no code".into())
+    /// (out of fuel, a trap, an answer that doesn't decode), and what fuel the call burned either
+    /// way. The default can't, which makes every module absent with that reason: "this host runs
+    /// no code" shows up as a flow that produces nothing, never as a wrong answer. A wrapper over
+    /// another resolver forwards.
+    fn run_module(&self, _bytes: &[u8], _limits: &ModuleLimits, _inputs: &[Option<Value>]) -> ModuleRun {
+        ModuleRun::refused("this host runs no code")
     }
 
     /// The shape kept for `unit` (a composite this resolver handed out, found by the unit itself,

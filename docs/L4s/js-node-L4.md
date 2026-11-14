@@ -263,6 +263,10 @@ out of fuel (50M)".
   **nothing a flow of leaves would not**, beyond the two limits; and a host policy may cap them
   (`[limits] module_fuel = …`) as it caps request timeouts, refusing a deploy over the ceiling
   with the sentence `deploy` already uses for refusals.
+- A call's fuel bounds one call, not a round that calls a node per item: a round's calls draw on
+  one pool, `max_fuel` (a limit like `max_steps`), each running on its own budget or what is left,
+  and a round that wants more fails the run
+  (`docs/engineering/capabilities/js-node.md`, "Budgets and the manifest").
 
 ## 7. `check`, `explain`, the editor
 

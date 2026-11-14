@@ -7,7 +7,7 @@
 // apart from reading it; a deployment whose grant lacks it answers 500 and its log says why. A
 // hash or HMAC of a secret asks nothing more (see sign-payload).
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   maps_browser_key   the publishable key the page uses (6 characters or more)
 //
 // Try it: deploy it (its approval lists answering with the secret), set the key, then

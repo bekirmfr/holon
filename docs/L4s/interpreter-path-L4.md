@@ -32,7 +32,7 @@ values), and its share where it shows in a profile. "Per run" is per request unl
 |---|---|---|---|---|---|
 | 1 | Read the request: body, headers, `DataRequest` | dataplane.rs:267-292 | request | values | small |
 | 2 | CORS origin, under the table lock | listeners.rs:27-31 | request | deployment | small |
-| 3 | On the worker or the pool (`runs_here_for`): `match_route`, the label, the level, a cache | dataplane.rs:351-379 | request | unit (cached) | small |
+| 3 | On the worker or the pool (`runs_here_for`; gone since B5, every run on the pool): `match_route`, the label, the level, a cache | dataplane.rs:351-379 | request | unit (cached) | small |
 | 4 | Snapshot of the deployment under the table lock, **`d.server.clone()`** | listeners.rs:87-91 | request | deployment | small |
 | 5 | The closure from the flow cache | listeners.rs:98, units.rs:185-196 | request | unit (cached) | small |
 | 6 | A second `match_route`, for resumes | listeners.rs:112-127 | request | values | 0.8% (hello, both) |

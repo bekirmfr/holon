@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outside, runLabel, runOutcome } from "./runs";
+import { outside, runLabel, runOutcome, startedBy } from "./runs";
 import type { LogEntry } from "./server";
 
 const run = (over: Partial<LogEntry>): LogEntry => ({
@@ -42,5 +42,18 @@ describe("runs", () => {
     expect(runLabel(run({}))).toBe("GET /a");
     expect(runLabel(run({ route: null }))).toBe("GET /a (no route)");
     expect(runLabel(run({ kind: "tick", route: null }))).toBe("clock tick");
+  });
+
+  it("says who started a run: whoever ran it through the server, else what does on its own", () => {
+    expect(startedBy("trigger", "ada")).toBe("ada");
+    expect(startedBy("request", "claude")).toBe("claude");
+    expect(startedBy("request", undefined)).toBe("a request on its port");
+    expect(startedBy("tick", null)).toBe("its clock");
+    expect(startedBy("trigger", null)).toBe("its action (who ran it isn't on record)");
+  });
+
+  it("names a run another flow's run started by that run's first eight", () => {
+    const run = "68251d6b4058e2118585013a5ca37d32a88c49e7a3b6fed4b89c96acbd9b058a";
+    expect(startedBy("trigger", `flow approved-payout, run ${run}`)).toBe("flow approved-payout, run 68251d6b…");
   });
 });

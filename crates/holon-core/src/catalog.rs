@@ -155,6 +155,17 @@ pub const VARIADIC: &[&str] = &[
     "decimal_add", "decimal_mul",
 ];
 
+/// The leaves that ask the host (eval.rs's `Request`): an outbound call, a call to another flow, a
+/// durable run's waiting point and its token, and every collection, file and database read. Core
+/// never answers one; the host does, and a run's log records the answer, so a replay (the editor's
+/// View runs, eager evaluation) answers each from the record and never recomputes it. One list,
+/// here: eval.rs's `Request::of` is held to it by a test, eager.rs and the editor's replay read it.
+pub const ASKS_HOST: &[&str] = &[
+    "http_request", "http_upload", "http_stream", "flow_call", "flow_start", "await", "approval", "resume_token", "collection_get",
+    "collection_list", "file_read", "file_read_bytes", "file_list", "file_handle", "file_lines", "file_slice", "db_query", "db_one",
+    "db_find", "db_find_one",
+];
+
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
 /// more of the same port: the higher-order leaves, whose function rides their `fn` param.
 pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by", "group_by", "json_parse", "json_stringify"];

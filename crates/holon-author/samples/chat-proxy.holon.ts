@@ -5,9 +5,9 @@
 // once it ends, and stores the prompt with what was said. A call the API refuses (a bad key, a
 // limit) forwards nothing: the reply is the API's answer, with its status. POST /room sends the
 // answer's pieces to the channel room instead, for whoever watches GET /room/live. An answer has
-// the run's 25 seconds (run_budget_ms under the gear for longer ones).
+// the run's 25 seconds (run_budget_ms in Settings for longer ones).
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   anthropic_api_key   an Anthropic API key (sk-ant-...), from console.anthropic.com
 //
 // Try it: deploy it, open http://127.0.0.1:8127/ and ask something. Or

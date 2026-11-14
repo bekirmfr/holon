@@ -9,14 +9,16 @@
 //!    Other exports are ignored.
 //! 3. **Budgets.** `fuel` (instructions) and `memory` (bytes) are frozen params, so the same
 //!    module under two budgets is two units and a result's budget is part of its identity. An
-//!    open param (a template, `promote.rs`) and an absent one read as the default.
+//!    open param (a template, `promote.rs`) and an absent one read as the default. A round's
+//!    calls share one pool besides (`max_fuel`, [`crate::DEFAULT_MAX_FUEL`]): each runs on its
+//!    own fuel or what is left of that, the less (`Observer::take_fuel`).
 //!
 //! The parser walks only what it needs: the type, import, function, memory and export sections.
 //! Everything else (code, data, customs) is the engine's to validate when it loads the module.
 
 use std::collections::BTreeMap;
 
-use crate::{Param, Resolver, Unit, UnitBody};
+use crate::{Param, Resolver, Unit, UnitBody, Value};
 
 /// The fuel a module gets when its params don't say: enough for real code, done in milliseconds.
 pub const DEFAULT_MODULE_FUEL: u64 = 10_000_000;
@@ -41,6 +43,25 @@ pub struct ModuleLimits {
 impl Default for ModuleLimits {
     fn default() -> Self {
         ModuleLimits { fuel: DEFAULT_MODULE_FUEL, memory: DEFAULT_MODULE_MEMORY }
+    }
+}
+
+/// What a module call came to ([`Resolver::run_module`]): an output per declared port, or why
+/// there are none; and the fuel it burned, which a round that pools its modules' fuel is charged
+/// ([`crate::Observer::take_fuel`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleRun {
+    pub outputs: Result<Vec<Option<Value>>, String>,
+    /// Instructions it burned, whether it answered or not.
+    pub burned: u64,
+    /// Whether it stopped for want of fuel.
+    pub out_of_fuel: bool,
+}
+
+impl ModuleRun {
+    /// A call that never ran, for `reason`: nothing burned.
+    pub fn refused(reason: impl Into<String>) -> ModuleRun {
+        ModuleRun { outputs: Err(reason.into()), burned: 0, out_of_fuel: false }
     }
 }
 
@@ -405,13 +426,16 @@ mod tests {
         fn resolve(&self, hash: &Hash) -> Option<&Unit> {
             self.0.resolve(hash)
         }
-        fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
+        fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> ModuleRun {
             assert!(validate_module(bytes).is_ok());
             if limits.fuel < 10 {
-                return Err(format!("out of fuel ({} instructions)", limits.fuel));
+                return ModuleRun { outputs: Err(format!("out of fuel ({} instructions)", limits.fuel)), burned: limits.fuel, out_of_fuel: true };
             }
-            let (Some(Value::Number(a)), Some(Value::Number(b))) = (&inputs[0], &inputs[1]) else { return Err("not two numbers".into()) };
-            Ok(vec![Some(Value::Number(a + b)), Some(Value::List(vec![Value::Number(*a), Value::Number(*b)]))])
+            let outputs = match (&inputs[0], &inputs[1]) {
+                (Some(Value::Number(a)), Some(Value::Number(b))) => Ok(vec![Some(Value::Number(a + b)), Some(Value::List(vec![Value::Number(*a), Value::Number(*b)]))]),
+                _ => Err("not two numbers".into()),
+            };
+            ModuleRun { outputs, burned: 10, out_of_fuel: false }
         }
     }
 

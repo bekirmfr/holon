@@ -11,10 +11,64 @@
 //      HOLON_AUDIT_TRACE=1 names each evaluation before it runs, so the last one named is the one
 //      that overflowed the stack (which aborts the process before any report).
 
-use holon_core::{capabilities_of, encode_value, eval, hash_unit, hex, interface_of, Edge, EncodeError, MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY, FAMILIES, GENESIS, MAX_VALUE_DEPTH, PASSES_EXTRA};
+use holon_core::{capabilities_of, encode_value, eval, hash_unit, hex, interface_of, Edge, EncodeError, MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY, FAMILIES, GENESIS, MAX_BYTES, MAX_ITEMS, MAX_TEXT, MAX_VALUE_DEPTH, PASSES_EXTRA};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
+
+/// Counts what each thread holds and the most it has held, as `holon_core::memory::Counting`
+/// does, and refuses (the process aborts, naming the size) an allocation past what a thread may
+/// hold (`MOST`): what the memory sweep measures each leaf with, a leaf that would make
+/// gigabytes stopped before it does.
+struct Peak;
+thread_local! {
+    static HELD: Cell<i64> = const { Cell::new(0) };
+    static PEAK: Cell<i64> = const { Cell::new(0) };
+    static MOST: Cell<i64> = const { Cell::new(i64::MAX) };
+}
+fn grow(bytes: i64) -> bool {
+    HELD.try_with(|held| {
+        let now = held.get() + bytes;
+        if bytes > 0 && now > MOST.with(Cell::get) {
+            return false;
+        }
+        held.set(now);
+        PEAK.with(|peak| peak.set(peak.get().max(now)));
+        true
+    })
+    .unwrap_or(true)
+}
+unsafe impl GlobalAlloc for Peak {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if !grow(layout.size() as i64) {
+            return std::ptr::null_mut();
+        }
+        let p = unsafe { System.alloc(layout) };
+        if p.is_null() {
+            grow(-(layout.size() as i64));
+        }
+        p
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        grow(-(layout.size() as i64));
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let more = new_size as i64 - layout.size() as i64;
+        if !grow(more) {
+            return std::ptr::null_mut();
+        }
+        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        if p.is_null() {
+            grow(-more);
+        }
+        p
+    }
+}
+#[global_allocator]
+static ALLOCATOR: Peak = Peak;
 
 struct Rng(u64);
 impl Rng {
@@ -381,4 +435,205 @@ fn sweep() -> Vec<String> {
         println!("  {took:>10.2?}  {what}");
     }
     found
+}
+
+/// The bytes `v` holds on the heap, as its representation lays it out: a list's items and a
+/// record's entries each a value wide, and what each holds besides.
+fn deep(v: &Value) -> usize {
+    const WIDE: usize = std::mem::size_of::<Value>();
+    match v {
+        Value::Text(s) => s.len(),
+        Value::Bytes(b) => b.len(),
+        Value::List(xs) => xs.iter().map(|x| WIDE + deep(x)).sum(),
+        Value::Record(fs) => fs.iter().map(|(k, x)| k.len() + 3 * WIDE + deep(x)).sum(),
+        Value::Sum { payload, .. } | Value::Effect { payload, .. } => WIDE + deep(payload),
+        _ => 0,
+    }
+}
+
+/// Values as large as a request's or a file's, and the counts and separators a leaf makes many of
+/// them with: texts of 64 KiB of each kind a leaf makes more of (three-byte characters, one that
+/// normalizes to eighteen, controls JSON escapes, commas, JSON, XML, `ß` that upper-cases to two),
+/// bytes, lists and a record as large, a gzip and a zip that inflate to the most they may, and
+/// the counts (up to `MAX_TEXT`) and separators a leaf repeats.
+fn large() -> Vec<Value> {
+    let n = 1 << 16;
+    let json = format!("[{}0]", "0,".repeat(n / 2));
+    let xml = format!("<a>{}</a>", "<b/>".repeat(n / 4));
+    let made = |leaf: &str, input: Value| holon_core::primitives::compute(leaf, &[&input], &[]).unwrap_or_else(|| panic!("{leaf}"));
+    vec![
+        txt(&"a".repeat(n)),
+        txt(&"\u{20ac}".repeat(n / 3)),
+        txt(&"\u{fdfa}".repeat(n / 3)),
+        txt(&"\u{0}".repeat(n)),
+        txt(&",".repeat(n)),
+        txt(&"a,".repeat(n / 2)),
+        txt(&json),
+        txt(&xml),
+        txt(&"\u{df}".repeat(n / 2)),
+        Value::Bytes(vec![0; n]),
+        Value::Bytes(vec![0xff; n]),
+        made("gzip", Value::Bytes(vec![0; MAX_BYTES])),
+        made("zip", rec(&[("a", Value::Bytes(vec![0; MAX_BYTES]))])),
+        Value::List((0..n / 16).map(|i| num(i as f64)).collect()),
+        Value::List((0..64).map(|i| txt(&format!("{i}").repeat(64))).collect()),
+        Value::List((0..64).map(|i| Value::List(vec![num(i as f64); 64])).collect()),
+        Value::Record((0..n / 32).map(|i| (format!("k{i}"), num(i as f64))).collect()),
+        // Small: what a leaf repeats, joins or counts by.
+        txt(""),
+        txt(","),
+        txt("ab"),
+        txt(&"x".repeat(4096)),
+        num(0.0),
+        num(1.0),
+        num(3.0),
+        num(1000.0),
+        num(65536.0),
+        num(MAX_TEXT as f64),
+        num(1e9),
+        Value::Boolean(true),
+        Value::List(vec![]),
+        rec(&[]),
+    ]
+}
+
+/// What a step of a leaf may make beyond its inputs: sixteen times what it is handed, and a
+/// little (a table, a buffer).
+const TIMES: usize = 16;
+const SLACK: usize = 64 << 10;
+
+/// The leaves that make more from what they are handed, each with the most it makes, which a bound
+/// of its own sets (`no_leaf_makes_a_value_past_the_most_one_may_be` in primitives.rs holds them to
+/// it at that bound; gzip's and zip's are compress.rs's).
+fn allowance(leaf: &str) -> usize {
+    match leaf {
+        // A text of a count, a separator or a replacement: up to MAX_TEXT units, three bytes each.
+        "pad" | "repeat" | "replace" | "join" => 3 * MAX_TEXT,
+        // Copies of a value, or bytes inflated: up to MAX_BYTES.
+        "fill" | "gunzip" | "unzip" => MAX_BYTES,
+        // Values read out of one text or bytes: up to MAX_ITEMS, a hundred bytes or so each while
+        // they are read.
+        "split" | "json_parse" | "csv_parse" | "xml_parse" | "bytes_to_list" => 128 * MAX_ITEMS,
+        _ => 0,
+    }
+}
+
+/// Measures what each step of an evaluation makes: the most the thread came to hold, from what it
+/// held as the step began, until the next step began. A step at a time (`take_steps` gives one),
+/// so a higher-order leaf's applications are each measured, as a host checks each.
+struct PerStep {
+    /// What the thread held as the step began.
+    from: i64,
+    /// The most a step made.
+    most: i64,
+}
+impl PerStep {
+    fn new() -> PerStep {
+        let from = HELD.with(Cell::get);
+        PEAK.with(|p| p.set(from));
+        PerStep { from, most: 0 }
+    }
+    /// Ends the step under way: what it made counted, and the next one begins.
+    fn end(&mut self) -> i64 {
+        let held = HELD.with(Cell::get);
+        self.most = self.most.max(PEAK.with(Cell::get) - self.from);
+        self.from = held;
+        PEAK.with(|p| p.set(held));
+        self.most
+    }
+}
+impl holon_core::Observer for PerStep {
+    fn step(&mut self) -> bool {
+        self.end();
+        true
+    }
+}
+
+/// Input sets for a leaf of `n` inputs over `pool`: each value alone and every pair, as
+/// [`input_sets`]; past two, every pair of values at every pair of ports, the other ports drawn.
+fn sets_of_large(n: usize, pool: &[Value], rng: &mut Rng) -> Vec<Vec<Option<Value>>> {
+    if n < 3 {
+        return input_sets(n, pool, rng);
+    }
+    let mut sets = Vec::new();
+    for a in 0..n {
+        for b in a + 1..n {
+            for x in pool {
+                for y in pool {
+                    let mut set: Vec<Option<Value>> = (0..n).map(|_| Some(pool[rng.below(pool.len())].clone())).collect();
+                    set[a] = Some(x.clone());
+                    set[b] = Some(y.clone());
+                    sets.push(set);
+                }
+            }
+        }
+    }
+    sets
+}
+
+/// What each pure leaf makes at most in one step, over [`large`] values, and what it was handed:
+/// the worst of each leaf.
+fn sweep_memory() -> Vec<(String, usize, usize, String)> {
+    let mut r = MapResolver::new();
+    let fns = functions(&mut r);
+    let pool = large();
+    let mut rng = Rng(0x1f83_d9ab_fb41_bd6b);
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut worst = Vec::new();
+    for (label, unit) in variants(&fns) {
+        let name = match &unit.body {
+            UnitBody::Primitive { name } => name.clone(),
+            _ => unreachable!(),
+        };
+        let mut most = (0usize, 0usize, String::new());
+        for inputs in sets_of_large(unit.inputs.len(), &pool, &mut rng) {
+            if std::env::var_os("HOLON_AUDIT_TRACE").is_some() {
+                eprintln!("{label} <- {}", inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", "));
+            }
+            let given: usize = inputs.iter().flatten().map(deep).sum();
+            let mut steps = PerStep::new();
+            MOST.with(|m| m.set(HELD.with(Cell::get) + (1 << 30)));
+            let out = catch_unwind(AssertUnwindSafe(|| holon_core::eval_observed(&unit, &inputs, &r, &mut steps).into_vec()));
+            let made = steps.end().max(0) as usize;
+            MOST.with(|m| m.set(i64::MAX));
+            drop(out);
+            if made > most.0 {
+                let shown = inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", ");
+                most = (made, given, shown);
+            }
+        }
+        worst.push((name, most.0, most.1, format!("{label} ({})", most.2)));
+    }
+    std::panic::set_hook(hook);
+    worst.sort_by_key(|w| std::cmp::Reverse(w.1));
+    worst
+}
+
+/// **Guards:** no step of any pure leaf, in any form its parameters give it, over large values alone,
+/// in pairs and at every pair of its ports, makes more than sixteen times what it is handed (and
+/// 64 KiB), except the leaves named with the bound that holds what they make (`allowance`). A step
+/// is measured from its start to the next's, so a higher-order leaf's applications are each one.
+///
+/// **Why:** a round's memory (`max_memory`) is looked at before each step, so what one step makes
+/// is what a round may hold past it. A leaf that makes far more than it is handed, a value copied
+/// into each of many items or a separator between them, makes gigabytes of a request's megabytes
+/// in one step, and the process aborts, taking every deployment with it.
+///
+/// **If it fails:** the report names each leaf, what it made and what it was handed. Bound what it
+/// makes before it makes it (as `sized` in primitives.rs does), and name it with that bound here;
+/// a leaf that makes some multiple of its input more than this is checked for a bound of its own
+/// too.
+#[test]
+fn no_step_of_a_pure_leaf_makes_more_than_sixteen_times_what_it_is_handed_or_its_bound() {
+    let worst = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(sweep_memory).unwrap().join().unwrap();
+    for (_, made, given, what) in worst.iter().take(12) {
+        println!("{:>8.1} MiB  given {:>8.1} KiB  {what}", *made as f64 / 1048576.0, *given as f64 / 1024.0);
+    }
+    let over: Vec<String> = worst
+        .iter()
+        .filter(|(leaf, made, given, _)| *made > TIMES * given + SLACK + allowance(leaf))
+        .map(|(_, made, given, what)| format!("{what}: made {made} bytes, handed {given}"))
+        .collect();
+    assert!(over.is_empty(), "{} leaves made more than their bound in a step:\n{}", over.len(), over.join("\n"));
 }

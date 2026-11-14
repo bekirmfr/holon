@@ -8,7 +8,7 @@
 // send it. That call answers {status: 0, error: "blocked_secret"}, naming the secret, never its
 // value; `holon verify` on an export checks every request that carried it went where it was shown.
 //
-// Before it works, set its secret under the deployment's settings (the gear):
+// Before it works, set its secret in the flow's Settings:
 //   demo_key   any made-up value (6 characters or more); it is sent to httpbin.dev
 //
 // Try it: deploy it, set the key, then

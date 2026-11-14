@@ -3,7 +3,7 @@
 // item reaches, through the binding that deployment sees: its own binding of the name, else the
 // server's (folders.rs's, databases.rs's, mails.rs's, feeds.rs's and queues.rs's `resolve`).
 
-import type { HeldGrant } from "./server";
+import type { HeldGrant, Proposal } from "./server";
 
 /** A folder's, database's, mail's, feed's or queue's binding: its name, for the server (`deployment` null) or one deployment. */
 export type Binding = { name: string; deployment: string | null };
@@ -76,6 +76,71 @@ export function holdersOf(kind: Kind, binding: Binding, bindings: Binding[], hel
     if (uses.length > 0) holders.push({ slug: d.slug, status: d.status, attention: d.attention, uses });
   }
   return holders;
+}
+
+/** A version waiting for a person (a proposal) that would reach a resource: its flow, the number it
+ *  would be, and what it would add (web-console-L4.md §9.1), read from what it asks to be approved. */
+export type Waiting = { slug: string; version: number | null; uses: Use[] };
+
+/** The waiting versions that would reach `binding` (a `kind`), and how: each proposal's items that
+ *  name it, through the binding its flow would see by that name. What it holds already isn't
+ *  among them: a proposal asks only for what is new. */
+export function waitingFor(kind: Kind, binding: Binding, bindings: Binding[], proposals: Proposal[]): Waiting[] {
+  const out: Waiting[] = [];
+  for (const p of proposals) {
+    if (p.state !== "waiting") continue;
+    const uses: Use[] = [];
+    for (const item of p.needs) {
+      const r = reaches(item);
+      if (!r || r.kind !== kind || r.name !== binding.name) continue;
+      const seen = seenBy(bindings, r.name, p.slug);
+      if (seen && same(seen, binding)) uses.push({ use: r.use, table: r.table, revoked: false, item });
+    }
+    if (uses.length > 0) out.push({ slug: p.slug, version: p.version ?? null, uses });
+  }
+  return out;
+}
+
+/** The deployments whose grants read the secret `name`, and the waiting versions that would where
+ *  theirs doesn't now (an agent's version asks again for a secret its flow reads: agents' deploys
+ *  leave secrets out, for a person to grant back). */
+export function secretReaders(name: string, held: HeldGrant[], proposals: Proposal[]): { now: string[]; waiting: { slug: string; version: number | null }[] } {
+  const reads = (items: string[]) => items.some((i) => {
+    const { kind, arg } = itemParts(i);
+    return kind === "SecretRead" && arg === name;
+  });
+  const now = held.filter((d) => reads(d.items)).map((d) => d.slug);
+  return { now, waiting: proposals.filter((p) => p.state === "waiting" && reads(p.needs) && !now.includes(p.slug)).map((p) => ({ slug: p.slug, version: p.version ?? null })) };
+}
+
+/** A database's matrix (§9.1): its tables down, the flows that use it across, and in each cell
+ *  what a flow does with that table now and what a waiting version would add. A table no flow
+ *  names is a row of its own, empty; a use of no table in particular (`DbRead("shop")`) is the
+ *  row `null`. */
+export type MatrixCell = { now: ("read" | "write")[]; waiting: ("read" | "write")[]; revoked: boolean };
+export type Matrix = { flows: { slug: string; version: number | null; waiting: boolean }[]; rows: { table: string | null; cells: MatrixCell[] }[] };
+
+export function databaseMatrix(tables: string[], holders: Holder[], waiting: Waiting[]): Matrix {
+  const flows = [
+    ...holders.map((h) => ({ slug: h.slug, version: null as number | null, waiting: false })),
+    ...waiting.filter((w) => !holders.some((h) => h.slug === w.slug)).map((w) => ({ slug: w.slug, version: w.version, waiting: true })),
+  ];
+  for (const f of flows) f.version = waiting.find((w) => w.slug === f.slug)?.version ?? f.version;
+  const named = [...holders.flatMap((h) => h.uses), ...waiting.flatMap((w) => w.uses)].map((u) => u.table);
+  const all: (string | null)[] = [...new Set([...tables, ...named.filter((t): t is string => t !== null)])].sort();
+  if (named.includes(null)) all.unshift(null);
+  const verbs = (uses: Use[], table: string | null) => (["read", "write"] as const).filter((v) => uses.some((u) => u.table === table && u.use === v));
+  const rows = all.map((table) => ({
+    table,
+    cells: flows.map((f) => {
+      const uses = holders.find((h) => h.slug === f.slug)?.uses ?? [];
+      const live = uses.filter((u) => !u.revoked);
+      const now = verbs(live, table);
+      const would = verbs(waiting.find((w) => w.slug === f.slug)?.uses ?? [], table).filter((v) => !now.includes(v));
+      return { now, waiting: would, revoked: now.length === 0 && verbs(uses, table).length > 0 };
+    }),
+  }));
+  return { flows, rows };
 }
 
 /** Every other item held, by item, with who holds it: a host called, a secret read, a state

@@ -2854,6 +2854,7 @@ nothing.
   route took is `lazy` (request-path Q12).
 - **Some routes run inline,** on the async worker instead of the blocking pool: only those that
   read nothing but `NetworkIngress`, the clock and randomness (`READS_HERE`, `dataplane.rs` 381).
+  (None since B5: every run goes to the pool.)
   A file read isn't among them (resilience-audit R2 took collection reads out for the same
   reason: a disk can be slow).
 

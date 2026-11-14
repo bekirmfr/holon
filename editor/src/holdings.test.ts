@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { holdersOf, itemParts, kindsHeld, othersHeld, reaches, seenBy, usesText } from "./holdings";
-import type { HeldGrant } from "./server";
+import { databaseMatrix, holdersOf, itemParts, kindsHeld, othersHeld, reaches, secretReaders, seenBy, usesText, waitingFor } from "./holdings";
+import type { HeldGrant, Proposal } from "./server";
 
 const held: HeldGrant[] = [
   {
@@ -108,5 +108,43 @@ describe("who holds what", () => {
     // A queue no binding answers is among the others.
     expect(othersHeld(held, [], [], [], [], queues).map((o) => [o.item, o.kind])).toEqual([['QueueSend("audit")', "queues"]]);
     expect(kindsHeld(held)).toEqual(["queues"]);
+  });
+
+  it("reads what a version waiting for a person would add, through the binding its flow would see", () => {
+    const proposals: Proposal[] = [
+      { id: 7, slug: "orders-api", unit: "u", why: "", agent: true, at_ms: 0, version: 5, state: "waiting", needs: ['DbWrite("shop/refunds")', 'SecretRead("stripe_key")'] },
+      { id: 8, slug: "stock-sheet", unit: "u", why: "", agent: false, at_ms: 0, version: 1, state: "waiting", needs: ['DbWrite("shop/stock")', 'DbRead("shop")'] },
+      // Its own "shop": not the server's.
+      { id: 9, slug: "audit", unit: "u", why: "", agent: true, at_ms: 0, version: 3, state: "waiting", needs: ['DbWrite("shop/orders")'] },
+      { id: 10, slug: "gone", unit: "u", why: "", agent: true, at_ms: 0, state: "declined", needs: ['DbWrite("shop/orders")', 'SecretRead("stripe_key")'] },
+    ];
+    const waiting = waitingFor("database", databases[0], databases, proposals);
+    expect(waiting.map((w) => [w.slug, w.version, usesText(w.uses).map((u) => u.text)])).toEqual([
+      ["orders-api", 5, ["writes refunds"]],
+      ["stock-sheet", 1, ["reads", "writes stock"]],
+    ]);
+    expect(waitingFor("database", databases[1], databases, proposals).map((w) => w.slug)).toEqual(["audit"]);
+
+    // The matrix: tables down (those read from the database, and those the flows name), flows
+    // across; a waiting version's cells say what it would add, a revoked use says so.
+    const m = databaseMatrix(["orders", "refunds", "stock", "customers"], holdersOf("database", databases[0], databases, held), waiting);
+    expect(m.flows).toEqual([
+      { slug: "orders-api", version: 5, waiting: false },
+      { slug: "stock-sheet", version: 1, waiting: true },
+    ]);
+    const cells = Object.fromEntries(m.rows.map((r) => [r.table ?? "*", r.cells.map((c) => [c.now.join("+"), c.waiting.join("+"), c.revoked])]));
+    expect(cells).toEqual({
+      "*": [["", "", false], ["", "read", false]],
+      customers: [["", "", false], ["", "", false]],
+      orders: [["read+write", "", false], ["", "", false]],
+      refunds: [["read", "write", false], ["", "", false]],
+      stock: [["", "", false], ["", "write", false]],
+    });
+
+    // Who reads a secret now, and which waiting versions would.
+    expect(secretReaders("key", held, proposals)).toEqual({ now: ["drop-box"], waiting: [] });
+    expect(secretReaders("stripe_key", held, proposals)).toEqual({ now: [], waiting: [{ slug: "orders-api", version: 5 }] });
+    // One its flow reads now isn't said again.
+    expect(secretReaders("key", held, [{ ...proposals[0], slug: "drop-box", needs: ['SecretRead("key")'] }])).toEqual({ now: ["drop-box"], waiting: [] });
   });
 });

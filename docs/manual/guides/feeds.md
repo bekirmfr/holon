@@ -293,7 +293,7 @@ create or replace trigger entries_notify after insert on entries for each row
 
 ## Its state
 
-The server panel lists each feed handler with what its connection is doing: `connected, at 41`
+The editor's Try a request lists each feed handler with what its connection is doing: `connected, at 41`
 (the last event run on), or `reconnecting: <why>`, how many events wait, and, since its
 connection opened, how many newer ones replaced (`latest`), the full buffer dropped (`skip`) and
 `--only` passed over, and how many numbers the feed skipped (`--sequence`): `connected, at

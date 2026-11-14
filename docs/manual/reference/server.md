@@ -430,7 +430,7 @@ sign-in of theirs at the provider still is one.
 
 ## Secrets
 
-Secrets are set per deployment, by an admin, in the editor (**⚙ → secrets**); see
+Secrets are set per deployment, by an admin, in the editor (**Settings → secrets**); see
 [Deploying](../guides/deploying.md#secrets). The server keeps them in `secrets.json`, each value
 sealed with AES-256-GCM, the deployment, name and version bound in.
 

@@ -51,6 +51,35 @@ export async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** A new untitled draft from the menu, once its tab is the one shown. New opens the tab a render
+ *  after the click (App.tsx's pendingNew), so a step taken at once can act on the tab shown before
+ *  it: a click on its canvas level acts on that tab's, not the draft's. The draft is the tab
+ *  shown, untitled, and with the tab bar shown before it, one tab more than there was. */
+export async function newFlow(page: Page) {
+  const tabs = page.getByRole("tablist", { name: "open tabs" }).locator(".hl-tab:not(.hl-tab--home)");
+  const before = await tabs.count();
+  await gotoPage(page, "new");
+  if (before > 0) await expect(tabs).toHaveCount(before + 1);
+  await expect(page.locator(".hl-tab--active")).toContainText("untitled");
+}
+
+/** The canvas at its Nodes level, the nodes the flow runs (web-console-L4.md §5.2): where a flow
+ *  opens, unless this browser kept another level for it. Pressed as such: beside the text and the
+ *  Inspector at the tests' width, the canvas's head can lie under another pane's edge. */
+export async function nodesLevel(page: Page) {
+  const nodes = page.locator(".hl-canvas").getByRole("group", { name: "canvas level" }).getByRole("button", { name: "Nodes", exact: true });
+  await nodes.dispatchEvent("click");
+  await expect(nodes).toHaveAttribute("aria-pressed", "true");
+}
+
+/** The canvas at its Statements, a read-only view of the nodes: the statement graph of its text.
+ *  Pressed as `nodesLevel` presses. */
+export async function statementsLevel(page: Page) {
+  const statements = page.locator(".hl-canvas").getByRole("group", { name: "read-only views" }).getByRole("button", { name: "Statements", exact: true });
+  await statements.dispatchEvent("click");
+  await expect(statements).toHaveAttribute("aria-pressed", "true");
+}
+
 /** The Flows page's row of the flow `name`, saved or deployed. */
 export function flowRow(page: Page, name: string): Locator {
   return page.getByRole("region", { name: "flows" }).getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
@@ -75,21 +104,28 @@ export async function still(locator: Locator) {
     .toBe(true);
 }
 
-/** Open the deployment settings panel if it is closed. */
+/** The deployment settings: the bottom pane's Settings tab, in Edit. */
+export function deploySettings(page: Page): Locator {
+  return page.getByRole("tabpanel", { name: "Deployment settings" });
+}
+
+/** Show the deployment settings: the bottom pane (shown if hidden), on its Settings tab. */
 export async function openDeployPanel(page: Page) {
-  const panel = page.getByRole("complementary", { name: "Deployment settings" });
+  const panel = deploySettings(page);
   if (!(await panel.isVisible())) {
-    await page.getByRole("button", { name: "open deployment settings" }).click();
+    const off = page.locator(".hl-canvas").getByRole("button", { name: "open the bottom pane" });
+    if (await off.isVisible()) await off.dispatchEvent("click");
+    await page.getByRole("region", { name: "bottom" }).getByRole("tab", { name: "Settings" }).dispatchEvent("click");
     await panel.waitFor({ state: "visible", timeout: 5_000 });
   }
 }
 
-/** Deploy the open flow through the deployment settings panel and the consent screen; its port
+/** Deploy the open flow through its deployment settings and the consent screen; its port
  *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
  *  panel. Answers the port it serves on (null for a flow without routes). */
 export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
@@ -108,11 +144,11 @@ export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Loc
   return port;
 }
 
-/** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
- *  its port. */
+/** Wait until text typed into the Text pane has compiled: its deployment settings then say its
+ *  port. */
 export async function settingsSayPort(page: Page, port: string) {
   await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const settings = deploySettings(page);
   await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
 

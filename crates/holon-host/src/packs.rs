@@ -489,24 +489,33 @@ mod tests {
         packs.pack(&vs).unwrap();
         let gone: std::collections::HashSet<Hash> = vs.iter().step_by(2).map(|(h, _)| *h).collect();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let read = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader = {
-            let (packs, stop, kept) = (Arc::clone(&packs), Arc::clone(&stop), vs.iter().skip(1).step_by(2).map(|(h, _)| *h).collect::<Vec<_>>());
+            let (packs, stop, read, kept) = (Arc::clone(&packs), Arc::clone(&stop), Arc::clone(&read), vs.iter().skip(1).step_by(2).map(|(h, _)| *h).collect::<Vec<_>>());
             std::thread::spawn(move || {
-                let mut reads = 0u64;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     for h in kept.iter().step_by(97) {
                         assert!(packs.get(h).unwrap().is_some(), "a value it keeps is read throughout");
-                        reads += 1;
+                        read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                reads
             })
         };
-        // The one put again between the look and the rewrite: the first of those gone.
+        // The one put again between the look and the rewrite: the first of those gone. Settling
+        // waits for a read once the new pack is written, so reads come during the rewrite however
+        // the threads are scheduled (unless the reader stopped, failing).
         let again = vs[0].0;
-        let (removed, _) = packs.rewrite(&gone, || ((), [again].into_iter().collect())).unwrap();
+        let settle = || {
+            let from = read.load(std::sync::atomic::Ordering::Relaxed);
+            while read.load(std::sync::atomic::Ordering::Relaxed) == from && !reader.is_finished() {
+                std::thread::yield_now();
+            }
+            ((), [again].into_iter().collect())
+        };
+        let (removed, _) = packs.rewrite(&gone, settle).unwrap();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(reader.join().unwrap() > 0);
+        reader.join().unwrap();
+        assert!(read.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert_eq!(removed, gone.len() - 1);
         assert_eq!(packs.get(&again).unwrap().as_deref(), Some(&vs[0].1[..]), "put again: kept");
         assert_eq!(packs.get(&vs[2].0).unwrap(), None, "gone");

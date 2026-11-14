@@ -6,9 +6,10 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { DiffLine } from "./diff";
+import { diffCounts, type DiffLine } from "./diff";
 import { diffHunk } from "./hunks";
 import { Review } from "./Review";
+import { useFocusTrap } from "./ui/focusTrap";
 
 /** One part of a dry run's diff: `lines` from what is there now ("-") to what it would be ("+"),
  *  `legend` saying which is which; `whole` shows every line (a grant's few items), else unchanged
@@ -19,6 +20,10 @@ export type Diff = { title: string; legend: string; lines: DiffLine[]; whole?: b
  *  the button that does it. `diffs` works out the diff, shown as soon as it is there. */
 export type DryRunReport = {
   title: string;
+  /** It in a few tagged lines, first (a restore's code, grant, state and runs since). */
+  summary?: { tag: string; line: string }[];
+  /** What it leaves as it is, by design: shown as a banner. */
+  banner?: string[];
   changes?: string[];
   sections: { heading: string; lines: string[] }[];
   /** What it needs approved (a restored version's permissions), in words. */
@@ -45,7 +50,9 @@ export function useDryRun(): { ask: (report: DryRunReport) => Promise<boolean>; 
 const heading = { color: "var(--accent)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" } as const;
 
 function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: boolean) => void }) {
+  const box = useRef<HTMLDivElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
+  useFocusTrap(box, true, () => ok.current);
   const [diff, setDiff] = useState<{ diffs?: Diff[]; error?: string }>({});
   useEffect(() => {
     let live = true;
@@ -58,7 +65,6 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
     };
   }, [report]);
   useEffect(() => {
-    ok.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose(false);
     };
@@ -70,6 +76,7 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
   const changes = report.changes ?? [];
   return (
     <div
+      ref={box}
       role="dialog"
       aria-modal="true"
       aria-label="dry run"
@@ -99,6 +106,31 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
         </div>
         <div style={{ color: "var(--faint)" }}>Nothing has changed yet: this is what it would do.</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: "65vh", overflowY: "auto" }}>
+          {(report.summary ?? []).length > 0 && (
+            <dl className="hl-dryrun__summary" aria-label="summary">
+              {(report.summary ?? []).map((s) => {
+                const code = s.tag === "code" ? diff.diffs?.find((d) => d.title === "code") : undefined;
+                const n = code ? diffCounts(code.lines) : null;
+                return (
+                  <div key={s.tag}>
+                    <dt>{s.tag}</dt>
+                    <dd>
+                      {s.line}
+                      {n && n.added + n.removed > 0 ? ` · +${n.added} −${n.removed} lines` : n ? " · the same text" : ""}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          )}
+          {(report.banner ?? []).length > 0 && (
+            <div className="hl-dryrun__banner" role="note">
+              <strong>Not put back, by design</strong>
+              {(report.banner ?? []).map((b) => (
+                <span key={b}>{b}</span>
+              ))}
+            </div>
+          )}
           {changes.length > 0 && (
             <div className="hl-dryrun__changes" style={{ display: "flex", flexDirection: "column", gap: 3, background: "var(--surface)", borderRadius: 4, padding: "8px 10px" }}>
               <span style={heading}>what it changes</span>

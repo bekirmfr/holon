@@ -624,7 +624,7 @@ fn steps_of(document: &Value, entry: &Value, line_of: &HashMap<&str, u32>) -> Ve
 
 const GUIDE: &str = r#"Holon: flows written as text, in TypeScript's syntax. A flow is a small service (routes, clocks,
 actions), built from pure parts. Holon derives what it may do from the text itself, runs only what
-is granted, and keeps a record of every run that replays exactly.
+is granted, and keeps a record of its runs, each of which replays exactly.
 
 A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import { flow, route, status } from "holon"   the vocabulary (flow, route, every, on, action, js,

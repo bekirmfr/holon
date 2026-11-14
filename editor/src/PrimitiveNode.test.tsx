@@ -106,3 +106,35 @@ describe("a node in view mode", () => {
     expect([...off.querySelectorAll("[data-overlay]")].some((o) => o.textContent === "{2 fields}")).toBe(false);
   });
 });
+
+describe("a node's params", () => {
+  const node = (inputs: PrimitiveData["inputs"]): PrimitiveData => ({
+    name: "request",
+    // A template, as the request is: its params' choices need no wasm.
+    body: { kind: "Template" },
+    inputs,
+    outputs: [{ name: "request", ty: "Record" }],
+    params: [
+      { name: "method", kind: "Frozen", value: "GET" },
+      { name: "path", kind: "Frozen", value: "/last" },
+      { name: "taint", kind: "Open" },
+    ] as PrimitiveData["params"],
+    variadic: false,
+    minInputs: 0,
+  });
+
+  it("sit beside the outputs when it has no inputs, and above the ports when it has", () => {
+    const source = render(node([]));
+    expect(source.querySelector(".hl-node__col--in > .hl-node__params")).not.toBeNull();
+    expect(source.querySelectorAll(".hl-node__params")).toHaveLength(1);
+    const fed = render(node([{ name: "a", ty: "Text" }]));
+    expect(fed.querySelector(".hl-node__col--in > .hl-node__params")).toBeNull();
+    expect(fed.querySelector(":scope > .hl-node__params")).not.toBeNull();
+  });
+
+  it("are one to a row: each a name and its field, two cells of the grid", () => {
+    const grid = render(node([])).querySelector(".hl-node__params")!;
+    const cells = [...grid.querySelectorAll(".hl-node__param")].map((p) => [...p.childNodes].filter((c) => c.textContent?.trim() || c instanceof HTMLElement).length);
+    expect(cells).toEqual([2, 2, 2]);
+  });
+});

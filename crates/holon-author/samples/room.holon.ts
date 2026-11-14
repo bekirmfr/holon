@@ -5,7 +5,7 @@
 // pack sent on it reaches every page in the room. Each text a page sends runs message: it is said
 // to the room under its sender's name. When a page goes, close runs once: the flow forgets them
 // and tells the room. A page from another site can't open one, and each connection may send ten
-// messages a second (limits, under ⚙).
+// messages a second (limits, in Settings).
 //
 // Try it: deploy it, open http://127.0.0.1:8132/ in two browsers, join under two names and say
 // something in one: it shows in both; close one and the other says who left.

@@ -11,7 +11,7 @@
 // Its approval says where each secret goes: "read the secret slack_webhook_path, and send it to
 // https://hooks.slack.com". The Stripe secret only checks a signature, so it is sent nowhere.
 //
-// Before it works, set its two secrets under the deployment's settings (the gear):
+// Before it works, set its two secrets in the flow's Settings:
 //   stripe_webhook_secret   the endpoint's signing secret from Stripe (whsec_...)
 //   slack_webhook_path      your Slack incoming webhook's path (/services/...)
 //
