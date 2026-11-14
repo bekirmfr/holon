@@ -356,9 +356,14 @@ sealed with XChaCha20-Poly1305, the deployment, name and version bound in.
 
 ### The root key
 
-What the server seals in its data folder (secret values, and what a waiting run keeps) is sealed
-under data keys kept in `keys.json`, each wrapped by one root key, which is never in the folder.
-`--root-key` says where it is:
+What the server seals in its data folder is sealed under data keys kept in `keys.json`, each
+wrapped by one root key, which is never in the folder: secret values, what a waiting run keeps,
+and every table: the deployments, saved flows and their proposals, the secrets file itself, the
+accounts, `access.json` and each line of its history, the folders, databases, mails, queues and
+feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and folders. Each is
+sealed for what it is, so one is never read as another, and a plain file where a sealed one
+belongs is refused, not read. `keys.json` is the one kept as it is. `--root-key` says where the
+root is:
 
 | Value | |
 |---|---|

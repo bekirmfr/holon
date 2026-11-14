@@ -80,10 +80,9 @@ impl Proposals {
         let path = flows_path.beside("proposals.json").map(PathBuf::from);
         let kept = match &path {
             None => Vec::new(),
-            Some(p) => match std::fs::read(p) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{p:?} is not valid proposals JSON: {e}"))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(format!("could not read {p:?}: {e}")),
+            Some(p) => match crate::at_rest::read_sealed(p, crate::at_rest::role::FLOW_PROPOSALS)? {
+                Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{p:?} is not valid proposals JSON: {e}"))?,
+                None => Vec::new(),
             },
         };
         Ok(Proposals { path, kept: Mutex::new(kept) })
@@ -93,7 +92,7 @@ impl Proposals {
         let Some(path) = &self.path else { return };
         match serde_json::to_vec_pretty(kept) {
             Ok(bytes) => {
-                if let Err(e) = write_atomically(path, &bytes) {
+                if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::FLOW_PROPOSALS, &bytes) {
                     eprintln!("warning: failed to persist proposals to {path:?}: {e}");
                 }
             }

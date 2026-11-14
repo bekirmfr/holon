@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 use crate::deploy::epoch_now;
 use crate::recorder::LogEntry;
 use crate::at_rest::{self, Keyring};
-use crate::sealing::write_private;
+
 use crate::secret_sources::{Reference, STALE_AFTER, Sources};
 use crate::SValue;
 
@@ -298,12 +298,10 @@ impl SecretStore {
             return Ok(SecretStore { keys, ..SecretStore::memory() });
         }
         let audit = Audit { path: Some(Path::new(path).with_extension("audit.jsonl")), kept: Mutex::new(Vec::new()) };
-        let store = |caps| SecretStore { path: path.into(), keys, sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(store(BTreeMap::new())),
-            Err(e) => return Err(format!("could not read {path:?}: {e}")),
-        };
+        let store = |caps| SecretStore { path: path.into(), keys: Arc::clone(&keys), sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
+        // Sealed whole under the server's keys (which secrets each deployment has, their sources),
+        // each local value in it under the secrets scope.
+        let Some(bytes) = at_rest::read(&keys, Path::new(path), at_rest::role::SECRETS)? else { return Ok(store(BTreeMap::new())) };
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
         let format = parsed.get("format").and_then(serde_json::Value::as_u64);
         if format != Some(u64::from(FORMAT)) {
@@ -703,7 +701,7 @@ impl SecretStore {
             caps: self.caps.lock().unwrap().clone(),
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-        write_private(Path::new(&self.path), &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
+        at_rest::write_private(&self.keys, Path::new(&self.path), at_rest::SERVER, at_rest::role::SECRETS, &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
     }
 }
 
@@ -1243,6 +1241,16 @@ mod tests {
         (dir.join("secrets.json").to_str().unwrap().to_string(), Arc::new(keys))
     }
 
+    /// The secrets file's text, opened under `keys`.
+    fn opened(keys: &Keyring, path: &str) -> String {
+        String::from_utf8(at_rest::read(keys, Path::new(path), at_rest::role::SECRETS).unwrap().unwrap().to_vec()).unwrap()
+    }
+
+    /// `bytes` written as the secrets file, sealed under `keys`.
+    fn seal(keys: &Keyring, path: &str, bytes: &[u8]) {
+        at_rest::write_private(keys, Path::new(path), at_rest::SERVER, at_rest::role::SECRETS, bytes).unwrap();
+    }
+
     #[test]
     fn a_store_keeps_values_sealed_and_survives_a_restart() {
         let (path, key) = temp("restart");
@@ -1252,8 +1260,8 @@ mod tests {
         assert!(store.set("api", "short", "12345", None).unwrap_err().contains("at least 6"));
         assert_eq!(store.names("api"), vec!["stripe_key"]);
         let vault = store.vault("api");
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
+        assert!(!opened(&key, &path).contains("sk_live"), "each value sealed in the file");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("sk_live"), "and the file itself");
 
         let again = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(*again.vault("api").lock().unwrap().current["stripe_key"], "sk_live_123456");
@@ -1263,7 +1271,7 @@ mod tests {
         store.forget("api", None).unwrap();
         assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
-        assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).is_err());
+        assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap().contains("not sealed"));
     }
 
     /// The server's secret is read by a deployment with none of its own, overridden by one it
@@ -1288,8 +1296,8 @@ mod tests {
         let sent = BTreeMap::from([("stripe_key".to_string(), BTreeSet::from(["hooks.slack.com".to_string()]))]);
         assert!(store.refuses("shop", &sent).unwrap().contains("may go only to https://api.stripe.com, and this flow sends it to https://hooks.slack.com"));
         assert_eq!(store.refuses("billing", &sent), None, "its own");
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
+        assert!(!opened(&key, &path).contains("sk_live"), "each value sealed in the file");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("sk_live"), "and the file itself");
         // After a restart: the same, a deployment new to it reads it.
         let again = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(*again.vault("new").lock().unwrap().current["stripe_key"], "sk_live_server_1");
@@ -1309,16 +1317,13 @@ mod tests {
     fn a_value_opens_only_under_its_keys_and_for_its_place() {
         let (path, key) = temp("place");
         SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().set("api", "k", "sk_live_123456", None).unwrap();
-        let other = SecretStore::open(&path, Arc::new(Keyring::memory()), Sources::none()).unwrap();
-        let vault = other.vault("api");
-        assert!(vault.lock().unwrap().current.is_empty(), "another keyring opens nothing");
-        assert!(vault.lock().unwrap().problems["k"].contains("doesn't open"), "{:?}", vault.lock().unwrap().problems);
+        assert!(SecretStore::open(&path, Arc::new(Keyring::memory()), Sources::none()).is_err(), "another keyring opens nothing");
         // Its sealed value put under another deployment, and another name.
-        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&opened(&key, &path)).unwrap();
         let sealed = v["deployments"]["api"]["k"].clone();
         v["deployments"]["shop"] = serde_json::json!({ "k": sealed.clone() });
         v["deployments"]["api"]["j"] = sealed;
-        std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        seal(&key, &path, &serde_json::to_vec_pretty(&v).unwrap());
         let store = SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap();
         assert_eq!(*store.vault("api").lock().unwrap().current["k"], "sk_live_123456", "where it was sealed");
         assert!(!store.vault("shop").lock().unwrap().current.contains_key("k"), "not for another deployment");
@@ -1326,15 +1331,21 @@ mod tests {
     }
 
     /// A secrets file of another format (plain values, or sealed under the key the server kept
-    /// before its keyring) is refused, never read or rewritten.
+    /// before its keyring) is refused, never read or rewritten: whether it is plain on disk or
+    /// sealed as this server seals it.
     #[test]
     fn a_secrets_file_of_another_format_is_refused() {
         let (path, key) = temp("format");
         for text in [r#"{"sign-payload": {"signing_key": "sample-signing-key-42"}}"#, r#"{"format": 3, "cipher": "AES-256-GCM", "key_check": "00", "deployments": {}}"#] {
             std::fs::write(&path, text).unwrap();
             let refused = SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap();
-            assert!(refused.contains("this server reads 4"), "{refused}");
+            assert!(refused.contains("not sealed"), "{refused}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "left as it was");
+            seal(&key, &path, text.as_bytes());
+            let on_disk = std::fs::read(&path).unwrap();
+            let refused = SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap();
+            assert!(refused.contains("this server reads 4"), "{refused}");
+            assert_eq!(std::fs::read(&path).unwrap(), on_disk, "left as it was");
         }
     }
 

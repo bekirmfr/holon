@@ -77,9 +77,9 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
         .collect();
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            // Owner-only, as the secrets and the flow log are: it holds the flows' documents,
-            // grants and what their waiting runs need.
-            if let Err(e) = crate::sealing::write_private(path, &bytes) {
+            // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
+            // and what their waiting runs need.
+            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes) {
                 eprintln!("warning: failed to persist deployments to {path:?}: {e}");
             }
         }
@@ -116,11 +116,7 @@ pub(crate) fn load_deployments(
     let mut loaded = BTreeMap::new();
     let Some(file) = path.at() else { return Ok(loaded) };
 
-    let bytes = match std::fs::read(file) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(loaded),
-        Err(e) => return Err(format!("could not read {file:?}: {e}")),
-    };
+    let Some(bytes) = crate::at_rest::read_sealed(file, crate::at_rest::role::DEPLOYMENTS)? else { return Ok(loaded) };
     let records: Vec<DeploymentRecord> = crate::wire::read_json(&bytes)
         .map_err(|e| format!("{file:?} is not valid deployment JSON: {e}"))?;
 
@@ -315,7 +311,7 @@ pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) 
     let records: Vec<&FlowRecord> = flows.values().collect();
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            if let Err(e) = write_atomically(path, &bytes) {
+            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::FLOWS, &bytes) {
                 eprintln!("warning: failed to persist flows to {path:?}: {e}");
             }
         }
@@ -330,11 +326,7 @@ pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) 
 /// `Err` too, for the same reason.
 pub(crate) fn load_flows(path: &Place) -> Result<BTreeMap<String, FlowRecord>, String> {
     let Some(path) = path.at() else { return Ok(BTreeMap::new()) };
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(e) => return Err(format!("could not read {path:?}: {e}")),
-    };
+    let Some(bytes) = crate::at_rest::read_sealed(path, crate::at_rest::role::FLOWS)? else { return Ok(BTreeMap::new()) };
     let records: Vec<FlowRecord> =
         serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not valid flows JSON: {e}"))?;
     let mut loaded = BTreeMap::new();

@@ -1,7 +1,8 @@
 //! What the server writes is its owner's alone, against the real server: `holon serve` started as
 //! it is installed, a flow deployed with `holon deploy` that leaves something in every kind of
 //! file a run leaves, requests sent over sockets, then every file under its home looked at
-//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0). A test binary of its own, as data_plane.rs.
+//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0), and every table it keeps sealed (step 2). A
+//! test binary of its own, as data_plane.rs.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -190,4 +191,12 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
         e.0 += 1;
     }
     assert!(open.is_empty(), "readable by more than its owner, of {} files (folder: how many, one of them): {by_folder:#?}", files.len());
+
+    // And every table in the data folder is sealed (at_rest.rs, step 2): only the keyring itself,
+    // its keys wrapped, is kept as it is.
+    let data = home.join("data");
+    let tables: Vec<&PathBuf> = files.iter().filter(|f| f.parent() == Some(data.as_path()) && f.extension().is_some_and(|e| e == "json")).collect();
+    assert!(tables.iter().any(|f| f.ends_with("deployments.json")) && tables.iter().any(|f| f.ends_with("keys.json")), "{tables:#?}");
+    let plain: Vec<&&PathBuf> = tables.iter().filter(|f| !f.ends_with("keys.json") && !std::fs::read(f).unwrap().starts_with(b"HLA1")).collect();
+    assert!(plain.is_empty(), "tables not sealed: {plain:#?}");
 }

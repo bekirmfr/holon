@@ -143,7 +143,7 @@ use holon_core::{
     Value,
 };
 use holon_host::{
-    is_storable, write_atomically, FileStore, Host, InsertError, MemStore,
+    is_storable, FileStore, Host, InsertError, MemStore,
     run_rounds, Waiting, Round, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
@@ -1011,6 +1011,8 @@ fn serve(args: Vec<String>) {
     } else {
         at_rest::Keyring::memory()
     });
+    // Every store seals through it from here (at_rest::keys).
+    at_rest::install(Arc::clone(&keys)).unwrap_or_else(|e| refuse_to_start(e));
     let store = if store_arg == ":memory:" {
         println!("holon: in-memory store (nothing persists past this run)");
         SharedStore::new(Box::new(MemStore::new()))

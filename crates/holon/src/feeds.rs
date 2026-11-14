@@ -360,10 +360,10 @@ impl Feeds {
             return Ok(Feeds::memory());
         }
         let path = PathBuf::from(file);
-        let bound = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a feeds file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
-            Err(e) => return Err(format!("can't read {file}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): addresses, paths, references to secrets.
+        let bound = match crate::at_rest::read_sealed(&path, crate::at_rest::role::FEEDS)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a feeds file: {e}"))?,
+            None => Bound::default(),
         };
         Ok(Feeds::with(Some(path), bound))
     }
@@ -600,7 +600,7 @@ impl Feeds {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.0.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::FEEDS, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a feed it listens to

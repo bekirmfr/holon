@@ -445,20 +445,88 @@ fn line_aad(scope: &str, version: u32, role: &str) -> String {
 }
 
 /// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only.
-#[allow(dead_code)] // the tables, step 2
 pub(crate) fn write_private(keys: &Keyring, path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
     let sealed = keys.seal_file(scope, role, bytes).map_err(std::io::Error::other)?;
     crate::sealing::write_private(path, &sealed)
 }
 
 /// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none.
-#[allow(dead_code)] // the tables, step 2
 pub(crate) fn read(keys: &Keyring, path: &Path, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     match std::fs::read(path) {
         Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("could not read {}: {e}", path.display())),
     }
+}
+
+/// The server's keyring, for what every store writes: set once, at startup, by `install`, before
+/// anything is read or written. A process that installs none (a test, a command that keeps
+/// nothing) has one in memory, as the resume tokens' host key is (`durable::HOST_KEY`).
+static KEYS: std::sync::OnceLock<std::sync::Arc<Keyring>> = std::sync::OnceLock::new();
+
+/// Make `keys` the server's keyring. An error if one was already in use: something sealed under
+/// another before this ran.
+pub(crate) fn install(keys: std::sync::Arc<Keyring>) -> Result<(), String> {
+    KEYS.set(keys).map_err(|_| "a keyring was in use before the server's opened".to_string())
+}
+
+/// The server's keyring.
+pub(crate) fn keys() -> &'static std::sync::Arc<Keyring> {
+    KEYS.get_or_init(|| std::sync::Arc::new(Keyring::memory()))
+}
+
+/// The scope of the deployment a kept file's key names first (`<slug>/<file>`): what it saw of
+/// its queues, mailboxes and feeds.
+pub(crate) fn deployment_of(key: &Path) -> String {
+    deployment(&key.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// What each file is for, bound into it as it is sealed: a file renamed to another role fails to
+/// open (§4).
+pub(crate) mod role {
+    pub(crate) const DEPLOYMENTS: &str = "table: deployments";
+    pub(crate) const FLOWS: &str = "table: flows";
+    pub(crate) const FLOW_PROPOSALS: &str = "table: flow proposals";
+    pub(crate) const SECRETS: &str = "table: secrets";
+    pub(crate) const FOLDERS: &str = "table: folders";
+    pub(crate) const DATABASES: &str = "table: databases";
+    pub(crate) const MAILS: &str = "table: mails";
+    pub(crate) const QUEUES: &str = "table: queues";
+    pub(crate) const FEEDS: &str = "table: feeds";
+    pub(crate) const ACCOUNTS: &str = "table: accounts";
+    pub(crate) const ACCESS: &str = "table: access";
+    pub(crate) const ACCESS_HISTORY: &str = "access history";
+    pub(crate) const QUEUE_SEEN: &str = "seen: queue";
+    pub(crate) const MAIL_SEEN: &str = "seen: mail";
+    pub(crate) const FEED_SEEN: &str = "seen: feed";
+    pub(crate) const ARRIVALS: &str = "arrivals";
+}
+
+/// A table of the server's (`scope` server), sealed for `role` and written to `path` atomically,
+/// owner-only.
+pub(crate) fn write_table(path: &Path, role: &str, bytes: &[u8]) -> std::io::Result<()> {
+    write_private(keys(), path, SERVER, role, bytes)
+}
+
+/// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only, under
+/// the server's keyring.
+pub(crate) fn write_sealed(path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
+    write_private(keys(), path, scope, role, bytes)
+}
+
+/// The file at `path` sealed for `role`, opened under the server's keyring: `Ok(None)` if there
+/// is none; an error if it doesn't open (a plain one where a sealed one belongs included).
+pub(crate) fn read_sealed(path: &Path, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    read(keys(), path, role)
+}
+
+/// For tests: a server table's text as it was sealed (`role` one of [`role`]), opened under the
+/// process's keys; panics where there is none or it doesn't open.
+#[cfg(test)]
+pub(crate) fn opened(path: impl AsRef<Path>, role: &str) -> String {
+    let path = path.as_ref();
+    let bytes = read_sealed(path, role).unwrap_or_else(|e| panic!("{}: {e}", path.display())).unwrap_or_else(|| panic!("{} is missing", path.display()));
+    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[cfg(test)]

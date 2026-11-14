@@ -285,10 +285,10 @@ impl Folders {
             return Ok(Folders { forbidden, ..Folders::memory() });
         }
         let path = PathBuf::from(file);
-        let bound = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a folders file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
-            Err(e) => return Err(format!("can't read {file}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): addresses, paths, references to secrets.
+        let bound = match crate::at_rest::read_sealed(&path, crate::at_rest::role::FOLDERS)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a folders file: {e}"))?,
+            None => Bound::default(),
         };
         Ok(Folders { file: Some(path), forbidden, ..Folders::memory() }.with_bound(bound))
     }
@@ -387,7 +387,7 @@ impl Folders {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::FOLDERS, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 }
 
@@ -2322,7 +2322,7 @@ mod tests {
         assert_eq!(other.read("inbox", "a.txt", MAX_FILE_BYTES).unwrap(), None, "nor does it see billing's files");
 
         // Kept as the file was before (the server's at the top), a deployment's beside them.
-        let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let on_disk: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&file, crate::at_rest::role::FOLDERS)).unwrap();
         assert!(on_disk["inbox"]["path"].is_string() && on_disk["@deployments"]["billing"]["inbox"]["path"].is_string(), "{on_disk}");
         let again = Folders::open(file.to_str().unwrap(), &[]).unwrap();
         assert_eq!(again.all(), all.all());

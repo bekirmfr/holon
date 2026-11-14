@@ -195,10 +195,10 @@ impl Databases {
             return Ok(Databases { forbidden, ..Databases::memory() });
         }
         let path = PathBuf::from(file);
-        let bound = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a databases file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
-            Err(e) => return Err(format!("can't read {file}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): addresses, paths, references to secrets.
+        let bound = match crate::at_rest::read_sealed(&path, crate::at_rest::role::DATABASES)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a databases file: {e}"))?,
+            None => Bound::default(),
         };
         Ok(Databases { file: Some(path), forbidden, bound: RwLock::new(bound), ..Databases::memory() })
     }
@@ -349,7 +349,7 @@ impl Databases {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::DATABASES, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
     /// `database`, opened on first use: a SQLite file read and write, or read only where it can't

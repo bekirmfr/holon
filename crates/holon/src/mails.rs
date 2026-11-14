@@ -281,10 +281,10 @@ impl Mails {
             return Ok(Mails::memory());
         }
         let path = PathBuf::from(file);
-        let bound = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a mails file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
-            Err(e) => return Err(format!("can't read {file}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): addresses, paths, references to secrets.
+        let bound = match crate::at_rest::read_sealed(&path, crate::at_rest::role::MAILS)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a mails file: {e}"))?,
+            None => Bound::default(),
         };
         let spool = path.with_file_name("mail-spool");
         Ok(Mails::with(Some(path), bound, Some(spool)))
@@ -518,7 +518,7 @@ impl Mails {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.0.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::MAILS, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a mail it sends through
@@ -1113,7 +1113,7 @@ mod tests {
         let b = mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", "*@acme.com, treasury@bank.example"), None).unwrap();
         assert_eq!(b.address, format!("smtp://127.0.0.1:{}", s.port));
         // Kept without the URL or its login, and read back.
-        let kept = std::fs::read_to_string(&file).unwrap();
+        let kept = crate::at_rest::opened(&file, crate::at_rest::role::MAILS);
         assert!(!kept.contains("pw") && kept.contains("env:HOLON_SECRET_OPS_SMTP"), "{kept}");
         assert_eq!(Mails::open(file.to_str().unwrap()).unwrap().resolve("app", "ops"), Some(b.clone()));
         let manifest = |caps: &[&str]| Manifest { capabilities: caps.iter().map(|c| c.to_string()).collect(), requirements: Default::default() };
@@ -1155,7 +1155,7 @@ mod tests {
         assert_eq!((b.smtp.as_str(), mailbox.folder.as_str(), mailbox.done.as_str(), mailbox.verdict_from.as_str(), mailbox.every), ("", "INBOX", "Processed", "mx.acme.com", 30));
         assert_eq!(mailbox.address, format!("imap://127.0.0.1:{}", imap.port));
         assert!(imap.folders.lock().unwrap().folders.contains_key("Processed"), "--done made");
-        let kept = std::fs::read_to_string(&file).unwrap();
+        let kept = crate::at_rest::opened(&file, crate::at_rest::role::MAILS);
         assert!(!kept.contains("s3cret") && kept.contains("env:HOLON_SECRET_REMIT_IMAP"), "{kept}");
         assert_eq!(Mails::open(file.to_str().unwrap()).unwrap().resolve("app", "remit"), Some(b.clone()));
         let manifest = |caps: &[&str]| Manifest { capabilities: caps.iter().map(|c| c.to_string()).collect(), requirements: Default::default() };
@@ -1206,7 +1206,7 @@ mod tests {
         session.logout();
         assert_eq!(imap.folders.lock().unwrap().logins, 2);
         assert_eq!(endpoint.asked.lock().unwrap().len(), before + 1, "the token kept");
-        let kept = std::fs::read_to_string(&file).unwrap();
+        let kept = crate::at_rest::opened(&file, crate::at_rest::role::MAILS);
         assert!(!kept.contains("s3cret") && !kept.contains("t0ken") && kept.contains("env:HOLON_SECRET_SUPPORT_OAUTH"), "{kept}");
     }
 

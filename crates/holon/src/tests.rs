@@ -1944,9 +1944,9 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     assert_eq!(deploy_json(&state, "w", writer, ack.clone()).status_code, 200);
 
     // As if granted less than it needs: drop an item from the stored grant.
-    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     file[0]["grant"]["items"] = serde_json::json!(["Action(\"put\")"]);
-    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&file).unwrap()).unwrap();
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let w = &reloaded["w"];
     assert_eq!(w.life.status, Status::Paused);
@@ -1961,9 +1961,9 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     assert_eq!(put(&state, "w", "ok").status_code, 200);
 
     // A record without a grant: granted its derived capabilities, by migration.
-    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     file[0].as_object_mut().unwrap().remove("grant");
-    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&file).unwrap()).unwrap();
     let migrated = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(migrated["w"].grant.by, "migrated");
     assert!(migrated["w"].attention.is_none() && migrated["w"].grant.items.contains("StateWrite(\"k\")"));
@@ -2202,7 +2202,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert!(log.contains("‹token:paid›"));
     // It survives a restart, and its record holds no token: it is derived again when needed.
     assert_eq!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains(&token) && !on_disk.contains("\"tokens\""), "a run record holds no token");
     // Holding a value as deep as one may be (an event delivered to it), it survives a restart too:
     // past serde_json's own stop, the deployments file didn't read back, and the server didn't start.
@@ -2211,7 +2211,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let shop = records.as_array_mut().unwrap().iter_mut().find(|r| r["slug"] == "shop").unwrap();
     shop["parked"][0]["events"]["earlier"] = serde_json::to_value(SValue::from_core(&deep)).unwrap();
     let deep_path = unique_temp_path("durable-deep");
-    std::fs::write(&deep_path, serde_json::to_vec(&records).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&deep_path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&records).unwrap()).unwrap();
     let reloaded = load_deployments(&Place::parse(&deep_path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["shop"].parked.values().next().unwrap().events["earlier"].clone().into_core(), deep);
 
@@ -2869,7 +2869,7 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order).body).unwrap();
     assert!(state.deployments.lock().unwrap()["sealed"].parked.values().next().unwrap().sealed.is_none(), "open in memory");
 
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "{on_disk}");
     #[cfg(unix)]
@@ -2933,7 +2933,7 @@ fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
     let mut order = fake_data("POST", "/orders", vec![]);
     order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
     serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order);
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "{on_disk}");
     // A restart, with a new in-memory store: its key is another, and the run says so.
@@ -3283,12 +3283,13 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let path = unique_temp_path("unloadable");
     let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
     for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
-        std::fs::write(&path, &contents).unwrap();
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, contents.as_bytes()).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
         let e = load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().expect("must refuse, not skip");
         assert!(e.contains("deployment"), "{e}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
+        assert_eq!(std::fs::read(&path).unwrap(), on_disk, "file left as it was");
     }
-    std::fs::write(&path, r#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::FLOWS, br#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
     assert!(load_flows(&Place::parse(&path)).is_err());
 
     // Regression 2: a redeploy keeps a slug's state across a stateless version, but loading
@@ -3340,7 +3341,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
 
     // The state is kept by its head: a file naming a snapshot of references, the deployments
     // file holding no state at all; and a restart gets the same root back.
-    let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     assert!(file[0].get("state").is_none() && file[0].get("state_refs").is_none(), "no state in the deployments file: {}", file[0]);
     let head = std::fs::read_to_string(state_head_for(&Place::parse(&path), "writer").unwrap()).unwrap();
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
@@ -3371,6 +3372,55 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let _ = std::fs::remove_dir_all(Path::new(&path).with_extension("logs"));
 }
 
+/// Guards: every table the server keeps in its data folder is read only sealed, and only as
+/// itself: an empty one sealed for its role opens; the same text plain on disk, or sealed for
+/// another table, is refused and left as it was (docs/L4s/at-rest-encryption-L4.md, step 2).
+/// Why: a table holds what a deployment may reach (addresses, paths, references to secrets) and
+/// what its runs keep; one read plain would be one anyone who can write the folder can forge,
+/// and one read as another table one whose contents were moved between them.
+/// If it fails: the table it names is read past `at_rest::read_sealed` (or `at_rest::read`), or
+/// its role isn't its own. A new table gets a row here.
+#[test]
+fn every_table_opens_only_sealed_and_only_as_itself() {
+    use crate::at_rest::role;
+    let state = test_state();
+    type Opens<'a> = Box<dyn Fn(&str) -> Result<(), String> + 'a>;
+    let access = serde_json::to_vec(&crate::bindings::Document::default()).unwrap();
+    let tables: Vec<(&str, &str, &[u8], Opens)> = vec![
+        ("deployments", role::DEPLOYMENTS, b"[]", Box::new(|p| load_deployments(&Place::parse(p), &state.store, &state.policy()).map(|_| ()))),
+        ("flows", role::FLOWS, b"[]", Box::new(|p| load_flows(&Place::parse(p)).map(|_| ()))),
+        ("flow proposals", role::FLOW_PROPOSALS, b"[]", Box::new(|p| crate::proposals::Proposals::beside(&Place::parse(&Path::new(p).with_file_name("flows.json").to_string_lossy())).map(|_| ()))),
+        ("folders", role::FOLDERS, b"{}", Box::new(|p| crate::folders::Folders::open(p, &[]).map(|_| ()))),
+        ("databases", role::DATABASES, b"{}", Box::new(|p| crate::databases::Databases::open(p, &[]).map(|_| ()))),
+        ("mails", role::MAILS, b"{}", Box::new(|p| crate::mails::Mails::open(p).map(|_| ()))),
+        ("queues", role::QUEUES, b"{}", Box::new(|p| crate::queues::Queues::open(p).map(|_| ()))),
+        ("feeds", role::FEEDS, b"{}", Box::new(|p| crate::feeds::Feeds::open(p).map(|_| ()))),
+        ("accounts", role::ACCOUNTS, b"{}", Box::new(|p| crate::accounts::Accounts::open(p).map(|_| ()))),
+        ("access", role::ACCESS, &access, Box::new(|p| crate::bindings::Bindings::open(PathBuf::from(p)).map(|_| ()))),
+    ];
+    for (name, own, empty, opens) in &tables {
+        let dir = PathBuf::from(unique_temp_path(&format!("sealed-{}", name.replace(' ', "-"))));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Proposals are found beside the flows (`flows.proposals.json`); the rest where they are named.
+        let file = dir.join(if *name == "flow proposals" { "flows.proposals.json" } else { "table.json" });
+        let path = file.to_str().unwrap();
+        opens(path).unwrap_or_else(|e| panic!("{name}: none at all is an empty table: {e}"));
+        crate::at_rest::write_table(&file, own, empty).unwrap();
+        opens(path).unwrap_or_else(|e| panic!("{name}: sealed for its role, it opens: {e}"));
+        std::fs::write(&file, empty).unwrap();
+        let refused = opens(path).expect_err(name);
+        assert!(refused.contains("not sealed"), "{name}, plain: {refused}");
+        assert_eq!(std::fs::read(&file).unwrap(), *empty, "{name}: left as it was");
+        let other = if *own == role::FLOWS { role::DEPLOYMENTS } else { role::FLOWS };
+        crate::at_rest::write_table(&file, other, empty).unwrap();
+        let sealed = std::fs::read(&file).unwrap();
+        let refused = opens(path).expect_err(name);
+        assert!(refused.contains("doesn't open"), "{name}, sealed as another table: {refused}");
+        assert_eq!(std::fs::read(&file).unwrap(), sealed, "{name}: left as it was");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Regression: a persistence file that failed to parse used to load as an empty table, so
 /// the first deploy or save after startup overwrote every deployment, its state, or every
 /// flow. Loading is now an `Err` (main() refuses to start) and the file is left untouched.
@@ -3379,10 +3429,18 @@ fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
     let state = test_state();
     for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
         let path = unique_temp_path(&format!("corrupt-{label}"));
+        // Plain on disk, and sealed as each table is: refused either way, and left as it was.
         std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file");
-        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file");
+        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().unwrap().contains("not sealed"), "{label} deployments file");
+        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("not sealed"), "{label} flows file");
         assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, contents).unwrap();
+        let sealed = std::fs::read(&path).unwrap();
+        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file, sealed");
+        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("doesn't open"), "a deployments file isn't read as flows");
+        assert_eq!(std::fs::read(&path).unwrap(), sealed, "the bad file must be left as it was");
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::FLOWS, contents).unwrap();
+        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file, sealed");
         let _ = std::fs::remove_file(&path);
     }
     // A missing file is still a normal first run, not an error.
@@ -5446,7 +5504,7 @@ fn versions_survive_a_restart() {
     let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "document": { "rev": 1 } });
     assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     let file: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert!(file[0].get("versions").is_none(), "the old name isn't written");
     let kept = file[0]["versions_kept"].as_array().unwrap();
@@ -12804,7 +12862,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     };
     assert_eq!(levels(&state), ["GET /broken unrecorded", "GET /health unrecorded", "POST /notes strict"]);
     persist_deployments(&state.deployments_path, &state.deployments);
-    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(state.deployments_path.at().unwrap()).unwrap()).unwrap();
+    let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
     assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
 
@@ -13212,7 +13270,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let file = || std::fs::read(state.deployments_path.at().unwrap()).unwrap();
     let head = |slug: &str| std::fs::read_to_string(state_head_for(&state.deployments_path, slug).unwrap()).ok();
     let counted = |slug: &str| -> (u64, u64) {
-        let on_disk: serde_json::Value = serde_json::from_slice(&file()).unwrap();
+        let on_disk: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
         let kept = on_disk.as_array().unwrap().iter().find(|r| r["slug"] == slug).unwrap()["trigger_count"].as_u64().unwrap();
         (state.deployments.lock().unwrap()[slug].trigger_count, kept)
     };
