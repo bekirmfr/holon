@@ -687,7 +687,9 @@ each holds, bound to them or to their groups: `viewer, editor on payout via paym
 `set` changes their role on the host (one the kind may hold), stops someone signing in (`--disable`: an agent's or
 a service's tokens are refused) or lets them again, sets a person's email for a provider (`""`
 clears it), or gives an agent or a service another owner. `reset` clears a person's password and
-ends their sessions, with a new link. `remove` takes an agent's or a service's tokens with it, and
+ends their sessions, with a new link. While access changes wait for people, a reset, an email or
+an owner for someone who decides runs or holds what is an admin's is made only by them or on this
+machine ([No one takes over someone](../guides/people.md#no-one-takes-over-someone)). `remove` takes an agent's or a service's tokens with it, and
 is refused for a person who still owns one: give it another owner first. The server refuses a
 change that would leave no admin.
 

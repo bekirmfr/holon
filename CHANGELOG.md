@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **No one takes over someone whose access waits for people to be given.** While `--changes` is
+  on, a way in to someone else who decides runs or holds anything of an admin's isn't made from
+  another account: resetting their password, setting their email (a provider matches people by
+  it), making a token of their agent or service (but by its owner), giving it another owner, or
+  setting the identity provider. Whoever did could sign in as them, and count as a second person
+  where people are counted, so it is refused (403), saying why. They do it themselves, or it is
+  done on the server's machine through its run file, which holds the data folder anyway: the
+  machine is the root here, and no account is. Or what they hold is taken away first, at once,
+  and given back after, which waits. A proposal now says whom it gives more (`to`) and who could
+  act as them (`ways_in`: "ada made bob's reset link"): none of those approves it, and a way in
+  made to one of them while it waits makes it stale. `GET /people` says each one's `ways_in`.
 - **An access change that gives more can wait for people: `holon access approvals --changes N`.**
   With `changes` set (1 to 5; off by default), a change that gives someone `run.decide` or
   anything of an admin's isn't made: binding a role that holds it, adding someone to a group bound

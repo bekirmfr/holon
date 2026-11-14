@@ -62,7 +62,8 @@ holon people add ana --person --role editor
 which prints the link. Later, on the same page (or with `holon people set` and `reset`): change
 their role, **reset** their password (a new link; their sign-ins end), **disable** them (they are
 signed out, and can't sign in until enabled), or remove them. The server never lets the last
-admin go.
+admin go. While access changes wait for people, someone who decides runs or holds what is an
+admin's is reset as [No one takes over someone](#no-one-takes-over-someone) says.
 
 ## An agent of your own
 
@@ -236,6 +237,35 @@ approvers are gone gets its access back, and whoever holds that machine holds th
 anyway. A new person or agent is never made waiting, as an invitation's link is shown once, to
 whoever makes it: one with a role that would wait is refused (409), saying to invite or add them
 as a viewer and then give them the role, which waits.
+
+## No one takes over someone
+
+While `--changes` is on, no one makes a way in to someone else who decides runs or holds anything
+of an admin's (an editor, an admin, or a role of yours that does): their password **reset**, their
+**email** set (a provider matches people by it), a **token** made of their agent or service by
+anyone but its owner, another **owner** given to it, or the **identity provider** set, which says
+who everyone is. Whoever did it could sign in as them, and count as a second person wherever
+people are counted. The server refuses it (403), saying so; with the setting off, an admin does
+it as before.
+
+It is still done three ways. They do it themselves: a person changes their own password or
+email, and an agent's owner makes its tokens. It is done on the server's machine, through its
+run file (`holon people reset bob` there): the machine holds the data folder, so it is the root
+here, and no account is. Or what they hold is taken away first, which applies at once, the way in
+made, and what they held given back, which waits like any change that gives more. For a
+forgotten password:
+
+```sh
+holon people set bob --role viewer     # at once
+holon people reset bob                 # a new link, for bob
+holon people set bob --role admin      # waits for another admin to approve it
+```
+
+A proposal says whom it gives more and who could act as them: "ada made bob's reset link".
+Whoever made someone's way in (their invite or reset link, their email; an agent's or a
+service's owner, or one who made a token of it) doesn't approve giving them more, whoever
+proposed it, and a way in made to one of them while it waits makes it stale. The People page
+says, for each person, who made their way in.
 
 Each decision is kept with what let it: the binding its principal took the step through, by its
 id, and the version of the access document it was read in. The run is given them with the

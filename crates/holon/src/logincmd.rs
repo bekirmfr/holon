@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(sign_out(&At(&state, Some(&cy))), Ok(false));
         // A reset ends it too: what a kept session's refusal tells the person to do then.
         let cy = begin(&At(&state, None), &file, server, "cy", "cy's own long password").unwrap().token;
-        accounts.reset("cy").unwrap();
+        accounts.reset("cy", "ada").unwrap();
         assert_eq!(At(&state, Some(&cy)).send("GET", "/auth/me", None).unwrap().0, 401);
         assert!(local::sign_in_hint(server, TokenFrom::Session).contains("holon login --server https://holon.example.com"));
         // A server without accounts has none to sign in to.

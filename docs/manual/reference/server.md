@@ -278,17 +278,19 @@ While `changes` is N, a change that gives someone more (`POST /bindings`, `PUT /
 `PUT /groups/<name>`, `PATCH /people/<name>` with a role, `PUT /access/approvals` loosening them)
 isn't made: it is answered 202, `{"proposal": {…}, "version": n}` (`PATCH` answers the principal
 with its `proposal`), and kept as a proposal: `id`, `author`, `why`, `change` (as the route got
-it), `what` (what its version will say), `gives` (in words), `base` (the version it was proposed
-on), `needs`, `approvals` and `state` (`waiting`; `applied` with its `version`; `declined` with
-`declined_by` and `reason`; `stale` with why). `POST /people` with a role that would wait is
+it), `what` (what its version will say), `gives` (in words), `to` (whom it gives more, by name),
+`ways_in` (who could act as them, in words: "ada made bob's reset link"), `base` (the version it
+was proposed on), `needs`, `approvals` and `state` (`waiting`; `applied` with its `version`;
+`declined` with `declined_by` and `reason`; `stale` with why). `POST /people` with a role that would wait is
 refused, 409: invite or add them with one that gives less, then give it. A change through this
 machine's run file to `/access/approvals` is made at once.
 
 - `GET /access/proposals` (`people.view`) lists every proposal, newest first.
 - `POST /access/proposals/<id>/approve` (`people.assign`): a person other than its author, holding
-  what it gives (403 if not), approves it; the N-th approval makes it, by its author, its why
-  saying who approved it, and answers it `applied`. One that no longer applies is `stale`: 409,
-  saying why.
+  what it gives and able to act as no one it gives it to (403 if not), approves it; the N-th
+  approval makes it, by its author, its why saying who approved it, and answers it `applied`. One
+  that no longer applies, or to one of whose `to` a way in was made since, is `stale`: 409, saying
+  why.
 - `POST /access/proposals/<id>/decline` (`{"reason": "…"}`, `people.assign`): declines it; its
   author withdraws it so. One that no longer waits is 409.
 
@@ -317,6 +319,17 @@ An admin also defines roles of their own, and groups:
   without holding everything an admin does can't make, become or lock out an admin. An agent's
   or a service's owner still makes and revokes its tokens. Setting the identity provider takes
   holding what each person holds.
+- **Nor makes a way in to anyone whose access waits for people to be given**, while `changes` is
+  N: resetting the password of, setting the email of, making a token of (but its owner), or giving
+  another owner to someone else who holds `run.decide` or anything of an admin's, or setting the
+  identity provider while another person does, is refused (403, `bob holds run.decide on this
+  host, as admin, and giving that waits here for 1 person other than its giver: whoever resets
+  bob's password could act as bob, counted as another person, so it is done only through this
+  server's machine (its run file); or take that from bob first, which applies at once, and give it
+  back after, which waits`). They do it themselves, or this machine's run file does. `GET /people`
+  answers who could act as each principal, `ways_in`: whoever made the link a person's password
+  was last set from, whoever set their email, an agent's or a service's owner and whoever else
+  made a token of it.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
   or manages people, roles, resources or the host.
@@ -393,7 +406,8 @@ email is refused, saying whose email it is, until an admin sets that person's em
 matches them anew. A token for several audiences must say it was issued to this client (`azp`).
 People are still added here, with a role; the provider only proves who is signing in. Since the
 provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
-person holds: an admin. An ID token is good until it expires, wherever it is shown, so signing out
+person holds: an admin; and while an access change that gives more waits for people, it is set
+only through this machine's run file. An ID token is good until it expires, wherever it is shown, so signing out
 with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
 sign-in of theirs at the provider still is one.
 

@@ -140,6 +140,10 @@ pub(crate) struct Principal {
     /// then on, and their email no longer (`Accounts::through_provider`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) provider: Option<ProviderId>,
+    /// The ways in to a person that someone else made, the latest of each sort: a link (an invite
+    /// or a reset) and an email (`WayIn`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ways_in: Vec<WayIn>,
     #[serde(default)]
     pub(crate) disabled: bool,
     pub(crate) created_at: u64,
@@ -164,11 +168,22 @@ impl Principal {
             password: None,
             email: None,
             provider: None,
+            ways_in: Vec::new(),
             disabled: false,
             created_at: epoch_now(),
             created_by: by.map(String::from),
             owner: None,
             prefs: serde_json::Value::Null,
+        }
+    }
+
+    /// `by` made the way in `way` to them now, in place of the one of its sort before; none is kept
+    /// when it is their own.
+    fn made(&mut self, way: Way, by: &str) {
+        let link = |w: Way| w != Way::Email;
+        self.ways_in.retain(|w| link(w.way) != link(way));
+        if by != self.name {
+            self.ways_in.push(WayIn { way, by: by.into(), at: epoch_now() });
         }
     }
 }
@@ -179,6 +194,27 @@ impl Principal {
 pub(crate) struct ProviderId {
     pub(crate) issuer: String,
     pub(crate) subject: String,
+}
+
+/// A way to sign in as a person that someone else made, who may hold it still: who used a link
+/// can't be told, and a provider matches the email whoever set it chose. Whoever made one could act
+/// as them, so doesn't approve giving them more (access_proposals.rs), and while giving what they
+/// hold waits for people, no one makes one to them but through the run file (auth.rs).
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct WayIn {
+    pub(crate) way: Way,
+    pub(crate) by: String,
+    pub(crate) at: u64,
+}
+
+/// The sorts of `WayIn`: a link a person's password is set from, an invite's or a reset's, and the
+/// email a provider matches them by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Way {
+    Invite,
+    Reset,
+    Email,
 }
 
 /// The most a person's preferences may take, as JSON.
@@ -922,6 +958,34 @@ impl Accounts {
         .map_err(|_| None)
     }
 
+    /// Who besides `name` could sign in or act as them, each with how in words ("bob made eve's
+    /// reset link"): for a person, whoever made the link their password was last set from and
+    /// whoever set the email a provider matches them by (`WayIn`); for an agent or a service, its
+    /// owner and whoever else made a token of it.
+    pub(crate) fn acting_as(&self, name: &str) -> Vec<(String, String)> {
+        let book = hold(&self.book);
+        let Some(p) = book.users.iter().find(|u| u.name == name) else { return Vec::new() };
+        let mut who: Vec<(String, String)> = p
+            .ways_in
+            .iter()
+            .map(|w| {
+                let how = match w.way {
+                    Way::Invite => format!("made {name}'s invite link"),
+                    Way::Reset => format!("made {name}'s reset link"),
+                    Way::Email => format!("set {name}'s email"),
+                };
+                (w.by.clone(), format!("{} {how}", w.by))
+            })
+            .collect();
+        if let Some(owner) = &p.owner {
+            who.push((owner.clone(), format!("{owner} owns {name}")));
+        }
+        for t in book.credentials.iter().filter(|t| t.principal == name && t.created_by != name && Some(&t.created_by) != p.owner.as_ref()) {
+            who.push((t.created_by.clone(), format!("{} made {name}'s token {:?}", t.created_by, t.label)));
+        }
+        who
+    }
+
     /// What `name` holds now (bindings.rs): nothing, if nothing is bound to it or all of it has
     /// expired.
     pub(crate) fn holding(&self, name: &str) -> Arc<[bindings::Held]> {
@@ -1149,7 +1213,12 @@ impl Accounts {
                 return Err(format!("there is a principal {name:?} already"));
             }
             let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
-            book.users.push(Principal { email, ..Principal::new(name, Kind::Person, Some(by)) });
+            let mut p = Principal { email, ..Principal::new(name, Kind::Person, Some(by)) };
+            p.made(Way::Invite, by);
+            if p.email.is_some() {
+                p.made(Way::Email, by);
+            }
+            book.users.push(p);
             access.set_host_role(name, role, by, epoch_now());
             let token = new_token("hi_");
             book.invites.push(Invite { hash: hash_of(&token), name: name.into(), expires_at: epoch_now() + INVITE_SECONDS });
@@ -1177,15 +1246,16 @@ impl Accounts {
         })
     }
 
-    /// A new link for the person `name` to set a new password; their sessions end, and their old
-    /// password no longer signs in (a reset is often because someone else has it).
-    pub(crate) fn reset(&self, name: &str) -> Result<String, String> {
+    /// A new link for the person `name` to set a new password, made by `by`; their sessions end,
+    /// and their old password no longer signs in (a reset is often because someone else has it).
+    pub(crate) fn reset(&self, name: &str, by: &str) -> Result<String, String> {
         self.change(|book| {
             let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
             if p.kind != Kind::Person {
                 return Err(format!("{name} is {}: it signs in with its tokens, not a password", p.kind.said()));
             }
             p.password = None;
+            p.made(Way::Reset, by);
             book.invites.retain(|i| i.name != name);
             book.sessions.retain(|s| s.user != name);
             let token = new_token("hi_");
@@ -1273,9 +1343,9 @@ impl Accounts {
         })
     }
 
-    /// A person's email, matched when they first sign in through a provider. Another one is
-    /// matched anew: who they were there no longer signs in as them.
-    pub(crate) fn set_email(&self, name: &str, email: Option<String>) -> Result<(), String> {
+    /// A person's email, matched when they first sign in through a provider, set by `by`. Another
+    /// one is matched anew: who they were there no longer signs in as them.
+    pub(crate) fn set_email(&self, name: &str, email: Option<String>, by: &str) -> Result<(), String> {
         let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
         self.change(|book| {
             let p = book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no principal {name:?}"))?;
@@ -1284,6 +1354,10 @@ impl Accounts {
             }
             if p.email != email {
                 p.provider = None;
+                match email {
+                    Some(_) => p.made(Way::Email, by),
+                    None => p.ways_in.retain(|w| w.way != Way::Email),
+                }
             }
             p.email = email;
             Ok(())
@@ -1636,7 +1710,7 @@ mod tests {
         assert!(a.sign_in("bob", PW).is_ok());
         // A reset: a new link, their sessions end, and the old password no longer signs in.
         let (other, _) = a.sign_in("bob", PW).unwrap();
-        let again = a.reset("bob").unwrap();
+        let again = a.reset("bob", "ada").unwrap();
         assert_eq!((a.who(&token), a.who(&other)), (None, None));
         assert!(a.sign_in("bob", PW).is_err(), "the old password is gone with the reset");
         a.accept(&again, "another good password").unwrap();
@@ -1734,7 +1808,7 @@ mod tests {
         assert!(a.access.document().at >= started);
         a.set_role("bob", "viewer", "ada", None).unwrap();
         a.set_disabled("bob", true).unwrap();
-        a.set_email("bob", Some("bob@example.com".into())).unwrap();
+        a.set_email("bob", Some("bob@example.com".into()), "ada").unwrap();
         assert_eq!(last(&a).0, 4, "nothing bound anew: no version");
         a.remove("bob", "ada").unwrap();
         assert_eq!(last(&a), (5, "ada".into(), "removed bob, and what was bound to bob".into()));
@@ -1788,8 +1862,8 @@ mod tests {
         assert!(a.set_role("ada", "agent", "ada", None).unwrap_err().contains("a person is"));
         assert!(a.invite("claude", "viewer", None, "ada").unwrap_err().contains("already"), "names are unique across kinds");
         assert!(a.add("ada", Kind::Service, "viewer", "ada", "ada").unwrap_err().contains("already"));
-        assert!(a.reset("claude").unwrap_err().contains("not a password"));
-        assert!(a.set_email("claude", Some("c@example.com".into())).unwrap_err().contains("only a person"));
+        assert!(a.reset("claude", "ada").unwrap_err().contains("not a password"));
+        assert!(a.set_email("claude", Some("c@example.com".into()), "ada").unwrap_err().contains("only a person"));
         assert!(a.sign_in("claude", PW).is_err());
         assert!(a.create_token("ada", "mine", "ada").unwrap_err().contains("a token is an agent's or a service's"));
         assert_eq!(a.local(&a.new_local("bma")).map(|w| w.kind), Some(Kind::Person), "the OS user is a person");
@@ -1893,12 +1967,48 @@ mod tests {
         a.set_disabled("cy", true).unwrap();
         assert_eq!(who("https://b", "s9", None), Err(None), "disabled");
         a.set_disabled("cy", false).unwrap();
-        a.set_email("cy", Some("cy@example.com".into())).unwrap();
+        a.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
         assert_eq!(a.principal("cy").unwrap().provider, at("https://b", "s9"), "the same email");
-        a.set_email("cy", Some("cy@example.org".into())).unwrap();
+        a.set_email("cy", Some("cy@example.org".into()), "ada").unwrap();
         assert_eq!(a.principal("cy").unwrap().provider, None, "another email");
         assert_eq!(who("https://b", "s9", None), Err(None));
         assert_eq!(who("https://b", "s3", Some("cy@example.org")), Ok("cy".into()));
+    }
+
+    /// Who could act as someone else (`acting_as`): for a person, whoever made the link their
+    /// password was last set from, an invite's or a reset's, and whoever set their email, the
+    /// latest of each sort and none of their own; a password they set themselves or a provider's
+    /// sign-in changes neither, as who held the link can't be told. For an agent or a service, its
+    /// owner and whoever else made a token of it, while the token is there.
+    #[test]
+    fn who_could_act_as_someone_else_is_whoever_made_their_way_in() {
+        let (a, _) = set_up();
+        let acting = |name: &str| a.acting_as(name).into_iter().map(|(who, how)| format!("{who}: {how}")).collect::<Vec<_>>();
+        let link = a.invite("cy", "viewer", Some("cy@example.com".into()), "ada").unwrap();
+        assert_eq!(acting("cy"), ["ada: ada made cy's invite link", "ada: ada set cy's email"]);
+        a.accept(&link, PW).unwrap();
+        a.change_password("cy", PW, "a new good password", None).unwrap();
+        a.through_provider("https://a", "s1", Some("cy@example.com")).unwrap();
+        assert_eq!(acting("cy").len(), 2, "who used the link, or the email, can't be told");
+        a.reset("cy", "bob").unwrap();
+        assert_eq!(acting("cy"), ["ada: ada set cy's email", "bob: bob made cy's reset link"], "a reset in place of the invite");
+        a.set_email("cy", Some("CY@example.com ".into()), "dee").unwrap();
+        assert_eq!(acting("cy").len(), 2, "the same email: no one sets it anew");
+        a.set_email("cy", Some("cy@example.org".into()), "dee").unwrap();
+        assert_eq!(acting("cy"), ["bob: bob made cy's reset link", "dee: dee set cy's email"]);
+        a.set_email("cy", None, "dee").unwrap();
+        a.reset("cy", "cy").unwrap();
+        assert!(acting("cy").is_empty(), "no email, and a link of cy's own");
+        assert!(acting("ada").is_empty(), "who set the server up set their own password");
+
+        a.invite("bob", "viewer", None, "ada").unwrap();
+        a.add("bot", Kind::Agent, "agent", "bob", "ada").unwrap();
+        assert_eq!(acting("bot"), ["bob: bob owns bot"]);
+        a.create_token("bot", "bob's", "bob").unwrap();
+        let (_, theirs) = a.create_token("bot", "ada's", "ada").unwrap();
+        assert_eq!(acting("bot"), ["bob: bob owns bot", "ada: ada made bot's token \"ada's\""]);
+        a.revoke_token("bot", &theirs.id).unwrap();
+        assert_eq!(acting("bot"), ["bob: bob owns bot"]);
     }
 
     #[test]

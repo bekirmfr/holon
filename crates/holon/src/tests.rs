@@ -5918,7 +5918,7 @@ fn accounts_through_the_routes() {
     // refused from then on; another of cy's sign-ins there isn't.
     {
         use crate::oidc::tests::{provider, token};
-        accounts.set_email("cy", Some("cy@example.com".into())).unwrap();
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
         accounts.use_oidc(provider());
         let [first, second] = [1, 2].map(|n| token(serde_json::json!({ "email": "cy@example.com", "email_verified": true, "nonce": n })));
         assert_eq!(call("GET", "/flows", null.clone(), Some(&first)).status_code, 200);

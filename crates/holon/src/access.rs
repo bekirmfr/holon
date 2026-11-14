@@ -291,7 +291,7 @@ mod tests {
         use crate::oidc::tests::{provider, token};
         let (access, _) = server();
         let accounts = access.accounts().unwrap();
-        accounts.set_email("cy", Some("cy@example.com".into())).unwrap();
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
         accounts.use_oidc(provider());
         let cy = token(serde_json::json!({ "email": "cy@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&cy)), Ok(Some("cy".into())));
@@ -300,11 +300,11 @@ mod tests {
         assert_eq!(call(&access, "GET", "/flows", Some(&moved)), Ok(Some("cy".into())), "the same subject, its email changed at the provider");
         let other = token(serde_json::json!({ "sub": "user-2", "email": "cy@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "cy's email, another subject");
-        accounts.set_email("cy", Some("cy@example.com".into())).unwrap();
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
         assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "the same email set again changes nothing");
-        accounts.set_email("cy", Some("Cy@Example.com ".into())).unwrap();
+        accounts.set_email("cy", Some("Cy@Example.com ".into()), "ada").unwrap();
         assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "nor written otherwise");
-        accounts.set_email("cy", Some("cy2@example.com".into())).unwrap();
+        accounts.set_email("cy", Some("cy2@example.com".into()), "ada").unwrap();
         let other = token(serde_json::json!({ "sub": "user-2", "email": "cy2@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&other)), Ok(Some("cy".into())), "set again: matched anew");
         assert_eq!(call(&access, "GET", "/flows", Some(&cy)), Err(403), "the first subject no longer");

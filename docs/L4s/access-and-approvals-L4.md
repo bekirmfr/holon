@@ -94,6 +94,14 @@ struct Principal {
 - **Owners.** An agent or service has an owner, a person. Disabling the owner doesn't disable the
   agent, but the People page flags it ("its owner is disabled"). Only a principal holding
   `people.manage` on it, or its owner, makes or revokes its tokens.
+- **Ways in.** Whoever made the link a person's password was last set from (an invite, a reset),
+  or set the email a provider matches them by, could act as them: who used a link can't be told.
+  So could an agent's or a service's owner, and whoever else made a token of it. The accounts book
+  keeps who made each (`ways_in`), and `GET /people` says it.
+- **The machine is the root, and no account is.** Whoever holds the server's machine holds the
+  data folder (the accounts, the access document, the secrets key), and its run file is admin on
+  the host. A root account would be one person who could take over anyone, alone, and the best
+  account to steal; it would add power without taking any from the machine.
 
 ## 4. Permissions: the catalogue
 
@@ -210,6 +218,15 @@ at deploy, is the thing being governed. Slugs stay for one-off bindings.
   through the run file to the settings (below). Proposals are a file of their own,
   `access.proposals.json` beside `access.json`, not versions of the document; one made is a
   version by its author, its why naming who approved it.
+- **No one takes over someone whose access waits.** While `changes` is N, no account makes a way
+  in to someone else who holds what giving waits for: their password reset, their email set, a
+  token of theirs made but by its owner, another owner given them, or the identity provider set
+  while another person holds any of it (403). Whoever did could act as them, a second person where
+  people are counted, while gaining nothing D19 would stop. They do it themselves, or the run
+  file does; or what they hold is taken away (at once) and given back (waits). A proposal says
+  whom it gives more and who could act as them; none of those approves it, and a way in made to one
+  of them since makes it stale. With `changes` off, an admin already gives anything alone, and
+  this holds no more than that.
 - **No one locks the host out.** The last binding of `admin` to an enabled person can't be removed;
   the OS user's run-file admin always works: a change to the approval settings through it is made
   at once, so a host whose approvers are gone turns `changes` down there.
@@ -505,7 +522,9 @@ One commit each; the first two change no behaviour.
    making it on a copy of the accounts (`Accounts::trial`) and comparing what each principal may
    do before and after, for as long, through `can`; a route's change that gives more waits (202),
    approved by people holding what it gives, made at the last approval, stale if it no longer
-   applies. The CLI, `holon mcp` and the editor follow (8d).
+   applies; no one makes a way in to someone else holding what waits, and whoever could act as
+   whom a change gives more doesn't approve it (8e). The CLI, `holon mcp` and the editor follow
+   (8d).
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and
    approvals pages; the editor guide.
 

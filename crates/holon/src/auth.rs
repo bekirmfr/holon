@@ -25,6 +25,13 @@
 //!
 //! Admins also: `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an
 //! admin does goes in the activity log.
+//!
+//! No one changes someone holding more than they do (D19, `may_change`). And while an access
+//! change that gives more waits for people, no one makes a way in to someone else holding what
+//! that governs, whose name would count as a second person (the access plan's D12,
+//! `may_take_over`): a reset, their email, a token of theirs but by its owner, their owner, the
+//! provider. They do it themselves, or this machine's run file does; or what they hold is taken
+//! away first, which applies at once, and given back after, which waits.
 
 use rouille::{Request, Response};
 use serde::Deserialize;
@@ -64,6 +71,7 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
         "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by,
         "owner": p.owner, "owner_disabled": owner_disabled,
         "invited": accounts.invited(&p.name),
+        "ways_in": accounts.acting_as(&p.name).into_iter().map(|(_, how)| how).collect::<Vec<_>>(),
     });
     if p.kind != Kind::Person {
         v["tokens"] = serde_json::json!(accounts.tokens(&p.name));
@@ -95,6 +103,22 @@ fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Re
         Some(more) => Err(err(403, format!("{more}: you change, or act as, only someone who holds no more than you"))),
         None => Ok(()),
     }
+}
+
+/// Why `caller` may not do `what` ("resets bob's password"), which makes a way in to `name`, if
+/// they may not (the access plan's D12): while this host has people approve an access change that
+/// gives more, whoever made one to someone holding what that governs could act as them, counted as
+/// another person, so no one makes one but `name` themself and this machine's run file, which
+/// holds the data folder anyway. Taken from them first, which applies at once, it is given back
+/// after, which waits.
+fn may_take_over(caller: &Caller, accounts: &Accounts, name: &str, what: &str) -> Result<(), Response> {
+    if caller.local.is_some() || caller.name.as_deref() == Some(name) {
+        return Ok(());
+    }
+    let Some(n) = accounts.access_document().approvals.changes else { return Ok(()) };
+    let Some(held) = crate::access_proposals::governing(accounts, name) else { return Ok(()) };
+    let instead = format!("or take that from {name} first, which applies at once, and give it back after, which waits");
+    Err(err(403, crate::access_proposals::taken_over(name, &held, what, n, &instead)))
 }
 
 /// Where `request` came from, as the tries of a way in are counted (accounts.rs, `counted`): its
@@ -329,6 +353,16 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 if let Some(more) = accounts.principals().iter().filter(|p| p.kind == Kind::Person).find_map(|p| holds_more(caller, accounts, &p.name)) {
                     return Err(err(403, format!("{more}: a provider says who each person here is, so it is set only by someone who holds what each of them holds")));
                 }
+                // And while giving waits for people, it is a way in to each of them (D12).
+                let others = || accounts.principals().into_iter().filter(|p| p.kind == Kind::Person && Some(p.name.as_str()) != caller.name.as_deref());
+                if s.settings.is_some()
+                    && caller.local.is_none()
+                    && let Some(n) = accounts.access_document().approvals.changes
+                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing(accounts, &p.name)?)))
+                {
+                    let instead = "or turn off access changes waiting for people first (holon access approvals --changes off), which waits too";
+                    return Err(err(403, crate::access_proposals::taken_over(&name, &held, "sets the identity provider, which says who each person here is,", n, instead)));
+                }
                 let what = if s.settings.is_some() { "set signing in through a provider" } else { "turned off signing in through a provider" };
                 let issuer = s.settings.as_ref().map(|o| o.issuer.clone()).unwrap_or_default();
                 accounts.set_oidc(s.settings).map_err(fail)?;
@@ -354,6 +388,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         body::<New>(request).and_then(|n| {
                             if !owned {
                                 may_change(caller, accounts, name)?;
+                                may_take_over(caller, accounts, name, &format!("makes a token of {name}"))?;
                             }
                             let (token, entry) = accounts.create_token(name, &n.label, by).map_err(fail)?;
                             state.activity.record("made a token for", name, Some(by));
@@ -372,10 +407,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some(name) = rest.strip_suffix("/reset")
                 && method == "POST"
             {
-                if let Err(r) = may_change(caller, accounts, name) {
+                if let Err(r) = may_change(caller, accounts, name).and_then(|_| may_take_over(caller, accounts, name, &format!("resets {name}'s password"))) {
                     return Some(r);
                 }
-                return respond(accounts.reset(name).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
+                return respond(accounts.reset(name, by).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
                     state.activity.record("reset the password of", name, Some(by));
                     Response::json(&serde_json::json!({ "name": name, "invite": link }))
                 }));
@@ -407,6 +442,17 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                     owner: Option<String>,
                 }
                 return respond(body::<Change>(request).and_then(|c| {
+                    // A way in to someone holding what waits for people to be given (D12), before
+                    // anything is changed: another email, which a provider matches, or owner.
+                    let now = accounts.principal(name);
+                    if let Some(email) = c.email.as_deref().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty())
+                        && now.as_ref().is_some_and(|p| p.email.as_deref() != Some(email.as_str()))
+                    {
+                        may_take_over(caller, accounts, name, &format!("sets {name}'s email"))?;
+                    }
+                    if let Some(owner) = c.owner.as_deref().filter(|o| now.as_ref().is_some_and(|p| p.owner.as_deref() != Some(*o))) {
+                        may_take_over(caller, accounts, name, &format!("makes {owner} the owner of {name}"))?;
+                    }
                     // A role that gives more waits for people (access_proposals.rs); the rest is
                     // changed at once, and the answer says what waits.
                     let mut waits = None;
@@ -426,7 +472,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         state.activity.record(if disabled { "disabled" } else { "enabled" }, name, Some(by));
                     }
                     if let Some(email) = c.email {
-                        accounts.set_email(name, Some(email)).map_err(fail)?;
+                        accounts.set_email(name, Some(email), by).map_err(fail)?;
                     }
                     if let Some(display) = c.display {
                         accounts.set_display(name, Some(display)).map_err(fail)?;

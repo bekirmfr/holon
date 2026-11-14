@@ -568,6 +568,125 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
     }
 }
 
+/// `server()`, with bob an admin, his email bob@example.com; `classifier` (run.decide, run.view), an agent's role; the agents
+/// `bot`, bound classifier on the host, and `pup`, a viewer, each owned by bob; and, when
+/// `changes`, an access change that gives more waiting for one person besides its author. Answered
+/// with a token of this machine's run file, tied to no account.
+fn takeover_world(changes: bool) -> (AppState, Tokens, String) {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| {
+        let (code, said) = send(&state, &t.ada, method, path, body);
+        assert!((200..300).contains(&code), "{method} {path}: {said}");
+    };
+    ada("PATCH", "/people/bob", json!({ "role": "admin", "email": "bob@example.com" }));
+    ada("PUT", "/roles/classifier", json!({ "allows": ["run.decide", "run.view"], "kinds": ["agent"] }));
+    for agent in ["bot", "pup"] {
+        ada("POST", "/people", json!({ "name": agent, "kind": "agent", "role": "viewer", "owner": "bob" }));
+    }
+    ada("POST", "/bindings", json!({ "who": { "principal": "bot" }, "role": "classifier", "scope": "host" }));
+    if changes {
+        ada("PUT", "/access/approvals", json!({ "changes": 1 }));
+    }
+    let local = state.access.accounts().unwrap().new_local("bma");
+    (state, t, local)
+}
+
+/// While an access change that gives more waits for people, no one makes a way in to someone else
+/// holding what that governs, whose name would count as a second person (the access plan's D12):
+/// every route that changes a principal makes a way in with a case here, or says why it makes none.
+/// Each way in is refused an admin (ada), saying so, to whoever holds what waits (bob, an admin;
+/// bot, an agent deciding its steps; for the provider, every person here), and made by the same
+/// admin to whoever holds none of it (cy, pup), while the setting is off, through the run file,
+/// and by whoever it is a way in to, or for a token its owner (bob).
+#[test]
+fn no_one_takes_over_someone_holding_what_waits_for_people() {
+    use crate::can::{Action, Rule, ROUTES};
+    // (route, method, to someone holding what waits, to someone holding none of it, body, who
+    // makes it for themself, what the refusal says is done).
+    type Way = ((&'static str, &'static str), &'static str, &'static str, Option<&'static str>, Value, Option<&'static str>, &'static str);
+    let provider = json!({ "settings": { "issuer": "http://127.0.0.1:9", "client_id": "holon" } });
+    let ways: [Way; 5] = [
+        (("POST", "/people/{name}/reset"), "POST", "/people/bob/reset", Some("/people/cy/reset"), Value::Null, Some("bob"), "resets bob's password"),
+        (("PATCH", "/people/{name}"), "PATCH", "/people/bob", Some("/people/cy"), json!({ "email": "someone@example.com" }), Some("bob"), "sets bob's email"),
+        (("PATCH", "/people/{name}"), "PATCH", "/people/bot", Some("/people/pup"), json!({ "owner": "ada" }), None, "makes ada the owner of bot"),
+        (("POST", "/people/{name}/tokens"), "POST", "/people/bot/tokens", Some("/people/pup/tokens"), json!({ "label": "mine now" }), Some("bob"), "makes a token of bot"),
+        (("POST", "/admin/oidc"), "POST", "/admin/oidc", None, provider, None, "sets the identity provider, which says who each person here is,"),
+    ];
+    let not_ways = [
+        (("POST", "/people"), "a new principal holds nothing that waits (a role that would is refused, 409): its link or owner is a way in to no one who does"),
+        (("DELETE", "/people/{name}/tokens/{id}"), "takes a way in away"),
+        (("DELETE", "/people/{name}"), "takes them away, and every way in to them"),
+        (("POST", "/bindings"), "what is bound: given, it waits for people"),
+        (("DELETE", "/bindings/{id}"), "what is bound: taken away at once"),
+        (("PUT", "/roles/{name}"), "what is bound: given, it waits for people"),
+        (("DELETE", "/roles/{name}"), "refused while the role is bound (D28)"),
+        (("PUT", "/groups/{name}"), "what is bound: given, it waits for people"),
+        (("DELETE", "/groups/{name}"), "refused while the group is bound (D28)"),
+        (("POST", "/access/proposals/{id}/approve"), "makes what waited, by its author"),
+        (("POST", "/access/proposals/{id}/decline"), "makes nothing"),
+        (("PUT", "/access/approvals"), "how this host decides approvals: no one's way in"),
+        (("PUT", "/access/local"), "the run file's own way in, which is this machine's: the root here (D11)"),
+    ];
+    let changing: Vec<(&str, &str)> = ROUTES
+        .iter()
+        .filter(|r| r.method != "GET" && matches!(r.rule, Rule::Can(Action::PeopleManage | Action::PeopleAssign | Action::RoleDefine, _)))
+        .map(|r| (r.method, r.path))
+        .collect();
+    let mut said: Vec<(&str, &str)> = ways.iter().map(|w| w.0).chain(not_ways.iter().map(|n| n.0)).collect();
+    said.dedup();
+    for route in &changing {
+        assert!(said.contains(route), "{route:?} changes a principal, and has no case here: is it a way in?");
+    }
+    assert_eq!(said.len(), changing.len(), "a case for a route the table doesn't have: {said:?}");
+
+    for (route, method, held, none, body, themself, what) in ways {
+        let made = |changes: bool, by: &str, path: &str| {
+            let (state, t, local) = takeover_world(changes);
+            let token = match by {
+                "ada" => t.ada.clone(),
+                "bob" => t.bob.clone(),
+                _ => local,
+            };
+            let (code, said) = refusal(send(&state, &token, method, path, body.clone()));
+            // The provider is let through to its discovery, which no one answers here.
+            let through = (200..300).contains(&code) || (route.1 == "/admin/oidc" && code == 400);
+            (through, code, said)
+        };
+        let (through, code, said) = made(true, "ada", held);
+        let target = if route.1 == "/admin/oidc" { "bob" } else { held.trim_start_matches("/people/").split('/').next().unwrap() };
+        assert!(!through && code == 403, "{route:?} by ada to {target}: {code} {said}");
+        assert!(said.contains(&format!("whoever {what} could act as {target}, counted as another person")), "{route:?}: {said}");
+        assert!(said.ends_with("which waits") || said.ends_with("which waits too"), "{route:?}: {said}");
+        for (changes, by, path, case) in [(true, "ada", none, "to someone holding none of it"), (false, "ada", Some(held), "the setting off"), (true, "local", Some(held), "through the run file"), (true, "bob", themself.map(|_| held), "by themself, or its owner")] {
+            let Some(path) = path else { continue };
+            let (through, code, said) = made(changes, by, path);
+            assert!(through, "{route:?} {path}, {case}: {code} {said}");
+        }
+    }
+
+    // Word for word, the first.
+    let (state, t, _) = takeover_world(true);
+    assert_eq!(
+        refusal(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null)),
+        (403, "bob holds run.decide on this host, as admin, and giving that waits here for 1 person other than its giver: whoever resets bob's password could act as bob, counted as another person, so it is done only through this server's machine (its run file); or take that from bob first, which applies at once, and give it back after, which waits".into())
+    );
+    // Not a way in: his email as it is, or cleared, and how he is shown.
+    for same in [json!({ "email": " Bob@Example.com" }), json!({ "email": "" }), json!({ "display": "Bob" })] {
+        assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", same.clone()).0, 200, "{same}");
+    }
+    // That way, through the rules there are: taken away at once, reset, and given back, which
+    // waits, its proposal saying who made bob's link.
+    assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "viewer" })).0, 200);
+    assert_eq!(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null).0, 200);
+    let (code, said) = send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "admin" }));
+    assert_eq!(code, 202, "{said}");
+    let p = &serde_json::from_str::<Value>(&said).unwrap()["proposal"];
+    assert_eq!((p["to"].clone(), p["ways_in"].clone()), (json!(["bob"]), json!(["ada made bob's reset link"])));
+    let people: Value = serde_json::from_str(&send(&state, &t.ada, "GET", "/people", Value::Null).1).unwrap();
+    let bob = people.as_array().unwrap().iter().find(|p| p["name"] == "bob").unwrap();
+    assert_eq!(bob["ways_in"], json!(["ada made bob's reset link"]), "the People page says it too");
+}
+
 /// While an access change that gives more waits for people (`approvals.changes`), each route that
 /// makes one answers 202 with the proposal, saying what its version will say, and changes nothing
 /// but what gives no more (a display name beside a role); a new principal with a role that would
