@@ -9,7 +9,7 @@ import type { Projection } from "./canvasOps";
 import type { Mode } from "./tabs";
 import type { CanvasLevel } from "./canvasLevel";
 import { Kbd } from "./ui/Kbd";
-import { gateOf, type Answer } from "./useCan";
+import { gateOf, type Answer } from "./can";
 import type { DeploymentEntry } from "./server";
 import { follow, format, type Route } from "./routes";
 

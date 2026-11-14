@@ -19,7 +19,7 @@ import {
   type Method,
 } from "./endpoint";
 import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending } from "./server";
-import { gateOf, type Answer } from "./useCan";
+import { gateOf, type Answer } from "./can";
 import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 

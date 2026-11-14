@@ -12,7 +12,7 @@ import type { RowMay } from "./canvasLevel";
 import { KIND_WORD, rowKey } from "./StatementGraph";
 import { samples } from "./samples";
 import { listDatabases, listFeeds, listFolders, listMails, listQueues, listSecrets, listServerSecrets } from "./server";
-import { useCan } from "./useCan";
+import { useCan } from "./can";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -210,8 +210,8 @@ function ImportSection({
   slug: string | null;
   deployed: boolean;
 }) {
-  const can = useCan(["resource.view"]);
-  const view = can.holds("resource.view");
+  const can = useCan();
+  const view = can.holds("resources");
   const bound = useBound(imported, slug, view);
   const secret = imported.kind === "secret";
   const mark = useSecretMark(imported.target, slug, deployed, view && secret);
@@ -234,7 +234,7 @@ function ImportSection({
         ? `the action ${imported.name} of the flow ${imported.target}, run on this host`
         : secret
           ? null
-          : (UNBOUND[imported.kind] ?? (!can.known ? "…" : !view ? `not shown to you: ${can.may("resource.view")}` : bound === undefined ? "…" : (bound ?? "not bound on this host yet: an admin binds it")));
+          : (UNBOUND[imported.kind] ?? (!can.known ? "…" : !view ? `not shown to you: ${can.may("resources")}` : bound === undefined ? "…" : (bound ?? "not bound on this host yet: an admin binds it")));
   return (
     <section className="hl-itext" aria-label={`the import ${imported.name}`}>
       <div className="hl-itext__head">

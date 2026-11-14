@@ -36,7 +36,7 @@ import {
   type SessionEntry,
   type WaitingRun,
 } from "./server";
-import { Gated, gateOf, type Answer, type Can } from "./useCan";
+import { Gated, gateOf, type Answer, type Can } from "./can";
 
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -53,7 +53,7 @@ export function SettingsTab({
 }: {
   slug: string;
   entry: DeploymentEntry;
-  /** What whoever is signed in may do to it (FlowPage.tsx's FLOW_ACTIONS). */
+  /** What whoever is signed in may do to it (can.tsx, on the flow). */
   can: Can;
   /** Asked for from the admin page: each new value brings the permissions into view. */
   focus?: number;
@@ -93,16 +93,16 @@ export function SettingsTab({
       <p className="hl-flow__note hl-flow__settings-how">
         Each setting changes here. One that narrows what it may do applies at once; one that widens it is a new version, which a person approves.
       </p>
-      <Permissions slug={slug} view={view} error={grantError} manifest={manifest} focus={focus} onChanged={(v) => (setView(v), onChanged())} may={can.may("flow.approve-deploy")} />
-      {secretNames.length > 0 && <Secrets slug={slug} names={secretNames} may={can.may("secret.set")} envNames={can.holds("resource.view")} />}
-      <Limits slug={slug} title="Limits" group="limits" rows={rows} known={policy !== null} may={can.may("flow.deploy")} onChanged={reread} onEdit={onEdit} />
-      <Limits slug={slug} title="Runs kept" group="runs kept" rows={rows} known={policy !== null} may={can.may("flow.deploy")} onChanged={reread} onEdit={onEdit} />
-      <Network view={view} policy={policy} may={can.may("flow.approve-deploy")} onChange={(item) => changeGrant(slug, { revoke: [item] }).then((v) => (setView(v), onChanged()))} onEdit={onEdit} />
-      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("flow.deploy")} onChanged={onChanged} />
+      <Permissions slug={slug} view={view} error={grantError} manifest={manifest} focus={focus} onChanged={(v) => (setView(v), onChanged())} may={can.may("grant")} />
+      {secretNames.length > 0 && <Secrets slug={slug} names={secretNames} may={can.may("setSecret")} envNames={can.holds("resources")} />}
+      <Limits slug={slug} title="Limits" group="limits" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
+      <Limits slug={slug} title="Runs kept" group="runs kept" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
+      <Network view={view} policy={policy} may={can.may("grant")} onChange={(item) => changeGrant(slug, { revoke: [item] }).then((v) => (setView(v), onChanged()))} onEdit={onEdit} />
+      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("settings")} onChanged={onChanged} />
       {(entry.waiting ?? 0) > 0 && <Waiting slug={slug} count={entry.waiting ?? 0} />}
-      <Sessions entry={entry} onRunFrom={(n) => onAction("run", n)} may={can.may("flow.lifecycle")} />
-      <Lifecycle entry={entry} onAction={onAction} may={can.may("flow.lifecycle")} />
-      <Remove slug={slug} stopped={entry.status === "stopped"} onRemove={onRemove} may={can.may("flow.delete")} />
+      <Sessions entry={entry} onRunFrom={(n) => onAction("run", n)} may={can.may("run")} />
+      <Lifecycle entry={entry} onAction={onAction} can={can} />
+      <Remove slug={slug} stopped={entry.status === "stopped"} onRemove={onRemove} may={can.may("remove")} />
     </div>
   );
 }
@@ -486,7 +486,7 @@ function Sessions({ entry, onRunFrom, may }: { entry: DeploymentEntry; onRunFrom
 
 /** Pause or resume it, and stop it: a stop ends its session, saves its state and releases its
  *  port, and asks first, saying how many waiting runs would end (`flow.lifecycle`). */
-function Lifecycle({ entry, onAction, may }: { entry: DeploymentEntry; onAction: (action: "run" | "pause" | "stop") => Promise<void>; may: Answer }) {
+function Lifecycle({ entry, onAction, can }: { entry: DeploymentEntry; onAction: (action: "run" | "pause" | "stop") => Promise<void>; can: Can }) {
   const dialog = useDialog();
   const [msg, setMsg] = useState("");
   const act = (action: "run" | "pause" | "stop") => {
@@ -504,21 +504,21 @@ function Lifecycle({ entry, onAction, may }: { entry: DeploymentEntry; onAction:
       {msg && <div className="hl-flow__bad">{msg}</div>}
       <div className="hl-flow__bar">
         {entry.status === "running" && (
-          <button className="hl-flow__button" onClick={() => act("pause")} {...gateOf(may, { title: "stop answering, keep the port and the session" })}>
+          <button className="hl-flow__button" onClick={() => act("pause")} {...can.gate("pause", { title: "stop answering, keep the port and the session" })}>
             Pause
           </button>
         )}
         {entry.status === "paused" && (
-          <button className="hl-flow__button" onClick={() => act("run")} {...gateOf(may, { title: "continue the same session" })}>
+          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("run", { title: "continue the same session" })}>
             Resume
           </button>
         )}
         {entry.status === "stopped" ? (
-          <button className="hl-flow__button" onClick={() => act("run")} {...gateOf(may, { title: "a new session, from the state the last one left" })}>
+          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("run", { title: "a new session, from the state the last one left" })}>
             Run
           </button>
         ) : (
-          <button className="hl-flow__button hl-flow__button--danger" onClick={() => void stop()} {...gateOf(may, { title: "end the session, save its state, release the port" })}>
+          <button className="hl-flow__button hl-flow__button--danger" onClick={() => void stop()} {...can.gate("stop", { title: "end the session, save its state, release the port" })}>
             Stop…
           </button>
         )}

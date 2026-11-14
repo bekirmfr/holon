@@ -14,7 +14,7 @@ import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
 import { useListKeys } from "./ui/Keys";
-import { gateOf, useCan, type Answer } from "./useCan";
+import { gateOf, useCan, type Answer } from "./can";
 
 type Show = "all" | "live" | "waiting" | "paused";
 const SHOWS: [Show, string, string][] = [
@@ -84,7 +84,7 @@ export function FlowsPage({
 }) {
   const dialog = useDialog();
   // Deleting a saved flow (`DELETE /flows/<name>` asks flow.delete, of any flow).
-  const can = useCan(["flow.delete"]);
+  const can = useCan();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   const [msg, setMsg] = useState("");
   // What a publish answered.
@@ -234,7 +234,7 @@ export function FlowsPage({
                   onReload={() => load(r.name, true)}
                   onDownload={() => download(r.name)}
                   onDelete={() => remove(r.name)}
-                  mayDelete={can.may("flow.delete")}
+                  mayDelete={can.may("deleteSaved")}
                   publish={
                     marketplace.url
                       ? () => marketplace.onPublish(r.name).then((m) => m && setNote(m))

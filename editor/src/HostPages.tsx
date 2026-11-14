@@ -56,7 +56,7 @@ import {
   type DeploymentEntry,
   ServerError,
 } from "./server";
-import { Gated, gateOf, useCan } from "./useCan";
+import { Gated, gateOf, useCan } from "./can";
 import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
@@ -265,13 +265,13 @@ export function HostPage({ title, about: what, tab, host, children }: { title: s
 export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: ResourcesTab; deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
   const h = useHost(true, tab);
   // Binding (and a server secret's where and roll back), unbinding, and the host's storage and
-  // sweeps (can.rs's routes: resource.bind, resource.unbind, host.operate).
-  const can = useCan(["resource.bind", "resource.unbind", "host.operate"]);
-  const [bind, unbind, operate] = [can.may("resource.bind"), can.may("resource.unbind"), can.may("host.operate")];
+  // sweeps (can.tsx's buttons).
+  const can = useCan();
+  const [bind, unbind, operate] = [can.may("bindResource"), can.may("unbindResource"), can.may("operate")];
   // Where a database or a folder is (its path, where its connection is kept) is shown to whoever
   // may bind one, not to whoever only views them (web-console-L4.md §12 Q4, the narrower answer):
   // the server leaves it out of their lists.
-  const seesWhere = can.holds("resource.bind");
+  const seesWhere = can.holds("bindResource");
   const secretValue = useRef<HTMLInputElement>(null);
   const { setMsg, folders, folderDraft, setFolderDraft, keepFor, setKeepFor, browsing, setBrowsing, databases, databaseDraft, setDatabaseDraft, tables, setTables, serverSecrets, secretDraft, setSecretDraft, grants, swept, setSwept, host, setHost, everyDraft, setEveryDraft, warnDraft, setWarnDraft, fullDraft, setFullDraft, backupDraft, setBackupDraft, kind, setKind, dialog, sweeps, refresh, readTables, act, folderHolders, databaseHolders, unbindingSays, mails, mailDraft, setMailDraft, noMail, feeds, feedDraft, setFeedDraft, noFeed, queues, queueDraft, setQueueDraft, noQueue, mailHolders, feedHolders, queueHolders } = h;
   return (
@@ -989,8 +989,8 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             grants={grants}
             known={h.grantsKnown}
             proposals={h.proposals}
-            bind={bind}
-            unbind={unbind}
+            bind={can.may("setServerSecret")}
+            unbind={can.may("removeServerSecret")}
             onSetNew={(s) => {
               // The bind form below takes it, its value typed where it is never shown.
               setSecretDraft({ ...secretDraft, name: s.name, value: "", kind: s.source === "local" ? "value" : s.source.startsWith("vault:") ? "vault" : "env" });
@@ -1009,7 +1009,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             }}
             onChanged={refresh}
           />
-          <Gated may={bind}>
+          <Gated may={can.may("setServerSecret")}>
           <form
             style={{ ...row, background: "transparent", flexWrap: "wrap" }}
             onSubmit={(e) => {
@@ -1377,7 +1377,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
 export function PolicyPage({ deployments, onOpenDeployment }: { deployments: DeploymentEntry[]; onOpenDeployment: (slug: string) => void }) {
   const h = useHost();
   // Reading holon.toml again (`POST /permissions/reload`) is policy.edit's.
-  const can = useCan(["policy.edit"]);
+  const can = useCan();
   const { policy, setPolicy, reloaded, setReloaded, act } = h;
   // Check flows against it: shown once asked, read from the deployments and proposals as they are.
   const [checking, setChecking] = useState(false);
@@ -1436,7 +1436,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
         <button
           style={small}
-          {...can.gate("policy.edit", { title: "read holon.toml again and hold every deployment to it" })}
+          {...can.gate("reloadPolicy", { title: "read holon.toml again and hold every deployment to it" })}
           onClick={() =>
             act(async () => {
               const r = await reloadPermissions();
