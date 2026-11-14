@@ -1539,7 +1539,10 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry & 
 /** What forgetting a removed deployment's keys did (`POST /admin/keys/forget`, keys.rs): whether
  *  anything was sealed under them, and whether the root key was rotated where it is kept (not when
  *  it is in an environment variable, `why` says). */
-export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string }; error?: string };
+/** What a forget did. `root.rotated`: the root key was rotated where it is kept, so backups and
+ *  copies of the data folder taken before need the old one (`pending`: rotated, `keys.json`'s last
+ *  write left to the next start). */
+export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string; pending?: string }; error?: string };
 
 /** `POST /admin/keys/forget` — a removed deployment's keys forgotten: nothing it left opens again. */
 export async function forgetKeys(slug: string): Promise<Forgotten> {

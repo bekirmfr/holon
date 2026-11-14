@@ -121,9 +121,46 @@ impl KeySource {
         }
     }
 
-    /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an
-    /// environment variable, which only the operator can unset.
+    /// The keys files opened under the root kept here, as the file system resolves them: kept
+    /// beside the root (`<key file>.keyrings`, or `<account>-keyrings` in the OS key store), so a
+    /// rotation in place can tell when another data folder still opens under this root
+    /// ([`crate::at_rest`]). None for a variable, which the server can't write. Not a key: paths.
+    pub(crate) fn keyrings(&self) -> Result<Vec<PathBuf>, String> {
+        let text: Option<String> = match self {
+            KeySource::Os { account } => os_store::read(&format!("{account}-keyrings"))?.map(|t| t.to_string()),
+            KeySource::Env(_) => return Ok(Vec::new()),
+            KeySource::File(path) => match std::fs::read_to_string(keyrings_file(path)) {
+                Ok(t) => Some(t),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("could not read {}: {e}", keyrings_file(path).display())),
+            },
+        };
+        Ok(text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default())
+    }
+
+    /// [`KeySource::keyrings`] kept as `keyrings`.
+    pub(crate) fn keep_keyrings(&self, keyrings: &[PathBuf]) -> Result<(), String> {
+        let text = serde_json::to_string(keyrings).map_err(|e| e.to_string())?;
+        match self {
+            KeySource::Os { account } => os_store::write(&format!("{account}-keyrings"), &text),
+            KeySource::Env(_) => Ok(()),
+            KeySource::File(path) => write_private(&keyrings_file(path), text.as_bytes()).map_err(|e| format!("could not write {}: {e}", keyrings_file(path).display())),
+        }
+    }
+
+    /// Drop the key (`uninstall --purge`), and the list of keyrings kept beside it. `Ok(false)`: there was
+    /// none here, or it is an environment variable, which only the operator can unset.
     pub(crate) fn forget(&self) -> Result<bool, String> {
+        // The list goes with its key; one left behind would only name folders.
+        match self {
+            KeySource::Os { account } => {
+                let _ = os_store::delete(&format!("{account}-keyrings"));
+            }
+            KeySource::Env(_) => {}
+            KeySource::File(path) => {
+                let _ = std::fs::remove_file(keyrings_file(path));
+            }
+        }
         match self {
             KeySource::Os { account } => os_store::delete(account),
             KeySource::Env(_) => Ok(false),
@@ -134,6 +171,13 @@ impl KeySource {
             },
         }
     }
+}
+
+/// Where a key file's keyrings are listed ([`KeySource::keyrings`]): beside it.
+fn keyrings_file(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".keyrings");
+    PathBuf::from(name)
 }
 
 /// Whether `path` is in `dir` or below it, as the file system resolves both: a root key file in

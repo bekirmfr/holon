@@ -1730,7 +1730,11 @@ function Canvas({
                     const f: Forgotten = await forgetKeys(route.slug).catch((e: unknown): Forgotten => ({ slug: route.slug, forgotten: false, root: { rotated: false }, error: e instanceof Error ? e.message : String(e) }));
                     if (f.error) toast(`Removed ${route.slug}, but its keys aren't forgotten: ${f.error}`, "bad");
                     else if (!f.root.rotated && f.forgotten) toast(`Removed ${route.slug} and forgot its keys. The root key isn't rotated: ${f.root.why ?? ""}`, "bad");
-                    else toast(`Removed ${route.slug} and forgot its keys: nothing it left opens again.`, "ok");
+                    else
+                      toast(
+                        `Removed ${route.slug} and forgot its keys: nothing it left opens again. The root key changed: back up the new one (holon key export --to file:PATH); backups and copies of the data folder taken before open only with the old.${f.root.pending ? ` ${f.root.pending}` : ""}`,
+                        "ok",
+                      );
                   }
                   refreshDeployments();
                   navigate({ kind: "flows" });

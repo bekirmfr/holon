@@ -277,6 +277,16 @@ fn root_check(root: &Key) -> String {
     blake3::keyed_hash(root, b"holon root key check").to_hex()[..16].to_string()
 }
 
+/// Whether the keys file at `path` still opens under the root whose check is `check` (made under
+/// it, or in a rotation to it), as far as can be told: one gone, or under another root, doesn't;
+/// one that can't be read is counted as opening, so a rotation never guesses it away.
+fn opens_under(path: &Path, check: &str) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<KeysFile>(&bytes).map_or(true, |f| f.root_check == check || f.next.is_some_and(|n| n.root_check == check)),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 fn wrap_context(key_id: &str, scope: &str, version: u32) -> String {
     format!("holon-key/v1\0{key_id}\0{scope}\0{version}")
 }
@@ -397,6 +407,9 @@ impl Keyring {
         if cut_short && !read_only {
             keyring.persist(&keyring.inner.read().unwrap().file)?;
         }
+        if !read_only {
+            keyring.register();
+        }
         Ok(keyring)
     }
 
@@ -425,6 +438,7 @@ impl Keyring {
         let mut keyring = Keyring::fresh(&root, key_id, Some(path.to_path_buf()), Some(source), None);
         keyring.persist(&keyring.inner.read().unwrap().file)?;
         keyring.made = true;
+        keyring.register();
         Ok(keyring)
     }
 
@@ -457,6 +471,40 @@ impl Keyring {
         let data = new_key();
         let wrapped = seal_with(root, wrap_context(key_id, scope, version).as_bytes(), data.as_slice());
         (Wrapped { wrapped: b64(&wrapped), made_ms: now_ms() }, data)
+    }
+
+    /// This keys file listed beside its root ([`KeySource::keyrings`]), and those no longer under
+    /// it dropped: what lets a rotation in place see another folder still opened by this root (a
+    /// copy of the folder, or one given the same `--root-key`). Best effort: a root kept where the
+    /// server can't write (a mounted secret) lists nothing, and a rotation there can't tell.
+    fn register(&self) {
+        let inner = self.inner.read().unwrap();
+        let (Some(path), Some(source)) = (&self.path, &inner.source) else { return };
+        if matches!(source, KeySource::Env(_)) {
+            return;
+        }
+        let Ok(me) = crate::paths::canonical(path) else { return };
+        let Ok(listed) = source.keyrings() else { return };
+        let mut kept: Vec<PathBuf> = listed.iter().filter(|p| **p != me && opens_under(p, &inner.file.root_check)).cloned().collect();
+        kept.push(me);
+        kept.sort();
+        if kept != listed {
+            let _ = source.keep_keyrings(&kept);
+        }
+    }
+
+    /// The other keys files the root in use still opens, as listed beside it
+    /// ([`Keyring::register`]): a rotation in place would leave each opened by no root, and
+    /// forgetting the old root after a rotation elsewhere would too.
+    pub(crate) fn others_on_root(&self) -> Result<Vec<PathBuf>, String> {
+        let inner = self.inner.read().unwrap();
+        self.others_under(&inner)
+    }
+
+    fn others_under(&self, inner: &Inner) -> Result<Vec<PathBuf>, String> {
+        let Some(source) = inner.source.as_ref().filter(|s| !matches!(s, KeySource::Env(_))) else { return Ok(Vec::new()) };
+        let me = self.path.as_ref().and_then(|p| crate::paths::canonical(p).ok());
+        Ok(source.keyrings()?.into_iter().filter(|p| Some(p) != me.as_ref() && opens_under(p, &inner.file.root_check)).collect())
     }
 
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
@@ -659,6 +707,14 @@ impl Keyring {
             (Some(to), Some(now)) => to.same_place(now),
             (Some(_), None) => false,
         };
+        if in_place && let Some(other) = self.others_under(&inner)?.first() {
+            return Err(format!(
+                "{} opens under this root too (a copy of this data folder, or another folder given the same root key): a new root \
+                 kept in its place would leave that folder opened by none. Give that folder a root of its own first (holon key \
+                 rotate --root --data <its folder> --to file:PATH), or delete it if it is no longer used; then rotate again",
+                other.display()
+            ));
+        }
         let to = to.cloned().or_else(|| inner.source.clone());
         let new = match &to {
             Some(source @ KeySource::Env(var)) => source.read()?.ok_or_else(|| format!("{var} isn't set: set it to the new root key (holon serve --new-root-key prints one), then rotate"))?,
@@ -711,7 +767,10 @@ impl Keyring {
         promote(&mut file, next);
         inner.file = file;
         inner.source = to;
-        Ok(self.persist(&inner.file).err().map(|e| {
+        let written = self.persist(&inner.file);
+        drop(inner);
+        self.register();
+        Ok(written.err().map(|e| {
             format!("the root key is rotated and in use, but {e}: the next start finishes writing it, under the new root, and nothing is lost")
         }))
     }
@@ -1612,6 +1671,56 @@ mod tests {
         assert_ne!(std::fs::read(dir.join("root.key")).unwrap(), before, "a new root, kept in place");
         let again = Keyring::open(&path, Some(&arg), &[]).unwrap();
         assert_eq!(again.open_file("table: test", &table).unwrap().as_slice(), b"kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a root that opens two data folders (a copy of the folder, or one given the same
+    /// `--root-key`) is never rotated in place: the rotation is refused, naming the other folder,
+    /// and both still open; once the other has a root of its own, or is gone, it goes ahead.
+    /// Why: a new root kept in the old one's place opens only the folder rotated, and every other
+    /// folder under the old root (a backup copy, a second server) would open under none (K2).
+    #[test]
+    fn a_root_shared_by_two_folders_is_never_rotated_in_place_from_under_one() {
+        let dir = temp("rotate-shared");
+        let arg = root_arg(&dir, "root.key");
+        let (a, b, c) = (dir.join("a"), dir.join("b"), dir.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let first = Keyring::open(&a.join("keys.json"), Some(&arg), &[]).unwrap();
+        let table = first.seal_file(SERVER, "table: test", b"kept").unwrap();
+        // b and c: copies of a, each opened (a server started on it).
+        std::fs::copy(a.join("keys.json"), b.join("keys.json")).unwrap();
+        std::fs::copy(a.join("keys.json"), c.join("keys.json")).unwrap();
+        let second = Keyring::open(&b.join("keys.json"), Some(&arg), &[]).unwrap();
+        drop(Keyring::open(&c.join("keys.json"), Some(&arg), &[]).unwrap());
+        assert_eq!(first.others_on_root().unwrap().len(), 2, "b and c, as listed beside the root");
+        let root = std::fs::read(dir.join("root.key")).unwrap();
+        for to in [None, Some(KeySource::File(dir.join("root.key")))] {
+            let said = first.rotate_root(to.as_ref()).err().unwrap();
+            assert!(said.contains("opens under this root too"), "{said}");
+            assert_eq!(std::fs::read(dir.join("root.key")).unwrap(), root, "the shared root untouched");
+        }
+        // A forget asks for the rotation, which is refused: the scope is still forgotten.
+        first.seal_line(&deployment("gone"), "log", b"a run").unwrap();
+        assert!(first.forget(&deployment("gone")).unwrap());
+        assert!(first.rotate_root(None).is_err());
+        for d in [&a, &b, &c] {
+            let again = Keyring::open(&d.join("keys.json"), Some(&arg), &[]).unwrap();
+            assert_eq!(again.open_file("table: test", &table).unwrap().as_slice(), b"kept", "{} still opens", d.display());
+        }
+        // b given a root of its own (a rotation elsewhere, which leaves the old root where it is),
+        // c deleted: a rotates in place.
+        assert_eq!(second.rotate_root(Some(&KeySource::File(dir.join("b.key")))).unwrap(), None);
+        std::fs::remove_dir_all(&c).unwrap();
+        assert!(first.others_on_root().unwrap().is_empty());
+        assert_eq!(first.rotate_root(None).unwrap(), None);
+        assert_ne!(std::fs::read(dir.join("root.key")).unwrap(), root, "a new root, kept in place");
+        let opened_a = Keyring::open(&a.join("keys.json"), Some(&arg), &[]).unwrap();
+        let opened_b = Keyring::open(&b.join("keys.json"), Some(&root_arg(&dir, "b.key")), &[]).unwrap();
+        for opened in [opened_a, opened_b] {
+            assert_eq!(opened.open_file("table: test", &table).unwrap().as_slice(), b"kept");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

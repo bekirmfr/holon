@@ -591,7 +591,7 @@ route.post("/bump", () => {{
 /// The low-level writers (owner-only, atomic, appending) and the standard library's, outside
 /// test code: each file's count of them, and why it may write past at_rest.rs.
 const WRITERS: &[(&str, usize, &str)] = &[
-    ("at_rest.rs", 6, "where sealing is: it writes what it sealed, and keys.lock, empty"),
+    ("at_rest.rs", 7, "where sealing is: it writes what it sealed, keys.lock, empty, and keys.json's copy in the backup folder: data keys wrapped under the root"),
     ("bindings.rs", 1, "access.versions.jsonl: lines sealed with seal_line just before"),
     ("blobs.rs", 2, "the file texts' chunks and chunk lists, sealed with seal just before"),
     ("claims.rs", 1, "the state head: a hash, in clear on purpose (§2.5)"),
@@ -606,7 +606,7 @@ const WRITERS: &[(&str, usize, &str)] = &[
     ("mcphosts.rs", 1, "an MCP client's config file, written where a person asked"),
     ("migrate.rs", 1, "holon migrate: a server's files moved byte for byte, as they are"),
     ("recorder.rs", 7, "the run log: its lines and segments sealed (LineSeal) before any of these writes them"),
-    ("sealing.rs", 4, "the writers themselves, and the root key's own file"),
+    ("sealing.rs", 5, "the writers themselves, the root key's own file, and the keys files listed beside it: paths, kept with the root, never in the data folder"),
     ("selfmanage.rs", 1, "holon's own install, edited on update"),
     ("stopping.rs", 1, "the clean-stop mark: a sentence, in clear on purpose (§2.5)"),
     ("storage.rs", 1, "the policy (holon.toml): hand-edited, in clear on purpose (§2.5)"),

@@ -548,7 +548,8 @@ function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boole
       {operate === true && (
         <label className="hl-flow__note">
           <input type="checkbox" checked={forget} disabled={!stopped} onChange={(e) => setForget(e.target.checked)} /> Forget its keys too: its kept run records, its
-          backups and every other file it left can&apos;t be opened again, here or in a copy of the data folder taken before (the root key is rotated where it is kept).
+          backups and every other file it left can&apos;t be opened again, here or in a copy of the data folder taken before. The root key is rotated where it is
+          kept: back up the new one after.
         </label>
       )}
       <div className="hl-flow__bar">

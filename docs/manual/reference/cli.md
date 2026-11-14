@@ -981,7 +981,7 @@ Prints what it swept, what it keeps, and what it spared as new. An in-memory sto
 ```
 holon key status [--json] [--server PORT|URL]
 holon key rotate <scope> [--server PORT|URL]
-holon key forget <slug> [--server PORT|URL]
+holon key forget <slug> --yes [--server PORT|URL]
 holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
 holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
 ```
@@ -996,12 +996,14 @@ anything of one.
 - `rotate <scope>` makes a new version of a scope's data key: what is written from then on is
   sealed under it, and what was sealed under the versions before still opens. `names` is never
   rotated: the store's files are named by it. Needs `host.operate`.
-- `forget <slug>`, for a removed deployment (as `holon remove --forget`): its keys are dropped from
+- `forget <slug> --yes`, for a removed deployment (as `holon remove --forget`; it can't be undone,
+  so it asks for `--yes`): its keys are dropped from
   `keys.json`, so its kept records, its backups and every other file it left open nowhere again,
   and say they were forgotten. The root key is then rotated where it is kept, so a copy of the
   whole folder taken before (which holds the old `keys.json`) needs the old root, which only a
   copy of it kept elsewhere still has; a root in an environment variable can't be rotated by the
-  server, and it says so. The slug deployed again seals under keys of its own. Needs `host.operate`.
+  server, and it says so; nor is a root another data folder still opens (below). Back the new root
+  up after (`export`). The slug deployed again seals under keys of its own. Needs `host.operate`.
 - `export` copies the root key, checked against the folder's `keys.json`, to a file only you can
   read, which must not be there yet and not be in the data folder: how a root kept in the OS key
   store (which shows no one its keys) is backed up. It reads only, so the server may be running.
@@ -1012,8 +1014,11 @@ anything of one.
   already holding a new key: `holon serve --new-root-key` prints one). Start the server with
   `--root-key` set to it after. `--to` must hold no key yet (it refuses one that does, so it never
   writes over another folder's root, or any key it didn't make), unless it is where the root is
-  kept now, however its path is spelled: then the root is rotated in place. The old root stays
-  where it was unless `--forget-old`. `--data` is the data folder (else the one under
+  kept now, however its path is spelled: then the root is rotated in place, which it refuses
+  while another data folder opens under that root (a copy of the folder, or one given the same
+  `--root-key`, each listed beside the root when a server opens it): it names the folder, which
+  needs a root of its own first, or deleting. The old root stays where it was unless
+  `--forget-old`, which keeps it too while another folder opens under it. `--data` is the data folder (else the one under
   `HOLON_HOME`), `--root-key` where its root is now. A rotation cut short loses nothing: the next
   start finishes it, or undoes it. Once the new root is kept the rotation stands, even if the last
   write of `keys.json` fails: it says so, and the next start finishes that write.

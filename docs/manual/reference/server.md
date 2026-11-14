@@ -487,15 +487,22 @@ them; none of it ever shows a key.
 - **A new root**, `holon key rotate --root --to <SOURCE>`, with the server stopped: every data key
   is wrapped under a new root, kept where `--to` says, which must hold no key yet (or be where the
   root is kept now: a rotation in place); start the server with `--root-key` set to it. No data
-  file is touched. A rotation cut short loses nothing: the next start finishes it, or undoes it,
+  file is touched. A root that opens more than one data folder (a copy of the folder, or a second
+  server given the same `--root-key`) is never rotated in place: the other folders would open
+  under none. Each folder a server opens is listed beside its root (`<key file>.keyrings`, or an
+  entry beside it in the OS key store), and a rotation in place refuses while another listed
+  folder still opens under the root, naming it: give that one a root of its own first (`holon key
+  rotate --root --data <its folder> --to file:PATH`), or delete it. A rotation cut short loses nothing: the next start finishes it, or undoes it,
   whichever root it is given.
 - **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
   section): its keys leave `keys.json`, so its kept records, its backups and every file it left
   open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated
   where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
   needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
-  a copy; forgetting doesn't reach it. A root in an environment variable can't be changed by the
-  server: it says so, and `holon key rotate --root` does it with the server stopped.
+  a copy; forgetting doesn't reach it. Back the new root up then (`holon key export`). A root in an
+  environment variable, or one another folder still opens (above), isn't rotated: the forget says
+  so, and `holon key rotate --root` does it with the server stopped. `holon key forget` asks for
+  `--yes`: a forget can't be undone.
 
 ### What the folder still says
 

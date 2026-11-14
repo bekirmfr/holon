@@ -93,8 +93,10 @@ const USAGE: &str = "holon key: the keys the server seals its data under (never 
   holon key rotate <scope>          a new data key for server, secrets or d:<slug>: what is
                                     written from now on is sealed under it, and what was sealed
                                     before still opens (names is never rotated)
-  holon key forget <slug>           a removed deployment's keys forgotten (as holon remove --forget):
-                                    nothing it left opens again, and the root key is rotated
+  holon key forget <slug> --yes     a removed deployment's keys forgotten (as holon remove --forget):
+                                    nothing it left opens again, for good, and the root key is
+                                    rotated where it is kept, so every backup and copy of the data
+                                    folder taken before needs the old root: back up the new one
   holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
                                     a copy of the root key, written owner-only to PATH, which must
                                     hold none: the way to back up a root kept in the OS key store.
@@ -114,7 +116,7 @@ const USAGE: &str = "holon key: the keys the server seals its data under (never 
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon key";
     let usage = format!("{USAGE}{}", cmdline::SIGN_IN);
-    let args = match cmdline::parse(WHO, &usage, args, &["--to", "--data", "--root-key"], &["--root", "--forget-old", "--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--to", "--data", "--root-key"], &["--root", "--forget-old", "--json", "--yes"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -132,6 +134,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         },
         (Some("rotate"), None, true) => rotate_root(&args),
         (Some("export"), None, false) => export_root(&args),
+        (Some("forget"), Some(slug), false) if !args.flag("--yes") => {
+            eprintln!(
+                "{WHO}: forgetting {slug}'s keys can't be undone: nothing it left (its kept log, its backups, its records) opens again, \
+                 and the root key is rotated where it is kept, so every backup and copy of the data folder taken before needs the old root. \
+                 Run it again with --yes to forget them"
+            );
+            2
+        }
         (Some("forget"), Some(slug), false) => match cmdline::json(WHO, &args, "POST", "/admin/keys/forget", Some(&json!({ "slug": slug }))) {
             Ok(v) if args.flag("--json") => {
                 cmdline::print_json(&v);
@@ -172,7 +182,8 @@ pub(crate) fn print_forgotten(v: &Value) -> i32 {
     println!("{slug}: its keys are forgotten: nothing it left (its kept log, its backups, its records) opens on this server again");
     let root = &v["root"];
     if root["rotated"].as_bool() == Some(true) {
-        println!("the root key is rotated where it is kept: a copy of the folder taken before opens only with a copy of the old root, if one was kept");
+        println!("the root key is rotated where it is kept: backups and copies of the data folder taken before open only with the old root, if a copy of it was kept");
+        println!("back up the new root key now, apart from the data folder: holon key export --to file:PATH");
         if let Some(pending) = root["pending"].as_str() {
             eprintln!("{pending}");
         }
@@ -297,6 +308,15 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
         return 2;
     }
     let old = keys.source();
+    // Read before the rotation: after it this folder is under the new root, and the old one's
+    // list says only what else it opens.
+    let others = match keys.others_on_root() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{WHO}: {e}");
+            return 1;
+        }
+    };
     match keys.rotate_root(Some(&new)) {
         Ok(None) => println!("the root key is now in {new}; every data key in {} is wrapped under it", data.join("keys.json").display()),
         Ok(Some(why)) => eprintln!("{WHO}: the root key is now in {new}, but {why}"),
@@ -308,6 +328,10 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
     // Compared by place, not by spelling: `--to` the file in use written another way is a
     // rotation in place, and forgetting "the old" there would forget the new root.
     match old.filter(|o| !o.same_place(&new)) {
+        Some(old) if args.flag("--forget-old") && !others.is_empty() => {
+            let names: Vec<String> = others.iter().map(|p| p.display().to_string()).collect();
+            println!("the old root key is kept in {old}: it still opens {}; give each a root of its own, then remove it", names.join(", "));
+        }
         Some(old) if args.flag("--forget-old") => match old.forget() {
             Ok(true) => println!("the old root key is gone from {old}"),
             Ok(false) => println!("{old} can't be cleared from here: unset it yourself, or a copy of the folder taken before still opens"),
