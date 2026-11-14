@@ -240,7 +240,7 @@ fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
 fn check_copy(dir: &Path, key_arg: Option<&str>) -> Result<(), String> {
     use crate::at_rest::role;
     let keys = dir.join("keys.json");
-    let keys = if keys.exists() { Some(std::sync::Arc::new(crate::at_rest::Keyring::open(&keys, key_arg, &[]).map_err(|e| format!("its keys: {e}"))?)) } else { None };
+    let keys = if keys.exists() { Some(std::sync::Arc::new(crate::at_rest::Keyring::open_to_read(&keys, key_arg).map_err(|e| format!("its keys: {e}"))?)) } else { None };
     for (table, role) in [("deployments.json", role::DEPLOYMENTS), ("flows.json", role::FLOWS), ("accounts.json", role::ACCOUNTS)] {
         let path = dir.join(table);
         if path.exists() {

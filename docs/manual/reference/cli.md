@@ -174,7 +174,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
-| `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
+| `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store on Windows and macOS, `~/.holon/keys/<id>.key` elsewhere); back it up apart with `holon key export` |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
@@ -982,6 +982,7 @@ Prints what it swept, what it keeps, and what it spared as new. An in-memory sto
 holon key status [--json] [--server PORT|URL]
 holon key rotate <scope> [--server PORT|URL]
 holon key forget <slug> [--server PORT|URL]
+holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
 holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
 ```
 
@@ -1001,6 +1002,11 @@ anything of one.
   whole folder taken before (which holds the old `keys.json`) needs the old root, which only a
   copy of it kept elsewhere still has; a root in an environment variable can't be rotated by the
   server, and it says so. The slug deployed again seals under keys of its own. Needs `host.operate`.
+- `export` copies the root key, checked against the folder's `keys.json`, to a file only you can
+  read, which must not be there yet and not be in the data folder: how a root kept in the OS key
+  store (which shows no one its keys) is backed up. It reads only, so the server may be running.
+  Keep the file apart from the data folder; export again after a forget, which rotates the root.
+  `--data` and `--root-key` as for `rotate --root`.
 - `rotate --root` runs with the server stopped (it refuses while one runs on the folder): every
   data key is wrapped under a new root key, kept in `--to` (`os`, `file:PATH`, or `env:VAR`
   already holding a new key: `holon serve --new-root-key` prints one). Start the server with

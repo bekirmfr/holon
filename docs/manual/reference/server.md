@@ -12,7 +12,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | Path | |
 |---|---|
 | `bin/` | the program |
-| `data/` | the server's state: **the one folder to back up** |
+| `data/` | the server's state: back it up, and the root key apart from it ([The root key](#the-root-key)) |
 | `keys/` | the root key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
 | `tokens.json` | the session `holon login` began on each server you signed in to, and the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
@@ -41,8 +41,9 @@ the command that makes it yours alone (`chmod 700 …`); the server leaves it as
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
-To move a server, stop it and copy the data folder; the root key goes with it only if it is in a
-file (see [The root key](#the-root-key)).
+To move a server, stop it and copy the data folder, and take its root key: `holon key export --to
+file:PATH` copies it out of the OS key store or `~/.holon/keys`, and the moved server starts with
+`--root-key file:PATH` (see [The root key](#the-root-key)).
 
 ### Stopping it
 
@@ -460,9 +461,15 @@ as they are sealed: an export (`holon export`) is plain, and `holon verify` chec
 | `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/<id>.key`) |
 | `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-root-key` prints one |
 
-`<id>` is the one `keys.json` records. Without the right root the server doesn't start; nor does it
-when `keys.json` is missing beside data it sealed. Back the root up apart from the data: one
-without the other opens nothing. One server at a time runs on a data folder: it holds
+`<id>` is the one `keys.json` records. The first start makes the root and says where it is kept.
+Without the right root the server doesn't start; nor does it when `keys.json` is missing beside
+data it sealed. A root key file in the data folder is refused: a copy of the folder would open
+itself.
+
+Back the root up apart from the data: one without the other opens nothing. `holon key export --to
+file:PATH` copies it, from wherever it is kept, to a file only you can read (the OS key store shows
+no one its keys, so this is the one way to copy a root kept there); keep that file on another disk
+or in a password manager. A forget rotates the root (below): export it again after one. One server at a time runs on a data folder: it holds
 `keys.lock` while it runs, and a second one started on the same folder refuses.
 
 ### Rotating and forgetting keys

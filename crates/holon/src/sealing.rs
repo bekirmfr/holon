@@ -136,6 +136,15 @@ impl KeySource {
     }
 }
 
+/// Whether `path` is in `dir` or below it, as the file system resolves both: a root key file in
+/// the data folder is refused, since a copy of the folder would then open itself.
+pub(crate) fn inside(path: &Path, dir: &Path) -> bool {
+    match (resolved(path), std::fs::canonicalize(dir)) {
+        (Some(p), Ok(d)) => p.starts_with(d),
+        _ => false,
+    }
+}
+
 /// `path` as the file system resolves it: its folder resolved (links, `..`, case) and its name
 /// joined, so a key file not made yet still compares; None when the folder isn't there either.
 fn resolved(path: &Path) -> Option<PathBuf> {

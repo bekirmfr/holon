@@ -194,6 +194,11 @@ pub(crate) struct Keyring {
     names: Key,
     /// What a secret value's fingerprint is keyed by.
     prints: Key,
+    /// Opened only to read (`holon verify`, `holon key export`): nothing is written, not even a
+    /// rotation cut short finished ([`Keyring::open_to_read`]).
+    read_only: bool,
+    /// Made by this open, its root with it: the server says where that root is kept.
+    made: bool,
 }
 
 fn now_ms() -> u64 {
@@ -318,12 +323,27 @@ impl Keyring {
     /// and starting anew would make them unreadable for good. A root that's missing or not the
     /// one the file was made under refuses too, and nothing is written.
     pub(crate) fn open(path: &Path, root_arg: Option<&str>, sealed: &[&Path]) -> Result<Keyring, String> {
+        Keyring::open_as(path, root_arg, sealed, false)
+    }
+
+    /// The keyring at `path` opened to read only, as [`Keyring::open`] but writing nothing: none
+    /// made where there is none, and a rotation cut short finished in memory, not on disk. For
+    /// what reads a folder a server may be running on, without its lock (`holon verify`, `holon
+    /// key export`): a write here could undo a rotation the server is making.
+    pub(crate) fn open_to_read(path: &Path, root_arg: Option<&str>) -> Result<Keyring, String> {
+        Keyring::open_as(path, root_arg, &[], true)
+    }
+
+    fn open_as(path: &Path, root_arg: Option<&str>, sealed: &[&Path], read_only: bool) -> Result<Keyring, String> {
         let file: Option<KeysFile> = match std::fs::read(path) {
             Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a keys file: {e}", path.display()))?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("could not read {}: {e}", path.display())),
         };
         let Some(file) = file else {
+            if read_only {
+                return Err(format!("{} isn't there: this folder has no keys to read with", path.display()));
+            }
             if let Some(there) = sealed.iter().find(|p| p.exists()) {
                 return Err(format!(
                     "{} is missing, and {} is there: it was sealed under its keys, or written before the server sealed its data. \
@@ -366,8 +386,15 @@ impl Keyring {
         }
         let names = Keyring::unwrap_one(&root, &file, NAMES, NAMES_CONTEXT, path)?;
         let prints = Keyring::unwrap_one(&root, &file, SECRETS, PRINTS_CONTEXT, path)?;
-        let keyring = Keyring { path: Some(path.to_path_buf()), inner: RwLock::new(Inner { file, open, source: Some(source), memory_root: None }), names, prints };
-        if cut_short {
+        let keyring = Keyring {
+            path: Some(path.to_path_buf()),
+            inner: RwLock::new(Inner { file, open, source: Some(source), memory_root: None }),
+            names,
+            prints,
+            read_only,
+            made: false,
+        };
+        if cut_short && !read_only {
             keyring.persist(&keyring.inner.read().unwrap().file)?;
         }
         Ok(keyring)
@@ -395,8 +422,9 @@ impl Keyring {
             Some(root) => root,
             None => source.create()?,
         };
-        let keyring = Keyring::fresh(&root, key_id, Some(path.to_path_buf()), Some(source), None);
+        let mut keyring = Keyring::fresh(&root, key_id, Some(path.to_path_buf()), Some(source), None);
         keyring.persist(&keyring.inner.read().unwrap().file)?;
+        keyring.made = true;
         Ok(keyring)
     }
 
@@ -421,7 +449,7 @@ impl Keyring {
         }
         let names = derive(NAMES_CONTEXT, derived[NAMES].as_slice());
         let prints = derive(PRINTS_CONTEXT, derived[SECRETS].as_slice());
-        Keyring { path, inner: RwLock::new(Inner { file, open, source, memory_root }), names, prints }
+        Keyring { path, inner: RwLock::new(Inner { file, open, source, memory_root }), names, prints, read_only: false, made: false }
     }
 
     /// A new data key for `scope` at `version`, and it wrapped under `root`.
@@ -434,6 +462,9 @@ impl Keyring {
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
+        if self.read_only {
+            return Err(format!("{} was opened to read only, and isn't written", path.display()));
+        }
         faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
         crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
@@ -460,6 +491,32 @@ impl Keyring {
     /// Where the root is kept, if anywhere.
     pub(crate) fn source(&self) -> Option<KeySource> {
         self.inner.read().unwrap().source.clone()
+    }
+
+    /// Whether this open made the keyring, and its root with it: the server then says where
+    /// that root is kept, and that it is backed up apart from the data folder.
+    pub(crate) fn made(&self) -> bool {
+        self.made
+    }
+
+    /// A copy of the root, the one this keyring opens under (checked), kept in `to` (`holon key
+    /// export`): the one way to back up a root kept in the OS key store, which shows no one its
+    /// keys. `to` must hold no key yet, and not be where the root is kept. Nothing of the key is
+    /// shown or returned.
+    pub(crate) fn export_root(&self, to: &KeySource) -> Result<(), String> {
+        let inner = self.inner.read().unwrap();
+        let root = self.root(&inner)?;
+        if matches!(to, KeySource::Env(_)) {
+            return Err("an environment variable can't be written: export the root to a file (file:PATH)".into());
+        }
+        if inner.source.as_ref().is_some_and(|s| s.same_place(to)) {
+            return Err(format!("{to} is where the root key is kept already: export it somewhere else, apart from the data folder"));
+        }
+        if to.read()?.is_some() {
+            return Err(format!("{to} holds a key already: an export never writes over one"));
+        }
+        faults::write("the root key's copy")?;
+        to.keep(&root)
     }
 
     /// `scope`'s current version and its key, the scope made (and `keys.json` written) if it is
@@ -1409,6 +1466,52 @@ mod tests {
             assert_eq!(again.open_line(&deployment("fresh"), "log", &fresh).unwrap().as_slice(), b"z", "write {n}");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Guards: a keyring opened to read writes nothing, ever: not a keyring where there is none,
+    /// not a rotation cut short (finished in memory only), not a scope or a version asked of it;
+    /// and the root it exports, to a place that holds none, opens the folder on its own, while
+    /// an export over a key, to where the root is kept, or to a variable is refused.
+    /// Why: `holon verify` and `holon key export` read a folder a server may be running on,
+    /// without its lock; a write from them could undo a rotation the server is making. And the
+    /// export is the one way to back up a root kept in the OS key store: one that didn't open
+    /// the folder would be found out only when it is needed.
+    #[test]
+    fn a_keyring_opened_to_read_writes_nothing_and_its_exported_root_opens_the_folder() {
+        let dir = temp("read-only");
+        let path = dir.join("keys.json");
+        let arg = root_arg(&dir, "root.key");
+        let missing = Keyring::open_to_read(&path, Some(&arg)).err().unwrap();
+        assert!(missing.contains("isn't there") && !path.exists() && !dir.join("root.key").exists(), "{missing}");
+        let keys = Keyring::open(&path, Some(&arg), &[]).unwrap();
+        assert!(keys.made());
+        let table = keys.seal_file(SERVER, "table: test", b"kept").unwrap();
+        // A rotation in place cut short: staged on disk, the new root kept.
+        keys.rotate_root_until(None, false).unwrap();
+        let staged = std::fs::read(&path).unwrap();
+        let read = Keyring::open_to_read(&path, Some(&arg)).unwrap();
+        assert!(!read.made());
+        assert_eq!(read.open_file("table: test", &table).unwrap().as_slice(), b"kept", "finished in memory");
+        assert!(read.seal_line(&deployment("new"), "log", b"x").is_err(), "no scope made");
+        assert!(read.rotate(SERVER).is_err(), "no version made");
+        assert_eq!(std::fs::read(&path).unwrap(), staged, "keys.json as it was");
+        // Its root exported, then the folder opened with that copy alone.
+        let copy = KeySource::File(dir.join("backup").join("root.copy"));
+        read.export_root(&copy).unwrap();
+        let alone = Keyring::open(&path, Some(&format!("file:{}", dir.join("backup").join("root.copy").display())), &[]).unwrap();
+        assert_eq!(alone.open_file("table: test", &table).unwrap().as_slice(), b"kept");
+        let again = read.export_root(&copy).err().unwrap();
+        assert!(again.contains("holds a key already"), "{again}");
+        let kept = read.export_root(&KeySource::File(dir.join(".").join("root.key"))).err().unwrap();
+        assert!(kept.contains("where the root key is kept"), "{kept}");
+        assert!(read.export_root(&KeySource::Env("HOLON_NEVER_SET".into())).is_err());
+        // A copy that can't be written: refused, and said.
+        faults::fail_at(Some(1));
+        assert!(read.export_root(&KeySource::File(dir.join("other.copy"))).is_err());
+        faults::fail_at(None);
+        assert!(!dir.join("other.copy").exists());
+        assert!(crate::sealing::inside(&dir.join("x").join("..").join("root.key"), &dir) && !crate::sealing::inside(&dir.join("root.key"), &dir.join("backup")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Guards: a root rotation to a place that holds a key already writes nothing there, nor

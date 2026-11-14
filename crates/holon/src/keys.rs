@@ -95,6 +95,11 @@ const USAGE: &str = "holon key: the keys the server seals its data under (never 
                                     before still opens (names is never rotated)
   holon key forget <slug>           a removed deployment's keys forgotten (as holon remove --forget):
                                     nothing it left opens again, and the root key is rotated
+  holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
+                                    a copy of the root key, written owner-only to PATH, which must
+                                    hold none: the way to back up a root kept in the OS key store.
+                                    Keep it apart from the data folder; a forget rotates the root,
+                                    so export it again after one
   holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
                                     with the server stopped: every data key wrapped under a new
                                     root key, kept in SOURCE (os, env:VAR holding a new key, or
@@ -126,6 +131,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             Err(code) => code,
         },
         (Some("rotate"), None, true) => rotate_root(&args),
+        (Some("export"), None, false) => export_root(&args),
         (Some("forget"), Some(slug), false) => match cmdline::json(WHO, &args, "POST", "/admin/keys/forget", Some(&json!({ "slug": slug }))) {
             Ok(v) if args.flag("--json") => {
                 cmdline::print_json(&v);
@@ -199,6 +205,58 @@ fn print_status(v: &Value) {
     }
 }
 
+/// The data folder `--data` names, else the one under `HOLON_HOME`; `Err` is the exit code, said.
+fn data_folder(args: &cmdline::Args, who: &str) -> Result<std::path::PathBuf, i32> {
+    match args.value("--data") {
+        Some(d) => Ok(std::path::PathBuf::from(d)),
+        None => match crate::local::holon_home() {
+            Some(home) => Ok(crate::migrate::data_folder(&home)),
+            None => {
+                eprintln!("{who}: no home folder (USERPROFILE or HOME), and no HOLON_HOME: pass --data");
+                Err(2)
+            }
+        },
+    }
+}
+
+/// `holon key export --to file:PATH`: the data folder's keyring opened to read only, with its
+/// root, and that root (checked against `keys.json`) copied to PATH, owner-only. Nothing of the
+/// key is printed. The server may be running: nothing in the folder is written.
+fn export_root(args: &cmdline::Args) -> i32 {
+    const WHO: &str = "holon key export";
+    let Some(to) = args.value("--to") else {
+        eprintln!("{WHO}: --to file:PATH says where the copy goes: a file that isn't there yet, apart from the data folder");
+        return 2;
+    };
+    let to = KeySource::File(std::path::PathBuf::from(to.strip_prefix("file:").unwrap_or(to)));
+    let data = match data_folder(args, WHO) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    if let KeySource::File(path) = &to
+        && crate::sealing::inside(path, &data)
+    {
+        eprintln!("{WHO}: {} is in the data folder: a copy of the root kept with what it opens protects nothing; put it apart", path.display());
+        return 2;
+    }
+    let keys = match crate::verify::keys_for(Some(&data.display().to_string()), args.value("--root-key")) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("{WHO}: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = keys.export_root(&to) {
+        eprintln!("{WHO}: {e}");
+        return 1;
+    }
+    let from = keys.source().map_or_else(|| "?".to_string(), |s| s.to_string());
+    println!("the root key in {from}, which opens {}, is copied to {to}, readable only by you", data.join("keys.json").display());
+    println!("keep it apart from the data folder (another disk, a password manager): the data folder and this key together open everything the server keeps");
+    println!("a forget (holon remove --forget, holon key forget) rotates the root: export it again after one");
+    0
+}
+
 /// `holon key rotate --root --to <SOURCE>`: the data folder's keyring opened with its root, the
 /// folder locked (no server on it), every data key wrapped under a new root kept in SOURCE.
 fn rotate_root(args: &cmdline::Args) -> i32 {
@@ -207,15 +265,9 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
         eprintln!("{WHO}: --to says where the new root key is kept: os, env:VAR (holding a new key: holon serve --new-root-key prints one) or file:PATH");
         return 2;
     };
-    let data = match args.value("--data") {
-        Some(d) => std::path::PathBuf::from(d),
-        None => match crate::local::holon_home() {
-            Some(home) => crate::migrate::data_folder(&home),
-            None => {
-                eprintln!("{WHO}: no home folder (USERPROFILE or HOME), and no HOLON_HOME: pass --data");
-                return 2;
-            }
-        },
+    let data = match data_folder(args, WHO) {
+        Ok(d) => d,
+        Err(code) => return code,
     };
     let _held = match crate::at_rest::lock_folder(&data) {
         Ok(f) => f,
@@ -224,7 +276,7 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
             return 1;
         }
     };
-    let keys = match crate::verify::keys_for(Some(&data.display().to_string()), args.value("--root-key")) {
+    let keys = match crate::verify::keys_to_change(Some(&data.display().to_string()), args.value("--root-key")) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("{WHO}: {e}");
@@ -238,6 +290,12 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
             return 2;
         }
     };
+    if let KeySource::File(path) = &new
+        && crate::sealing::inside(path, &data)
+    {
+        eprintln!("{WHO}: {} is in the data folder: a root kept with what it opens protects nothing; keep it apart", path.display());
+        return 2;
+    }
     let old = keys.source();
     match keys.rotate_root(Some(&new)) {
         Ok(None) => println!("the root key is now in {new}; every data key in {} is wrapped under it", data.join("keys.json").display()),

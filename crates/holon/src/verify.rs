@@ -1601,8 +1601,20 @@ impl Performer for Offline {
 
 /// The keys a sealed export opens under (§2.7): `keys.json` in the data folder (`--data`, else
 /// the server's own), its root where `--root-key` says (else the OS key, as the server's). Read
-/// only: a folder with no keys.json is said, never given one.
+/// only, and nothing written: a folder with no keys.json is said, never given one, and a rotation
+/// a server on that folder is making is neither finished nor undone from here.
 pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
+    let keys = keys_json(data)?;
+    crate::at_rest::Keyring::open_to_read(&keys, root_key).map(std::sync::Arc::new)
+}
+
+/// [`keys_for`], to change: `holon key rotate --root`, which holds the folder's lock first.
+pub(crate) fn keys_to_change(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
+    let keys = keys_json(data)?;
+    crate::at_rest::Keyring::open(&keys, root_key, &[]).map(std::sync::Arc::new)
+}
+
+fn keys_json(data: Option<&str>) -> Result<PathBuf, String> {
     let data = match data {
         Some(d) => PathBuf::from(d),
         None => crate::migrate::data_folder(&crate::local::holon_home().ok_or("no home folder (USERPROFILE or HOME), and no HOLON_HOME")?),
@@ -1611,7 +1623,7 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
     if !keys.exists() {
         return Err(format!("it is sealed under a server's keys, and {} isn't there: pass --data with the data folder it came from (and --root-key where its root key is)", keys.display()));
     }
-    crate::at_rest::Keyring::open(&keys, root_key, &[]).map(std::sync::Arc::new)
+    Ok(keys)
 }
 
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
@@ -1689,7 +1701,8 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
                            deployment's records): the data folder whose keys.json sealed it, if
                            not this machine's server's (HOLON_DATA, or data/ in HOLON_HOME)
   --root-key SOURCE        where that keys.json's root key is: os, env:VAR or file:PATH (the
-                           server's --root-key); the OS key store if not given. An export
+                           server's --root-key); if not given, the server's default: the OS key
+                           store on Windows and macOS, ~/.holon/keys/<id>.key elsewhere. An export
                            holon export wrote is plain, and needs neither
 
 examples:

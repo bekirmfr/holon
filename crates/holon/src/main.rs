@@ -551,8 +551,10 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
                            HOLON_EXPORT_HEADS_TOKEN]
   --root-key SOURCE        where the root key is kept, which opens everything the server seals
-                           in its data folder (keys.json): os, the OS key store (the default);
-                           env:VAR; or file:PATH. Never in the data folder; keep a copy apart
+                           in its data folder (keys.json): os, the OS key store (the default on
+                           Windows and macOS); env:VAR; or file:PATH (the default elsewhere:
+                           ~/.holon/keys/<id>.key). Never in the data folder; back it up apart
+                           (holon key export)
   --new-root-key           print a fresh key for --root-key env:VAR, and exit
   --dotenv FILE            a .env file HOLON_SECRET_* values are also read from
   --editor DIR             serve the editor from DIR instead of the built-in one
@@ -821,8 +823,12 @@ fn serve(args: Vec<String>) {
         } else if a == "--root-key" {
             // Where the root key is kept: `os` (the OS key store, the default where there is
             // one), `env:VAR` or `file:PATH` (sealing.rs, at_rest.rs).
-            if let Some(v) = args.next() {
-                root_key_arg = Some(v);
+            match args.next() {
+                Some(v) => root_key_arg = Some(v),
+                None => {
+                    eprintln!("holon: --root-key needs a SOURCE: os, env:VAR or file:PATH");
+                    std::process::exit(2);
+                }
             }
         } else if a == "--data" || a == "--editor" {
             if let Some(v) = args.next() {
@@ -1020,12 +1026,28 @@ fn serve(args: Vec<String>) {
             eprintln!("holon: {e}");
             std::process::exit(1);
         }
+        // A root key file kept in the folder it opens: a copy of the folder would open itself.
+        if let Some(path) = root_key_arg.as_deref().and_then(|a| a.strip_prefix("file:"))
+            && sealing::inside(Path::new(path), &dir)
+        {
+            eprintln!("holon: --root-key {path} is in the data folder {}: a root kept with what it opens protects nothing. Keep it apart (holon key rotate --root --to file:PATH moves it)", dir.display());
+            std::process::exit(1);
+        }
         let sealed: Vec<&Path> = [&secrets_arg, &host_key_arg, &deployments_arg].into_iter().filter(|a| a.as_str() != ":memory:").map(|a| Path::new(a.as_str())).collect();
         // Its refusal says what to do itself: moving `keys.json` aside would lose everything.
-        at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| {
+        let keys = at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| {
             eprintln!("holon: {e}");
             std::process::exit(1);
-        })
+        });
+        // Said once, when the root is made: it is never in the data folder, and without it a
+        // copy of the folder opens nothing.
+        if keys.made()
+            && let Some(source) = keys.source()
+        {
+            println!("holon: a new root key, which opens everything this server seals in {}, is kept in {source}", dir.display());
+            println!("holon: back it up apart from the data folder, which it is never in: holon key export --to file:PATH");
+        }
+        keys
     } else {
         at_rest::Keyring::memory()
     });
