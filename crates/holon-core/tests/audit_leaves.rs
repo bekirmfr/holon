@@ -468,6 +468,10 @@ fn large() -> Vec<Value> {
         txt(&"\u{0}".repeat(n)),
         txt(&",".repeat(n)),
         txt(&"a,".repeat(n / 2)),
+        // A CSV of one long name over many short rows, each row's record its own copy of the
+        // name: 512 MiB of names from these 64 KiB, were it made; and one whose names are made.
+        txt(&format!("{}\n{}", "h".repeat(n / 2), "x\n".repeat(n / 4))),
+        txt(&format!("{}\n{}", "h".repeat(1024), "x\n".repeat(n / 4))),
         txt(&json),
         txt(&xml),
         txt(&"\u{df}".repeat(n / 2)),
@@ -513,7 +517,9 @@ fn allowance(leaf: &str) -> usize {
         "fill" | "gunzip" | "unzip" => MAX_BYTES,
         // Values read out of one text or bytes: up to MAX_ITEMS, a hundred bytes or so each while
         // they are read.
-        "split" | "json_parse" | "csv_parse" | "xml_parse" | "bytes_to_list" => 128 * MAX_ITEMS,
+        "split" | "json_parse" | "xml_parse" | "bytes_to_list" => 128 * MAX_ITEMS,
+        // And each row's own copy of the first row's names: up to MAX_BYTES of them.
+        "csv_parse" => 128 * MAX_ITEMS + MAX_BYTES,
         _ => 0,
     }
 }
