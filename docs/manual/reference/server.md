@@ -476,9 +476,10 @@ them; none of it ever shows a key.
   new version; what was sealed under the ones before still opens, so they are kept. `names` is
   never rotated: a store file's name must stay what it was.
 - **A new root**, `holon key rotate --root --to <SOURCE>`, with the server stopped: every data key
-  is wrapped under a new root, kept where `--to` says; start the server with `--root-key` set to
-  it. No data file is touched. A rotation cut short loses nothing: the next start finishes it, or
-  undoes it, whichever root it is given.
+  is wrapped under a new root, kept where `--to` says, which must hold no key yet (or be where the
+  root is kept now: a rotation in place); start the server with `--root-key` set to it. No data
+  file is touched. A rotation cut short loses nothing: the next start finishes it, or undoes it,
+  whichever root it is given.
 - **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
   section): its keys leave `keys.json`, so its kept records, its backups and every file it left
   open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated

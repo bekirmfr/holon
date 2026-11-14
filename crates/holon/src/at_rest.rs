@@ -35,6 +35,43 @@ use zeroize::Zeroizing;
 use crate::sealing::{KeySource, new_key};
 use crate::sync::RwLock;
 
+/// The keyring's writes (`keys.json`, a root kept) made to fail one at a time, for the tests that
+/// hold a rotation or a forget to leaving an openable folder whichever write fails. Nothing
+/// outside the tests.
+mod faults {
+    #[cfg(test)]
+    thread_local! {
+        /// Which write from now fails: `Some(1)` the next one; `None`, none.
+        static AT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_at(n: Option<u32>) {
+        AT.with(|at| at.set(n));
+    }
+
+    #[cfg(test)]
+    pub(super) fn write(what: &str) -> Result<(), String> {
+        AT.with(|at| match at.get() {
+            Some(1) => {
+                at.set(None);
+                Err(format!("could not write {what}: a write made to fail"))
+            }
+            Some(n) => {
+                at.set(Some(n - 1));
+                Ok(())
+            }
+            None => Ok(()),
+        })
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(super) fn write(_what: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// A 256-bit key, wiped from memory when dropped.
 pub(crate) type Key = Zeroizing<[u8; 32]>;
 
@@ -397,6 +434,7 @@ impl Keyring {
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
+        faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
         crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
     }
@@ -521,20 +559,40 @@ impl Keyring {
     /// the keys wrapped under the new root are written beside the old (`next`), the new root is
     /// kept, the old wraps are dropped; [`Keyring::open`] finishes a rotation cut short under the
     /// new root, or undoes it under the old. An environment variable can't be written: `to` one
-    /// must hold the new root already. The old root stays where it was kept unless that is `to`:
-    /// forgetting it there is the caller's (`holon key rotate --root --forget-old`).
-    pub(crate) fn rotate_root(&self, to: Option<&KeySource>) -> Result<(), String> {
+    /// must hold the new root already. Anywhere else but in place, `to` must hold no key yet: a
+    /// rotation never writes over another folder's root, or any key it didn't make. The old root
+    /// stays where it was kept unless that is `to`: forgetting it there is the caller's (`holon
+    /// key rotate --root --forget-old`).
+    ///
+    /// `Ok(Some(why))`: rotated, the new root kept and in use, but the last write of `keys.json`
+    /// failed (`why`): the file on disk still holds the new wraps staged, which the next start
+    /// finishes under the new root, and the next write here writes them whole. Never `Err` once
+    /// the new root is kept: from then on only the new root opens this folder, and saying "not
+    /// rotated" would send the operator looking for an old root that is gone.
+    pub(crate) fn rotate_root(&self, to: Option<&KeySource>) -> Result<Option<String>, String> {
         self.rotate_root_until(to, true)
     }
 
     /// [`Keyring::rotate_root`], stopped after the new root is kept when `finish` is false: a
     /// rotation cut short, for the tests.
-    fn rotate_root_until(&self, to: Option<&KeySource>, finish: bool) -> Result<(), String> {
+    fn rotate_root_until(&self, to: Option<&KeySource>, finish: bool) -> Result<Option<String>, String> {
         let mut inner = self.inner.write().unwrap();
         let old = self.root(&inner)?;
+        let in_place = match (to, &inner.source) {
+            (None, _) => true,
+            (Some(to), Some(now)) => to.same_place(now),
+            (Some(_), None) => false,
+        };
         let to = to.cloned().or_else(|| inner.source.clone());
         let new = match &to {
             Some(source @ KeySource::Env(var)) => source.read()?.ok_or_else(|| format!("{var} isn't set: set it to the new root key (holon serve --new-root-key prints one), then rotate"))?,
+            Some(source) if !in_place && source.read()?.is_some() => {
+                return Err(format!(
+                    "{source} holds a key already: a new root is kept only where none is, so a rotation never writes over another folder's root \
+                     or a key it didn't make. Pick a place that holds none; if it is left from a rotation cut short, start the server with \
+                     --root-key set to it, which finishes that rotation"
+                ));
+            }
             _ => new_key(),
         };
         if root_check(&new) == inner.file.root_check {
@@ -558,6 +616,7 @@ impl Keyring {
         // Kept failing, the old root still opens everything: the staged wraps are dropped on the
         // next write, or the next open.
         if let Some(source) = to.as_ref().filter(|s| !matches!(s, KeySource::Env(_))) {
+            faults::write("the root key")?;
             source.keep(&new)?;
         }
         if inner.memory_root.is_some() {
@@ -566,14 +625,19 @@ impl Keyring {
         if !finish {
             inner.file = file;
             inner.source = to;
-            return Ok(());
+            return Ok(None);
         }
+        // The new root is kept: from here the keyring in use is the rotated one, whatever the last
+        // write does. Left on the old file (no `next`, the old check) a later write here (a forget,
+        // a scope made) would drop the staged wraps from disk, and the folder would open under no
+        // root at all.
         let next = file.next.take().expect("staged above");
         promote(&mut file, next);
-        self.persist(&file)?;
         inner.file = file;
         inner.source = to;
-        Ok(())
+        Ok(self.persist(&inner.file).err().map(|e| {
+            format!("the root key is rotated and in use, but {e}: the next start finishes writing it, under the new root, and nothing is lost")
+        }))
     }
 
     /// What `holon key status` shows (`GET /admin/keys`): where the root is kept and the id it is
@@ -1302,6 +1366,82 @@ mod tests {
         third.rotate_root_until(Some(&KeySource::File(dir.join("third.key"))), false).unwrap();
         check(&Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap());
         assert!(Keyring::open(&path, Some(&root_arg(&dir, "third.key")), &[]).is_err(), "undone: the new root opens nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a forget and the root rotation it makes, failing at any one of their writes
+    /// (`keys.json` forgotten, the next root's wraps staged, the root kept, the wraps promoted),
+    /// leave a folder that opens under the root its source holds, everything sealed before it
+    /// still opening; and so does every write the same keyring makes after it (another forget and
+    /// rotation, a scope made). Once the new root is kept the rotation says so, never "not
+    /// rotated".
+    /// Why: a rotation whose last write failed left the keyring in use on the old file (the old
+    /// root's check, nothing staged) while its source held the new root; the next forget wrote
+    /// that over the staged wraps on disk, and the folder opened under no root at all.
+    #[test]
+    fn a_forget_and_its_rotation_failing_at_any_write_leave_a_folder_that_opens() {
+        // Four writes; the fifth round fails none.
+        for n in 1..=5 {
+            let dir = temp(&format!("rotate-fault-{n}"));
+            let path = dir.join("keys.json");
+            let arg = root_arg(&dir, "root.key");
+            let keys = Keyring::open(&path, Some(&arg), &[]).unwrap();
+            let table = keys.seal_file(SERVER, "table: test", b"kept").unwrap();
+            let line = keys.seal_line(&deployment("shop"), "log", b"a run").unwrap();
+            keys.seal_line(&deployment("gone"), "log", b"x").unwrap();
+            keys.seal_line(&deployment("later"), "log", b"y").unwrap();
+            // What keys.rs's forget does: the scope forgotten, then the root rotated in place.
+            faults::fail_at(Some(n));
+            let rotated = keys.forget(&deployment("gone")).and_then(|_| keys.rotate_root(None));
+            faults::fail_at(None);
+            match n {
+                4 => assert!(matches!(&rotated, Ok(Some(why)) if why.contains("rotated and in use")), "write {n}: {rotated:?}"),
+                5 => assert!(matches!(rotated, Ok(None)), "write {n}: {rotated:?}"),
+                _ => assert!(rotated.is_err(), "write {n}: {rotated:?}"),
+            }
+            // The same keyring writes on.
+            keys.forget(&deployment("later")).unwrap();
+            assert_eq!(keys.rotate_root(None).unwrap(), None, "write {n}");
+            let fresh = keys.seal_line(&deployment("fresh"), "log", b"z").unwrap();
+            let again = Keyring::open(&path, Some(&arg), &[]).unwrap_or_else(|e| panic!("write {n} failed, then: {e}"));
+            assert_eq!(again.open_file("table: test", &table).unwrap().as_slice(), b"kept", "write {n}");
+            assert_eq!(again.open_line(&deployment("shop"), "log", &line).unwrap().as_slice(), b"a run", "write {n}");
+            assert_eq!(again.open_line(&deployment("fresh"), "log", &fresh).unwrap().as_slice(), b"z", "write {n}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Guards: a root rotation to a place that holds a key already writes nothing there, nor
+    /// anything else; one `--to` the key file in use, its path spelled another way, is a rotation
+    /// in place ([`KeySource::same_place`]).
+    /// Why: a rotation `--to` another folder's root, or a key kept for something else, wrote over
+    /// it, and that folder or that key was gone; and `--forget-old`, deciding "old" by spelling,
+    /// removed the new root it had just kept in place.
+    #[test]
+    fn a_new_root_is_kept_only_where_none_is_and_a_place_is_known_however_spelled() {
+        let dir = temp("rotate-to-kept");
+        let path = dir.join("keys.json");
+        let arg = root_arg(&dir, "root.key");
+        let keys = Keyring::open(&path, Some(&arg), &[]).unwrap();
+        let table = keys.seal_file(SERVER, "table: test", b"kept").unwrap();
+        let other = KeySource::File(dir.join("other.key"));
+        other.create().unwrap();
+        let (theirs, file) = (std::fs::read(dir.join("other.key")).unwrap(), std::fs::read(&path).unwrap());
+        let said = keys.rotate_root(Some(&other)).err().unwrap();
+        assert!(said.contains("holds a key already"), "{said}");
+        assert_eq!(std::fs::read(dir.join("other.key")).unwrap(), theirs, "the other key untouched");
+        assert_eq!(std::fs::read(&path).unwrap(), file, "keys.json untouched");
+        // The key file in use, spelled another way.
+        let used = KeySource::File(dir.join("root.key"));
+        let spelled = KeySource::File(dir.join(".").join("..").join(dir.file_name().unwrap()).join("root.key"));
+        assert!(spelled.same_place(&used) && used.same_place(&spelled));
+        assert!(!other.same_place(&used));
+        assert!(KeySource::File(dir.join("not-yet.key")).same_place(&KeySource::File(dir.join(".").join("not-yet.key"))), "a file not made yet");
+        let before = std::fs::read(dir.join("root.key")).unwrap();
+        assert_eq!(keys.rotate_root(Some(&spelled)).unwrap(), None, "in place, not refused");
+        assert_ne!(std::fs::read(dir.join("root.key")).unwrap(), before, "a new root, kept in place");
+        let again = Keyring::open(&path, Some(&arg), &[]).unwrap();
+        assert_eq!(again.open_file("table: test", &table).unwrap().as_slice(), b"kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

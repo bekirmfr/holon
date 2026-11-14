@@ -67,7 +67,8 @@ fn forget(state: &AppState, slug: &str, by: &str) -> Value {
             "why": format!("the root key is in {var}, which the server can't change: with the server stopped, holon key rotate --root --to <SOURCE> puts a copy of the folder taken before out of reach"),
         }),
         _ => match keys.rotate_root(None) {
-            Ok(()) => json!({ "rotated": true }),
+            Ok(None) => json!({ "rotated": true }),
+            Ok(Some(pending)) => json!({ "rotated": true, "pending": pending }),
             Err(e) => json!({ "rotated": false, "why": e }),
         },
     };
@@ -166,6 +167,9 @@ pub(crate) fn print_forgotten(v: &Value) -> i32 {
     let root = &v["root"];
     if root["rotated"].as_bool() == Some(true) {
         println!("the root key is rotated where it is kept: a copy of the folder taken before opens only with a copy of the old root, if one was kept");
+        if let Some(pending) = root["pending"].as_str() {
+            eprintln!("{pending}");
+        }
         0
     } else {
         eprintln!("the root key isn't rotated: {}", root["why"].as_str().unwrap_or("?"));
@@ -235,12 +239,17 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
         }
     };
     let old = keys.source();
-    if let Err(e) = keys.rotate_root(Some(&new)) {
-        eprintln!("{WHO}: {e}");
-        return 1;
+    match keys.rotate_root(Some(&new)) {
+        Ok(None) => println!("the root key is now in {new}; every data key in {} is wrapped under it", data.join("keys.json").display()),
+        Ok(Some(why)) => eprintln!("{WHO}: the root key is now in {new}, but {why}"),
+        Err(e) => {
+            eprintln!("{WHO}: {e}");
+            return 1;
+        }
     }
-    println!("the root key is now in {new}; every data key in {} is wrapped under it", data.join("keys.json").display());
-    match old.filter(|o| *o != new) {
+    // Compared by place, not by spelling: `--to` the file in use written another way is a
+    // rotation in place, and forgetting "the old" there would forget the new root.
+    match old.filter(|o| !o.same_place(&new)) {
         Some(old) if args.flag("--forget-old") => match old.forget() {
             Ok(true) => println!("the old root key is gone from {old}"),
             Ok(false) => println!("{old} can't be cleared from here: unset it yourself, or a copy of the folder taken before still opens"),

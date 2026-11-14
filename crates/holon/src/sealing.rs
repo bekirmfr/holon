@@ -110,6 +110,17 @@ impl KeySource {
         Ok(())
     }
 
+    /// Whether `other` names the same place: a key file however its path is spelled (relative or
+    /// not, `.` and `..`, a link, a drive letter's case), else the same entry or variable. What a
+    /// rotation in place and `--forget-old` decide by: told apart by spelling, a rotation `--to`
+    /// the file in use, written another way, would forget the new root it just kept there.
+    pub(crate) fn same_place(&self, other: &KeySource) -> bool {
+        match (self, other) {
+            (KeySource::File(a), KeySource::File(b)) => a == b || matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b),
+            _ => self == other,
+        }
+    }
+
     /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an
     /// environment variable, which only the operator can unset.
     pub(crate) fn forget(&self) -> Result<bool, String> {
@@ -123,6 +134,20 @@ impl KeySource {
             },
         }
     }
+}
+
+/// `path` as the file system resolves it: its folder resolved (links, `..`, case) and its name
+/// joined, so a key file not made yet still compares; None when the folder isn't there either.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return Some(p);
+    }
+    let name = path.file_name()?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    Some(std::fs::canonicalize(parent).ok()?.join(name))
 }
 
 impl std::fmt::Display for KeySource {

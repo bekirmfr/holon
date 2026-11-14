@@ -1004,9 +1004,13 @@ anything of one.
 - `rotate --root` runs with the server stopped (it refuses while one runs on the folder): every
   data key is wrapped under a new root key, kept in `--to` (`os`, `file:PATH`, or `env:VAR`
   already holding a new key: `holon serve --new-root-key` prints one). Start the server with
-  `--root-key` set to it after. The old root stays where it was unless `--forget-old`.
-  `--data` is the data folder (else the one under `HOLON_HOME`), `--root-key` where its root is now.
-  A rotation cut short loses nothing: the next start finishes it, or undoes it.
+  `--root-key` set to it after. `--to` must hold no key yet (it refuses one that does, so it never
+  writes over another folder's root, or any key it didn't make), unless it is where the root is
+  kept now, however its path is spelled: then the root is rotated in place. The old root stays
+  where it was unless `--forget-old`. `--data` is the data folder (else the one under
+  `HOLON_HOME`), `--root-key` where its root is now. A rotation cut short loses nothing: the next
+  start finishes it, or undoes it. Once the new root is kept the rotation stands, even if the last
+  write of `keys.json` fails: it says so, and the next start finishes that write.
 
 ## `holon database`
 
