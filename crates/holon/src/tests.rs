@@ -7099,14 +7099,12 @@ route.get("/basic", (req) => {
     let report = verify::check(&export, None, &BTreeMap::new());
     let text = verify::describe(&report, None);
     assert!(matches!(report.reruns[0].1, verify::Rerun::Matched), "{text}");
-    assert!(report.given.get(&0).is_some_and(|stood| stood.len() >= 2), "the token check and the receipt are taken from the log: {text}");
-    // Each is named, by its leaf and the secret it was fed as the entry shows it (the receipt's
-    // signing isn't among them: no token came, and it never ran); and every leaf the report
-    // names is one a run's record stood in for, no more and no fewer.
-    for leaf in ["secure_equals", "concat"] {
-        assert!(text.lines().any(|l| l.starts_with(&format!("    {leaf} fed the secret api_token v1 #")) && l.ends_with(", as recorded")), "{leaf} is named: {text}");
-    }
-    assert!(!text.contains("hmac_sha256"), "{text}");
+    // No token came: the check against the secret is computed on its mark, with the texts that
+    // carry it (`holon_core::taint::on_a_mark`), and the receipt's signing never ran. So nothing
+    // of that run is taken from the log; and every leaf the report names is one a run's record
+    // stood in for, no more and no fewer.
+    assert!(report.given.is_empty(), "nothing taken as recorded: {text}");
+    assert!(text.contains("re-ran 1 runs: each produced what its log entry says\n"), "{text}");
     let named: BTreeSet<&str> = text.lines().filter(|l| l.starts_with("    ") && l.ends_with(", as recorded")).filter_map(|l| l.trim_start().split(' ').next()).collect();
     let stood: BTreeSet<&str> = report.given.values().flatten().map(|s| s.leaf.as_str()).collect();
     assert_eq!(named, stood, "{text}");
@@ -7118,6 +7116,64 @@ route.get("/basic", (req) => {
     }
     assert!(!text.contains("too large"), "{text}");
     assert!(text.lines().last().is_some_and(|l| l.starts_with("INCOMPLETE")), "{text}");
+}
+
+/// A token check is computed on the marks, not taken from the log: the caller's token is the
+/// secret exactly when the log shows it as the secret's mark. A record of the check that says
+/// other than the marks give differs. Where the log holds no more of the caller's token than
+/// that it was one (a tainted value, when it isn't the secret), the check is still taken as
+/// recorded, and said.
+#[test]
+fn a_token_check_is_computed_on_the_marks_and_its_record_is_held_to_it() {
+    let state = claims_state("");
+    let text = r#"import { flow, route, secure_equals, status } from "holon"
+import api_token from "secret:api_token"
+
+flow("gated", { port: 18154 })
+
+route.get("/me", (req) => {
+  const ok = secure_equals(req.headers.authorization, `Bearer ${api_token}`)
+  return (ok ? { in: "yes" } : undefined) ?? status(401)
+})
+"#;
+    let slug = deploy_text_to(&state, text, &[]);
+    let value = "a-dummy-token-for-tests";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_token"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    // No token, a wrong one, then the right one last (its line is the one changed below).
+    let call = |token: Option<&str>| {
+        let mut request = fake_data("GET", "/me", vec![]);
+        request.headers.extend(token.map(|t| ("authorization".to_string(), format!("Bearer {t}"))));
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &request).status
+    };
+    assert_eq!((call(None), call(Some("not-the-token-at-all")), call(Some(value))), (401, 401, 200));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(export.lines.iter().all(|l| !l.contains(value)), "the log never holds the value");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok() && report.complete(), "{said}");
+    // The right token and none: computed. The wrong one: the log holds it as a tainted value,
+    // which reads as any other, so that one check is taken as recorded, and named.
+    assert_eq!(report.given.keys().copied().collect::<Vec<_>>(), [1], "{said}");
+    assert_eq!(report.given[&1].iter().map(|s| (s.leaf.as_str(), s.tainted.join(","))).collect::<Vec<_>>(), [("secure_equals", "authorization".to_string())], "{said}");
+    assert!(said.contains("re-ran 3 runs: each produced what its log entry says, 1 of them given what the log kept for a step (named below)"), "{said}");
+
+    // Someone with the data folder turns the right token's check, in the node's own record, and
+    // chains the line again: computed on the marks it is true, and the record says false.
+    let (yes, no) = (serde_json::to_value(SValue::from_core(&Value::Boolean(true))).unwrap(), serde_json::to_value(SValue::from_core(&Value::Boolean(false))).unwrap());
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+    let turned = v["timeline"].as_array_mut().unwrap().iter_mut().filter(|node| node["outputs"] == serde_json::json!([yes])).map(|node| node["outputs"] = serde_json::json!([no])).count();
+    assert_eq!(turned, 1, "the check is the one node that gave true: {}", export.lines[2]);
+    let line = serde_json::to_string(&v).unwrap();
+    let head = recorder::line_hash(&line);
+    let lines = vec![export.lines[0].clone(), export.lines[1].clone(), line];
+    let forged = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert!(report.breaks.is_empty(), "re-chained, it links");
+    let came_to = &report.reruns[2].1;
+    assert_eq!(*came_to, verify::Rerun::Differs("what a step computed on its marks gives, from what the log recorded for it".into()), "{}", verify::describe(&report, None));
+    assert!(!report.ok());
 }
 
 /// The server's own secret, bound once for every deployment that reads it, with where it may go:

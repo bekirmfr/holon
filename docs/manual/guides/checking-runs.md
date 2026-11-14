@@ -169,9 +169,14 @@ and its own (`commit`): the run before a run is the one whose commit it began af
 line is, and a run no other commit landed beside is checked whole, however close its times. A log
 written before entries said so is taken by each line's place and times.
 
-A node that computed with a secret, a resume token or a tainted value (a signature, a token
-check, a caller's API key: [tainted keys](../language/reference.md#imports-and-settings)) can't be
-computed again: the log never holds their values, only a placeholder. What the log kept for that
+A node fed a secret, a resume token or a tainted value (a caller's API key:
+[tainted keys](../language/reference.md#imports-and-settings)) gets a placeholder where the value
+was: the log never holds it. A node that only moves the value (into a text, a record, a list) is
+computed with the placeholder, and so is a `secure_equals` of it, since a caller's token is the
+secret exactly when the log shows it as the secret's mark; what the log recorded for such a node
+is held to what it gives, and a record that says other differs. A node that computes with what
+the value holds (a signature, a hash, an encoding) can't be computed again, nor can a check of a
+token that isn't the secret, of which the log keeps only that it came. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
 that way, and names each such step: its leaf, the secret or token it was fed (a secret by its

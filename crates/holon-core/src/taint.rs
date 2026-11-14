@@ -78,6 +78,55 @@ fn selects(leaf: &str, port: &crate::Port) -> bool {
         )
 }
 
+/// What a leaf does with a value it is handed whole, for a check that runs a recorded run again
+/// with a mark where the record never holds the value (`holon verify`: a secret's, a token's, a
+/// tainted value's). Each is exact on a mark: what it gives with the mark is what it gives with
+/// the value, every occurrence of the value then written as the mark. So such a check computes
+/// the leaf, and needn't take its result from the record.
+///
+/// That holds as far as the record's marks do: for a value the run made of other parts that
+/// happens to be the secret's, nothing is marked, and the mark and it read as different.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OnAMark {
+    /// It moves the value: into a list, a record, a longer text, or on. True of any mark.
+    Moves,
+    /// It answers whether the value is another, a true or false. True only where every mark in
+    /// its inputs tells one value from another (a fingerprint): two tainted values read alike.
+    Compares,
+}
+
+/// The leaves that move a value and never look inside it: [`PASSES_LITERALLY`] less the sinks
+/// (they act, and a check performs nothing), `const` and `record` (no input), and the ones that order
+/// or compare by what a text holds (`sort`, `unique`) or by a key that may be the value
+/// (`lookup`, `insert`, `remove`, `merge`, `from_entries`, `entries`, `values`). `as_text` and
+/// `json_stringify` move a text as it is, and write anything else as JSON, where a mark is
+/// escaped as its value wouldn't be: `as_text` is exact for a text alone, which the check looks
+/// at, and `json_stringify` isn't here.
+const MOVES: &[&str] = &[
+    "select", "cons", "head", "tail", "concat", "add", "list", "get", "append", "extend", "join", "pair", "some",
+    "reverse", "to_spliced", "with_item", "fill", "copy_within", "flat",
+    "field", "with_field", "without_field", "as_text", "guard", "default", "coalesce",
+];
+
+/// The leaves that say whether a value is another, as a whole. `same_value` does too, but what it
+/// says is computed from a secret as the taint walk has it, so the log withholds whatever follows
+/// from it and a check has nothing to hold the rest of the run to: it stays off this list until
+/// the log marks such values (docs/L4s/secret-verification-L4.md §8.1 A).
+const COMPARES: &[&str] = &["secure_equals"];
+
+/// How `leaf` treats a value handed to it whole, if computing it on a mark is exact
+/// ([`OnAMark`]); none for a leaf that computes with what the value holds (`hmac_sha256`, a
+/// slice, `sort`), and for one nobody has put on a list: a check takes its result as recorded.
+pub fn on_a_mark(leaf: &str) -> Option<OnAMark> {
+    if MOVES.contains(&leaf) {
+        Some(OnAMark::Moves)
+    } else if COMPARES.contains(&leaf) {
+        Some(OnAMark::Compares)
+    } else {
+        None
+    }
+}
+
 /// Leaves whose output is what the far side answered: an outbound request's response, a
 /// database read's rows. (One that echoes a secret back holds its value, where the host finds it.)
 const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start", "db_query", "db_one", "db_find", "db_find_one"];

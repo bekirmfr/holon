@@ -1247,6 +1247,11 @@ fn rerun(
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
+    // A node computed on its placeholders gives what the run gave, written with them; the log
+    // recording other for it is a record that isn't the run's.
+    if observer.belied {
+        differs.push("what a step computed on its marks gives, from what the log recorded for it");
+    }
     // Each node stood in for, its secrets as the run's entry shows them (their version and
     // fingerprint), as a request that carried one is said (`check_sends`).
     given.nodes = observer
@@ -1464,10 +1469,19 @@ impl Waits for Logged {
 /// against them; what such a node produced is taken from the log, not checked. A composite fed a
 /// placeholder is opened instead: the leaves inside it that compute with it are stood in for,
 /// and the rest of it checked.
+///
+/// Not every leaf fed a placeholder needs its record: one that only moves the value, or says
+/// whether it is another, gives with the placeholder what it gave with the value
+/// (`holon_core::taint::on_a_mark`). Those are computed, and what the log recorded for them is
+/// held to what they give: a record that says other differs (`belied`). Unless a node before it
+/// in the run couldn't be computed nor stood in for (`unrecorded`): what this run again computes
+/// after that one isn't the run's, so the record is taken, as for any other leaf.
 struct Asserting {
     timer: recorder::Timer,
     /// Each node's outputs in the last round the log recorded them in, by path.
     recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
+    /// Whether a node computed on its placeholders gave other than the log recorded for it.
+    belied: bool,
     /// The nodes stood in for, by path: each one's leaf, and the secrets (by name) and tokens in
     /// its inputs.
     stood_in: BTreeMap<Vec<u32>, Stood>,
@@ -1489,7 +1503,39 @@ impl Asserting {
             rounds.insert(t.path.clone(), t.round);
             recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting { timer: recorder::Timer::new(), recorded, belied: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+    }
+
+    /// Whether `leaf`, fed `inputs`, is computed on the placeholders they carry, and how
+    /// (`holon_core::taint::on_a_mark`), given what these inputs are:
+    ///
+    /// - a record's key that is a placeholder orders and finds by the placeholder, not the value:
+    ///   not computed;
+    /// - `as_text` writes anything but a text as JSON, where a placeholder is escaped as its value
+    ///   wouldn't be: computed for a text only;
+    /// - a comparison is of two texts, each placeholder in them one that tells its value from
+    ///   another (a fingerprint): a tainted value's doesn't, nor a token's without one.
+    fn computes(&self, leaf: &str, inputs: &[Option<&Value>]) -> Option<holon_core::taint::OnAMark> {
+        use holon_core::taint::OnAMark;
+        let how = holon_core::taint::on_a_mark(leaf)?;
+        if inputs.iter().flatten().any(|v| self.marks.in_a_key(v)) {
+            return None;
+        }
+        let texts = || inputs.iter().flatten().all(|v| matches!(v, Value::Text(_)));
+        match how {
+            OnAMark::Moves if leaf == "as_text" => texts().then_some(how),
+            OnAMark::Moves => Some(how),
+            OnAMark::Compares => (texts() && inputs.iter().flatten().all(|v| self.marks.told_apart(v))).then_some(how),
+        }
+    }
+
+    /// What `unit`, a leaf that compares (`OnAMark::Compares`), gives for `inputs`: each
+    /// placeholder read by its fingerprint, so one value under two names or two versions is one
+    /// value. Nothing where an input didn't arrive, as core gives.
+    fn compared(&self, name: &str, unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Vec<Option<Value>> {
+        let by_print: Vec<Value> = inputs.iter().flatten().map(|v| self.marks.by_print(v)).collect();
+        let all_here = by_print.len() == inputs.len();
+        vec![all_here.then(|| holon_core::primitives::compute(name, &by_print.iter().collect::<Vec<_>>(), &unit.params)).flatten()]
     }
 }
 
@@ -1512,6 +1558,27 @@ impl Observer for Asserting {
     fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
             return None;
+        }
+        if let holon_core::UnitBody::Primitive { name } = &unit.body
+            && let Some(how) = self.computes(name, inputs)
+        {
+            let gave = match how {
+                // A leaf: it resolves nothing.
+                holon_core::taint::OnAMark::Moves => {
+                    let inputs: Vec<Option<Value>> = inputs.iter().map(|v| v.cloned()).collect();
+                    holon_core::eval(unit, &inputs, &holon_core::MapResolver::new()).into_vec()
+                }
+                holon_core::taint::OnAMark::Compares => self.compared(name, unit, inputs),
+            };
+            match self.recorded.get(path) {
+                Some(recorded) if *recorded != gave && self.unrecorded.is_empty() => {
+                    self.belied = true;
+                    return Some(gave);
+                }
+                // After a node that couldn't be computed, what it gives here isn't the run's.
+                Some(recorded) if *recorded != gave => {}
+                _ => return Some(gave),
+            }
         }
         match self.recorded.get(path) {
             Some(outputs) => {
@@ -1649,6 +1716,62 @@ impl Marks {
             Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carries_secret(payload),
             Value::Bytes(b) => secrets::bytes_hold(b, &secret),
             Value::Number(_) | Value::Boolean(_) => false,
+        }
+    }
+
+    /// Each placeholder in `t`, as what follows its start up to its end (`secret:name v3 #a1b2c3d4`),
+    /// with where it starts and where what follows it does.
+    fn each_in<'a>(&'a self, t: &'a str) -> impl Iterator<Item = (usize, usize, &'a str)> + 'a {
+        t.match_indices(self.start.as_str()).filter_map(move |(at, _)| {
+            let body = &t[at + self.start.len()..];
+            let end = body.find('›')?;
+            Some((at, at + self.start.len() + end + '›'.len_utf8(), &body[..end]))
+        })
+    }
+
+    /// The fingerprint a placeholder's body ends with (`… #a1b2c3d4`), if it has one: what tells
+    /// its value from another's, whatever its name or version.
+    fn print_of(body: &str) -> Option<&str> {
+        let (_, print) = body.rsplit_once(" #")?;
+        (print.len() == 8 && print.bytes().all(|b| b.is_ascii_hexdigit())).then_some(print)
+    }
+
+    /// Whether every placeholder in the text `v` tells its value from another's: a secret's or a
+    /// token's with its fingerprint. A tainted value's has none, so two of them read alike.
+    fn told_apart(&self, v: &Value) -> bool {
+        match v {
+            Value::Text(t) => self.each_in(t).all(|(_, _, body)| Marks::print_of(body).is_some()),
+            _ => false,
+        }
+    }
+
+    /// The text `v` with each placeholder written as its fingerprint alone, so that one value
+    /// under two names or two versions reads as one. For comparing, never for what is kept.
+    fn by_print(&self, v: &Value) -> Value {
+        let Value::Text(t) = v else { return v.clone() };
+        let (mut out, mut from) = (String::with_capacity(t.len()), 0);
+        for (at, end, body) in self.each_in(t) {
+            if at < from {
+                continue;
+            }
+            out.push_str(&t[from..at]);
+            match Marks::print_of(body) {
+                Some(print) => out.push_str(&format!("{}#{print}›", self.start)),
+                None => out.push_str(&t[at..end]),
+            }
+            from = end;
+        }
+        out.push_str(&t[from..]);
+        Value::Text(out)
+    }
+
+    /// Whether a record's key anywhere in `v` carries a placeholder.
+    fn in_a_key(&self, v: &Value) -> bool {
+        match v {
+            Value::Record(fields) => fields.iter().any(|(k, v)| k.contains(&self.start) || self.in_a_key(v)),
+            Value::List(items) => items.iter().any(|v| self.in_a_key(v)),
+            Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.in_a_key(payload),
+            Value::Text(_) | Value::Bytes(_) | Value::Number(_) | Value::Boolean(_) => false,
         }
     }
 
@@ -2192,6 +2315,92 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: every leaf `verify` computes on a placeholder (`Asserting::computes`, by core's
+    /// `taint::on_a_mark`) gives with the placeholder what it gives with the value: computed
+    /// with a secret's value and its result written as the log writes it, it is what it gives
+    /// computed with the log's marks. Every leaf of the catalog, inputs made from each port's
+    /// type, each holding a secret in a text, a list and a record.
+    /// Why: `verify` reports such a leaf as checked, and holds the log's record of it to what it
+    /// computes. A leaf on the list that orders by a text, or writes it as JSON, would make a
+    /// sound export differ, or pass a record that isn't the run's.
+    /// If it fails: the leaf named isn't exact on a mark for those inputs: take it off core's
+    /// list, or narrow `computes`.
+    #[test]
+    fn a_leaf_computed_on_a_mark_gives_what_it_gives_with_the_value() {
+        use holon_core::taint::OnAMark;
+        // Two secrets, the first with what JSON escapes; each written by the log with a
+        // fingerprint, as a run's entry shows it.
+        let (secret, other) = ("s3cr3t \"quoted\" \\ é value", "an0ther-secret-value");
+        let mut resolved = secrets::Resolved::default();
+        resolved.current = BTreeMap::from([("k".to_string(), zeroize::Zeroizing::new(secret.to_string())), ("o".to_string(), zeroize::Zeroizing::new(other.to_string()))]);
+        resolved.shown = BTreeMap::from([("k".to_string(), "v1 #0a0b0c0d".to_string()), ("o".to_string(), "v2 #1a1b1c1d".to_string())]);
+        let vault: secrets::Vault = std::sync::Arc::new(crate::sync::Mutex::new(resolved));
+        let redactor = secrets::Redactor::of(&vault);
+        let marks = Marks::new();
+        // A value as the log writes it, read as `verify` reads it.
+        let logged = |v: &Value| {
+            let mut s = SValue::from_core(v);
+            redactor.svalue(&mut s);
+            marks.read(&s, false)
+        };
+        let text = |t: &str| Value::Text(t.to_string());
+        let texts = [text(secret), text(&format!("Bearer {secret}")), text(other), text("plain text"), text(&format!("{secret}, then {other}")), text(&format!("Bearer {other}"))];
+        let of = |ty: &holon_core::Type, pick: usize| -> Value {
+            use holon_core::Type::*;
+            let t = |i: usize| texts[(pick + i) % texts.len()].clone();
+            match ty {
+                Number => Value::Number((pick % 3) as f64),
+                Boolean => Value::Boolean(pick % 2 == 0),
+                Text => t(0),
+                List(_) => Value::List(vec![t(0), t(1), text("b"), t(2), t(0)]),
+                Record => Value::Record(BTreeMap::from([("id".to_string(), t(0)), ("z".to_string(), t(1)), ("a".to_string(), Value::List(vec![t(2)]))])),
+                _ => match pick % 4 {
+                    0 => t(0),
+                    1 => Value::List(vec![t(0), t(1)]),
+                    2 => Value::Record(BTreeMap::from([("id".to_string(), t(0)), ("n".to_string(), Value::Number(1.0))])),
+                    _ => t(3),
+                },
+            }
+        };
+        let asserting = Asserting::from_timeline(&[], &marks, false);
+        let resolver = holon_core::MapResolver::new();
+        let mut computed: BTreeMap<&str, usize> = BTreeMap::new();
+        for name in holon_core::GENESIS.iter().copied().filter(|n| holon_core::taint::on_a_mark(n).is_some()) {
+            let unit = holon_core::interface_of(name).unwrap_or_else(|| panic!("{name} has an interface"));
+            for case in 0..48usize {
+                let real: Vec<Option<Value>> = unit.inputs.iter().enumerate().map(|(i, p)| Some(of(&p.ty, case / (i + 1) + i * 5))).collect();
+                let marked: Vec<Option<Value>> = real.iter().map(|v| v.as_ref().map(&logged)).collect();
+                let refs: Vec<Option<&Value>> = marked.iter().map(Option::as_ref).collect();
+                if !refs.iter().flatten().any(|v| marks.carried(v)) {
+                    continue;
+                }
+                let Some(how) = asserting.computes(name, &refs) else { continue };
+                *computed.entry(name).or_default() += 1;
+                let with_the_value: Vec<Option<Value>> = holon_core::eval(&unit, &real, &resolver).iter().map(|o| o.as_ref().map(&logged)).collect();
+                let with_the_mark: Vec<Option<Value>> = match how {
+                    OnAMark::Moves => holon_core::eval(&unit, &marked, &resolver).into_vec(),
+                    OnAMark::Compares => asserting.compared(name, &unit, &refs),
+                };
+                assert_eq!(with_the_mark, with_the_value, "{name}, case {case}: fed {marked:?}");
+            }
+        }
+        // None is on the list and never tried: a leaf added to it is held here from then on.
+        for name in holon_core::GENESIS.iter().copied().filter(|n| holon_core::taint::on_a_mark(n).is_some()) {
+            assert!(computed.get(name).is_some_and(|&n| n > 0), "{name} is on core's list and no case computed it: {computed:?}");
+        }
+        // And the comparisons met both answers, a secret under another name among them.
+        let same = [Some(logged(&text(&format!("Bearer {secret}")))), Some(logged(&text(&format!("Bearer {secret}"))))];
+        let apart = [Some(logged(&text(secret))), Some(logged(&text(other)))];
+        let unit = holon_core::interface_of("secure_equals").unwrap();
+        let refs = |v: &[Option<Value>; 2]| -> Vec<Option<Value>> { v.to_vec() };
+        let gave = |v: &[Option<Value>; 2]| asserting.compared("secure_equals", &unit, &refs(v).iter().map(Option::as_ref).collect::<Vec<_>>());
+        assert_eq!((gave(&same), gave(&apart)), (vec![Some(Value::Boolean(true))], vec![Some(Value::Boolean(false))]));
+        // A tainted value's mark tells nothing apart: a comparison of one isn't computed.
+        let tainted = Some(Value::Text(format!("{}taint:authorization›", marks.start)));
+        assert_eq!(asserting.computes("secure_equals", &[tainted.as_ref(), same[0].as_ref()]), None);
+        assert_eq!(asserting.computes("concat", &[tainted.as_ref(), same[0].as_ref()]), Some(OnAMark::Moves), "moving one is");
+    }
 
     /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest
     /// run in the export to the head's, and, when the log was trimmed to its newest runs, that it
