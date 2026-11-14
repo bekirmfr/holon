@@ -12,7 +12,7 @@ pub(crate) const WITHHELD: &str = "‹withheld: computed from a secret›";
 /// from a secret: the parts built from it (its path, headers or body) withheld.
 pub(crate) fn withhold_request(request: &mut holon_core::Value, path: &[u32], fed: &SecretFed) {
     let holon_core::Value::Record(r) = request else { return };
-    let derived = |port: usize| fed.input(path, port) == Taint::Derived;
+    let derived = |port: usize| fed.input(path, port).is_derived();
     // A call to another flow's action: what it sends is its one input.
     if r.contains_key("flow") {
         if derived(0)

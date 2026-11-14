@@ -14,7 +14,7 @@
 //!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
 //! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) fed the secret
-//! whole, `jwt_verify` for a key that is (the token's payload comes out, nothing of the key; fed
+//! whole (as it is, or in another spelling: its base64, its bytes), `jwt_verify` for a key that is (the token's payload comes out, nothing of the key; fed
 //! a part of the secret, or anything else computed from it, each is derived, since a hash of one
 //! character names it), and an outbound request's
 //! response or a database read's rows (what the far side said, not what was sent). Nothing else
@@ -40,14 +40,37 @@ use crate::{capabilities, capabilities_of, child_refs, declaration_of, kind::ide
 pub enum Taint {
     #[default]
     Clean,
+    /// It may hold the secret as it is: redaction finds it.
     Literal,
+    /// It may hold the secret whole in another spelling ([`RECODES`]: its base64, its bytes, the
+    /// JSON it is, read). Redaction can't find it, so to the log, an answer or a write it is as
+    /// anything computed from the secret ([`Taint::is_derived`]). To a one-way leaf it is the
+    /// secret whole: a hash of it gives nothing of the secret back.
+    Recoded,
+    /// It may hold something computed from the secret: a part of it, a test of it.
     Derived,
 }
 
+impl Taint {
+    /// Whether it may hold something of the secret that redaction can't find by the secret's
+    /// value: a re-spelling of it whole, or anything else computed from it.
+    pub fn is_derived(self) -> bool {
+        self >= Taint::Recoded
+    }
+}
+
+/// Leaves that spell their one input another way, whole: an encoding, a decoding, the value a
+/// JSON text is. Nothing is chosen out of it and nothing mixed in, so what a one-way leaf makes of
+/// the result gives no more of a secret back than what it makes of the secret: signing with a key
+/// kept as base64 (`hmac_sha256(text_to_bytes(key, { encoding: "base64" }), message)`) is signing
+/// with the key. Fed only at their first input, and that the secret whole.
+const RECODES: &[&str] = &["base64", "hex", "text_to_bytes", "bytes_to_text", "uri_encode", "uri_decode", "json_parse"];
+
 /// Leaves whose output is computed one way from their inputs: nothing of a secret is recovered
-/// from it, when it is the secret whole they are fed (literal). Fed something computed from it
-/// (derived: a slice, a character), what comes out is derived too: a hash of one character names
-/// the character, and a comparison of a prefix says how the secret begins.
+/// from it, when it is the secret whole they are fed: as it is (literal), or in another spelling
+/// (recoded: [`RECODES`]). Fed anything else computed from it (derived: a slice, a character),
+/// what comes out is derived too: a hash of one character names the character, and a comparison
+/// of a prefix says how the secret begins.
 const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
@@ -176,7 +199,7 @@ impl SecretFed {
     /// Whether the run's output `port` (a request's answer is its first) may be computed from a
     /// secret.
     pub fn derives_output(&self, port: usize) -> bool {
-        self.opaque.iter().any(Vec::is_empty) || self.nodes.get(&[][..]).is_some_and(|(_, outs)| outs.get(port) == Some(&Taint::Derived))
+        self.opaque.iter().any(Vec::is_empty) || self.nodes.get(&[][..]).is_some_and(|(_, outs)| outs.get(port).is_some_and(|t| t.is_derived()))
     }
 
     /// Whether the run's output `port` may carry a secret at all: as it is, or computed from it.
@@ -191,7 +214,7 @@ impl SecretFed {
     /// Whether the node at `path` may produce something computed from a secret: the log keeps
     /// none of its outputs.
     pub fn derives(&self, path: &[u32]) -> bool {
-        self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.contains(&Taint::Derived))
+        self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.iter().any(|t| t.is_derived()))
     }
 
     /// Each sink a secret reaches: the node's path, and the effect it makes with it.
@@ -297,8 +320,14 @@ impl<R: Resolver> Walk<'_, R> {
                         // or of anything else computed from it, what comes out says that part:
                         // `sha256(k.slice(i, i + 1))` is the character, by a table of 256, and
                         // `secure_equals(k.slice(0, n), p)` whether `p` is how it begins.
-                        n if ONE_WAY.contains(&n) && most <= Taint::Literal => Taint::Clean,
+                        n if ONE_WAY.contains(&n) && most <= Taint::Recoded => Taint::Clean,
                         n if ONE_WAY.contains(&n) => Taint::Derived,
+                        // The secret whole, spelled another way: still whole. Of a part of it,
+                        // or fed it anywhere but as what it spells, it is computed like any other.
+                        n if RECODES.contains(&n) && most > Taint::Clean => {
+                            let whole = inputs.first().is_some_and(|t| *t <= Taint::Recoded) && inputs.iter().skip(1).all(|t| *t == Taint::Clean);
+                            if whole { Taint::Recoded } else { Taint::Derived }
+                        }
                         // The token's payload comes out, nothing of the key: a shared secret's
                         // taint stops here, as at hmac_sha256; the token's goes on, decoded. A key
                         // or a clock computed from a secret is a part of it, as above.
@@ -330,7 +359,7 @@ impl<R: Resolver> Walk<'_, R> {
                         }
                     }
                     // A sink fed something computed from a secret: its effect carries it.
-                    if outputs.contains(&Taint::Derived)
+                    if outputs.iter().any(|t| t.is_derived())
                         && let Some(caps) = capabilities_of(name, &unit.params)
                     {
                         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
@@ -566,7 +595,7 @@ mod tests {
         assert!(fed.derives(&[3]), "and so is what's built from that");
         assert!(!fed.derives(&[2]), "a constant isn't reached");
         assert!(!fed.derives(&[4]), "an hmac cuts it");
-        assert_eq!(fed.input(&[3], 1), Taint::Derived);
+        assert_eq!(fed.input(&[3], 1), Taint::Recoded, "the secret whole, spelled as base64: derived to the log, whole to a hash");
         assert_eq!(fed.input(&[3], 0), Taint::Clean);
         assert!(fed.derives(&[]), "the root's first output is derived");
     }
@@ -1022,9 +1051,14 @@ mod tests {
     /// As [`fed_on`], the input fed a part of the secret (`k.trim()`: something computed from it)
     /// in place of the secret whole.
     fn fed_a_part_on(unit: &Unit, port: usize) -> Vec<Taint> {
+        fed_through("trim", unit, port)
+    }
+
+    /// As [`fed_on`], the input fed what the leaf `through` makes of the secret.
+    fn fed_through(through: &str, unit: &Unit, port: usize) -> Vec<Taint> {
         let mut r = MapResolver::new();
         let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
-        let part = leaf(&mut r, "trim", vec![Param::frozen("side", "both")]);
+        let part = r.insert(interface_of(through).unwrap()).unwrap();
         let node = r.insert(unit.clone()).unwrap();
         let mut edges: Vec<Edge> = vec![e(0, 0, 1, 0)];
         edges.extend((0..unit.inputs.len() as u32).map(|i| if i as usize == port { e(1, 0, 2, i) } else { e(BOUNDARY, i, 2, i) }));
@@ -1068,6 +1102,30 @@ mod tests {
                 assert_eq!(fed_on(&unit, port), vec![Taint::Clean], "{leaf_name}, the secret whole at {}", unit.inputs[port].name);
             }
         }
+        // The secret whole in another spelling is whole to a one-way leaf: a key kept as base64
+        // signs as the key does, and its signature is a run's to keep and to check. To anything
+        // else it is computed from the secret: no leaf gives it on as clean, or as the secret's
+        // own text for redaction to find.
+        for &spelled in RECODES {
+            let recoder = interface_of(spelled).unwrap();
+            assert_eq!(fed_on(&recoder, 0), vec![Taint::Recoded], "{spelled}, of the secret whole");
+            assert_eq!(fed_a_part_on(&recoder, 0), vec![Taint::Derived], "{spelled}, of a part of it");
+            for one_way in ONE_WAY {
+                let unit = interface_of(one_way).unwrap();
+                for port in 0..unit.inputs.len() {
+                    assert_eq!(fed_through(spelled, &unit, port), vec![Taint::Clean], "{one_way}, the secret {spelled}-spelled at {}", unit.inputs[port].name);
+                }
+            }
+        }
+        for &name in crate::GENESIS {
+            let Some(unit) = interface_of(name) else { continue };
+            for port in 0..unit.inputs.len() {
+                let out = fed_through("base64", &unit, port);
+                let cut = ONE_WAY.contains(&name) || name == "jwt_verify" || ANSWERED.contains(&name);
+                assert!(cut || !out.iter().any(|t| *t <= Taint::Literal), "{name}.{}: of the secret's base64 it gave {out:?}", unit.inputs[port].name);
+            }
+        }
+        assert!(Taint::Recoded.is_derived() && Taint::Derived.is_derived() && !Taint::Literal.is_derived() && !Taint::Clean.is_derived());
         // Where a secret lands in a sorted list, or whether `unique` leaves it out, says how it
         // compares with the others.
         for placed in ["sort", "unique"] {

@@ -449,6 +449,8 @@ mod tests {
         assert_eq!(may("sha256", "route.get(\"/h\", () => sha256(k.slice(0, 1)))"), answers);
         assert_eq!(may("hmac_sha256", "route.get(\"/m\", (req) => hmac_sha256(k.slice(0, 4), req.query.p))"), answers);
         assert_eq!(may("secure_equals", "route.get(\"/w\", (req) => secure_equals(k, req.query.p))"), reads);
+        // A key kept as base64 signs as the key: its bytes are the secret whole, spelled another way.
+        assert_eq!(may("hmac_sha256, text_to_bytes", "route.get(\"/k\", (req) => hmac_sha256(text_to_bytes(k, { encoding: \"base64\" }), req.query.p))"), reads);
         assert_eq!(may("sha256", "route.get(\"/s\", () => sha256(k))"), reads);
     }
 

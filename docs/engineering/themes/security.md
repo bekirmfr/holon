@@ -410,7 +410,10 @@ What is not defended, or only partly:
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
   never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
   `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
-  call's answer give out what they compute from it as clean. Fed a part of it (a slice, a
+  call's answer give out what they compute from it as clean. Whole is the secret as it is, or
+  spelled another way with nothing chosen out of it (taint.rs: `RECODES`, `Taint::Recoded`: its
+  base64 or hex, its bytes, the JSON it is), so a key kept as base64 signs as the key does and
+  its signature is logged and checked. Fed a part of it (a slice, a
   character), a one-way leaf's answer is derived: a hash of one character names it, and a
   comparison of a prefix says how the secret begins. So is where `sort` or `unique` places it. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.
