@@ -31,6 +31,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use crate::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -147,6 +148,10 @@ pub(crate) struct Principal {
     #[serde(default)]
     pub(crate) disabled: bool,
     pub(crate) created_at: u64,
+    /// Which principal made here it is, counting from 1 (`Book::admit`): one removed and made
+    /// again under its name is another, with a later one, whenever it was made.
+    #[serde(default)]
+    pub(crate) serial: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) created_by: Option<String>,
     /// An agent's or a service's: the person answerable for it.
@@ -175,6 +180,7 @@ impl Principal {
             ways_in: Vec::new(),
             disabled: false,
             created_at: epoch_now(),
+            serial: 0,
             created_by: by.map(String::from),
             owner: None,
             prefs: serde_json::Value::Null,
@@ -282,6 +288,20 @@ struct Book {
     /// shown, so each is kept refused until then (`end_provider_sign_in`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ended: Vec<Ended>,
+    /// How many principals have been made here, the removed with the rest: the last one's
+    /// `serial`.
+    #[serde(default)]
+    made: u64,
+}
+
+impl Book {
+    /// `p`, the next principal made here, added: as added.
+    fn admit(&mut self, mut p: Principal) -> Principal {
+        self.made += 1;
+        p.serial = self.made;
+        self.users.push(p.clone());
+        p
+    }
 }
 
 /// A provider's ID token signed out of: its hash, and when it expires (seconds since the epoch).
@@ -400,6 +420,10 @@ pub(crate) struct Accounts {
     proposals: crate::access_proposals::Proposals,
     /// When each principal was last seen and each token last used (`saw`).
     seen: Mutex<Seen>,
+    /// How many times the book or the access document was written while the server runs: read
+    /// with what an access change would make (`trial`), and asked again as it is made
+    /// (`unchanged_since`).
+    written: AtomicU64,
 }
 
 /// A new secret token: `prefix` and 32 random bytes, in hex.
@@ -456,6 +480,22 @@ thread_local! {
     /// checked while it holds one (`checking` says so in every test that runs one): a check takes
     /// a while, longer when the server is busy, and every request needs these locks to say who it is.
     static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The accounts' writes counted when what an access change makes was read, while it is made
+    /// on this thread (`Accounts::unchanged_since`): its write is refused if another was made since.
+    static SINCE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Why a write made under `unchanged_since` is refused: another was made since what it makes was
+/// read.
+const MEANWHILE: &str = "the accounts were changed meanwhile";
+
+/// What `Accounts::trial` read: the access document as it is and as it would be after, and, as
+/// they were then, how many principals had been made and how many writes.
+pub(crate) struct Trial {
+    pub(crate) before: Arc<Document>,
+    pub(crate) after: Document,
+    pub(crate) made: u64,
+    pub(crate) written: u64,
 }
 
 /// One of the accounts' locks, held: counted in `HELD` while it is.
@@ -692,6 +732,7 @@ impl Accounts {
             local: Mutex::new(None),
             proposals,
             seen: Mutex::new(Seen::default()),
+            written: AtomicU64::new(0),
         }
     }
 
@@ -703,15 +744,40 @@ impl Accounts {
     /// What `f` would make of the access document, made on a copy of the accounts held in memory
     /// only, so that it is checked as it would be (`change_access`): the document as it is, and as
     /// it would be after. Refused as `f` is; nothing here changes.
-    pub(crate) fn trial(&self, f: impl FnOnce(&Accounts) -> Result<(), String>) -> Result<(Arc<Document>, Document), String> {
-        let (book, before) = {
+    pub(crate) fn trial(&self, f: impl FnOnce(&Accounts) -> Result<(), String>) -> Result<Trial, String> {
+        let (book, before, written) = {
             let book = hold(&self.book);
-            (book.clone(), self.access.document())
+            (book.clone(), self.access.document(), self.written.load(Ordering::SeqCst))
         };
+        let made = book.made;
         let scratch = Accounts::with(None, book, Bindings::scratch(Document::clone(&before)), crate::access_proposals::Proposals::memory());
         f(&scratch)?;
         let after = Document::clone(&scratch.access.document());
-        Ok((before, after))
+        Ok(Trial { before, after, made, written })
+    }
+
+    /// `f`, whose write of the accounts (the first, of `change` or `change_access`) is made only
+    /// if none was made since `written` (`trial`'s): None, with nothing written, if one was. An
+    /// access change is so made exactly as it was read (access_proposals.rs `approve`).
+    pub(crate) fn unchanged_since<T>(&self, written: u64, f: impl FnOnce() -> Result<T, String>) -> Option<Result<T, String>> {
+        SINCE.with(|s| s.set(Some(written)));
+        let out = f();
+        SINCE.with(|s| s.set(None));
+        match out {
+            Err(e) if e == MEANWHILE => None,
+            out => Some(out),
+        }
+    }
+
+    /// Asked under the book's lock before a write: refused if it is the first made under
+    /// `unchanged_since` and another was made since. Counts the write, made or refused after: one
+    /// counted and not made only has an access change read again.
+    fn writing(&self) -> Result<(), String> {
+        if SINCE.with(|s| s.take()).is_some_and(|since| since != self.written.load(Ordering::SeqCst)) {
+            return Err(MEANWHILE.into());
+        }
+        self.written.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -723,6 +789,7 @@ impl Accounts {
     /// Change the book, and keep it; expired sessions and invites go at the same time.
     fn change<T>(&self, f: impl FnOnce(&mut Book) -> Result<T, String>) -> Result<T, String> {
         let mut book = hold(&self.book);
+        self.writing()?;
         let now = epoch_now();
         book.sessions.retain(|s| s.expires_at > now);
         book.invites.retain(|i| i.expires_at > now);
@@ -772,6 +839,7 @@ impl Accounts {
     /// left once there is one (the plan's D15).
     fn change_access<T>(&self, by: &str, what: &str, why: Option<&str>, f: impl FnOnce(&mut Book, &mut Document) -> Result<T, String>) -> Result<T, String> {
         let mut book = hold(&self.book);
+        self.writing()?;
         let now = epoch_now();
         book.sessions.retain(|s| s.expires_at > now);
         book.invites.retain(|i| i.expires_at > now);
@@ -841,8 +909,7 @@ impl Accounts {
             if book.users.iter().any(|u| u.name == name) {
                 return Err(format!("there is a principal {name:?} already: pick another name"));
             }
-            let account = Principal { password: Some(hash), ..Principal::new(name, Kind::Person, None) };
-            book.users.push(account.clone());
+            let account = book.admit(Principal { password: Some(hash), ..Principal::new(name, Kind::Person, None) });
             access.set_host_role(name, "admin", name, epoch_now());
             // The run file is the account set up here (D45): whoever entered the code saw what the
             // server printed to the OS user who runs it. What the OS user owned before (holon mcp's
@@ -1311,7 +1378,7 @@ impl Accounts {
             if p.email.is_some() {
                 p.made(Way::Email, by);
             }
-            book.users.push(p);
+            book.admit(p);
             access.set_host_role(name, role, by, epoch_now());
             let token = new_token("hi_");
             book.invites.push(Invite { hash: hash_of(&token), name: name.into(), expires_at: epoch_now() + INVITE_SECONDS });
@@ -1332,8 +1399,7 @@ impl Accounts {
                 return Err(format!("there is a principal {name:?} already"));
             }
             may_own(book, owner, local.as_deref())?;
-            let p = Principal { owner: Some(owner.into()), ..Principal::new(name, kind, Some(by)) };
-            book.users.push(p.clone());
+            let p = book.admit(Principal { owner: Some(owner.into()), ..Principal::new(name, kind, Some(by)) });
             access.set_host_role(name, role, by, epoch_now());
             Ok(p)
         })

@@ -83,6 +83,16 @@ impl Change {
             Change::Approvals { settings } => accounts.set_approvals(settings, by, why).map(drop),
         }
     }
+
+    /// What its route asks of whoever makes it, on the host (can.rs): asked again of its author
+    /// when it is approved.
+    fn asks(&self) -> Action {
+        match self {
+            Change::Role { .. } => Action::RoleDefine,
+            Change::HostRole { .. } => Action::PeopleManage,
+            Change::Bind { .. } | Change::Group { .. } | Change::Approvals { .. } => Action::PeopleAssign,
+        }
+    }
 }
 
 /// Whether giving `action` waits for people (D4): `run.decide`, and what is an admin's (every
@@ -112,6 +122,10 @@ pub(crate) struct Proposal {
     /// them is one of them, and a way in to one of them made since makes it stale (D13).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ways_in: Vec<String>,
+    /// How many principals had been made here when it was proposed: one it gives more made since
+    /// is someone else under the name (accounts.rs `Book::admit`).
+    #[serde(default)]
+    pub(crate) made: u64,
     /// The access version it was proposed on.
     pub(crate) base: u64,
     /// How many approve it: the host's setting when it was proposed, or since, if that is more.
@@ -332,7 +346,7 @@ pub(crate) fn govern<T>(accounts: &Accounts, caller: &Caller, change: Change, wh
         return make().map(Governed::Made);
     }
     let by = caller.name.as_deref().unwrap_or("");
-    let (before, after) = accounts.trial(|scratch| change.make(scratch, by, why))?;
+    let crate::accounts::Trial { before, after, made, .. } = accounts.trial(|scratch| change.make(scratch, by, why))?;
     let now = epoch_now();
     let kind_of = |name: &str| accounts.principal(name).map(|p| p.kind);
     let grants = gains(&before, &after, &kind_of, now);
@@ -342,7 +356,7 @@ pub(crate) fn govern<T>(accounts: &Accounts, caller: &Caller, change: Change, wh
     let id = list.iter().map(|p| p.id).max().unwrap_or(0) + 1;
     let to = to(&grants);
     let ways_in = who_could_act(accounts, &to).into_iter().map(|(_, _, how)| how).collect();
-    let p = Proposal { id, author: by.into(), at: now, why: why.map(String::from), change, what: after.what.clone(), gives, to, ways_in, base: before.version, needs, approvals: Vec::new(), state: State::Waiting, ended_at: None };
+    let p = Proposal { id, author: by.into(), at: now, why: why.map(String::from), change, what: after.what.clone(), gives, to, ways_in, made, base: before.version, needs, approvals: Vec::new(), state: State::Waiting, ended_at: None };
     list.push(p.clone());
     if let Err(e) = proposals.save(&list) {
         list.pop();
@@ -393,12 +407,92 @@ fn decider(caller: &Caller, p: &Proposal, verb: &str) -> Result<String, Refused>
     Ok(name)
 }
 
-/// `caller` approves the proposal `id`: it, made if theirs is the last approval it waits for, or
-/// stale if it no longer applies, or someone could act as whom it gives more who its approvers
-/// didn't read (D13). Refused (403) its author, whoever doesn't hold what it gives where it gives
-/// it (D6), read against the document as it is now, and whoever could act as whom it gives more;
-/// 409 for a second approval by the same person.
+/// What a proposal comes to, read again against the document as it is now: the document, what
+/// making it gives and to whom, who could act as them, and the accounts' writes when it was read
+/// (accounts.rs `unchanged_since`).
+struct Read {
+    before: Arc<Document>,
+    gained: Vec<Gain>,
+    acting: Vec<(String, String, String)>,
+    written: u64,
+}
+
+/// `p` read again against the document as it is now, as it is made only as its approvers read it:
+/// or why it no longer applies, which makes it stale. Its author is still here, holding what its
+/// route asks and what it gives (D19, as when they proposed it); it can still be made; it gives exactly what it said, to
+/// exactly whom (a role widened, a group joined or the settings tightened since would make it give
+/// more than its approvers read, or other than it); whom it gives more is who it was when it was
+/// proposed, not someone removed and added again under the name since; and no way in to them was
+/// made since but those its approvers read (D13).
+fn read_again(accounts: &Accounts, p: &Proposal, now: u64) -> Result<Read, String> {
+    let kind_of = |name: &str| accounts.principal(name).map(|p| p.kind);
+    let author = accounts.principal(&p.author).filter(|a| !a.disabled).ok_or_else(|| format!("its author, {}, is no longer here, or is disabled", p.author))?;
+    let as_author = Caller { name: Some(author.name.clone()), kind: Some(author.kind), holds: Some(accounts.holding(&author.name)), local: None };
+    if can(&as_author, p.change.asks(), &Resource::Host).is_err() {
+        return Err(format!("its author, {}, no longer holds {} on this host", p.author, p.change.asks().name()));
+    }
+    let crate::accounts::Trial { before, after, written, .. } = accounts.trial(|scratch| p.change.make(scratch, &p.author, None))?;
+    let gained = gains(&before, &after, &kind_of, now);
+    let mut gives = said(&gained);
+    gives.extend(loosened(&before.approvals, &after.approvals));
+    let more: Vec<&str> = gives.iter().filter(|g| !p.gives.contains(g)).map(String::as_str).collect();
+    let less: Vec<&str> = p.gives.iter().filter(|g| !gives.contains(g)).map(String::as_str).collect();
+    match (more.is_empty(), less.is_empty()) {
+        (true, true) => {}
+        (false, true) => return Err(format!("since it was proposed, it would give {} too", more.join("; "))),
+        (true, false) => return Err(format!("since it was proposed, it no longer gives {}", less.join("; "))),
+        (false, false) => return Err(format!("since it was proposed, it would give {}, and no longer {}", more.join("; "), less.join("; "))),
+    }
+    let to = to(&gained);
+    if let Some(whom) = to.iter().find(|whom| !p.to.contains(whom)) {
+        return Err(format!("since it was proposed, it would give more to {whom} too"));
+    }
+    if let Some(whom) = to.iter().find(|whom| accounts.principal(whom).is_some_and(|w| w.serial > p.made)) {
+        return Err(format!("since it was proposed, {whom} was removed and added again"));
+    }
+    if let Some(g) = gained.iter().find(|g| can(&as_author, g.action, &bindings::given_on(g.action, &g.scope)).is_err()) {
+        return Err(format!("its author, {}, no longer holds {} {}", p.author, g.action.name(), g.scope.said()));
+    }
+    let acting = who_could_act(accounts, &to);
+    if let Some((_, _, how)) = acting.iter().find(|(whom, _, how)| p.to.contains(whom) && !p.ways_in.contains(how)) {
+        return Err(format!("since it was proposed, {how}"));
+    }
+    Ok(Read { before, gained, acting, written })
+}
+
+/// Why `caller` (named `name`) may not approve what `read` gives, if they may not: it gives them
+/// more (whom it gives more doesn't decide giving it), they don't hold what it gives where it
+/// gives it (D6), or they could act as someone it gives more (D13).
+fn may_not_approve(caller: &Caller, name: &str, id: u64, read: &Read) -> Option<String> {
+    if read.gained.iter().any(|g| g.who == name) {
+        return Some(format!("access change {id} gives more to you: it is approved by people other than whom it gives more"));
+    }
+    if let Some(g) = read.gained.iter().find(|g| can(caller, g.action, &bindings::given_on(g.action, &g.scope)).is_err()) {
+        return Some(format!("access change {id} gives {} to {} {}, which you don't hold: an access change is approved only by someone who holds what it gives", g.action.name(), g.who, g.scope.said()));
+    }
+    let (_, _, how) = read.acting.iter().find(|(_, who, _)| who == name)?;
+    Some(format!("access change {id} gives more to someone you could act as ({how}): it is approved by someone who couldn't"))
+}
+
+/// Whether `who`'s approval, given earlier, still counts against `read`: they are still here, a
+/// person, enabled, holding people.assign on the host, and may approve what it gives now. One
+/// disabled since, or holding less, approved what they no longer could.
+fn still_approves(accounts: &Accounts, who: &str, id: u64, read: &Read) -> bool {
+    let Some(p) = accounts.principal(who).filter(|p| !p.disabled && p.kind == Kind::Person) else { return false };
+    let caller = Caller { name: Some(p.name.clone()), kind: Some(p.kind), holds: Some(accounts.holding(&p.name)), local: None };
+    can(&caller, Action::PeopleAssign, &Resource::Host).is_ok() && may_not_approve(&caller, who, id, read).is_none()
+}
+
+/// `caller` approves the proposal `id`: it, made if theirs is the last approval it waits for, as
+/// its approvers read it, or stale if it no longer applies as they read it (`read_again`). Refused
+/// (403) its author, whom it gives more, whoever doesn't hold what it gives where it gives it (D6),
+/// read against the document as it is now, and whoever could act as whom it gives more (D13); 409
+/// for a second approval by the same person. The approvals given before are read again too, and
+/// one that no longer would be given (its approver disabled, or holding less since) doesn't count.
+/// Made, it is made only if nothing in the accounts was written since it was read; if something
+/// was, it is read again (`TRIES` times, then 503 with nothing changed).
 pub(crate) fn approve(accounts: &Accounts, caller: &Caller, id: u64) -> Result<Proposal, Refused> {
+    const TRIES: usize = 8;
     let proposals = accounts.proposals();
     let mut list = proposals.list.lock().unwrap();
     let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| (404, format!("no access change {id}")))?;
@@ -410,47 +504,37 @@ pub(crate) fn approve(accounts: &Accounts, caller: &Caller, id: u64) -> Result<P
         return Err((409, format!("{name} approved access change {id} already: it waits for {} more", usize::from(p.needs).saturating_sub(p.approvals.len()))));
     }
     let now = epoch_now();
-    let kind_of = |name: &str| accounts.principal(name).map(|p| p.kind);
-    // Read again against the document as it is now: its author still here, the change one that
-    // can still be made, and no one able to act as whom it gave more but who its approvers read.
-    let tried = match accounts.principal(&p.author) {
-        Some(author) if !author.disabled => accounts.trial(|scratch| p.change.make(scratch, &p.author, None)),
-        _ => Err(format!("its author, {}, is no longer here, or is disabled", p.author)),
-    };
-    let read = tried.and_then(|(before, after)| {
-        let gained = gains(&before, &after, &kind_of, now);
-        let acting = who_could_act(accounts, &to(&gained));
-        match acting.iter().find(|(whom, _, how)| p.to.contains(whom) && !p.ways_in.contains(how)) {
-            Some((_, _, how)) => Err(format!("since it was proposed, {how}")),
-            None => Ok((before, gained, acting)),
+    for _ in 0..TRIES {
+        let read = match read_again(accounts, p, now) {
+            Ok(read) => read,
+            Err(e) => {
+                p.state = State::Stale { stale: e };
+                p.ended_at = Some(now);
+                break;
+            }
+        };
+        if let Some(refused) = may_not_approve(caller, &name, id, &read) {
+            return Err((403, refused));
         }
-    });
-    let (before, gained, acting) = match read {
-        Ok(read) => read,
-        Err(e) => {
-            p.state = State::Stale { stale: e };
-            p.ended_at = Some(now);
-            let p = p.clone();
-            proposals.save(&list).map_err(|e| (500, e))?;
-            return Ok(p);
+        let mut approvals: Vec<Approval> = p.approvals.iter().filter(|a| still_approves(accounts, &a.who, id, &read)).cloned().collect();
+        approvals.push(Approval { who: name.clone(), at: now });
+        let needs = p.needs.max(read.before.approvals.changes.unwrap_or(0));
+        if approvals.len() < usize::from(needs) {
+            (p.approvals, p.needs) = (approvals, needs);
+            break;
         }
-    };
-    if let Some(g) = gained.iter().find(|g| can(caller, g.action, &bindings::given_on(g.action, &g.scope)).is_err()) {
-        return Err((403, format!("access change {id} gives {} to {} {}, which you don't hold: an access change is approved only by someone who holds what it gives", g.action.name(), g.who, g.scope.said())));
-    }
-    if let Some((_, _, how)) = acting.iter().find(|(_, who, _)| *who == name) {
-        return Err((403, format!("access change {id} gives more to someone you could act as ({how}): it is approved by someone who couldn't")));
-    }
-    p.approvals.push(Approval { who: name, at: now });
-    p.needs = p.needs.max(before.approvals.changes.unwrap_or(0));
-    if p.approvals.len() >= usize::from(p.needs) {
-        let who: Vec<&str> = p.approvals.iter().map(|a| a.who.as_str()).collect();
+        let who: Vec<&str> = approvals.iter().map(|a| a.who.as_str()).collect();
         let why = format!("{}access change {id}, approved by {}", p.why.as_ref().map(|w| format!("{w}; ")).unwrap_or_default(), and(&who));
-        p.state = match p.change.make(accounts, &p.author, Some(&why)) {
+        let Some(made) = accounts.unchanged_since(read.written, || p.change.make(accounts, &p.author, Some(&why))) else { continue };
+        p.state = match made {
             Ok(()) => State::Applied { version: accounts.access_document().version },
             Err(e) => State::Stale { stale: e },
         };
-        p.ended_at = Some(now);
+        (p.approvals, p.needs, p.ended_at) = (approvals, needs, Some(now));
+        break;
+    }
+    if p.state == State::Waiting && p.approvals.iter().all(|a| a.who != name) {
+        return Err((503, format!("the accounts were changed each time access change {id} was read to be made: approve it again")));
     }
     let p = p.clone();
     proposals.save(&list).map_err(|e| (500, e))?;
@@ -759,6 +843,189 @@ mod tests {
         assert!(matches!(govern(&a, &ada, off.clone(), None, || off.make(&a, "ada", None)).unwrap(), Governed::Waits(_)));
         assert!(matches!(govern(&a, &run_file, off.clone(), None, || off.make(&a, "ada", None)).unwrap(), Governed::Made(())));
         assert_eq!(a.access_document().approvals.changes, None);
+    }
+
+    /// The class (R4): whatever is changed while an access change waits (something else, a role it
+    /// binds widened or narrowed, whom it gives more put in a group, the settings tightened, a way
+    /// in made to whom it gives more, they removed and invited again, its author or an approver
+    /// holding less, an approver disabled, what it gives given already), before any approval or
+    /// after the first, approving it makes it exactly as its approvers read it, or not at all.
+    /// Made, the document gains just what it says it gives, to just whom, each the principal it was
+    /// proposed for, and each approval counted is one that could be given then (a person, enabled,
+    /// not its author nor whom it gives more, holding people.assign and what it gives, and unable to
+    /// act as whom it gives more); stale, refused or waiting, the document is as it was. Whom it
+    /// gives more doesn't approve it, gus's binding lasting longer than his own too (CR:A2).
+    #[test]
+    fn an_approved_access_change_is_made_as_its_approvers_read_it_whatever_changed_since() {
+        fn settings(a: &Accounts, f: impl FnOnce(&mut ApprovalSettings)) {
+            let mut s = a.access_document().approvals.clone();
+            f(&mut s);
+            a.set_approvals(s, "ada", None).unwrap();
+        }
+        fn to_principal(name: &str) -> Subject {
+            Subject::Principal(name.into())
+        }
+        /// `p`, made from `doc`: the document gained exactly what it says, to exactly whom, each
+        /// the principal it was proposed for, and each approval counted could be given on `doc`.
+        fn exactly(a: &Accounts, doc: &Document, p: &Proposal, case: &str) {
+            let now = epoch_now();
+            let after = a.access_document();
+            let kind_of = |n: &str| a.principal(n).map(|w| w.kind);
+            let gained = gains(doc, &after, &kind_of, now);
+            let mut gave = said(&gained);
+            gave.extend(loosened(&doc.approvals, &after.approvals));
+            let mut says = p.gives.clone();
+            gave.sort();
+            says.sort();
+            assert_eq!(gave, says, "{case}: it gives what it says");
+            assert_eq!(to(&gained), p.to, "{case}: to whom it says");
+            for w in &p.to {
+                assert!(a.principal(w).unwrap().serial <= p.made, "{case}: {w} is whom it was proposed for");
+            }
+            assert!(p.approvals.len() >= usize::from(p.needs) && p.needs >= doc.approvals.changes.unwrap_or(0), "{case}: enough approve it");
+            let held = doc.index();
+            for ap in &p.approvals {
+                let w = a.principal(&ap.who).unwrap();
+                assert!(w.kind == Kind::Person && !w.disabled && ap.who != p.author && !p.to.contains(&ap.who), "{case}: {} approves it", ap.who);
+                let then = bindings::as_caller(held.get(&ap.who).map(Vec::as_slice).unwrap_or_default(), &ap.who, Kind::Person, now, Some(now));
+                assert!(can(&then, Action::PeopleAssign, &Resource::Host).is_ok(), "{case}: {} holds people.assign", ap.who);
+                for g in &gained {
+                    assert!(can(&then, g.action, &bindings::given_on(g.action, &g.scope)).is_ok(), "{case}: {} holds {}", ap.who, g.action.name());
+                }
+                assert!(!p.to.iter().any(|w| a.acting_as(w).iter().any(|(by, _)| *by == ap.who)), "{case}: {} could act as whom it gives more", ap.who);
+            }
+        }
+        let later = epoch_now() + 3 * 86_400;
+        let events: [(&str, fn(&Accounts)); 13] = [
+            ("nothing", |_| {}),
+            ("watch bound to fay on pay", |a| {
+                a.bind(to_principal("fay"), "watch", pay(), None, "ada", None).unwrap();
+            }),
+            ("approver widened to people.assign", |a| {
+                a.define_role(role("approver", &["run.decide", "run.view", "people.assign"]), "ada", None).unwrap();
+            }),
+            ("approver narrowed to run.view", |a| {
+                a.define_role(role("approver", &["run.view"]), "ada", None).unwrap();
+            }),
+            ("eve into team", |a| {
+                a.set_group(Group { name: "team".into(), about: None, members: vec!["dee".into(), "eve".into()] }, "ada", None).unwrap();
+            }),
+            ("one more approving an access change", |a| settings(a, |s| s.changes = s.changes.map(|n| n + 1))),
+            ("agents kept from their steps", |a| settings(a, |s| s.agents = false)),
+            ("cy made eve's reset link", |a| {
+                a.reset("eve", "cy").unwrap();
+            }),
+            ("eve and fay removed and invited again", |a| {
+                for name in ["eve", "fay"] {
+                    a.remove(name, "ada").unwrap();
+                    a.invite(name, "viewer", None, "ada").unwrap();
+                }
+            }),
+            ("ada made a viewer", |a| a.set_role("ada", "viewer", "bob", None).unwrap()),
+            ("assigner without people.assign", |a| {
+                a.define_role(role("assigner", &["people.view", "role.view", "role.define"]), "ada", None).unwrap();
+            }),
+            ("bob disabled", |a| a.set_disabled("bob", true).unwrap()),
+            ("admin bound to gus for good", |a| {
+                a.bind(to_principal("gus"), "admin", Scope::Host, None, "ada", None).unwrap();
+            }),
+        ];
+        let mut outcomes: std::collections::HashMap<(u8, &str, &str, bool), (String, Vec<String>)> = std::collections::HashMap::new();
+        for setting in [1u8, 2] {
+            let base = ApprovalSettings { exclude_deployer: true, changes: Some(setting), ..ApprovalSettings::default() };
+            let mut kinds: Vec<(&str, Change)> = changes(&base).into_iter().filter(|(_, _, gives, _)| *gives).map(|(what, change, ..)| (what, change)).collect();
+            kinds.push(("admin to gus for good, who holds it until later", Change::Bind { who: to_principal("gus"), role: "admin".into(), scope: Scope::Host, expires_at: None }));
+            for (what, change) in &kinds {
+                for (event, meanwhile) in events {
+                    for after_first in [false, true] {
+                        let case = format!("{what}, changes {setting}, {event} {}", if after_first { "after the first approval" } else { "before any" });
+                        let a = universe(Some(setting));
+                        a.invite("gus", "viewer", None, "ada").unwrap();
+                        a.bind(to_principal("gus"), "admin", Scope::Host, Some(later), "ada", None).unwrap();
+                        let Governed::Waits(p) = govern(&a, &person(&a, "ada"), change.clone(), None, || change.make(&a, "ada", None)).unwrap() else { panic!("{case}: it waits") };
+                        if !after_first {
+                            meanwhile(&a);
+                        }
+                        let mut pending = after_first;
+                        let mut last = (*p).clone();
+                        for who in ["bob", "gus", "cy", "dee"] {
+                            if a.principal(who).is_none_or(|w| w.disabled) {
+                                continue;
+                            }
+                            let doc = a.access_document();
+                            let answer = approve(&a, &person(&a, who), p.id);
+                            let now = a.proposals().all().into_iter().find(|q| q.id == p.id).unwrap();
+                            if p.to.iter().any(|w| w == who) && !matches!(now.state, State::Stale { .. }) {
+                                assert_eq!(answer.as_ref().err().map(|(s, _)| *s), Some(403), "{case}: {who} is given more: {answer:?}");
+                            }
+                            if matches!(now.state, State::Applied { .. }) {
+                                exactly(&a, &doc, &now, &case);
+                            } else {
+                                assert_eq!(kept(&a.access_document()), kept(&doc), "{case}: {who}: nothing changes until it is made");
+                            }
+                            last = now;
+                            if last.state != State::Waiting {
+                                break;
+                            }
+                            if pending && answer.is_ok() {
+                                meanwhile(&a);
+                                pending = false;
+                            }
+                        }
+                        let state = match &last.state {
+                            State::Applied { .. } => "made".to_string(),
+                            State::Waiting => "waits".to_string(),
+                            State::Stale { stale } => format!("stale: {stale}"),
+                            State::Declined { .. } => unreachable!("no one declines it here"),
+                        };
+                        outcomes.insert((setting, what, event, after_first), (state, last.approvals.iter().map(|a| a.who.clone()).collect()));
+                    }
+                }
+            }
+        }
+        let outcome = |setting: u8, what: &str, event: &str, after_first: bool| outcomes[&(setting, what, event, after_first)].clone();
+        let state = |setting: u8, what: &str, event: &str| outcome(setting, what, event, false).0;
+        let (eve, gus) = ("approver bound to eve on the host", "admin to gus for good, who holds it until later");
+        let made_by = |who: &[&str]| ("made".to_string(), who.iter().map(|w| w.to_string()).collect::<Vec<_>>());
+        assert_eq!(outcome(1, eve, "nothing", false), made_by(&["bob"]));
+        assert_eq!(outcome(1, eve, "watch bound to fay on pay", false), made_by(&["bob"]));
+        assert_eq!(outcome(1, eve, "one more approving an access change", false), made_by(&["bob", "gus"]));
+        let widened = state(1, eve, "approver widened to people.assign");
+        assert!(widened.starts_with("stale: since it was proposed, it would give run.decide, people.assign to eve on this host, as approver"), "{widened}");
+        assert_eq!(state(1, eve, "approver narrowed to run.view"), "stale: since it was proposed, it no longer gives run.decide to eve on this host, as approver");
+        assert_eq!(state(1, eve, "cy made eve's reset link"), "stale: since it was proposed, cy made eve's reset link");
+        assert_eq!(state(1, eve, "eve and fay removed and invited again"), "stale: since it was proposed, eve was removed and added again");
+        assert_eq!(state(1, eve, "ada made a viewer"), "stale: its author, ada, no longer holds people.assign on this host");
+        let undone = state(1, "whoever deployed a version let decide it", "agents kept from their steps");
+        assert!(undone.starts_with("stale: since it was proposed, it would give"), "{undone}");
+        let given = state(1, gus, "admin bound to gus for good");
+        assert!(given.starts_with("stale: since it was proposed, it no longer gives"), "{given}");
+        // An earlier approval from someone disabled since doesn't count; gus, given more, never
+        // approves what gives him more.
+        assert_eq!(outcome(2, eve, "bob disabled", true), ("waits".into(), vec!["gus".into()]));
+        assert_eq!(outcome(2, gus, "nothing", false), ("waits".into(), vec!["bob".into()]));
+    }
+
+    /// What `approve` makes is made only if nothing in the accounts was written since it was read
+    /// (accounts.rs `unchanged_since`): with a write between, nothing is made, and read again it
+    /// is. Only its first write is asked: a second, after its own, is made as any is.
+    #[test]
+    fn an_access_change_is_not_made_over_a_write_since_it_was_read() {
+        let a = universe(Some(1));
+        let change = Change::Bind { who: Subject::Principal("eve".into()), role: "approver".into(), scope: Scope::Host, expires_at: None };
+        let read = a.trial(|scratch| change.make(scratch, "ada", None)).unwrap();
+        a.reset("dee", "bob").unwrap();
+        let before = kept(&a.access_document());
+        assert_eq!(a.unchanged_since(read.written, || change.make(&a, "ada", None)), None);
+        assert_eq!(kept(&a.access_document()), before);
+        let again = a.trial(|scratch| change.make(scratch, "ada", None)).unwrap();
+        let made = a.unchanged_since(again.written, || {
+            change.make(&a, "ada", None)?;
+            a.reset("dee", "cy").map(drop)
+        });
+        assert_eq!(made, Some(Ok(())));
+        assert_ne!(kept(&a.access_document()), before);
+        assert_eq!(a.acting_as("dee"), [("cy".to_string(), "cy made dee's reset link".to_string())]);
     }
 
     /// Whoever could act as someone a change gives more (D13) doesn't approve it, and the proposal

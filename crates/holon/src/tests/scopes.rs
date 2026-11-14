@@ -692,7 +692,9 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
 /// but what gives no more (a display name beside a role); a new principal with a role that would
 /// wait is refused (409). The proposals are listed newest first; their author doesn't approve
 /// them, another admin does, each then made as its author asked, by them, its why saying who
-/// approved it; a decline needs a reason. The activity log says each.
+/// approved it; a decline needs a reason. The activity log says each. (Each gives to someone of its
+/// own: one made before another that gives to the same person would change what the other gives,
+/// which makes it stale, access_proposals.rs.)
 #[test]
 fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() {
     let (state, t, _, _) = server();
@@ -702,15 +704,20 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
     assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
     assert_eq!(ada("PUT", "/groups/team", json!({ "members": ["cy"] })).0, 200);
     assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "team" }, "role": "approver", "scope": { "flows": { "slug": "d" } } })).0, 200);
+    for name in ["gil", "hal", "ivy"] {
+        assert_eq!(ada("POST", "/people", json!({ "name": name, "kind": "person", "role": "viewer" })).0, 200);
+    }
+    assert_eq!(ada("PUT", "/roles/keeper", json!({ "allows": ["run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "hal" }, "role": "keeper", "scope": "host" })).0, 200);
     assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200, "turning it up is made at once");
     let accounts = Arc::clone(state.access.accounts().unwrap());
     let base = accounts.access_document().version;
 
     let waiting = [
         ("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "approver", "scope": "host", "why": "on call" }), "bound approver to dee on this host"),
-        ("PUT", "/groups/team", json!({ "members": ["cy", "dee"] }), "changed the group team: cy, dee"),
-        ("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view", "secret.set"], "kinds": ["person"] }), "changed the role approver: run.decide, run.view, secret.set, held by a person"),
-        ("PATCH", "/people/dee", json!({ "role": "editor", "display": "Dee" }), "bound editor to dee on this host"),
+        ("PUT", "/groups/team", json!({ "members": ["cy", "gil"] }), "changed the group team: cy, gil"),
+        ("PUT", "/roles/keeper", json!({ "allows": ["run.view", "secret.set"], "kinds": ["person"] }), "changed the role keeper: run.view, secret.set, held by a person"),
+        ("PATCH", "/people/ivy", json!({ "role": "editor", "display": "Ivy" }), "bound editor to ivy on this host"),
         ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once"),
     ];
     for (n, (method, path, body, what)) in waiting.iter().enumerate() {
@@ -721,7 +728,7 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
         assert_eq!((p["id"].as_u64(), p["what"].as_str(), p["state"].as_str(), p["author"].as_str(), p["base"].as_u64()), (Some(n as u64 + 1), Some(*what), Some("waiting"), Some("ada"), Some(base)), "{said}");
     }
     assert_eq!(accounts.access_document().version, base, "nothing it gives is made");
-    assert_eq!(accounts.principal("dee").unwrap().display.as_deref(), Some("Dee"), "a display name gives nothing");
+    assert_eq!(accounts.principal("ivy").unwrap().display.as_deref(), Some("Ivy"), "a display name gives nothing");
     assert_eq!(listed(&state, &t.ada, "/access/proposals", Some("proposals"), "what"), waiting.iter().rev().map(|w| w.3.to_string()).collect::<Vec<_>>());
     let (code, said) = refusal(ada("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })));
     assert_eq!(code, 409, "{said}");
@@ -737,7 +744,7 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
     let document = accounts.access_document();
     assert_eq!((document.version, document.by.as_str(), document.why.as_deref()), (base + 5, "ada", Some("access change 5, approved by bob")));
     assert_eq!(accounts.access_version(base + 1).unwrap().unwrap().why.as_deref(), Some("on call; access change 1, approved by bob"));
-    assert_eq!((accounts.host_role("dee"), document.approvals.changes), (Some(crate::access::Role::Editor), None));
+    assert_eq!((accounts.host_role("ivy"), document.approvals.changes), (Some(crate::access::Role::Editor), None));
 
     // Back on: a decline needs a reason.
     assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
