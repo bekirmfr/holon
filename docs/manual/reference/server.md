@@ -397,7 +397,9 @@ of "payout": each step of an approval is someone else's`).
   name, what is bound to them, and admin on the host. The access document keeps the tie
   (`local`); `holon access local` (`GET /access/local`) says it, and whether it holds now, and
   `--as NAME` (`PUT /access/local`, `people.assign` on the host) moves it to another person who
-  isn't disabled, as a version. Removing that person clears it.
+  isn't disabled and holds no more than its caller, as a version; while access changes that give
+  more wait for people, so does this one, but through the run file itself. Removing that person
+  clears it.
   Before setup, or tied to no one (its person removed or disabled), the run file is
   `local:<your user>`, admin on the host, and decides no approval. Each activity entry made
   through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.

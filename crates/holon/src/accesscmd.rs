@@ -474,7 +474,9 @@ pub(crate) fn access(args: &[String]) -> i32 {
             };
             match answer {
                 Ok(v) => {
-                    if !as_json(&args, &v) {
+                    if let Some(line) = waiting(&v).filter(|_| !args.flag("--json")) {
+                        println!("{line}");
+                    } else if !as_json(&args, &v) {
                         println!("{} (version {})", tie_line(&v), v["version"]);
                     }
                     0

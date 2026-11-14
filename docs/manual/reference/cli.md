@@ -827,11 +827,17 @@ applies at once.
 
 `local` says who this machine's run file signs in as: the person who set the server up, so the
 commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to
-another person here who isn't disabled, as a new version (holding `people.assign` on the host):
+another person here who isn't disabled and holds no more than you, as a new version (holding
+`people.assign` on the host):
 
 ```
 this machine's run file signs in as bob (version 9)
 ```
+
+Whoever holds the machine then decides as that person, so while this server has people approve
+an access change that gives more, the tie waits as one (`proposals`), saying what that person
+holds; it isn't approved through the run file, nor by whom it signs in as now. Run on the machine
+itself, through its run file, it applies at once.
 
 Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
 `local:<user>`, and decides no approval.

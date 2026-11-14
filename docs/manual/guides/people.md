@@ -50,7 +50,8 @@ you sign in: a step bound to you, you take with `holon decide` or in the editor,
 start, or a version you deploy, from either is yours. The activity log says which entries came
 through the run file (`via: local:<your user>`). Before anyone sets the server up they act as
 `local:<your user>`, an admin. Someone else running the machine now? `holon access local --as
-NAME` ties the run file to them, as a new version of the access document; removing your account
+NAME` ties the run file to them, as a new version of the access document (waiting for people
+where an access change that gives more does, unless you run it through the run file); removing your account
 unties it, and while it is disabled, or tied to no one, the run file is the machine's admin and
 decides no approval.
 
