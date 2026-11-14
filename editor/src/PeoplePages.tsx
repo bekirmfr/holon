@@ -725,7 +725,7 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
   const [points, setPoints] = useState<string[]>([]);
   const [until, setUntil] = useState("");
   const [why, setWhy] = useState("");
-  const [said, setSaid] = useState<{ done?: string; error?: string; blind?: { who: Subject; flow: string; point: string } } | null>(null);
+  const [said, setSaid] = useState<{ done?: string; waits?: boolean; error?: string; blind?: { who: Subject; flow: string; point: string } } | null>(null);
   const subject = subjectOf(fixed ? keyOf(fixed) : who);
   const kind = subject && "principal" in subject ? a.principals.find((p) => p.name === subject.principal)?.kind : undefined;
   const offered = kind ? rolesFor(a.roles, kind) : a.roles;
@@ -765,8 +765,8 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
     try {
       const r = await bind({ who: subject, role, scope, ...(ends && "at" in ends ? { expires_at: ends.at } : {}), ...(why.trim() ? { why: why.trim() } : {}) });
       if ("proposal" in r) {
-        // Kept until people approve it: said here, and listed in Approvals.
-        setSaid({ done: `${waitsSaid(r.proposal)}.` });
+        // Kept until people approve it: said here, linking to where it is decided.
+        setSaid({ done: waitsSaid(r.proposal), waits: true });
         setWhy("");
         setUntil("");
         a.refresh();
@@ -882,8 +882,13 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
         </div>
       )}
       {said?.done && (
-        <div role="status" style={quiet}>
+        <div role="status" style={said.waits ? { ...quiet, color: "var(--warn)" } : quiet}>
           {said.done}
+          {said.waits && (
+            <>
+              : <a href={format({ kind: "approvals", tab: "access" })}>Approvals › Access changes</a>
+            </>
+          )}
         </div>
       )}
       {said?.blind && (

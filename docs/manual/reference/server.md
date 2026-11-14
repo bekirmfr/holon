@@ -345,6 +345,23 @@ group's name. `POST` and `PATCH /people` take any role the principal's kind may 
 own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
 ([the command line](cli.md#roles-and-bindings)).
 
+A run waiting at an approval is listed to whoever views the flow's runs or decides one of its
+approvals: `GET /deployments/<slug>/runs` (`run.view` on the flow, or `run.decide` at one of its
+approvals) lists the runs that wait, and `GET /runs/waiting` (anyone signed in) every
+deployment's, each with its slug, so that someone bound only at an approval point, who lists no
+flow, finds the runs waiting there. To whoever only decides, a run lists the points they decide
+alone. Each approval lists its steps, who took each and their note, what it shows, and which
+steps are the caller's to take (`yours`). `POST /deployments/<slug>/runs/<id>/decide`
+(`{"name": "payout", "approve": true, "reason": "…", "slot": 1, "note": {…}}`, `run.decide` at
+that point) takes a step: `slot` counts from 0 as the steps are written, and none is the one open
+step the caller may take. A decline says why (`reason`, at most 1000 characters), and a note is
+any JSON up to 16 KiB, given to the run with the decision. It answers `{name, slot, slots,
+outcome}`, `outcome` being `waiting` until the last step, then `approved` or `declined`. A step
+out of turn, a second step by whoever took one, a step of a run its caller started (but one that
+says `starter: true`), a person's step to an agent or an agent's to a person, and whatever the
+host's approval settings keep out are refused, saying why (`dee already decided slot 1 (reviewer)
+of "payout": each step of an approval is someone else's`).
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's), and five wrong setup codes lock setting up from

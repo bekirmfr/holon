@@ -479,6 +479,13 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
 - **The run's timeline** and the evidence view show each decision with its slot and role.
 - **Buttons follow `can`**: disabled with the refusal as their title, rather than failing on click.
 
+*Done:* Runs waiting's chain, across flows through `GET /runs/waiting` (7a); People's tabs, the
+form, and each principal's page saying what they may do (7b); buttons from `can` (7c); the
+review's not-ready rows, deploying asked again (6, 7d); each decision on the run's page and on
+hover in Runs waiting, with the binding and the access version that let it (5, 7a); Access
+changes, and a change made in People that waits saying so, linked to them (8d, 9). The editor
+guide says each ([The web editor](../manual/guides/editor.md#the-hosts-pages)).
+
 ## 13. Samples and tests
 
 - `approved-payout` moves to the three-slot chain, tagged `payments`: an agent classifies (through
@@ -493,6 +500,16 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
 - e2e: the editor's Runs waiting with three accounts (one an agent) through the real server; a
   viewer sees no buttons; an agent's person-slot decide gets 403; the deploy review's not-ready row.
 - The manual's leaves are blessed for the changed `approval` leaf; wasm rebuilt.
+
+*Done:* `approved-payout` is the three-step chain, tagged `payments` (5, 6), its walkthrough
+binding the roles from the command line or the editor's form, and, with `--changes 1`, a binding
+waiting for another admin (9); run live with three principals in step 9, as its commit says. The
+refusals are held as classes, not per sample: `durable.rs`'s decide table (out of turn, one
+principal a step, the starter, a step's kind, the host's settings) and the server's tests in
+`tests.rs`; the sample's own test keeps the deposits made while it waits. End to end: Runs
+waiting with an agent, a reviewer and an admin (`system.e2e.ts`, `approvals.e2e.ts`); buttons
+that follow `can`, the deploy review's not-ready rows, and access changes that wait
+(`access.e2e.ts`).
 
 ## 14. Steps
 
@@ -518,7 +535,8 @@ One commit each; the first two change no behaviour.
    as its starter); a tag's row says who it lets in (step 3d). With it, the launch review's H1
    (a flow call is deployed only by someone who may run the action it calls) and H9 (an agent's
    change to what a flow sends out waits for a person).
-7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`.
+7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`. *Done (7a to
+   7d).*
 8. **Governed access changes.** `access_changes: { people: N }` through proposals. *Done
    (server):* `approvals.changes` (8b); `access_proposals.rs` (8c): what a change gives is read by
    making it on a copy of the accounts (`Accounts::trial`) and comparing what each principal may
@@ -530,7 +548,10 @@ One commit each; the first two change no behaviour.
    and a change made in People and access that waits says so; `holon mcp` says an agent never
    approves one.
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and
-   approvals pages; the editor guide.
+   approvals pages; the editor guide. *Done (9):* the sample's walkthrough binds its roles in the
+   editor's form and shows a binding waiting for another admin; the people guide maps People and
+   access's tabs; the editor guide says what in People waits and where it is decided; the server
+   reference lists and decides waiting runs (`GET /runs/waiting`, `POST …/runs/<id>/decide`).
 
 Later, if asked for: admin-written deny rules; conditions on attributes (amount, time of day, a
 run's input) in the style of AWS Cedar; per-slot deadlines and escalation; delegation; withdrawing a
@@ -540,11 +561,22 @@ decision before the count is reached; nested groups; SCIM; notifications.
 
 1. **Tags or folders** for selecting flows: tags in the flow's text (reviewed at deploy) are
    proposed; folders on the flows page would be set by whoever manages the host instead.
+   *Settled: tags (3d).* A version that adds one asks for it (`Tag("payments")`), its review says
+   who the tag lets in, and only a host admin tags a flow its deployer holds nothing on or takes
+   a tag off.
 2. **The short form's meaning**: `people: 2` with no role means "anyone holding `run.decide` here";
    should it rather require a role, so every approval names who?
+   *Settled: it stays (4).* `people: N` is one step with no role: N people holding `run.decide`
+   where the approval is, never its starter. The deploy review marks it not ready when fewer
+   than N may take it, saying how many do (6), so it never means "whoever" unseen.
 3. **Agent notes as decisions**: an agent slot always approves or declines; should an agent be able
    to only annotate (a classifier that never blocks), as a slot of kind `note` that can't decline?
+   *Open.* An agent's step approves or declines, with a note the run is given (5).
 4. **Editors and `run.decide`**: built-in `editor` keeps deciding (today's rule). With custom roles,
    should it lose it, so deciding is only ever granted on purpose?
+   *Open.* `editor` keeps it (2); a host that wants deciding granted on purpose binds a role of
+   its own instead (3), and `--changes N` makes giving it wait for people (8).
 5. **Where a decision is made from**: only the editor, CLI and MCP; or also a signed link sent by
    the flow (email, Slack), which then needs a short-lived, single-use, principal-bound token.
+   *Open.* The editor and the command line (`holon decide`), and an agent's step through `holon
+   mcp`.

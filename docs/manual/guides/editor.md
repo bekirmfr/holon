@@ -283,7 +283,7 @@ In the nav's second group, each to whoever may view it (an admin, all of them):
   group, on the host, a flow, a tag or one approval point of a flow, until a date or for a while
   (`7d`), and why; **History**, each version of who may do what, who made it, what and why, and
   each version's page what it changed from the one before, under the access changes that wait for
-  people (a binding that waits says so where it was made); and **Signing in** through an identity
+  people; and **Signing in** through an identity
   provider (OpenID Connect). A name in these tables opens that principal's page
   (`#people.who.NAME`): what they are, the groups they are in, their tokens, what is bound to them
   (and through which group), a form binding one more, and what it all lets them do, as the server
@@ -291,7 +291,12 @@ In the nav's second group, each to whoever may view it (an admin, all of them):
   flow what more, with the approvals they decide there. A refused binding says the server's words
   (`editor holds flow.edit on "payout", which you don't: …`); one at an approval point alone lets
   its holder decide from Runs waiting but not open the flow, and the form says so and offers viewer
-  on the flow too. Someone who isn't an admin and can't see people has **Your agents and
+  on the flow too. While the host has people approve an access change, one that gives someone
+  more (a binding, a role changed, a group's members, someone's role on the host) isn't made: the
+  form says it waits, for how many people and as which access change, linking to **Approvals ›
+  Access changes**, where others approve or decline it
+  ([Access changes that wait for people](people.md#access-changes-that-wait-for-people)).
+  Someone who isn't an admin and can't see people has **Your agents and
   services** instead: the agents and services they own, whose tokens they make (each shown once)
   and revoke; an admin adds one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever

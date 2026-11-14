@@ -523,6 +523,7 @@ test("while access changes wait for people, an admin's binding of a role that de
     await form.getByRole("button", { name: "bind", exact: true }).click();
     const what = `bound ${approver} to ${dee} on "${slug}"`;
     await expect(form.getByRole("status")).toContainText(`${what}: waits for 1 person other than you to approve it (access change `);
+    await expect(form.getByRole("status").getByRole("link", { name: "Approvals › Access changes" })).toHaveAttribute("href", "#approvals.access");
     expect(await holding()).toEqual([]);
 
     // History lists it above the versions; holon access proposals, with what it gives and who

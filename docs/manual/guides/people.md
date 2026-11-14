@@ -5,6 +5,11 @@ version 2 by ana", "saved by bma-agent", "made a token for ci · by ana". This g
 server for a team: the first admin, a teammate, an agent of your own, a token for CI, a role on
 one flow or a role of your own, and taking any of them away.
 
+In the editor it is all **People and access**, in tabs: *People*, *Agents and tokens*, *Groups*,
+*Roles*, *Bindings* (with the form that binds a role), *History* and *Signing in*, and a page for
+each principal, their name a link, saying what they hold and what it lets them do
+([The web editor](editor.md#the-hosts-pages)). Each has a command too, shown below.
+
 ## Who acts
 
 Each is a **principal** of one of three kinds, each name unique across them:

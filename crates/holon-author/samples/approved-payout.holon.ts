@@ -42,8 +42,17 @@
 //   holon bind reviewer --to bob --tag payments
 //   holon bind approver --to <you> --tag payments
 // Or in the editor's People and access: Roles defines the three (the classifier held by an agent
-// alone), Agents and tokens adds scout and makes its token, People adds bob, and Bindings binds
-// each role to its principal on the tag payments; each one's page then says what they decide.
+// alone), Agents and tokens adds scout and makes its token, People adds bob, and the bind form,
+// on Bindings or on each one's page, binds each role to its principal on the flows with a tag,
+// payments (until: empty, for good; why: History keeps it). Each one's page then says what they
+// decide.
+// With access changes governed, a binding that gives someone more waits for another admin. Add
+// one first (holon people add eve --person --role admin), then holon access approvals --changes
+// 1: binding reviewer to bob now isn't made at once. The form says it waits for 1 person other
+// than you to approve it (access change 1), and History lists it. Eve approves it in the editor's
+// Approvals › Access changes, which says what it gives and who could act as bob (you made bob's
+// invite link, so you don't approve it), or with holon access approve 1, and it is made. Binding
+// approver to you is made at once: it gives an admin nothing more.
 // And binds the database, with its tables and one account holding 100:
 //   holon database add bank ~/holon-bank.db --schema "create table if not exists accounts
 //     (id integer primary key, balance integer not null);
