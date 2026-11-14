@@ -7,7 +7,7 @@
 
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { channelCounts, getCollectionItems, getDeploymentState, getSecretHistory, previewSecretRollback, rollbackSecret, type ChannelCount, type DeploymentEntry, type HeldGrant, type Proposal, type SecretHistory as History, type SecretInfo } from "./server";
-import { gateOf, type Answer } from "./useCan";
+import { gateOf, type Answer } from "./can";
 import { itemParts, secretReaders, usesText, type Holder, type Matrix, type Waiting } from "./holdings";
 import { useDryRun } from "./DryRun";
 import { secretRollbackReport, sourceLabel } from "./DeploySettings";

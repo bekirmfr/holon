@@ -18,7 +18,7 @@ import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { deployUnit, getDeployedDocument, listProposals, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeploySettings";
-import { canOn, refusal } from "./can";
+import { canOn } from "./can";
 import { useToast } from "./ui/Toast";
 import { askAgain, touchLines } from "./touches";
 import type { useDialog } from "./Dialog";
@@ -120,8 +120,8 @@ export function useDeployFlow({
     }
     // What the server would answer on this flow, named just now or not.
     const can = await canOn(name);
-    const refused = refusal(can, "deploy");
-    if (refused) {
+    const refused = can.may("deploy");
+    if (refused !== true) {
       setError(refused);
       return;
     }
@@ -157,8 +157,8 @@ export function useDeployFlow({
       const optional = requirements?.optional ?? [];
       const said = (i: string) => `• ${describeItemSending(i, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       // Someone who may not approve what it asks proposes it: it waits in Approvals.
-      const notApproving = refusal(can, "approve");
-      proposes = ask.length > 0 && notApproving !== undefined;
+      const notApproving = can.may("approve");
+      proposes = ask.length > 0 && notApproving !== true;
       const lines = [proposes ? `Propose "${name}"?` : `${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", proposes ? "It needs a person's approval to:" : "It needs your approval to:", ...ask.map(said));
       if (proposes) lines.push("", `You may not approve it (${notApproving}): it waits in Approvals for someone who may.`);

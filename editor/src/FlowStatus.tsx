@@ -11,7 +11,7 @@ import { describeItem } from "./holon";
 import { follow, format, type Route } from "./routes";
 import { runLabel, runOutcome } from "./runs";
 import { getDeployedDocument, getManifest, getSummary, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type VersionEntry } from "./server";
-import type { Answer } from "./useCan";
+import type { Answer } from "./can";
 import { useFlowLog } from "./useFlowLog";
 import { Spark } from "./ui/Spark";
 

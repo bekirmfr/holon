@@ -16,7 +16,7 @@ import { Fragment, useEffect, useState } from "react";
 import { changeState, decidedChange, notYours } from "./access";
 import { reviewQueue, routeOf, said, versionsSaid, type Approval, type Reviewable } from "./approvals";
 import type { Me } from "./AuthGate";
-import { gate, useCan as useCanOn } from "./can";
+import { canOn, useCan } from "./can";
 import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { cardRows, mayGroups, textLines, type CardRows } from "./reviewMay";
@@ -37,7 +37,6 @@ import {
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
 import type { WaitingRunOf } from "./useApprovals";
-import { askCan, useCan } from "./useCan";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
@@ -136,9 +135,9 @@ export function ApprovalsPage({
 /** Decline a proposal of `slug`'s, for whoever may approve its deploys (`flow.approve-deploy`
  *  on the flow, as declining asks it); disabled, saying why not, for anyone else. */
 function DeclineButton({ slug, onDecline }: { slug: string; onDecline: () => void }) {
-  const can = useCan(["flow.approve-deploy"], { flow: slug });
+  const can = useCan(slug);
   return (
-    <button className="hl-flow__button" onClick={onDecline} aria-label={`decline ${slug}`} {...can.gate("flow.approve-deploy")}>
+    <button className="hl-flow__button" onClick={onDecline} aria-label={`decline ${slug}`} {...can.gate("decline")}>
       Decline with a reason…
     </button>
   );
@@ -337,14 +336,11 @@ function Deploys({
       if (!selected) return toast("Select one first: j and k.", "info");
       if (!proposed(selected)) return toast(`Only a version proposed is declined here: the ${KIND_SAID[selected.kind]} of ${selected.slug} isn't one.`, "info");
       const p = selected.proposal;
-      void askCan(["flow.approve-deploy"], { flow: p.slug }).then(
-        (may) => {
-          const answer = may["flow.approve-deploy"] ?? true;
-          if (answer === true) void decline(p);
-          else toast(answer, "bad");
-        },
-        () => void decline(p),
-      );
+      void canOn(p.slug).then((can) => {
+        const answer = can.may("decline");
+        if (answer === true) void decline(p);
+        else toast(answer, "bad");
+      });
     },
   });
   if (approvals.length === 0) return <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
@@ -652,10 +648,10 @@ function useDecideChange(me: string, onDecided: () => void) {
 
 /** The access changes that wait for people (`GET /access/proposals`): what each changes and
  *  gives, who could act as whom it gives more, who proposed it and why, and who approved it so far;
- *  Approve and Decline to whoever the server would let (can.ts), Withdraw to its author. Then the
+ *  Approve and Decline to whoever the server would let (can.tsx), Withdraw to its author. Then the
  *  last ten decided, and how. */
 function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] | null; me: Me; onDecided: () => void }) {
-  const can = useCanOn();
+  const can = useCan();
   const decide = useDecideChange(me.name, onDecided);
   const waiting = (changes ?? []).filter((p) => p.state === "waiting");
   const ended = (changes ?? []).filter((p) => p.state !== "waiting").slice(0, 10);
@@ -701,11 +697,11 @@ function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] |
                   </td>
                   <td>{changeState(p)}</td>
                   <td className="hl-flows__do">
-                    <button className="hl-flow__button" onClick={() => void decide(p, false)} aria-label={`${p.author === me.name ? "withdraw" : "decline"} ${label}`} {...gate(can, "declineAccess")}>
+                    <button className="hl-flow__button" onClick={() => void decide(p, false)} aria-label={`${p.author === me.name ? "withdraw" : "decline"} ${label}`} {...can.gate("declineAccess")}>
                       {p.author === me.name ? "Withdraw…" : "Decline…"}
                     </button>
                     {p.author !== me.name && (
-                      <button className="hl-flow__button" onClick={() => void decide(p, true)} aria-label={`approve ${label}`} {...gate(can, "approveAccess", no !== null, no ?? undefined)}>
+                      <button className="hl-flow__button" onClick={() => void decide(p, true)} aria-label={`approve ${label}`} {...can.gate("approveAccess", { disabled: no !== null, title: no ?? undefined })}>
                         Approve…
                       </button>
                     )}

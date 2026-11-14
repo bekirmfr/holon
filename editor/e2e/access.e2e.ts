@@ -3,7 +3,7 @@
 // flow; unbinding, which says why, takes it away; History says each change, and a version what it
 // changed. Someone who holds less than a binding gives is refused it in the server's words. And
 // what a principal's page says it may do (access.ts givesOf) is what the server's `can` answers
-// them, for each way of being bound. And the buttons follow `can` (can.ts): a viewer's flow page
+// them, for each way of being bound. And the buttons follow `can` (can.tsx): a viewer's flow page
 // has each that changes something disabled, saying why in the server's words, until a binding
 // lets them, which the page then follows; someone who may deploy a flow but not approve what it
 // asks proposes it, told why, and it waits in Approvals. And a flow whose approval no one here can

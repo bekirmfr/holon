@@ -91,7 +91,7 @@ import { FlowsPage } from "./FlowsPage";
 import { ApprovalsPage, WAITING_LIST, waitingKey } from "./ApprovalsPage";
 import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
-import { useCan, useHostPages, type Answer } from "./useCan";
+import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
@@ -107,7 +107,6 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, ta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { Shell, type Waiting } from "./ui/Shell";
-import { refusal, useCan as useCanOn } from "./can";
 import { PolicyPage, ResourcesPage } from "./HostPages";
 import { OwnedPage, PeoplePage } from "./PeoplePages";
 import { checkRunLog, OverviewPage } from "./OverviewPage";
@@ -649,11 +648,11 @@ function Canvas({
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
   // And the access changes waiting for people that are theirs to decide (access.ts), when they
-  // may decide one (can.ts: approving one asks people.assign on the host): changes, as versions are.
-  const hostCan = useCanOn();
+  // may decide one (can.tsx: approving one asks people.assign on the host): changes, as versions are.
+  const hostCan = useCan();
   const deciding = useMemo(() => toDecide(approvals.runs ?? []), [approvals.runs]);
   const accessDeciding = useMemo(
-    () => (refusal(hostCan, "approveAccess") === undefined && hostCan !== null ? changesToDecide(approvals.access ?? [], me.name) : 0),
+    () => (hostCan.holds("approveAccess") ? changesToDecide(approvals.access ?? [], me.name) : 0),
     [approvals.access, hostCan, me.name],
   );
   useEffect(
@@ -682,10 +681,9 @@ function Canvas({
       toast(`Deployed ${name}.`, "ok", { label: "Open the flow", to: { kind: "flow", slug: name, tab: "status" } });
     },
   });
-  // What the editor's buttons need (can.rs's routes): saving and deploying, of any flow as their
-  // routes ask it (an agent's deploy is a proposal); running, ticking and calling it, on it.
-  const canSave = useCan(["flow.edit", "flow.propose"]);
-  const canFlow = useCan(["flow.lifecycle", "run.call"], { flow: flowName });
+  // What the editor's buttons need (can.tsx): saving and deploying, of any flow as their routes
+  // ask it (hostCan; an agent's deploy is a proposal); ticking and calling it, on it.
+  const canFlow = useCan(flowName);
 
   // The It may strip (MayStrip.tsx): the draft's manifest, as the server will read it, beside the
   // deployed version's, read again when another version is deployed. Worked out when the canvas's
@@ -1370,9 +1368,9 @@ function Canvas({
             onFormat: () => askTextOpening({ do: "format" }),
             onCheck: runCheck,
             onSave: () => void onSave(),
-            maySave: canSave.may("flow.edit"),
+            maySave: hostCan.may("save"),
             onDeploy: () => void onDeployFlow(),
-            mayDeploy: canSave.may("flow.propose"),
+            mayDeploy: hostCan.may("deploy"),
             busy: deployBusy,
             outOfDate,
             waiting: waitingVersion,
@@ -1551,8 +1549,8 @@ function Canvas({
                 errors={derived.errors}
                 liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
                 tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
-                mayCall={canFlow.may("run.call")}
-                mayTick={canFlow.may("flow.lifecycle")}
+                mayCall={canFlow.may("request")}
+                mayTick={canFlow.may("tick")}
                 outOfDate={outOfDate === true}
                 onViewRun={(seq) => flowName && onView(flowName, seq)}
               />
@@ -1677,7 +1675,7 @@ function Canvas({
           {/* The host's pages, to whoever may view them (HostPages.tsx, PeoplePages.tsx); to anyone else, why not. */}
           {pages.can.known &&
             ((shown === "resources" && !pages.resources) || (shown === "people" && pages.people === null) || (shown === "policy" && !pages.policy)) && (
-              <p className="hl-flow__note">{notShown(pages.can.may(shown === "resources" ? "resource.view" : shown === "people" ? "people.view" : "policy.view"))}</p>
+              <p className="hl-flow__note">{notShown(pages.can.may(shown === "resources" ? "resources" : shown === "people" ? "people" : "policy"))}</p>
             )}
           {/* Someone who may not see everyone: the agents and services they own. */}
           {shown === "people" && pages.people === "owned" && <OwnedPage />}

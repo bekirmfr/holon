@@ -62,7 +62,7 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await expect(menuEntry(cy, "resources")).toHaveCount(0);
   await expect(menuEntry(cy, "people")).toHaveCount(0);
-  // Save is disabled for her, saying why as the server does (useCan.tsx); the server's own refusal
+  // Save is disabled for her, saying why as the server does (can.tsx); the server's own refusal
   // is held by its tests (crates/holon/src/tests.rs).
   await gotoPage(cy, "new");
   const save = cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true });

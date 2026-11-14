@@ -18,7 +18,7 @@ import { useFocusTrap } from "./ui/focusTrap";
 /** Who is signed in: their name, kind and widest built-in role on the host, and whether they may
  *  view People and access (`people` holds `people.view` on the host: an admin, or a role an
  *  admin defined), which the editor asks the server once they are in. */
-/** Who is signed in; and, once the server has answered (can.ts), the host's pages they may view,
+/** Who is signed in; and, once the server has answered (can.tsx), the host's pages they may view,
  *  and whether the overview shows what the host warns of: each true, or the words it is refused
  *  in. */
 export type Me = { name: string; kind: Kind; role: Role };
