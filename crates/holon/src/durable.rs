@@ -384,11 +384,16 @@ pub(crate) struct Decided {
     pub(crate) binding: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) access: Option<u64>,
+    /// How it came, when not through their own sign-in: this machine's run file, as its OS user
+    /// (`local:<user>`), which signs in as the account it is tied to (D45). The record says so,
+    /// and what it is shown to and exported with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) via: Option<String>,
 }
 
 impl Decided {
     /// As the run is given it: `{slot, who, kind, role, at, approved, reason, note, binding,
-    /// access}`, the role, the reason, the note and what let it when there are.
+    /// access, via}`, the role, the reason, the note, what let it and how it came when there are.
     fn value(&self) -> Value {
         let text = |s: &str| Value::Text(s.to_string());
         let mut r = BTreeMap::from([
@@ -403,6 +408,7 @@ impl Decided {
         r.extend(self.note.as_ref().and_then(|n| holon_core::parse_json(&n.to_string())).map(|n| ("note".to_string(), n)));
         r.extend(self.binding.map(|id| ("binding".to_string(), Value::Number(id as f64))));
         r.extend(self.access.map(|v| ("access".to_string(), Value::Number(v as f64))));
+        r.extend(self.via.as_deref().map(|via| ("via".to_string(), text(via))));
         Value::Record(r)
     }
 }
@@ -1258,7 +1264,7 @@ fn yours(caller: &access::Caller, slug: &str, excluded: &Excluded, w: &StoredWai
     let Ok(by) = decider(caller, slug, &w.name) else { return Vec::new() };
     let point = crate::can::Resource::Approval { slug, name: Some(&w.name) };
     let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).and_then(|h| h.from);
-    w.yours(excluded, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds })
+    w.yours(excluded, &Decider { who: &by, kind: caller.kind.unwrap_or_default(), holds: &holds, via: caller.local.as_deref() })
 }
 
 /// What a decision did: the approval still waits for more, or it is decided, `approved` or not,
@@ -1276,6 +1282,9 @@ pub(crate) struct Decider<'a> {
     pub(crate) who: &'a str,
     pub(crate) kind: Kind,
     pub(crate) holds: &'a dyn Fn(Option<&str>) -> Option<Bound>,
+    /// Through this machine's run file, as its OS user (`local:<user>`): none through their own
+    /// sign-in.
+    pub(crate) via: Option<&'a str>,
 }
 
 impl Decider<'_> {
@@ -1325,7 +1334,7 @@ impl StoredWaiting {
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
         // What let them: the binding of the step's role, or of run.decide for a step without one.
         let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |b| (Some(b.binding), Some(b.access)));
-        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note, binding, access };
+        let d = Decided { slot, who: by.who.to_string(), kind: by.kind, role, at: decision.at, approved: decision.approve, reason: decision.reason, note: decision.note, binding, access, via: by.via.map(String::from) };
         self.take(d).map(|taken| (slot, taken)).map_err(|why| (409, why))
     }
 
@@ -1460,7 +1469,7 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     // A step with a role takes someone bound to it where the approval is, and keeps the binding.
     let point = crate::can::Resource::Approval { slug, name: Some(&body.name) };
     let holds = |role: Option<&str>| crate::can::holding(caller, role, &point).and_then(|h| h.from);
-    let decider = Decider { who: &by, kind, holds: &holds };
+    let decider = Decider { who: &by, kind, holds: &holds, via: caller.local.as_deref() };
     let (deployments, path) = (&state.deployments, &state.deployments_path);
     // In the activity log as what it was, by whom, at which step.
     let recorded = |state: &AppState, slot: u8| state.activity.record(if body.approve { "approved" } else { "declined" }, &format!("{slug} run {run_id} at {:?}, slot {slot}", body.name), Some(&by));
@@ -1548,16 +1557,18 @@ mod tests {
             note: None,
             binding: None,
             access: None,
+            via: None,
         };
         let noted = |d: Decided| Decided { note: Some(serde_json::json!({ "checked": ["invoice", "po"], "score": 0.93 })), ..d };
         let through = |d: Decided, binding: u64, access: u64| Decided { binding: Some(binding), access: Some(access), ..d };
+        let by_run_file = |d: Decided| Decided { via: Some("local:bma".into()), ..d };
         let ada = serde_json::json!({ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true });
         let rows = [
             (
-                "approved by two people, one with a note, each through what let them",
+                "approved by two people, one with a note through this machine's run file, each through what let them",
                 vec![
                     through(took("ada", true, None, 5), 3, 7),
-                    through(noted(took("bob", true, Some("the invoice matches"), 9)), 4, 7),
+                    by_run_file(through(noted(took("bob", true, Some("the invoice matches"), 9)), 4, 7)),
                 ],
                 Some(1),
                 serde_json::json!({
@@ -1565,7 +1576,7 @@ mod tests {
                     "by": ["ada", "bob"],
                     "decisions": [{ "slot": 0, "who": "ada", "kind": "person", "at": 5, "approved": true, "binding": 3, "access": 7 }, {
                         "slot": 0, "who": "bob", "kind": "person", "at": 9, "approved": true, "reason": "the invoice matches",
-                        "note": { "checked": ["invoice", "po"], "score": 0.93 }, "binding": 4, "access": 7,
+                        "note": { "checked": ["invoice", "po"], "score": 0.93 }, "binding": 4, "access": 7, "via": "local:bma",
                     }],
                 }),
             ),
@@ -1778,7 +1789,7 @@ mod tests {
             for (i, (who, slot, approve, then)) in decisions.into_iter().enumerate() {
                 let (_, kind, roles) = cast.iter().find(|(name, ..)| *name == who).unwrap();
                 let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
-                let by = Decider { who, kind: *kind, holds: &holds };
+                let by = Decider { who, kind: *kind, holds: &holds, via: None };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
                 let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, ..Default::default() };
                 let got = w.decide(&excluded, &by, decision);

@@ -145,6 +145,10 @@ pub(crate) struct Proposal {
 pub(crate) struct Approval {
     pub(crate) who: String,
     pub(crate) at: u64,
+    /// How it came, when not through their own sign-in: this machine's run file, as its OS user
+    /// (`local:<user>`, D45).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) via: Option<String>,
 }
 
 /// On disk and in an answer, beside the proposal's fields: `"state": "waiting"`;
@@ -572,7 +576,7 @@ pub(crate) fn approve(accounts: &Accounts, caller: &Caller, id: u64) -> Result<P
             return Err((403, refused));
         }
         let mut approvals: Vec<Approval> = p.approvals.iter().filter(|a| still_approves(accounts, &a.who, id, &read)).cloned().collect();
-        approvals.push(Approval { who: name.clone(), at: now });
+        approvals.push(Approval { who: name.clone(), at: now, via: caller.local.clone() });
         let needs = p.needs.max(read.before.approvals.changes.unwrap_or(0));
         if approvals.len() < usize::from(needs) {
             (p.approvals, p.needs) = (approvals, needs);
@@ -1102,7 +1106,8 @@ mod tests {
     /// Tying this machine's run file to someone (D45) gives whoever holds the machine their name
     /// and what they hold: it waits for people, saying so, and isn't approved through the run file,
     /// nor by whom it signs in as now, nor by someone holding less than whom it ties it to (D19).
-    /// Through the run file itself, the machine's root (D11), it is made at once.
+    /// Through the run file itself, the machine's root (D11), it is made at once. An approval
+    /// through the run file says so (`via`).
     #[test]
     fn tying_the_run_file_to_someone_waits_for_people() {
         let a = universe(Some(1));
@@ -1124,6 +1129,11 @@ mod tests {
         // Through the run file, at once.
         assert!(matches!(govern(&a, &run_file, tie("eve"), None, || tie("eve").make(&a, "gus", None)).unwrap(), Governed::Made(())));
         assert_eq!(a.access_document().local.as_deref(), Some("eve"));
+        // Another change, approved through the run file, says so.
+        let editor = Change::HostRole { name: "fay".into(), role: "editor".into() };
+        let Governed::Waits(p) = govern(&a, &person(&a, "ada"), editor.clone(), None, || editor.make(&a, "ada", None)).unwrap() else { panic!("it waits") };
+        let made = approve(&a, &run_file, p.id).unwrap();
+        assert_eq!(made.approvals.iter().map(|a| (a.who.as_str(), a.via.as_deref())).collect::<Vec<_>>(), [("gus", Some("bma"))]);
     }
 
     /// Whoever could act as someone a change gives more (D13) doesn't approve it, and the proposal

@@ -2764,7 +2764,8 @@ export const pay = action(async (order) => {
 /// takes the step bound to that account, through that account's binding; with `people: 2` it and
 /// the account's session are one person; a run it starts, and a version it deploys, are the
 /// account's, which the starter rule and `exclude_deployer` refuse it and the session alike; tied
-/// to no account (that account disabled), it decides nothing, its admin no binding.
+/// to no account (that account disabled), it decides nothing, its admin no binding. Each decision
+/// it takes says so (`via: local:<user>`), as the run is given it.
 /// **Why:** one human at the keyboard is one principal on the record, whichever way they signed
 /// in: two of them would let one person fill two steps, or approve what they started.
 #[test]
@@ -2814,12 +2815,13 @@ export const pay = action(async (order) => {{
     let deployed = "ada deployed the version this run is on: on this host, someone else decides its approval \"payout\"";
     let once = "ada already approved \"payout\": it needs 2 different people";
     // Each row: the flow, who starts its run, whether this host excludes the deployer, and each
-    // decision in turn, with the outcome or the refusal; then who decided it, through which binding.
-    type Row<'a> = (&'a str, &'a str, &'a str, bool, Vec<(&'a str, Result<&'a str, (u16, &'a str)>)>, Vec<(&'a str, &'a str)>);
+    // decision in turn, with the outcome or the refusal; then who decided it, through which binding,
+    // and whether through the run file.
+    type Row<'a> = (&'a str, &'a str, &'a str, bool, Vec<(&'a str, Result<&'a str, (u16, &'a str)>)>, Vec<(&'a str, &'a str, Option<&'a str>)>);
     let rows: Vec<Row> = vec![
-        ("the run file takes the step bound to its account", "steps", "eve", false, vec![("the run file", Ok("approved"))], vec![("ada", "approver")]),
-        ("as the account's session does", "steps", "eve", false, vec![("ada", Ok("approved"))], vec![("ada", "approver")]),
-        ("one person, whichever way they signed in", "pair", "eve", false, vec![("the run file", Ok("waiting")), ("ada", Err((409, once))), ("bob", Ok("approved"))], vec![("ada", "admin"), ("bob", "approver")]),
+        ("the run file takes the step bound to its account", "steps", "eve", false, vec![("the run file", Ok("approved"))], vec![("ada", "approver", Some("local:bma"))]),
+        ("as the account's session does", "steps", "eve", false, vec![("ada", Ok("approved"))], vec![("ada", "approver", None)]),
+        ("one person, whichever way they signed in", "pair", "eve", false, vec![("the run file", Ok("waiting")), ("ada", Err((409, once))), ("bob", Ok("approved"))], vec![("ada", "admin", Some("local:bma")), ("bob", "approver", None)]),
         ("a run the run file starts is ada's", "steps", "the run file", false, vec![("ada", Err((403, started))), ("the run file", Err((403, started)))], vec![]),
         ("a version the run file deployed is ada's", "steps", "eve", true, vec![("ada", Err((403, deployed))), ("the run file", Err((403, deployed)))], vec![]),
     ];
@@ -2846,8 +2848,8 @@ export const pay = action(async (order) => {{
         }
         let decided = state.deployments.lock().unwrap()[slug].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
         let d: Value = serde_json::from_str(&holon_core::stringify_json(&decided).unwrap()).unwrap();
-        let kept: Vec<(Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["binding"].clone())).collect();
-        assert_eq!(kept, took.iter().map(|(who, role)| (json!(who), through(who, role))).collect::<Vec<_>>(), "{what}: {d}");
+        let kept: Vec<(Value, Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["binding"].clone(), x["via"].clone())).collect();
+        assert_eq!(kept, took.iter().map(|(who, role, via)| (json!(who), through(who, role), json!(via))).collect::<Vec<_>>(), "{what}: {d}");
     }
     // ada disabled, the run file is tied to no account: it decides nothing, saying so.
     assert_eq!(ask(&ada, "PUT", "/access/approvals", json!({ "exclude_deployer": false })).0, 200);
