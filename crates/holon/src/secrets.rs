@@ -185,36 +185,19 @@ pub(crate) struct SecretEvent {
 
 /// The audit log: appended to a file, or kept in memory for an in-memory store.
 struct Audit {
-    path: Option<PathBuf>,
+    /// The file, and how its lines are sealed: each under the secrets' keys (at_rest.rs, §5.2).
+    path: Option<(PathBuf, at_rest::LineSeal)>,
     kept: Mutex<Vec<SecretEvent>>,
 }
 
 impl Audit {
     fn record(&self, event: SecretEvent) {
-        let Some(path) = &self.path else {
+        let Some((path, seal)) = &self.path else {
             self.kept.lock().unwrap().push(event);
             return;
         };
-        let line = match serde_json::to_string(&event) {
-            Ok(l) => l + "\n",
-            Err(_) => return,
-        };
-        let appended = (|| -> std::io::Result<()> {
-            use std::io::Write;
-            let new = !path.exists();
-            let mut options = std::fs::OpenOptions::new();
-            options.append(true).create(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(path)?;
-            if new {
-                crate::sealing::restrict_to_owner(path)?;
-            }
-            file.write_all(line.as_bytes())
-        })();
+        let Ok(line) = serde_json::to_string(&event) else { return };
+        let appended = seal.append(path, &line);
         if let Err(e) = appended {
             eprintln!("holon: could not append to the secrets audit log {path:?}: {e}");
         }
@@ -224,11 +207,7 @@ impl Audit {
     fn read(&self, slug: &str, name: &str, limit: usize) -> Vec<SecretEvent> {
         let all: Vec<SecretEvent> = match &self.path {
             None => self.kept.lock().unwrap().clone(),
-            Some(path) => std::fs::read_to_string(path)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect(),
+            Some((path, seal)) => seal.read_lines(path).iter().filter_map(|l| serde_json::from_str(l).ok()).collect(),
         };
         let mine: Vec<SecretEvent> = all.into_iter().filter(|e| e.slug == slug && (e.name == name || e.name == "*")).collect();
         mine[mine.len().saturating_sub(limit)..].to_vec()
@@ -297,7 +276,8 @@ impl SecretStore {
         if path == ":memory:" {
             return Ok(SecretStore { keys, ..SecretStore::memory() });
         }
-        let audit = Audit { path: Some(Path::new(path).with_extension("audit.jsonl")), kept: Mutex::new(Vec::new()) };
+        let seal = at_rest::LineSeal::with(Arc::clone(&keys), at_rest::SECRETS, at_rest::role::SECRETS_AUDIT);
+        let audit = Audit { path: Some((Path::new(path).with_extension("audit.jsonl"), seal)), kept: Mutex::new(Vec::new()) };
         let store = |caps| SecretStore { path: path.into(), keys: Arc::clone(&keys), sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
         // Sealed whole under the server's keys (which secrets each deployment has, their sources),
         // each local value in it under the secrets scope.

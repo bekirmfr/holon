@@ -500,6 +500,100 @@ pub(crate) mod role {
     pub(crate) const MAIL_SEEN: &str = "seen: mail";
     pub(crate) const FEED_SEEN: &str = "seen: feed";
     pub(crate) const ARRIVALS: &str = "arrivals";
+    pub(crate) const LOG: &str = "log";
+    pub(crate) const EVENTS: &str = "events";
+    pub(crate) const CONSOLE: &str = "console";
+    pub(crate) const ACTIVITY: &str = "activity";
+    pub(crate) const SECRETS_AUDIT: &str = "secrets audit";
+
+    /// A run log's sealed segment: its older runs, gzipped then sealed whole.
+    pub(crate) fn segment(slug: &str) -> String {
+        format!("segment: {slug}")
+    }
+}
+
+/// How a line log is sealed (§4, §5.1, §5.2): each line on its own, under `scope`, for `role`, so
+/// the file still splits on `\n` and a reader opens each line it reads. Its whole files (a run
+/// log's segments) are sealed under the same scope. What it opens is the line as it was made:
+/// the chain hashes that, never what is on disk (§2.2).
+#[derive(Clone)]
+pub(crate) struct LineSeal {
+    keys: std::sync::Arc<Keyring>,
+    scope: String,
+    role: String,
+}
+
+impl std::fmt::Debug for LineSeal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LineSeal({:?}, {:?})", self.scope, self.role)
+    }
+}
+
+impl LineSeal {
+    /// Lines under `scope` for `role`, with the server's keyring.
+    pub(crate) fn new(scope: &str, role: &str) -> LineSeal {
+        LineSeal::with(std::sync::Arc::clone(keys()), scope, role)
+    }
+
+    /// Lines under `scope` for `role`, with `keys` (a store that holds its own, the secrets').
+    pub(crate) fn with(keys: std::sync::Arc<Keyring>, scope: &str, role: &str) -> LineSeal {
+        LineSeal { keys, scope: scope.into(), role: role.into() }
+    }
+
+    /// Deployment `slug`'s lines for `role`: its run log, its events, its console lines.
+    pub(crate) fn of(slug: &str, role: &str) -> LineSeal {
+        LineSeal::new(&deployment(slug), role)
+    }
+
+    /// `plain` (one line, no newline) sealed.
+    pub(crate) fn seal(&self, plain: &str) -> std::io::Result<String> {
+        self.keys.seal_line(&self.scope, &self.role, plain.as_bytes()).map_err(std::io::Error::other)
+    }
+
+    /// A line as it is on disk, opened: none if it doesn't (cut short as it was written, changed,
+    /// or plain where a sealed one belongs).
+    pub(crate) fn open(&self, line: &str) -> Option<String> {
+        let plain = self.keys.open_line(&self.scope, &self.role, line).ok()?;
+        String::from_utf8(plain.to_vec()).ok()
+    }
+
+    /// Each line of `text` (lines ending in `\n`) sealed, `\n` after each.
+    pub(crate) fn seal_lines(&self, text: &[u8]) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(text.len() * 3 / 2);
+        for line in text.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            let line = std::str::from_utf8(line).map_err(std::io::Error::other)?;
+            out.extend_from_slice(self.seal(line)?.as_bytes());
+            out.push(b'\n');
+        }
+        Ok(out)
+    }
+
+    /// Each line of `text` that opens, opened, oldest first.
+    pub(crate) fn open_lines<'a>(&'a self, text: &'a str) -> impl Iterator<Item = String> + 'a {
+        text.lines().filter_map(|l| self.open(l))
+    }
+
+    /// The file at `path`'s lines that open, opened: none if there is no file.
+    pub(crate) fn read_lines(&self, path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
+    }
+
+    /// `plain` (one line) sealed and appended to the file at `path`, owner-only.
+    pub(crate) fn append(&self, path: &Path, plain: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let line = self.seal(plain)? + "\n";
+        crate::sealing::append_private(path)?.write_all(line.as_bytes())
+    }
+
+    /// A whole file of the same scope (a segment), sealed for `role`.
+    pub(crate) fn seal_file(&self, role: &str, bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.keys.seal_file(&self.scope, role, bytes).map_err(std::io::Error::other)
+    }
+
+    /// A whole file sealed for `role`, opened.
+    pub(crate) fn open_file(&self, role: &str, bytes: &[u8]) -> std::io::Result<Zeroizing<Vec<u8>>> {
+        self.keys.open_file(role, bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    }
 }
 
 /// A table of the server's (`scope` server), sealed for `role` and written to `path` atomically,
@@ -527,6 +621,49 @@ pub(crate) fn opened(path: impl AsRef<Path>, role: &str) -> String {
     let path = path.as_ref();
     let bytes = read_sealed(path, role).unwrap_or_else(|e| panic!("{}: {e}", path.display())).unwrap_or_else(|| panic!("{} is missing", path.display()));
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// For tests that read or change a line log as it is on disk: its lines opened, and written back
+/// sealed, so each keeps testing what it tests (a cut line, a changed one, a broken chain).
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// How the line log at `path` is sealed, by its name as the server names it: `<slug>.jsonl` a
+    /// run log, `<slug>.events.jsonl` events, `<slug>.console[.n].jsonl` console lines,
+    /// `….activity.jsonl` the activity.
+    pub(crate) fn seal_of(path: &Path) -> LineSeal {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let slug = name.split('.').next().unwrap_or_default();
+        if name.ends_with("activity.jsonl") {
+            LineSeal::new(SERVER, role::ACTIVITY)
+        } else if name.ends_with(".events.jsonl") {
+            LineSeal::of(slug, role::EVENTS)
+        } else if name.contains(".console.") {
+            LineSeal::of(slug, role::CONSOLE)
+        } else {
+            LineSeal::of(slug, role::LOG)
+        }
+    }
+
+    /// The line log at `path`'s lines, opened; one that doesn't open (cut short, or plain) as it
+    /// is on disk. None if there is no file.
+    pub(crate) fn open_lines(path: &Path) -> Vec<String> {
+        let seal = seal_of(path);
+        std::fs::read_to_string(path).unwrap_or_default().lines().map(|l| seal.open(l).unwrap_or_else(|| l.to_string())).collect()
+    }
+
+    /// The line log at `path` written as `lines`, each sealed, `\n` after each.
+    pub(crate) fn write_lines(path: &Path, lines: &[impl AsRef<str>]) {
+        let seal = seal_of(path);
+        let text: String = lines.iter().map(|l| seal.seal(l.as_ref()).unwrap() + "\n").collect();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// `line` as the line log at `path` holds it, sealed (no newline).
+    pub(crate) fn sealed(path: &Path, line: &str) -> String {
+        seal_of(path).seal(line).unwrap()
+    }
 }
 
 #[cfg(test)]

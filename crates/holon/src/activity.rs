@@ -90,11 +90,8 @@ impl Activity {
             return;
         };
         let _one_at_a_time = self.kept.lock().unwrap();
-        let appended = (|| -> std::io::Result<()> {
-            use std::io::Write;
-            let line = serde_json::to_string(&entry).map_err(std::io::Error::other)? + "\n";
-            crate::sealing::append_private(path)?.write_all(line.as_bytes())
-        })();
+        // A line at a time, each sealed under the server's keys (at_rest.rs, §5.2).
+        let appended = serde_json::to_string(&entry).map_err(std::io::Error::other).and_then(|line| seal().append(path, &line));
         if let Err(e) = appended {
             eprintln!("holon: could not append to the activity log {path:?}: {e}");
         }
@@ -104,10 +101,15 @@ impl Activity {
     pub(crate) fn newest(&self, limit: usize, keep: impl Fn(&ActivityEntry) -> bool) -> Vec<ActivityEntry> {
         let all: Vec<ActivityEntry> = match &self.path {
             None => self.kept.lock().unwrap().clone(),
-            Some(path) => std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect(),
+            Some(path) => seal().read_lines(path).iter().filter_map(|l| serde_json::from_str(l).ok()).collect(),
         };
         all.into_iter().rev().filter(keep).take(limit.min(MAX_READ)).collect()
     }
+}
+
+/// How the activity's lines are sealed.
+fn seal() -> crate::at_rest::LineSeal {
+    crate::at_rest::LineSeal::new(crate::at_rest::SERVER, crate::at_rest::role::ACTIVITY)
 }
 
 /// What is done to a flow, by the words its entry is kept in (flows.rs, deploy.rs, proposals.rs,

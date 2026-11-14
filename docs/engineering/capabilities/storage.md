@@ -93,7 +93,8 @@ opens is left as it is, its values missing, and warned of.
 ### Sealing a log's older runs
 
 A log keeps its newest `HOT` (128) runs in its file as written; a cut-back seals the older ones it
-keeps into `<slug>.sealed/<first>-<last>.jsonl.gz` and lets go of whole segments none of whose runs
+keeps into `<slug>.sealed/<first>-<last>.jsonl.gz` (gzipped, then sealed whole under the
+deployment's keys, at_rest.rs) and lets go of whole segments none of whose runs
 it keeps (`split`). A file is cut once it holds more than twice `min(keep, HOT)` lines, or its
 oldest is a day past the age it keeps. The chain across segments is in
 [Run records](run-records-and-verify.md#keeping-and-cutting-back); the cut outside the lock,

@@ -204,9 +204,10 @@ impl Logs {
             None => self.0.slugs.lock().unwrap().get(slug).map(|p| p.memory.iter().cloned().collect()).unwrap_or_default(),
             Some(dir) => {
                 let mut lines = Vec::new();
+                let seal = crate::at_rest::LineSeal::of(slug, crate::at_rest::role::CONSOLE);
                 for n in (0..self.0.caps.files).rev() {
                     let Ok(text) = std::fs::read_to_string(file_of(dir, slug, n)) else { continue };
-                    lines.extend(text.lines().filter_map(|l| serde_json::from_str::<Line>(l).ok()));
+                    lines.extend(seal.open_lines(&text).filter_map(|l| serde_json::from_str::<Line>(&l).ok()));
                 }
                 lines
             }
@@ -357,6 +358,8 @@ fn file_of(dir: &Path, slug: &str, n: usize) -> PathBuf {
 /// `bytes` added to `slug`'s file, which is rolled first if they would take it past its cap.
 fn append(dir: &Path, slug: &str, bytes: &[u8], caps: &Caps) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    // Each line sealed under the deployment's keys (at_rest.rs, §5.2): the cap counts them sealed.
+    let bytes = &crate::at_rest::LineSeal::of(slug, crate::at_rest::role::CONSOLE).seal_lines(bytes)?;
     let current = file_of(dir, slug, 0);
     let size = std::fs::metadata(&current).map_or(0, |m| m.len());
     if size > 0 && size + bytes.len() as u64 > caps.file_bytes {

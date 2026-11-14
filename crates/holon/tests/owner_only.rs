@@ -1,8 +1,8 @@
 //! What the server writes is its owner's alone, against the real server: `holon serve` started as
 //! it is installed, a flow deployed with `holon deploy` that leaves something in every kind of
 //! file a run leaves, requests sent over sockets, then every file under its home looked at
-//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0), and every table it keeps sealed (step 2). A
-//! test binary of its own, as data_plane.rs.
+//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0), every table it keeps sealed (step 2), and
+//! every line log (step 3). A test binary of its own, as data_plane.rs.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -199,4 +199,22 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     assert!(tables.iter().any(|f| f.ends_with("deployments.json")) && tables.iter().any(|f| f.ends_with("keys.json")), "{tables:#?}");
     let plain: Vec<&&PathBuf> = tables.iter().filter(|f| !f.ends_with("keys.json") && !std::fs::read(f).unwrap().starts_with(b"HLA1")).collect();
     assert!(plain.is_empty(), "tables not sealed: {plain:#?}");
+
+    // And every line log a line at a time (step 3): the run log, events, console lines, the
+    // activity, the access history; a run log's segments whole. The witness's queue and receipts
+    // (deployments.heads/) hold only hashes, and stay as they are (§2.5).
+    let logs = data.join("deployments.logs");
+    let line_logs: Vec<&PathBuf> = files
+        .iter()
+        .filter(|f| f.extension().is_some_and(|e| e == "jsonl") && (f.parent() == Some(logs.as_path()) || f.parent() == Some(data.as_path())))
+        .collect();
+    for want in ["kept.jsonl", "kept.events.jsonl", "kept.console.jsonl", "deployments.activity.jsonl"] {
+        assert!(line_logs.iter().any(|f| f.ends_with(want)), "{want} is among the line logs looked at: {line_logs:#?}");
+    }
+    for f in &line_logs {
+        let text = std::fs::read_to_string(f).unwrap();
+        assert!(!text.is_empty() && text.lines().all(|l| l.starts_with("a1.")), "{} holds a line not sealed", f.display());
+    }
+    let segments: Vec<&PathBuf> = files.iter().filter(|f| f.to_string_lossy().ends_with(".jsonl.gz")).collect();
+    assert!(!segments.is_empty() && segments.iter().all(|f| std::fs::read(f).unwrap().starts_with(b"HLA1")), "segments sealed whole: {segments:#?}");
 }

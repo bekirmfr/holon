@@ -24,7 +24,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 |---|---|---|
 | `store/` | every unit, by hash | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
-| `deployments.logs/` | each deployment's run log: its newest 128 runs as written, `<slug>.jsonl`, and the older ones it keeps sealed, gzipped, in `<slug>.sealed/` (`zcat` reads them); its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on | |
+| `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
@@ -360,10 +360,13 @@ What the server seals in its data folder is sealed under data keys kept in `keys
 wrapped by one root key, which is never in the folder: secret values, what a waiting run keeps,
 and every table: the deployments, saved flows and their proposals, the secrets file itself, the
 accounts, `access.json` and each line of its history, the folders, databases, mails, queues and
-feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and folders. Each is
-sealed for what it is, so one is never read as another, and a plain file where a sealed one
-belongs is refused, not read. `keys.json` is the one kept as it is. `--root-key` says where the
-root is:
+feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and folders; and every
+log, a line at a time: each deployment's run log (its older runs gzipped, then sealed whole), its
+events and console lines, the activity and the secrets audit. Each is sealed for what it is, so
+one is never read as another, and a plain file where a sealed one belongs is refused, not read.
+`keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
+as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.
+`--root-key` says where the root is:
 
 | Value | |
 |---|---|

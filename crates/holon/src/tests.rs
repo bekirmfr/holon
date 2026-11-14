@@ -1262,7 +1262,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         seqs.extend(export.lines.iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq));
     }
     let kept: Vec<u64> = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).iter().map(|e| e.seq).collect();
-    let file: Vec<u64> = std::fs::read_to_string(std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).unwrap().lines().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
+    let file: Vec<u64> = crate::at_rest::testing::open_lines(&std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
     seqs.extend(file.iter().copied());
     seqs.sort_unstable();
     assert_eq!(seqs, (0..40).collect::<Vec<u64>>(), "backed up and still in the file: every run, once");
@@ -5565,17 +5565,18 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     let entries = log["entries"].as_array().unwrap();
     assert_eq!(entries[0].get("prev"), None, "the first run has nothing before it");
     let file = recorder::file_for(&Place::parse(&path), "chained").unwrap();
-    let text = std::fs::read_to_string(&file).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(entries[1]["prev"], recorder::line_hash(lines[0]));
-    assert_eq!(log["head"], recorder::line_hash(lines[2]));
+    let lines = crate::at_rest::testing::open_lines(&file);
+    assert_eq!(entries[1]["prev"], recorder::line_hash(&lines[0]));
+    assert_eq!(log["head"], recorder::line_hash(&lines[2]));
     assert_eq!(log["breaks"], serde_json::json!([]));
     assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["chained"].log.with(|log| log.breaks().is_empty()));
 
     // The first run's body changed in the file: the second no longer follows it.
-    let changed = text.replacen("hello", "jello", 1);
-    assert_ne!(changed, text, "the run's request is in the file");
-    std::fs::write(&file, changed).unwrap();
+    let mut changed = lines.clone();
+    changed[0] = changed[0].replacen("hello", "jello", 1);
+    assert_ne!(changed, lines, "the run's request is in the file");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("hello"), "sealed on disk");
+    crate::at_rest::testing::write_lines(&file, &changed);
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["chained"].log.with(|log| log.breaks().to_vec()), [1]);
 
