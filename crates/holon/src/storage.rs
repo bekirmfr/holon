@@ -1140,6 +1140,13 @@ pub(crate) fn archive(state: &AppState) {
     let Some(dir) = state.policy().storage.backup.clone() else { return };
     let Ok(slugs) = std::fs::read_dir(&dir) else { return };
     let mut failed: Option<String> = None;
+    // First the keys the archives are sealed under, so the folder opens without the data folder.
+    if let Err(e) = crate::at_rest::keys().keep_copy_in(&dir) {
+        if state.sweeps.backup_error.lock().unwrap().as_deref() != Some(e.as_str()) {
+            eprintln!("holon: backing up the keys: {e}");
+        }
+        failed = Some(e);
+    }
     for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
         let slug = slug_dir.file_name().to_string_lossy().into_owned();
         let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };

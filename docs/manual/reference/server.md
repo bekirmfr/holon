@@ -192,10 +192,12 @@ allow_plain_http = true
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
     within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
-    server's keys as its data folder is (`holon verify --root-key` opens one; keep the root key
-    apart from the backup): `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`,
-    with the units the runs
-    ran and the file texts they read that the server keeps. Every file the server writes there
+    server's keys as its data folder is: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`.
+    The folder keeps a copy of `keys.json` too, `<backup>/holon-archive-keys.json` (every key in it
+    wrapped under the root, as in the data folder), written again as it changes, so the backup and
+    the root key alone open every archive in it, the data folder lost: `holon verify <archive>
+    --root-key …` finds the copy beside it. Keep the root key apart from the backup. Each archive
+    holds the units its runs ran and the file texts they read that the server keeps. Every file the server writes there
     starts with `holon-archive-`, and the folder may hold other things: the server only ever
     exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>.jsonl`, each
     seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360

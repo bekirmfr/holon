@@ -499,6 +499,25 @@ impl Keyring {
         self.made
     }
 
+    /// `keys.json` copied into `dir`, a backup folder (storage.rs), as [`BACKUP_KEYS`], when the
+    /// copy there isn't the same: what the archives there are sealed under, so the backup folder
+    /// and the root alone open them once the data folder is lost. It is safe there as it is in
+    /// the data folder: every key in it is wrapped under the root. Read under the keyring's lock,
+    /// so never half of a write. `Ok(false)`: the copy was the same, or this keyring is kept in
+    /// memory only and has no file.
+    pub(crate) fn keep_copy_in(&self, dir: &Path) -> Result<bool, String> {
+        let Some(path) = &self.path else { return Ok(false) };
+        let _held = self.inner.read().unwrap();
+        let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let to = dir.join(BACKUP_KEYS);
+        if std::fs::read(&to).is_ok_and(|kept| kept == bytes) {
+            return Ok(false);
+        }
+        faults::write("the backup's copy of keys.json")?;
+        crate::sealing::write_private(&to, &bytes).map_err(|e| format!("could not write {}: {e}", to.display()))?;
+        Ok(true)
+    }
+
     /// A copy of the root, the one this keyring opens under (checked), kept in `to` (`holon key
     /// export`): the one way to back up a root kept in the OS key store, which shows no one its
     /// keys. `to` must hold no key yet, and not be where the root is kept. Nothing of the key is
@@ -929,6 +948,10 @@ static KEYS: std::sync::OnceLock<std::sync::Arc<Keyring>> = std::sync::OnceLock:
 pub(crate) fn install(keys: std::sync::Arc<Keyring>) -> Result<(), String> {
     KEYS.set(keys).map_err(|_| "a keyring was in use before the server's opened".to_string())
 }
+
+/// What `keys.json` is copied as in a backup folder ([`Keyring::keep_copy_in`]): named as every
+/// file the server writes there is, `holon-archive-…`.
+pub(crate) const BACKUP_KEYS: &str = "holon-archive-keys.json";
 
 /// The server's keyring.
 pub(crate) fn keys() -> &'static std::sync::Arc<Keyring> {
@@ -1511,6 +1534,50 @@ mod tests {
         faults::fail_at(None);
         assert!(!dir.join("other.copy").exists());
         assert!(crate::sealing::inside(&dir.join("x").join("..").join("root.key"), &dir) && !crate::sealing::inside(&dir.join("root.key"), &dir.join("backup")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a backup folder keeps a copy of keys.json, written again whenever keys.json
+    /// changes (not when it hasn't), and every archive in it opens with that folder and the root
+    /// alone once the data folder is gone; a copy that can't be written is said, and the one there
+    /// before is left whole.
+    /// Why: archives are sealed under per-deployment keys that lived only in the data folder's
+    /// keys.json, so the backup was lost with the disk it was meant to replace.
+    #[test]
+    fn an_archive_opens_with_its_backup_folder_and_the_root_alone() {
+        let dir = temp("backup-keys");
+        let (data, backup) = (dir.join("data"), dir.join("backup"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(backup.join("shop")).unwrap();
+        let arg = root_arg(&dir, "root.key");
+        let keys = Keyring::open(&data.join("keys.json"), Some(&arg), &[]).unwrap();
+        let archive = |name: &str, plain: &[u8]| {
+            let p = backup.join("shop").join(name);
+            std::fs::write(&p, keys.seal_file(&deployment("shop"), &role::export("shop"), plain).unwrap()).unwrap();
+            (p, plain.to_vec())
+        };
+        let mut archives = vec![archive("holon-archive-shop-runs-0-9.json.gz", b"runs 0-9")];
+        assert!(keys.keep_copy_in(&backup).unwrap());
+        assert!(!keys.keep_copy_in(&backup).unwrap(), "the same: not written again");
+        // keys.json changes (a new version of the scope): the copy follows.
+        keys.rotate(&deployment("shop")).unwrap();
+        archives.push(archive("holon-archive-shop-runs-10-19.json.gz", b"runs 10-19"));
+        assert!(keys.keep_copy_in(&backup).unwrap());
+        // A copy that can't be written: said, and the one before left whole.
+        let kept = std::fs::read(backup.join(BACKUP_KEYS)).unwrap();
+        keys.rotate(SERVER).unwrap();
+        faults::fail_at(Some(1));
+        assert!(keys.keep_copy_in(&backup).is_err());
+        faults::fail_at(None);
+        assert_eq!(std::fs::read(backup.join(BACKUP_KEYS)).unwrap(), kept);
+        assert!(!Keyring::memory().keep_copy_in(&backup).unwrap(), "a keyring in memory has no file to copy");
+        // The data folder lost: the backup folder and the root open every archive.
+        std::fs::remove_dir_all(&data).unwrap();
+        for (p, plain) in &archives {
+            let beside = crate::verify::keys_beside(p, Some(&arg)).expect("the copy found").unwrap();
+            assert_eq!(open_export(&beside, &std::fs::read(p).unwrap()).unwrap().as_slice(), plain.as_slice(), "{}", p.display());
+        }
+        assert!(crate::verify::keys_beside(&dir.join("elsewhere").join("x.json.gz"), Some(&arg)).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

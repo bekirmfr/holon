@@ -1608,6 +1608,15 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
     crate::at_rest::Keyring::open_to_read(&keys, root_key).map(std::sync::Arc::new)
 }
 
+/// The keys an archive in a backup folder opens under, when `--data` doesn't say: the copy of
+/// `keys.json` the folder keeps ([`crate::at_rest::BACKUP_KEYS`]), beside the archive or in the
+/// folder above it (`<backup>/<slug>/holon-archive-…`); None when there is none.
+pub(crate) fn keys_beside(export: &Path, root_key: Option<&str>) -> Option<Result<std::sync::Arc<crate::at_rest::Keyring>, String>> {
+    let here = export.parent()?;
+    let copy = [Some(here), here.parent()].into_iter().flatten().map(|d| d.join(crate::at_rest::BACKUP_KEYS)).find(|p| p.is_file())?;
+    Some(crate::at_rest::Keyring::open_to_read(&copy, root_key).map(std::sync::Arc::new))
+}
+
 /// [`keys_for`], to change: `holon key rotate --root`, which holds the folder's lock first.
 pub(crate) fn keys_to_change(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
     let keys = keys_json(data)?;
@@ -1657,7 +1666,11 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
-    let export: Export = match read_export(Path::new(&file), || keys_for(data.as_deref(), root_key.as_deref())) {
+    let keys = || match data.as_deref() {
+        Some(d) => keys_for(Some(d), root_key.as_deref()),
+        None => keys_beside(Path::new(&file), root_key.as_deref()).unwrap_or_else(|| keys_for(None, root_key.as_deref())),
+    };
+    let export: Export = match read_export(Path::new(&file), keys) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("holon verify: can't read {file}: {e}");
@@ -1698,8 +1711,10 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
-                           deployment's records): the data folder whose keys.json sealed it, if
-                           not this machine's server's (HOLON_DATA, or data/ in HOLON_HOME)
+                           deployment's records): the data folder whose keys.json sealed it. If
+                           not given: the copy of keys.json a backup folder keeps beside its
+                           archives, else this machine's server's (HOLON_DATA, or data/ in
+                           HOLON_HOME)
   --root-key SOURCE        where that keys.json's root key is: os, env:VAR or file:PATH (the
                            server's --root-key); if not given, the server's default: the OS key
                            store on Windows and macOS, ~/.holon/keys/<id>.key elsewhere. An export

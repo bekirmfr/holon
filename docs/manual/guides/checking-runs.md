@@ -282,12 +282,16 @@ changed or removed`.
 An export `holon export` writes is plain: whoever holds the file reads every run in it, and you
 decide how to keep it. The ones the server keeps on disk itself, a backup's archives and a removed
 deployment's records, are sealed under its keys, as everything in its data folder is. `holon
-verify` opens one with the server's root key; on another machine, give it the data folder's
-`keys.json` and where the root key is:
+verify` opens one with the server's root key. A backup folder keeps a copy of `keys.json` beside
+its archives, which `holon verify` finds there, so on another machine, the data folder lost, the
+backup and the root key are enough:
 
 ```sh
-holon verify holon-archive-notes-api-runs-…json.gz --data /srv/holon/data --root-key file:/etc/holon/root.key
+holon verify /mnt/backup/notes-api/holon-archive-notes-api-runs-…json.gz --root-key file:/media/usb/root.key
 ```
+
+For a removed deployment's records, give it the data folder they are in (`--data
+/srv/holon/data`).
 
 A run the server couldn't write is said lost in the next line, whose head the witness holds.
 Someone who removes a run and rewrites the lines after it to say it was lost makes a log that
