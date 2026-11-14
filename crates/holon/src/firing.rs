@@ -1058,7 +1058,7 @@ fn tainted_keys(dep: &Deployment) -> Vec<String> {
 
 /// What redacting `slug`'s runs takes: its secrets and the keys its flow taints. None: no such
 /// deployment.
-fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<(Arc<Mutex<secrets::Resolved>>, Vec<String>)> {
+pub(crate) fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<(Arc<Mutex<secrets::Resolved>>, Vec<String>)> {
     let table = deployments.lock().unwrap();
     let dep = table.get(slug)?;
     Some((Arc::clone(&dep.secrets), tainted_keys(dep)))
@@ -1068,7 +1068,7 @@ fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -
 /// the credentials its calls answered, and the values of the keys its flow taints (`taint`, and
 /// those every run does) wherever it or its `lines` hold them (`data::tainted`), each as its
 /// mark. One taken for a secret or a token stays marked as that.
-fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
+pub(crate) fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
     let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets));
     let found = data::tainted(taint, entry, lines, &marked);
     marked.and(Redactor::tainted(&found))

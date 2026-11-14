@@ -493,6 +493,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "http_upload" => &["headers"],
         "http_stream" => &["headers", "body"],
         "flow_call" | "flow_start" => &["input"],
+        "approval" => &["shows"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
         "to_number" => &["radix"],

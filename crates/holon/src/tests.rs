@@ -12,6 +12,8 @@ use holon_core::{hash_value, Edge, BOUNDARY};
 use holon_host::fire_sourced_with;
 
 mod access_table;
+mod approval_shows;
+mod deploy_review;
 /// No page of another site may frame the control plane.
 mod frames;
 mod scopes;
@@ -2622,7 +2624,8 @@ export const pay = action(async (order) => {
 /// `exclude_deployer`, whoever deployed the version a run is on fills none of its steps; with
 /// `agents` off, a flow whose approval has an agent's step neither previews nor deploys, and an
 /// agent fills no step of a run already waiting. A change is a version, with who and why, by
-/// someone holding people.assign; one changing nothing makes none.
+/// someone holding people.assign; one changing nothing makes none. How many approve an access
+/// change that gives more is one to five, or none (null).
 /// **Why:** separation of duties is the host's to set, not the flow's: whoever writes and deploys
 /// a flow can't write themselves into deciding it, and the record says who set it, and when.
 #[test]
@@ -2677,7 +2680,7 @@ export const pay = action(async (order) => {
     for (exclude_deployer, agents, ada_refused, scout_refused) in rows {
         let row = format!("exclude_deployer {exclude_deployer}, agents {agents}");
         let (code, said) = set(&ada, json!({ "exclude_deployer": exclude_deployer, "agents": agents, "why": row }));
-        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents })), "{row}: {said}");
+        assert_eq!((code, &said["approvals"]), (200, &json!({ "exclude_deployer": exclude_deployer, "agents": agents, "starter": true, "changes": null })), "{row}: {said}");
         let refused = (!agents).then_some(agents_off);
         let (code, preview) = ask(&ada, "POST", "/deploy/preview", json!({ "slug": "payouts", "unit": unit }));
         assert_eq!((code, preview["refused"].as_str()), (200, refused), "{row}: {preview}");
@@ -2701,7 +2704,7 @@ export const pay = action(async (order) => {
     let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
     assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
     let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
-    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them";
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once";
     assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
     assert_eq!(decide(&scout).1["outcome"], "waiting");
     assert_eq!(decide(&ada).1["outcome"], "approved");
@@ -2710,7 +2713,51 @@ export const pay = action(async (order) => {
     assert_eq!(set(&bob, json!({ "agents": false })).0, 403);
     let (code, said) = set(&ada, json!({ "deployer": true }));
     assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
-    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true }));
+    assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true, "changes": null }));
+
+    // How many people approve an access change that gives more: one to five, said in the
+    // version; null, none. Raising it is made at once; lowering it, or turning it off, gives more,
+    // and waits for that many people (access_proposals.rs). Each row: what is sent, and what is
+    // kept, or that it waits, or why it is refused.
+    enum Then {
+        Kept(Value),
+        Waits,
+        Refused(String),
+    }
+    let refused = |n: u8| Then::Refused(format!("changes is how many people approve an access change that gives more, 1 to 5, not {n}: null lets one apply at once"));
+    let rows: [(Value, Then, &str); 6] = [
+        (json!(2), Then::Kept(json!(2)), "an access change that gives more waits until 2 people other than its author approve it"),
+        (json!(5), Then::Kept(json!(5)), "an access change that gives more waits until 5 people other than its author approve it"),
+        (json!(1), Then::Waits, "an access change that gives more waits until 1 person other than its author approves it"),
+        (json!(null), Then::Waits, "an access change applies at once"),
+        (json!(0), refused(0), ""),
+        (json!(6), refused(6), ""),
+    ];
+    for (sent, then, said) in rows {
+        let before = ask(&ada, "GET", "/access", Value::Null).1;
+        let (code, answer) = set(&ada, json!({ "changes": sent, "why": "how many approve" }));
+        let what = || ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0]["what"].as_str().unwrap().to_string();
+        match then {
+            Then::Kept(kept) => {
+                assert_eq!((code, &answer["approvals"]["changes"]), (200, &kept), "{sent}: {answer}");
+                assert!(what().ends_with(&format!("; {said}")), "{sent}: {}", what());
+            }
+            Then::Waits => {
+                let p = &answer["proposal"];
+                assert_eq!((code, p["state"].as_str(), p["needs"].as_u64()), (202, Some("waiting"), Some(5)), "{sent}: {answer}");
+                assert!(p["what"].as_str().unwrap().ends_with(&format!("; {said}")), "{sent}: {answer}");
+                assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"]["changes"], json!(5), "{sent}: as it was");
+            }
+            Then::Refused(why) => {
+                assert_eq!((code, answer["error"].as_str()), (400, Some(why.as_str())), "{sent}");
+                assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["version"], before["version"], "{sent}: no version");
+            }
+        }
+    }
+    // Not a number, it is refused as the body; left out, it stays as it is.
+    let (code, said) = set(&ada, json!({ "changes": "two" }));
+    assert!(code == 400 && said["error"].as_str().unwrap().starts_with("approvals are {"), "{said}");
+    assert_eq!(set(&ada, json!({ "agents": true, "exclude_deployer": true })).1["approvals"]["changes"], json!(5));
 }
 
 /// **Guards:** the run file decides as the account that set the server up (the plan's D45): it
@@ -5661,7 +5708,7 @@ fn the_gate_and_the_router_read_every_path_alike() {
     let callers = [("no one", None), ("cy, a viewer", Some(cy.as_str())), ("bob, an editor", Some(bob.as_str())), ("claude, an agent", Some(claude.as_str())), ("ci, a service", Some(ci.as_str()))];
     let hash = "0".repeat(64);
     let mut sent = 0;
-    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..))) {
+    for row in ROUTES.iter().filter(|r| matches!(r.rule, Rule::Can(..) | Rule::Either(..))) {
         // ci's tokens, the deployment d, its secret k.
         let people = row.path.starts_with("/people/");
         let path = row
@@ -6041,6 +6088,19 @@ fn accounts_through_the_routes() {
     let again = body_json(call("POST", "/auth/sign-in", serde_json::json!({ "name": "cy", "password": pw }), None))["token"].as_str().unwrap().to_string();
     assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&again)).status_code, 204);
     assert_eq!(call("GET", "/flows", null.clone(), Some(&again)).status_code, 401);
+    // Through a provider, then out: that ID token, though the provider signed it to last, is
+    // refused from then on; another of cy's sign-ins there isn't.
+    {
+        use crate::oidc::tests::{provider, token};
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
+        accounts.use_oidc(provider());
+        let [first, second] = [1, 2].map(|n| token(serde_json::json!({ "email": "cy@example.com", "email_verified": true, "nonce": n })));
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&first)).status_code, 200);
+        assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&first)).status_code, 204);
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&first)).status_code, 401);
+        assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&first)).status_code, 401, "signed out already");
+        assert_eq!(call("GET", "/flows", null.clone(), Some(&second)).status_code, 200);
+    }
 
     // An admin makes cy an editor; a service for CI writes with its token, never managing people.
     assert_eq!(body_json(call("PATCH", "/people/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
@@ -6105,9 +6165,10 @@ fn the_run_file_is_its_users_admin_then_the_account_that_set_the_server_up() {
     assert_eq!(call("GET", "/flows", vec![], &local).status_code, 200, "before setup");
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 403, "the last run's token");
     let json = |s: &str| serde_json::json!(s);
-    // Before setup, an agent it adds is owned by the OS user, by its name.
+    // Before setup, an agent it adds is owned by the OS user, as `local:ada`: no person here, ada
+    // among them, can be it.
     let added = body_json(call("POST", "/people", br#"{"name":"ada-agent","kind":"agent","role":"agent"}"#.to_vec(), &local));
-    assert_eq!((&added["owner"], &added["created_by"]), (&json("ada"), &json("local:ada")), "{added}");
+    assert_eq!((&added["owner"], &added["created_by"]), (&json("local:ada"), &json("local:ada")), "{added}");
     let (bob, _) = accounts.setup(&accounts.setup_code().unwrap(), "bob", "correct horse battery").unwrap();
     assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 401);
     assert_eq!(call("GET", "/flows", vec![], "hl_nope").status_code, 401);

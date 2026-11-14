@@ -1,13 +1,27 @@
 // What waits for a person (approvals.ts), kept fresh: the saved flows and the proposals read every 4 s while
 // Approvals or the overview is shown (every 30 s otherwise, for the nav's count), each
-// deployment's events (for an agent's asks) while Approvals is, the runs waiting in the deployments
-// that have any (Runs waiting lists them, each approval with the steps whoever is signed in may
-// take; the nav counts them), and the versions of a deployment that has a newer save, so its
-// review has a number.
+// deployment's events (for an agent's asks) while Approvals is, the runs waiting across flows that
+// whoever is signed in may see or decide (`GET /runs/waiting`: Runs waiting lists them, each
+// approval with the steps they may take; the nav counts them), the access changes that wait for
+// people (`GET /access/proposals`, to whoever may view people: Access changes lists them), and the
+// versions of a deployment that has a newer save, so its review has a number.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
-import { getEvents, getVersions, listFlows, listProposals, listWaitingRuns, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal, type WaitingRun } from "./server";
+import {
+  getEvents,
+  getVersions,
+  listAccessChanges,
+  listAllWaitingRuns,
+  listFlows,
+  listProposals,
+  type AccessProposal,
+  type DeploymentEntry,
+  type DeploymentEvent,
+  type FlowListEntry,
+  type Proposal,
+  type WaitingRun,
+} from "./server";
 
 /** A run waiting in a deployment. */
 export type WaitingRunOf = { slug: string; run: WaitingRun };
@@ -30,12 +44,18 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
   const [runs, setRuns] = useState<WaitingRunOf[] | null>(null);
+  // Every access change, newest first; none to whoever may not view people.
+  const [access, setAccess] = useState<AccessProposal[] | null>(null);
   const now = useRef(deployments);
   now.current = deployments;
 
+  // One listing across flows: someone bound only at an approval lists no deployment, and still
+  // finds the runs waiting for them.
   const readRuns = useCallback(() => {
-    const waiting = now.current.filter((d) => (d.waiting ?? 0) > 0);
-    Promise.all(waiting.map((d) => listWaitingRuns(d.slug).then((rs) => rs.map((run) => ({ slug: d.slug, run })), () => []))).then((all) => setRuns(all.flat()));
+    listAllWaitingRuns().then(
+      (rs) => setRuns(rs.map(({ slug, ...run }) => ({ slug, run }))),
+      () => setRuns((was) => was ?? []),
+    );
   }, []);
   const refresh = useCallback(() => {
     listFlows()
@@ -44,6 +64,7 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     listProposals()
       .then(setProposals)
       .catch(() => undefined);
+    listAccessChanges().then(setAccess, () => setAccess((was) => was ?? []));
     readRuns();
   }, [readRuns]);
   // Read again as soon as a deployment's count of waiting runs changes.
@@ -100,5 +121,5 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, proposals, runs, keep, refresh };
+  return { approvals, queue, flows, proposals, runs, access, keep, refresh };
 }

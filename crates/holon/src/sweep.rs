@@ -488,7 +488,8 @@ examples:
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.";
+  as you with holon login (and with none running here, the one you signed in to needs no
+  --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 /// `holon store sweep [--dry-run]`: sweep the store of the server this user runs here (or
 /// `--server`).

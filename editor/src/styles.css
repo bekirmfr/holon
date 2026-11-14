@@ -391,6 +391,11 @@ code, kbd, pre, samp { font-family: var(--mono); }
 /* A tutorial's samples, under its first paragraph: each opens an unsaved copy. */
 .hl-library__uses { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .hl-flows__step + .hl-flows__step { margin-top: 4px; }
+/* An approval in steps, as its chain (ApprovalsPage.tsx): a step not open yet is dimmed. */
+.hl-chain__step--done { color: var(--ok); }
+.hl-chain__step--later { color: var(--muted); opacity: 0.7; }
+.hl-chain__detail { color: var(--muted); }
+.hl-chain__step--done .hl-chain__detail { color: inherit; }
 .hl-library__pages { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
 .hl-library__pages a, .hl-library a { color: var(--accent); text-decoration: none; }
 .hl-library__samples { display: flex; flex-direction: column; gap: 10px; }
@@ -417,6 +422,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-review-page__group { margin-bottom: 12px; }
 .hl-review-page__group h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--body); }
 .hl-review-page__group--approve h3 { color: var(--warn); }
+.hl-review-page__group--undecided h3 { color: var(--bad-ink); }
 .hl-review-page__group--gone h3 { color: var(--faint); }
 .hl-review-page__group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
 .hl-review-page__said { color: var(--ink); }
@@ -1419,6 +1425,8 @@ h1, h2, h3 { color: var(--ink); }
 .hl-flow__more, .hl-library a, .hl-table a { color: var(--accent); text-decoration: none; }
 .hl-flow__more:hover, .hl-table a:hover { text-decoration: underline; }
 .hl-flow__note { font-size: var(--fs-xs); color: var(--muted); }
+/* What an approval shows those who decide it: what they approve, so it reads as the row does. */
+.hl-flow__shown { margin-top: 2px; font-size: var(--fs-sm); color: var(--ink); overflow-wrap: anywhere; }
 .hl-flow__none { color: var(--muted); font-size: var(--fs-sm); }
 .hl-flow__said, .hl-flow__facts, .hl-flow__may, .hl-flow__versions, .hl-flow__grant, .hl-flow__changes, .hl-flow__check { font-size: var(--fs-sm); }
 .hl-flow__facts { gap: 6px; }

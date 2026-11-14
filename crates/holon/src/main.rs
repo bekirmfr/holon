@@ -30,6 +30,7 @@
 static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
 
 mod access;
+mod access_proposals;
 mod accesscmd;
 mod accounts;
 mod accountscmd;
@@ -95,6 +96,7 @@ mod logscmd;
 mod load;
 mod locks;
 mod local;
+mod logincmd;
 mod lsp;
 mod migrate;
 mod mcp;
@@ -485,6 +487,8 @@ const USAGE: &str = "usage: holon <command>
                                      a deployment's secrets (a value is piped in, never shown)
   flows [list|show|save|remove]      the flows saved on the server
   activity [--last N]                what was done on the server, by whom
+  login | logout [--server URL]      sign in to a server elsewhere as you, a person, for the other
+                                     commands; end that session
   people | oidc                      people, agents and services, and their tokens; signing in
                                      through a provider (admin)
   roles | groups                     the roles principals are bound, and groups of them (admin)
@@ -636,6 +640,8 @@ fn main() {
         Some("secret") => std::process::exit(secretcmd::cli(&rest)),
         Some("flows") => std::process::exit(flowscmd::flows(&rest)),
         Some("activity") => std::process::exit(flowscmd::activity(&rest)),
+        Some("login") => std::process::exit(logincmd::login(&rest)),
+        Some("logout") => std::process::exit(logincmd::logout(&rest)),
         Some("people") => std::process::exit(accountscmd::people(&rest)),
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("roles") => std::process::exit(accesscmd::roles(&rest)),

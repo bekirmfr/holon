@@ -1,12 +1,21 @@
 // An approval a run waits at, as the editor says it and which steps whoever is signed in takes
 // (decisions.ts).
 import { describe, expect, it } from "vitest";
-import { approvalSaid, decidedSaid, decisionSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, decisionSaid, decisionsOf, inSteps, shownSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import type { WValue } from "./holon";
-import type { Decided, WaitingRun } from "./server";
+import type { Decided, WaitingDecision, WaitingRun } from "./server";
 
 const took = (who: string, slot = 0, role?: string, approved = true) => ({ slot, who, kind: "person" as const, role, at: 0, approved });
-const step = (slot: number, people: number, by: string[], open: boolean, role?: string, kind: "person" | "agent" = "person"): WaitingStep => ({ slot, stage: slot, role, kind, people, by, open });
+const step = (slot: number, people: number, by: string[], open: boolean, role?: string, kind: "person" | "agent" = "person", starter = false): WaitingStep => ({
+  slot,
+  stage: slot,
+  role,
+  kind,
+  people,
+  ...(starter ? { starter } : {}),
+  by,
+  open,
+});
 /** By people alone: one step of `people`, approved so far by `by`. */
 const alone = (people: number, by: string[] = [], yours: number[] = []): WaitingPoint => ({
   name: "payout",
@@ -30,6 +39,15 @@ const chain = (classified: string[], reviewed: string[], yours: number[] = []): 
   ],
   decisions: [...classified.map((b) => ({ ...took(b, 0, "classifier"), kind: "agent" as const })), ...reviewed.map((b) => took(b, 1, "reviewer"))],
   yours,
+});
+/** An output review: an agent drafts it, then whoever started the run may approve it as editor. */
+const review = (drafted: string[]): WaitingPoint => ({
+  name: "shape",
+  expires_at: 0,
+  steps: "agent:drafter>person:editor^",
+  said: "an agent holding drafter, then a person holding editor, who may be whoever started the run",
+  slots: [step(0, 1, drafted, drafted.length === 0, "drafter", "agent"), step(1, 1, [], drafted.length > 0, "editor", "person", true)],
+  decisions: drafted.map((b) => ({ ...took(b, 0, "drafter"), kind: "agent" as const })),
 });
 const ada = { name: "ada", kind: "person" as const, role: "editor" as const };
 const t = (value: string): WValue => ({ type: "Text", value });
@@ -91,5 +109,100 @@ describe("an approval, said", () => {
     expect(decisionSaid(record([["approved", no], ["by", by()], ["declined_by", t("bob")], ["reason", t("not this vendor")]]))).toBe("declined by bob: not this vendor");
     expect(decisionSaid(record([["approved", no], ["by", by("ada")], ["expired", { type: "Boolean", value: true }]]))).toBe("ran out undecided, approved by ada before");
     expect(decisionSaid(record([["method", t("GET")]]))).toBeNull();
+  });
+});
+
+describe("an approval in steps, as its chain", () => {
+  // Each row: the approval as it stands, and its chain in a line: a step taken ✓ with who took it
+  // (and what their note says in a word or two), any other ◻, how far it is, or not open yet.
+  const noted = (w: WaitingPoint, note: unknown): WaitingPoint => ({ ...w, decisions: (w.decisions ?? []).map((d) => (d.slot === 0 ? { ...d, note } : d)) });
+  const rows: [string, WaitingPoint, string][] = [
+    ["nothing taken: the first step open, the others not yet", chain([], []), "◻ classifier → ◻ reviewer (2 people, not open yet) → ◻ approver (not open yet)"],
+    ["the agent's note, its label and confidence", noted(chain(["scout"], []), { label: "invoice", confidence: 0.93 }), "✓ classifier (scout, invoice, 0.93) → ◻ reviewer (2 people) → ◻ approver (not open yet)"],
+    ["a note of anything else, not in the chain", noted(chain(["scout"], ["ada"]), { checked: ["po"] }), "✓ classifier (scout) → ◻ reviewer (1 of 2: ada) → ◻ approver (not open yet)"],
+    ["a confidence alone", noted(chain(["scout"], ["ada", "bob"]), { confidence: 0.5 }), "✓ classifier (scout, 0.5) → ✓ reviewer (ada and bob) → ◻ approver"],
+    ["a step whoever started the run may take, not open yet", review([]), "◻ drafter → ◻ editor (whoever started it may take it, not open yet)"],
+    ["and open", review(["scout"]), "✓ drafter (scout) → ◻ editor (whoever started it may take it)"],
+  ];
+  it.each(rows)("%s", (_, w, said) => {
+    expect(chainSaid(w)).toBe(said);
+  });
+  it("is drawn only for an approval in steps, each step with the decisions taken on it", () => {
+    expect([inSteps(chain([], [])), inSteps(alone(2)), inSteps({ name: "paid", expires_at: 0 })]).toEqual([true, false, false]);
+    // One step of people, which whoever started it may take, is a chain: the short form isn't.
+    const theirs: WaitingPoint = { ...alone(1), steps: "person^", slots: [step(0, 1, [], true, undefined, "person", true)] };
+    expect(inSteps(theirs)).toBe(true);
+    expect(chainOf(chain(["scout"], ["ada"])).map((c) => [c.state, c.decisions.map((d) => d.who)])).toEqual([
+      ["done", ["scout"]],
+      ["open", ["ada"]],
+      ["later", []],
+    ]);
+  });
+});
+
+describe("a decision, a line on the run's timeline", () => {
+  const at = (s: number) => `t${s}`;
+  // Each row: a decision as the server keeps it, and its line: when, who, what as which step, why,
+  // what they noted, and the binding that let them with the access version to check it against.
+  const rows: [string, WaitingDecision, string][] = [
+    ["a person, the short form", { slot: 0, who: "ada", kind: "person", at: 5, approved: true }, "t5: ada approved"],
+    [
+      "an agent's step, with its note and binding",
+      { slot: 0, who: "scout", kind: "agent", role: "classifier", at: 6, approved: true, note: { confidence: 0.93, label: "invoice" }, binding: 4, access: 7 },
+      't6: scout (an agent) approved as classifier · noted {"confidence":0.93,"label":"invoice"} · through binding 4 (holon access show --version 7)',
+    ],
+    [
+      "a decline with its reason",
+      { slot: 1, who: "bob", kind: "person", role: "reviewer", at: 9, approved: false, reason: "not this vendor", binding: 5, access: 7 },
+      "t9: bob declined as reviewer: not this vendor · through binding 5 (holon access show --version 7)",
+    ],
+    ["a step with no role, by its number", { slot: 2, who: "cy", kind: "person", at: 3, approved: true, reason: "checked" }, "t3: cy approved as slot 2: checked"],
+  ];
+  it.each(rows)("%s", (_, d, line) => {
+    expect(decidedLine(d, at)).toBe(line);
+  });
+  it("reads each decision as the run's log holds it", () => {
+    const num = (value: number): WValue => ({ type: "Number", value });
+    const logged = (d: WaitingDecision): WValue => {
+      const fields: [string, WValue | undefined][] = [
+        ["slot", num(d.slot)],
+        ["who", t(d.who)],
+        ["kind", t(d.kind)],
+        ["at", num(d.at)],
+        ["approved", { type: "Boolean", value: d.approved }],
+        ["role", d.role === undefined ? undefined : t(d.role)],
+        ["reason", d.reason === undefined ? undefined : t(d.reason)],
+        ["binding", d.binding === undefined ? undefined : num(d.binding)],
+        ["access", d.access === undefined ? undefined : num(d.access)],
+        ["note", d.note === undefined ? undefined : record([["confidence", num(0.93)], ["label", t("invoice")]])],
+      ];
+      return record(fields.filter((f): f is [string, WValue] => f[1] !== undefined).sort(([a], [b]) => (a < b ? -1 : 1)));
+    };
+    const decisions = rows.map(([, d]) => d);
+    const given = record([
+      ["approved", { type: "Boolean", value: false }],
+      ["by", { type: "List", value: [] }],
+      ["decisions", { type: "List", value: decisions.map(logged) }],
+    ]);
+    expect(decisionsOf(given)).toEqual(decisions);
+    expect(decisionsOf(record([["method", t("GET")]]))).toEqual([]);
+  });
+});
+
+describe("what an approval shows those who decide it", () => {
+  // Each row: what the server lists (what the flow named, else the run's input), and what Runs
+  // waiting says of it.
+  const rows: [string, Partial<WaitingPoint>, { label: string; text: string } | null][] = [
+    ["a record of plain values, a field each", { shows: { amount: 30, payee: "acme", urgent: true, memo: null } }, { label: "shows", text: "amount 30 · payee acme · urgent true · memo null" }],
+    ["the run's input, when the flow names nothing", { input: { amount: 30 } }, { label: "started with", text: "amount 30" }],
+    ["what the flow named, over the input", { shows: { amount: 30 }, input: { amount: 30, card: "x" } }, { label: "shows", text: "amount 30" }],
+    ["anything deeper, as JSON", { shows: { lines: [1, 2], to: { iban: "DE00" } } }, { label: "shows", text: '{"lines":[1,2],"to":{"iban":"DE00"}}' }],
+    ["a text, as it is: withheld, or too large", { shows: "‹withheld: computed from a secret›" }, { label: "shows", text: "‹withheld: computed from a secret›" }],
+    ["a value named null, as null", { shows: null }, { label: "shows", text: "null" }],
+    ["an empty record, as JSON", { input: {} }, { label: "started with", text: "{}" }],
+    ["nothing, for a run a clock started", {}, null],
+  ];
+  it.each(rows)("%s", (_, listed, said) => {
+    expect(shownSaid({ ...alone(1), ...listed })).toEqual(said);
   });
 });

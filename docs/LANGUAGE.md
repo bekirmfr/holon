@@ -491,12 +491,15 @@ Each step is taken after the one before. `order: "any"` takes them in any order;
 `steps` is a stage, its steps taken in any order and the stages in turn: `steps: [[{ role: "a" },
 { role: "b" }], { role: "c" }]`. A step with no role is anyone holding `run.decide` there, a
 person; an agent's step (`kind: "agent"`) names its role, and a service never takes one. Up to 5
-steps, each taken by 1 to 5 different principals (`people`). `people: N` is the short form of one
-step with no role, and `people` beside `steps` is refused, as are an empty stage, a stage of one
+steps, each taken by 1 to 5 different principals (`people`). `starter: true` lets whoever started
+the run take that step, a person (`{ role: "editor", starter: true }`: an output review, the one
+who asked checking what was made); left out, they may not, and an agent's step can't say it.
+`people: N` is the short form of one step with no role, which the starter doesn't take, and
+`people` beside `steps` is refused, as are an empty stage, a stage of one
 step and `order` with stages, each saying what to write.
 
 The steps lower to one canonical text, which the permission names: stages joined by `>`, a stage's
-steps by `+`, a step its kind, `:role` and `*N`. Here,
+steps by `+`, a step its kind, `:role`, `*N` and `^` when it takes the starter. Here,
 `approval{…, steps: "agent:classifier>person:reviewer>person:approver*2"}` and
 `Approval("payout/agent:classifier>person:reviewer>person:approver*2")`. A version that changes
 the steps changes the permission, so it asks anew, as weakening an approval should (§8.2).
@@ -508,21 +511,38 @@ The host decides each step in its order (§8.3, §8.4): a step opens once every 
 filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
 role, directly or through a group, on the host, the flow or the approval itself, and holding
 `run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
-step of an approval, once, and not of a run they started; one decline ends it. A decision names
-its step (`slot`), or takes the one open step its decider may fill. The host's approval settings
-say two things more, for every flow (§8.4, `holon access approvals`): with `exclude_deployer`,
-whoever deployed the version a run is on decides none of its steps; with `agents` off, no agent
-decides one, and a flow whose approval has an agent's step doesn't deploy.
+step of an approval, once, and not of a run they started but a step that says `starter: true`; an
+agent never decides a run it started. One decline ends it. A decision names its step (`slot`), or
+takes the one open step its decider may fill. The host's approval settings say three things more,
+for every flow (§8.4, `holon access approvals`): with `exclude_deployer`, whoever deployed the
+version a run is on decides none of its steps; with `agents` off, no agent decides one, and a flow
+whose approval has an agent's step doesn't deploy; with `starter` off, whoever started a run takes
+no step of it, and a flow whose approval has a `starter` step doesn't deploy.
 
 Each decision keeps what let its decider (§8.6): `binding`, the id of the binding they took the
 step through (`holon access show` lists it), and `access`, the version of the access document it
 was read in. The run is given them, so the resumed part's log entry, the run's export and `holon
 verify` carry them: an auditor checks the order, the kinds, the different principals and their
-bindings offline, against `holon access show N`. On the server's machine, `holon decide` signs in
-as the account that set the server up, one principal with its session. The approved-payout
+bindings offline, against `holon access show --version N`. On the server's machine, `holon
+decide` signs in as the account that set the server up, one principal with its session. The approved-payout
 sample pays in three steps: an agent bound to `classifier` takes the first with a note (`holon
 decide --note`, or `holon mcp`'s `decide`), a person bound to `reviewer` the second, and you,
 bound to `approver`, the third, each bound on its tag.
+
+Those who decide an approval see what they approve. `shows:` names it, any value the run has
+before it waits: `shows: { account: account.id, amount: asked.amount }` is the leaf's optional
+`shows` input (`approval{…}` with `shows` wired), and the request carries it. With no `shows` they
+see what the run was started with: the action's argument, a request's record without its headers,
+or what a source delivered; a run a clock started shows nothing. Either is kept when the run parks,
+as its log keeps it: a field tainted by a secret's mark redacted as the log redacts it
+(`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB its size instead.
+Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
+decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
+`run.view` lists only the runs waiting at an approval they may decide, those points alone: the
+editor's Runs waiting finds them across flows (`GET /runs/waiting`), though it lists them no flow.
+It draws an approval in steps as its chain, `✓ classifier (scout, invoice, 0.93) → ◻ reviewer →
+◻ approver (not open yet)`, each decision on hover, and the run's page, once it is given the
+decision, says each step's decision a line, with the binding that let it.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its

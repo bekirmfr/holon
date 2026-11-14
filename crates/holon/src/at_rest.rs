@@ -823,6 +823,7 @@ pub(crate) mod role {
     pub(crate) const FEEDS: &str = "table: feeds";
     pub(crate) const ACCOUNTS: &str = "table: accounts";
     pub(crate) const ACCESS: &str = "table: access";
+    pub(crate) const ACCESS_PROPOSALS: &str = "table: access proposals";
     pub(crate) const ACCESS_HISTORY: &str = "access history";
     pub(crate) const QUEUE_SEEN: &str = "seen: queue";
     pub(crate) const MAIL_SEEN: &str = "seen: mail";

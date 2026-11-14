@@ -165,9 +165,13 @@ impl Access {
                 Ok(i) => i,
                 Err(e) => return refuse(format!("sign-in not accepted: {e}")),
             };
-            match identity.email.as_deref().and_then(|e| accounts.by_email(e)) {
-                Some(who) => Ok(who),
-                None => match (identity.email, identity.unverified) {
+            if accounts.provider_sign_in_ended(presented) {
+                return refuse("you signed out of this sign-in: sign in again".into());
+            }
+            match accounts.through_provider(&oidc.issuer, &identity.subject, identity.email.as_deref()) {
+                Ok(who) => Ok(who),
+                Err(Some(name)) => Err(err(403, format!("{name}'s email is yours at your identity provider, but {name} signs in as someone else there: ask an admin to set {name}'s email again, which matches whoever signs in with it next"))),
+                Err(None) => match (identity.email, identity.unverified) {
                     (None, Some(email)) => Err(err(403, format!("your identity provider gave {email} but didn't say it verified it: an account here is matched by an email the provider vouches for (email_verified); ask your provider's admin"))),
                     (email, _) => {
                         let shown = email.unwrap_or(identity.subject);
@@ -279,16 +283,31 @@ mod tests {
         assert_eq!(said(&open, "POST", "/deploy", "", Some("agent")), Ok((None, None, None)));
     }
 
+    /// Someone signing in through a provider is matched by the email it verified the first time,
+    /// and by its subject from then on: another subject with that email isn't them, until an admin
+    /// sets their email again.
     #[test]
-    fn signed_in_through_a_provider_is_matched_by_email() {
+    fn signed_in_through_a_provider_is_matched_by_email_then_by_subject() {
         use crate::oidc::tests::{provider, token};
         let (access, _) = server();
         let accounts = access.accounts().unwrap();
-        accounts.set_email("cy", Some("cy@example.com".into())).unwrap();
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
         accounts.use_oidc(provider());
         let cy = token(serde_json::json!({ "email": "cy@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&cy)), Ok(Some("cy".into())));
         assert_eq!(call(&access, "POST", "/flows", Some(&cy)), Err(403), "still a viewer");
+        let moved = token(serde_json::json!({ "email": "cy.new@example.com", "email_verified": true }));
+        assert_eq!(call(&access, "GET", "/flows", Some(&moved)), Ok(Some("cy".into())), "the same subject, its email changed at the provider");
+        let other = token(serde_json::json!({ "sub": "user-2", "email": "cy@example.com", "email_verified": true }));
+        assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "cy's email, another subject");
+        accounts.set_email("cy", Some("cy@example.com".into()), "ada").unwrap();
+        assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "the same email set again changes nothing");
+        accounts.set_email("cy", Some("Cy@Example.com ".into()), "ada").unwrap();
+        assert_eq!(call(&access, "GET", "/flows", Some(&other)), Err(403), "nor written otherwise");
+        accounts.set_email("cy", Some("cy2@example.com".into()), "ada").unwrap();
+        let other = token(serde_json::json!({ "sub": "user-2", "email": "cy2@example.com", "email_verified": true }));
+        assert_eq!(call(&access, "GET", "/flows", Some(&other)), Ok(Some("cy".into())), "set again: matched anew");
+        assert_eq!(call(&access, "GET", "/flows", Some(&cy)), Err(403), "the first subject no longer");
         let eve = token(serde_json::json!({ "email": "eve@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&eve)), Err(403), "no account with that email");
         // The provider doesn't say it verified cy's email: not cy (a person can type any email at

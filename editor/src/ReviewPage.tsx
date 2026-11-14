@@ -1,10 +1,11 @@
 // A version reviewed before it is deployed (gaps-web.md G9, C4, C15), at `#approvals.<slug>.v<n>`:
-// three columns. Left, what it may do, grouped as a person decides (needs your approval /
-// unchanged / no longer), each pointing at its line. Middle, the version itself: its changes
+// three columns. Left, what it may do, grouped as a person decides (can't be decided here / needs
+// your approval / unchanged / no longer), each pointing at its line. Middle, the version itself: its changes
 // beside the version deployed (hunks, as a deploy's consent shows them), the whole flow, or its
 // statement graph, the rows new since the version deployed dashed (StatementGraph.tsx). Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
 // note), what approving it does, the gate ("I read …"), Approve, keep it saved without deploying,
-// or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
+// (asked again when its runs would wait at an approval no one here can decide), keep it saved
+// without deploying, or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
 // A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
 // saved since. A version of a deployed flow is replayed on its recent runs (G11, ReplayRuns.tsx).
 // Under what it may do (web-console-L4.md §7.3): while it runs (its port, run budget, the runs it
@@ -14,13 +15,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
+import { useDialog } from "./Dialog";
 import { codeHunk, touchHunks } from "./hunks";
 import { holonGraph, type FlowGraph } from "./holonText";
 import { ReplayRuns } from "./ReplayRuns";
 import { Review } from "./Review";
 import { StatementGraph } from "./StatementGraph";
 import { mayGroups, policyRows, textLines, whileItRuns } from "./reviewMay";
-import { touchLines } from "./touches";
+import { askAgain, touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
 import {
   deployUnit,
@@ -178,8 +180,12 @@ export function ReviewPage({
     setLine(n);
   };
 
+  const dialog = useDialog();
   const approve = async () => {
     if (!data) return;
+    const action = asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy";
+    const again = askAgain(slug, data.preview.touches, action);
+    if (again && !(await dialog.confirm(again, `${action} anyway`))) return;
     setBusy(true);
     setError("");
     try {

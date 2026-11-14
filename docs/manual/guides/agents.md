@@ -110,12 +110,15 @@ answers, oldest first, a line each (when, level, the run, the text), at a level 
 answers that agents may not read them, and so it does once you revoke it.
 
 A run that waits at an approval (`await approval("payout", { people: 2 })`) waits for people:
-`runs` shows which run waits and who has approved each step so far, and the agent tells you. You
+`runs` shows which run waits, who has approved each step so far and what the approval shows
+(its `shows`, or the run's input), and the agent tells you. You
 decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide).
+Who may do what is a person's to change, and an access change that waits for people is approved by
+people (Approvals › Access changes, or [`holon access approve`](../reference/cli.md#holon-access)), never by an agent.
 An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
 }`): bind a role of your own to the agent where the flow is (`holon roles define classifier
 --allow run.view,run.decide --kinds agent`, then `holon bind classifier --to bma-agent --flow
-payout`), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
+payout`, or the same in the editor's People and access), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
 confidence) the run is given. A person's step it never takes: it says who decides it and where,
 for the agent to tell you. Turning agents off for the host (`holon access approvals --agents
 off`, [Who decides an approval](people.md#who-decides-an-approval)) keeps them out of every
@@ -170,7 +173,12 @@ pages it doesn't answer yet) is proposed to you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a
 person approves it again. A secret the flow marks optional doesn't hold it up: the version
 deploys with that secret withheld (its reads refused), and you grant it back from the
-deployment's permissions once you've read the change. An agent never restarts a deployment a
+deployment's permissions once you've read the change. So is a version whose changed code sends
+something out of the flow (to a host, a mail, a channel, a queue, another flow, a process, a
+folder or a database), or feeds code that does (a key it writes that another handler sends on),
+or changes what a route answers from a database or a folder the host binds: you let the old
+code send there, not what the agent put in its place. Those rows say *asked again*. A version that runs another
+flow's action the agent may not run itself waits for you too, if you may run it. An agent never restarts a deployment a
 person paused or stopped; its `deploy` answers that a person runs it first.
 
 ## A good loop

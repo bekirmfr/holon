@@ -15,7 +15,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | `data/` | the server's state: **the one folder to back up** |
 | `keys/` | the root key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
-| `tokens.json` | the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
+| `tokens.json` | the session `holon login` began on each server you signed in to, and the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
 
 In the data folder (`--data`, `HOLON_DATA`):
@@ -249,24 +249,52 @@ admin binds it (`POST /bindings`):
   The lists (flows, deployments, proposals, the overview, the activity) keep the flows its holder
   may view. A flow they saved that no one has deployed is theirs wherever they hold the action, so
   they draft one, and deploy it where they may.
+- **A flow that runs another flow's action** (`import { payout } from "flow:payments"`) is
+  deployed only by someone who may run that action themselves (`run.call` on it, and for an
+  agent, the other flow letting agents run it): its call runs the action under that flow's grant,
+  with what the caller sends. Anyone else is refused (403, saying which action), whether the call
+  is new or granted already; an agent's version waits for someone who may, as a proposal.
 - **At an approval point** (`{"approval": {"flow": {"slug": "payout"}, "name": "ok"}}`), it
   decides that point and nothing else, not even viewing the runs: bind `viewer` on the flow with
   it for that.
 - **A binding that has expired** holds nothing. It stays listed, `expired: true`, until it is
   unbound.
 - A binding gives only what its author holds where it is made, and is refused where its role holds
-  nothing (a viewer at an approval point).
+  nothing (a viewer at an approval point). It is taken away only by someone who holds what it
+  gives there (403 saying what): a role that assigns people doesn't unbind an admin.
 
 `GET /bindings` (`?who=&role=&flow=`) lists what is bound, and `DELETE /bindings/<id>` (`?why=`)
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
 answers one whole. Each change is also in the activity log.
 
-`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "why": "…"}`, either or
-both; `people.assign` on the host) sets how the host decides approvals beyond each step's role,
-as a new version: with `exclude_deployer`, whoever deployed the version a run is on decides none
-of its approvals; with `agents` false, no agent decides one, and a deploy whose approval has a
-step for an agent is refused. They are `false` and `true` by default, and `GET /access` has them,
-`approvals`.
+`PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "starter": false,
+"changes": 2, "why": "…"}`, any of them; `people.assign` on the host) sets how the host decides
+approvals beyond each step's role, as a new version: with `exclude_deployer`, whoever deployed the
+version a run is on decides none of its approvals; with `agents` false, no agent decides one, and
+a deploy whose approval has a step for an agent is refused; with `starter` false, no step takes
+whoever started the run, and a deploy whose approval has a step that would is refused; with
+`changes` N (1 to 5; `null` turns it off), an access change that gives more waits for N people.
+They are `false`, `true`, `true` and `null` by default, and `GET /access` has them, `approvals`.
+
+While `changes` is N, a change that gives someone more (`POST /bindings`, `PUT /roles/<name>`,
+`PUT /groups/<name>`, `PATCH /people/<name>` with a role, `PUT /access/approvals` loosening them)
+isn't made: it is answered 202, `{"proposal": {…}, "version": n}` (`PATCH` answers the principal
+with its `proposal`), and kept as a proposal: `id`, `author`, `why`, `change` (as the route got
+it), `what` (what its version will say), `gives` (in words), `to` (whom it gives more, by name),
+`ways_in` (who could act as them, in words: "ada made bob's reset link"), `base` (the version it
+was proposed on), `needs`, `approvals` and `state` (`waiting`; `applied` with its `version`;
+`declined` with `declined_by` and `reason`; `stale` with why). `POST /people` with a role that would wait is
+refused, 409: invite or add them with one that gives less, then give it. A change through this
+machine's run file to `/access/approvals` is made at once.
+
+- `GET /access/proposals` (`people.view`) lists every proposal, newest first.
+- `POST /access/proposals/<id>/approve` (`people.assign`): a person other than its author, holding
+  what it gives and able to act as no one it gives it to (403 if not), approves it; the N-th
+  approval makes it, by its author, its why saying who approved it, and answers it `applied`. One
+  that no longer applies, or to one of whose `to` a way in was made since, is `stale`: 409, saying
+  why.
+- `POST /access/proposals/<id>/decline` (`{"reason": "…"}`, `people.assign`): declines it; its
+  author withdraws it so. One that no longer waits is 409.
 
 An admin also defines roles of their own, and groups:
 
@@ -282,28 +310,68 @@ An admin also defines roles of their own, and groups:
   it out of its groups.
 - A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
   them first.
-- **No one gives more than they hold**, whichever way they give it: binding a role, inviting,
-  adding or setting someone with one, adding a member to a group that is bound, or resetting
-  someone's password or making their tokens (they would act as them). So a role that manages
-  people without holding everything an admin does can't make an admin. An agent's or a
-  service's owner still makes its tokens.
+- **No one gives or takes more than they hold**, whichever way: binding or unbinding a role,
+  inviting, adding or setting someone with one, adding a member to a group that is bound or
+  taking one out, or changing a role that is defined (holding what it allows before and after).
+  **Nor changes anyone who holds more**: whoever changes a principal (`PATCH` or
+  `DELETE /people/<name>`, its email, owner, role or whether it is enabled; resetting its password;
+  making or revoking its tokens) holds all it holds, since they could then act as it, or is
+  refused (403, `ada holds admin on this host, which holds flow.edit there, which you don't: you
+  change, or act as, only someone who holds no more than you`). So a role that manages people
+  without holding everything an admin does can't make, become or lock out an admin. An agent's
+  or a service's owner still makes and revokes its tokens. Setting the identity provider takes
+  holding what each person holds.
+- **Nor makes a way in to anyone whose access waits for people to be given**, while `changes` is
+  N: resetting the password of, setting the email of, making a token of (but its owner), or giving
+  another owner to someone else who holds `run.decide` or anything of an admin's, or setting the
+  identity provider while another person does, is refused (403, `bob holds run.decide on this
+  host, as admin, and giving that waits here for 1 person other than its giver: whoever resets
+  bob's password could act as bob, counted as another person, so it is done only through this
+  server's machine (its run file); or take that from bob first, which applies at once, and give it
+  back after, which waits`). They do it themselves, or this machine's run file does. `GET /people`
+  answers who could act as each principal, `ways_in`: whoever made the link a person's password
+  was last set from, whoever set their email, an agent's or a service's owner and whoever else
+  made a token of it.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
   or manages people, roles, resources or the host.
 
 `GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout` answers, for each action, `true`
 or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
-with `&approval=ok`), and with no flow, on the host for the host's actions and on every flow at
-once for the others. `/auth/me` and `GET /people` answer what holds for a principal, each binding
+with `&approval=ok`), and with no flow, on the host for the host's actions and on any flow for the
+others, as the lists ask. The editor's buttons follow it. `/auth/me` answers `access_version`, the
+access document's version, which moves with every change to who may do what: what `can` answers
+changes only with it (or with a flow's tags, on deploying). `/auth/me` and `GET /people` answer what holds for a principal, each binding
 with what its role allows (an agent may not read `/roles`), and one to one of its groups with the
 group's name. `POST` and `PATCH /people` take any role the principal's kind may hold, an admin's
 own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
 ([the command line](cli.md#roles-and-bindings)).
 
+A run waiting at an approval is listed to whoever views the flow's runs or decides one of its
+approvals: `GET /deployments/<slug>/runs` (`run.view` on the flow, or `run.decide` at one of its
+approvals) lists the runs that wait, and `GET /runs/waiting` (anyone signed in) every
+deployment's, each with its slug, so that someone bound only at an approval point, who lists no
+flow, finds the runs waiting there. To whoever only decides, a run lists the points they decide
+alone. Each approval lists its steps, who took each and their note, what it shows, and which
+steps are the caller's to take (`yours`). `POST /deployments/<slug>/runs/<id>/decide`
+(`{"name": "payout", "approve": true, "reason": "…", "slot": 1, "note": {…}}`, `run.decide` at
+that point) takes a step: `slot` counts from 0 as the steps are written, and none is the one open
+step the caller may take. A decline says why (`reason`, at most 1000 characters), and a note is
+any JSON up to 16 KiB, given to the run with the decision. It answers `{name, slot, slots,
+outcome}`, `outcome` being `waiting` until the last step, then `approved` or `declined`. A step
+out of turn, a second step by whoever took one, a step of a run its caller started (but one that
+says `starter: true`), a person's step to an agent or an agent's to a person, and whatever the
+host's approval settings keep out are refused, saying why (`dee already decided slot 1 (reviewer)
+of "payout": each step of an approval is someone else's`).
+
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
-  behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
-  a sign-in waits its turn, and past thirty seconds is told the server is busy (503).
+  behind a proxy, every address is the proxy's), and five wrong setup codes lock setting up from
+  that address the same way. A few passwords are checked at once: past that, a sign-in waits its
+  turn, and past thirty seconds is told the server is busy (503). While 64 wait, or 8 from one
+  address (an IPv6 address by its /64), whatever the names, one more is told so at once: a flood
+  of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
+  checked before its password is.
 - The server answers up to 512 requests at once; one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
@@ -335,20 +403,32 @@ own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` a
   through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
   yours the first time, `<your user>-agent`, even before anyone has set the server up (it is set
-  up by the first person, as ever), owned by you: by `<your user>` until then, and by the person
-  who sets it up from then on; its token is kept in `tokens.json`.
+  up by the first person, as ever), owned by you: by `local:<your user>` until then (a name no
+  one here can have, so a person later invited as `<your user>` owns none of it), and by the
+  person who sets it up from then on; its token is kept in `tokens.json`.
+- **The command line** sends its token over https, or over plain http only to this machine: given
+  `http://` to another machine with a token (`HOLON_TOKEN`, or one kept for it), it refuses, and
+  says to give the server's https address, or to reach it through an SSH tunnel. A host given
+  bare (`--server holon.example.com`) is reached over https.
 
 ### Signing in through an identity provider
 
 An admin can turn on OpenID Connect on People and access, with the provider's issuer URL and a
 client id (a public client; the editor signs in with the authorization code flow and PKCE). The
 issuer, and every address its discovery document gives, must be https (plain http only to this
-machine), since the keys that check its tokens come from there. A person signs in through the
-provider when a person here has their email, and the provider says it verified that email
-(`email_verified` true in its ID token): one that doesn't say so signs no one in, since some
-providers let a person type any email. A token for several audiences must say it was issued to
-this client (`azp`). People are still added here, with a role; the provider only proves who is
-signing in.
+machine), since the keys that check its tokens come from there. The first time someone signs in
+through the provider, they are the person here with their email, when the provider says it
+verified that email (`email_verified` true in its ID token): one that doesn't say so signs no one
+in, since some providers let a person type any email. From then on they are the subject the
+provider names them by (`sub`, with its issuer), and no one else is: another subject with that
+email is refused, saying whose email it is, until an admin sets that person's email again, which
+matches them anew. A token for several audiences must say it was issued to this client (`azp`).
+People are still added here, with a role; the provider only proves who is signing in. Since the
+provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
+person holds: an admin; and while an access change that gives more waits for people, it is set
+only through this machine's run file. An ID token is good until it expires, wherever it is shown, so signing out
+with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
+sign-in of theirs at the provider still is one.
 
 ## Secrets
 

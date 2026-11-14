@@ -2,11 +2,14 @@
 // page's buttons (web-console-L4.md §3, principle 6): a page asks once for every action its buttons'
 // routes need (can.rs's route table names them), and a button the caller may not use is disabled,
 // with the server's refusal as its title. The answers are kept a little while, so pages and tabs
-// asking the same don't ask again, and forgotten when someone else signs in.
+// asking the same don't ask again, and forgotten when someone else signs in, or when can.ts's
+// round moves: the access version moved (a binding made or taken away), a request was refused, or
+// access was changed from here. A page asks again then, so it follows.
 //
 // Which of the host's pages the nav shows follows the same answers (hostPagesOf).
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCanRound } from "./can";
 import { listOwned, mayI, type Kind } from "./server";
 
 /** What `can` answers for an action: true, or the words it refuses in. */
@@ -21,6 +24,8 @@ const AGAIN_MS = 60_000;
 const kept = new Map<string, { at: number; answers: Promise<Record<string, Answer>> }>();
 const forget = () => kept.clear();
 if (typeof window !== "undefined") window.addEventListener("holon:session", forget);
+/** can.ts's round the kept answers were asked in: once it moves, none of them is kept. */
+let keptRound = 0;
 
 /** Where an action is asked about: on a flow (its slug), or, without one, as the host's lists and
  *  pages ask it (bindings.rs `me_can`). */
@@ -65,11 +70,18 @@ export function canOf(answers: Record<string, Answer> | null): Can {
 }
 
 /** Whether whoever is signed in may do each of `actions` at `at`, as `can` answers it: asked once
- *  for them all when the page opens, when someone else signs in, and each minute it stays open. */
+ *  for them all when the page opens, when someone else signs in, when can.ts's round moves (the
+ *  access version moved: on coming back to the window, and now and then), and each minute it stays
+ *  open. What was answered stays shown while it is asked again. */
 export function useCan(actions: readonly string[], at: CanAt = {}): Can {
   const key = keyOf(actions, at);
+  const round = useCanRound();
   const [answers, setAnswers] = useState<{ key: string; answers: Record<string, Answer> } | null>(null);
   useEffect(() => {
+    if (round !== keptRound) {
+      kept.clear();
+      keptRound = round;
+    }
     let live = true;
     const [flow, list] = key.split("?");
     const ask = () =>
@@ -85,7 +97,7 @@ export function useCan(actions: readonly string[], at: CanAt = {}): Can {
       clearInterval(timer);
       window.removeEventListener("holon:session", ask);
     };
-  }, [key]);
+  }, [key, round]);
   // Another flow's answers are not this one's.
   const now = answers?.key === key ? answers.answers : null;
   return useMemo(() => canOf(now), [now]);

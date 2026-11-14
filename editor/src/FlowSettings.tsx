@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SecretRow } from "./DeploySettings";
 import { useDialog } from "./Dialog";
-import { approvalSaid, isApproval } from "./decisions";
+import { approvalSaid, isApproval, shownSaid } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { limitChange, limitRows, type LimitRow } from "./flowFacts";
 import { limitMeaning } from "./policyMeans";
@@ -415,6 +415,16 @@ function Waiting({ slug, count }: { slug: string; count: number }) {
             <span className="hl-flow__what">{r.route ?? r.kind}</span> · since {when(r.parked_at)} ·{" "}
             {r.waiting.map((w) => `waits for ${isApproval(w) ? approvalSaid(w) : `"${w.name}"`} until ${when(w.expires_at)}`).join("; ")}
             {r.delivered.length > 0 && <span> · delivered: {r.delivered.join(", ")}</span>}
+            {r.waiting.map((w) => {
+              const shown = isApproval(w) ? shownSaid(w) : null;
+              return (
+                shown && (
+                  <div key={w.name} className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
+                    "{w.name}" {shown.label}: {shown.text}
+                  </div>
+                )
+              );
+            })}
           </li>
         ))}
       </ul>

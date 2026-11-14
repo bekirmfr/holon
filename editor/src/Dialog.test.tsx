@@ -159,6 +159,39 @@ describe("dialog keys", () => {
     await expect(name).resolves.toBe("shout");
   });
 
+  it("holds a required answer until something is typed, saying why, and still cancels", async () => {
+    const d = mount();
+    const field = () => document.querySelector<HTMLInputElement>("[aria-modal=true] input")!;
+    const type = (value: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field(), value);
+        field().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    const decline = () => buttons().find((b) => nameOf(b) === "Decline")!;
+    const { answer: why } = await ask(() => d.prompt("Decline it?", "", "Decline", { required: "A decline says why: type a reason." }));
+    expect([decline().disabled, decline().title]).toEqual([true, "A decline says why: type a reason."]);
+    expect(dialog()!.textContent).toContain("A decline says why: type a reason.");
+    await press("Enter", {}, field());
+    type("   ");
+    await press("Enter", {}, field());
+    expect(dialog()).not.toBeNull();
+    type(" not this vendor ");
+    expect(decline().disabled).toBe(false);
+    expect(dialog()!.textContent).not.toContain("A decline says why");
+    await press("Enter", {}, field());
+    await expect(why).resolves.toBe("not this vendor");
+    const { answer: none } = await ask(() => d.prompt("Decline it?", "", "Decline", { required: "A decline says why: type a reason." }));
+    await press("Escape");
+    await expect(none).resolves.toBeNull();
+    // An optional answer may be empty; by default an empty one answers as Cancel does.
+    const { answer: optional } = await ask(() => d.prompt("Approve it?", "", "Approve", "optional"));
+    await press("Enter", {}, field());
+    await expect(optional).resolves.toBe("");
+    const { answer: needed } = await ask(() => d.prompt("Name it:"));
+    await press("Enter", {}, field());
+    await expect(needed).resolves.toBeNull();
+  });
+
   it("gives each of a choice's answers its letter, the last answered by Enter too, Esc none", async () => {
     const d = mount();
     const three = ["Keep it open", "Discard", "Save and close"];

@@ -188,7 +188,17 @@ pub(crate) fn people(args: &[String]) -> i32 {
                 eprintln!("{WHO}: set {name} with --role, --disable, --enable, --email, --owner or --display");
                 return 2;
             }
-            ask(WHO, &args, "PATCH", &path(name), Some(&Value::Object(body))).map_or_else(|c| c, |(_, v)| one(&v))
+            ask(WHO, &args, "PATCH", &path(name), Some(&Value::Object(body))).map_or_else(
+                |c| c,
+                |(_, v)| {
+                    let code = one(&v);
+                    // A role that gives more waits for people; the rest is set.
+                    if let Some(line) = crate::accesscmd::waiting(&v).filter(|_| !args.flag("--json")) {
+                        println!("{line}");
+                    }
+                    code
+                },
+            )
         }
         (Some("remove"), Some(name), None) => {
             if !args.flag("--yes") {

@@ -49,11 +49,11 @@ const WORK: Entry[] = [
 ];
 const HOST: Entry[] = [
   { label: "Resources", to: { kind: "resources", tab: "databases" }, icon: "resources", key: 6 },
-  { label: "People and access", to: { kind: "people", tab: null }, icon: "people", key: 7 },
+  { label: "People and access", to: { kind: "people", tab: "people" }, icon: "people", key: 7 },
   { label: "Policy", to: { kind: "policy" }, icon: "policy", key: 8 },
 ];
 /** A person who may not see everyone: the agents and services they own, on People and access's page. */
-const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: null }, icon: "people", key: 7 };
+const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: "people" }, icon: "people", key: 7 };
 /** The host's pages the nav lists, as `can` answers who may view them (useCan.tsx's hostPagesOf). */
 export const hostEntries = (pages: HostPages): Entry[] => [
   ...(pages.resources ? [HOST[0]] : []),
@@ -88,8 +88,8 @@ export function hintsAt(r: Route): [string, string][] {
   }
 }
 
-/** What waits for a person: versions to approve (Approvals' Deploys) and the runs' approvals
- *  theirs to decide. */
+/** What waits for a person: changes to approve (Approvals' Deploys, and the access changes theirs
+ *  to decide) and the runs' approvals theirs to decide. */
 export type Waiting = { changes: number; runs: number };
 
 /** What waits, as the status bar says it: "waits: 2 changes, 2 runs". */
@@ -147,7 +147,7 @@ export function Shell({
   const current = [...WORK, ...host, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
   // People and access is, for someone who may not see everyone, what they own.
-  const crumb = (r: Route) => (r.kind === "people" && r.tab === null && pages.people === "owned" ? OWNED.label : labelOf(r));
+  const crumb = (r: Route) => (r.kind === "people" && r.tab === "people" && pages.people === "owned" ? OWNED.label : labelOf(r));
   // On a phone the nav is a drawer: the top bar's menu opens it, going anywhere closes it.
   const [drawer, setDrawer] = useState(false);
   const routeKey = format(route);

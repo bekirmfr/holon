@@ -9,11 +9,11 @@
 //! server this user runs, setup (or `holon mcp`, the first time it reaches one) makes them an
 //! agent, `<user>-agent`, as the run file's admin ([`local_agent`]). For a server elsewhere, the
 //! entry names the server (`holon mcp --server URL`) and holon keeps the agent's token it is
-//! given (local.rs's `tokens.json`), so a host that has no way to keep a secret is as safe as one
-//! that has, and a new token is one command.
+//! given (local.rs's `tokens.json`, as `agent:<URL>`, apart from a person's `holon login`), so a
+//! host that has no way to keep a secret is as safe as one that has, and a new token is one
+//! command.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -428,52 +428,6 @@ fn apply(host: &Host, file: &Path, name: &str, entry: Option<&Value>) -> Result<
 
 // ── how holon mcp signs in: as an agent ─────────────────────────────────────────────────────
 
-/// A line from the terminal, not shown as it is typed.
-fn read_hidden(prompt: &str) -> Result<String, String> {
-    eprint!("{prompt}");
-    let _ = std::io::stderr().flush();
-    let stdin = std::io::stdin();
-    let terminal = stdin.is_terminal();
-    let restore = if terminal { hide_input() } else { None };
-    let mut line = String::new();
-    let read = stdin.read_line(&mut line);
-    if let Some(restore) = restore {
-        restore();
-    }
-    // The Enter wasn't shown, or there was none (it was piped).
-    eprintln!();
-    read.map_err(|e| e.to_string())?;
-    Ok(line.trim().to_string())
-}
-
-/// Stop the terminal showing what is typed; what puts it back.
-#[cfg(windows)]
-fn hide_input() -> Option<Box<dyn FnOnce()>> {
-    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE};
-    // SAFETY: the standard input handle and a mode word, as the console API documents.
-    unsafe {
-        let handle = GetStdHandle(STD_INPUT_HANDLE);
-        let mut mode = 0;
-        if GetConsoleMode(handle, &mut mode) == 0 || SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT) == 0 {
-            return None;
-        }
-        let handle = handle as usize;
-        Some(Box::new(move || {
-            SetConsoleMode(handle as _, mode);
-        }))
-    }
-}
-
-#[cfg(not(windows))]
-fn hide_input() -> Option<Box<dyn FnOnce()>> {
-    let stty = |arg: &str| std::process::Command::new("stty").arg(arg).stdin(std::process::Stdio::inherit()).status().is_ok_and(|s| s.success());
-    stty("-echo").then(|| {
-        Box::new(move || {
-            stty("echo");
-        }) as Box<dyn FnOnce()>
-    })
-}
-
 /// Who a token signs in as, asked of the server.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Me {
@@ -585,8 +539,8 @@ fn sign_in(server: Option<&str>, agent: Option<&str>, remove: bool) -> Result<()
             return Err(format!("--agent makes an agent on a holon serve you run here, and {server} isn't one: give holon mcp an agent's token for it instead"));
         }
         if remove {
-            if local::keep_token(&file, &server, None)? {
-                println!("Forgot the token for {server}.");
+            if local::keep_token(&file, &local::agent_key(&server), None)? {
+                println!("Forgot the agent's token for {server}.");
             }
             return Ok(());
         }
@@ -614,11 +568,13 @@ fn sign_in(server: Option<&str>, agent: Option<&str>, remove: bool) -> Result<()
 }
 
 /// The token for a server this user doesn't run: `HOLON_TOKEN`, or asked for; checked to be an
-/// agent's, and kept.
+/// agent's, and kept as `agent:<URL>` (a person's `holon login` session is kept as `<URL>`).
 fn keep_token_for(server: &str) -> Result<(), String> {
+    local::token_safe_to(server)?;
     let file = local::tokens_file().ok_or("no home folder to keep the token in")?;
-    let kept = local::saved_token(&file, server);
-    let given = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let key = local::agent_key(server);
+    let kept = local::saved_token(&file, &key);
+    let given = local::env_token();
     let token = match given {
         Some(t) => t,
         None => {
@@ -627,7 +583,7 @@ fn keep_token_for(server: &str) -> Result<(), String> {
             } else {
                 format!("An agent's token for {server} (holon people token NAME there, or its People page, makes one): ")
             };
-            read_hidden(&ask)?
+            crate::cmdline::read_hidden(&ask)?
         }
     };
     let token = match (token.is_empty(), kept) {
@@ -644,7 +600,7 @@ fn keep_token_for(server: &str) -> Result<(), String> {
         }
         None => println!("{server} didn't answer, so the token isn't checked yet."),
     }
-    local::keep_token(&file, server, Some(&token))?;
+    local::keep_token(&file, &key, Some(&token))?;
     println!("Kept in {}, readable only by you; no host's file holds it.", file.display());
     Ok(())
 }
@@ -1115,7 +1071,7 @@ mod tests {
         let kept = || local::saved_token(&file, &local::agent_key(&admin.server()));
 
         let (name, owner, first) = local_agent(&admin, None, &file).unwrap();
-        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "bma"));
+        assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "local:bma"));
         assert_eq!(kept().as_deref(), Some(first.as_str()));
         assert_eq!(who(&Signed { state: &state, token: &first }).unwrap(), Some(Me::Is { name: "bma-agent".into(), kind: "agent".into(), role: "agent".into() }), "signs in before setup");
         assert!(accounts.needs_setup(), "left for a person to set up");
@@ -1126,7 +1082,7 @@ mod tests {
 
         let (cursor, _, _) = local_agent(&admin, Some("bma-cursor"), &file).unwrap();
         assert_eq!(cursor, "bma-cursor");
-        accounts.add("ci", crate::accounts::Kind::Service, "viewer", "bma", "local:bma").unwrap();
+        accounts.add("ci", crate::accounts::Kind::Service, "viewer", "local:bma", "local:bma").unwrap();
         assert!(local_agent(&admin, Some("ci"), &file).unwrap_err().contains("ci on the test server is a service, not an agent"));
         accounts.set_disabled("bma-cursor", true).unwrap();
         assert!(local_agent(&admin, Some("bma-cursor"), &file).unwrap_err().contains("is disabled"));

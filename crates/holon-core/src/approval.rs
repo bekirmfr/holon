@@ -5,9 +5,9 @@
 //!
 //! The `approval` leaf keeps its steps as one canonical text, which its capability names too
 //! (`Approval("payout/person*2")`): stages joined by `>`, a stage's slots by `+`, a slot its kind,
-//! `:role` when it has one, and `*N` when more than one decides it. This module alone reads and
-//! writes that text, so every change to the steps is a change to the text, and to what a person
-//! approves.
+//! `:role` when it has one, `*N` when more than one decides it, and `^` when whoever started the
+//! run may take it. This module alone reads and writes that text, so every change to the steps is
+//! a change to the text, and to what a person approves.
 
 /// The most slots an approval has, across its stages.
 pub const MAX_SLOTS: usize = 5;
@@ -42,6 +42,11 @@ pub struct Slot {
     pub role: Option<String>,
     /// How many different principals fill it, 1 to [`MAX_PEOPLE`].
     pub people: u8,
+    /// Whether whoever started the run may take it (`starter: true`): an output review, where the
+    /// one who asked checks what was made. Left out, they may not: a request check, where whoever
+    /// asks is never the one who says yes (the design's §8.4). A person's step only: an agent
+    /// never decides a run it started.
+    pub starter: bool,
 }
 
 /// An approval's steps: stages in order, each a set of slots filled in any order.
@@ -54,7 +59,7 @@ impl Steps {
     /// `n` different people, any holding `run.decide`: `{ people: n }`, and an approval with no
     /// options for 1.
     pub fn people(n: u8) -> Steps {
-        Steps { stages: vec![vec![Slot { kind: SlotKind::Person, role: None, people: n }]] }
+        Steps { stages: vec![vec![Slot { kind: SlotKind::Person, role: None, people: n, starter: false }]] }
     }
 
     /// The steps `text` writes, when it is canonical: `text()` of what comes back is `text`.
@@ -76,13 +81,16 @@ impl Steps {
             if s.people > 1 {
                 t.push_str(&format!("*{}", s.people));
             }
+            if s.starter {
+                t.push('^');
+            }
             t
         };
         self.stages.iter().map(|stage| stage.iter().map(slot).collect::<Vec<_>>().join("+")).collect::<Vec<_>>().join(">")
     }
 
     /// Who decides it, in words: "2 people", "an agent holding classifier, then a person holding
-    /// reviewer".
+    /// reviewer", "a person holding editor, who may be whoever started the run".
     pub fn said(&self) -> String {
         let slot = |s: &Slot| {
             let who = match (s.kind, s.people) {
@@ -91,9 +99,14 @@ impl Steps {
                 (SlotKind::Agent, 1) => "an agent".to_string(),
                 (SlotKind::Agent, n) => format!("{n} agents"),
             };
-            match &s.role {
+            let who = match &s.role {
                 Some(role) => format!("{who} holding {role}"),
                 None => who,
+            };
+            match (s.starter, s.people) {
+                (false, _) => who,
+                (true, 1) => format!("{who}, who may be whoever started the run"),
+                (true, _) => format!("{who}, who may include whoever started the run"),
             }
         };
         let stage = |slots: &Vec<Slot>| match slots.as_slice() {
@@ -104,11 +117,12 @@ impl Steps {
         self.stages.iter().map(stage).collect::<Vec<_>>().join(", then ")
     }
 
-    /// How many people decide it, when it is the short form: one slot, a person's, with no role.
+    /// How many people decide it, when it is the short form: one slot, a person's, with no role,
+    /// which whoever started the run doesn't take.
     pub fn short(&self) -> Option<u8> {
         match self.stages.as_slice() {
             [stage] => match stage.as_slice() {
-                [Slot { kind: SlotKind::Person, role: None, people }] => Some(*people),
+                [Slot { kind: SlotKind::Person, role: None, people, starter: false }] => Some(*people),
                 _ => None,
             },
             _ => None,
@@ -138,13 +152,20 @@ impl Steps {
                 None if s.kind == SlotKind::Agent => return Some("an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }".into()),
                 _ => {}
             }
+            if s.starter && s.kind == SlotKind::Agent {
+                return Some("an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }".into());
+            }
         }
         None
     }
 }
 
-/// One slot's canonical text: `person`, `agent:classifier`, `person:approver*2`.
+/// One slot's canonical text: `person`, `agent:classifier`, `person:approver*2`, `person:editor^`.
 fn slot(text: &str) -> Option<Slot> {
+    let (text, starter) = match text.strip_suffix('^') {
+        Some(text) => (text, true),
+        None => (text, false),
+    };
     let (head, people) = match text.split_once('*') {
         Some((head, n)) => (head, n.parse::<u8>().ok()?),
         None => (text, 1),
@@ -158,7 +179,7 @@ fn slot(text: &str) -> Option<Slot> {
         "agent" => SlotKind::Agent,
         _ => return None,
     };
-    Some(Slot { kind, role, people })
+    Some(Slot { kind, role, people, starter })
 }
 
 /// A role's name as the steps take it: letters, digits, `-` and `_`, at most 64. A role an admin
@@ -168,15 +189,24 @@ pub fn is_role(name: &str) -> bool {
 }
 
 /// Steps enough to try every rule on, a few hundred: every slot variant (a person with no role or
-/// a role, an agent with a role; 1, 2 or 5 of them) in every shape of stages (one to three, of one
-/// to three slots, five at most), from each starting variant. For the round trips' tests, here and
-/// in the language's.
+/// a role, either whoever started the run may take or not, an agent with a role; 1, 2 or 5 of
+/// them) in every shape of stages (one to three, of one to three slots, five at most), from each
+/// starting variant. For the round trips' tests, here and in the language's.
 #[doc(hidden)]
 pub fn universe() -> Vec<Steps> {
     let mut variants = Vec::new();
-    for (kind, role) in [(SlotKind::Person, None), (SlotKind::Person, Some("reviewer")), (SlotKind::Person, Some("x-1")), (SlotKind::Agent, Some("reviewer")), (SlotKind::Agent, Some("x-1"))] {
+    let person = SlotKind::Person;
+    for (kind, role, starter) in [
+        (person, None, false),
+        (person, Some("reviewer"), false),
+        (person, Some("x-1"), false),
+        (person, None, true),
+        (person, Some("reviewer"), true),
+        (SlotKind::Agent, Some("reviewer"), false),
+        (SlotKind::Agent, Some("x-1"), false),
+    ] {
         for people in [1, 2, 5] {
-            variants.push(Slot { kind, role: role.map(str::to_string), people });
+            variants.push(Slot { kind, role: role.map(str::to_string), people, starter });
         }
     }
     let mut shapes: Vec<Vec<usize>> = Vec::new();
@@ -226,7 +256,7 @@ mod tests {
     #[test]
     fn every_steps_text_reads_back_as_the_steps_and_no_two_share_one() {
         let all = universe();
-        assert!((300..400).contains(&all.len()), "{}", all.len());
+        assert!((400..500).contains(&all.len()), "{}", all.len());
         let mut texts = BTreeSet::new();
         for steps in &all {
             assert_eq!(steps.problem(), None, "{steps:?}");
@@ -246,12 +276,16 @@ mod tests {
         for text in [
             "", "person*1", "person*02", "person*6", "person*0", "person:", "agent", "agent*2", "service:x", "Person", "person:a:b", "person*2*2", ">person",
             "person>", "person++person", "person >person", "person:a b", "person+person+person+person+person+person", &long,
+            // whoever started the run: once, last, and never an agent's step
+            "person^^", "person^*2", "^person", "person:a^b", "agent:a^", "agent:a*2^", "person^ ",
         ] {
             assert_eq!(Steps::parse(text), None, "{text:?}");
         }
         assert_eq!(Steps::parse("person"), Some(Steps::people(1)));
         assert_eq!(Steps::parse("person*2").and_then(|s| s.short()), Some(2));
         assert_eq!(Steps::parse("person:approver*2").and_then(|s| s.short()), None, "a role is the long form");
+        assert_eq!(Steps::parse("person^").and_then(|s| s.short()), None, "so is a step whoever started the run may take");
+        assert!(Steps::parse("person:editor*2^").is_some_and(|s| s.slots().all(|(_, _, s)| s.starter && s.people == 2)));
     }
 
     #[test]
@@ -262,6 +296,8 @@ mod tests {
         assert_eq!(said("agent:classifier>person:reviewer>person:approver"), "an agent holding classifier, then a person holding reviewer, then a person holding approver");
         assert_eq!(said("person:a+person:b>person:c*2"), "a person holding a and a person holding b, in any order, then 2 people holding c");
         assert_eq!(said("agent:a*2+person+person:b"), "2 agents holding a, a person and a person holding b, in any order");
+        assert_eq!(said("agent:drafter>person:editor^"), "an agent holding drafter, then a person holding editor, who may be whoever started the run");
+        assert_eq!(said("person*2^"), "2 people, who may include whoever started the run");
         let numbered: Vec<(usize, usize)> = Steps::parse("person:a+person:b>person:c").unwrap().slots().map(|(n, stage, _)| (n, stage)).collect();
         assert_eq!(numbered, [(0, 0), (1, 0), (2, 1)]);
     }

@@ -13,20 +13,31 @@
 //!   widest built-in role bound to it on the host, and with an agent's or a service's tokens;
 //! - `POST /people` (`{name, kind, role, owner?, email?, display?}`): a person, answered with
 //!   their invite link; an agent or a service, owned by `owner` (by default whoever asks); `role`
-//!   is bound to it on the host;
+//!   is bound to it on the host; 409 for a role that would wait for people (access_proposals.rs
+//!   `adding`): a new principal is made with a role that gives less, and given it after;
 //! - `PATCH /people/<name>` (role, disabled, email, display, owner; a role is bound on the host in
-//!   place of what was there), `DELETE /people/<name>` (with what is bound to it),
+//!   place of what was there, and a role that gives more, while the host has people approve such
+//!   a change, waits: 202, the principal with the `proposal`), `DELETE /people/<name>` (with what
+//!   is bound to it),
 //!   `POST /people/<name>/reset` (a person's new invite link);
 //! - `GET`/`POST /people/<name>/tokens` (`{label}`), `DELETE /people/<name>/tokens/<id>`: also for
 //!   the agent's or service's owner (can.rs's owner rule).
 //!
 //! Admins also: `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an
 //! admin does goes in the activity log.
+//!
+//! No one changes someone holding more than they do (D19, `may_change`). And while an access
+//! change that gives more waits for people, no one makes a way in to someone else holding what
+//! that governs, whose name would count as a second person (the access plan's D12,
+//! `may_take_over`): a reset, their email, a token of theirs but by its owner, their owner, the
+//! provider. They do it themselves, or this machine's run file does; or what they hold is taken
+//! away first, which applies at once, and given back after, which waits.
 
 use rouille::{Request, Response};
 use serde::Deserialize;
 
 use crate::access::Caller;
+use crate::access_proposals::{govern, Governed};
 use crate::accounts::{Accounts, Kind, OidcSettings, Principal};
 use crate::http::{err, read_body};
 use crate::AppState;
@@ -61,6 +72,7 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
         "disabled": p.disabled, "created_at": p.created_at, "created_by": p.created_by, "last_seen": p.last_seen,
         "owner": p.owner, "owner_disabled": owner_disabled,
         "invited": accounts.invited(&p.name),
+        "ways_in": accounts.acting_as(&p.name).into_iter().map(|(_, how)| how).collect::<Vec<_>>(),
     });
     if p.kind != Kind::Person {
         v["tokens"] = serde_json::json!(accounts.tokens(&p.name));
@@ -75,22 +87,58 @@ fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Resp
     crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
 }
 
-/// Why `caller` may not make `name`'s sign-in or tokens, if they may not: they would act as
-/// `name`, so they hold everything `name` holds, as they would to have given it (D19).
-fn may_act_as(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
-    let Some(p) = accounts.principal(name) else { return Ok(()) };
+/// What `name` holds that `caller` doesn't, in words, if anything (D19).
+fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String> {
+    let p = accounts.principal(name)?;
     let document = accounts.access_document();
-    match crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now()) {
-        Some((b, a)) => Err(err(
-            403,
-            format!("{name} holds {} {}, which holds {} there, which you don't: you make the sign-in or the tokens only of someone who holds no more than you", b.role, b.scope.said(), a.name()),
-        )),
+    let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now())?;
+    Some(format!("{name} holds {} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+}
+
+/// Why `caller` may not change `name`, if they may not: its sign-in (a reset, its email), its
+/// tokens, its owner, its role, whether it is enabled, or that it is there. Whoever does could act
+/// as `name` or take from them, so they hold everything `name` holds, as they would to have given
+/// it (D19, both ways).
+fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
+    match holds_more(caller, accounts, name) {
+        Some(more) => Err(err(403, format!("{more}: you change, or act as, only someone who holds no more than you"))),
         None => Ok(()),
     }
 }
 
+/// Why `caller` may not do `what` ("resets bob's password"), which makes a way in to `name`, if
+/// they may not (the access plan's D12): while this host has people approve an access change that
+/// gives more, whoever made one to someone holding what that governs could act as them, counted as
+/// another person, so no one makes one but `name` themself and this machine's run file, which
+/// holds the data folder anyway. Taken from them first, which applies at once, it is given back
+/// after, which waits.
+fn may_take_over(caller: &Caller, accounts: &Accounts, name: &str, what: &str) -> Result<(), Response> {
+    if caller.local.is_some() || caller.name.as_deref() == Some(name) {
+        return Ok(());
+    }
+    let Some(n) = accounts.access_document().approvals.changes else { return Ok(()) };
+    let Some(held) = crate::access_proposals::governing(accounts, name) else { return Ok(()) };
+    let instead = format!("or take that from {name} first, which applies at once, and give it back after, which waits");
+    Err(err(403, crate::access_proposals::taken_over(name, &held, what, n, &instead)))
+}
+
+/// Where `request` came from, as the tries of a way in are counted (accounts.rs, `counted`): its
+/// address, or for IPv6 its /64, which one client is commonly given whole.
+fn address(request: &Request) -> String {
+    match request.remote_addr().ip() {
+        std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        ip => ip.to_canonical().to_string(),
+    }
+}
+
+/// A session begun: its token, whose it is, and when it ends (`holon login` says so).
 fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
-    Response::json(&serde_json::json!({ "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name) }))
+    Response::json(&serde_json::json!({
+        "token": token, "name": p.name, "kind": p.kind, "role": accounts.host_role(&p.name), "expires_at": accounts.session_ends(token),
+    }))
 }
 
 /// `/auth/…`, `/admin/…` and `/people…`, or None for any other path.
@@ -152,8 +200,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
-    // Whose what they add is, and what they own: the OS user by its name.
-    let me = by.strip_prefix("local:").unwrap_or(by);
+    // Whose what they add is, and what they own: the OS user as `local:<user>`, which no principal
+    // is named (accounts.rs, `may_own`).
+    let me = by;
     let method = request.method();
     let respond = |r: Result<Response, Response>| Some(r.unwrap_or_else(|e| e));
     let fail = |e: String| err(400, e);
@@ -174,7 +223,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<Setup>(request).and_then(|s| {
-                let (token, a) = accounts.setup(&s.code, &s.name, &s.password).map_err(fail)?;
+                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
                 state.activity.record("set up the server", &a.name, Some(&a.name));
                 Ok(signed_in(&token, &a, accounts))
             }));
@@ -186,8 +235,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<SignIn>(request).and_then(|s| {
-                let from = request.remote_addr().ip().to_string();
-                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &from).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
+                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
@@ -210,15 +258,20 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
-        // Through the run file, `local` says so: the OS user, `local:<user>` (D45).
-        ("GET", "/auth/me") => match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
-            Some(p) => Response::json(&serde_json::json!({
-                "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
-                "email": p.email, "owner": p.owner, "display": p.display, "local": caller.local,
-            })),
-            // The run file tied to no account (`local:<user>`): admin on the host, bound nowhere.
-            None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role(), "local": caller.local })),
-        },
+        // Through the run file, `local` says so: the OS user, `local:<user>` (D45). `access_version`
+        // is the access document's: what `can` answers changes only with it (or a flow's tags), so
+        // the editor reads its buttons again when it moves.
+        ("GET", "/auth/me") => {
+            let access_version = accounts.access_document().version;
+            match caller.name.as_deref().and_then(|n| accounts.principal(n)) {
+                Some(p) => Response::json(&serde_json::json!({
+                    "name": p.name, "kind": p.kind, "role": caller.host_role(), "bindings": bindings(&p.name, accounts),
+                    "email": p.email, "owner": p.owner, "display": p.display, "local": caller.local, "access_version": access_version,
+                })),
+                // The run file tied to no account (`local:<user>`): admin on the host, bound nowhere.
+                None => Response::json(&serde_json::json!({ "name": by, "kind": caller.kind, "role": caller.host_role(), "local": caller.local, "access_version": access_version })),
+            }
+        }
         ("GET", "/auth/owned") => Response::json(&accounts.principals().iter().filter(|p| p.owner.as_deref() == Some(me)).map(|p| shown(p, accounts)).collect::<Vec<_>>()),
         ("POST", "/auth/password") => {
             #[derive(Deserialize)]
@@ -240,8 +293,17 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }));
         }
         ("POST", "/auth/sign-out") => {
-            if let Some(token) = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")) {
-                accounts.sign_out(token.trim());
+            let token = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or_default();
+            // A provider's ID token is good until it expires: it is kept refused until then.
+            if crate::oidc::looks_like_jwt(token) {
+                let until = accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at);
+                if let Some(until) = until
+                    && let Err(e) = accounts.end_provider_sign_in(token, until)
+                {
+                    return Some(err(500, format!("couldn't sign you out: {e}")));
+                }
+            } else {
+                accounts.sign_out(token);
             }
             Response::empty_204()
         }
@@ -265,6 +327,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }
             return respond(body::<New>(request).and_then(|n| {
                 may_give(caller, accounts, &n.role)?;
+                crate::access_proposals::adding(accounts, &n.name, n.kind, &n.role).map_err(|e| err(409, e))?;
                 let invite = if n.kind == Kind::Person {
                     let link = accounts.invite(&n.name, &n.role, n.email, by).map_err(fail)?;
                     state.activity.record("invited", &n.name, Some(by));
@@ -293,6 +356,20 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 settings: Option<OidcSettings>,
             }
             return respond(body::<Set>(request).and_then(|s| {
+                // The provider says who each person here is: whoever sets it could be any of them.
+                if let Some(more) = accounts.principals().iter().filter(|p| p.kind == Kind::Person).find_map(|p| holds_more(caller, accounts, &p.name)) {
+                    return Err(err(403, format!("{more}: a provider says who each person here is, so it is set only by someone who holds what each of them holds")));
+                }
+                // And while giving waits for people, it is a way in to each of them (D12).
+                let others = || accounts.principals().into_iter().filter(|p| p.kind == Kind::Person && Some(p.name.as_str()) != caller.name.as_deref());
+                if s.settings.is_some()
+                    && caller.local.is_none()
+                    && let Some(n) = accounts.access_document().approvals.changes
+                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing(accounts, &p.name)?)))
+                {
+                    let instead = "or turn off access changes waiting for people first (holon access approvals --changes off), which waits too";
+                    return Err(err(403, crate::access_proposals::taken_over(&name, &held, "sets the identity provider, which says who each person here is,", n, instead)));
+                }
                 let what = if s.settings.is_some() { "set signing in through a provider" } else { "turned off signing in through a provider" };
                 let issuer = s.settings.as_ref().map(|o| o.issuer.clone()).unwrap_or_default();
                 accounts.set_oidc(s.settings).map_err(fail)?;
@@ -305,6 +382,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some((name, tokens)) = rest.split_once('/')
                 && (tokens == "tokens" || tokens.starts_with("tokens/"))
             {
+                // Its owner makes and revokes its tokens, as the design has it; anyone else only
+                // holding what it holds.
+                let owned = accounts.principal(name).and_then(|p| p.owner).as_deref() == Some(me);
                 return respond(match (method, tokens.strip_prefix("tokens/")) {
                     ("GET", None) => Ok(Response::json(&accounts.tokens(name))),
                     ("POST", None) => {
@@ -312,21 +392,21 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         struct New {
                             label: String,
                         }
-                        // Its owner makes its tokens, as the design has it; anyone else acts as
-                        // it only holding what it holds.
-                        let owner = accounts.principal(name).and_then(|p| p.owner);
                         body::<New>(request).and_then(|n| {
-                            if owner.as_deref() != Some(me) {
-                                may_act_as(caller, accounts, name)?;
+                            if !owned {
+                                may_change(caller, accounts, name)?;
+                                may_take_over(caller, accounts, name, &format!("makes a token of {name}"))?;
                             }
                             let (token, entry) = accounts.create_token(name, &n.label, by).map_err(fail)?;
                             state.activity.record("made a token for", name, Some(by));
                             Ok(Response::json(&serde_json::json!({ "token": token, "entry": entry })))
                         })
                     }
-                    ("DELETE", Some(id)) => accounts.revoke_token(name, id).map_err(|e| err(404, e)).map(|_| {
-                        state.activity.record("revoked a token of", name, Some(by));
-                        Response::empty_204()
+                    ("DELETE", Some(id)) => (if owned { Ok(()) } else { may_change(caller, accounts, name) }).and_then(|_| {
+                        accounts.revoke_token(name, id).map_err(|e| err(404, e)).map(|_| {
+                            state.activity.record("revoked a token of", name, Some(by));
+                            Response::empty_204()
+                        })
                     }),
                     _ => Ok(Response::empty_404()),
                 });
@@ -334,10 +414,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             if let Some(name) = rest.strip_suffix("/reset")
                 && method == "POST"
             {
-                if let Err(r) = may_act_as(caller, accounts, name) {
+                if let Err(r) = may_change(caller, accounts, name).and_then(|_| may_take_over(caller, accounts, name, &format!("resets {name}'s password"))) {
                     return Some(r);
                 }
-                return respond(accounts.reset(name).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
+                return respond(accounts.reset(name, by).map_err(|e| err(if e.starts_with("no principal") { 404 } else { 400 }, e)).map(|link| {
                     state.activity.record("reset the password of", name, Some(by));
                     Response::json(&serde_json::json!({ "name": name, "invite": link }))
                 }));
@@ -345,6 +425,11 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             let name = rest;
             if name.contains('/') {
                 return Some(Response::empty_404());
+            }
+            if matches!(method, "DELETE" | "PATCH")
+                && let Err(r) = may_change(caller, accounts, name)
+            {
+                return Some(r);
             }
             if method == "DELETE" {
                 return respond(accounts.remove(name, by).map_err(fail).map(|_| {
@@ -364,17 +449,37 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                     owner: Option<String>,
                 }
                 return respond(body::<Change>(request).and_then(|c| {
+                    // A way in to someone holding what waits for people to be given (D12), before
+                    // anything is changed: another email, which a provider matches, or owner.
+                    let now = accounts.principal(name);
+                    if let Some(email) = c.email.as_deref().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty())
+                        && now.as_ref().is_some_and(|p| p.email.as_deref() != Some(email.as_str()))
+                    {
+                        may_take_over(caller, accounts, name, &format!("sets {name}'s email"))?;
+                    }
+                    if let Some(owner) = c.owner.as_deref().filter(|o| now.as_ref().is_some_and(|p| p.owner.as_deref() != Some(*o))) {
+                        may_take_over(caller, accounts, name, &format!("makes {owner} the owner of {name}"))?;
+                    }
+                    // A role that gives more waits for people (access_proposals.rs); the rest is
+                    // changed at once, and the answer says what waits.
+                    let mut waits = None;
                     if let Some(role) = c.role {
                         may_give(caller, accounts, &role)?;
-                        accounts.set_role(name, &role, by).map_err(fail)?;
-                        state.activity.record(&format!("made {role}"), name, Some(by));
+                        let change = crate::access_proposals::Change::HostRole { name: name.into(), role: role.clone() };
+                        match govern(accounts, caller, change, None, || accounts.set_role(name, &role, by, None)).map_err(fail)? {
+                            Governed::Made(()) => state.activity.record(&format!("made {role}"), name, Some(by)),
+                            Governed::Waits(p) => {
+                                state.activity.record("proposed an access change", &format!("{}: {}", p.id, p.what), Some(by));
+                                waits = Some(p);
+                            }
+                        }
                     }
                     if let Some(disabled) = c.disabled {
                         accounts.set_disabled(name, disabled).map_err(fail)?;
                         state.activity.record(if disabled { "disabled" } else { "enabled" }, name, Some(by));
                     }
                     if let Some(email) = c.email {
-                        accounts.set_email(name, Some(email)).map_err(fail)?;
+                        accounts.set_email(name, Some(email), by).map_err(fail)?;
                     }
                     if let Some(display) = c.display {
                         accounts.set_display(name, Some(display)).map_err(fail)?;
@@ -384,7 +489,14 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                         state.activity.record(&format!("made {owner} the owner of"), name, Some(by));
                     }
                     let p = accounts.principal(name).ok_or_else(|| err(404, "no such principal"))?;
-                    Ok(Response::json(&shown(&p, accounts)))
+                    let mut answer = shown(&p, accounts);
+                    Ok(match waits {
+                        Some(proposal) => {
+                            answer["proposal"] = serde_json::json!(proposal);
+                            Response::json(&answer).with_status_code(202)
+                        }
+                        None => Response::json(&answer),
+                    })
                 }));
             }
             Response::empty_404()

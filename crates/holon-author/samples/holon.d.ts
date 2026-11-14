@@ -276,13 +276,14 @@ declare module "holon" {
 
   /** Parks the run until people approve it in Holon, or one declines, or its deadline: in an
    *  action, not a route. `people: 2` is two different people; `steps`, each step in turn (in any
-   *  order with `order: "any"`), taken by principals holding its role. */
+   *  order with `order: "any"`), taken by principals holding its role; `shows`, what they see of
+   *  the run (else what it was started with). */
   export function approval(name: string, options?: ApprovalOptions): Promise<Decision>
-  /** An approval's options: how many people decide it, or its steps (up to 5). A list in
-   *  `steps` is a stage, its steps taken in any order. */
+  /** An approval's options: how many people decide it, or its steps (up to 5), and what it shows
+   *  those who decide it. A list in `steps` is a stage, its steps taken in any order. */
   export type ApprovalOptions =
-    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5 }
-    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any" }
+    | { expires?: Duration; people?: 1 | 2 | 3 | 4 | 5; shows?: any }
+    | { expires?: Duration; steps: (Step | Step[])[]; order?: "sequence" | "any"; shows?: any }
   /** One step of an approval. */
   export interface Step {
     /** The role its principals hold where the approval is; left out, anyone holding run.decide
@@ -292,6 +293,9 @@ declare module "holon" {
     kind?: "person" | "agent"
     /** How many different principals take it. */
     people?: 1 | 2 | 3 | 4 | 5
+    /** `true` when whoever started the run may take it, a person (an output review: the one who
+     *  asked checks what was made); left out, they may not. An agent's step can't say it. */
+    starter?: true
   }
   /** What people decided on an approval. */
   export interface Decision {
@@ -317,8 +321,8 @@ declare module "holon" {
     at: number
     approved: boolean
     reason?: string
-    /** What they noted with it, any JSON (an agent's label and confidence, say). */
-    note?: unknown
+    /** What they noted with it, any JSON (an agent's label and confidence, say, or its draft). */
+    note?: any
     /** What let them: the binding they took it through, by its id (`holon access show` lists it). */
     binding?: number
     /** The version of the access document that binding was read in (`holon access show N`). */
