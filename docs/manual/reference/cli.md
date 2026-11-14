@@ -316,7 +316,8 @@ or from the state session N left (`holon state <slug> --sessions` lists them). `
 runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment for good:
 its state, its sessions and its secrets. Its runs' log and timeline are kept: written first, beside
 the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
-where). The slug deployed again starts a new log, and the old one stays as it was.
+where), sealed under the server's keys as everything in its data folder is: `holon verify` opens it
+with `--root-key`. The slug deployed again starts a new log, and the old one stays as it was.
 Editors and admins.
 
 ### `holon call`
@@ -803,16 +804,20 @@ export. See [Checking runs](../guides/checking-runs.md).
 ### `holon verify`
 
 ```
-holon verify <export.json | export.json.gz> [--head HEX] [--files DIR]
+holon verify <export.json | export.json.gz> [--head HEX] [--files DIR] [--data DIR] [--root-key SOURCE]
 ```
 
 Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
-texts the export doesn't hold. Exits 0 when it all checks, every run run again; 1 when something
-doesn't check; 3 when nothing fails but some runs couldn't be run again (it says which, and why);
-2 for a file it can't read.
+texts the export doesn't hold. An export `holon export` wrote is plain and needs no key; one the
+server keeps on disk (a backup's, a removed deployment's records) is sealed under its keys, and
+opens with the `keys.json` of the data folder it came from (`--data`, else this machine's
+server's) and its root key (`--root-key`: `os`, `env:VAR` or `file:PATH`, as the server's; the OS
+key store if not given); without them it says which it needs. Exits 0 when it all checks, every
+run run again; 1 when something doesn't check; 3 when nothing fails but some runs couldn't be run
+again (it says which, and why); 2 for a file it can't read.
 
 ## `holon history`
 

@@ -1245,8 +1245,11 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, if i == 1 { "" } else { "{\"mine\":1}\n" }).unwrap();
     }
-    // A batch that can't be made an export (not text): the others are made all the same, and it
-    // stays, warned of.
+    // A batch that can't be made an export (not sealed, as one the server wrote is): the others
+    // are made all the same, and it stays, warned of.
+    // Each batch the cut-backs wrote, its runs sealed together as one file (at_rest.rs §5.5).
+    let batches: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| storage::is_batch(&p.file_name().unwrap().to_string_lossy())).collect();
+    assert!(!batches.is_empty() && batches.iter().all(|b| std::fs::read(b).unwrap().starts_with(b"HLA1")), "{batches:?}");
     let bad = backup.join("kept").join(storage::batch_name(0, 0));
     std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
     storage::archive(&state);
@@ -1266,8 +1269,19 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| !theirs.contains(p)).collect();
     assert!(!exports.is_empty() && exports.iter().all(|p| { let n = p.file_name().unwrap().to_string_lossy(); n.starts_with("holon-archive-kept-runs-") && n.ends_with(".json.gz") }), "{exports:?}");
     let mut seqs = Vec::new();
+    // Each export sealed (at_rest.rs §5.5), no run in it in clear: it verifies with the keys that
+    // sealed it; without them it says what it needs; under another folder's, it doesn't open.
+    let no_keys = unique_temp_path("backup-no-keys");
     for p in &exports {
-        let export = verify::read_export(p).unwrap();
+        let bytes = std::fs::read(p).unwrap();
+        assert!(bytes.starts_with(b"HLA1"), "{}", p.display());
+        let e = verify::read_export(p, || verify::keys_for(Some(&no_keys), None)).err().unwrap();
+        assert!(e.contains("keys.json") && e.contains("--data") && e.contains("--root-key"), "{e}");
+        let e = verify::read_export(p, || Ok(std::sync::Arc::new(crate::at_rest::Keyring::memory()))).err().unwrap();
+        assert!(e.contains("doesn't open"), "{e}");
+    }
+    for p in &exports {
+        let export = verify::read_export(p, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap();
         assert_eq!(export.deployment, "kept");
         let report = verify::check(&export, None, &BTreeMap::new());
         assert!(report.ok(), "{}", verify::describe(&report, None));
@@ -6488,7 +6502,10 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
     assert_eq!(kept.parent(), Some(logs.with_file_name("removed").as_path()), "{}", kept.display());
     assert!(!logs.exists(), "its live log goes");
 
-    let export = verify::read_export(&kept).unwrap();
+    // Sealed as the deployment's export (at_rest.rs §5.5): it opens under the server's keys only.
+    assert!(std::fs::read(&kept).unwrap().starts_with(b"HLA1"));
+    assert!(verify::read_export(&kept, || Ok(std::sync::Arc::new(crate::at_rest::Keyring::memory()))).is_err());
+    let export = verify::read_export(&kept, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap();
     assert_eq!((export.lines.len(), export.head.as_str()), (3, head.as_str()));
     assert!(export.events.iter().any(|e| e.contains("\"deploy")), "its timeline: {:?}", export.events);
     let report = verify::check(&export, Some(&head), &BTreeMap::new());
@@ -6500,7 +6517,7 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
     assert_eq!(put(&state, "gone", "anew").status_code, 200);
     let fresh = log_entries(&state, "gone");
     assert_eq!((fresh.len(), fresh[0]["seq"].as_u64(), fresh[0].get("prev")), (1, Some(0), None), "{fresh:?}");
-    assert_eq!(verify::read_export(&kept).unwrap().lines, export.lines);
+    assert_eq!(verify::read_export(&kept, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap().lines, export.lines);
 
     route(&state, &req("POST", "/deployments/gone/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/gone", vec![]));

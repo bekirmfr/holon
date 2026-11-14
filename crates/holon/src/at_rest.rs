@@ -528,11 +528,42 @@ pub(crate) mod role {
     pub(crate) const CONSOLE: &str = "console";
     pub(crate) const ACTIVITY: &str = "activity";
     pub(crate) const SECRETS_AUDIT: &str = "secrets audit";
+    pub(crate) const SPOOL_MAIL: &str = "spool: mail";
+    pub(crate) const SPOOL_QUEUE: &str = "spool: queue";
 
     /// A run log's sealed segment: its older runs, gzipped then sealed whole.
     pub(crate) fn segment(slug: &str) -> String {
         format!("segment: {slug}")
     }
+
+    /// The runs a cut-back let go of, written to the backup as one file (§5.5).
+    pub(crate) fn batch(slug: &str) -> String {
+        format!("batch: {slug}")
+    }
+
+    /// An export kept on disk: a backup's archive, a removed deployment's records (§5.5).
+    pub(crate) fn export(slug: &str) -> String {
+        format!("export: {slug}")
+    }
+}
+
+/// An export kept on disk (a backup's archive, a removed deployment's records), opened by
+/// `keys`: sealed under its deployment's scope for `role::export` of it, so which deployment it
+/// is comes from the header, and a file sealed as anything else doesn't open as one.
+pub(crate) fn open_export(keys: &Keyring, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    let scope = bytes
+        .strip_prefix(MAGIC.as_slice())
+        .and_then(|rest| rest.split_first())
+        .and_then(|(&len, rest)| rest.get(..usize::from(len)))
+        .and_then(|scope| std::str::from_utf8(scope).ok())
+        .ok_or("its header is cut short")?;
+    let slug = scope.strip_prefix(&deployment("")).ok_or_else(|| format!("it is sealed under {scope:?}, not a deployment's"))?;
+    keys.open_file(&role::export(slug), bytes).map_err(|e| e.to_string())
+}
+
+/// Whether `bytes` are sealed whole (§4): what `holon verify` needs keys for.
+pub(crate) fn is_sealed(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC.as_slice())
 }
 
 /// How a line log is sealed (§4, §5.1, §5.2): each line on its own, under `scope`, for `role`, so

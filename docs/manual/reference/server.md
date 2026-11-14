@@ -190,8 +190,10 @@ allow_plain_http = true
   - `backup`: a folder's whole path (an external or second drive, or a folder a cloud client
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
-    within ten seconds made into exports `holon verify` checks, gzipped:
-    `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs
+    within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
+    server's keys as its data folder is (`holon verify --root-key` opens one; keep the root key
+    apart from the backup): `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`,
+    with the units the runs
     ran and the file texts they read that the server keeps. Every file the server writes there
     starts with `holon-archive-`, and the folder may hold other things: the server only ever
     exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>.jsonl`, each
@@ -364,7 +366,9 @@ feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and 
 log, a line at a time: each deployment's run log (its older runs gzipped, then sealed whole), its
 events and console lines, the activity and the secrets audit; and the content store: each unit,
 value and kept file text, and a pack's blocks (deflated first) and its index, each file named by a
-keyed hash of its content hash, so a name says nothing of what it holds. Each is sealed for what it is, so
+keyed hash of its content hash, so a name says nothing of what it holds; and what waits to be
+sent (`mail-spool/`, `queue-spool/`), a removed deployment's records (`removed/`), and what a
+backup holds. Each is sealed for what it is, so
 one is never read as another, and a plain file where a sealed one belongs is refused, not read.
 `keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
 as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.

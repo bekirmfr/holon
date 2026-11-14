@@ -727,11 +727,12 @@ impl CutPlan {
     }
 }
 
-/// Write the lines a cut-back lets go of (`gone`, the file at `path`'s) to `backup`, when there is
-/// one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>.jsonl`, written whole then renamed in, so the same
-/// cut made again writes the same file; the housekeeping turns it into an export `holon verify`
-/// checks, gzipped (storage.rs). An error if it can't be written, unless the cut may go on
-/// without (`backup`'s flag).
+/// Write the lines a cut-back lets go of (`gone`, the file at `path`'s, opened) to `backup`, when
+/// there is one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>.jsonl`, the lines sealed
+/// together as one file under the deployment's keys (at_rest.rs §5.5), written whole then renamed
+/// in, so the same cut made again writes the same runs; the housekeeping turns it into an export
+/// `holon verify` checks, gzipped and sealed (storage.rs). An error if it can't be written, unless
+/// the cut may go on without (`backup`'s flag).
 fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &LineAt)]) -> std::io::Result<()> {
     let (Some((dir, may_drop)), Some((_, first)), Some((_, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
     let written = (|| {
@@ -743,7 +744,7 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &
             bytes.extend_from_slice(b);
             bytes.push(b'\n');
         }
-        holon_host::write_atomically(&dir.join(crate::storage::batch_name(first.seq, last.seq)), &bytes)
+        crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
     })();
     match written {
         Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
@@ -2880,8 +2881,9 @@ mod tests {
         let seqs: Vec<u64> = all.iter().map(|l| serde_json::from_str::<LogEntry>(l).unwrap().seq).collect();
         assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1) && seqs.last() == Some(&999), "in order, none twice");
         assert!(cell.shows("n", "root-750"), "a sealed run's state, found");
-        // What retention let go of went to the backup first, segments too.
-        let backed: usize = std::fs::read_dir(backup.join("cell")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap().lines().count()).sum();
+        // What retention let go of went to the backup first, segments too, each batch sealed whole.
+        let batch = |p: &Path| String::from_utf8(crate::at_rest::read_sealed(p, &crate::at_rest::role::batch("cell")).unwrap().unwrap().to_vec()).unwrap();
+        let backed: usize = std::fs::read_dir(backup.join("cell")).unwrap().flatten().map(|e| batch(&e.path()).lines().count()).sum();
         assert_eq!(backed + seqs.len(), 1000, "every run backed up or still in the log, once");
         // Opened again: the same runs, the chain unbroken.
         let back = Log::open_keeping(Some(cell_path.clone()), 300);

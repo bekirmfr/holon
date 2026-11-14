@@ -612,7 +612,9 @@ impl Mails {
                 let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
                 kept.push(b'\n');
                 kept.extend_from_slice(&bytes);
-                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::sealing::write_private(file, &kept)) {
+                // Sealed under the deployment's keys (at_rest.rs, §5.5): what it mails, to whom.
+                let scope = crate::at_rest::deployment(slug);
+                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_MAIL, &kept)) {
                     self.note(slug, &spooled.mail, format!("didn't mail {:?} through {}: it couldn't be spooled ({e})", spooled.subject, spooled.mail));
                     continue;
                 }
@@ -675,7 +677,16 @@ impl Mails {
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "mail")) {
-            let Ok(bytes) = std::fs::read(&file) else { continue };
+            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_MAIL) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => continue,
+                // One that doesn't open (changed, plain, or sealed by another folder's keys): left
+                // as it is, said, never sent.
+                Err(e) => {
+                    eprintln!("holon: the spooled mail {} doesn't open, so it isn't sent; left as it is: {e}", file.display());
+                    continue;
+                }
+            };
             let Some(end) = bytes.iter().position(|b| *b == b'\n') else { continue };
             let Ok(spooled) = serde_json::from_slice::<Spooled>(&bytes[..end]) else {
                 let _ = std::fs::remove_file(&file);
@@ -1289,12 +1300,21 @@ mod tests {
         mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]));
         mails.send_unlogged("app", &entry("unlogged"), vec![("ops".into(), message(&["a@acme.com"], "unlogged"))]);
         assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 3);
+        // Each sealed under the deployment's keys (at_rest.rs §5.5): no recipient, no subject in
+        // clear. One written plain (the landed run's, as it was before it was sealed) is left as it
+        // is, never sent.
+        for f in std::fs::read_dir(&spool).unwrap().flatten() {
+            let bytes = std::fs::read(f.path()).unwrap();
+            assert!(bytes.starts_with(b"HLA1") && !bytes.windows(10).any(|w| w == b"a@acme.com"), "{}", f.path().display());
+        }
+        let plain = crate::at_rest::read_sealed(&spool.join("app.landed.0.mail"), crate::at_rest::role::SPOOL_MAIL).unwrap().unwrap();
+        std::fs::write(spool.join("app.plain.0.mail"), &*plain).unwrap();
         // The log holds the first run only: the second's record a crash lost.
         let again = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap();
         again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
         let mut left: Vec<String> = std::fs::read_dir(&spool).unwrap().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
-        assert_eq!(left, ["app.landed.0.mail", "app.unlogged.0.mail"]);
+        assert_eq!(left, ["app.landed.0.mail", "app.plain.0.mail", "app.unlogged.0.mail"]);
         let queued: usize = again.0.queues.lock().unwrap().values().map(|q| q.items.lock().unwrap().len()).sum();
         assert_eq!(queued, 2);
     }

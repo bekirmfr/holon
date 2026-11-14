@@ -1004,8 +1004,9 @@ pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64) -> 
 }
 
 /// Write a deployment's log and timeline (`held`: its log, its secrets' redactor, its events and
-/// their head) as an export, gzipped as a backup's is (storage.rs): where it went, or None with
-/// no data folder or nothing on record.
+/// their head) as an export, gzipped and sealed as a backup's is (storage.rs, at_rest.rs §5.5;
+/// `holon verify` opens it with the data folder's keys): where it went, or None with no data
+/// folder or nothing on record.
 fn keep_records(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -1027,7 +1028,7 @@ fn keep_records(
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    crate::sealing::write_private(&to, &bytes).map_err(|e| e.to_string())?;
+    crate::at_rest::write_sealed(&to, &crate::at_rest::deployment(slug), &crate::at_rest::role::export(slug), &bytes).map_err(|e| e.to_string())?;
     Ok(Some(to))
 }
 

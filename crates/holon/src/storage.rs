@@ -1132,7 +1132,7 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 
 /// Turn each batch of runs a log wrote aside to the backup
 /// (`<backup>/<slug>/holon-archive-<first>-<last>.jsonl`, recorder.rs `keep_aside`) into an export
-/// `holon verify` checks, gzipped: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
+/// `holon verify` checks, gzipped then sealed: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
 /// texts they read that the server keeps (none if the deployment is gone). The batch is removed
 /// once its export is written; one that can't be stays (its runs are in it still, as lines), is
 /// warned of, and is tried again at the next look, the others made meanwhile.
@@ -1161,7 +1161,9 @@ pub(crate) fn archive(state: &AppState) {
 }
 
 fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(batch).map_err(|e| e.to_string())?;
+    // Opened first, so the archive's head is over its lines as made (at_rest.rs §5.5).
+    let opened = crate::at_rest::read_sealed(batch, &crate::at_rest::role::batch(slug))?.ok_or("gone meanwhile")?;
+    let text = std::str::from_utf8(&opened).map_err(|e| e.to_string())?;
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let Some(last) = lines.last() else { return std::fs::remove_file(batch).map_err(|e| e.to_string()) };
     let head = crate::recorder::line_hash(last);
@@ -1173,7 +1175,7 @@ fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String>
     let bytes = gz.finish().map_err(|e| e.to_string())?;
     let name = batch.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let to = batch.with_file_name(export_name(slug, name).ok_or("not a batch's name")?);
-    holon_host::write_atomically(&to, &bytes).map_err(|e| e.to_string())?;
+    crate::at_rest::write_sealed(&to, &crate::at_rest::deployment(slug), &crate::at_rest::role::export(slug), &bytes).map_err(|e| e.to_string())?;
     std::fs::remove_file(batch).map_err(|e| e.to_string())
 }
 

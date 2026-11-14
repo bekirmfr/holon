@@ -75,7 +75,7 @@ impl Env {
 }
 
 /// The data folder `holon serve` uses when given none: HOLON_DATA, else `<home>/data`.
-fn data_folder(home: &Path) -> PathBuf {
+pub(crate) fn data_folder(home: &Path) -> PathBuf {
     std::env::var_os("HOLON_DATA").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join("data"))
 }
 

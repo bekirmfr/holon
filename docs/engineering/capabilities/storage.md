@@ -118,12 +118,18 @@ oldest is a day past the age it keeps. The chain across segments is in
 
 With `backup` set, a cut-back writes the lines it lets go of to
 `<backup>/<slug>/holon-archive-<first>-<last>.jsonl` first (`keep_aside`, `storage::batch_name`,
-each seq 20 digits; whole segments let go of, `keep_segments_aside`). If it can't, it doesn't cut:
+each seq 20 digits; whole segments let go of, `keep_segments_aside`), the lines opened and sealed
+together as one file under the deployment's keys (`role::batch`, docs/L4s/at-rest-encryption-L4.md
+§5.5). If it can't, it doesn't cut:
 the log keeps the runs and records why (`Log::backup_error`), unless `roll` is acting past
 `full_at` (the admin chose room over history). Each look, `archive` makes each batch an export
 `holon verify` checks (`archive_one`: `verify::export_of`, with the units the runs ran and the file
-texts they read, redacted by the deployment's secrets), gzipped, as
-`<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, then removes the batch. Every
+texts they read, redacted by the deployment's secrets; the batch opened first, so its head is over
+the lines as made), gzipped, then sealed (`role::export`), as
+`<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, then removes the batch. `holon
+verify` opens one with the data folder's `keys.json` and the root key (`verify::keys_for`,
+`at_rest::open_export`, which takes the deployment from the file's own header). A removed
+deployment's records (`deploy::keep_records`) are sealed the same way. Every
 file the server writes there starts with `ARCHIVE_PREFIX`, and it exports or removes only a file
 with a batch's exact shape (`is_batch`) and counts only its exports (`is_export`): the folder may be
 a drive or a synced folder holding other things. A batch that can't be made an export stays, is
