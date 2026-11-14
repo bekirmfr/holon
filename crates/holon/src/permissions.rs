@@ -803,7 +803,7 @@ impl Policy {
 
     /// Whether `item` is granted without asking. Never a tag: the policy says what a flow may
     /// reach, not who may act on it (D24).
-    fn is_auto(&self, item: &str) -> bool {
+    pub(crate) fn is_auto(&self, item: &str) -> bool {
         !item.starts_with("Tag(") && self.auto.iter().any(|pattern| match pattern.strip_suffix("(*)") {
             Some(kind) => item.starts_with(&format!("{kind}(")),
             None => pattern == item,

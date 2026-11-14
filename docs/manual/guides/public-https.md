@@ -116,11 +116,25 @@ holon serve --allow-host holon.example.com --allow-origin https://holon.example.
 - `--allow-origin`: the editor's own requests carry their page's origin, which must be one the
   server knows.
 
-Everyone still signs in. Use long passwords, or an identity provider (the admin page), and make
+Everyone still signs in. Use long passwords, or an identity provider (the admin page), and
 give agents and services the narrowest role that works.
 
+From another machine, the command line reaches the server at the same address. A person signs in
+once with their name and password, and the other commands then sign in as them:
+
+```sh
+holon login --server https://holon.example.com
+holon decide payouts
+```
+
+An agent or a service uses its own token instead (`HOLON_TOKEN`, or `holon mcp setup --server
+https://holon.example.com` for an agent's host). The command line sends a password or a token
+over https only, never plain http to another machine.
+
 To reach the server from your network without a proxy, `--at 0.0.0.0:7420` listens on every
-interface, still unencrypted (the server warns so): only on a network you trust.
+interface, still unencrypted (the server warns so): only on a network you trust. The command line
+on another machine then reaches it through an SSH tunnel (`ssh -L 7420:localhost:7420 HOST`, then
+`--server 7420`), since it sends no password or token over plain http.
 
 ## Checking it
 

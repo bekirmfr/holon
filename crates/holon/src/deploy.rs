@@ -99,13 +99,28 @@ fn untainted(taint: &[String], previous: &[String]) -> Vec<String> {
 /// offered back to a person, and one it needs waits for a person's approval. Nor does an unrecorded
 /// handler whose code it changed stay unrecorded: a person let that code's runs out of the log, not
 /// what an agent put in its place, so it is withheld too, and its runs logged until a person grants
-/// it back (an agent's later versions keep it withheld). `proposes`: whoever deploys doesn't
-/// approve what a deploy needs (can.rs), as an agent doesn't.
-fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, server: Option<&Server>, unit: Hash, proposes: bool) -> (BTreeSet<String>, BTreeSet<String>) {
+/// it back (an agent's later versions keep it withheld). Nor does it send out of the flow, through
+/// code it changed, what a person let the old code send ([`resent`]): what policy doesn't grant
+/// without asking waits for a person. `proposes`: whoever deploys doesn't approve what a deploy
+/// needs (can.rs), as an agent doesn't.
+#[allow(clippy::too_many_arguments)]
+fn approval_needed(
+    policy: &Policy,
+    manifest: &Manifest,
+    previous: &Previous,
+    server: Option<&Server>,
+    slug: &str,
+    unit: Hash,
+    resolver: &impl holon_core::Resolver,
+    proposes: bool,
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut needed = policy.needs_approval(manifest, previous.grant.as_ref());
     let mut withheld = BTreeSet::new();
     if proposes && previous.unit != Some(unit) {
         let items = manifest.items();
+        if let Some(server) = server {
+            needed.extend(resent(server, previous, slug, &items, resolver).into_iter().filter(|item| !policy.is_auto(item)));
+        }
         for item in items.iter().filter(|item| item.starts_with("SecretRead(")).cloned() {
             if manifest.is_optional(&item) {
                 needed.remove(&item);
@@ -126,6 +141,72 @@ fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, se
         }
     }
     (needed, withheld)
+}
+
+/// What a version sends out of the flow through code an agent changed (the launch review's H9): a
+/// person let the old code send there, not what an agent put in its place, as a secret goes only
+/// to code a person has looked at. The handlers whose code changed, and those fed by one, through
+/// what one writes and the other reads (a key, a collection, a table, a folder), by starting one
+/// of its own actions, by a message on a queue it handles, or a file in a folder it watches: each
+/// item through which one sends out of the flow (a host, a mail, a channel, a queue, another flow,
+/// a process, a folder or a table others read), and, for a route or a websocket among them that
+/// reads what the host binds (a database's tables, a folder's files), the item it answers its
+/// callers through. What a route answers from the flow's own state is the flow's: an agent bound
+/// to it reads that state anyway. Of `items`, the version's; all that send or answer when a
+/// handler doesn't resolve.
+fn resent(server: &Server, previous: &Previous, slug: &str, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver) -> BTreeSet<String> {
+    const SENDS: [&str; 10] = ["NetworkEgress", "HttpRequest(", "RunsAction(", "FileWrite(", "ChannelSend(", "MailSend(", "QueueSend(", "FileServe(", "Spawn", "DbWrite("];
+    const BOUND: [&str; 2] = ["DbRead(", "FileRead("];
+    const FEEDS: [(&str, &str); 5] = [("StateWrite", "StateRead"), ("CollectionWrite", "CollectionRead"), ("DbWrite", "DbRead"), ("FileWrite", "FileRead"), ("FileWrite", "FileServe")];
+    // What core names a key it can't tell (holon_core's SATURATED_STATE_KEY): any key.
+    const ANY: &str = "<unknown>";
+    let own = format!("RunsAction(\"{slug}/");
+    let sends = |item: &str| SENDS.iter().any(|s| item.starts_with(s)) && !item.starts_with(&own);
+    let arg = |item: &str, kind: &str| -> Option<String> { item.strip_prefix(kind)?.strip_prefix("(\"")?.strip_suffix("\")").map(String::from) };
+    let feeds = |write: &str, read: &str| FEEDS.iter().any(|(w, r)| matches!((arg(write, w), arg(read, r)), (Some(a), Some(b)) if a == b || a == ANY || b == ANY));
+    // What starts the handler `label` from another one's code.
+    let starts = |label: &str, item: &str| {
+        server.actions.iter().any(|a| a.label == label && item == format!("RunsAction({:?})", format!("{slug}/{}", a.name)))
+            || server.queues.iter().any(|q| q.label == label && item == format!("QueueSend({:?})", q.queue))
+            || server.files.iter().any(|f| f.label == label && item == format!("FileWrite({:?})", f.trigger.folder))
+    };
+    let answers = |label: &str| {
+        let route = server.routes.iter().any(|r| format!("{} {}", r.method, r.path) == label).then(|| "NetworkIngress".to_string());
+        route.or_else(|| server.websockets.iter().find(|w| w.blocks().any(|b| b.label == label)).map(|w| format!("WebSocket({:?})", w.path)))
+    };
+    // Each handler: its label, what its code may touch, and whether it is changed or fed.
+    let mut handlers: Vec<(String, BTreeSet<String>, bool)> = vec![];
+    for (label, _, h) in server.handlers() {
+        let Some(code) = resolver.resolve(&h) else {
+            return items.iter().filter(|i| sends(i) || *i == "NetworkIngress" || i.starts_with("WebSocket(")).cloned().collect();
+        };
+        let caps = holon_core::capabilities(code, resolver).iter().map(|c| holon_core::consent_name(&c)).collect();
+        let changed = previous.handlers.get(&label) != Some(&h);
+        handlers.push((label, caps, changed));
+    }
+    loop {
+        let fed: Vec<usize> = (0..handlers.len())
+            .filter(|&b| {
+                let (label, reads, affected) = &handlers[b];
+                !affected && handlers.iter().filter(|h| h.2).flat_map(|h| &h.1).any(|w| starts(label, w) || reads.iter().any(|r| feeds(w, r)))
+            })
+            .collect();
+        if fed.is_empty() {
+            break;
+        }
+        for b in fed {
+            handlers[b].2 = true;
+        }
+    }
+    let mut resent = BTreeSet::new();
+    for (label, caps, _) in handlers.iter().filter(|h| h.2) {
+        resent.extend(caps.iter().filter(|c| sends(c)).cloned());
+        if caps.iter().any(|c| BOUND.iter().any(|k| c.starts_with(k))) {
+            resent.extend(answers(label));
+        }
+    }
+    resent.retain(|i| items.contains(i));
+    resent
 }
 
 /// `POST /deploy` — register `slug → unit`. The triggers are **derived**, not asserted: the
@@ -283,10 +364,17 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = previous_of(deployments, &body.slug);
-    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), unit_hash, !approves);
+    // What it runs of other flows that whoever deploys it may not run: a person who approves is
+    // refused it, and what someone proposes waits for someone who may run it.
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    if approves && let Some((_, why)) = borrowed.first() {
+        return err(403, why.clone());
+    }
+    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), &body.slug, unit_hash, &resolver, !approves);
     if !approves {
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
         needed.extend(untainted(&server.taint, &previous.taint));
+        needed.extend(borrowed.into_iter().map(|(item, _)| item));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
@@ -511,6 +599,34 @@ fn as_it_would_be(who: &Caller, action: Action, slug: &str, now: Option<&[String
     )))
 }
 
+/// The actions of other flows that `items` (a version's) run, `RunsAction("billing/charge")`,
+/// which `who` may not run, each with why. A call runs the other flow's action under that flow's
+/// grant, with whatever this flow's code sends it, so deploying the code runs it as surely as
+/// running it by hand: whoever deploys it may run it (the launch review's H1). An agent runs only
+/// what the other flow's grant lets agents run, as by hand. A flow starting its own action runs
+/// nothing of another's.
+fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<String>, slug: &str, who: &Caller) -> Vec<(String, String)> {
+    let deployments = deployments.lock().unwrap();
+    items
+        .iter()
+        .filter_map(|item| {
+            let ran = item.strip_prefix("RunsAction(\"")?.strip_suffix("\")")?;
+            let (flow, action) = ran.split_once('/').unwrap_or((ran, ""));
+            if flow == slug {
+                return None;
+            }
+            let agents_may = deployments.get(flow).is_some_and(|d| d.grant.items.contains(&format!("AgentRuns({action:?})")));
+            let refusal = can(who, Action::RunCall, &Resource::Action { slug: flow, name: action, agents_may }).err()?;
+            let name = who.name.as_deref().unwrap_or_default();
+            let why = refusal.0.strip_prefix(&format!("{name} may not do that: ")).unwrap_or(&refusal.0);
+            Some((
+                item.clone(),
+                format!("this version runs {flow:?}'s action {action:?}, which {name} may not run ({why}): a call runs it under {flow:?}'s grant with what this flow sends, so someone who may run it deploys this version"),
+            ))
+        })
+        .collect()
+}
+
 /// Whether `who` approves what deploying a version of `slug` tagged `then` needs: on the flow as
 /// it is deployed now, if it is, and as the version would make it (D22).
 fn may_approve(who: &Caller, slug: &str, deployed: bool, then: &[String]) -> bool {
@@ -588,7 +704,7 @@ pub(crate) fn handle_post_deploy_preview(
         return refusal.response();
     }
     let proposes = !may_approve(who, &body.slug, tagged_now.is_some(), &then);
-    match preview_value(state, &body, proposes) {
+    match preview_value(state, &body, who, proposes) {
         Ok(v) => Response::json(&v),
         Err(r) => r,
     }
@@ -603,8 +719,8 @@ fn unit_tags(store: &SharedStore, unit: &str) -> Vec<String> {
 }
 
 /// What deploying `body` would ask for (`POST /deploy/preview`'s answer, and, for a restore to add
-/// to, its dry run's); `proposes` as `approval_needed` takes it.
-fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> Result<serde_json::Value, Response> {
+/// to, its dry run's), as `who` would deploy it; `proposes` as `approval_needed` takes it.
+fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, proposes: bool) -> Result<serde_json::Value, Response> {
     let (store, deployments, secrets, folders) = (&state.store, &state.deployments, &state.secrets, &state.folders);
     let policy = &*state.policy();
     let Some(unit_hash) = parse_hash(&body.unit) else {
@@ -617,13 +733,35 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
     let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let previous = previous_of(deployments, &body.slug);
     let server = read_server(root_unit, &resolver).ok();
-    let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, proposes);
+    let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), &body.slug, unit_hash, &resolver, proposes);
     let taint: Vec<String> = server.as_ref().map(|s| s.taint.clone()).unwrap_or_default();
+    // What it runs of other flows that `who` may not run: refused to a person who approves,
+    // waiting for someone who may when proposed.
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    let name = who.name.as_deref().unwrap_or_default();
+    let mut unready: BTreeMap<String, String> = borrowed
+        .iter()
+        .map(|(item, _)| {
+            let then = if proposes { "it waits for someone who may, as a proposal" } else { "someone who may deploys this version" };
+            (item.clone(), format!("{name} may not run it: {then}"))
+        })
+        .collect();
     if proposes {
         needs.extend(browsers_added(&body.browsers, &previous.browsers));
         needs.extend(untainted(&taint, &previous.taint));
+        needs.extend(borrowed.iter().map(|(item, _)| item.clone()));
     }
     let items = manifest.items();
+    // Its approvals whose steps can't all be taken here (§9), whoever deploys it set aside where
+    // the host says so: a person who approves now; someone later, for a proposal. And which of
+    // their runs would wait there undecided.
+    let mut waits = BTreeMap::new();
+    if let Some(server) = &server {
+        for (item, (why, runs)) in approvals_unready(state, &body.slug, server, &items, &resolver, (!proposes).then_some(name)) {
+            unready.insert(item.clone(), why);
+            waits.insert(item, runs);
+        }
+    }
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     // What it touches, beside what it touches now, and the settings that change.
     let (deployed, asked_now) = {
@@ -639,7 +777,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
     // Where each secret it reads is sent (secret → destinations).
     let sent = holon_core::sent_secrets(root_unit, &resolver);
-    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent });
+    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
     let settings = match &asked_now {
         Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
         None => serde_json::json!([]),
@@ -673,6 +811,140 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, proposes: bool) -> 
             .filter(|name| !secrets.names(&body.slug).iter().any(|n| n == name))
             .collect::<Vec<_>>(),
     }))
+}
+
+/// For each approval a version of `slug` waits at whose steps can't all be taken here, why (the
+/// access design's §9): a step takes a principal of its kind bound to its role where the approval
+/// is (none named: to a role that decides there), as the version's tags would make it, and not
+/// disabled; one principal a step, as many as the step's `people`. Whoever deploys it takes none
+/// on a host that keeps them out (`approvals.exclude_deployer`), nor whoever starts a run, which,
+/// for an approval in one of its actions, may be anyone who may run that action, but for a step
+/// that says `starter: true`, a person, where the host lets one (`approvals.starter`). None
+/// worked out on a server without accounts. With why, which of its runs would wait there undecided: `every
+/// run` (a step no one here may take, or too few), or `some runs` (those a principal starts who
+/// would then take no step of them: a run a route, a schedule or a file starts has no starter, and
+/// can be decided), which deploying in the editor doesn't ask about again.
+fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver, deployer: Option<&str>) -> BTreeMap<String, (String, &'static str)> {
+    use crate::accounts::Kind;
+    use holon_core::approval::{SlotKind, Steps};
+    let Some(accounts) = state.access.accounts() else { return BTreeMap::new() };
+    let settings = accounts.access_document().approvals.clone();
+    let callers: Vec<Caller> = accounts
+        .principals()
+        .into_iter()
+        .filter(|p| !p.disabled && p.kind != Kind::Service && !(settings.exclude_deployer && deployer == Some(p.name.as_str())))
+        .map(|p| {
+            let holds: Arc<[crate::bindings::Held]> = accounts.holding(&p.name).iter().map(|h| as_tagged(h, slug, &server.tags)).collect();
+            Caller { name: Some(p.name), kind: Some(p.kind), holds: Some(holds), local: None }
+        })
+        .collect();
+    let mut unready = BTreeMap::new();
+    for item in items {
+        let Some((name, steps)) = item.strip_prefix("Approval(\"").and_then(|r| r.strip_suffix("\")")).and_then(|r| r.split_once('/')) else { continue };
+        let Some(steps) = Steps::parse(steps) else { continue };
+        let on = Resource::Approval { slug, name: Some(name) };
+        // Who may take each step.
+        let takes: Vec<Taking> = steps
+            .slots()
+            .map(|(_, _, slot)| {
+                let kind = if slot.kind == SlotKind::Agent { Kind::Agent } else { Kind::Person };
+                let who = (0..callers.len())
+                    .filter(|&i| {
+                        let c = &callers[i];
+                        c.kind == Some(kind) && can(c, Action::RunDecide, &on).is_ok() && crate::can::holding(c, slot.role.as_deref(), &on).is_some()
+                    })
+                    .collect();
+                Taking { slot, who }
+            })
+            .collect();
+        if let Some(why) = untaken(&takes) {
+            unready.insert(item.clone(), (why, "every run"));
+            continue;
+        }
+        // Whoever may start a run that waits there, set aside.
+        let started = server.actions.iter().filter(|a| resolver.resolve(&a.handler).is_some_and(|h| holon_core::capabilities(h, resolver).iter().any(|c| holon_core::consent_name(&c) == *item)));
+        let starters = started.flat_map(|a| {
+            let agents_may = items.contains(&format!("AgentRuns({:?})", a.name));
+            let callers = &callers;
+            (0..callers.len()).filter(move |&i| can(&callers[i], Action::RunCall, &Resource::Action { slug, name: &a.name, agents_may }).is_ok())
+        });
+        for i in starters.collect::<BTreeSet<_>>() {
+            // Set aside from each step that doesn't take whoever started the run.
+            let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter && callers[i].kind == Some(Kind::Person);
+            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| p != i || takes_them(t.slot)).collect() }).collect();
+            if let Some(why) = untaken(&theirs) {
+                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()), "some runs"));
+                break;
+            }
+        }
+    }
+    unready
+}
+
+/// A step of an approval, and who may take it (by their place in a list).
+struct Taking<'a> {
+    slot: &'a holon_core::approval::Slot,
+    who: Vec<usize>,
+}
+
+/// Why `takes` can't all be taken, one principal a step and as many as each needs: a step fewer
+/// may take than it needs ("approver: 1 person holds it here; it needs 2"), or fewer different
+/// principals than the steps need together.
+fn untaken(takes: &[Taking]) -> Option<String> {
+    use holon_core::approval::SlotKind;
+    for Taking { slot, who } in takes {
+        let n = who.len();
+        if n >= slot.people as usize {
+            continue;
+        }
+        let (one, many) = if slot.kind == SlotKind::Agent { ("agent", "agents") } else { ("person", "people") };
+        let (who, verb) = match n {
+            0 => (format!("no {one}"), "holds"),
+            1 => (format!("1 {one}"), "holds"),
+            n => (format!("{n} {many}"), "hold"),
+        };
+        let needs = if n > 0 || slot.people > 1 { format!("; it needs {}", slot.people) } else { String::new() };
+        return Some(match &slot.role {
+            Some(role) => format!("{role}: {who} {verb} it here{needs}"),
+            None => format!("its step: {who} may decide it here{needs}"),
+        });
+    }
+    // One seat a person a step needs; each principal takes one seat at most (Kuhn's matching).
+    let seats: Vec<&Vec<usize>> = takes.iter().flat_map(|t| std::iter::repeat_n(&t.who, t.slot.people as usize)).collect();
+    fn seat(s: usize, seats: &[&Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
+        for &p in seats[s] {
+            if !seen.insert(p) {
+                continue;
+            }
+            let other = taken.get(&p).copied();
+            if other.is_none_or(|o| seat(o, seats, seen, taken)) {
+                taken.insert(p, s);
+                return true;
+            }
+        }
+        false
+    }
+    let mut taken = BTreeMap::new();
+    let all = (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken));
+    (!all).then(|| format!("its steps take {} different principals, one a step, and fewer can here", seats.len()))
+}
+
+/// `held` as a version of `slug` tagged `tags` would make it (D22): a binding on a tag covers the
+/// flow when the version has the tag, whatever it has now.
+fn as_tagged(held: &crate::bindings::Held, slug: &str, tags: &[String]) -> crate::bindings::Held {
+    use crate::bindings::{Scope, Selector};
+    match &held.scope {
+        Scope::Flows(Selector::Tag(tag)) | Scope::Approval { flow: Selector::Tag(tag), .. } => {
+            let mut tagged = (*held.tagged).clone();
+            if tags.contains(tag) {
+                tagged.insert(slug.to_string());
+            } else {
+                tagged.remove(slug);
+            }
+            crate::bindings::Held { tagged: Arc::new(tagged), ..held.clone() }
+        }
+        _ => held.clone(),
+    }
 }
 
 /// For each of `tags`, who a binding on it lets act on a flow deployed with it now (D24).
@@ -1434,7 +1706,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     let code = code.map(|(n, body)| (n, DeployRequestBody { acknowledge: restore.acknowledge, ..body }));
     if restore.dry_run {
         let mut answer = match &code {
-            Some((_, body)) => match preview_value(state, body, can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_err()) {
+            Some((_, body)) => match preview_value(state, body, who, can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)).is_err()) {
                 Ok(v) => v,
                 Err(r) => return r,
             },
@@ -1452,7 +1724,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             let policy = state.policy();
             let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed, tags: tag_holders(state, &tagged) };
             // Its code isn't worked out again here: where its secrets go isn't said.
-            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default() });
+            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default(), unready: &Default::default(), waits: &Default::default() });
             answer["settings"] = serde_json::json!([]);
         }
         if let Some((snapshot, label, since)) = &put_back {

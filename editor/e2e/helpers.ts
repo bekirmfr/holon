@@ -29,6 +29,13 @@ export async function resourcesTab(page: Page, label: string): Promise<void> {
   await expect(tabs.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
 }
 
+/** People and access's tab `label` (People, Agents and tokens, Groups, Roles, Bindings, History, Signing in), from People and access. */
+export async function peopleTab(page: Page, label: string): Promise<void> {
+  const tabs = page.getByRole("navigation", { name: "people tabs" });
+  await tabs.getByRole("link", { name: label, exact: true }).click();
+  await expect(tabs.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+}
+
 /** Go to `name` from the side nav, as a person would. */
 export async function gotoPage(page: Page, name: MenuPage) {
   await menuEntry(page, name).click();

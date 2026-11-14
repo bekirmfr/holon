@@ -345,12 +345,11 @@ pub(crate) fn everywhere(who: &Caller, action: Action) -> bool {
     can(who, action, &Resource::Flow("")).is_ok()
 }
 
-/// The owner's rule: a person manages the tokens of an agent or a service they own (the OS user by
-/// the name it runs as).
+/// The owner's rule: a person manages the tokens of an agent or a service they own (the OS user as
+/// `local:<user>`, while its run file is tied to no account).
 fn owns(who: &Caller, action: Action, on: &Resource) -> bool {
     let Resource::Principal { owner: Some(owner), .. } = on else { return false };
-    let me = who.name.as_deref().map(|n| n.strip_prefix("local:").unwrap_or(n));
-    action == PeopleManage && who.kind == Some(Kind::Person) && me == Some(*owner)
+    action == PeopleManage && who.kind == Some(Kind::Person) && who.name.as_deref() == Some(*owner)
 }
 
 /// What is a person's, whatever role an agent holds (the plan's D20): approving a deploy, starting,
@@ -441,6 +440,9 @@ pub(crate) enum Rule {
     SignedIn,
     /// That `can` lets them do the action to what the path names.
     Can(Action, On),
+    /// That `can` lets them do either action to what the path names: the handler answers each
+    /// what it may see (the waiting runs, to whoever may decide one of their approvals).
+    Either(Action, On, Action, On),
 }
 
 /// What a route's path names: the resource its rule asks `can` about.
@@ -476,6 +478,10 @@ const fn signed_in(method: &'static str, path: &'static str) -> Route {
 
 const fn asks(method: &'static str, path: &'static str, action: Action, on: On) -> Route {
     Route { method, path, rule: Rule::Can(action, on) }
+}
+
+const fn asks_either(method: &'static str, path: &'static str, first: (Action, On), second: (Action, On)) -> Route {
+    Route { method, path, rule: Rule::Either(first.0, first.1, second.0, second.1) }
 }
 
 /// Every route, in the order the routers read them (auth.rs's, then http.rs's): the first that
@@ -548,6 +554,11 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/access/versions", PeopleView, On::Host),
     asks("GET", "/access", PeopleView, On::Host),
     asks("PUT", "/access/approvals", PeopleAssign, On::Host),
+    // Access changes waiting for people (access_proposals.rs): approved and declined by a person
+    // holding what each gives, as its handler asks.
+    asks("GET", "/access/proposals", PeopleView, On::Host),
+    asks("POST", "/access/proposals/{id}/approve", PeopleAssign, On::Host),
+    asks("POST", "/access/proposals/{id}/decline", PeopleAssign, On::Host),
     asks("GET", "/access/local", PeopleView, On::Host),
     asks("PUT", "/access/local", PeopleAssign, On::Host),
     asks("GET", "/roles", RoleView, On::Host),
@@ -578,13 +589,17 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/permissions", PolicyView, On::Host),
     asks("POST", "/permissions/reload", PolicyEdit, On::Host),
     asks("GET", "/deployments", FlowView, On::Flows),
+    // Every flow's waiting runs, each as its flow's runs list them to the caller (durable.rs).
+    signed_in("GET", "/runs/waiting"),
     asks("GET", "/deployments/{slug}/secrets", SecretList, On::Slug),
     asks("GET", "/deployments/{slug}/secrets/{name}", SecretList, On::Slug),
     asks("POST", "/deployments/{slug}/secrets/{name}", SecretSet, On::Slug),
     asks("DELETE", "/deployments/{slug}/secrets/{name}", SecretSet, On::Slug),
     asks("POST", "/deployments/{slug}/secrets/{name}/rollback", SecretRollBack, On::Slug),
     asks("GET", "/deployments/{slug}/collections/{name}", StateView, On::Slug),
-    asks("GET", "/deployments/{slug}/runs", RunView, On::Slug),
+    // Its waiting runs: all of them to whoever views its runs, those waiting at an approval to
+    // whoever may decide it (durable.rs).
+    asks_either("GET", "/deployments/{slug}/runs", (RunView, On::Slug), (RunDecide, On::Approvals)),
     asks("GET", "/deployments/{slug}/logs", RunView, On::Slug),
     asks("GET", "/deployments/{slug}/feeds", StateView, On::Slug),
     asks("GET", "/deployments/{slug}/queues", StateView, On::Slug),
@@ -652,7 +667,15 @@ fn matched<'a>(pattern: &str, url: &'a str) -> Option<Parts<'a>> {
 /// Whether `who` may take `route`, as its rule says, on what `parts` name. Someone not signed in
 /// was refused before (access.rs), so a route open to anyone signed in has nothing to ask.
 pub(crate) fn may(who: &Caller, route: &Route, parts: &Parts, accounts: Option<&Accounts>) -> Result<(), Refusal> {
-    let Rule::Can(action, on) = route.rule else { return Ok(()) };
+    match route.rule {
+        Rule::Can(action, on) => may_on(who, action, on, parts, accounts),
+        Rule::Either(first, on, second, then) => may_on(who, first, on, parts, accounts).or_else(|refused| may_on(who, second, then, parts, accounts).map_err(|_| refused)),
+        Rule::Open | Rule::SignedIn => Ok(()),
+    }
+}
+
+/// Whether `who` may do `action` to what `on` names of `parts`.
+fn may_on(who: &Caller, action: Action, on: On, parts: &Parts, accounts: Option<&Accounts>) -> Result<(), Refusal> {
     let owner;
     let resource = match on {
         On::Host => Resource::Host,
@@ -945,7 +968,12 @@ mod tests {
             let path = route.path.split('/').map(|s| if s.starts_with('{') { "x" } else { s }).collect::<Vec<_>>().join("/");
             let (found, parts) = find(route.method, &path).unwrap_or_else(|| panic!("{} {}: no route", route.method, route.path));
             assert!(std::ptr::eq(found, route), "{} {} is taken by {} {}", route.method, route.path, found.method, found.path);
-            if let Rule::Can(action, on) = route.rule {
+            let asked = match route.rule {
+                Rule::Can(action, on) => vec![(action, on)],
+                Rule::Either(first, on, second, then) => vec![(first, on), (second, then)],
+                Rule::Open | Rule::SignedIn => vec![],
+            };
+            for (action, on) in asked {
                 let resource = match on {
                     On::Host => Resource::Host,
                     On::Flows => Resource::Flows,

@@ -3,19 +3,37 @@
 // through, who proposed it and why, and the rows of what it may do that change (the Review's,
 // reviewMay.ts, read when the card comes into view); then as rows what else a deployment waits on
 // a person for. Decline (with a reason its author reads back, proposals.rs). Runs waiting: runs
-// parked across flows, what each is and until when. An approval (`await approval(…)`) is decided
-// here, Approve or Decline with a reason, by people signed in (durable.rs); an event goes on
-// through its flow's own route. `a` and `d` approve and decline the one selected.
+// parked across flows that whoever is signed in may see or decide (`GET /runs/waiting`), what each
+// is and until when, an approval in steps drawn as its chain. An approval (`await approval(…)`) is
+// decided here, Approve or Decline with a reason, by people signed in (durable.rs); an event goes
+// on through its flow's own route. `a` and `d` approve and decline the one selected. Access
+// changes: a change to who may do what that gives someone more, kept while this host has people
+// approve one (access_proposals.rs), with what it gives and who could act as whom it gives more;
+// Approve and Decline to whoever the server would let, its author's Withdraw, and those decided
+// lately.
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { changeState, decidedChange, notYours } from "./access";
 import { reviewQueue, routeOf, said, versionsSaid, type Approval, type Reviewable } from "./approvals";
 import type { Me } from "./AuthGate";
-import { approvalSaid, decidedSaid, isApproval, stepName, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { gate, useCan as useCanOn } from "./can";
+import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
 import { useDialog } from "./Dialog";
 import { cardRows, mayGroups, textLines, type CardRows } from "./reviewMay";
-import { follow, format, type Route } from "./routes";
+import { follow, format, type ApprovalsTab, type Route } from "./routes";
 import { startedBy } from "./runs";
-import { decideRun, declineProposal, getProposal, previewDeploy, type DeploymentEntry, type FlowDocument, type Proposal } from "./server";
+import {
+  approveAccessChange,
+  decideRun,
+  declineAccessChange,
+  declineProposal,
+  getProposal,
+  previewDeploy,
+  type AccessProposal,
+  type DeploymentEntry,
+  type FlowDocument,
+  type Proposal,
+} from "./server";
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
 import type { WaitingRunOf } from "./useApprovals";
@@ -36,6 +54,7 @@ export function useDecline(onDeclined: (p: Proposal) => void) {
       `Why it was declined\n\n${p.slug} ${v}, proposed by ${p.by ?? "someone"}. Tell them what to change. It is kept on the flow's history${p.agent ? ", and the agent reads it through holon mcp" : ""}. The version stays saved, and what runs keeps running.`,
       "",
       "Submit",
+      { required: "A decline says why: type a reason." },
     );
     if (reason === null) return;
     try {
@@ -53,35 +72,39 @@ export function ApprovalsPage({
   approvals,
   deployments,
   runs,
+  access,
   me,
   navigate,
   textOf,
   onDeclined,
   onDecided,
 }: {
-  tab: "deploys" | "runs";
+  tab: ApprovalsTab;
   approvals: Approval[];
+  /** The deployments whoever is signed in may list: a run's flow is a link only to one of them. */
   deployments: DeploymentEntry[];
-  /** The runs waiting in them (useApprovals), null until first read. */
+  /** The runs waiting across flows that whoever is signed in may see or decide (useApprovals),
+   *  null until first read. */
   runs: WaitingRunOf[] | null;
+  /** Every access change, newest first (useApprovals), null until first read. */
+  access: AccessProposal[] | null;
   me: Me;
   navigate: (r: Route) => void;
   /** A document as its text, for the lines a card's rows point at. Throws when it can't be written. */
   textOf: (slug: string, doc: FlowDocument) => string;
   /** A proposal was declined: what waits is read again. */
   onDeclined: () => void;
-  /** An approval was decided: the runs and deployments are read again. */
+  /** An approval, or an access change, was decided: what waits is read again. */
   onDecided: () => void;
 }) {
-  const waiting = deployments.filter((d) => (d.waiting ?? 0) > 0);
-  const waitingRuns = waiting.reduce((n, d) => n + (d.waiting ?? 0), 0);
-  const tabs: ["deploys" | "runs", string, number][] = [
+  const tabs: [ApprovalsTab, string, number][] = [
     ["deploys", "Deploys", approvals.length],
-    ["runs", "Runs waiting", waitingRuns],
+    ["runs", "Runs waiting", runs?.length ?? 0],
+    ["access", "Access changes", (access ?? []).filter((p) => p.state === "waiting").length],
   ];
-  // [ and ]: the other tab (there are two).
-  const other = () => navigate({ kind: "approvals", tab: tab === "deploys" ? "runs" : "deploys" });
-  useKeys("tabs", { "[": other, "]": other });
+  // [ and ]: the tab before and after, round.
+  const step = (by: number) => navigate({ kind: "approvals", tab: tabs[(tabs.findIndex(([t]) => t === tab) + by + tabs.length) % tabs.length][0] });
+  useKeys("tabs", { "[": () => step(-1), "]": () => step(1) });
   return (
     <div className="hl-flow hl-approvals">
       <header className="hl-flow__head">
@@ -101,8 +124,10 @@ export function ApprovalsPage({
       </nav>
       {tab === "deploys" ? (
         <Deploys approvals={approvals} navigate={navigate} textOf={textOf} onDeclined={onDeclined} />
+      ) : tab === "runs" ? (
+        <RunsWaiting runs={runs} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
       ) : (
-        <RunsWaiting any={waiting.length > 0} runs={runs} me={me} navigate={navigate} onDecided={onDecided} />
+        <AccessChanges changes={access} me={me} onDecided={onDecided} />
       )}
     </div>
   );
@@ -402,14 +427,12 @@ function useDecide(onDecided: () => void) {
           `Approve "${w.name}"${as} for this run of ${slug}?\n\n${after ? `It then waits for ${after}.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
           "",
           "Approve",
-          true,
+          "optional",
         )
-      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", true);
+      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", {
+          required: "A decline says why: type a reason.",
+        });
     if (reason === null) return;
-    if (!approve && reason.trim() === "") {
-      toast("A decline says why: give a reason.", "bad");
-      return;
-    }
     try {
       const d = await decideRun(slug, runId, w.name, step.slot, approve, reason);
       toast(decidedSaid(d), "ok", d.outcome === "waiting" ? undefined : { label: "Open its runs", to: { kind: "flow", slug, tab: "runs" } });
@@ -421,22 +444,48 @@ function useDecide(onDecided: () => void) {
   };
 }
 
+/** A step of a chain on hover: each decision taken on it, a line each (who, kind, role, when, why,
+ *  the binding), or that it is open, or not open yet. */
+const stepTitle = (c: ChainStep) =>
+  c.decisions.length > 0 ? c.decisions.map((d) => decidedLine(d, when)).join("\n") : c.state === "open" ? `${c.name}: open` : `${c.name}: opens once the steps before it are approved`;
+
+/** An approval in steps as its chain: each step taken (✓, who took it), open (◻), or not open yet
+ *  (dimmed), a decision's details on hover. */
+function Chain({ w }: { w: WaitingPoint }) {
+  return (
+    <span className="hl-chain" role="group" aria-label={`approval "${w.name}": ${chainSaid(w)}`}>
+      <span className="hl-chain__name">approval &quot;{w.name}&quot;: </span>
+      {chainOf(w).map((c, i) => (
+        <Fragment key={c.slot}>
+          {i > 0 && <span aria-hidden="true"> → </span>}
+          <span className={`hl-chain__step hl-chain__step--${c.state}`} title={stepTitle(c)}>
+            {c.state === "done" ? "✓" : "◻"} {c.name}
+            {c.detail && <span className="hl-chain__detail"> ({c.detail})</span>}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+
 /** Runs waiting's list, by its name (ui/Keys.tsx's `pick`: the palette goes to a row of it). */
 export const WAITING_LIST = "approvals.runs";
 /** A run's key in Runs waiting's list. */
 export const waitingKey = (slug: string, runId: string) => `${slug}:${runId}`;
 
-/** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
- *  decided here a step at a time, each step by whoever the server says may take it. */
+/** The runs waiting across flows (GET /runs/waiting): what each waits for and until when. An
+ *  approval is decided here a step at a time, each step by whoever the server says may take it. */
 function RunsWaiting({
-  any,
   runs,
+  listed,
   me,
   navigate,
   onDecided,
 }: {
-  any: boolean;
   runs: WaitingRunOf[] | null;
+  /** The flows they may open: whoever only decides an approval of another sees its slug alone. */
+  listed: Set<string>;
   me: Me;
   navigate: (r: Route) => void;
   onDecided: () => void;
@@ -466,7 +515,7 @@ function RunsWaiting({
     toast("No step of it is yours to take now.", "bad");
   };
   useKeys("approvals", { a: () => decideSelected(true), d: () => decideSelected(false) });
-  if (!any) return <p className="hl-flow__none">No run is waiting.</p>;
+  if (runs !== null && runs.length === 0) return <p className="hl-flow__none">No run is waiting.</p>;
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
@@ -492,9 +541,13 @@ function RunsWaiting({
             return (
               <tr key={waitingKey(slug, run.run_id)} {...list.row(waitingKey(slug, run.run_id))}>
                 <td>
-                  <a href={format(to)} onClick={follow(to, navigate)}>
-                    {slug}
-                  </a>
+                  {listed.has(slug) ? (
+                    <a href={format(to)} onClick={follow(to, navigate)}>
+                      {slug}
+                    </a>
+                  ) : (
+                    slug
+                  )}
                 </td>
                 <td title={`run ${run.run_id}`}>
                   <span className="hl-flow__what">{run.route ?? run.kind}</span>
@@ -509,9 +562,20 @@ function RunsWaiting({
                   {startedBy(run.kind, run.by)}
                 </td>
                 <td>
-                  {run.waiting.map((w) => (
-                    <div key={w.name}>{isApproval(w) ? approvalSaid(w) : "its event"}</div>
-                  ))}
+                  {run.waiting.map((w) => {
+                    // What it shows those who decide it: what they approve.
+                    const shown = isApproval(w) ? shownSaid(w) : null;
+                    return (
+                      <div key={w.name}>
+                        {inSteps(w) ? <Chain w={w} /> : isApproval(w) ? approvalSaid(w) : "its event"}
+                        {shown && (
+                          <div className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
+                            {shown.label}: {shown.text}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </td>
                 <td>
                   {run.waiting.map((w) => (
@@ -553,6 +617,130 @@ function RunsWaiting({
           )}
         </tbody>
       </table>
+    </section>
+  );
+}
+
+/** Approve, or decline with a reason, an access change that waits for people, asked first (its
+ *  author withdraws it so): what deciding it did is said, and `onDecided` once it is. */
+function useDecideChange(me: string, onDecided: () => void) {
+  const dialog = useDialog();
+  const toast = useToast();
+  return async (p: AccessProposal, approve: boolean) => {
+    const more = p.needs - p.approvals.length;
+    if (approve) {
+      const then = more > 1 ? `It then waits for ${more - 1} more ${more - 1 === 1 ? "person" : "people"}.` : "It is made once you do, checked again then.";
+      const ok = await dialog.confirm(`Approve access change ${p.id}?\n\n${p.what}, proposed by ${p.author}${p.why ? `: ${p.why}` : ""}. It gives ${p.gives.join("; ")}. ${then}`, "Approve");
+      if (!ok) return;
+    }
+    const reason = approve
+      ? ""
+      : p.author === me
+        ? await dialog.prompt(`Withdraw access change ${p.id}?\n\n${p.what}. Why: it is kept with it.`, "", "Withdraw", { required: "Withdrawing says why: type a reason." })
+        : await dialog.prompt(`Decline access change ${p.id}?\n\n${p.what}, proposed by ${p.author}. Why: it is kept with it, for them to read.`, "", "Decline", {
+            required: "A decline says why: type a reason.",
+          });
+    if (reason === null) return;
+    try {
+      toast(decidedChange(approve ? await approveAccessChange(p.id) : await declineAccessChange(p.id, reason)), "ok");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "bad");
+    }
+    onDecided();
+  };
+}
+
+/** The access changes that wait for people (`GET /access/proposals`): what each changes and
+ *  gives, who could act as whom it gives more, who proposed it and why, and who approved it so far;
+ *  Approve and Decline to whoever the server would let (can.ts), Withdraw to its author. Then the
+ *  last ten decided, and how. */
+function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] | null; me: Me; onDecided: () => void }) {
+  const can = useCanOn();
+  const decide = useDecideChange(me.name, onDecided);
+  const waiting = (changes ?? []).filter((p) => p.state === "waiting");
+  const ended = (changes ?? []).filter((p) => p.state !== "waiting").slice(0, 10);
+  return (
+    <section aria-label="access changes">
+      <p className="hl-flow__note">
+        While this host has people approve an access change (<code>holon access approvals --changes N</code>), a change that gives someone more of run.decide or
+        of an admin&apos;s waits here until N people other than whoever proposed it approve it: each holding what it gives, and none who could act as whom it
+        gives more. Taking access away applies at once.
+      </p>
+      {changes === null ? (
+        <p className="hl-table__dim">reading…</p>
+      ) : (
+        waiting.length === 0 && <p className="hl-flow__none">No access change waits.</p>
+      )}
+      {waiting.length > 0 && (
+        <table className="hl-table" aria-label="access changes waiting">
+          <thead>
+            <tr>
+              <th>Change</th>
+              <th>Proposed</th>
+              <th>Approved</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {waiting.map((p) => {
+              const no = notYours(p, me.name);
+              const label = `access change ${p.id}`;
+              return (
+                <tr key={p.id} aria-label={label}>
+                  <td>
+                    <span className="hl-flow__what">{p.what}</span>
+                    <span className="hl-flow__note"> ({label})</span>
+                    <div className="hl-flow__said">gives {p.gives.join("; ")}</div>
+                    {(p.ways_in ?? []).length > 0 && (
+                      <div className="hl-flow__note">who could act as whom it gives more, and so doesn&apos;t approve it: {(p.ways_in ?? []).join("; ")}</div>
+                    )}
+                  </td>
+                  <td>
+                    {p.author}, {when(p.at)}
+                    {p.why && <div className="hl-flow__note">why: {p.why}</div>}
+                  </td>
+                  <td>{changeState(p)}</td>
+                  <td className="hl-flows__do">
+                    <button className="hl-flow__button" onClick={() => void decide(p, false)} aria-label={`${p.author === me.name ? "withdraw" : "decline"} ${label}`} {...gate(can, "declineAccess")}>
+                      {p.author === me.name ? "Withdraw…" : "Decline…"}
+                    </button>
+                    {p.author !== me.name && (
+                      <button className="hl-flow__button" onClick={() => void decide(p, true)} aria-label={`approve ${label}`} {...gate(can, "approveAccess", no !== null, no ?? undefined)}>
+                        Approve…
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {ended.length > 0 && (
+        <table className="hl-table" aria-label="access changes decided">
+          <thead>
+            <tr>
+              <th>Decided lately</th>
+              <th>Proposed</th>
+              <th>How</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ended.map((p) => (
+              <tr key={p.id}>
+                <td>
+                  {p.what}
+                  <span className="hl-flow__note"> (access change {p.id})</span>
+                </td>
+                <td>
+                  {p.author}, {when(p.at)}
+                </td>
+                <td>{changeState(p)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }

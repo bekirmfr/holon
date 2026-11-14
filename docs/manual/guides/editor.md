@@ -19,14 +19,23 @@ password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is besi
 
 The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
 **Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
-for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8), and
-for anyone else **Your agents and services** (7); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
+the host's pages, each to whoever may view it: **Resources** (6, `resource.view`), **People and
+access** (7, `people.view`; to a person who can't, **Your agents and services**) and **Policy** (8,
+`policy.view`, a viewer's too); and **Getting started** and **Docs**. Under them, the host card says which server this is, whether its
 run log is intact, how many runs it holds and the newest head, as of the time it shows (read every
 minute; its refresh button reads it now). The version the server runs is beside the name, top left. The top bar
 says where you are (each step back a link), and has the search (**Ctrl K** or **/**: a page, a
 flow or a command), the interface, the theme and your account.
 Every place has its own address (`#overview`, `#pulse.history`, `#approvals.shout.v1`), so the
 browser's back and forward work, and a link opens where it says.
+
+Each button follows what the server would answer you: one it would refuse (**Pause** to a viewer,
+**Approve and deploy** to someone who doesn't approve deploys, **bind** to someone who can't bind)
+is disabled, and says why in the server's words on hover, as `cy may not do that: a viewer only
+reads`. The editor asks the server once per flow what you may do there, and asks again when who
+may do what changes (it reads `/auth/me`'s `access_version` every few seconds and on coming back to
+the window), when you change something, and when the server refuses you. The server still decides
+each request.
 
 **new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
 or deploy it. A name another saved flow or a deployment already has asks before that one is
@@ -38,15 +47,30 @@ closes with its ×.
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
 - **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
-  agent's proposal with its why and note, and **Decline with a reason…**), and **Runs waiting**.
-  **Review** opens one: what it may do, its changes, *If approved*, *On recent runs* (a deployed
-  flow's new version replayed on its last runs, [Replayed on recent runs](deploying.md#replayed-on-recent-runs)),
-  and Approve, keep it saved, or decline it. **Runs waiting** lists the runs waiting at an
-  `approval`, each step and who has taken it so far: **Approve**, or **Decline…** with a reason,
-  on the steps you may take (*Approve as reviewer…* when there are several). Each principal takes
-  one step, once, never of a run they started, and the host's [approval
-  settings](people.md#who-decides-an-approval) can keep out whoever deployed the version, and
-  agents.
+  agent's proposal with its why and note, and **Decline with a reason…**), **Runs waiting**, and
+  **Access changes**: while the host has people approve an access change, each change to who may
+  do what that gives someone more, with what it gives, who proposed it and why, who could act as
+  whom it gives more, and **Approve…** and **Decline…** ([Access changes that wait for
+  people](people.md#access-changes-that-wait-for-people)).
+  **Review** opens one: what it may do (first, under *Can't be decided here*, each approval its
+  runs would wait at that no one here can decide yet, saying why), its changes, *If approved*, *On
+  recent runs* (a deployed flow's new version replayed on its last runs,
+  [Replayed on recent runs](deploying.md#replayed-on-recent-runs)), and Approve (asked again,
+  naming them, when an approval can't be decided here), keep it saved, or decline it. **Runs waiting** lists, across flows, the runs
+  waiting at an `approval` that you may see or decide (one bound only at an approval point sees
+  the runs waiting there, though no flow), and what each shows: what the flow named (`shows`),
+  else what the run was started with (*started with*), redacted as its log is. An approval in
+  steps is its chain, `✓ classifier (scout, invoice, 0.93) → ◻ reviewer → ◻ approver (not open
+  yet)`: a step taken, with who took it and what their note says in a word or two; an open one; one
+  not open yet, dimmed; one whoever started the run may take says so (*whoever started it may take
+  it*). Hover over a step for each decision on it: who, of which kind and role,
+  when, why, and the binding that let them. **Approve** (a reason optional), or **Decline…** (a
+  reason required: its button waits for one), on the steps you may take (*Approve as reviewer…*
+  when there are several). Each principal takes one step, once, never of a run they started but a
+  step that says `starter: true` (and an agent never of one it started), and the host's [approval
+  settings](people.md#who-decides-an-approval) can keep out whoever deployed the version, agents,
+  and whoever started the run from every step. A run's page says what its resumed part was given: the approval's
+  decision, then each step's decision a line.
 - **Getting started** has the steps to start, each ticked once done, your notes (kept with your
   account) and short docs. Untick **show this on start** to stop it opening.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each
@@ -138,8 +162,8 @@ The pane under the canvas (**b** shows or hides it) has four tabs in edit mode:
 **Try a request** lists its clocks (`every 2s`), its file handlers (`on file inbox`), its actions
 and its routes. **tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
 send it, as JSON, and **run**: the answer shows under it with the run's number, and **view run**
-opens that run. A viewer sees the actions and can't run them
-([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
+opens that run. Someone who may not run them (a viewer) sees the actions, and **run** disabled
+saying why ([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
 and the tab says so.
 
 **test** opens a request
@@ -176,7 +200,15 @@ unsaved changes). In edit mode it has **format**, **check**, **save** and **depl
 and **History**, on the flow's page. A deployed flow's status and port is a chip that goes to its
 page, where it is paused, resumed, stopped and run. Its settings (port, limits, secrets, optional
 permissions and which actions agents may run) are the bottom pane's **Settings**. Deploying shows what the flow may do and asks you
-to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
+to approve what isn't granted yet; if you may deploy the flow but not approve what it asks
+(`flow.approve-deploy`), the button says **Propose**, and the version waits in Approvals for
+someone who may, as the editor then says. When its runs would wait at an approval no one here can
+decide yet (its row marked **!**: a step no one here may take), deploying asks again, naming each:
+it deploys if you go on, and its runs wait there until someone is bound to take each step. An
+approval only the runs someone starts couldn't be decided at (`a run ada starts…`: they take no
+step of their own run, and no one else holds it) is marked, without asking: the runs a route
+starts can be.
+[Deploying and permissions](deploying.md) covers it in full.
 
 A flow with no route, clock, file handler or action starts nothing, so **deploy** is greyed and
 says why: add one. An action is the one a person runs by hand.
@@ -254,7 +286,7 @@ A deployed flow has a page of its own (`#pulse`): its name and state, **Pause**,
 
 ## The host's pages
 
-An admin's, in the nav's second group:
+In the nav's second group, each to whoever may view it (an admin, all of them):
 
 - **Resources**, in tabs: **Databases** and **Folders** flows use by name
   ([Files on the host](files.md), [Databases](databases.md)); **Mail** and **Feeds**; the
@@ -266,18 +298,39 @@ An admin's, in the nav's second group:
   each flow hold, as `holon host` says, how often it sweeps (`[storage] sweep_every`) and sweeping
   now, as `holon store sweep` and `holon folder sweep` do; and **Who may touch what**, each
   resource with the deployments granted it.
-- **People and access**: people (add someone with a role, and they get a link to set their
-  password, good once, for seven days; change a role, reset a password, disable, or remove);
-  **agents and services**, each with a role and an owner, and their tokens, each shown once
-  (for agents on other machines, scripts and CI); and signing in through an identity provider
-  (OpenID Connect). Someone who isn't an admin has **Your agents and services** instead: the
-  agents and services they own, whose tokens they make (each shown once) and revoke; an admin adds
-  one and names its owner.
+- **People and access**, in tabs: **People** (add someone with a role, and they get a link to
+  set their password, good once, for seven days; change a role, reset a password, disable, or
+  remove); **Agents and tokens**, each agent and service with a role and an owner, and their
+  tokens, each shown once (for agents on other machines, scripts and CI); **Groups**, each with
+  its members and what is bound to it; **Roles**, the built-in ones and your own, what each allows
+  and how many bindings hold it, and a form to define or change one by ticking its actions and who
+  may hold it; **Bindings**, every role bound, to whom, where and until when, each with
+  **unbind** (which asks why), and the form that binds one: to a person, an agent, a service or a
+  group, on the host, a flow, a tag or one approval point of a flow, until a date or for a while
+  (`7d`), and why; **History**, each version of who may do what, who made it, what and why, and
+  each version's page what it changed from the one before, under the access changes that wait for
+  people; and **Signing in** through an identity
+  provider (OpenID Connect). A name in these tables opens that principal's page
+  (`#people.who.NAME`): what they are, the groups they are in, their tokens, what is bound to them
+  (and through which group), a form binding one more, and what it all lets them do, as the server
+  decides it: on the host, on every flow, on the flows they saved, on each tag's flows, and on each
+  flow what more, with the approvals they decide there. A refused binding says the server's words
+  (`editor holds flow.edit on "payout", which you don't: …`); one at an approval point alone lets
+  its holder decide from Runs waiting but not open the flow, and the form says so and offers viewer
+  on the flow too. While the host has people approve an access change, one that gives someone
+  more (a binding, a role changed, a group's members, someone's role on the host) isn't made: the
+  form says it waits, for how many people and as which access change, linking to **Approvals ›
+  Access changes**, where others approve or decline it
+  ([Access changes that wait for people](people.md#access-changes-that-wait-for-people)).
+  Someone who isn't an admin and can't see people has **Your agents and
+  services** instead: the agents and services they own, whose tokens they make (each shown once)
+  and revoke; an admin adds one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
-  grants, whether agents may propose versions, and each limit's default and ceiling.
+  grants, whether agents may propose versions, and each limit's default and ceiling. A viewer reads
+  it; **read the policy again** is `policy.edit`'s.
 
 The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
-too: `holon people`, `holon oidc`, `holon folder`,
+too: `holon people`, `holon bind`, `holon roles`, `holon groups`, `holon access`, `holon oidc`, `holon folder`,
 `holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 

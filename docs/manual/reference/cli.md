@@ -31,6 +31,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
+| [`holon login`, `logout`](#holon-login-logout) | sign in to a server elsewhere as you, a person, for the other commands |
 | [`holon people`, `oidc`](#people-and-sign-in) | people, agents and services, and their tokens; signing in through a provider |
 | [`holon roles`](#holon-roles) | the roles principals are bound, and defining your own |
 | [`holon groups`](#holon-groups) | groups of principals, to bind a role to all of them |
@@ -179,7 +180,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
 | `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--queues`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails`, the messages to queues in `queue-spool` beside `--queues` |
 
-`HOLON_SETUP_CODE` sets the setup code instead of a random one.
+`HOLON_SETUP_CODE` sets the setup code instead of a random one; it is entered in any case.
 
 Ctrl+C (or SIGTERM, or closing its console) stops it: it takes no new runs, finishes those going
 on, syncs its logs and exits. A second ctrl+c stops it at once ([Stopping
@@ -193,8 +194,9 @@ holon deploy <file> [--server PORT|URL] [--slug NAME] [--approve]
 
 Compiles the flow and deploys it, as the editor's deploy does: under its own name, or `--slug`.
 From the server you run on this machine, signed in as you; with several running, `--server PORT`
-picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in
-`HOLON_TOKEN`.
+picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`. A
+password or a token goes over https, or plain http only to this machine: a host given bare is
+reached over https, and `http://` to another machine is refused while there is one to send.
 
 A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
 approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:
@@ -286,8 +288,9 @@ With no server it still opens, checks and formats files.
 
 What the editor's deployed page does, from the command line. Each command below reaches the
 server you run on this machine, signed in as you; with several running, `--server PORT` picks
-one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in `HOLON_TOKEN`.
-Those that list take `--json`, for the server's answer as it is.
+one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`; with no
+server running here, the one you signed in to needs no `--server`. Those that list take `--json`,
+for the server's answer as it is.
 
 ### `holon deployments`
 
@@ -440,11 +443,14 @@ Decides an approval a run waits at (`await approval("payout", { people: 2 })` in
 the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
 run (the first 12 characters of its id), what started it and since when, then an approval with
 who decides it and each step as it stands, who approved it so far or whether it is open, or an
-event, and until when:
+event, and until when; under an approval, what it shows those who decide it, what its flow
+named (`shows`) or else what the run was started with, as the run's log keeps it:
 
 ```
 run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout" (2 people): 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+  it shows {"amount":30,"payee":"acme"}
 run 0c2e81f4a9d3 (action pay, since 2026-11-09T14:50:12) waits at approval "release" (an agent holding classifier, then a person holding reviewer): classifier scout approved; reviewer open, until 2026-11-09T15:50:12
+  its run was started with {"amount":30}
 
 Yours to decide:
   run 0c2e81f4a9d3, "release": reviewer (slot 1)
@@ -458,8 +464,9 @@ the decision, up to 16 KiB, which the run is given with it. It says what the dec
 step it took, what the approval still waits for, approved by whom, or declined; the run goes on
 with the decision once it is made. Each decides one step, once, and not of a run they started;
 one decline ends it, and the host's [approval settings](#holon-access) may keep out whoever
-deployed the version, and agents. A person decides a person's step, signed in, as you are on
-your own machine. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
+deployed the version, and agents. A person decides a person's step, signed in as themselves:
+as you are on your own machine, or after [`holon login`](#holon-login-logout) on a server
+elsewhere. An agent decides a step written for an agent with its token in `HOLON_TOKEN`
 (or `holon mcp`'s `decide`), never a person's; a service's token is refused.
 
 ### `holon wait`
@@ -621,8 +628,39 @@ grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up
 
 ## People and sign-in
 
-Admins only, as the editor's People and access; an agent's or a service's owner also makes and
-revokes its tokens (in the editor, *Your agents and services*).
+`holon login` and `logout` are anyone's. The rest are admins' only, as the editor's People and
+access; an agent's or a service's owner also makes and revokes its tokens (in the editor, *Your
+agents and services*).
+
+### `holon login`, `logout`
+
+```
+holon login [--server URL] [--name NAME]
+holon logout [--server URL]
+```
+
+How a person uses the command line on a server elsewhere, as themselves. `login` asks your name
+(or takes `--name`) and your password, which isn't shown as you type it (or reads them piped in,
+a line each), and signs you in. The session is kept for that server in `~/.holon/tokens.json`,
+readable only by you, and `login` says who you are and until when: a week from then. Every
+other command reaching that server signs in with it, unless `HOLON_TOKEN` is set, which wins;
+with no server running on this machine, they reach the one you signed in to without `--server`:
+
+```sh
+holon login --server https://holon.example.com
+holon decide payouts          # the steps yours to take, then one taken as you
+holon logout
+```
+
+A password goes over https only, or plain http to this machine: for a server elsewhere on plain
+http, reach it through an SSH tunnel (`ssh -L 7420:localhost:7420 HOST`, then `--server 7420`).
+`logout` ends the session on the server too, and forgets it. A session also ends when an admin
+resets your password; a command then says so, and to `holon login` again. Neither the password
+nor the session's token is printed or written anywhere else.
+
+An agent or a service signs in with a token of its own (`holon people token NAME`) in
+`HOLON_TOKEN`, never `login`. Signing in through a provider ([`holon oidc`](#holon-oidc)) isn't in
+the command line yet: such a person signs in to the editor.
 
 ### `holon people`
 
@@ -652,7 +690,9 @@ each holds, bound to them or to their groups: `viewer, editor on payout via paym
 `set` changes their role on the host (one the kind may hold), stops someone signing in (`--disable`: an agent's or
 a service's tokens are refused) or lets them again, sets a person's email for a provider (`""`
 clears it), or gives an agent or a service another owner. `reset` clears a person's password and
-ends their sessions, with a new link. `remove` takes an agent's or a service's tokens with it, and
+ends their sessions, with a new link. While access changes wait for people, a reset, an email or
+an owner for someone who decides runs or holds what is an admin's is made only by them or on this
+machine ([No one takes over someone](../guides/people.md#no-one-takes-over-someone)). `remove` takes an agent's or a service's tokens with it, and
 is refused for a person who still owns one: give it another owner first. The server refuses a
 change that would leave no admin.
 
@@ -744,8 +784,12 @@ holon unbind 12 --why "back from leave"
 ```
 holon access [versions] [--json]
 holon access show [--version N] [--json]
-holon access approvals [--exclude-deployer on|off] [--agents on|off] [--why TEXT] [--json]
+holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
+                       [--changes N|off] [--why TEXT] [--json]
 holon access local [--as NAME] [--why TEXT] [--json]
+holon access proposals [--json]
+holon access approve <id> [--json]
+holon access decline <id> --reason TEXT [--json]
 ```
 
 Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
@@ -760,14 +804,22 @@ it, as a new version (holding `people.assign` on the host):
 ```
 exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
 agents            on   agents take the steps written for them
+starter           on   a person who started a run may take a step of it that says so
+changes           2    an access change that gives more waits until 2 people other than its author approve it
 (version 7)
 ```
 
 `--exclude-deployer on` keeps whoever deployed the version a run is on from deciding any of its
 approvals, whatever they hold (off by default). `--agents off` lets no agent decide one: a flow
 whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
-already waiting (on by default). Who started a run never decides its approvals, whatever these
-say.
+already waiting (on by default). `--starter off` lets whoever started a run take no step of it:
+a flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
+already waiting goes by it at once (on by default: a person who started a run may take a step that
+says so). An agent never decides a run it started, whatever these say. `--changes N` (1 to 5, or
+`off`, the default) has an access change that gives someone more wait until N people other than
+its author approve it ([People and access](../guides/people.md#access-changes-that-wait-for-people)):
+loosening any of these is such a change, but made here, through this machine's run file, where it
+applies at once.
 
 `local` says who this machine's run file signs in as: the person who set the server up, so the
 commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to
@@ -780,6 +832,32 @@ this machine's run file signs in as bob (version 9)
 Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
 `local:<user>`, and decides no approval.
 
+`proposals` lists the access changes that wait for people, and those decided, newest first (holding
+`people.view` on the host); then each that waits in full: what it gives, who could act as whom it
+gives more (none of whom approves it), and how to decide it:
+
+```
+id  state                                      what                               by   at                   why
+5   waits, 1 of 2 approved (bob)               bound approver to dee on "payout"  ada  2026-11-14T10:02:11  on call
+3   made as version 12 (approved by bob, eve)  bound approver to cy on "refunds"  ada  2026-11-13T16:40:05
+2   declined by bob: not this week             bound editor to fay on this host   ada  2026-11-13T09:12:47
+
+access change 5 gives run.decide to dee on "payout", as approver
+  who could act as whom it gives more, and so doesn't approve it: ada made dee's invite link
+  holon access approve 5, or holon access decline 5 --reason TEXT
+```
+
+`approve <id>` approves one, as a person holding `people.assign` on the host and what it gives;
+the last approval it waits for makes it, checked again then (one that no longer applies is stale,
+saying why). `decline <id> --reason TEXT` declines it; its author withdraws it so. Whoever proposed
+it, and whoever could act as whom it gives more, doesn't approve it; nor does an agent
+([Access changes that wait for people](../guides/people.md#access-changes-that-wait-for-people)):
+
+```sh
+holon access approve 5
+holon access decline 5 --reason "dee is on leave until March"
+```
+
 ## Runs
 
 ### `holon export`
@@ -791,8 +869,7 @@ holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
 verify`. From the server you run on this machine, signed in as you; with several running,
-`--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API
-token in `HOLON_TOKEN`.
+`--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
 read; `--without-files` ships none. `--run N` writes run N alone, to `<slug>-run-N.json`: its line
@@ -1066,6 +1143,6 @@ Code extension starts it.
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |
 | `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_NAMESPACE` | for secrets whose source is vault |
-| `HOLON_SERVER` | the server `export`, `folder` and `mcp` reach |
-| `HOLON_TOKEN` | an API token to sign in to it with |
+| `HOLON_SERVER` | the server the commands reach, when `--server` isn't given |
+| `HOLON_TOKEN` | an agent's or a service's token to sign in with; it wins over a `holon login` session |
 | `HOLON_EDITOR` | `holon serve --editor` |

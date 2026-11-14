@@ -94,6 +94,14 @@ struct Principal {
 - **Owners.** An agent or service has an owner, a person. Disabling the owner doesn't disable the
   agent, but the People page flags it ("its owner is disabled"). Only a principal holding
   `people.manage` on it, or its owner, makes or revokes its tokens.
+- **Ways in.** Whoever made the link a person's password was last set from (an invite, a reset),
+  or set the email a provider matches them by, could act as them: who used a link can't be told.
+  So could an agent's or a service's owner, and whoever else made a token of it. The accounts book
+  keeps who made each (`ways_in`), and `GET /people` says it.
+- **The machine is the root, and no account is.** Whoever holds the server's machine holds the
+  data folder (the accounts, the access document, the secrets key), and its run file is admin on
+  the host. A root account would be one person who could take over anyone, alone, and the best
+  account to steal; it would add power without taking any from the machine.
 
 ## 4. Permissions: the catalogue
 
@@ -200,12 +208,28 @@ at deploy, is the thing being governed. Slugs stay for one-off bindings.
   accounts book): roles, groups, bindings, host settings (§8.4). Versioned like a deployment: every
   change makes a new version with who, when and why, kept for good.
 - **The activity log** names each change ("ada bound payout-approver to bob on payments").
-- **Changing access can need approval.** A host setting `access_changes: { people: 2 }`: a change
-  to roles or bindings is kept as a proposal (the same `proposals.rs` shape as an agent's deploy)
-  until that many people holding `people.assign` approve it, none of them its author. Off by
-  default; on, it covers granting `admin` and anything touching `run.decide`.
+- **Changing access can need approval.** A host setting `access_changes: { people: 2 }`, kept as
+  `approvals.changes: 2` beside the approval settings of §8.4 (`holon access approvals --changes
+  2`, 1 to 5, or `off`): a change that gives someone `run.decide` or anything of an admin's (a
+  binding, a member of a group bound to one, a role changed to hold one, a role set on the host),
+  or that loosens the approval settings, is kept as a proposal until that many people approve it,
+  none of them its author, each a person holding `people.assign` on the host and what the change
+  gives (`access_proposals.rs`). Off by default. Taking away applies at once, as does a change
+  through the run file to the settings (below). Proposals are a file of their own,
+  `access.proposals.json` beside `access.json`, not versions of the document; one made is a
+  version by its author, its why naming who approved it.
+- **No one takes over someone whose access waits.** While `changes` is N, no account makes a way
+  in to someone else who holds what giving waits for: their password reset, their email set, a
+  token of theirs made but by its owner, another owner given them, or the identity provider set
+  while another person holds any of it (403). Whoever did could act as them, a second person where
+  people are counted, while gaining nothing D19 would stop. They do it themselves, or the run
+  file does; or what they hold is taken away (at once) and given back (waits). A proposal says
+  whom it gives more and who could act as them; none of those approves it, and a way in made to one
+  of them since makes it stale. With `changes` off, an admin already gives anything alone, and
+  this holds no more than that.
 - **No one locks the host out.** The last binding of `admin` to an enabled person can't be removed;
-  the OS user's run-file admin always works.
+  the OS user's run-file admin always works: a change to the approval settings through it is made
+  at once, so a host whose approvers are gone turns `changes` down there.
 
 ## 7. The decision function
 
@@ -256,12 +280,14 @@ const decision = await approval("payout", {
 if (!decision.approved) return { declined: decision.reason ?? "expired" }
 ```
 
-- `steps`: 1 to 5 slots. A slot is `{ role, kind?, people? }`:
+- `steps`: 1 to 5 slots. A slot is `{ role, kind?, people?, starter? }`:
   - `role`: a role name; the principal filling it must hold that role at a scope covering this
     approval point (§5.3);
   - `kind`: `person` (default) or `agent`. An agent slot is always written out; a slot without
     `kind` never accepts an agent or a service;
-  - `people`: how many different principals fill it, 1 to 5 (1 by default).
+  - `people`: how many different principals fill it, 1 to 5 (1 by default);
+  - `starter: true`: whoever started the run may fill it, a person (§8.4). Left out, they may not.
+    Only `true` is written: an agent's slot never says it.
 - `order`: `sequence` (each slot opens when the one before is filled) or `any` (all open at once).
   Stages are written as nested lists: `steps: [[a, b], c]` is a and b in any order, then c.
 - The short form stays: `await approval("payout", { people: 2 })` is one slot of two people, and a
@@ -287,6 +313,9 @@ What the run receives:
   `Approval("payout", "seq[agent:classifier, person:reviewer, person:approver]")`.
 - What the flow may do reads: "waits for approval (payout): an agent with classifier, then a person
   with reviewer, then a person with approver".
+- A slot that lets the starter in is marked `^` in the canonical text (`agent:drafter>person:
+  editor^`, `person*2^`), a character no role name holds, and said "…, who may be whoever started
+  the run": letting them in, or no longer, is a changed row like any change to who decides.
 - **Weakening needs approval.** Any change to the steps changes the capability, so a version that
   drops a slot, lowers `people`, turns `sequence` into `any`, renames a role, or turns a person slot
   into an agent slot asks for a new permission and waits for a person (an agent's deploy becomes a
@@ -331,8 +360,16 @@ Enforced by the host, not the flow:
 
 - **One principal, one slot.** A principal fills at most one slot of an approval, and counts once
   within it. An admin who reviewed may not also approve, though admin holds everything.
-- **Not the starter.** The principal whose request or action started the run may not fill any
-  slot. (A run started by a schedule or a file has no starter.)
+- **Not the starter, but where a step says so.** The principal whose request or action started
+  the run fills no slot but one that says `starter: true`, and then only a person: an agent never
+  decides a run it started, whatever the step says. (A run started by a schedule or a file has no
+  starter.) Strict by default: a payout is a request check, whose asker never approves it; a
+  draft an agent wrote for whoever asked is an output review, whose asker is its natural
+  reviewer, and the flow says so on that step. One flow may hold both, so neither a host switch
+  nor a deploy setting is fine enough: the step says it, and the version's review shows it.
+- **The host's floor**: `approvals.starter: false` (`holon access approvals --starter off`) lets no
+  step take whoever started the run, whatever the flow says: a version with a `starter` step is
+  refused at deploy, and a run already waiting goes by it at once. On by default.
 - **Not the deployer**, optional per host: `approvals.exclude_deployer: true` keeps whoever deployed
   the version the run is on from filling a slot.
 - **People are people.** A slot without `kind: "agent"` is filled only by a `person`. Services never
@@ -364,15 +401,25 @@ escalation (a slot unfilled for 4 h opens to a wider role) are a later step (§1
 `approval: { order, slots: [{ role, kind, people, by: [...], open }], expires_at }`. Runs waiting
 (the Approvals page) reads it across flows.
 
+*Done (the launch review's H6):* a decider sees what they approve. An approval point lists `shows`,
+what its flow named (`await approval("payout", { shows: { amount, payee } })`, the leaf's optional
+`shows` input), or else `input`, what the run was started with (an action's argument, a request
+without its headers, what a source delivered; nothing for a clock). Either is kept at park as the
+run's log keeps it: redacted by the log's redactor (a tainted field `‹taint:card›`), withheld whole
+when a secret may have made it, its size past 16 KiB, sealed on disk with the run. The route takes
+`run.view` on the flow or `run.decide` on its approvals: one who only decides sees the runs waiting
+at an approval they may decide, those points alone, nothing delivered, and no other run.
+
 ## 9. At deploy
 
 The deploy preview (`POST /deploy/preview`) adds, for each approval point:
 
 - the steps, and against the version deployed now: same, changed (a changed row, to approve);
 - **not ready** when a slot can't be filled: no principal of the slot's kind holds its role at a
-  scope covering this flow, or fewer than `people` do once the starter is set aside ("approver: 1
-  person holds it here; this needs 2");
-- refused when `approvals.agents` is false and a slot is an agent's.
+  scope covering this flow, or fewer than `people` do once the starter is set aside from each slot
+  that doesn't take them ("approver: 1 person holds it here; this needs 2");
+- refused when `approvals.agents` is false and a slot is an agent's, or `approvals.starter` is
+  false and a slot says `starter: true`.
 
 A flow whose tags (§5.5) bring it into a scope with bindings shows who gains access to it: "joins
 payments: payments-team may view and call it, payout-approver decides its approvals".
@@ -389,7 +436,11 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /groups` · `PUT /groups/<name>` | `people.view` / `people.assign` | members |
 | `GET /bindings` · `POST` · `DELETE /bindings/<id>` | `people.view` / `people.assign` | bindings |
 | `GET /access/versions` · `GET /access?version=n` | `people.view` | access history |
+| `PUT /access/approvals` | `people.assign` | the host's approval settings (§8.4, §6) |
+| `GET /access/proposals` | `people.view` | access changes waiting for people (§6) |
+| `POST /access/proposals/<id>/approve` · `…/decline` | `people.assign`, a person holding what it gives | approve, decline (`{reason}`) |
 | `GET /auth/me/can?actions=&flow=` | — | what the caller may do, for the editor |
+| `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals | §8.7 |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
 
 `/admin/accounts…` and `/admin/tokens…` go (replaced). A change to access that needs approval
@@ -417,6 +468,8 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
 - **People** (step 16 of the editor plan, replaced by this): tabs People, Agents and tokens, Groups,
   Roles, Bindings, History. A principal's page shows its bindings and what they let it do, per flow.
   Granting is a form (who, role, where, until), and a change needing approval shows as waiting.
+- **Approvals › Access changes**: each access change that waits for people, what it gives, who
+  could act as whom it gives more, Approve / Decline (its author's Withdraw), as `can` lets them.
 - **Approvals › Runs waiting**: each row shows its chain, `✓ classifier (refunds-bot: refund, 0.93)
   → ◻ reviewer → ◻ approver`, expiry, and Approve / Decline only for the caller who can fill an open
   slot; "you reviewed" where they already did; the reason dialog (`Dialog.tsx`), required to
@@ -425,6 +478,13 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
   do, changed rows when they change, not ready when a slot can't be filled (§9).
 - **The run's timeline** and the evidence view show each decision with its slot and role.
 - **Buttons follow `can`**: disabled with the refusal as their title, rather than failing on click.
+
+*Done:* Runs waiting's chain, across flows through `GET /runs/waiting` (7a); People's tabs, the
+form, and each principal's page saying what they may do (7b); buttons from `can` (7c); the
+review's not-ready rows, deploying asked again (6, 7d); each decision on the run's page and on
+hover in Runs waiting, with the binding and the access version that let it (5, 7a); Access
+changes, and a change made in People that waits saying so, linked to them (8d, 9). The editor
+guide says each ([The web editor](../manual/guides/editor.md#the-hosts-pages)).
 
 ## 13. Samples and tests
 
@@ -440,6 +500,16 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
 - e2e: the editor's Runs waiting with three accounts (one an agent) through the real server; a
   viewer sees no buttons; an agent's person-slot decide gets 403; the deploy review's not-ready row.
 - The manual's leaves are blessed for the changed `approval` leaf; wasm rebuilt.
+
+*Done:* `approved-payout` is the three-step chain, tagged `payments` (5, 6), its walkthrough
+binding the roles from the command line or the editor's form, and, with `--changes 1`, a binding
+waiting for another admin (9); run live with three principals in step 9, as its commit says. The
+refusals are held as classes, not per sample: `durable.rs`'s decide table (out of turn, one
+principal a step, the starter, a step's kind, the host's settings) and the server's tests in
+`tests.rs`; the sample's own test keeps the deposits made while it waits. End to end: Runs
+waiting with an agent, a reviewer and an admin (`system.e2e.ts`, `approvals.e2e.ts`); buttons
+that follow `can`, the deploy review's not-ready rows, and access changes that wait
+(`access.e2e.ts`).
 
 ## 14. Steps
 
@@ -457,10 +527,31 @@ One commit each; the first two change no behaviour.
    listing, timeline and evidence; `holon decide --slot --note`; the MCP `decide` tool for agent
    slots.
 6. **Deploy review.** Steps against the deployed version, not ready, who gains access through tags.
-7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`.
-8. **Governed access changes.** `access_changes: { people: N }` through proposals.
+   *Done:* an approval's row is new, gone or changed against the version deployed (its
+   capability names its steps); one whose steps can't all be taken here is not ready, saying
+   why (`deploy::approvals_unready`: a step's holders of its kind, where the approval is as the
+   version's tags would make it, one principal a step; whoever deploys it set aside where
+   `exclude_deployer` says so, and, for an approval in an action, each who may run the action,
+   as its starter); a tag's row says who it lets in (step 3d). With it, the launch review's H1
+   (a flow call is deployed only by someone who may run the action it calls) and H9 (an agent's
+   change to what a flow sends out waits for a person).
+7. **Editor.** People pages; Runs waiting chain; review rows; buttons from `can`. *Done (7a to
+   7d).*
+8. **Governed access changes.** `access_changes: { people: N }` through proposals. *Done
+   (server):* `approvals.changes` (8b); `access_proposals.rs` (8c): what a change gives is read by
+   making it on a copy of the accounts (`Accounts::trial`) and comparing what each principal may
+   do before and after, for as long, through `can`; a route's change that gives more waits (202),
+   approved by people holding what it gives, made at the last approval, stale if it no longer
+   applies; no one makes a way in to someone else holding what waits, and whoever could act as
+   whom a change gives more doesn't approve it (8e). *Done (8d):* `holon access proposals`,
+   `approve` and `decline`; Approvals › Access changes in the editor, History's waiting changes,
+   and a change made in People and access that waits says so; `holon mcp` says an agent never
+   approves one.
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and
-   approvals pages; the editor guide.
+   approvals pages; the editor guide. *Done (9):* the sample's walkthrough binds its roles in the
+   editor's form and shows a binding waiting for another admin; the people guide maps People and
+   access's tabs; the editor guide says what in People waits and where it is decided; the server
+   reference lists and decides waiting runs (`GET /runs/waiting`, `POST …/runs/<id>/decide`).
 
 Later, if asked for: admin-written deny rules; conditions on attributes (amount, time of day, a
 run's input) in the style of AWS Cedar; per-slot deadlines and escalation; delegation; withdrawing a
@@ -470,11 +561,22 @@ decision before the count is reached; nested groups; SCIM; notifications.
 
 1. **Tags or folders** for selecting flows: tags in the flow's text (reviewed at deploy) are
    proposed; folders on the flows page would be set by whoever manages the host instead.
+   *Settled: tags (3d).* A version that adds one asks for it (`Tag("payments")`), its review says
+   who the tag lets in, and only a host admin tags a flow its deployer holds nothing on or takes
+   a tag off.
 2. **The short form's meaning**: `people: 2` with no role means "anyone holding `run.decide` here";
    should it rather require a role, so every approval names who?
+   *Settled: it stays (4).* `people: N` is one step with no role: N people holding `run.decide`
+   where the approval is, never its starter. The deploy review marks it not ready when fewer
+   than N may take it, saying how many do (6), so it never means "whoever" unseen.
 3. **Agent notes as decisions**: an agent slot always approves or declines; should an agent be able
    to only annotate (a classifier that never blocks), as a slot of kind `note` that can't decline?
+   *Open.* An agent's step approves or declines, with a note the run is given (5).
 4. **Editors and `run.decide`**: built-in `editor` keeps deciding (today's rule). With custom roles,
    should it lose it, so deciding is only ever granted on purpose?
+   *Open.* `editor` keeps it (2); a host that wants deciding granted on purpose binds a role of
+   its own instead (3), and `--changes N` makes giving it wait for people (8).
 5. **Where a decision is made from**: only the editor, CLI and MCP; or also a signed link sent by
    the flow (email, Slack), which then needs a short-lived, single-use, principal-bound token.
+   *Open.* The editor and the command line (`holon decide`), and an agent's step through `holon
+   mcp`.

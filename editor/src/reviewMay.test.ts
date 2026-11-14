@@ -37,22 +37,27 @@ describe("the review's what it may do", () => {
     expect(anchorOf({ kind: "clock", name: "" }, lines)).toBeNull();
   });
 
-  it("groups it as a person decides: to approve, unchanged, no longer", () => {
+  it("groups it as a person decides: what can't be decided here first, to approve, unchanged, no longer", () => {
+    const undecided = { ...touch("approval", "refunds", "new", true, "triggers"), ready: "approver: no person holds it here" };
+    // Not ready, but no approval: it stays where it is, saying why.
+    const unset = { ...touch("secret", "stripe_key", "same", false, "resources"), ready: "not set: the steps that read it get nothing until it is" };
     const groups = mayGroups(
-      [touch("host", "api.stripe.com", "new", true), touch("requests", "", "same", false, "triggers"), touch("secret", "old_key", "gone", false, "resources")],
+      [touch("host", "api.stripe.com", "new", true), touch("requests", "", "same", false, "triggers"), touch("secret", "old_key", "gone", false, "resources"), undecided, unset],
       [{ name: "every", now: "1m", then: "5m" }],
       lines,
     );
-    expect(groups.map((g) => [g.key, g.rows.map((r) => [r.line.mark, r.line.text, r.anchor])])).toEqual([
+    expect(groups.map((g) => [g.key, g.title, g.rows.map((r) => [r.line.mark, r.line.text, r.anchor])])).toEqual([
+      ["undecided", "Can't be decided here", [["unready", "approval refunds: read", 4]]],
       [
         "approve",
+        "Needs your approval",
         [
           ["approve", "host api.stripe.com: read", 9],
           ["changed", "every: 1m → 5m", null],
         ],
       ],
-      ["same", [["same", "requests", 8]]],
-      ["gone", [["gone", "secret old_key: read", null]]],
+      ["same", "Unchanged, or the host allows it", [["same", "requests", 8], ["unready", "secret stripe_key: read", 6]]],
+      ["gone", "No longer", [["gone", "secret old_key: read", null]]],
     ]);
   });
 });

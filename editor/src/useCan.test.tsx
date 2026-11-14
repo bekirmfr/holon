@@ -6,6 +6,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetCan } from "./can";
 import { hostEntries } from "./ui/Shell";
 import { canOf, gateOf, Gated, hostPagesOf, useCan, useHostPages, type Answer, type HostPages } from "./useCan";
 import { listOwned, mayI, setSession, type Principal } from "./server";
@@ -105,6 +106,21 @@ describe("a button the caller may not use", () => {
     await mount(<Header />);
     expect(mayI).toHaveBeenCalledTimes(1);
     expect(button("Stop").disabled).toBe(true);
+  });
+
+  it("is asked again, past what was kept, once can.ts's round moves: a binding made since shows on the page", async () => {
+    vi.mocked(mayI).mockResolvedValue({ "flow.lifecycle": "ada may not do that: a viewer only reads" });
+    function Header() {
+      const can = useCan(["flow.lifecycle"], { flow: "refunds" });
+      return <button {...can.gate("flow.lifecycle")}>Pause</button>;
+    }
+    await mount(<Header />);
+    expect(button("Pause").disabled).toBe(true);
+    // Bound editor on it: the round moves, as when /auth/me's access_version has moved.
+    vi.mocked(mayI).mockResolvedValue({ "flow.lifecycle": true });
+    await act(async () => forgetCan());
+    expect(mayI).toHaveBeenCalledTimes(2);
+    expect(button("Pause").disabled).toBe(false);
   });
 });
 

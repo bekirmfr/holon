@@ -267,6 +267,106 @@ pub(crate) struct StoredWaiting {
     /// The decisions taken on it so far, in the order they came.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) decisions: Vec<Decided>,
+    /// What it shows those who decide it, an approval's (`shown_of`): none for an event, or for a
+    /// run with nothing to show. Sealed on disk with the run's inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) shown: Option<Shown>,
+}
+
+/// What an approval shows those who decide it, as the run's log would keep it: what its flow put
+/// in its `shows` (an amount, a payee), or else the run's input.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Shown {
+    Shows(serde_json::Value),
+    Input(serde_json::Value),
+}
+
+/// The most an approval shows, as JSON text: past it, only how large it is.
+const SHOWN_MAX: usize = 16 * 1024;
+
+impl Shown {
+    fn value(&self) -> &serde_json::Value {
+        match self {
+            Shown::Shows(v) | Shown::Input(v) => v,
+        }
+    }
+
+    fn map(self, f: impl FnOnce(serde_json::Value) -> serde_json::Value) -> Shown {
+        match self {
+            Shown::Shows(v) => Shown::Shows(f(v)),
+            Shown::Input(v) => Shown::Input(f(v)),
+        }
+    }
+}
+
+/// What each of `run`'s waiting points shows those who decide it, in order: an approval what its
+/// `shows` put there, withheld whole when a secret may have made it, or else the run's input
+/// (`input_of`); each redacted as the run's log entry is (the run's `tokens`, the credentials its
+/// calls were handed, and `redaction`: the deployment's secrets and the keys its flow taints), and
+/// past `SHOWN_MAX`, how large it is. None for an event, and for a run with no input that names
+/// nothing to show.
+pub(crate) fn shown_of(
+    kind: &str,
+    inputs: &[Option<Value>],
+    sourced: &[(Capability, Value)],
+    run: &FiredRun,
+    tokens: &BTreeMap<String, String>,
+    redaction: Option<(Arc<Mutex<secrets::Resolved>>, Vec<String>)>,
+) -> Vec<Option<Shown>> {
+    if run.waiting.iter().all(|w| w.approval.is_none()) {
+        return vec![None; run.waiting.len()];
+    }
+    // An entry as the run's would be, only for its redactor: never logged, so its kind is no kind
+    // the host logs a run as.
+    const UNLOGGED: &str = "shown";
+    let mut entry = run_entry(UNLOGGED, started_now(), sourced, run);
+    entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
+    // What `shows` holds is looked through for the keys the flow taints too, as a log line is.
+    let lines: Vec<(String, Value)> = run.waiting.iter().filter_map(|w| Some((w.name.clone(), w.shows.clone()?))).collect();
+    let marked = Redactor::tokens(tokens).and(Redactor::handed(&calls::handed(&run.rounds)));
+    let redactor = match &redaction {
+        Some((secrets, taint)) => redactor_of(&mut entry, &lines, marked, secrets, taint),
+        None => marked,
+    };
+    let json = |v: &Value| -> serde_json::Value {
+        let Some(text) = holon_core::stringify_json(v) else { return "‹it has no JSON form›".into() };
+        if text.len() > SHOWN_MAX {
+            return format!("‹{} bytes, more than an approval shows ({} KiB)›", text.len(), SHOWN_MAX / 1024).into();
+        }
+        serde_json::from_str(&text).unwrap_or_default()
+    };
+    run.waiting
+        .iter()
+        .map(|w| {
+            w.approval.as_ref()?;
+            let shown = match &w.shows {
+                Some(_) if run.secret_fed.input(&w.path, 0) == crate::taint::Taint::Derived => Shown::Shows(crate::taint::WITHHELD.into()),
+                Some(v) => Shown::Shows(json(v)),
+                None => Shown::Input(json(&input_of(kind, inputs, sourced)?)),
+            };
+            Some(shown.map(|mut v| {
+                redactor.json(&mut v);
+                v
+            }))
+        })
+        .collect()
+}
+
+/// A run's input, as those who decide its approvals read it: an action's argument, a request's
+/// record without its headers, or the message, mail, file or feed event that started it; none for
+/// a run a clock started.
+fn input_of(kind: &str, inputs: &[Option<Value>], sourced: &[(Capability, Value)]) -> Option<Value> {
+    if let Some(Some(input)) = inputs.first() {
+        return Some(match (kind, input) {
+            ("request", Value::Record(r)) => Value::Record(r.iter().filter(|(k, _)| k.as_str() != "headers").map(|(k, v)| (k.clone(), v.clone())).collect()),
+            _ => input.clone(),
+        });
+    }
+    sourced
+        .iter()
+        .find(|(c, _)| matches!(c, Capability::FileArrival(_) | Capability::MailArrival(_) | Capability::FeedEvent(_) | Capability::QueueMessage(_)))
+        .map(|(_, v)| v.clone())
 }
 
 /// One decision on an approval: which step it took, who took it, and what they decided. The run
@@ -332,6 +432,9 @@ pub(crate) struct SlotState {
     pub(crate) kind: &'static str,
     /// How many different principals fill it.
     pub(crate) people: u8,
+    /// Whether whoever started the run may take it (`starter: true`); listed only when they may.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) starter: bool,
     /// Who approved it, in the order they did.
     pub(crate) by: Vec<String>,
     pub(crate) open: bool,
@@ -353,7 +456,7 @@ impl SlotState {
 
 impl StoredWaiting {
     fn new(w: &Waiting, expires_at: u64) -> StoredWaiting {
-        StoredWaiting { name: w.name.clone(), expires_at, steps: w.approval.clone().unwrap_or_default(), decisions: Vec::new() }
+        StoredWaiting { name: w.name.clone(), expires_at, steps: w.approval.clone().unwrap_or_default(), decisions: Vec::new(), shown: None }
     }
 
     /// Whether it is an event's, which its route delivers, not an approval's.
@@ -373,6 +476,7 @@ impl StoredWaiting {
                 role: s.role.clone(),
                 kind: s.kind.word(),
                 people: s.people,
+                starter: s.starter,
                 by: self.approvals().filter(|d| usize::from(d.slot) == n).map(|d| d.who.clone()).collect(),
                 open: false,
             })
@@ -449,13 +553,13 @@ impl StoredWaiting {
 
     /// The open steps `by` may fill now, by number: what the decide route would let them take
     /// without naming one. None when the run's `excluded` keeps them out, or they decided a step of
-    /// it already, or it is decided.
+    /// it already, or it is decided; when they started the run, only a step that takes them.
     fn yours(&self, excluded: &Excluded, by: &Decider) -> Vec<u8> {
         let Some(steps) = Steps::parse(&self.steps) else { return Vec::new() };
-        if excluded.excludes(by, &self.name).is_some() || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
+        if excluded.excludes(by, &self.name, &steps).is_some() || self.decided() || self.decisions.iter().any(|d| d.who == by.who) {
             return Vec::new();
         }
-        let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| by.may_fill(slot, "").is_ok());
+        let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| excluded.may_fill(by, slot, "").is_ok());
         self.slots().iter().filter(|s| s.open && fills(s.slot)).map(|s| s.slot).collect()
     }
 
@@ -478,6 +582,11 @@ impl StoredWaiting {
             v["said"] = Steps::parse(&self.steps).map_or_else(|| self.steps.clone(), |s| s.said()).into();
             v["slots"] = serde_json::to_value(self.slots()).unwrap_or_default();
             v["decisions"] = serde_json::to_value(&self.decisions).unwrap_or_default();
+            match &self.shown {
+                Some(s @ Shown::Shows(_)) => v["shows"] = s.value().clone(),
+                Some(s @ Shown::Input(_)) => v["input"] = s.value().clone(),
+                None => {}
+            }
         }
         v
     }
@@ -584,6 +693,9 @@ struct Sealable {
     #[serde(default)]
     tokens: BTreeMap<String, String>,
     events: BTreeMap<String, SValue>,
+    /// What each waiting point shows, by its name.
+    #[serde(default)]
+    shown: BTreeMap<String, Shown>,
 }
 
 fn parked_context(slug: &str, run_id: &str) -> String {
@@ -753,6 +865,7 @@ impl ParkedRun {
             rounds: self.rounds.clone(),
             tokens: self.tokens.clone(),
             events: self.events.clone(),
+            shown: self.waiting.iter().filter_map(|w| Some((w.name.clone(), w.shown.clone()?))).collect(),
         };
         let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
         let (nonce, data) = sealer.seal(&parked_context(slug, &self.run_id), &plain);
@@ -762,6 +875,7 @@ impl ParkedRun {
             rounds: Vec::new(),
             tokens: BTreeMap::new(),
             events: BTreeMap::new(),
+            waiting: self.waiting.iter().map(|w| StoredWaiting { shown: None, ..w.clone() }).collect(),
             sealed: Some(SealedPart { nonce, data }),
             ..self.clone()
         }
@@ -772,7 +886,10 @@ impl ParkedRun {
         let Some(sealed) = &self.sealed else { return Ok(()) };
         let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
         let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
-        let part: Sealable = crate::wire::read_json(plain.as_bytes()).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        let mut part: Sealable = crate::wire::read_json(plain.as_bytes()).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        for w in &mut self.waiting {
+            w.shown = part.shown.remove(&w.name).or(w.shown.take());
+        }
         self.inputs = part.inputs;
         self.sourced = part.sourced;
         self.rounds = part.rounds;
@@ -795,10 +912,16 @@ impl ParkedRun {
         })
     }
 
-    /// Who decides none of its approvals, as this host's `settings` say: who started it, and who
-    /// deployed the version it is on (of its deployment's `versions`) when they are excluded.
+    /// Who decides none of its approvals, or only some steps, as this host's `settings` say: who
+    /// started it (a step that says so, where the host lets one), and who deployed the version it
+    /// is on (of its deployment's `versions`) when they are excluded.
     fn excluded(&self, versions: &[wire::Version], settings: &ApprovalSettings) -> Excluded {
-        Excluded { starter: self.started_by.clone(), deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(), no_agents: !settings.agents }
+        Excluded {
+            starter: self.started_by.clone(),
+            deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(),
+            no_agents: !settings.agents,
+            no_starter_steps: !settings.starter,
+        }
     }
 }
 
@@ -809,20 +932,38 @@ fn deployer_of(versions: &[wire::Version], unit: &str, at: u64) -> Option<String
     by_then.or_else(|| versions.iter().rfind(|v| v.unit == unit))?.by.clone()
 }
 
-/// Who decides none of a run's approvals, whatever they hold (the design's §8.4): who started
-/// it, whoever deployed the version it is on when this host excludes them, and every agent when
-/// it lets none decide (bindings.rs `ApprovalSettings`).
+/// Who decides none of a run's approvals, or only some of its steps, whatever they hold (the
+/// design's §8.4): who started it, but for a person's step that says `starter: true` on a host
+/// that lets one (`no_starter_steps` off), an agent never; whoever deployed the version it is on
+/// when this host excludes them; and every agent when it lets none decide (bindings.rs
+/// `ApprovalSettings`).
 #[derive(Default)]
 struct Excluded {
     starter: Option<String>,
     deployer: Option<String>,
     no_agents: bool,
+    no_starter_steps: bool,
 }
 
 impl Excluded {
-    /// Why `by` decides none of the approval `name`, if they don't.
-    fn excludes(&self, by: &Decider, name: &str) -> Option<String> {
-        if self.starter.as_deref() == Some(by.who) {
+    /// Whether `by` started the run.
+    fn started(&self, by: &Decider) -> bool {
+        self.starter.as_deref() == Some(by.who)
+    }
+
+    /// Whether `slot` takes `by` as whoever started the run: it says so, this host lets it, and
+    /// they are a person (an agent never decides a run it started).
+    fn takes_starter(&self, by: &Decider, slot: &Slot) -> bool {
+        slot.starter && !self.no_starter_steps && by.kind == Kind::Person
+    }
+
+    /// Why `by` decides none of the approval `name`, with `steps`, if they don't: they started the
+    /// run and no step takes them; the host keeps whoever deployed the version out; or it lets no
+    /// agent decide.
+    fn excludes(&self, by: &Decider, name: &str, steps: &Steps) -> Option<String> {
+        if self.started(by) && by.kind == Kind::Agent {
+            Some(format!("{} started this run, and an agent never decides a run it started: someone else decides its approval {name:?}", by.who))
+        } else if self.started(by) && !steps.slots().any(|(_, _, s)| self.takes_starter(by, s)) {
             Some(format!("{} started this run: someone else decides its approval {name:?}", by.who))
         } else if self.deployer.as_deref() == Some(by.who) {
             Some(format!("{} deployed the version this run is on: on this host, someone else decides its approval {name:?}", by.who))
@@ -831,6 +972,15 @@ impl Excluded {
         } else {
             None
         }
+    }
+
+    /// Whether `by` may fill `slot`, `named` as a refusal says it: as their kind and roles let them
+    /// (`Decider::may_fill`), and, when they started the run, only a step that takes them.
+    fn may_fill(&self, by: &Decider, slot: &Slot, named: &str) -> Result<(), String> {
+        if self.started(by) && !self.takes_starter(by, slot) {
+            return Err(format!("{} started this run, and {named} doesn't take whoever started it", by.who));
+        }
+        by.may_fill(slot, named)
     }
 }
 
@@ -873,6 +1023,14 @@ pub(crate) fn park_if_waiting(
     record.version = run.unit.clone();
     if log != holon_core::LogLevel::Strict {
         record.log = log.word().to_string();
+    }
+    // What its approvals show those who decide them, redacted as its log entry is.
+    let mut tokens = waits.tokens.clone();
+    for w in &run.waiting {
+        tokens.entry(w.name.clone()).or_insert_with(|| token_for(&run.run_id, &w.name));
+    }
+    for (w, shown) in record.waiting.iter_mut().zip(shown_of(kind, inputs, sourced, run, &tokens, redaction_of(deployments, slug))) {
+        w.shown = shown;
     }
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
@@ -981,6 +1139,8 @@ pub(crate) fn resume_parked(
     for name in waits.events.keys().chain(run.waiting.iter().map(|w| &w.name)) {
         tokens.entry(name.clone()).or_insert_with(|| token_for(run_id, name));
     }
+    // What a point it waits at now shows those who decide it, as for its first part.
+    let mut shown = shown_of(&record.kind, &inputs, &sourced, &run, &tokens, redaction_of(deployments, slug)).into_iter();
     let redactor = Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds)));
     if let Some(l) = log_run(deployments, slug, entry, redactor, declared) {
         l.said(slug);
@@ -1006,9 +1166,12 @@ pub(crate) fn resume_parked(
                 kept.waiting = run
                     .waiting
                     .iter()
-                    .map(|w| match kept.waiting.iter().find(|o| o.name == w.name) {
-                        Some(o) => o.clone(),
-                        None => StoredWaiting::new(w, now + w.expires.min(dep.permit.durable.max_await_seconds)),
+                    .map(|w| {
+                        let shown = shown.next().flatten();
+                        match kept.waiting.iter().find(|o| o.name == w.name) {
+                            Some(o) => o.clone(),
+                            None => StoredWaiting { shown, ..StoredWaiting::new(w, now + w.expires.min(dep.permit.durable.max_await_seconds)) },
+                        }
                     })
                     .collect();
             }
@@ -1045,22 +1208,67 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval
-/// point with the open steps `caller` may fill (`yours`, by number), as the decide route says
-/// under this host's `settings`.
+/// point with what it shows (`shows`, or the run's `input`) and the open steps `caller` may fill
+/// (`yours`, by number), as the decide route says under this host's `settings`. All of them to
+/// whoever views the flow's runs; to whoever only decides, each run waiting at an approval they
+/// may decide, with those points alone: what they decide, and nothing else of the flow's runs.
 pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
     let table = deployments.lock().unwrap();
     let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-    let runs = dep.parked.values().map(|run| {
+    Response::json(&serde_json::json!({ "runs": waiting_runs(dep, slug, caller, settings) }))
+}
+
+/// `GET /runs/waiting`: every deployment's waiting runs as [`waiting_runs`] lists them to
+/// `caller`, each with its deployment's slug. Someone who only decides an approval (bound at it,
+/// or holding run.decide alone) may list no flow (`GET /deployments` asks flow.view), so this is
+/// how the editor's Runs waiting finds what waits for them.
+pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment>>, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
+    let table = deployments.lock().unwrap();
+    let runs: Vec<serde_json::Value> = table
+        .iter()
+        .flat_map(|(slug, dep)| {
+            waiting_runs(dep, slug, caller, settings).into_iter().map(move |mut run| {
+                run["slug"] = slug.as_str().into();
+                run
+            })
+        })
+        .collect();
+    Response::json(&serde_json::json!({ "runs": runs }))
+}
+
+/// The waiting runs of `dep` (deployed as `slug`) `caller` lists: each run and every point it
+/// waits at to whoever views its runs; to whoever only decides one of its approvals, the runs
+/// waiting at an approval they may decide, those points alone, and nothing delivered to its
+/// events. Each approval says which of its steps are the caller's to take (`yours`).
+fn waiting_runs(dep: &Deployment, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Vec<serde_json::Value> {
+    use crate::can::{Action, Resource, can};
+    let views = can(caller, Action::RunView, &Resource::Flow(slug)).is_ok();
+    let decides = |w: &StoredWaiting| !w.is_event() && can(caller, Action::RunDecide, &Resource::Approval { slug, name: Some(&w.name) }).is_ok();
+    dep.parked.values().filter_map(|run| {
         let mut listed = run.summary();
         let excluded = run.excluded(&dep.versions, settings);
-        for (w, point) in run.waiting.iter().zip(listed["waiting"].as_array_mut().into_iter().flatten()) {
+        let points = listed["waiting"].as_array_mut()?;
+        let mut kept = Vec::new();
+        for (w, mut point) in run.waiting.iter().zip(std::mem::take(points)) {
+            if !views && !decides(w) {
+                continue;
+            }
             if !w.is_event() {
                 point["yours"] = yours(caller, slug, &excluded, w).into();
             }
+            kept.push(point);
         }
-        listed
-    });
-    Response::json(&serde_json::json!({ "runs": runs.collect::<Vec<_>>() }))
+        if kept.is_empty() {
+            return None;
+        }
+        listed["waiting"] = kept.into();
+        if !views {
+            // What was delivered to its events is the flow's, not theirs.
+            listed["delivered"] = serde_json::json!([]);
+        }
+        Some(listed)
+    })
+    .collect()
 }
 
 /// The open steps of `w` `caller` may fill, by number: none when `run.decide` refuses them there.
@@ -1128,10 +1336,10 @@ impl StoredWaiting {
         let Some(steps) = Steps::parse(&self.steps) else {
             return Err((409, format!("{name:?} asks for steps this host can't read ({}): nobody decides it, and it runs out", self.steps)));
         };
-        if let Some(why) = excluded.excludes(by, name) {
+        if let Some(why) = excluded.excludes(by, name, &steps) {
             return Err((403, why));
         }
-        let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, by, decision.slot)? };
+        let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, excluded, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
         // What let them: the binding of the step's role, or of run.decide for a step without one.
         let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |b| (Some(b.binding), Some(b.access)));
@@ -1141,12 +1349,13 @@ impl StoredWaiting {
 
     /// The step `by` decides: the one named, when they may fill it (whether it is open, `take`
     /// says), or else the one open step they may fill. Refused when they may fill none (403), or
-    /// may fill several and named none (409, the plan's D36).
-    fn pick(&self, steps: &Steps, by: &Decider, named: Option<u8>) -> Result<u8, (u16, String)> {
+    /// may fill several and named none (409, the plan's D36). Whoever started the run fills only a
+    /// step that takes them (`excluded`).
+    fn pick(&self, steps: &Steps, excluded: &Excluded, by: &Decider, named: Option<u8>) -> Result<u8, (u16, String)> {
         let slots = self.slots();
         let fills = |s: &SlotState| -> Result<(), String> {
             let (_, _, slot) = steps.slots().nth(usize::from(s.slot)).expect("a slot of the steps");
-            by.may_fill(slot, &self.step_said(&slots, s.slot))
+            excluded.may_fill(by, slot, &self.step_said(&slots, s.slot))
         };
         if let Some(n) = named {
             let s = slots.get(usize::from(n)).ok_or((409, format!("{:?} has {} steps, from slot 0: there is no slot {n}", self.name, slots.len())))?;
@@ -1315,13 +1524,37 @@ mod tests {
         assert!(same_token(&a, &token_for("aa", "paid")) && !same_token(&a, &token_for("aa", "paid2")));
     }
 
+    /// What an approval that names nothing shows, by what started its run: an action's argument as
+    /// it is (a field called headers too), a request without its headers, the file, mail, feed
+    /// event or queue message a source delivered (not what else it read), and nothing for a clock.
+    #[test]
+    fn an_approval_naming_nothing_shows_what_started_its_run() {
+        let v = |json: &str| holon_core::parse_json(json).unwrap();
+        let clock = (Capability::Clock, Value::Number(5.0));
+        // Each row: the run's kind, its input, what it sourced, and what the approval shows.
+        type Row<'a> = (&'a str, Option<Value>, Vec<(Capability, Value)>, Option<&'a str>);
+        let rows: Vec<Row> = vec![
+            ("trigger", Some(v(r#"{"amount":30,"headers":{"x":"1"}}"#)), vec![], Some(r#"{"amount":30,"headers":{"x":"1"}}"#)),
+            ("request", Some(v(r#"{"method":"POST","path":"/pay","headers":{"authorization":"Bearer t"},"body":"{}"}"#)), vec![], Some(r#"{"body":"{}","method":"POST","path":"/pay"}"#)),
+            ("file", None, vec![clock.clone(), (Capability::FileArrival("in".into()), v(r#"{"name":"a.csv"}"#))], Some(r#"{"name":"a.csv"}"#)),
+            ("mail", None, vec![(Capability::MailArrival("ops".into()), v(r#"{"subject":"pay"}"#))], Some(r#"{"subject":"pay"}"#)),
+            ("feed", None, vec![(Capability::FeedEvent("prices".into()), v(r#"{"price":3}"#))], Some(r#"{"price":3}"#)),
+            ("queue", None, vec![(Capability::QueueMessage("jobs".into()), v(r#""go""#))], Some(r#""go""#)),
+            ("tick", None, vec![clock.clone()], None),
+        ];
+        for (kind, input, sourced, shown) in rows {
+            let got = input_of(kind, &[input], &sourced).map(|v| holon_core::stringify_json(&v).unwrap());
+            assert_eq!(got.as_deref(), shown, "{kind}");
+        }
+    }
+
     /// **T5** (docs/L4s/approval-steps-plan.md §5): what a run waiting at an approval for two
     /// people is given, from the decisions taken on it, each row its decisions in turn, which of
     /// them decides it (none: it runs out), and the value. Every decision is in `decisions`, with
     /// its step, kind, when, note and what let it; a decline is the decision, and stands.
     #[test]
     fn an_approval_gives_its_run_every_decision_taken() {
-        let point = || StoredWaiting { name: "payout".into(), expires_at: 100, steps: "person*2".into(), decisions: Vec::new() };
+        let point = || StoredWaiting { name: "payout".into(), expires_at: 100, steps: "person*2".into(), decisions: Vec::new(), shown: None };
         let took = |who: &str, approved: bool, reason: Option<&str>, at: u64| Decided {
             slot: 0,
             who: who.into(),
@@ -1440,13 +1673,15 @@ mod tests {
         let (ok, no) = (|slot: u8, decides: bool| Ok((slot, decides)), |code: u16, why: &'static str| Err((code, why)));
         // (who, the step named, approves), then what it does.
         type Step = (&'static str, Option<u8>, bool, Result<(u8, bool), (u16, &'static str)>);
-        // What it shows, the steps, who started the run, the decisions, and what the run is given.
-        type Row = (&'static str, &'static str, Option<&'static str>, Vec<Step>, serde_json::Value);
+        // What it shows, the steps, who started the run, whether the host lets a step take them, the
+        // decisions, and what the run is given.
+        type Row = (&'static str, &'static str, Option<&'static str>, bool, Vec<Step>, serde_json::Value);
         let rows: Vec<Row> = vec![
             (
                 "a chain, decided in its order by each step's kind and role",
                 chain,
                 Some("sam"),
+                true,
                 vec![
                     ("ana", None, true, no(403, "ana is a person, and slot 0 (classifier) of \"payout\" is an agent's")),
                     ("scout", None, true, ok(0, false)),
@@ -1465,6 +1700,7 @@ mod tests {
                 "one principal, one step; a decline ends it",
                 chain,
                 None,
+                true,
                 vec![
                     ("scout", None, true, ok(0, false)),
                     ("dee", None, true, ok(1, false)),
@@ -1478,6 +1714,7 @@ mod tests {
                 "any order: two steps open at once",
                 "person:reviewer+person:approver",
                 None,
+                true,
                 vec![
                     ("dee", None, true, no(409, "dee may fill slot 0 (reviewer) and slot 1 (approver) of \"payout\": say which, with slot")),
                     ("scout", None, true, no(403, "scout may fill none of the open steps of \"payout\": scout is an agent, and slot 0 (reviewer) of \"payout\" is a person's; scout is an agent, and slot 1 (approver) of \"payout\" is a person's")),
@@ -1490,6 +1727,7 @@ mod tests {
                 "a step of two different people, then run out",
                 "person:reviewer*2>person:approver",
                 None,
+                true,
                 vec![
                     ("ana", None, true, ok(0, false)),
                     ("ana", Some(0), true, no(409, "ana already approved slot 0 (reviewer) of \"payout\": it needs 2 different people")),
@@ -1504,6 +1742,7 @@ mod tests {
                 "people alone: anyone run.decide lets in, a person",
                 "person*2",
                 Some("sam"),
+                true,
                 vec![
                     ("root", None, true, ok(0, false)),
                     ("scout", None, true, no(403, "scout is an agent, and \"payout\" is a person's")),
@@ -1512,24 +1751,54 @@ mod tests {
                 ],
                 json!({ "approved": false, "by": ["root"], "declined_by": "ana", "reason": "not this vendor" }),
             ),
-            ("an event", "", None, vec![("ana", None, true, no(409, "\"payout\" is an event, which its route delivers: nobody decides it"))], json!({ "approved": false, "by": [], "expired": true })),
+            (
+                "an output review: whoever started it takes the step that says so, and only that one",
+                "person:reviewer>person:approver^",
+                Some("dee"),
+                true,
+                vec![
+                    ("dee", Some(0), true, no(403, "dee started this run, and slot 0 (reviewer) of \"payout\" doesn't take whoever started it")),
+                    ("dee", None, true, no(403, "dee started this run, and slot 0 (reviewer) of \"payout\" doesn't take whoever started it")),
+                    ("ana", None, true, ok(0, false)),
+                    ("dee", None, true, ok(1, true)),
+                ],
+                json!({ "approved": true, "by": ["ana", "dee"] }),
+            ),
+            (
+                "a host that lets no step take whoever started the run",
+                "person:reviewer>person:approver^",
+                Some("dee"),
+                false,
+                vec![("ana", None, true, ok(0, false)), ("dee", None, true, no(403, "dee started this run: someone else decides its approval \"payout\"")), ("cy", None, true, ok(1, true))],
+                json!({ "approved": true, "by": ["ana", "cy"] }),
+            ),
+            (
+                "an agent never decides a run it started, whatever the steps say",
+                "agent:classifier>person:reviewer^",
+                Some("scout"),
+                true,
+                vec![("scout", None, true, no(403, "scout started this run, and an agent never decides a run it started: someone else decides its approval \"payout\""))],
+                json!({ "approved": false, "by": [], "expired": true }),
+            ),
+            ("an event", "", None, true, vec![("ana", None, true, no(409, "\"payout\" is an event, which its route delivers: nobody decides it"))], json!({ "approved": false, "by": [], "expired": true })),
             (
                 "steps this host can't read",
                 "person*9",
                 None,
+                true,
                 vec![("ana", None, true, no(409, "\"payout\" asks for steps this host can't read (person*9): nobody decides it, and it runs out"))],
                 json!({ "approved": false, "by": [], "expired": true }),
             ),
         ];
-        for (what, steps, starter, decisions, want) in rows {
-            let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: steps.into(), decisions: Vec::new() };
+        for (what, steps, starter, starter_steps, decisions, want) in rows {
+            let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: steps.into(), decisions: Vec::new(), shown: None };
             let mut decided = false;
             for (i, (who, slot, approve, then)) in decisions.into_iter().enumerate() {
                 let (_, kind, roles) = cast.iter().find(|(name, ..)| *name == who).unwrap();
                 let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
                 let by = Decider { who, kind: *kind, holds: &holds };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
-                let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };
+                let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, ..Default::default() };
                 let got = w.decide(&excluded, &by, decision);
                 let got = got.as_ref().map(|(slot, taken)| (*slot, taken.is_some())).map_err(|(code, why)| (*code, why.as_str()));
                 assert_eq!(got, then, "{what}: decision {i}, {who}");

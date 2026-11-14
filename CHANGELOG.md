@@ -2,6 +2,219 @@
 
 ## Unreleased
 
+- **Access changes that wait for people are decided in the editor and from the command line.**
+  The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
+  proposed it and why, who could act as whom it gives more, and who approved it so far, with
+  **Approve…** and **Decline…** to whoever may (its author withdraws it), and those decided lately;
+  People and access › History lists those that wait above the versions, and a binding, a role or a
+  group changed in People and access that waits says so, linking to Access changes, where before
+  the form failed reading the binding it expected. The `approved-payout` sample walks through
+  binding its roles in the editor's form, and a binding that waits for another admin. `holon access proposals` lists them, `holon access approve <id>` and
+  `holon access decline <id> --reason TEXT` decide one. `holon mcp` says an agent never approves
+  one.
+- **No one takes over someone whose access waits for people to be given.** While `--changes` is
+  on, a way in to someone else who decides runs or holds anything of an admin's isn't made from
+  another account: resetting their password, setting their email (a provider matches people by
+  it), making a token of their agent or service (but by its owner), giving it another owner, or
+  setting the identity provider. Whoever did could sign in as them, and count as a second person
+  where people are counted, so it is refused (403), saying why. They do it themselves, or it is
+  done on the server's machine through its run file, which holds the data folder anyway: the
+  machine is the root here, and no account is. Or what they hold is taken away first, at once,
+  and given back after, which waits. A proposal now says whom it gives more (`to`) and who could
+  act as them (`ways_in`: "ada made bob's reset link"): none of those approves it, and a way in
+  made to one of them while it waits makes it stale. `GET /people` says each one's `ways_in`.
+- **An access change that gives more can wait for people: `holon access approvals --changes N`.**
+  With `changes` set (1 to 5; off by default), a change that gives someone `run.decide` or
+  anything of an admin's isn't made: binding a role that holds it, adding someone to a group bound
+  to one, changing a role so that it holds it, setting someone's role on the host to one, and
+  loosening the approval settings (`--exclude-deployer off`, `--agents on`, `--starter on`,
+  `--changes` lower or off). It is answered 202 with a proposal saying what it changes and what it
+  gives to whom, kept beside the access document (`access.proposals.json`), and listed at
+  `GET /access/proposals`. N people other than its author approve it
+  (`POST /access/proposals/<id>/approve`), each a person holding `people.assign` and what it
+  gives, so two who hold less don't give more together; the last approval makes it as its author
+  asked, its version's why naming who approved it, and one that no longer applies (its role
+  removed since) is stale, saying why. `…/decline` takes a reason; its author withdraws it so.
+  Taking away applies at once, as does a change that gives no one more, and a change to the
+  approval settings through the server machine's run file: that is how a host whose approvers
+  are gone gets its access back. A new principal with a role that would wait is refused (409),
+  saying to give the role after. The commands and the editor's page for proposals come with the
+  next step; the settings table shows `changes`, and the editor's version diff names it.
+- **A step of an approval may let whoever started the run take it: `starter: true`.** Whoever
+  started a run took no step of any of its approvals: right for a request check, as whoever asks
+  for a payout never approves it, and wrong for an output review, where a person asks agents for
+  a draft and is its natural reviewer. The rule is now the step's: `steps: [{ role: "drafter",
+  kind: "agent" }, { role: "proofreader", starter: true }]` lets the one who started the run take
+  the second step. Left out, they may not, as before. It is part of what the flow asks for
+  (`Approval("shape/agent:drafter>person:proofreader^")`, said "…, who may be whoever started the
+  run"), so letting the starter in, or no longer, is a changed row in the version's review. An
+  agent never decides a run it started, whatever a step says (an agent's step can't say it).
+  `holon access approvals --starter off` lets no step take whoever started a run, on this host:
+  a version with such a step is refused at deploy, saying how to let it, and a run already
+  waiting goes by it at once (`approvals.starter`, on by default). The deploy review sets the
+  starter aside only from the steps that don't take them, and the editor's Runs waiting says of a
+  step "whoever started it may take it". The `reviewed-draft` sample shows it: an agent drafts
+  what you asked for, you approve it as it reads, and it is written to a folder. `holon.d.ts`
+  types a decision's `note` as any JSON, so a flow reads the draft from `note.text`.
+- **Deploying a flow whose approval no one here can decide asks again, naming it.** The deploy
+  preview already marked such an approval **!** (a step no principal of its kind here may take, or
+  too few, or none once whoever starts the run is set aside), but deploying went on as for any
+  other row, and a flow could be deployed whose runs would wait at an approval nobody could
+  decide. Now the editor's deploy dialog, and Approve and deploy on a version's review, ask again,
+  naming each approval and why (`touches.ts` `askAgain`); the version deploys if you go on (the
+  server doesn't refuse it: someone may be bound after), and its runs wait there until someone is.
+  The review lists those approvals first, under *Can't be decided here*. It asks only when no run
+  could be decided there: each approval row of the preview now says which of its runs would wait
+  undecided (`waits`: `every run`, or `some runs`, those a principal starts who takes no step of
+  them), and an approval whose only approver is the admin, as the approved-payout sample binds
+  it, is marked but not asked about, since the runs its route starts can be decided.
+- **The editor's buttons follow what the server would answer you.** A viewer saw **Pause**,
+  **Revoke**, **run** and the rest as an admin did, and learned only on pressing one that it was
+  refused; the host's pages were shown by the built-in role alone (an admin's, or People and
+  access to whoever held `people.view`). Now each button that changes something asks the server's
+  `can` for its flow (`GET /auth/me/can`, every action at once, once per flow) and, refused, is
+  disabled, saying why in the server's words on hover (`cy may not do that: a viewer only reads`):
+  deploying and approving a deploy, run, pause, resume and stop, removing a deployment and deleting
+  a saved flow, declining a proposal, revoking and granting back, whether agents may propose,
+  setting, removing and rolling back a secret (a flow's and the server's own), running an action,
+  reading the policy again, binding and unbinding. Each host page is shown to whoever may view it:
+  **Resources** to `resource.view`, **People and access** to `people.view`, **Policy** to
+  `policy.view`, which a viewer holds, so a viewer reads the host's policy now. `/auth/me` answers
+  `access_version`, which the editor reads every few seconds and on coming back to the window, and
+  it asks again when that moves, when it changes something and when the server refuses it.
+  Someone who may deploy a flow but not approve what a version asks is offered **Propose**: it
+  waits in Approvals for someone who may, as the editor then says (it had sent an acknowledgement
+  the server refuses from them, and asked nothing of a flow named just then). A server test writes what `can` answers five callers into the editor's fixture
+  (`HOLON_BLESS=1`), and the editor's table of callers and buttons is held to it.
+- **People and access binds roles, makes groups and roles, and says what each principal may do.**
+  Binding a role on one flow, a tag or an approval point, defining a role, making a group, and
+  reading what the access document's versions changed took the command line: the editor's People
+  and access gave only a role on the host. Now it is in tabs, **People**, **Agents and tokens**,
+  **Groups**, **Roles**, **Bindings**, **History** and **Signing in**. *Bindings* lists every role
+  bound, each with **unbind** (which asks why), and binds one: to a person, an agent, a service or
+  a group, on the host, a flow, a tag or one approval point (its flow, then one of the approvals
+  its deployed version has), until a date or for a while (`7d`), and why; a refusal says the
+  server's words (`editor holds flow.edit on "payout", which you don't: a binding gives only what
+  its author holds where it is made`). A binding at an approval point alone lets its holder decide
+  from Runs waiting but not open the flow, and the form says so and offers viewer on the flow too,
+  as `holon bind` does. A name in these tables opens the principal's page (`#people.who.NAME`):
+  their groups, tokens and bindings (and through which group), a form binding one more, and what
+  it all lets them do, worked out as the server's `can` decides it (an end-to-end test compares
+  the two for each way of being bound): on the host, on every flow, on the flows they saved, on
+  each tag's flows, and on each flow what more, with the approvals they decide there. *Roles*
+  defines and changes a role by ticking its actions, by resource, and who may hold it; *Groups*
+  makes one, adds and takes out members, and binds a role to it; *History* lists each version,
+  who made it, what and why, and a version's page what it changed from the one before. Someone
+  who isn't an admin and holds `people.view` (a role of your own) has People and access too, and
+  binds what their role lets them; anyone else keeps Your agents and services.
+- **Runs waiting finds every run waiting for you, draws an approval in steps as its chain, and a
+  run's page says each step's decision.** Someone bound only at an approval point decided it with
+  `holon decide`, but the editor's Approvals, which read the runs of each flow it listed, showed
+  them nothing: they may list no flow. Now `GET /runs/waiting` lists, across flows, the runs
+  whoever is signed in may see or decide, as each flow's own listing gives them, and Runs waiting
+  and the nav's count read it. An approval in steps is drawn as its chain, `✓ classifier (scout,
+  invoice, 0.93) → ◻ reviewer → ◻ approver (not open yet)`: who took a step and what their note
+  says in a word or two, the open steps, the steps not open yet dimmed; hovering over a step shows
+  each decision on it (who, kind, role, when, why, and the binding that let them, with the access
+  version `holon access show --version N` prints). Declining a step, or an agent's proposal, needs
+  a reason: the button waits for one and says so, where an empty one used to close the dialog
+  silently. The run's page, and the details pane of a run stepped through in the editor, say what
+  the resumed part was given: the approval's decision, then each step's decision a line.
+- **A person signs in to a server elsewhere from the command line: `holon login`.** On another
+  machine a person's only way in was the editor; the commands took an agent's or a service's
+  token. Now `holon login --server https://holon.example.com` asks their name and password (not
+  shown as typed, or piped in), signs them in, and keeps the session for that server in
+  `~/.holon/tokens.json`, readable only by them; it says who they are and until when, a week on.
+  Every other command reaching that server signs in with it unless `HOLON_TOKEN` is set, and with
+  no server running here they reach the one signed in to without `--server`, so `holon decide
+  payouts` lists their steps and takes one as them. `holon logout` ends the session there and
+  forgets it. A refused sign-in says what to do by where it came from: a session that ended,
+  `holon login` again; `HOLON_TOKEN` not taken; none, how to sign in. A password goes over https
+  only, as a token does. The sign-in answer says when the session ends (`expires_at`). An agent's
+  token `holon mcp setup --server` keeps for a server elsewhere is now kept as `agent:<URL>`, apart
+  from a person's session: set it up again. Signing in through a provider isn't in the command
+  line yet.
+- **Those who decide an approval see what they approve, and nothing else of the flow's runs.**
+  An approval listed its steps and who had taken them, never what the run would do: a reviewer
+  approved a payout without seeing its amount or payee. Now `await approval("payout", { shows:
+  { amount, payee } })` names what it shows, any value the run has before it waits (the
+  `approval` leaf's optional `shows` input); with no `shows`, it shows what the run was started
+  with (an action's argument, a request without its headers, what a source delivered; nothing
+  for a clock). Either is kept when the run parks as its log keeps it: a field tainted by a
+  secret's mark redacted (`‹taint:card›`), a value a secret may have made withheld whole, one
+  past 16 KiB its size instead, sealed on disk with the run. Runs waiting in the editor's
+  Approvals and the flow's Waiting list, `holon decide` and `holon mcp`'s `runs` show it under
+  the approval (`it shows {"amount":30,"payee":"acme"}`). Listing a flow's runs took `run.view`;
+  now `run.decide` on its approvals lists the runs waiting at an approval the caller may decide,
+  those points alone, with nothing delivered. The approved-payout sample shows the account, the
+  amount and the balance it read.
+- **A version runs and sends only what someone who may has looked at, and the deploy review says
+  which approvals can't be decided here.**
+  - **A flow that runs another flow's action is deployed only by someone who may run it.** A
+    call runs the other flow's action under that flow's grant, with what the caller sends, and
+    only the caller's grant was asked: an editor bound on the `marketing` tag deployed a flow of
+    their own that drove `payments`' payout with any amount. Now deploying a version that runs
+    another flow's action takes `run.call` on it (for an agent, the other flow letting agents run
+    it too), whether the call is new or granted already: anyone else is refused (403, naming the
+    action), an agent's version waits as a proposal for someone who may, and the review marks the
+    row (`! flow payments: run payout — bob may not run it: someone who may deploys this version`).
+  - **An agent's change to what a flow sends out waits for a person.** Only the secrets a version
+    read were asked again: an agent's version posting whole CRM rows instead of a count to the
+    same granted host deployed without anyone looking. Now each handler whose code an agent
+    changed, and each fed by one (through a key, collection, table or folder one writes and the
+    other reads, an action of its own it starts, a queue it handles, a folder it watches), asks a
+    person again for what it sends out through (a host, a mail, a channel, a queue, another flow,
+    a process, a folder or a database), and a route among them that reads a database or folder
+    the host binds, for its answers. The review says `asked again` on those rows. What the host
+    grants without asking isn't asked again, nor what a route answers from the flow's own state.
+  - **The deploy review says when an approval can't be decided here.** A row for an approval
+    whose steps can't all be taken is marked not ready, saying why: `approver: 1 person holds it
+    here; it needs 2`, `classifier: no agent holds it here`, `its steps take 2 different
+    principals, one a step, and fewer can here`, or `a run pat starts can't be decided` when the
+    only one who may take a step may also start the run (whoever starts a run decides none of
+    it). Holders are counted where the approval is as the version's tags would make it, not
+    disabled, and without whoever deploys it on a host that keeps them out.
+  - `holon deploy` and `holon editor` say when a deploy was kept as a proposal, rather than
+    saying it deployed.
+- **Signing in, setting up and reading units hold against what the launch review found.**
+  - **A flood of sign-ins under ever new names no longer takes the server down.** Each waited its
+    turn for a password check, up to 30 seconds, until the 512 requests the server answers at
+    once were all sign-ins, and everything was answered 503. Now at most 64 wait, and 8 from one
+    address (an IPv6 address by its /64), whatever the names; one more is told the server is
+    busy at once. Sign-ins wait while it lasts, never the rest of what the server answers. An
+    invite link is checked before its password is hashed, so links made up wait for nothing.
+  - **Setting up is locked per address.** Five wrong setup codes locked setting up for everyone,
+    so anyone could keep the first admin out a minute at a time; now only from the address that
+    sent them. A `HOLON_SETUP_CODE` with lowercase letters never matched (what was entered was
+    put in capitals, and it wasn't): it is entered in any case now.
+  - **Signing out ends a provider's sign-in.** An ID token stayed good after signing out, until
+    it expired. The server now keeps one signed out of refused until then (its hash, forgotten
+    once it has expired); another sign-in of the person's at the provider still is one.
+  - **The command line sends no token over plain http to another machine.** `--server
+    holon.example.com` was reached over http, the token with it; a host given bare is reached
+    over https now, and `http://` to another machine with a token to send is refused, saying to
+    give its https address or reach it through an SSH tunnel. This machine stays plain http.
+  - **What the run file makes before anyone is tied to it is owned by `local:<user>`.** It was
+    owned by the OS user's bare name, so a person invited under that name owned the agents and
+    services it made (and made their tokens). `local:` is no principal's name.
+  - **`GET /unit/<hash>` reads only a flow you may view.** Anyone viewing one flow read any
+    flow's code by its hash. Now a unit is answered to someone who views every flow, or one who
+    views a deployment that places it; anyone else is answered 404, as for a hash nothing has.
+- **A role that manages people no longer makes its holder an admin.** No one gave more than they
+  held, but anyone holding `people.manage` changed anyone: an admin's email (and, setting the
+  identity provider to one they ran, signed in as them), a service's owner (and then made its
+  tokens), or disabled, demoted and removed every admin. Now whoever changes a principal
+  (`PATCH` or `DELETE /people/<name>`, its email, owner, role, display or whether it is enabled,
+  its password reset, making or revoking its tokens) holds all it holds, or is refused (403, `ada
+  holds admin on this host, which holds flow.edit there, which you don't: you change, or act as,
+  only someone who holds no more than you`); its owner still makes and revokes an agent's or a
+  service's tokens. Taking is held to it as giving is: a binding is unbound, a member taken out
+  of a bound group, and a defined role changed only by someone holding what it gives. Setting the
+  identity provider takes holding what each person holds, since it says who each of them is.
+  And a provider's sign-in is matched by the email it verified only the first time: from then on
+  by its issuer and subject, so another subject given that email is refused, saying whose it is,
+  until an admin sets that person's email again. A sweep of the route table holds every route
+  that changes a principal or what it holds to the rule, with a case for each.
 - **A flow's taint keys are a deploy setting, listed in the editor.** `taint: [...]` stays in the
   text's `flow(...)` line, beside `tags`, and is held in the flow's deploy settings and frozen on
   its server unit from there: the route nodes have no `taint` param any more. The editor's

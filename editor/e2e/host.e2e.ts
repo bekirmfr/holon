@@ -6,7 +6,7 @@
 
 import type { APIResponse } from "@playwright/test";
 import { expect, FOLDERS, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, resourcesTab } from "./helpers";
+import { gotoPage, navLink, peopleTab, resourcesTab } from "./helpers";
 
 test("a server secret's versions, and rolling one back after its dry run", async ({ page }) => {
   const name = `probe_${Date.now().toString(36)}`;
@@ -58,6 +58,7 @@ test("people and access says how an agent connects; policy says what it holds of
   await page.goto("/");
   await gotoPage(page, "people");
   await expect(page.getByRole("heading", { level: 1, name: "People and access" })).toBeVisible();
+  await peopleTab(page, "Agents and tokens");
   await expect(page.getByLabel("the holon mcp line")).toHaveValue(/^holon mcp setup claude-code --server http/);
   await gotoPage(page, "policy");
   await expect(page.getByRole("heading", { level: 1, name: "Policy" })).toBeVisible();

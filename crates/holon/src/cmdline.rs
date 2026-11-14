@@ -62,7 +62,8 @@ impl Args {
 /// What the commands' usage ends with: where the server is, and how to sign in.
 pub(crate) const SIGN_IN: &str = "  From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.";
+  as you with holon login (and with none running here, the one you signed in to needs no
+  --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 /// Parse `args` for a command named `who` with `usage`, or the exit code: 0 for `--help`
 /// (printed), 2 for a mistake (said, with the usage).
@@ -137,6 +138,62 @@ pub(crate) fn stdin_text(who: &str) -> Result<String, i32> {
         1
     })?;
     Ok(text)
+}
+
+/// A line from the terminal, not shown as it is typed (a password, a token); or the next line
+/// piped in.
+pub(crate) fn read_hidden(prompt: &str) -> Result<String, String> {
+    eprint!("{prompt}");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    let stdin = std::io::stdin();
+    let terminal = std::io::IsTerminal::is_terminal(&stdin);
+    let restore = if terminal { hide_input() } else { None };
+    let mut line = String::new();
+    let read = stdin.read_line(&mut line);
+    if let Some(restore) = restore {
+        restore();
+    }
+    // The Enter wasn't shown, or there was none (it was piped).
+    eprintln!();
+    read.map_err(|e| e.to_string())?;
+    Ok(line.trim().to_string())
+}
+
+/// Stop the terminal showing what is typed; what puts it back.
+#[cfg(windows)]
+fn hide_input() -> Option<Box<dyn FnOnce()>> {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE};
+    // SAFETY: the standard input handle and a mode word, as the console API documents.
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        let mut mode = 0;
+        if GetConsoleMode(handle, &mut mode) == 0 || SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT) == 0 {
+            return None;
+        }
+        let handle = handle as usize;
+        Some(Box::new(move || {
+            SetConsoleMode(handle as _, mode);
+        }))
+    }
+}
+
+#[cfg(not(windows))]
+fn hide_input() -> Option<Box<dyn FnOnce()>> {
+    let stty = |arg: &str| std::process::Command::new("stty").arg(arg).stdin(std::process::Stdio::inherit()).status().is_ok_and(|s| s.success());
+    stty("-echo").then(|| {
+        Box::new(move || {
+            stty("echo");
+        }) as Box<dyn FnOnce()>
+    })
+}
+
+/// A line from the terminal, shown as it is typed (a name); or the next line piped in.
+pub(crate) fn read_line(prompt: &str) -> Result<String, String> {
+    eprint!("{prompt}");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    Ok(line.trim().to_string())
 }
 
 /// Rows as columns, each as wide as its widest cell.

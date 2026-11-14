@@ -69,7 +69,20 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
     setSession(null);
     signOut();
   }
+  if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
+}
+
+/** Whether what the buttons follow (can.ts) may have changed with this answer: a change refused
+ *  (what was kept is out of date), or made from here (a binding, a deploy that tags a flow). Not
+ *  one's own prefs, sign-in or password, nor staging a unit or previewing a deploy; nor a read
+ *  refused, which a list polled every few seconds may be for good (Approvals' deployments, to
+ *  someone bound at an approval point alone): the access version tells those. */
+export function mayHaveChanged(url: string, method: string, status: number): boolean {
+  if (method === "GET") return false;
+  const path = url.replace(/^[a-z]+:\/\/[^/]+/, "").split("?")[0];
+  if (/^\/(auth\/|unit$|deploy\/preview$)/.test(path)) return false;
+  return status === 403 || (status >= 200 && status < 300);
 }
 
 const post = (url: string, body?: unknown) =>
@@ -111,7 +124,9 @@ export async function mayI(actions: string[], at: { flow?: string; approval?: st
   if (at.approval) q.set("approval", at.approval);
   return asJson(await api(`${BASE}/auth/me/can?${q}`));
 }
-export const whoAmI = async () => asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null }>(await api(`${BASE}/auth/me`));
+/** `GET /auth/me`. `access_version`: the access document's, which what `can` answers moves with. */
+export const whoAmI = async () =>
+  asJson<{ name: string; kind: Kind; role: Role; email?: string | null; owner?: string | null; display?: string | null; access_version?: number }>(await api(`${BASE}/auth/me`));
 export async function changePassword(current: string, next: string): Promise<void> {
   await asJson<void>(await post(`${BASE}/auth/password`, { current, new: next }));
 }
@@ -177,7 +192,10 @@ export const invitePerson = async (name: string, role: string, email: string) =>
 /** A new agent or service, owned by `owner` (by whoever adds it, when empty). */
 export const addPrincipal = async (name: string, kind: Exclude<Kind, "person">, role: string, owner: string) =>
   asJson<Principal>(await post(`${BASE}/people`, { name, kind, role, owner: owner || null }));
-export const changePrincipal = async (name: string, change: { role?: string; disabled?: boolean; email?: string; owner?: string }) => asJson<Principal>(await patch(principalAt(name), change));
+/** `PATCH /people/<name>`: the principal as changed; a role that gives more, while this host has
+ *  people approve such a change, waits instead (202, `proposal`), and the rest is changed. */
+export const changePrincipal = async (name: string, change: { role?: string; disabled?: boolean; email?: string; owner?: string }) =>
+  asJson<Principal & { proposal?: AccessProposal }>(await patch(principalAt(name), change));
 export const resetPerson = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${principalAt(name)}/reset`));
 export async function removePrincipal(name: string): Promise<void> {
   await asJson<void>(await api(principalAt(name), { method: "DELETE" }));
@@ -187,6 +205,98 @@ export const createToken = async (principal: string, label: string) => asJson<{ 
 export async function revokeToken(principal: string, id: string): Promise<void> {
   await asJson<void>(await api(`${principalAt(principal)}/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
+/** Whom a binding is to (bindings.rs `Subject`): a principal, or a group. */
+export type Subject = { principal: string } | { group: string };
+/** A binding as `GET /bindings` lists it: to whom, which role, where, who bound it and when, and
+ *  until when (`expired` once that has passed). */
+export type BindingEntry = { id: number; who: Subject; role: string; scope: Scope; by: string; at: number; expires_at?: number | null; expired: boolean };
+/** A binding to make: until `expires_at` (seconds) if it ends, and `why`, which its version keeps. */
+export type NewBinding = { who: Subject; role: string; scope: Scope; expires_at?: number; why?: string };
+const put = (url: string, body: unknown) => api(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+/** A removal's `?why=`, which its version keeps. */
+const because = (why: string) => (why.trim() ? `?why=${encodeURIComponent(why.trim())}` : "");
+export const listBindings = async () => (await asJson<{ version: number; bindings: BindingEntry[] }>(await api(`${BASE}/bindings`))).bindings;
+/** `POST /bindings`: the binding and the version it made, or the access change it waits as (202);
+ *  refused in the server's words: 400 for a role it doesn't know or one that holds nothing there,
+ *  403 for more than its author holds there. */
+export const bind = async (b: NewBinding) => asJson<{ binding: BindingEntry; version: number } | AccessProposalAnswer>(await post(`${BASE}/bindings`, b));
+/** `DELETE /bindings/<id>`: 403 for one giving what whoever takes it doesn't hold, 409 for the last
+ *  admin's. */
+export async function unbind(id: number, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/bindings/${id}${because(why)}`, { method: "DELETE" }));
+}
+/** A group (`GET /groups`): its members, and how many bindings are to it. */
+export type GroupEntry = { name: string; about: string | null; members: string[]; bound: number };
+export const listGroups = async () => (await asJson<{ groups: GroupEntry[] }>(await api(`${BASE}/groups`))).groups;
+/** `PUT /groups/<name>`, with all its members: 403 for a member added or taken out who'd gain or
+ *  lose what its author doesn't hold. */
+export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string }) =>
+  asJson<{ group: GroupEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
+export async function removeGroup(name: string, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/groups/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
+}
+/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds. */
+export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string }) =>
+  asJson<{ role: RoleEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
+/** `DELETE /roles/<name>`: 409 while it is bound. */
+export async function removeRole(name: string, why: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/roles/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
+}
+/** A version of the access document (`GET /access/versions`, newest first): who made it, when,
+ *  what it changed in words, and why. */
+export type AccessVersion = { version: number; at: number; by: string; what: string; why?: string };
+export const listAccessVersions = async () => (await asJson<{ versions: AccessVersion[] }>(await api(`${BASE}/access/versions`))).versions;
+/** The access document as a version left it (`GET /access?version=n`): the roles an admin defined,
+ *  the groups, the bindings, how approvals are decided, and whom the run file signs in as. */
+export type AccessDocument = AccessVersion & {
+  roles: { name: string; about?: string; allows: string[]; kinds: Kind[] }[];
+  groups: { name: string; about?: string; members: string[] }[];
+  bindings: Omit<BindingEntry, "expired">[];
+  /** How this host decides approvals; `changes`, how many people approve an access change that
+   *  gives more (none: it applies at once). */
+  approvals: { exclude_deployer: boolean; agents: boolean; starter: boolean; changes: number | null };
+  local?: string;
+};
+export const getAccessVersion = async (n: number) => asJson<AccessDocument>(await api(`${BASE}/access?version=${n}`));
+/** An access change kept until people approve it (access_proposals.rs): while this host has
+ *  people approve a change that gives someone more (`approvals.changes`), a binding, a role, a
+ *  group's members, a role on the host or a looser approval setting that does waits as one, until
+ *  `needs` people other than its `author` approve it. `what` says it as its version will;
+ *  `gives`, what it gives, in words (whoever approves it holds all of it); `to`, whom; `ways_in`,
+ *  who could act as them ("ada made dee's invite link"), none of whom approves it. */
+export type AccessProposal = {
+  id: number;
+  author: string;
+  at: number;
+  why?: string;
+  what: string;
+  gives: string[];
+  to?: string[];
+  ways_in?: string[];
+  /** The access version it was proposed on. */
+  base: number;
+  needs: number;
+  approvals: { who: string; at: number }[];
+  /** Waiting; made, as access `version`; declined by `declined_by` (its author: withdrawn), saying
+   *  `reason`; or `stale`, saying why it no longer applies. */
+  state: "waiting" | "applied" | "declined" | "stale";
+  version?: number;
+  declined_by?: string;
+  reason?: string;
+  stale?: string;
+  ended_at?: number;
+};
+/** A change kept as an access change (202), or one decided: it, and the access version now. */
+export type AccessProposalAnswer = { proposal: AccessProposal; version: number };
+/** `GET /access/proposals`: every access change, newest first. */
+export const listAccessChanges = async () => (await asJson<{ proposals: AccessProposal[] }>(await api(`${BASE}/access/proposals`))).proposals;
+/** Approve an access change: made with the last approval it waits for, checked again then; 409 if
+ *  it no longer applies (stale, saying why), 403 for whoever proposed it, holds less than it gives
+ *  or could act as whom it gives more. */
+export const approveAccessChange = async (id: number) => (await asJson<AccessProposalAnswer>(await post(`${BASE}/access/proposals/${id}/approve`, {}))).proposal;
+/** Decline one, saying why; its author withdraws it so. */
+export const declineAccessChange = async (id: number, reason: string) =>
+  (await asJson<AccessProposalAnswer>(await post(`${BASE}/access/proposals/${id}/decline`, { reason }))).proposal;
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
  *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may
@@ -554,6 +664,9 @@ export type DeployResult = {
   slug: string;
   unit: string;
   triggers: string[];
+  /** Answered 202 instead: whoever deployed it may not approve what it asks, so it waits as this
+   *  proposal (proposals.rs). */
+  proposal?: { id: number; version?: number };
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the
@@ -897,19 +1010,37 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** The tags its version is deployed with (`flow("payout", { tags: ["payments"] })`): a binding
+   *  on one of them holds on it. */
+  tags?: string[];
   /** The number of the version deployed now (`v3`), as its versions count them. */
   version?: number | null;
 };
 
 /** One decision on an approval (durable.rs `Decided`): its step (0 for the short form), who took
- *  it, as what, when, and what they noted. */
-export type WaitingDecision = { slot: number; who: string; kind: "person" | "agent"; role?: string; at: number; approved: boolean; reason?: string; note?: unknown };
+ *  it, as what, when, what they noted, and what let them: the binding they took it through and
+ *  the access document's version it was read in (`holon access show --version N`). */
+export type WaitingDecision = {
+  slot: number;
+  who: string;
+  kind: "person" | "agent";
+  role?: string;
+  at: number;
+  approved: boolean;
+  reason?: string;
+  note?: unknown;
+  binding?: number;
+  access?: number;
+};
 
 /** One step of an approval as it stands (durable.rs `SlotState`): its number and stage, the role
  *  and kind it takes, how many different principals, who approved it, and whether it is open. */
-export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; by: string[]; open: boolean };
+/** One step of an approval as it stands (durable.rs `SlotState`): `starter` when whoever started
+ *  the run may take it. */
+export type WaitingSlot = { slot: number; stage: number; role?: string; kind: "person" | "agent"; people: number; starter?: boolean; by: string[]; open: boolean };
 
-/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
+/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`, `GET /runs/waiting`;
+ *  never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;
@@ -919,8 +1050,10 @@ export type WaitingRun = {
   by?: string | null;
   parked_at: number;
   /** Each point it waits at; an approval's with its steps (`steps`, `said` in words), each as it
-   *  stands, the decisions taken on it so far, and the open steps whoever asked may take. */
-  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[] }[];
+   *  stands, the decisions taken on it so far, the open steps whoever asked may take, and what it
+   *  shows those who decide it: what its flow named (`shows`), or else the run's `input`, each as
+   *  the run's log keeps it. */
+  waiting: { name: string; expires_at: number; steps?: string; said?: string; slots?: WaitingSlot[]; decisions?: WaitingDecision[]; yours?: number[]; shows?: unknown; input?: unknown }[];
   delivered: string[];
 };
 
@@ -954,6 +1087,14 @@ export async function getCollectionItems(
 export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
   return (await asJson<{ runs: WaitingRun[] }>(res)).runs;
+}
+
+/** `GET /runs/waiting`: every flow's waiting runs as each flow's own listing gives them to whoever
+ *  is signed in, each with its flow's slug. Someone who only decides an approval (bound at it)
+ *  may list no flow, and finds what waits for them here. */
+export async function listAllWaitingRuns(): Promise<(WaitingRun & { slug: string })[]> {
+  const res = await api(`${BASE}/runs/waiting`);
+  return (await asJson<{ runs: (WaitingRun & { slug: string })[] }>(res)).runs;
 }
 
 /** What the host granted a deployment (permissions.rs's `Grant`): the items it holds, what it

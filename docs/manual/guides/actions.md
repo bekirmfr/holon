@@ -86,8 +86,8 @@ and the next `POST /hit` answers 6.
 
 ## Who may run one
 
-On a server with accounts, an editor or an admin may run an action; a viewer sees the rows, and
-not **run**. Each run's log entry says who ran it and what they sent, under the action's label
+On a server with accounts, whoever holds `run.call` on the flow may run an action (an editor or an
+admin); a viewer sees the rows, and **run** disabled, saying why. Each run's log entry says who ran it and what they sent, under the action's label
 (`action reset`), and view mode replays it like any run ([The web editor](editor.md)).
 
 An agent may run an action only when a person has let it. In the deploy settings (the editor's **Settings**), **agents

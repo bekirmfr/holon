@@ -37,6 +37,7 @@ import {
   manifestTrigger,
   describeItem,
 } from "./holon";
+import { changesToDecide } from "./access";
 import { toDecide, yourSteps } from "./decisions";
 import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
@@ -106,7 +107,9 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, ta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { Shell, type Waiting } from "./ui/Shell";
-import { OwnedPage, PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
+import { refusal, useCan as useCanOn } from "./can";
+import { PolicyPage, ResourcesPage } from "./HostPages";
+import { OwnedPage, PeoplePage } from "./PeoplePages";
 import { checkRunLog, OverviewPage } from "./OverviewPage";
 import { compileHolon, documentText, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
@@ -645,8 +648,18 @@ function Canvas({
   const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals" });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
+  // And the access changes waiting for people that are theirs to decide (access.ts), when they
+  // may decide one (can.ts: approving one asks people.assign on the host): changes, as versions are.
+  const hostCan = useCanOn();
   const deciding = useMemo(() => toDecide(approvals.runs ?? []), [approvals.runs]);
-  useEffect(() => onWaiting({ changes: approvals.approvals.length, runs: deciding }), [approvals.approvals.length, deciding, onWaiting]);
+  const accessDeciding = useMemo(
+    () => (refusal(hostCan, "approveAccess") === undefined && hostCan !== null ? changesToDecide(approvals.access ?? [], me.name) : 0),
+    [approvals.access, hostCan, me.name],
+  );
+  useEffect(
+    () => onWaiting({ changes: approvals.approvals.length + accessDeciding, runs: deciding }),
+    [approvals.approvals.length, accessDeciding, deciding, onWaiting],
+  );
   // Deploying it (useDeployFlow.ts); running, pausing or stopping it is its page's.
   const { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow } = useDeployFlow({
     flowName,
@@ -894,9 +907,9 @@ function Canvas({
       ["Library", { kind: "library", tab: "samples" }],
       ...(pages.resources ? ([["Resources", { kind: "resources", tab: "databases" }]] as [string, Route][]) : []),
       ...(pages.people === "everyone"
-        ? ([["People and access", { kind: "people", tab: null }]] as [string, Route][])
+        ? ([["People and access", { kind: "people", tab: "people" }]] as [string, Route][])
         : pages.people === "owned"
-          ? ([["Your agents and services", { kind: "people", tab: null }]] as [string, Route][])
+          ? ([["Your agents and services", { kind: "people", tab: "people" }]] as [string, Route][])
           : []),
       ...(pages.policy ? ([["Policy", { kind: "policy" }]] as [string, Route][]) : []),
       ["Docs", { kind: "docs", page: null, anchor: null }],
@@ -1613,6 +1626,7 @@ function Canvas({
               approvals={approvals.approvals}
               deployments={deployments}
               runs={approvals.runs}
+              access={approvals.access}
               me={me}
               navigate={navigate}
               textOf={(slug, doc) => documentText(slug, doc)}
@@ -1660,7 +1674,7 @@ function Canvas({
               }}
             />
           )}
-          {/* The host's pages, to whoever may view them (HostPages.tsx); to anyone else, why not. */}
+          {/* The host's pages, to whoever may view them (HostPages.tsx, PeoplePages.tsx); to anyone else, why not. */}
           {pages.can.known &&
             ((shown === "resources" && !pages.resources) || (shown === "people" && pages.people === null) || (shown === "policy" && !pages.policy)) && (
               <p className="hl-flow__note">{notShown(pages.can.may(shown === "resources" ? "resource.view" : shown === "people" ? "people.view" : "policy.view"))}</p>
@@ -1670,7 +1684,8 @@ function Canvas({
           {shown === "resources" && route.kind === "resources" && pages.resources && (
             <ResourcesPage tab={route.tab} deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}
-          {shown === "people" && route.kind === "people" && pages.people === "everyone" && <PeoplePage me={me.name} kind={me.kind} tab={route.tab} />}
+          {/* Its tabs, and each principal's, group's and access version's page (PeoplePages.tsx). */}
+          {shown === "people" && pages.people === "everyone" && <PeoplePage me={me.name} route={route} />}
           {shown === "policy" && pages.policy && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
           {shown === "docs" && (
             <Suspense fallback={<div style={{ color: "var(--faint)" }}>loading the manual…</div>}>
@@ -1762,7 +1777,7 @@ function Editor({ me }: { me: Me }) {
       { kind: "editor", slug: null, view: false, seq: null },
       { kind: "library", tab: "samples" },
       { kind: "resources", tab: "databases" },
-      { kind: "people", tab: null },
+      { kind: "people", tab: "people" },
       { kind: "policy" },
     ];
     navigate(to[i]);

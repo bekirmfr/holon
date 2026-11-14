@@ -1,13 +1,14 @@
 // The Review page's left column (gaps-web.md G9, C4): what a version may do, from a deploy's
-// preview (`touches`), grouped as a person decides on it: what needs their approval, what is
-// unchanged (or the host allows already), what it no longer does. Each points at the line of the
+// preview (`touches`), grouped as a person decides on it: the approvals its runs would wait at that
+// no one here can decide yet, first, each saying why; what needs their approval, what is unchanged
+// (or the host allows already), what it no longer does. Each points at the line of the
 // flow's text it comes from, found by scanning the text for its name, as the workbench marks
 // names (review.rs) — the nearest line, not a proof.
 
-import { touchLines, type SettingChange, type Touch, type TouchLine } from "./touches";
+import { cannotDecide, touchLines, type SettingChange, type Touch, type TouchLine } from "./touches";
 
 export type MayRow = { line: TouchLine; anchor: number | null };
-export type MayGroup = { key: "approve" | "same" | "gone"; title: string; rows: MayRow[] };
+export type MayGroup = { key: "undecided" | "approve" | "same" | "gone"; title: string; rows: MayRow[] };
 
 /** The text's lines, as the review numbers them. */
 export function textLines(text: string): string[] {
@@ -36,8 +37,10 @@ export function anchorOf(t: Pick<Touch, "kind" | "name">, lines: string[]): numb
   return null;
 }
 
-/** Which group a row goes in: a use to approve, a thing no longer touched, or the rest. */
+/** Which group a row goes in: an approval no one here can decide, a use to approve, a thing no
+ *  longer touched, or the rest. */
 function groupOf(t: Touch): MayGroup["key"] {
+  if (cannotDecide(t)) return "undecided";
   if (t.change === "gone") return "gone";
   return t.uses.some((u) => u.approval && u.change !== "gone") ? "approve" : "same";
 }
@@ -56,6 +59,7 @@ export function cardRows(groups: MayGroup[]): CardRows {
  *  left out. */
 export function mayGroups(touches: Touch[] = [], settings: SettingChange[] = [], lines: string[] = []): MayGroup[] {
   const groups: MayGroup[] = [
+    { key: "undecided", title: "Can't be decided here", rows: [] },
     { key: "approve", title: "Needs your approval", rows: [] },
     { key: "same", title: "Unchanged, or the host allows it", rows: [] },
     { key: "gone", title: "No longer", rows: [] },
@@ -64,7 +68,8 @@ export function mayGroups(touches: Touch[] = [], settings: SettingChange[] = [],
     const [, line] = touchLines([t]);
     groups.find((g) => g.key === groupOf(t))!.rows.push({ line, anchor: anchorOf(t, lines) });
   }
-  for (const line of touchLines([], settings).slice(1)) groups[0].rows.push({ line, anchor: null });
+  const approve = groups.find((g) => g.key === "approve")!;
+  for (const line of touchLines([], settings).slice(1)) approve.rows.push({ line, anchor: null });
   return groups.filter((g) => g.rows.length > 0);
 }
 

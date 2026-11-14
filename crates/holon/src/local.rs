@@ -10,13 +10,17 @@
 //! user, and so could read the server's data folder and its secrets key as well. A connection
 //! from loopback alone proves nothing (a web page, another user's program and a port forward
 //! all arrive there), so the control plane still asks every request who it is; the file is how
-//! the user's own commands answer. A server elsewhere, or a script in CI, uses an API token
-//! (`HOLON_TOKEN`), as before, or the token `holon mcp setup --server` kept for that server in
-//! `~/.holon/tokens.json`, readable only by the user.
+//! the user's own commands answer. On a server elsewhere a person signs in with `holon login`
+//! (logincmd.rs), whose session is kept for that server in `~/.holon/tokens.json`, readable only
+//! by the user; an agent, a service or a script in CI with its own token (`HOLON_TOKEN`), which
+//! wins over a session. A command's [`Target`] says which it signs in with, so that a refusal
+//! says what to do ([`sign_in_hint`]).
 //!
-//! `holon mcp` never signs in with the run file's token: it signs in as an agent ([`agent_target`]).
-//! On a server this user runs, the run file's admin makes them one (mcphosts.rs), whose token is
-//! kept as `agent:<URL>`, a key no other command reads, so `holon deploy` stays the person.
+//! `holon mcp` never signs in with the run file's token, nor with a person's session: it signs in
+//! as an agent ([`agent_target`]). On a server this user runs, the run file's admin makes them one
+//! (mcphosts.rs); for one elsewhere, `holon mcp setup --server` keeps the agent's token it is
+//! given. Either is kept as `agent:<URL>`, a key no other command reads, so `holon deploy` stays
+//! the person.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -58,15 +62,24 @@ pub(crate) fn dir() -> Option<PathBuf> {
     holon_home().map(|h| h.join("run"))
 }
 
-/// Where the tokens for servers elsewhere are kept: `~/.holon/tokens.json`, each server's URL to
-/// its token (and `agent:<URL>` to the agent's `holon mcp` made on a server this user runs),
+/// Where the tokens for servers are kept: `~/.holon/tokens.json`, each server's URL to the session
+/// `holon login` began there, and `agent:<URL>` to the token `holon mcp` signs in to it with;
 /// readable only by this user.
 pub(crate) fn tokens_file() -> Option<PathBuf> {
     holon_home().map(|h| h.join("tokens.json"))
 }
 
-fn tokens_in(file: &Path) -> std::collections::BTreeMap<String, String> {
+/// What `tokens.json` keeps: each key ([`tokens_file`]) to its token.
+pub(crate) type Kept = std::collections::BTreeMap<String, String>;
+
+/// Everything `file` keeps; nothing, if it can't be read.
+pub(crate) fn tokens_in(file: &Path) -> Kept {
     std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The servers this user signed in to with `holon login`: every key kept but the agents'.
+pub(crate) fn logins(kept: &Kept) -> Vec<String> {
+    kept.keys().filter(|k| !k.starts_with("agent:")).cloned().collect()
 }
 
 /// The token kept for `server` (a URL, as [`server_url`] writes it).
@@ -153,39 +166,104 @@ fn answers(server: &str) -> Option<bool> {
     }
 }
 
-/// `--server` as given: a port alone (`7401`), `host:port`, or a URL.
+/// `--server` as given: a port alone (`7401`, on this machine), `host:port`, or a URL. A host
+/// given bare is reached over https unless it is this machine (`token_safe_to`).
 pub(crate) fn server_url(given: &str) -> String {
     let given = given.trim().trim_end_matches('/');
     if given.parse::<u16>().is_ok() {
         format!("http://127.0.0.1:{given}")
     } else if given.contains("://") {
         given.to_string()
-    } else {
+    } else if on_this_machine(given) {
         format!("http://{given}")
+    } else {
+        format!("https://{given}")
     }
 }
 
-/// The server a command talks to, and the token it signs in with.
+/// Whether `authority` (`host`, `host:port`, `[v6]:port`) names this machine: `localhost`, or a
+/// loopback address.
+fn on_this_machine(authority: &str) -> bool {
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').filter(|(_, port)| port.parse::<u16>().is_ok()).map_or(authority, |(host, _)| host),
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Why no token is sent to `server` (a URL), if none may be: it is plain http to another machine,
+/// where anyone on the way could read the token and sign in with it.
+pub(crate) fn token_safe_to(server: &str) -> Result<(), String> {
+    let plain = server.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"));
+    let authority = server.get(7..).unwrap_or_default().split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    if !plain || on_this_machine(authority) {
+        return Ok(());
+    }
+    Err(format!(
+        "{server} is plain http to another machine: a password or a token sent there could be read on the way, and signed in with. \
+         Give its https:// address, or reach it through an SSH tunnel (ssh -L 7420:localhost:7420 HOST, then --server 7420)"
+    ))
+}
+
+/// The server a command talks to, the token it signs in with, and where that came from.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Target {
     pub(crate) server: String,
     pub(crate) token: Option<String>,
+    pub(crate) from: TokenFrom,
+}
+
+/// Where the token a command signs in with came from: what to do when the server refuses it.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(crate) enum TokenFrom {
+    /// `HOLON_TOKEN`: an agent's, a service's or a script's.
+    Env,
+    /// The session `holon login` kept for the server: a person's.
+    Session,
+    /// The run file of the holon serve this user runs here.
+    RunFile,
+    /// Nothing: it asks without signing in.
+    Nothing,
+}
+
+/// What to do when `server` doesn't take the sign-in a command sent (it answered 401), by where
+/// the token came from.
+pub(crate) fn sign_in_hint(server: &str, from: TokenFrom) -> String {
+    match from {
+        TokenFrom::Env => format!(
+            "it doesn't take HOLON_TOKEN (revoked, its holder disabled, or another server's): set it to a token for {server}, \
+             or unset it and sign in as you with holon login --server {server}"
+        ),
+        TokenFrom::Session => format!("your session there has ended (it expired, you signed out, or your password was reset): holon login --server {server} signs you in again"),
+        TokenFrom::RunFile => format!("it doesn't take its run file's token: is the holon serve at {server} the one you started?"),
+        TokenFrom::Nothing => format!("a person signs in with holon login --server {server}; an agent or a service with its token in HOLON_TOKEN (holon people token NAME makes one)"),
+    }
 }
 
 /// Which server, and how to sign in: `--server` (or `HOLON_SERVER`) if given, else the one server
-/// this user runs on this machine; `HOLON_TOKEN` if set, else the token kept for that server
-/// (`holon mcp setup --server`, chosen for it), else its run file's.
+/// this user runs on this machine, else the one they signed in to with `holon login`;
+/// `HOLON_TOKEN` if set, else the session kept for that server (one given by name, or signed in
+/// to), else its run file's.
 pub(crate) fn target(given: Option<&str>) -> Result<Target, String> {
     let (given, env_token, files) = asked(given);
-    let kept = |server: &str| tokens_file().and_then(|f| saved_token(&f, server));
-    target_from(given.as_deref(), env_token, files, answers, kept)
+    let kept = tokens_file().map(|f| tokens_in(&f)).unwrap_or_default();
+    target_from(given.as_deref(), env_token, files, answers, &kept)
+}
+
+/// The server given: `--server`, else `HOLON_SERVER`.
+pub(crate) fn given_server(given: Option<&str>) -> Option<String> {
+    given.map(str::to_string).or_else(|| std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty()))
+}
+
+/// `HOLON_TOKEN`, if it is set.
+pub(crate) fn env_token() -> Option<String> {
+    std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
 /// What [`target`] and [`agent_target`] read: the server given, `HOLON_TOKEN`, the run files.
 fn asked(given: Option<&str>) -> (Option<String>, Option<String>, Vec<(PathBuf, RunFile)>) {
-    let env_token = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    let given = given.map(str::to_string).or_else(|| std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty()));
-    (given, env_token, dir().map(|d| run_files(&d)).unwrap_or_default())
+    (given_server(given), env_token(), dir().map(|d| run_files(&d)).unwrap_or_default())
 }
 
 /// The server `holon mcp` talks to, and how it signs in there: as an agent, never with the run
@@ -211,13 +289,13 @@ pub(crate) fn agent_key(server: &str) -> String {
     format!("agent:{server}")
 }
 
-/// Which server, as [`target`] finds it, and the agent token `holon mcp` signs in with:
-/// `HOLON_TOKEN`, else the one kept for that server (`agent:<URL>`; for a server this user
-/// doesn't run, `<URL>` too, where `holon mcp setup --server` keeps it).
+/// Which server, as [`target`] finds it (never through a person's `holon login`), and the agent
+/// token `holon mcp` signs in with: `HOLON_TOKEN`, else the one kept for that server
+/// (`agent:<URL>`).
 pub(crate) fn agent_target(given: Option<&str>) -> Result<AgentTarget, String> {
     let (given, env_token, files) = asked(given);
-    let kept = |key: &str| tokens_file().and_then(|f| saved_token(&f, key));
-    agent_target_from(given.as_deref(), env_token, files, answers, kept)
+    let kept = tokens_file().map(|f| tokens_in(&f)).unwrap_or_default();
+    agent_target_from(given.as_deref(), env_token, files, answers, &kept)
 }
 
 /// Ask the server this user runs here (or `server`) as its admin, for a command named `who`:
@@ -228,7 +306,7 @@ pub(crate) fn admin_call(who: &str, server: Option<&str>, method: &str, path: &s
     if (200..300).contains(&answer.status) {
         return Ok((answer.server, answer.body));
     }
-    eprintln!("{who}: {} answered {}: {}", answer.server, answer.status, answer.why());
+    eprintln!("{who}: {}", answer.said());
     Err(1)
 }
 
@@ -237,12 +315,24 @@ pub(crate) struct Answer {
     pub(crate) server: String,
     pub(crate) status: u16,
     pub(crate) body: String,
+    /// Where the token the request was signed in with came from: what a 401 says to do.
+    pub(crate) from: TokenFrom,
 }
 
 impl Answer {
     /// The `{"error": …}` sentence it answered, or its body.
     pub(crate) fn why(&self) -> String {
         serde_json::from_str::<serde_json::Value>(&self.body).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| self.body.trim().to_string())
+    }
+
+    /// A refusal, said: its status and why; for a sign-in it didn't take (401), what to do.
+    pub(crate) fn said(&self) -> String {
+        let said = format!("{} answered {}: {}", self.server, self.status, self.why());
+        if self.status == 401 {
+            format!("{said}; {}", sign_in_hint(&self.server, self.from))
+        } else {
+            said
+        }
     }
 }
 
@@ -254,9 +344,9 @@ pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, bo
         eprintln!("{who}: {e}");
         1
     })?;
-    let server = target.server;
+    let Target { server, token, from } = target;
     let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
-    if let Some(token) = &target.token {
+    if let Some(token) = &token {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
     let answered = match body {
@@ -271,7 +361,7 @@ pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, bo
             return Err(1);
         }
     };
-    Ok(Answer { server, status, body: response.into_string().unwrap_or_default() })
+    Ok(Answer { server, status, body: response.into_string().unwrap_or_default(), from })
 }
 
 /// [`target`], given what it reads: testable without a server.
@@ -280,13 +370,22 @@ fn target_from(
     env_token: Option<String>,
     files: Vec<(PathBuf, RunFile)>,
     answers: impl Fn(&str) -> Option<bool>,
-    kept: impl Fn(&str) -> Option<String>,
+    kept: &Kept,
 ) -> Result<Target, String> {
-    let (server, from_run) = server_from(given, files, answers)?;
-    // A token kept for a server is for one given by name; the one server running is signed in to
-    // with its run file's.
-    let kept = given.and_then(|_| kept(&server));
-    Ok(Target { token: env_token.or(kept).or(from_run), server })
+    let (server, from_run) = server_from(given, files, answers, &logins(kept))?;
+    // A session is for a server given by name, or found as the one signed in to; the one server
+    // running here is signed in to with its run file's.
+    let session = if given.is_some() || from_run.is_none() { kept.get(&server).cloned() } else { None };
+    let (token, from) = match (env_token, session, from_run) {
+        (Some(t), _, _) => (Some(t), TokenFrom::Env),
+        (None, Some(t), _) => (Some(t), TokenFrom::Session),
+        (None, None, Some(t)) => (Some(t), TokenFrom::RunFile),
+        (None, None, None) => (None, TokenFrom::Nothing),
+    };
+    if token.is_some() {
+        token_safe_to(&server)?;
+    }
+    Ok(Target { server, token, from })
 }
 
 /// [`agent_target`], given what it reads.
@@ -295,19 +394,25 @@ fn agent_target_from(
     env_token: Option<String>,
     files: Vec<(PathBuf, RunFile)>,
     answers: impl Fn(&str) -> Option<bool>,
-    kept: impl Fn(&str) -> Option<String>,
+    kept: &Kept,
 ) -> Result<AgentTarget, String> {
-    let (server, from_run) = server_from(given, files, answers)?;
-    if env_token.is_some() {
-        return Ok(AgentTarget { server, token: env_token, run_token: None });
+    let (server, from_run) = server_from(given, files, answers, &[])?;
+    let target = match env_token {
+        Some(token) => AgentTarget { server, token: Some(token), run_token: None },
+        None => {
+            let token = kept.get(&agent_key(&server)).cloned();
+            AgentTarget { server, token, run_token: from_run }
+        }
+    };
+    if target.token.is_some() || target.run_token.is_some() {
+        token_safe_to(&target.server)?;
     }
-    let token = kept(&agent_key(&server)).or_else(|| from_run.is_none().then(|| kept(&server)).flatten());
-    Ok(AgentTarget { server, token, run_token: from_run })
+    Ok(target)
 }
 
-/// Which server: `given`, else the one this user runs here; and its run file's token, when this
-/// user runs it.
-fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: impl Fn(&str) -> Option<bool>) -> Result<(String, Option<String>), String> {
+/// Which server: `given`, else the one this user runs here, else the one of `logins` (the servers
+/// they signed in to with `holon login`); and its run file's token, when this user runs it.
+fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: impl Fn(&str) -> Option<bool>, logins: &[String]) -> Result<(String, Option<String>), String> {
     if let Some(given) = given {
         let server = server_url(given);
         let from_run = files.into_iter().find(|(_, f)| f.server == server).map(|(_, f)| f.token);
@@ -329,9 +434,17 @@ fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: imp
             let file = running.remove(0);
             Ok((file.server, Some(file.token)))
         }
-        0 => Err("no holon serve is running for you on this machine: start one, or give --server <port or URL> \
-                  (and HOLON_TOKEN, for a server elsewhere)"
-            .into()),
+        0 => match logins {
+            [one] => Ok((one.clone(), None)),
+            [] => Err("no holon serve is running for you on this machine: start one, give --server <port or URL>, \
+                       or sign in to a server elsewhere with holon login --server <URL>"
+                .into()),
+            several => Err(format!(
+                "no holon serve is running for you on this machine, and you are signed in to {} servers: pick one with --server {}",
+                several.len(),
+                several.join(" or --server ")
+            )),
+        },
         _ => {
             let ports: Vec<String> = running.iter().map(|f| f.server.rsplit(':').next().unwrap_or("").to_string()).collect();
             Err(format!("{} holon servers are running here: pick one with --server {}", ports.len(), ports.join(" or --server ")))
@@ -343,56 +456,123 @@ fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: imp
 mod tests {
     use super::*;
 
-    fn none(_: &str) -> Option<String> {
-        None
-    }
-
     fn file(port: u16) -> (PathBuf, RunFile) {
         let f = RunFile { server: format!("http://127.0.0.1:{port}"), token: format!("hl_{port}"), pid: 1 };
         (PathBuf::from(format!("/nowhere/{port}.json")), f)
     }
 
-    #[test]
-    fn server_takes_a_port_an_address_or_a_url() {
-        assert_eq!(server_url("7401"), "http://127.0.0.1:7401");
-        assert_eq!(server_url("holon.example.com:443"), "http://holon.example.com:443");
-        assert_eq!(server_url("https://holon.example.com/"), "https://holon.example.com");
+    /// `tokens.json`, keeping `pairs`.
+    fn kept(pairs: &[(&str, &str)]) -> Kept {
+        pairs.iter().map(|(k, t)| (k.to_string(), t.to_string())).collect()
     }
 
+    /// `--server` as given, where it is reached, and whether a token is sent there: never over
+    /// plain http to another machine, wherever the token comes from (`HOLON_TOKEN`, a session kept
+    /// for the server, an agent's); to this machine, as before. A host given bare is reached over
+    /// https.
     #[test]
-    fn the_one_server_running_is_the_target_with_its_token() {
-        let up = |s: &str| Some(s.ends_with("7401"));
-        let t = target_from(None, None, vec![file(7400), file(7401)], up, none).unwrap();
-        assert_eq!(t, Target { server: "http://127.0.0.1:7401".into(), token: Some("hl_7401".into()) });
-        // HOLON_TOKEN wins over the file's.
-        let t = target_from(None, Some("ht_x".into()), vec![file(7401)], |_| Some(true), none).unwrap();
-        assert_eq!(t.token.as_deref(), Some("ht_x"));
+    fn a_token_crosses_a_network_only_over_https() {
+        #[rustfmt::skip]
+        let cases = [
+            ("7401", "http://127.0.0.1:7401", true),
+            ("localhost:7420", "http://localhost:7420", true),
+            ("127.0.0.2:7420", "http://127.0.0.2:7420", true),
+            ("[::1]:7420", "http://[::1]:7420", true),
+            ("http://LOCALHOST:7420/", "http://LOCALHOST:7420", true),
+            ("holon.example.com:443", "https://holon.example.com:443", true),
+            ("holon.example.com", "https://holon.example.com", true),
+            ("https://holon.example.com/", "https://holon.example.com", true),
+            ("http://holon.example.com:7420", "http://holon.example.com:7420", false),
+            ("http://192.168.1.5:7420", "http://192.168.1.5:7420", false),
+            ("http://[fe80::1]:7420", "http://[fe80::1]:7420", false),
+            ("http://localhost.example.com", "http://localhost.example.com", false),
+            ("http://127.0.0.1@holon.example.com", "http://127.0.0.1@holon.example.com", false),
+            ("HTTP://holon.example.com", "HTTP://holon.example.com", false),
+        ];
+        for (given, url, sent) in cases {
+            assert_eq!(server_url(given), url, "{given}");
+            assert_eq!(token_safe_to(url).is_ok(), sent, "{given}");
+            let session = kept(&[(url, "hs_kept"), (&agent_key(url), "ht_agent")]);
+            for (env, kept) in [(Some("ht_env".to_string()), &Kept::new()), (None, &session)] {
+                let target = target_from(Some(given), env.clone(), vec![], |_| None, kept);
+                assert_eq!(target.is_ok(), sent, "{given}, HOLON_TOKEN {env:?}: {target:?}");
+                let agent = agent_target_from(Some(given), env.clone(), vec![], |_| None, kept);
+                assert_eq!(agent.is_ok(), sent, "holon mcp: {given}, HOLON_TOKEN {env:?}: {agent:?}");
+            }
+            // No token, nothing to read on the way.
+            assert!(target_from(Some(given), None, vec![], |_| None, &Kept::new()).is_ok(), "{given}, no token");
+        }
+        let said = token_safe_to("http://holon.example.com:7420").unwrap_err();
+        assert!(said.contains("https://") && said.contains("ssh -L"), "{said}");
     }
 
+    /// Where a command signs in from, every way it can: `HOLON_TOKEN`, a person's session (`holon
+    /// login`), the run file of a server this user runs, or nothing; and which server, when none
+    /// is given: the one running here, else the one signed in to. What a refusal (401) says to do
+    /// follows from where the token came from.
     #[test]
-    fn none_or_several_running_say_what_to_pass() {
-        let nothing = target_from(None, None, vec![file(7401)], |_| Some(false), none).unwrap_err();
-        assert!(nothing.contains("no holon serve is running"), "{nothing}");
-        let two = target_from(None, None, vec![file(7401), file(7420)], |_| Some(true), none).unwrap_err();
-        assert!(two.contains("--server 7401 or --server 7420"), "{two}");
+    fn a_command_signs_in_with_holon_token_a_session_the_run_file_or_nothing() {
+        use TokenFrom::*;
+        let (here, there, other) = ("http://127.0.0.1:7420", "https://holon.example.com", "https://other.example.com");
+        let target = |server: &str, token: Option<&str>, from| Target { server: server.into(), token: token.map(String::from), from };
+        /// `--server`, `HOLON_TOKEN`, what `tokens.json` keeps, the servers running here, and the
+        /// target (or what the refusal says).
+        type Case<'a> = (Option<&'a str>, Option<&'a str>, &'a [(&'a str, &'a str)], &'a [u16], Result<Target, &'a str>);
+        #[rustfmt::skip]
+        let cases: &[Case] = &[
+            // A server elsewhere, given: HOLON_TOKEN wins; else the session kept for it; else nothing.
+            (Some(there), Some("ht_env"), &[(there, "hs_ada")], &[], Ok(target(there, Some("ht_env"), Env))),
+            (Some("https://holon.example.com/"), None, &[(there, "hs_ada")], &[], Ok(target(there, Some("hs_ada"), Session))),
+            (Some(there), None, &[(other, "hs_ada")], &[], Ok(target(there, None, Nothing))),
+            // An agent's token kept for it is holon mcp's alone.
+            (Some(there), None, &[("agent:https://holon.example.com", "ht_agent")], &[], Ok(target(there, None, Nothing))),
+            // A server this user runs, given by port: its run file's token, or a session kept for it.
+            (Some("7420"), None, &[], &[7420], Ok(target(here, Some("hl_7420"), RunFile))),
+            (Some("7420"), None, &[(here, "hs_ada")], &[7420], Ok(target(here, Some("hs_ada"), Session))),
+            (Some("7420"), Some("ht_env"), &[(here, "hs_ada")], &[7420], Ok(target(here, Some("ht_env"), Env))),
+            // None given: the one running here, with its run file's, whatever sessions are kept.
+            (None, None, &[(there, "hs_ada"), (here, "hs_ada")], &[7420], Ok(target(here, Some("hl_7420"), RunFile))),
+            (None, Some("ht_env"), &[], &[7420], Ok(target(here, Some("ht_env"), Env))),
+            // None running here: the one server signed in to, with its session (an agent's isn't one).
+            (None, None, &[(there, "hs_ada"), ("agent:https://other.example.com", "ht_agent")], &[], Ok(target(there, Some("hs_ada"), Session))),
+            (None, Some("ht_env"), &[(there, "hs_ada")], &[], Ok(target(there, Some("ht_env"), Env))),
+            (None, None, &[(there, "hs_ada"), (other, "hs_ada")], &[], Err("pick one with --server https://holon.example.com or --server https://other.example.com")),
+            (None, None, &[("agent:https://holon.example.com", "ht_agent")], &[], Err("holon login --server <URL>")),
+            // Several running: one is picked, whatever is signed in to.
+            (None, None, &[(there, "hs_ada")], &[7401, 7420], Err("--server 7401 or --server 7420")),
+        ];
+        for (given, env, kept_, running, want) in cases {
+            let files = vec![file(7400), file(7401), file(7420)];
+            let up = |s: &str| Some(running.iter().any(|p| s.ends_with(&format!(":{p}"))));
+            let got = target_from(*given, env.map(String::from), files, up, &kept(kept_));
+            let case = format!("--server {given:?}, HOLON_TOKEN {env:?}, kept {kept_:?}, running {running:?}");
+            match (got, want) {
+                (Ok(got), Ok(want)) => {
+                    assert_eq!(&got, want, "{case}");
+                    assert_eq!(got.token.is_some(), got.from != Nothing, "{case}");
+                }
+                (Err(got), Err(want)) => assert!(got.contains(want), "{case}: {got}"),
+                (got, want) => panic!("{case}: {got:?}, wanted {want:?}"),
+            }
+        }
+        // What a refusal says to do, by where the token came from.
+        #[rustfmt::skip]
+        let hints: [(TokenFrom, &[&str]); 4] = [
+            (Env, &["HOLON_TOKEN", "holon login --server https://holon.example.com"]),
+            (Session, &["ended", "holon login --server https://holon.example.com"]),
+            (RunFile, &["run file"]),
+            (Nothing, &["holon login --server https://holon.example.com", "HOLON_TOKEN"]),
+        ];
+        for (from, says) in hints {
+            let said = sign_in_hint(there, from);
+            assert!(says.iter().all(|s| said.contains(s)), "{from:?}: {said}");
+        }
     }
 
-    #[test]
-    fn a_server_given_by_port_signs_in_with_its_run_file() {
-        let t = target_from(Some("7420"), None, vec![file(7401), file(7420)], |_| unreachable!("not probed"), none).unwrap();
-        assert_eq!(t, Target { server: "http://127.0.0.1:7420".into(), token: Some("hl_7420".into()) });
-        let elsewhere = target_from(Some("https://holon.example.com"), None, vec![file(7420)], |_| None, none).unwrap();
-        assert_eq!(elsewhere.token, None);
-        // The token kept for it, over its run file's; HOLON_TOKEN still wins.
-        let kept = |s: &str| (s == "https://holon.example.com" || s.ends_with(":7420")).then(|| "ht_kept".to_string());
-        assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
-        assert_eq!(target_from(Some("https://holon.example.com/"), None, vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
-        assert_eq!(target_from(Some("https://holon.example.com"), Some("ht_env".into()), vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_env"));
-    }
-
-    /// `holon mcp` signs in as an agent, never with a run file's token: `HOLON_TOKEN`, else the
-    /// agent's token kept for the server; a server this user runs lends its run file's token only
-    /// to make one. Every other command signs in as before, the person, whatever agent's is kept.
+    /// `holon mcp` signs in as an agent, never with a run file's token nor a person's session:
+    /// `HOLON_TOKEN`, else the agent's token kept for the server; a server this user runs lends
+    /// its run file's token only to make one. Every other command signs in as before, the person,
+    /// whatever agent's is kept.
     #[test]
     fn holon_mcp_signs_in_as_an_agent_and_other_commands_as_before() {
         let (here, there) = ("http://127.0.0.1:7420", "https://holon.example.com");
@@ -404,27 +584,28 @@ mod tests {
             // A server this user runs: its agent's token, or none yet (and the run file's, to make one).
             (Some("7420"), None, &[("agent:http://127.0.0.1:7420", "ht_agent")], agent(here, Some("ht_agent"), Some("hl_7420"))),
             (Some("7420"), None, &[], agent(here, None, Some("hl_7420"))),
-            // Not the token kept for `holon deploy --server 7420`: that may be anyone's.
-            (Some("7420"), None, &[("http://127.0.0.1:7420", "ht_kept")], agent(here, None, Some("hl_7420"))),
+            // Not the session kept for `holon deploy --server 7420`: that is a person's.
+            (Some("7420"), None, &[("http://127.0.0.1:7420", "hs_ada")], agent(here, None, Some("hl_7420"))),
             (None, None, &[("agent:http://127.0.0.1:7401", "ht_agent")], agent("http://127.0.0.1:7401", Some("ht_agent"), Some("hl_7401"))),
-            // A server elsewhere: the token setup kept for it, an agent's kept under its own key first.
-            (Some(there), None, &[("https://holon.example.com", "ht_kept")], agent(there, Some("ht_kept"), None)),
-            (Some(there), None, &[("https://holon.example.com", "ht_kept"), ("agent:https://holon.example.com", "ht_agent")], agent(there, Some("ht_agent"), None)),
+            // A server elsewhere: the agent's token setup kept for it, never a person's session.
+            (Some(there), None, &[("https://holon.example.com", "hs_ada")], agent(there, None, None)),
+            (Some(there), None, &[("https://holon.example.com", "hs_ada"), ("agent:https://holon.example.com", "ht_agent")], agent(there, Some("ht_agent"), None)),
             (Some(there), None, &[], agent(there, None, None)),
             // HOLON_TOKEN, wherever: nothing is made with the run file's.
             (Some("7420"), Some("ht_env"), &[("agent:http://127.0.0.1:7420", "ht_agent")], agent(here, Some("ht_env"), None)),
-            (Some(there), Some("ht_env"), &[("https://holon.example.com", "ht_kept")], agent(there, Some("ht_env"), None)),
+            (Some(there), Some("ht_env"), &[("https://holon.example.com", "hs_ada")], agent(there, Some("ht_env"), None)),
         ];
         let running = |s: &str| Some(s.ends_with("7401"));
-        for (given, env, kept, want) in cases {
-            let lookup = |key: &str| kept.iter().find(|(k, _)| *k == key).map(|(_, t)| t.to_string());
-            let got = agent_target_from(*given, env.map(String::from), vec![file(7400), file(7401), file(7420)], running, lookup).unwrap();
-            assert_eq!(&got, want, "--server {given:?}, HOLON_TOKEN {env:?}, kept {kept:?}");
-            assert!(got.token.as_deref().is_none_or(|t| !t.starts_with("hl_")), "never a run file's token: {got:?}");
+        for (given, env, kept_, want) in cases {
+            let got = agent_target_from(*given, env.map(String::from), vec![file(7400), file(7401), file(7420)], running, &kept(kept_)).unwrap();
+            assert_eq!(&got, want, "--server {given:?}, HOLON_TOKEN {env:?}, kept {kept_:?}");
+            assert!(got.token.as_deref().is_none_or(|t| t.starts_with("ht_")), "never a run file's token nor a session: {got:?}");
         }
+        // holon mcp never finds its server through a person's sign-in.
+        assert!(agent_target_from(None, None, vec![], |_| None, &kept(&[(there, "hs_ada")])).is_err());
         // `holon deploy --server 7420` is the person, with an agent's token kept for it.
-        let kept = |key: &str| (key == "agent:http://127.0.0.1:7420").then(|| "ht_agent".to_string());
-        assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, kept).unwrap().token.as_deref(), Some("hl_7420"));
+        let agents = kept(&[("agent:http://127.0.0.1:7420", "ht_agent")]);
+        assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, &agents).unwrap().token.as_deref(), Some("hl_7420"));
     }
 
     #[test]
@@ -434,7 +615,9 @@ mod tests {
         assert!(!keep_token(&file, "https://a.example", Some("ht_a")).unwrap());
         assert!(keep_token(&file, "https://a.example", Some("ht_a2")).unwrap(), "replaced");
         keep_token(&file, "https://b.example", Some("ht_b")).unwrap();
+        keep_token(&file, &agent_key("https://b.example"), Some("ht_agent")).unwrap();
         assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("ht_a2"));
+        assert_eq!(logins(&tokens_in(&file)), ["https://a.example", "https://b.example"]);
         assert!(keep_token(&file, "https://a.example", None).unwrap());
         assert_eq!(saved_token(&file, "https://a.example"), None);
         assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("ht_b"));

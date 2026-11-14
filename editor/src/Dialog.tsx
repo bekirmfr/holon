@@ -17,9 +17,15 @@ import { useFocusTrap } from "./ui/focusTrap";
 import { lettersOf } from "./keymap";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
+/** What a prompt takes for its answer: by default a line, left empty answering null as Cancel
+ *  does; `optional`, a line it may be answered without (a reason one may give); `required`, a line
+ *  it can't be answered without (a decline's reason): its button stays disabled until something
+ *  is typed, and `required` says why under the field. */
+export type Answer = "optional" | { required: string };
+
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
-  | { kind: "prompt"; message: string; initial: string; action: string; empty: boolean; resolve: (value: string | null) => void }
+  | { kind: "prompt"; message: string; initial: string; action: string; answer?: Answer; resolve: (value: string | null) => void }
   | { kind: "choose"; message: string; answers: string[]; resolve: (at: number | null) => void }
   | { kind: "notice"; message: string; action: string; body?: ReactNode; resolve: () => void };
 
@@ -28,9 +34,9 @@ type Dialogs = {
    *  `body`, shown under the question, is what it is about (a deploy's review, say). */
   confirm: (message: string, action?: string, body?: ReactNode) => Promise<boolean>;
   /** Ask for a line of text; resolves the trimmed text, or null if cancelled or left empty
-   *  (unless `empty` lets it be answered empty, an optional reason). `action` labels the button
-   *  that answers. */
-  prompt: (message: string, initial?: string, action?: string, empty?: boolean) => Promise<string | null>;
+   *  (`answer` says otherwise: an optional reason, or one that is required). `action` labels the
+   *  button that answers. */
+  prompt: (message: string, initial?: string, action?: string, answer?: Answer) => Promise<string | null>;
   /** Ask a question with several answers, the last of them the highlighted one (Enter); resolves
    *  the answer's index, or null if cancelled (Esc, or a click beside it). */
   choose: (message: string, answers: string[]) => Promise<number | null>;
@@ -65,9 +71,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, body, resolve })),
     [],
   );
-  const prompt = useCallback((message: string, initial = "", action = "OK", empty = false) => {
+  const prompt = useCallback((message: string, initial = "", action = "OK", answer?: Answer) => {
     setText(initial);
-    return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, empty, resolve }));
+    return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, answer, resolve }));
   }, []);
   const choose = useCallback((message: string, answers: string[]) => new Promise<number | null>((resolve) => setAsk({ kind: "choose", message, answers, resolve })), []);
   const notice = useCallback(
@@ -75,17 +81,21 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // Why it can't be answered yet: a required line, still empty.
+  const required = ask?.kind === "prompt" && typeof ask.answer === "object" ? ask.answer.required : null;
+  const blocked = required !== null && text.trim() === "";
   /** `accepted`: the highlighted button (for a choice, the last answer; a number, that answer). */
   const close = useCallback(
     (accepted: boolean | number) => {
       if (!ask) return;
+      if (accepted !== false && blocked) return;
       if (ask.kind === "notice") ask.resolve();
       else if (ask.kind === "confirm") ask.resolve(accepted !== false);
       else if (ask.kind === "choose") ask.resolve(accepted === false ? null : accepted === true ? ask.answers.length - 1 : accepted);
-      else ask.resolve(accepted !== false && (ask.empty || text.trim() !== "") ? text.trim() : null);
+      else ask.resolve(accepted !== false && (ask.answer !== undefined || text.trim() !== "") ? text.trim() : null);
       setAsk(null);
     },
-    [ask, text],
+    [ask, text, blocked],
   );
 
   // A choice's answers each take a letter, as a notice's button does; a yes/no question takes y and n.
@@ -191,6 +201,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 ref={input}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
+                aria-required={required !== null}
+                aria-describedby={blocked ? "hl-dialog-required" : undefined}
                 style={{
                   font: "inherit",
                   color: "var(--ink)",
@@ -200,6 +212,11 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                   padding: "4px 6px",
                 }}
               />
+            )}
+            {blocked && (
+              <div id="hl-dialog-required" style={{ color: "var(--muted)", fontSize: 12, marginTop: -6 }}>
+                {required}
+              </div>
             )}
             {ask.kind === "notice" ? (
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -250,8 +267,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               <button
                 ref={ok}
                 onClick={() => close(true)}
+                disabled={blocked}
+                title={blocked ? (required ?? undefined) : undefined}
                 aria-keyshortcuts={ask.kind === "confirm" ? "Y Enter" : "Enter"}
-                style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }}
+                style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...(blocked ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}
               >
                 {ask.kind === "confirm" && <Kbd k="y" />}
                 {ask.action}

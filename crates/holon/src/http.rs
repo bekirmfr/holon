@@ -214,7 +214,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(hash_hex) = url.strip_prefix("/unit/")
         && method == "GET" {
-            return handle_get_unit(&state.store, hash_hex);
+            return handle_get_unit(state, &caller, hash_hex);
         }
 
     if method == "POST" && url == "/unit" {
@@ -286,6 +286,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if method == "GET" && url == "/deployments" {
         return handle_get_deployments(&state.deployments, &caller);
+    }
+
+    if method == "GET" && url == "/runs/waiting" {
+        return durable::handle_get_waiting(&state.deployments, &caller, &crate::bindings::approval_settings(state));
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
