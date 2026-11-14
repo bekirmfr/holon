@@ -6705,8 +6705,16 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert!(export.lines[0].contains(&signature), "it holds the signature the run answered");
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
-    assert_eq!(report.given, BTreeMap::from([(0, 1)]), "one node stood in for: the signing");
-    assert!(verify::describe(&report, None).contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{}", verify::describe(&report, None));
+    let stood = &report.given[&0];
+    assert_eq!(stood.iter().map(|s| s.leaf.as_str()).collect::<Vec<_>>(), ["hmac_sha256"], "one node stood in for: the signing");
+    assert!(stood[0].secrets[0].starts_with("signing_key v1 #") && stood[0].tokens.is_empty(), "named by its secret, as the entry shows it: {stood:?}");
+    let said = verify::describe(&report, None);
+    assert!(said.contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{said}");
+    // The report names the step it took on trust, and the line that says the run matched says it
+    // matched given that step: a matching run never reads as more than it is.
+    assert!(said.contains("re-ran 1 runs: each produced what its log entry says, 1 of them given what the log kept for a step (named below)"), "{said}");
+    assert!(said.contains("    hmac_sha256 fed the secret signing_key v1 #") && said.contains(": 1 node in 1 run: 0, as recorded"), "{said}");
+    assert!(!said.contains(value), "nothing of the value: {said}");
     assert!(report.ok(), "{}", verify::describe(&report, None));
 
     let forged_signature: String = signature.chars().rev().collect();
@@ -6731,7 +6739,9 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     let (forged, head) = rechained(export.lines[0].replace(&signature, &forged_signature));
     let report = verify::check(&forged, Some(&head), &BTreeMap::new());
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
-    assert_eq!(report.given, BTreeMap::from([(0, 1)]));
+    assert_eq!(report.given[&0].len(), 1);
+    // Which is why the report names it: the forged signature rests on this line alone.
+    assert!(verify::describe(&report, None).contains("    hmac_sha256 fed the secret signing_key v1 #"), "{}", verify::describe(&report, None));
 }
 
 /// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
@@ -7089,7 +7099,19 @@ route.get("/basic", (req) => {
     let report = verify::check(&export, None, &BTreeMap::new());
     let text = verify::describe(&report, None);
     assert!(matches!(report.reruns[0].1, verify::Rerun::Matched), "{text}");
-    assert!(report.given.get(&0).is_some_and(|&n| n >= 2), "the token check and the receipt are taken from the log: {text}");
+    assert!(report.given.get(&0).is_some_and(|stood| stood.len() >= 2), "the token check and the receipt are taken from the log: {text}");
+    // Each is named, by its leaf and the secret it was fed as the entry shows it (the receipt's
+    // signing isn't among them: no token came, and it never ran); and every leaf the report
+    // names is one a run's record stood in for, no more and no fewer.
+    for leaf in ["secure_equals", "concat"] {
+        assert!(text.lines().any(|l| l.starts_with(&format!("    {leaf} fed the secret api_token v1 #")) && l.ends_with(", as recorded")), "{leaf} is named: {text}");
+    }
+    assert!(!text.contains("hmac_sha256"), "{text}");
+    let named: BTreeSet<&str> = text.lines().filter(|l| l.starts_with("    ") && l.ends_with(", as recorded")).filter_map(|l| l.trim_start().split(' ').next()).collect();
+    let stood: BTreeSet<&str> = report.given.values().flatten().map(|s| s.leaf.as_str()).collect();
+    assert_eq!(named, stood, "{text}");
+    assert!(!text.contains("fed a placeholder"), "each says what it was fed: {text}");
+    assert!(!text.contains("a-dummy-token-for-tests"), "nothing of the value: {text}");
     match &report.reruns[1].1 {
         verify::Rerun::Skipped(why) => assert_eq!(why, verify::WITHHELD_NODE, "{text}"),
         other => panic!("a run computed from the secret is not run again: {other:?}\n{text}"),

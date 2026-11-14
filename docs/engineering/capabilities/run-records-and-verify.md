@@ -138,8 +138,8 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 3. **Every run again** (`rerun`): the same unit, request, state, clock and random, its outbound
    answers and collection reads from the entry, through the same core and rounds, compared with
    its run id, outputs, effects and status. A node that computed with a secret or a resume token
-   can't be computed again; what the log kept for it stands in (`Asserting`), and the report counts
-   those runs and nodes (`given`). A run that failed is run again too, its status aside: what it
+   can't be computed again; what the log kept for it stands in (`Asserting`), and the report names
+   each such node by its leaf and the secrets and tokens it was fed (`given`, `Stood`), by run. A run that failed is run again too, its status aside: what it
    computed, and what its writes made of its state (none, where its error says the commit refused
    them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
    kept for such a node, failed and gets further run again, a file read whose text neither the

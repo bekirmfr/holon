@@ -315,8 +315,8 @@ pub(crate) struct Report {
     /// Each run, by seq, with what running it again came to.
     pub(crate) reruns: Vec<(u64, Rerun)>,
     /// The runs checked given what the log kept for nodes that can't be computed again (fed a
-    /// secret or a token): by seq, how many such nodes.
-    pub(crate) given: BTreeMap<u64, usize>,
+    /// secret or a token): by seq, each such node, so the report names what it took on trust.
+    pub(crate) given: BTreeMap<u64, Vec<Stood>>,
     /// The runs whose run id was taken from the log, not made again: it was made from a secret or
     /// a resume token the run received (in its request, its state or what it read), which the log
     /// never holds.
@@ -381,9 +381,45 @@ struct Left {
 #[derive(Default)]
 struct Given {
     /// Nodes fed a secret or a token (`Asserting`).
-    nodes: usize,
+    nodes: Vec<Stood>,
     /// The run id.
     id: bool,
+}
+
+/// A node whose outputs were taken from the log, not computed again: its leaf, and what it was
+/// fed that the log never holds. A unit names no composite it sits in, so the leaf is all there
+/// is to name it by.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Stood {
+    /// The leaf's name (`hmac_sha256`), or `a module`.
+    pub(crate) leaf: String,
+    /// The secrets in its inputs, each as the run's entry shows it (`api_token v3 #a1b2c3d4`).
+    pub(crate) secrets: Vec<String>,
+    /// The tokens in its inputs, each as its mark reads (`answer access_token #a1b2c3d4`).
+    pub(crate) tokens: Vec<String>,
+    /// The tainted keys in its inputs (`authorization`): values of the request's the host never
+    /// keeps.
+    pub(crate) tainted: Vec<String>,
+}
+
+impl Stood {
+    /// What it was fed, as the report says it: `the secret api_token v3 #a1b2c3d4`.
+    fn fed(&self) -> String {
+        let some = |one: &str, many: &str, items: &[String]| match items {
+            [] => None,
+            [item] => Some(format!("{one} {item}")),
+            items => Some(format!("{many} {}", items.join(", "))),
+        };
+        let fed: Vec<String> = [
+            some("the secret", "the secrets", &self.secrets),
+            some("the token", "the tokens", &self.tokens),
+            some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if fed.is_empty() { "a placeholder".into() } else { fed.join(" and ") }
+    }
 }
 
 impl Report {
@@ -490,7 +526,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
             None => rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left),
         };
         lefts.push(left);
-        if given.nodes > 0 {
+        if !given.nodes.is_empty() {
             report.given.insert(entry.seq, given.nodes);
         }
         if given.id {
@@ -1211,7 +1247,16 @@ fn rerun(
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
-    given.nodes = observer.stood_in.len();
+    // Each node stood in for, its secrets as the run's entry shows them (their version and
+    // fingerprint), as a request that carried one is said (`check_sends`).
+    given.nodes = observer
+        .stood_in
+        .values()
+        .map(|stood| Stood {
+            secrets: stood.secrets.iter().map(|name| entry.secrets.get(name).map_or(name.clone(), |shown| format!("{name} {shown}"))).collect(),
+            ..stood.clone()
+        })
+        .collect();
     // A write of a secret's value is refused where it runs (firing.rs), and run again here with
     // its placeholder it can't be told from one that was performed (a file's text, logged by
     // hash, differs too): the run isn't checked.
@@ -1423,8 +1468,9 @@ struct Asserting {
     timer: recorder::Timer,
     /// Each node's outputs in the last round the log recorded them in, by path.
     recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
-    /// The nodes stood in for.
-    stood_in: BTreeSet<Vec<u32>>,
+    /// The nodes stood in for, by path: each one's leaf, and the secrets (by name) and tokens in
+    /// its inputs.
+    stood_in: BTreeMap<Vec<u32>, Stood>,
     /// The nodes that needed standing in for and that the log keeps no outputs for (computed from
     /// a secret, larger than the log keeps, or deeper than it records).
     unrecorded: BTreeSet<Vec<u32>>,
@@ -1443,7 +1489,7 @@ impl Asserting {
             rounds.insert(t.path.clone(), t.round);
             recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeSet::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
     }
 }
 
@@ -1469,7 +1515,18 @@ impl Observer for Asserting {
         }
         match self.recorded.get(path) {
             Some(outputs) => {
-                self.stood_in.insert(path.to_vec());
+                let leaf = match &unit.body {
+                    holon_core::UnitBody::Primitive { name } => name.clone(),
+                    _ => "a module".into(),
+                };
+                let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+                for v in inputs.iter().flatten() {
+                    fed.0.extend(self.marks.secrets_in(v));
+                    fed.1.extend(self.marks.tokens_in(v));
+                    fed.2.extend(self.marks.tainted_in(v));
+                }
+                let list = |set: BTreeSet<String>| set.into_iter().collect();
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2) });
                 Some(outputs.clone())
             }
             None => {
@@ -1519,10 +1576,21 @@ impl Marks {
         found.into_inner()
     }
 
+    /// The tainted keys whose placeholder is in `v` (`‹taint:authorization›`: a value of the
+    /// request's the host never keeps), by key.
+    fn tainted_in(&self, v: &Value) -> BTreeSet<String> {
+        self.rest_of("taint:", v)
+    }
+
     /// The tokens whose placeholder is in `v` (as [`Marks::read`] gives it): each as its mark
     /// reads, `answer access_token #a1b2c3d4`, so one token is told from another by its print.
     fn tokens_in(&self, v: &Value) -> BTreeSet<String> {
-        let start = format!("{}token:", self.start);
+        self.rest_of("token:", v)
+    }
+
+    /// What follows `kind` in each placeholder of that kind in `v`, up to the placeholder's end.
+    fn rest_of(&self, kind: &str, v: &Value) -> BTreeSet<String> {
+        let start = format!("{}{kind}", self.start);
         let found = std::cell::RefCell::new(BTreeSet::new());
         secrets::value_holds(v, &|s: &str| {
             for (i, _) in s.match_indices(start.as_str()) {
@@ -1814,15 +1882,36 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             _ => {}
         }
     }
-    out += &format!("  re-ran {matched} runs: each produced what its log entry says\n");
+    // A run that matched with a step taken from the log matched given that step: the line that
+    // says it matched says so, and the lines after name each such step.
+    let on_trust = r.reruns.iter().filter(|(seq, x)| *x == Rerun::Matched && r.given.contains_key(seq)).count();
+    out += &format!("  re-ran {matched} runs: each produced what its log entry says");
+    out += &match on_trust {
+        0 => "\n".to_string(),
+        n => format!(", {n} of them given what the log kept for a step (named below)\n"),
+    };
     if !r.given.is_empty() {
         let seqs: Vec<u64> = r.given.keys().copied().collect();
-        let nodes: usize = r.given.values().sum();
+        let nodes: usize = r.given.values().map(Vec::len).sum();
         out += &format!(
-            "  {} checked given what the log kept for {nodes} node{} fed a secret or a resume token (not computed again)\n",
+            "  {} checked given what the log kept for {nodes} node{} fed a secret, a token or a tainted value (not computed again):\n",
             count_of(&seqs),
             if nodes == 1 { "" } else { "s" }
         );
+        // By leaf and what it was fed: how many nodes, in which runs.
+        let mut steps: BTreeMap<(&str, String), (usize, Vec<u64>)> = BTreeMap::new();
+        for (seq, stood) in &r.given {
+            for s in stood {
+                let step = steps.entry((s.leaf.as_str(), s.fed())).or_default();
+                step.0 += 1;
+                if step.1.last() != Some(seq) {
+                    step.1.push(*seq);
+                }
+            }
+        }
+        for ((leaf, fed), (nodes, seqs)) in &steps {
+            out += &format!("    {leaf} fed {fed}: {nodes} node{} in {}, as recorded\n", if *nodes == 1 { "" } else { "s" }, count_of(seqs));
+        }
     }
     if !r.ids_given.is_empty() {
         out += &format!(

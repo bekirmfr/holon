@@ -74,8 +74,9 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
-  re-ran 42 runs: each produced what its log entry says
-  3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
+  re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
+  3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
+    hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
@@ -173,8 +174,12 @@ check, a caller's API key: [tainted keys](../language/reference.md#imports-and-s
 computed again: the log never holds their values, only a placeholder. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
-that way, and for how many nodes. What such a node produced is taken from the log, not checked:
-a run whose signature check the log says passed is checked as if it had.
+that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
+name, version and fingerprint, as the run's entry has them), how many nodes and in which runs,
+`hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded`.
+The line that counts the runs that matched says how many matched given such a step. What such a
+node produced is taken from the log, not checked: a run whose signature check the log says passed
+is checked as if it had, and the named line is where the report says so.
 
 A run's id is made from what it received. When that held a secret or a token (a bearer token
 equal to a secret, a resume link's token in its path), the id can't be made again either: the log
