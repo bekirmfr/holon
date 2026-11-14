@@ -142,7 +142,10 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    each such node by its leaf and the secrets and tokens it was fed (`given`, `Stood`), by run.
    Not every leaf fed one: those core lists as exact on a mark (`taint::on_a_mark`: the ones that
    move a value, and `secure_equals` where each mark has a fingerprint) are computed on the
-   placeholder, and the log's record of them is held to what they give (`Asserting::computes`). A run that failed is run again too, its status aside: what it
+   placeholder, and the log's record of them is held to what they give (`Asserting::computes`).
+   What is taken from the log is held to its leaf's shape (`shaped`: the outputs' number and
+   types, 32 bytes for a hash) and, across the export, to itself (`Taken`): one leaf, the same
+   inputs, the same record. A run that failed is run again too, its status aside: what it
    computed, and what its writes made of its state (none, where its error says the commit refused
    them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
    kept for such a node, failed and gets further run again, a file read whose text neither the

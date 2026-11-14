@@ -7176,6 +7176,75 @@ route.get("/me", (req) => {
     assert!(!report.ok());
 }
 
+/// What `verify` takes from the log it can't compute again, but a leaf is a function of its
+/// inputs. So two runs that record other for one leaf and the same inputs can't both be the
+/// leaf's, and a signature that isn't 32 bytes is no HMAC's: each differs. A record rewritten
+/// whole, with no other run of the same inputs to hold it to, still passes: the trust that
+/// remains, which the report names.
+#[test]
+fn what_is_taken_from_the_log_agrees_with_itself_across_an_export() {
+    let state = claims_state("");
+    let value = "whsec_test_123456";
+    let set = req("POST", "/deployments/twice/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "import { flow, hmac_sha256, route, status } from \"holon\"\nimport signing_key from \"secret:signing_key\"\n\nflow(\"twice\", { port: 18198 })\n\nroute.post(\"/sign\", (req) => hmac_sha256(signing_key, req.body) ?? status(400))\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    // One body signed twice, then another: the last line is the one rewritten below.
+    let sign = |body: &str| data_call(&state, &slug, "POST", "/sign", body).1;
+    let (first, other, again) = (sign("hello"), sign("goodbye"), sign("hello"));
+    assert_eq!(first, again);
+    assert_ne!(first, other);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.given.len(), 3, "each signing is taken from the log");
+
+    // The last line, its signature rewritten everywhere (the answer, and the signing node's own
+    // record), chained again.
+    let rewritten = |to: &str| {
+        let line = export.lines[2].replace(&again, to);
+        assert_ne!(line, export.lines[2]);
+        let head = recorder::line_hash(&line);
+        let lines = vec![export.lines[0].clone(), export.lines[1].clone(), line];
+        let forged = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut report = verify::check(&forged, Some(&head), &BTreeMap::new());
+        assert!(report.breaks.is_empty(), "re-chained, it links");
+        let (ok, said) = (report.ok(), verify::describe(&report, None));
+        (report.reruns.remove(2).1, ok, said)
+    };
+    // To another signature of the right shape: run 0 recorded other for the same body.
+    let forged: String = again.chars().rev().collect();
+    let (came_to, ok, said) = rewritten(&forged);
+    assert_eq!(came_to, verify::Rerun::Differs("what the log recorded for hmac_sha256, taken from it: run 0 recorded other for the same inputs".into()), "{said}");
+    assert!(!ok, "{said}");
+    // To the signature the other body got: of the right shape, and a real one, but not this
+    // body's, as run 0 says.
+    let (came_to, _, said) = rewritten(&other);
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("run 0 recorded other")), "{said}");
+    // Cut short: no HMAC-SHA-256 is 30 bytes, whatever the secret.
+    let (came_to, ok, said) = rewritten(&again[..60]);
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("the shape of what the log recorded for a step taken from it")), "{said}");
+    assert!(!ok, "{said}");
+    // And not hex at all.
+    let (came_to, _, said) = rewritten(&"z".repeat(64));
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("the shape of")), "{said}");
+
+    // The other body's line rewritten the same way has no second run to be held to, and passes:
+    // what one record of a node fed a secret says is taken from the log.
+    let forged: String = other.chars().rev().collect();
+    let line = export.lines[1].replace(&other, &forged);
+    let mut lines = vec![export.lines[0].clone(), line];
+    let last: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+    assert!(last.get("prev").is_some(), "a line names the one before it");
+    lines.truncate(2);
+    let head = recorder::line_hash(&lines[1]);
+    let alone = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&alone, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns[1].1, verify::Rerun::Matched, "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("    hmac_sha256 fed the secret signing_key v1 #"), "and it is named: {}", verify::describe(&report, None));
+}
+
 /// The server's own secret, bound once for every deployment that reads it, with where it may go:
 /// a flow that sends it there deploys and runs with it; one that sends it elsewhere is refused at
 /// deploy, unless it has its own of that name; and a cap narrowed after deploy holds from the next

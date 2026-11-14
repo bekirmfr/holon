@@ -182,6 +182,11 @@ answer built from a signature, the effects, the status. The report says which ru
 that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
 name, version and fingerprint, as the run's entry has them), how many nodes and in which runs,
 `hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded`.
+What is taken from the log is still held to itself: a leaf gives the same for the same inputs,
+so two runs that record other for one leaf fed the same message under the same secret can't both
+be the leaf's, and the later one differs (`what the log recorded for hmac_sha256, taken from it:
+run 4 recorded other for the same inputs`); and a recorded signature that isn't 32 bytes is no
+HMAC's, whatever the secret (`the shape of what the log recorded for a step taken from it`).
 The line that counts the runs that matched says how many matched given such a step. What such a
 node produced is taken from the log, not checked: a run whose signature check the log says passed
 is checked as if it had, and the named line is where the report says so.

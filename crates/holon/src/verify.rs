@@ -384,6 +384,19 @@ struct Given {
     nodes: Vec<Stood>,
     /// The run id.
     id: bool,
+    /// What was taken from the log for a leaf that is a function of its inputs, each of which
+    /// tells its value from another (`Asserting::taken`).
+    taken: Vec<Taken>,
+}
+
+/// What the log recorded for one leaf fed what it never holds, taken as recorded: what the leaf
+/// and its inputs are (a hash of them), its name, and the outputs. Two of these for one leaf and
+/// the same inputs, anywhere in an export, are the same outputs, or one of them isn't the leaf's.
+#[derive(Clone)]
+struct Taken {
+    of: [u8; 32],
+    leaf: String,
+    outputs: Vec<Option<Value>>,
 }
 
 /// A node whose outputs were taken from the log, not computed again: its leaf, and what it was
@@ -516,6 +529,9 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files };
     let marks = Marks::new();
     let mut lefts = Vec::new();
+    // What each leaf taken from the log gave, by the leaf and its inputs: the first run that
+    // recorded it, and what it recorded.
+    let mut taken: BTreeMap<[u8; 32], (u64, Vec<Option<Value>>)> = BTreeMap::new();
     for (i, (entry, _)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
@@ -526,6 +542,24 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
             None => rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left),
         };
         lefts.push(left);
+        // A leaf is a function of its inputs: what the log recorded for it here is what it
+        // recorded for the same leaf and inputs in every other run, or one of the two isn't what
+        // the leaf gave. Which one, only the secret could say; the later one is said to differ.
+        let mut belied = None;
+        for t in &given.taken {
+            match taken.get(&t.of) {
+                Some((first, outputs)) if *outputs != t.outputs => belied = belied.or(Some((t.leaf.clone(), *first))),
+                Some(_) => {}
+                None => {
+                    taken.insert(t.of, (entry.seq, t.outputs.clone()));
+                }
+            }
+        }
+        let came_to = match (came_to, belied) {
+            (Rerun::Differs(why), _) => Rerun::Differs(why),
+            (_, Some((leaf, first))) => Rerun::Differs(format!("what the log recorded for {leaf}, taken from it: run {first} recorded other for the same inputs")),
+            (came_to, None) => came_to,
+        };
         if !given.nodes.is_empty() {
             report.given.insert(entry.seq, given.nodes);
         }
@@ -1252,6 +1286,11 @@ fn rerun(
     if observer.belied {
         differs.push("what a step computed on its marks gives, from what the log recorded for it");
     }
+    // What is taken from the log can't be computed, but it can be what its leaf never gives.
+    if observer.misshapen {
+        differs.push("the shape of what the log recorded for a step taken from it");
+    }
+    given.taken = observer.taken.values().cloned().collect();
     // Each node stood in for, its secrets as the run's entry shows them (their version and
     // fingerprint), as a request that carried one is said (`check_sends`).
     given.nodes = observer
@@ -1482,6 +1521,13 @@ struct Asserting {
     recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
     /// Whether a node computed on its placeholders gave other than the log recorded for it.
     belied: bool,
+    /// What was taken from the log for a leaf that is a function of its inputs alone, where
+    /// every placeholder in them tells its value from another's: by path, for `check` to hold
+    /// the export's other runs to.
+    taken: BTreeMap<Vec<u32>, Taken>,
+    /// Whether something taken from the log isn't what its leaf can give: the wrong number of
+    /// outputs, one of another type than the leaf declares, a hash that isn't 32 bytes.
+    misshapen: bool,
     /// The nodes stood in for, by path: each one's leaf, and the secrets (by name) and tokens in
     /// its inputs.
     stood_in: BTreeMap<Vec<u32>, Stood>,
@@ -1503,7 +1549,7 @@ impl Asserting {
             rounds.insert(t.path.clone(), t.round);
             recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, belied: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting { timer: recorder::Timer::new(), recorded, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
     }
 
     /// Whether `leaf`, fed `inputs`, is computed on the placeholders they carry, and how
@@ -1537,6 +1583,32 @@ impl Asserting {
         let all_here = by_print.len() == inputs.len();
         vec![all_here.then(|| holon_core::primitives::compute(name, &by_print.iter().collect::<Vec<_>>(), &unit.params)).flatten()]
     }
+}
+
+/// Whether `outputs`, what the log recorded for the leaf `name`, is something that leaf can
+/// give: as many outputs as it has, each of the type it declares where it declares one, and a
+/// SHA-256 or an HMAC of one 32 bytes in the encoding its node says. Nothing is what any leaf
+/// gives when an input didn't arrive.
+fn shaped(name: &str, unit: &holon_core::Unit, outputs: &[Option<Value>]) -> bool {
+    use holon_core::Type;
+    if outputs.len() != unit.outputs.len().max(1) {
+        return false;
+    }
+    let of_type = |ty: &Type, v: &Value| match ty {
+        Type::Number => matches!(v, Value::Number(_)),
+        Type::Boolean => matches!(v, Value::Boolean(_)),
+        Type::Text => matches!(v, Value::Text(_)),
+        Type::List(_) => matches!(v, Value::List(_)),
+        Type::Record => matches!(v, Value::Record(_)),
+        _ => true,
+    };
+    let typed = outputs.iter().zip(&unit.outputs).all(|(o, port)| o.as_ref().is_none_or(|v| of_type(&port.ty, v)));
+    let digest = || match (&outputs[0], unit.params.iter().find(|p| p.name() == "encoding").and_then(|p| p.value())) {
+        (Some(Value::Text(t)), Some(encoding)) => holon_core::text_bytes(t, encoding).is_some_and(|b| b.len() == 32),
+        (None, _) => true,
+        _ => false,
+    };
+    typed && (!matches!(name, "sha256" | "hmac_sha256") || digest())
 }
 
 impl Observer for Asserting {
@@ -1593,6 +1665,20 @@ impl Observer for Asserting {
                     fed.2.extend(self.marks.tainted_in(v));
                 }
                 let list = |set: BTreeSet<String>| set.into_iter().collect();
+                // A pure leaf's record can be held to its shape, and, where its inputs tell
+                // their values apart, to the export's other records of it.
+                if let holon_core::UnitBody::Primitive { name } = &unit.body
+                    && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
+                {
+                    self.misshapen |= !shaped(name, unit, outputs);
+                    // After a node that couldn't be computed, the inputs seen here aren't the
+                    // run's (two runs that signed two messages both show none): nothing to hold
+                    // one record to another by.
+                    if self.unrecorded.is_empty() && inputs.iter().flatten().all(|v| self.marks.all_told_apart(v)) {
+                        let of = *blake3::hash(format!("{name}\0{:?}\0{inputs:?}", unit.params).as_bytes()).as_bytes();
+                        self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs: outputs.clone() });
+                    }
+                }
                 self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2) });
                 Some(outputs.clone())
             }
@@ -1742,6 +1828,21 @@ impl Marks {
         match v {
             Value::Text(t) => self.each_in(t).all(|(_, _, body)| Marks::print_of(body).is_some()),
             _ => false,
+        }
+    }
+
+    /// Whether every placeholder anywhere in `v` tells its value from another's
+    /// ([`Marks::told_apart`]): in a text, a list, a record's keys and values. Bytes that carry
+    /// one don't say (a placeholder in bytes isn't read apart).
+    fn all_told_apart(&self, v: &Value) -> bool {
+        let text = |t: &str| self.each_in(t).all(|(_, _, body)| Marks::print_of(body).is_some());
+        match v {
+            Value::Text(t) => text(t),
+            Value::List(items) => items.iter().all(|v| self.all_told_apart(v)),
+            Value::Record(fields) => fields.iter().all(|(k, v)| text(k) && self.all_told_apart(v)),
+            Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.all_told_apart(payload),
+            Value::Bytes(b) => !secrets::bytes_hold(b, &|t: &str| t.contains(&self.start)),
+            Value::Number(_) | Value::Boolean(_) => true,
         }
     }
 
