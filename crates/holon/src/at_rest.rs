@@ -415,7 +415,6 @@ impl Keyring {
     }
 
     /// What a content hash is named on disk (§2.6): keyed, 64 lowercase hex.
-    #[allow(dead_code)] // the store's names, step 4
     pub(crate) fn name(&self, hash: &[u8; 32]) -> String {
         blake3::keyed_hash(&self.names, hash).to_hex().to_string()
     }
@@ -475,6 +474,28 @@ pub(crate) fn keys() -> &'static std::sync::Arc<Keyring> {
     KEYS.get_or_init(|| std::sync::Arc::new(Keyring::memory()))
 }
 
+/// The content store's sealing (holon-host's `AtRest`, §5.4): its units, values and packs sealed
+/// under the server's keys, each for what it is, and named by the names key.
+pub(crate) struct StoreKeys(pub(crate) std::sync::Arc<Keyring>);
+
+impl holon_host::AtRest for StoreKeys {
+    fn seal(&self, role: &'static str, plain: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.0.seal_file(SERVER, role, plain).map_err(std::io::Error::other)
+    }
+    fn open(&self, role: &'static str, sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+        // The store hands its bytes on (a unit decoded, a value to a run): not kept zeroized.
+        self.0.open_file(role, sealed).map(|mut plain| std::mem::take(&mut *plain)).map_err(|e| std::io::Error::other(e.to_string()))
+    }
+    fn name(&self, hash: &holon_core::Hash) -> String {
+        self.0.name(hash)
+    }
+}
+
+/// The store's sealing under the server's keyring.
+pub(crate) fn store() -> std::sync::Arc<dyn holon_host::AtRest> {
+    std::sync::Arc::new(StoreKeys(std::sync::Arc::clone(keys())))
+}
+
 /// The scope of the deployment a kept file's key names first (`<slug>/<file>`): what it saw of
 /// its queues, mailboxes and feeds.
 pub(crate) fn deployment_of(key: &Path) -> String {
@@ -484,6 +505,8 @@ pub(crate) fn deployment_of(key: &Path) -> String {
 /// What each file is for, bound into it as it is sealed: a file renamed to another role fails to
 /// open (§4).
 pub(crate) mod role {
+    pub(crate) const BLOB_TEXT: &str = "blob: text";
+    pub(crate) const BLOB_CHUNK: &str = "blob: chunk";
     pub(crate) const DEPLOYMENTS: &str = "table: deployments";
     pub(crate) const FLOWS: &str = "table: flows";
     pub(crate) const FLOW_PROPOSALS: &str = "table: flow proposals";

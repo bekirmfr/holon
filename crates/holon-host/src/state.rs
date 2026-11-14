@@ -238,16 +238,17 @@ mod tests {
     fn a_file_store_keeps_values_apart_and_refuses_tampered_ones() {
         let dir = std::env::temp_dir().join(format!("holon-state-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut store = FileStore::new(&dir).unwrap();
+        let mut store = FileStore::new(&dir, crate::test_seal::sealing()).unwrap();
         let mut s = State::new();
         s.insert("todos".into(), todos(&["milk"])).unwrap();
         let refs = s.save(&mut store).unwrap();
-        let hex: String = refs["todos"].iter().map(|b| format!("{b:02x}")).collect();
-        let path = dir.join("values").join(&hex);
+        let path = dir.join("values").join(crate::AtRest::name(&crate::test_seal::Sealing, &refs["todos"]));
         assert!(path.exists(), "values live under values/");
         assert_eq!(State::load(&refs, &store).unwrap(), s);
 
-        std::fs::write(&path, holon_core::encode_value(&todos(&["beer"])).unwrap()).unwrap();
+        // Another value's bytes, sealed as a value: they open, and the hash refuses them.
+        let other = crate::AtRest::seal(&crate::test_seal::Sealing, crate::role::VALUE, &holon_core::encode_value(&todos(&["beer"])).unwrap()).unwrap();
+        std::fs::write(&path, other).unwrap();
         assert!(matches!(State::load(&refs, &store), Err(LoadError::Store(StoreError::Corrupt { .. }))));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -80,8 +80,10 @@ skipped when nothing is older (`Blobs::any_put_before`, R5).
 ### Packing long-lived values
 
 The server's sweep collects the named values older than it spares (`to_pack`) and `pack` moves
-them, up to `PACK_AT_MOST` (16,384) a pack. `Packs::pack` writes `values/packs/<id>.pack` (`MAGIC`,
-raw-deflate blocks of about `BLOCK`, 64 KiB, then an index of 52 bytes a value) aside, syncs it and
+them, up to `PACK_AT_MOST` (16,384) a pack, each file opened as it is read. `Packs::pack` writes
+`values/packs/<id>.pack` (`MAGIC`, `HOLONPK2`; raw-deflate blocks of about `BLOCK`, 64 KiB, each
+then sealed, `role::PACK_BLOCK`; then an index of 52 bytes a value, sealed whole,
+`role::PACK_INDEX`) aside, syncs it and
 renames it in with no lock held, then takes its index in under the lock; only then are the values'
 files removed, paced as removals are. A crash leaves a value in both places, never in neither. A
 read looks for the value's own file, then the in-memory index (`Packs::get`), keeping `KEPT_BYTES`
@@ -89,6 +91,18 @@ read looks for the value's own file, then the in-memory index (`Packs::get`), ke
 written with no lock held, then, under the store's lock, values put again meanwhile kept (a put of
 a packed value writes nothing) and the index moved at once. A pack that can't be read as the store
 opens is left as it is, its values missing, and warned of.
+
+### Sealed at rest
+
+Every file the store writes is sealed by its `AtRest` (holon-host; the server's keyring implements
+it, `at_rest::StoreKeys`, docs/L4s/at-rest-encryption-L4.md §5.4): a unit (`role::UNIT`), a value
+(`role::VALUE`), a pack's blocks and index; each named by `AtRest::name`, a keyed hash of its
+content hash, 64 hex. A read opens the file, then checks it against the hash asked for, as ever. A
+file's name says which value it is only to the keys, so the sweep knows the files by name
+(`there`), and a value by its hash only once its walk reaches it (`reached`); `Puts` keeps what was
+put lately by name. The kept file texts (`blobs.rs`) are sealed the same way, a text's chunk list
+(`role::BLOB_TEXT`) and each chunk (`role::BLOB_CHUNK`), under keyed names; `held` counts the
+chunks' bytes as they are on disk.
 
 ### Sealing a log's older runs
 

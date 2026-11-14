@@ -699,7 +699,7 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
 #[test]
 fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let dir = unique_temp_path("sweep");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -719,6 +719,19 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let files = || std::fs::read_dir(&values).unwrap().count();
     let before = files();
     let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run, false).unwrap().unwrap();
+
+    // At rest (at_rest.rs, docs/L4s/at-rest-encryption-L4.md §5.4): every unit and value sealed,
+    // none named by its hash (the flow's unit, a kept run's state), each by a keyed hash of it.
+    let root = Path::new(&dir);
+    let mut on_disk: Vec<PathBuf> = std::fs::read_dir(root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    on_disk.extend(std::fs::read_dir(&values).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()));
+    assert!(on_disk.len() > 10, "{on_disk:#?}");
+    let plain: Vec<&PathBuf> = on_disk.iter().filter(|f| !std::fs::read(f).unwrap().starts_with(b"HLA1")).collect();
+    assert!(plain.is_empty(), "not sealed: {plain:#?}");
+    for hash in kept.iter().map(|(_, s)| s.as_str()).chain([plan.unit.as_str()]) {
+        assert!(!root.join(hash).exists() && !values.join(hash).exists(), "a file named by its hash, {hash}");
+    }
+    assert!(root.join(crate::at_rest::keys().name(&parse_hash(&plan.unit).unwrap())).exists(), "the unit, by its keyed name");
 
     // Everything is new: spared, whoever names it.
     let new = sweep(sweep::SPARES_MS, false);
@@ -763,7 +776,7 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
 #[test]
 fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     let dir = unique_temp_path("sweep-scheduled");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 2 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -808,7 +821,7 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
 #[test]
 fn the_server_sweeps_as_often_as_its_storage_setting_says() {
     let dir = unique_temp_path("sweep-every");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[storage]\nsweep_every = \"1m\"").unwrap());
@@ -840,7 +853,7 @@ fn the_server_sweeps_as_often_as_its_storage_setting_says() {
 #[test]
 fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
     let dir = unique_temp_path("host-view");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let host = || body_json(route(&state, &req("GET", "/admin/host", vec![])));
@@ -878,7 +891,7 @@ fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
 #[test]
 fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
     let dir = unique_temp_path("holds");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -923,7 +936,7 @@ fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
 #[test]
 fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let dir = unique_temp_path("warnings");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let path = std::path::PathBuf::from(unique_temp_path("warn-policy")).with_extension("toml");
@@ -1045,13 +1058,13 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
 fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
     let dir = unique_temp_path("pack-unreadable");
     {
-        let disk = FileStore::new(&dir).unwrap();
+        let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
         disk.packs().pack(&[([7u8; 32], b"a value".to_vec())]).unwrap();
     }
     let packs = std::path::Path::new(&dir).join("values").join("packs");
     let pack = std::fs::read_dir(&packs).unwrap().flatten().next().unwrap().path();
     std::fs::write(&pack, b"not a pack").unwrap();
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
@@ -1064,7 +1077,7 @@ fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
 #[test]
 fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
     let dir = unique_temp_path("roll-sweep-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let data = unique_temp_path("roll-sweep-data");
@@ -1196,7 +1209,7 @@ fn a_full_disk_rolls_the_log_keeping_the_most() {
 #[test]
 fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let dir = unique_temp_path("backup-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("backup-data");
@@ -1295,7 +1308,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
 #[test]
 fn the_values_a_sweep_keeps_are_packed_and_read_back() {
     let dir = unique_temp_path("pack-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -1349,7 +1362,7 @@ fn the_values_a_sweep_keeps_are_packed_and_read_back() {
 #[test]
 fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let dir = unique_temp_path("sealed-sweep");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("sealed-data");
@@ -3089,7 +3102,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // A real on-disk store, not MemStore — the deployment definition surviving only means
     // something if the unit it points at is still there too.
-    let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+    let backend: DynStore = Box::new(FileStore::new(&store_dir, crate::at_rest::store()).unwrap());
     let store = SharedStore::new(backend);
 
     // "First run": nothing to load yet, deploy, which persists write-through.
@@ -5012,7 +5025,7 @@ fn get_state_404s_for_unknown_slug_and_400s_for_stateless_deployment() {
 fn state_persists_across_a_simulated_restart() {
     let deployments_path = unique_temp_path("state-deployments");
     let store_dir = unique_temp_path("state-store");
-    let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+    let backend: DynStore = Box::new(FileStore::new(&store_dir, crate::at_rest::store()).unwrap());
     let store = SharedStore::new(backend);
 
     // "First run": deploy and run once — writes "before-restart".
@@ -13562,7 +13575,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
 
     // On disk: read once from the file, then from memory.
     let dir = unique_temp_path("value-cache");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut store = SharedStore::on_disk(Box::new(disk), values.clone());
     let v = Value::Text("kept".into());
@@ -13577,7 +13590,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
 
     // A run's collection read: the trie's values come from memory the second time.
     let store_dir = unique_temp_path("value-cache-run");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = Place::Nowhere;
@@ -14043,7 +14056,7 @@ fn request_throughput() {
     let secs = std::env::var("HOLON_PERF_SECS").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(5.0);
     // On disk, as a server keeps it: the store, the deployments file and the logs.
     let store_dir = unique_temp_path("throughput-store");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("throughput").into();
@@ -14205,7 +14218,7 @@ route.post("/stats", (req) => {
 #[ignore = "a profile, run by hand: HOLON_PROFILE=notes cargo test --release -p holon -- --ignored profile_one_route --nocapture"]
 fn profile_one_route() {
     let store_dir = unique_temp_path("profile-store");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("profile").into();

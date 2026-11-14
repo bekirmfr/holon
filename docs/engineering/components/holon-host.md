@@ -62,7 +62,11 @@ filed under its content hash. Every read is checked: `decode_verified` and
 (`StoreError::Corrupt`), so the store is trusted for nothing. `MemStore` and `FileStore` share that
 path and differ only in where the bytes are.
 
-`FileStore` keeps a unit as `<root>/<hex>` and a value as `<root>/values/<hex>`, each written by
+`FileStore` keeps a unit as `<root>/<name>` and a value as `<root>/values/<name>`, sealed by the
+`AtRest` it is given (the server's keyring; holon-host holds no keys) for what it is
+(`role::UNIT`, `role::VALUE`), its name `AtRest::name` of its hash: a keyed hash, 64 hex, so a
+name says nothing of what the file holds. A read opens the bytes, then checks them as below. Each
+is written by
 `write_atomically`: a sibling `<name>.tmp-<pid>-<n>`, synced, renamed over, its folder synced
 (`sync_dir_of`), so a crash leaves the old file or the new one, and a power loss after it returns
 the new one. A `put` of a unit writes again each time; `put_value` writes nothing
@@ -70,8 +74,9 @@ when the value is there already, as a file or packed. `get_value` reads the valu
 then the packs.
 
 **Packs** (packs.rs) hold the values a sweep keeps once they are old (the server's sweep calls
-`Packs::pack` and `Packs::rewrite`): a pack is `values/packs/<id>.pack`, `MAGIC`, raw-deflated
-blocks of about `BLOCK` (64 KiB) of values, then an index of `ENTRY` bytes a value, written whole
+`Packs::pack` and `Packs::rewrite`): a pack is `values/packs/<id>.pack`, `MAGIC` (`HOLONPK2`),
+raw-deflated blocks of about `BLOCK` (64 KiB) of values, each then sealed, then an index of `ENTRY`
+bytes a value, sealed whole, written whole
 aside, synced and renamed in, the loose files removed only after. The index is read into memory
 when the store opens, one per values folder a process (`Packs::shared`), and up to `KEPT_BYTES`
 (8 MiB) of inflated blocks are kept. A pack is written with no lock held and its index taken in

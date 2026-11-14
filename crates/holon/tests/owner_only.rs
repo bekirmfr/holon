@@ -1,8 +1,9 @@
 //! What the server writes is its owner's alone, against the real server: `holon serve` started as
 //! it is installed, a flow deployed with `holon deploy` that leaves something in every kind of
 //! file a run leaves, requests sent over sockets, then every file under its home looked at
-//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0), every table it keeps sealed (step 2), and
-//! every line log (step 3). A test binary of its own, as data_plane.rs.
+//! (docs/L4s/at-rest-encryption-L4.md §1.2, step 0), and what it keeps sealed: every table
+//! (step 2), every line log (step 3) and the content store (step 4). A test binary of its own, as
+//! data_plane.rs.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -217,4 +218,20 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     }
     let segments: Vec<&PathBuf> = files.iter().filter(|f| f.to_string_lossy().ends_with(".jsonl.gz")).collect();
     assert!(!segments.is_empty() && segments.iter().all(|f| std::fs::read(f).unwrap().starts_with(b"HLA1")), "segments sealed whole: {segments:#?}");
+
+    // And the content store (step 4): its units, values and file texts each sealed whole, its
+    // packs' blocks and index (a pack begins HOLONPK2); each named by 64 hex, a keyed hash.
+    let store = data.join("store");
+    let in_store: Vec<&PathBuf> = files.iter().filter(|f| f.starts_with(&store)).collect();
+    assert!(in_store.iter().any(|f| f.parent() == Some(store.as_path())) && in_store.iter().any(|f| f.parent() == Some(store.join("values").as_path())), "units and values: {in_store:#?}");
+    for f in &in_store {
+        let bytes = std::fs::read(f).unwrap();
+        let name = f.file_name().unwrap().to_string_lossy();
+        if f.extension().is_some_and(|e| e == "pack") {
+            assert!(bytes.starts_with(b"HOLONPK2"), "{} not a sealed pack", f.display());
+        } else {
+            assert!(name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()), "{} not named by a keyed hash", f.display());
+            assert!(bytes.starts_with(b"HLA1"), "{} not sealed", f.display());
+        }
+    }
 }

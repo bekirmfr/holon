@@ -234,27 +234,38 @@ fn data_apply(env: &Env, plan: &Plan) -> Result<String, String> {
     Ok(format!("{} things moved into {}", plan.moves.len(), env.data.display()))
 }
 
-/// The copy is a server's: the store opens, the tables parse, and where it has a keyring
-/// (`keys.json`) the keyring opens under its root and the secrets under it. A copy with none is
-/// from before the server sealed its data: moved as it is, which this release won't read.
+/// The copy is a server's: where it has a keyring (`keys.json`), the keyring opens under its root,
+/// and under it the tables, the secrets and the store's packs; with none (from before the server
+/// sealed its data: moved as it is, which this release won't read), the tables parse.
 fn check_copy(dir: &Path, key_arg: Option<&str>) -> Result<(), String> {
-    let store = dir.join("store");
-    if store.exists() {
-        holon_host::FileStore::new(&store).map_err(|e| format!("the store: {e}"))?;
-    }
-    for table in ["deployments.json", "flows.json", "accounts.json"] {
+    use crate::at_rest::role;
+    let keys = dir.join("keys.json");
+    let keys = if keys.exists() { Some(std::sync::Arc::new(crate::at_rest::Keyring::open(&keys, key_arg, &[]).map_err(|e| format!("its keys: {e}"))?)) } else { None };
+    for (table, role) in [("deployments.json", role::DEPLOYMENTS), ("flows.json", role::FLOWS), ("accounts.json", role::ACCOUNTS)] {
         let path = dir.join(table);
         if path.exists() {
             let bytes = std::fs::read(&path).map_err(|e| format!("{table}: {e}"))?;
-            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| format!("{table}: {e}"))?;
+            let plain = match &keys {
+                Some(keys) => keys.open_file(role, &bytes).map_err(|e| format!("{table}: {e}"))?,
+                None => zeroize::Zeroizing::new(bytes),
+            };
+            serde_json::from_slice::<serde_json::Value>(&plain).map_err(|e| format!("{table}: {e}"))?;
         }
     }
-    let keys = dir.join("keys.json");
-    if keys.exists() {
-        let keys = crate::at_rest::Keyring::open(&keys, key_arg, &[]).map_err(|e| format!("its keys: {e}"))?;
+    let store = dir.join("store");
+    if store.exists() {
+        let sealing = crate::at_rest::StoreKeys(keys.clone().unwrap_or_else(|| std::sync::Arc::new(crate::at_rest::Keyring::memory())));
+        let opened = holon_host::FileStore::new(&store, std::sync::Arc::new(sealing)).map_err(|e| format!("the store: {e}"))?;
+        if keys.is_some()
+            && let Some((pack, why)) = opened.packs().unreadable().first()
+        {
+            return Err(format!("the store's pack {} doesn't open: {why}", pack.display()));
+        }
+    }
+    if let Some(keys) = keys {
         let secrets = dir.join("secrets.json");
         if secrets.exists() {
-            crate::secrets::SecretStore::open(&secrets.to_string_lossy(), std::sync::Arc::new(keys), crate::secret_sources::Sources::none())?;
+            crate::secrets::SecretStore::open(&secrets.to_string_lossy(), keys, crate::secret_sources::Sources::none())?;
         }
     }
     Ok(())
@@ -380,8 +391,21 @@ mod tests {
         let copy = dir.join("copy");
         std::fs::create_dir_all(&copy).unwrap();
         let made = dir.join("made.key");
-        crate::at_rest::Keyring::open(&copy.join("keys.json"), Some(&format!("file:{}", made.display())), &[]).unwrap();
+        let keys = std::sync::Arc::new(crate::at_rest::Keyring::open(&copy.join("keys.json"), Some(&format!("file:{}", made.display())), &[]).unwrap());
+        // Its tables and its store's packs sealed under it (the store let go before the check, so
+        // the check opens its packs again).
+        let sealed = keys.seal_file(crate::at_rest::SERVER, crate::at_rest::role::DEPLOYMENTS, b"{}").unwrap();
+        std::fs::write(copy.join("deployments.json"), &sealed).unwrap();
+        {
+            let store = holon_host::FileStore::new(copy.join("store"), std::sync::Arc::new(crate::at_rest::StoreKeys(std::sync::Arc::clone(&keys)))).unwrap();
+            store.packs().pack(&[([7u8; 32], b"a value".to_vec())]).unwrap();
+        }
         assert!(check_copy(&copy, Some(&format!("file:{}", made.display()))).is_ok(), "its own root");
+        // A plain table where its keyring says sealed: refused.
+        std::fs::write(copy.join("deployments.json"), b"{}").unwrap();
+        let e = check_copy(&copy, Some(&format!("file:{}", made.display()))).unwrap_err();
+        assert!(e.contains("deployments.json"), "{e}");
+        std::fs::write(copy.join("deployments.json"), &sealed).unwrap();
         let wrong = dir.join("wrong.key");
         crate::sealing::KeySource::File(wrong.clone()).create().unwrap();
         let e = check_copy(&copy, Some(&format!("file:{}", wrong.display()))).unwrap_err();

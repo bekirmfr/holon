@@ -462,6 +462,7 @@ fn decode_verified(key: &Hash, bytes: &[u8]) -> Result<Unit, StoreError> {
     Ok(unit)
 }
 
+#[cfg(test)]
 fn hex(key: &Hash) -> String {
     holon_core::hex(key)
 }
@@ -510,21 +511,48 @@ impl Store for MemStore {
     }
 }
 
-/// On-disk content-addressed store: one file per unit, named by its hex hash,
-/// under a single root directory. Where units actually live on a machine.
+/// How the store keeps what it writes at rest (docs/L4s/at-rest-encryption-L4.md §5.4): each file
+/// sealed for what it is, and named by a keyed hash of its content hash, so neither its bytes nor
+/// its name tell what it holds (a guess at a small value can't be checked against the names).
+/// The server's keyring implements it (holon's at_rest.rs); holon-host holds no keys. Inside, the
+/// store still speaks hashes: a read opens the bytes, then checks them against the hash asked for.
+pub trait AtRest: Send + Sync {
+    /// `plain` sealed for `role`.
+    fn seal(&self, role: &'static str, plain: &[u8]) -> io::Result<Vec<u8>>;
+    /// Bytes sealed for `role`, opened: an error if they don't (changed, sealed for another role,
+    /// or plain where sealed bytes belong).
+    fn open(&self, role: &'static str, sealed: &[u8]) -> io::Result<Vec<u8>>;
+    /// What the unit or value hashed `hash` is named on disk: 64 lowercase hex, keyed, so what
+    /// recognises a store file by its name's shape still does.
+    fn name(&self, hash: &Hash) -> String;
+}
+
+/// What each of the store's files is, bound into it as it is sealed: one renamed to another role
+/// doesn't open.
+pub mod role {
+    pub const UNIT: &str = "store: unit";
+    pub const VALUE: &str = "store: value";
+    pub const PACK_BLOCK: &str = "pack block";
+    pub const PACK_INDEX: &str = "pack index";
+}
+
+/// On-disk content-addressed store: one file per unit, sealed, named by a keyed hash of its hash
+/// (`AtRest::name`), under a single root directory. Where units actually live on a machine.
 pub struct FileStore {
     root: PathBuf,
     /// Its long-lived values, packed (packs.rs): read when a value's own file isn't there.
     packs: std::sync::Arc<packs::Packs>,
+    at_rest: std::sync::Arc<dyn AtRest>,
 }
 
 impl FileStore {
-    /// Open (creating if needed) a store rooted at `root`.
-    pub fn new(root: impl Into<PathBuf>) -> io::Result<Self> {
+    /// Open (creating if needed) a store rooted at `root`, its files sealed and named by
+    /// `at_rest`: given now, since opening reads the packs' indexes.
+    pub fn new(root: impl Into<PathBuf>, at_rest: std::sync::Arc<dyn AtRest>) -> io::Result<Self> {
         let root = root.into();
         create_private_dir(&root)?;
-        let packs = packs::Packs::shared(&root.join("values"))?;
-        Ok(FileStore { root, packs })
+        let packs = packs::Packs::shared(&root.join("values"), std::sync::Arc::clone(&at_rest))?;
+        Ok(FileStore { root, packs, at_rest })
     }
 
     /// Its packs, shared with whoever packs its values (the server's sweep).
@@ -532,15 +560,15 @@ impl FileStore {
         std::sync::Arc::clone(&self.packs)
     }
     fn path(&self, key: &Hash) -> PathBuf {
-        self.root.join(hex(key))
+        self.root.join(self.at_rest.name(key))
     }
     /// Where its values live: `values/` under the root, apart from units, one file each named by
-    /// its hex hash (the server sweeps the ones nothing names).
+    /// its keyed name (the server sweeps the ones nothing names).
     pub fn values_dir(&self) -> PathBuf {
         self.root.join("values")
     }
     fn value_path(&self, key: &Hash) -> PathBuf {
-        self.values_dir().join(hex(key))
+        self.values_dir().join(self.at_rest.name(key))
     }
 }
 
@@ -740,7 +768,8 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 impl Store for FileStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_keyed(unit)?;
-        write_atomically(&self.path(&key), &bytes).map_err(StoreError::Io)?;
+        let sealed = self.at_rest.seal(role::UNIT, &bytes).map_err(StoreError::Io)?;
+        write_atomically(&self.path(&key), &sealed).map_err(StoreError::Io)?;
         Ok(key)
     }
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
@@ -749,7 +778,8 @@ impl Store for FileStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::Io(e)),
         };
-        decode_verified(key, &bytes).map(Some)
+        // Opened, then checked against its hash as ever.
+        decode_verified(key, &self.at_rest.open(role::UNIT, &bytes).map_err(StoreError::Io)?).map(Some)
     }
     fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_value_keyed(value)?;
@@ -758,13 +788,14 @@ impl Store for FileStore {
         // read verifies it).
         if !path.exists() && !self.packs.contains(&key) {
             create_private_dir(&self.values_dir()).map_err(StoreError::Io)?;
-            write_atomically(&path, &bytes).map_err(StoreError::Io)?;
+            let sealed = self.at_rest.seal(role::VALUE, &bytes).map_err(StoreError::Io)?;
+            write_atomically(&path, &sealed).map_err(StoreError::Io)?;
         }
         Ok(key)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
         let bytes = match fs::read(self.value_path(key)) {
-            Ok(b) => b,
+            Ok(b) => self.at_rest.open(role::VALUE, &b).map_err(StoreError::Io)?,
             // Not a file of its own: packed, or not there.
             Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {
                 Some(b) => b,
@@ -1099,6 +1130,55 @@ pub enum CacheIngestError {
     /// The entry does not hash to the key it was offered under — the peer mis-keyed it (lied about
     /// which computation it is for). The cache's analogue of `StoreError::Corrupt`.
     KeyMismatch { claimed: Hash, actual: Hash },
+}
+
+/// A sealing for holon-host's tests: what the server's keyring does, in shape (a header naming
+/// the role, the bytes not as put, names keyed), with no keys to keep.
+#[cfg(test)]
+pub(crate) mod test_seal {
+    use super::*;
+
+    pub(crate) const MAGIC: &[u8] = b"TS1";
+
+    pub(crate) struct Sealing;
+
+    pub(crate) fn sealing() -> std::sync::Arc<dyn AtRest> {
+        std::sync::Arc::new(Sealing)
+    }
+
+    impl AtRest for Sealing {
+        fn seal(&self, role: &'static str, plain: &[u8]) -> io::Result<Vec<u8>> {
+            let mut out = MAGIC.to_vec();
+            out.push(role.len() as u8);
+            out.extend_from_slice(role.as_bytes());
+            out.extend(plain.iter().map(|b| b ^ 0x5a));
+            let tag = tag(&out);
+            out.extend_from_slice(&tag);
+            Ok(out)
+        }
+        fn open(&self, role: &'static str, sealed: &[u8]) -> io::Result<Vec<u8>> {
+            let short = || io::Error::other("cut short");
+            let (sealed, said_tag) = sealed.split_at_checked(sealed.len().checked_sub(16).ok_or_else(short)?).ok_or_else(short)?;
+            if tag(sealed) != said_tag {
+                return Err(io::Error::other("changed, or not sealed"));
+            }
+            let rest = sealed.strip_prefix(MAGIC).ok_or_else(|| io::Error::other("not sealed"))?;
+            let (&len, rest) = rest.split_first().ok_or_else(short)?;
+            let (said, body) = rest.split_at_checked(len as usize).ok_or_else(short)?;
+            if said != role.as_bytes() {
+                return Err(io::Error::other("sealed for another role"));
+            }
+            Ok(body.iter().map(|b| b ^ 0x5a).collect())
+        }
+        fn name(&self, hash: &Hash) -> String {
+            blake3::keyed_hash(&[7; 32], hash).to_hex().to_string()
+        }
+    }
+
+    /// What a changed file fails: 16 bytes of a keyed hash over the rest.
+    fn tag(bytes: &[u8]) -> [u8; 16] {
+        blake3::keyed_hash(&[9; 32], bytes).as_bytes()[..16].try_into().unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -2225,7 +2305,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         let dir = unique_temp_dir().join("nested").join("store");
-        let mut store = FileStore::new(&dir).unwrap();
+        let mut store = FileStore::new(&dir, test_seal::sealing()).unwrap();
         assert_eq!(mode(&dir), 0o700, "the store's folder");
         assert_eq!(mode(dir.parent().unwrap()), 0o700, "and one it made above it");
         let unit = store.put(&number("7")).unwrap();
@@ -2285,14 +2365,24 @@ mod tests {
         let dir = unique_temp_dir();
         let u = number("7");
         let key = {
-            let mut s = FileStore::new(&dir).unwrap();
+            let mut s = FileStore::new(&dir, test_seal::sealing()).unwrap();
             let key = s.put(&u).unwrap();
-            assert!(dir.join(hex(&key)).exists()); // a file named by the hash
+            // A file named by a keyed hash of its hash, never the hash itself, and sealed.
+            assert!(!dir.join(hex(&key)).exists());
+            let on_disk = fs::read(dir.join(test_seal::Sealing.name(&key))).unwrap();
+            assert!(on_disk.starts_with(test_seal::MAGIC));
             key
         };
         // A fresh handle on the same root fetches it back, identical.
-        let s2 = FileStore::new(&dir).unwrap();
-        assert_eq!(s2.get(&key).unwrap(), Some(u));
+        let s2 = FileStore::new(&dir, test_seal::sealing()).unwrap();
+        assert_eq!(s2.get(&key).unwrap(), Some(u.clone()));
+        // A file that doesn't open (plain where a sealed one belongs, or sealed as a value) is an
+        // error, not a unit.
+        let (_, plain) = encode_keyed(&u).unwrap();
+        fs::write(dir.join(test_seal::Sealing.name(&key)), &plain).unwrap();
+        assert!(matches!(s2.get(&key), Err(StoreError::Io(_))));
+        fs::write(dir.join(test_seal::Sealing.name(&key)), test_seal::Sealing.seal(role::VALUE, &plain).unwrap()).unwrap();
+        assert!(matches!(s2.get(&key), Err(StoreError::Io(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

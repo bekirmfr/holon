@@ -22,7 +22,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 
 | File | Holds | Option |
 |---|---|---|
-| `store/` | every unit, by hash | `--store` |
+| `store/` | every unit, and under it the values (`values/`, the long-lived ones packed in `values/packs/`) and the texts of files runs read (`blobs/`): each sealed, and named by a keyed hash of its hash, not the hash itself | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
@@ -362,7 +362,9 @@ and every table: the deployments, saved flows and their proposals, the secrets f
 accounts, `access.json` and each line of its history, the folders, databases, mails, queues and
 feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and folders; and every
 log, a line at a time: each deployment's run log (its older runs gzipped, then sealed whole), its
-events and console lines, the activity and the secrets audit. Each is sealed for what it is, so
+events and console lines, the activity and the secrets audit; and the content store: each unit,
+value and kept file text, and a pack's blocks (deflated first) and its index, each file named by a
+keyed hash of its content hash, so a name says nothing of what it holds. Each is sealed for what it is, so
 one is never read as another, and a plain file where a sealed one belongs is refused, not read.
 `keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
 as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.

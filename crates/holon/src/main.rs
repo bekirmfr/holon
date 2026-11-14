@@ -216,7 +216,7 @@ impl SharedStore {
 
     /// The same onto a `FileStore` keeping its values in `values`, which a sweep may clear.
     fn on_disk(backend: DynStore, values: PathBuf) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)), Arc::default(), Arc::default())
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values, at_rest::store())), Arc::default(), Arc::default())
     }
 }
 
@@ -1017,7 +1017,7 @@ fn serve(args: Vec<String>) {
         println!("holon: in-memory store (nothing persists past this run)");
         SharedStore::new(Box::new(MemStore::new()))
     } else {
-        let store = FileStore::new(&store_arg)
+        let store = FileStore::new(&store_arg, at_rest::store())
             .unwrap_or_else(|e| panic!("could not open store at {store_arg:?}: {e}"));
         println!("holon: file store at {store_arg:?}");
         let values = store.values_dir();
