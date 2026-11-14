@@ -20,8 +20,8 @@ fn server() -> (AppState, Arc<Accounts>, String, String) {
     let dir = unique_temp_path("approval-shows");
     std::fs::create_dir_all(&dir).unwrap();
     state.deployments_path = format!("{dir}/deployments.json").into();
-    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
-    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
+    let keys = crate::at_rest::Keyring::open(std::path::Path::new(&format!("{dir}/keys.json")), Some(&format!("file:{dir}/root.key")), &[]).unwrap();
+    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), Arc::new(keys), crate::secret_sources::Sources::none()).unwrap());
     let book = Arc::new(Accounts::memory());
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", PW).unwrap();
     state.access = access::Access::new(Arc::clone(&book), vec![], vec![]);
@@ -132,14 +132,14 @@ export const pay = action(async (order) => {
     assert_eq!((&listed["runs"][0]["waiting"][0]["name"], &listed["runs"][0]["waiting"][0]["shows"]), (&json!("payout"), &json!({ "amount": 30, "checked": true })), "{listed}");
 
     // Sealed on disk with the run, and read back after a restart.
-    let on_disk = std::fs::read_to_string(format!("{dir}/deployments.json")).unwrap();
+    let on_disk = crate::at_rest::opened(format!("{dir}/deployments.json"), crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains("acme") && !on_disk.contains("checked"), "the deployments file holds what a run shows: {on_disk}");
     let mut reloaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
     for (slug, dep) in reloaded.iter_mut() {
         dep.secrets = state.secrets.vault(slug);
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         for run in dep.parked.values_mut() {
-            run.open(slug, sealer.as_deref()).unwrap();
+            run.open(slug, keys.as_deref()).unwrap();
         }
     }
     *state.deployments.lock().unwrap() = reloaded;

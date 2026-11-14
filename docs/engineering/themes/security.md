@@ -478,6 +478,14 @@ What is not defended, or only partly:
 - **Files**: holon-host's `the_store_writes_its_files_and_folders_for_its_owner_only` (a unit, a
   value, their folders, one made above them, a file readable by others written again `0o600`),
   `the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt`.
+- **At rest** (docs/L4s/at-rest-encryption-L4.md), against the real server:
+  `no_file_the_server_writes_holds_run_data_in_clear` (`crates/holon/tests/at_rest.rs`: a canary
+  sent through every writer a run reaches and written in the flow's own text, then every file
+  under the server's home and backup folder, and every gzip or deflate stream in one, searched
+  for it raw, in hex and in base64; the export holding it is the control), `no_writer_under_the_data_folder_bypasses_at_rest` (each
+  low-level writer in the sources, by file, with why it may write past at_rest.rs), and
+  `every_file_the_server_writes_is_its_owners_alone` (`owner_only.rs`: every file owner-only, and
+  the tables, line logs and store sealed).
 - **Grants**: `deploy_asks_for_what_policy_doesnt_grant_and_only_once`,
   `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`.
 - **Outbound**: `every_rule_is_enforced_at_perform_time` (an ungranted host, plain HTTP, a private

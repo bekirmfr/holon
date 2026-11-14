@@ -27,7 +27,7 @@ examples:
 const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
        holon pause <slug>
        holon stop <slug>
-       holon remove <slug> --yes
+       holon remove <slug> --yes [--forget]
        (each with [--server PORT|URL])
 
   Starts, holds, ends or deletes a deployment, as the editor's buttons do.
@@ -41,6 +41,10 @@ const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
                            its secrets. Its runs' log and timeline are kept on the host, as an
                            export holon verify checks; the slug deployed again starts a new
                            log. --yes says you mean it
+    --forget               and forget its keys: its kept log, its backups and every other
+                           file it left can't be opened again, here or in a copy of the
+                           folder taken before (the root key is rotated too, unless it is in
+                           an environment variable). Needs host.operate
 
 examples:
   holon pause shop
@@ -231,7 +235,7 @@ pub(crate) fn detail_lines(d: &Value, waiting: &[Value]) -> Vec<String> {
 pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
     let who = format!("holon {action}");
     let usage = usage(LIFECYCLE_USAGE);
-    let args = match cmdline::parse(&who, &usage, args, &["--session"], &["--fresh", "--yes"]) {
+    let args = match cmdline::parse(&who, &usage, args, &["--session"], &["--fresh", "--yes", "--forget"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -271,10 +275,20 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
     match answer {
         Ok(d) if action == "remove" => {
             println!("{slug}: removed{}", if d["status"].is_string() { ", its secrets forgotten" } else { "" });
-            if let Some(at) = d["records"].as_str() {
-                println!("its run records: {at} (holon verify checks it)");
+            if !args.flag("--forget") {
+                if let Some(at) = d["records"].as_str() {
+                    println!("its run records: {at} (holon verify checks it)");
+                }
+                return 0;
             }
-            0
+            // Its keys forgotten once it is gone: what it left can't be opened again.
+            match cmdline::json(&who, &args, "POST", "/admin/keys/forget", Some(&serde_json::json!({ "slug": slug }))) {
+                Ok(f) => crate::keys::print_forgotten(&f),
+                Err(_) => {
+                    eprintln!("{who}: {slug:?} is removed, but its keys aren't forgotten: someone who may operate the host can, with holon key forget {slug}");
+                    1
+                }
+            }
         }
         Ok(d) => {
             println!("{slug}: {}{}", d["status"].as_str().unwrap_or("done"), d["attention"].as_str().map(|a| format!(" ({a})")).unwrap_or_default());

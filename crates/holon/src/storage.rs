@@ -682,16 +682,19 @@ impl Sweeps {
         let census = self.census.lock().unwrap();
         let puts = state.store.2.count();
         let at = (census.at_ms > 0).then_some(census.at_ms);
-        let mut logs = None;
+        let (mut logs, mut console) = (None, None);
         let mut left = Count::default();
         if let Some(dir) = state.deployments_path.beside("logs") {
-            // Counted now: one file a deployment, and its sealed segments beside it (their bytes,
-            // not more logs). What crashes left is removed by the census only.
+            // Counted now: a deployment's run log and events, and its sealed segments beside them
+            // (their bytes, not more logs); its console lines apart (logs.rs). What crashes left is
+            // removed by the census only.
+            let mut lines = Count::default();
             logs = std::fs::read_dir(&dir).ok().map(|entries| {
                 let mut c = Count::default();
                 for e in entries.flatten() {
                     let name = e.file_name();
                     match (name.to_str(), e.metadata()) {
+                        (Some(n), Ok(m)) if m.is_file() && crate::logs::is_console_file(n) => lines.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl") => c.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
                         (Some(n), Ok(m)) if m.is_dir() && n.ends_with(".sealed") => {
@@ -708,6 +711,7 @@ impl Sweeps {
                 }
                 c
             });
+            console = logs.is_some().then_some(lines);
         }
         serde_json::json!({
             "at_ms": at,
@@ -723,6 +727,7 @@ impl Sweeps {
                 })
             }),
             "logs": logs,
+            "console": console,
             "file_texts": census.file_texts.map(|h| serde_json::json!({ "texts": h.texts, "chunks": h.chunks, "bytes": h.bytes })),
             "leftovers": { "removed": census.leftovers, "waiting": left },
         })
@@ -989,6 +994,9 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     if k["logs"].is_object() {
         lines.push(format!("  logs         {} logs, {} on disk", n(&k["logs"]["files"]), size(&k["logs"]["on_disk"])));
     }
+    if k["console"].is_object() {
+        lines.push(format!("  console      {} files, {} on disk", n(&k["console"]["files"]), size(&k["console"]["on_disk"])));
+    }
     if k["file_texts"].is_object() {
         lines.push(format!("  file texts   {} texts, {}", n(&k["file_texts"]["texts"]), size(&k["file_texts"]["bytes"])));
     }
@@ -1124,7 +1132,7 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 
 /// Turn each batch of runs a log wrote aside to the backup
 /// (`<backup>/<slug>/holon-archive-<first>-<last>.jsonl`, recorder.rs `keep_aside`) into an export
-/// `holon verify` checks, gzipped: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
+/// `holon verify` checks, gzipped then sealed: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
 /// texts they read that the server keeps (none if the deployment is gone). The batch is removed
 /// once its export is written; one that can't be stays (its runs are in it still, as lines), is
 /// warned of, and is tried again at the next look, the others made meanwhile.
@@ -1153,7 +1161,9 @@ pub(crate) fn archive(state: &AppState) {
 }
 
 fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(batch).map_err(|e| e.to_string())?;
+    // Opened first, so the archive's head is over its lines as made (at_rest.rs §5.5).
+    let opened = crate::at_rest::read_sealed(batch, &crate::at_rest::role::batch(slug))?.ok_or("gone meanwhile")?;
+    let text = std::str::from_utf8(&opened).map_err(|e| e.to_string())?;
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let Some(last) = lines.last() else { return std::fs::remove_file(batch).map_err(|e| e.to_string()) };
     let head = crate::recorder::line_hash(last);
@@ -1165,7 +1175,7 @@ fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String>
     let bytes = gz.finish().map_err(|e| e.to_string())?;
     let name = batch.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let to = batch.with_file_name(export_name(slug, name).ok_or("not a batch's name")?);
-    holon_host::write_atomically(&to, &bytes).map_err(|e| e.to_string())?;
+    crate::at_rest::write_sealed(&to, &crate::at_rest::deployment(slug), &crate::at_rest::role::export(slug), &bytes).map_err(|e| e.to_string())?;
     std::fs::remove_file(batch).map_err(|e| e.to_string())
 }
 

@@ -309,10 +309,9 @@ mod tests {
         let (runs, breaks, read) = check_log(&cell);
         assert_eq!((runs, breaks, read), (4, vec![], head));
         // Run 2's line changed: run 3 no longer names it.
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let mut lines = crate::at_rest::testing::open_lines(&path);
         lines[2] = lines[2].replace("\"status\":200", "\"status\":201");
-        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        crate::at_rest::testing::write_lines(&path, &lines);
         let cell = LogCell::new(Log::open(Some(path)));
         let (runs, breaks, _) = check_log(&cell);
         assert_eq!((runs, breaks), (4, vec![3]));

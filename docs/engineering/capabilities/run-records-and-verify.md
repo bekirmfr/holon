@@ -83,6 +83,14 @@ older ones it keeps into `<slug>.sealed/<first>-<last>.jsonl.gz` as it cuts back
 segments unchanged. A cut that crashes between sealing and replacing the file leaves runs in both;
 opening reads each once.
 
+**Sealed at rest.** Each line is sealed on its own under the deployment's keys as it is written
+(`at_rest::LineSeal`, docs/L4s/at-rest-encryption-L4.md §5.1), and a segment is gzipped then
+sealed whole. The chain hashes the line as made, before it is sealed, and every reader opens what
+it reads (`lines_of`, `each_line`, `Wanted::read_if`, `Log::lines`), so heads, exports and
+`holon verify` are over plaintext as before. A line that doesn't open is skipped as a line cut
+short is, and the line after it shows as a break. `LineAt.len` is a line's length on disk, which a
+cut-back copies by, byte for byte.
+
 **In memory.** A log on file keeps its newest `IN_MEMORY` (32) runs whole and of the rest only
 their seqs and times (`Log::kept`); older runs are planned under the lock (`Log::plan`) and read
 from the file and segments with it released (`Wanted::read`)

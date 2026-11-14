@@ -121,6 +121,8 @@ export const BUTTONS = {
   operate: { route: ["POST /admin/storage", "POST /admin/store/sweep", "POST /admin/folders/sweep"], action: "host.operate" },
   /** Check every run log again (the overview). */
   check: { route: "POST /summary/check", action: "host.check" },
+  /** A removed flow's keys forgotten with it (Remove's checkbox): its kept records unreadable. */
+  forgetKeys: { route: "POST /admin/keys/forget", action: "host.operate" },
   /** Read holon.toml again (Policy). */
   reloadPolicy: { route: "POST /permissions/reload", action: "policy.edit" },
   /** Bind a role (People and access's form). */

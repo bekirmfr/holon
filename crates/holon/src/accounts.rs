@@ -648,10 +648,10 @@ fn setup_code_from(given: Option<String>) -> String {
 impl Accounts {
     /// The accounts at `path` (none yet if it doesn't exist), and the access document beside them.
     pub(crate) fn open(path: &str) -> Result<Accounts, String> {
-        let book: Book = match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the accounts file {path:?}: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Book::default(),
-            Err(e) => return Err(format!("the accounts file {path:?}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): who may sign in, their sessions and invites.
+        let book: Book = match crate::at_rest::read_sealed(Path::new(path), crate::at_rest::role::ACCOUNTS).map_err(|e| format!("the accounts file {e}"))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the accounts file {path:?}: {e}"))?,
+            None => Book::default(),
         };
         let at = bindings::beside(Path::new(path));
         let access = Bindings::open(at.clone())?;
@@ -717,7 +717,7 @@ impl Accounts {
     fn save(&self, book: &Book) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
         let text = serde_json::to_vec_pretty(book).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(Path::new(path), &text).map_err(|e| format!("the accounts file {path:?}: {e}"))
+        crate::at_rest::write_table(Path::new(path), crate::at_rest::role::ACCOUNTS, &text).map_err(|e| format!("the accounts file {path:?}: {e}"))
     }
 
     /// Change the book, and keep it; expired sessions and invites go at the same time.
@@ -2147,7 +2147,7 @@ mod tests {
         let (ended, gone) = ("eyJ.ended.sig", "eyJ.gone.sig");
         a.end_provider_sign_in(gone, epoch_now() - 1).unwrap();
         a.end_provider_sign_in(ended, epoch_now() + 3600).unwrap();
-        let file = std::fs::read_to_string(&path).unwrap();
+        let file = crate::at_rest::opened(&path, crate::at_rest::role::ACCOUNTS);
         assert!(!file.contains(&token) && !file.contains(PW) && !file.contains(ended), "only hashes are kept");
         let again = Accounts::open(&path).unwrap();
         assert!(!again.needs_setup());
@@ -2197,7 +2197,7 @@ mod tests {
         assert_eq!((used(&a, &made.id), used(&a, &unused.id)), (Some(at), None));
         let again = Accounts::open(&path).unwrap();
         assert_eq!((seen(&again, "ci"), used(&again, &made.id), used(&again, &unused.id)), (Some(at), Some(at), None), "kept in the file");
-        let file = std::fs::read_to_string(&path).unwrap();
+        let file = crate::at_rest::opened(&path, crate::at_rest::role::ACCOUNTS);
         assert!(!file.contains(&secret) && !file.contains(&session), "only hashes are kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2216,7 +2216,7 @@ mod tests {
             ],
             "tokens": [{ "id": "a1b2c3", "label": "ci", "role": "editor", "hash": "00", "created_at": 1, "created_by": "ada" }]
         });
-        std::fs::write(&path, old.to_string()).unwrap();
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::ACCOUNTS, old.to_string().as_bytes()).unwrap();
         let a = Accounts::open(&path).unwrap();
         assert_eq!(a.principals().iter().map(|p| (p.name.as_str(), p.kind)).collect::<Vec<_>>(), [("ada", Kind::Person), ("bob", Kind::Person)]);
         assert!(a.holding("ada").is_empty() && a.holding("bob").is_empty(), "the file's roles aren't read");

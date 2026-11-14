@@ -242,11 +242,19 @@ fn uninstall(args: &[String]) -> Result<(), String> {
     forget_legacy(&exe);
     remove_file_if_there(&alias)?;
     if let (true, Some(d)) = (purge, &data) {
-        let secrets = d.join("secrets.json");
-        match crate::sealing::KeySource::parse(None, &secrets.to_string_lossy()).and_then(|k| k.forget().map(|gone| (k, gone))) {
-            Ok((key, true)) => println!("removed the secrets key from {key}"),
-            Ok(_) => {}
-            Err(e) => eprintln!("holon: the secrets key: {e} (remove it by hand)"),
+        // The root key, kept where the server keeps it by default, under the id its keys.json
+        // records: one kept elsewhere (--root-key env: or file:) is the operator's to remove.
+        let id = std::fs::read(d.join("keys.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("key_id")?.as_str().map(str::to_string))
+            .filter(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_hexdigit()));
+        if let Some(id) = id {
+            match crate::sealing::KeySource::parse(None, &id).and_then(|k| k.forget().map(|gone| (k, gone))) {
+                Ok((key, true)) => println!("removed the root key from {key}"),
+                Ok(_) => {}
+                Err(e) => eprintln!("holon: the root key: {e} (remove it by hand)"),
+            }
         }
         std::fs::remove_dir_all(d).map_err(|e| format!("could not remove {}: {e}", d.display()))?;
         println!("removed {}", d.display());

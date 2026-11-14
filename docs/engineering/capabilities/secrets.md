@@ -34,7 +34,8 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 - `secrets.rs`: the store (`SecretStore`), a deployment's values in memory (`Vault`, `Resolved`),
   the marks and the `Redactor`.
-- `sealing.rs`: encryption at rest and the master key (`Sealer`, `KeySource`).
+- `at_rest.rs`: the keyring every value is sealed under (`Keyring`, the `secrets` scope);
+  `sealing.rs`: where its root key is kept (`KeySource`).
 - `secret_sources.rs`: values kept elsewhere (`Reference`, `Sources`).
 - `holon-core/src/taint.rs` and `crates/holon/src/taint.rs`: where a secret's value flows in the
   graph (`SecretFed`, `sent_secrets`).
@@ -42,17 +43,18 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 2. How it works
 
-- **Stored sealed.** The secrets file (`--secrets`, `secrets.json`, owner-only, written whole by
-  `write_private`) keeps each deployment's secrets as versions (`Stored`: version, time, source,
-  nonce, sealed value), never a value in the clear. Each value is sealed with AES-256-GCM under
-  the master key, a fresh nonce each, the slug, name and version as associated data, so a sealed
-  value moved elsewhere fails to open. The file records `key_check` (derived from the key) and
-  `key_id`, so a wrong key is told from a damaged file and the server refuses to start rather than
-  start empty over the real store.
-- **The master key** is kept apart from the file: `--secrets-key os` (the OS key store, the
-  default on Windows and macOS), `env:VAR` (64 hex digits, never created; `--new-secrets-key`
-  prints one) or `file:PATH` (owner-only, the default elsewhere, in `~/.holon/keys`, outside the
-  data folder) (`KeySource::parse`).
+- **Stored sealed.** The secrets file (`--secrets`, `secrets.json`, owner-only) keeps each
+  deployment's secrets as versions (`Stored`: version, time, source, sealed value), never a value
+  in the clear. Each value is sealed as a line (`Keyring::seal_line`) with XChaCha20-Poly1305
+  under the `secrets` scope's data key, the slug, name and version as associated data, so a sealed
+  value moved elsewhere fails to open; and the file as a whole is a table sealed under the
+  `server` scope (`at_rest::write_private`), as every table is (docs/L4s/at-rest-encryption-L4.md).
+- **The root key** is kept apart from the data folder and wraps every data key in `keys.json`:
+  `--root-key os` (the OS key store, the default on Windows and macOS), `env:VAR` (64 hex digits,
+  never created; `--new-root-key` prints one) or `file:PATH` (owner-only, the default elsewhere,
+  in `~/.holon/keys`, outside the data folder) (`KeySource::parse`). `keys.json` records a check
+  of it, so a wrong root is told from a damaged file and the server refuses to start. The
+  `secrets` data key is rotated with `holon key rotate secrets`: values sealed before still open.
 - **Or a reference.** A version's source is `local` (sealed here), `env:HOLON_SECRET_<NAME>`
   (only `ENV_PREFIX` names: the server's environment holds credentials no flow may ask for) or
   `vault:<mount>/<path>#<field>` (HashiCorp Vault KV v2). `--dotenv FILE` adds a file's
@@ -67,7 +69,8 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
 - **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
   form, with its mark, `‹secret:name v3 #a1b2c3d4›` (`mark`: the version and an 8-hex fingerprint
-  keyed by a key derived from the master key). `Redactor::entry` marks everything a log entry
+  keyed by a key derived from the `secrets` scope's first data key, `Keyring::fingerprint`, so it
+  stays the same across a rotation). `Redactor::entry` marks everything a log entry
   carries (request, sourced values, state before, outputs, effects, reads, timeline, rounds,
   answer, error, url) and escapes a run's own look-alike of a mark (`write_marked`). Control-plane
   replies go through `Redactor::json`; exports carry the log's lines, already marked. Credentials

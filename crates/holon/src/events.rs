@@ -83,6 +83,8 @@ pub(crate) struct Events {
     entries: Vec<Event>,
     /// Where they are kept beside memory (none: memory only, a `:memory:` deployments file).
     file: Option<PathBuf>,
+    /// How its file's lines are sealed: each under its deployment's keys (at_rest.rs, §5.2).
+    line_seal: Option<crate::at_rest::LineSeal>,
     /// The hash of the newest line: the next event's `prev`.
     head: String,
     /// The seqs of the events that don't follow the line before them: the file was changed outside
@@ -112,17 +114,21 @@ impl Events {
     }
 
     fn open(file: Option<PathBuf>) -> Events {
-        let mut events = Events { file, ..Events::default() };
-        let Some(path) = &events.file else { return events };
+        // `<slug>.events.jsonl`: a slug has no dot.
+        let slug = |f: &std::path::Path| f.file_name().map(|n| n.to_string_lossy().split('.').next().unwrap_or_default().to_string()).unwrap_or_default();
+        let line_seal = file.as_deref().map(|f| crate::at_rest::LineSeal::of(&slug(f), crate::at_rest::role::EVENTS));
+        let mut events = Events { file, line_seal, ..Events::default() };
+        let (Some(path), Some(seal)) = (&events.file, &events.line_seal) else { return events };
         let Ok(text) = std::fs::read_to_string(path) else { return events };
         events.cut = !text.is_empty() && !text.ends_with('\n');
-        for line in text.lines() {
-            // A line a crash cut short is skipped; the chain goes on from the line before it.
-            if let Ok(event) = serde_json::from_str::<Event>(line) {
+        // A line a crash cut short (or changed outside holon) doesn't open, and is skipped; the
+        // chain goes on from the line before it, and says so at the next.
+        for line in seal.open_lines(&text).collect::<Vec<_>>() {
+            if let Ok(event) = serde_json::from_str::<Event>(&line) {
                 if event.prev != events.head {
                     events.breaks.push(event.seq);
                 }
-                events.head = line_hash(line);
+                events.head = line_hash(&line);
                 events.entries.push(event);
             }
         }
@@ -171,6 +177,10 @@ impl Events {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        let line = match &self.line_seal {
+            Some(seal) => seal.seal(line)?,
+            None => line.to_string(),
+        };
         let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
         let new = !path.exists();
         let mut options = std::fs::OpenOptions::new();
@@ -205,10 +215,11 @@ impl Events {
         &self.entries
     }
 
-    /// The lines exactly as written, oldest first, so a copy checks against the chain.
+    /// The lines exactly as made, oldest first, so a copy checks against the chain: each opened
+    /// (one that doesn't is left out, and the chain says so at the next).
     pub(crate) fn lines(&self) -> Vec<String> {
-        if let Some(path) = &self.file {
-            return std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
+        if let (Some(path), Some(seal)) = (&self.file, &self.line_seal) {
+            return seal.read_lines(path);
         }
         self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
     }
@@ -283,9 +294,18 @@ mod tests {
         assert_eq!(again.entries()[1].prev, line_hash(&again.lines()[0]));
         assert_eq!((again.entries()[1].seq, again.entries()[1].run_seq), (1, 4));
 
-        // A line changed outside holon breaks the chain at the next one.
-        let text = std::fs::read_to_string(&path).unwrap().replace("paused", "resumed");
-        std::fs::write(&path, text).unwrap();
+        // Sealed on disk, each line (at_rest.rs).
+        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.")));
+        // A line changed outside holon breaks the chain at the next one: changed and sealed again,
+        // or changed as it is on disk, so it doesn't open.
+        let lines = crate::at_rest::testing::open_lines(&path);
+        crate::at_rest::testing::write_lines(&path, &lines.iter().map(|l| l.replace("paused", "resumed")).collect::<Vec<_>>());
+        assert_eq!(Events::open(Some(path.clone())).breaks(), &[1]);
+        crate::at_rest::testing::write_lines(&path, &lines);
+        assert_eq!(Events::open(Some(path.clone())).breaks(), &[] as &[u64]);
+        let mut raw: Vec<String> = std::fs::read_to_string(&path).unwrap().lines().map(str::to_string).collect();
+        raw[0].insert(10, 'x');
+        std::fs::write(&path, raw.join("\n") + "\n").unwrap();
         assert_eq!(Events::open(Some(path.clone())).breaks(), &[1]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

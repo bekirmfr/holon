@@ -24,7 +24,7 @@ impl Server {
         std::fs::create_dir_all(&home).unwrap();
         let port = free_port();
         let child = Command::new(HOLON)
-            .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--secrets-key", &format!("file:{}", home.join("secrets.key").display())])
+            .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", home.join("root.key").display())])
             .env("HOLON_HOME", &home)
             .env_remove("HOLON_DATA")
             .env_remove("HOLON_RUN_DIR")

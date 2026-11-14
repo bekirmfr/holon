@@ -64,8 +64,9 @@ fn changed_ms(path: &std::path::Path) -> u64 {
 pub(crate) struct Puts {
     /// Where the store keeps its values on disk; none for one in memory, which isn't swept.
     dir: Option<PathBuf>,
-    /// Each value put lately, with when (ms since 1970).
-    recent: Mutex<HashMap<Hash, u64>>,
+    /// Each value put lately, by the name its file has (a keyed hash of its hash), with when (ms
+    /// since 1970).
+    recent: Mutex<HashMap<String, u64>>,
     /// How many puts there have been: none since a sweep that spared nothing, and the next has
     /// nothing new to find (but what a deployment deleted since let go, left to the sweep after
     /// the next put, or an admin's).
@@ -74,12 +75,15 @@ pub(crate) struct Puts {
     sweeping: Mutex<()>,
     /// The store's packs (holon-host's packs.rs), shared with the store reading them.
     packs: Option<std::sync::Arc<holon_host::packs::Packs>>,
+    /// How the store seals and names its files: the sweep knows a file by its name, which says
+    /// what value it is only to the keys (at_rest.rs, §5.4).
+    at_rest: Option<std::sync::Arc<dyn holon_host::AtRest>>,
 }
 
 impl Puts {
-    pub(crate) fn at(dir: PathBuf) -> Puts {
-        let packs = holon_host::packs::Packs::shared(&dir).ok();
-        Puts { dir: Some(dir), packs, ..Puts::default() }
+    pub(crate) fn at(dir: PathBuf, at_rest: std::sync::Arc<dyn holon_host::AtRest>) -> Puts {
+        let packs = holon_host::packs::Packs::shared(&dir, std::sync::Arc::clone(&at_rest)).ok();
+        Puts { dir: Some(dir), packs, at_rest: Some(at_rest), ..Puts::default() }
     }
 
     /// The store's packs, if it is on disk.
@@ -105,13 +109,12 @@ impl Puts {
     /// Note `hash` as just put. Called with the store held, so a sweep, which holds it too while
     /// it removes a value, sees every put before it or none of it.
     pub(crate) fn put(&self, hash: Hash) {
-        if self.dir.is_none() {
-            return;
-        }
+        let Some(at_rest) = &self.at_rest else { return };
         let now = now_ms();
         self.count.fetch_add(1, Ordering::Relaxed);
+        let name = at_rest.name(&hash);
         let mut recent = self.recent.lock().unwrap();
-        recent.insert(hash, now);
+        recent.insert(name, now);
         // Held to what a sweep still spares, so a server that never sweeps doesn't grow it for good.
         if recent.len().is_multiple_of(FORGET_AT) {
             recent.retain(|_, at| *at + SPARES_MS > now);
@@ -242,21 +245,22 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
 /// pausing as it removes them (`PACE`), as the server's own sweep does. None for a store in
 /// memory, which has nothing on disk to sweep.
 pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64, dry_run: bool, paced: bool) -> Result<Option<Swept>, String> {
-    let Some(dir) = &store.2.dir else { return Ok(None) };
+    let (Some(dir), Some(at_rest)) = (&store.2.dir, &store.2.at_rest) else { return Ok(None) };
     let _turn = store.2.sweeping.lock().unwrap_or_else(|e| e.into_inner());
-    // The values there are now: one put after this isn't a candidate, whoever names it. Each its
-    // own file (its path), or packed (none).
-    let mut there: BTreeMap<Hash, (Option<PathBuf>, u64)> = BTreeMap::new();
+    // The values there are now: one put after this isn't a candidate, whoever names it. Each by
+    // the name it is kept under, a keyed hash of its hash (at_rest.rs, §5.4), which says nothing
+    // of which value it is until the walk below reaches it by its hash. Each its own file (its
+    // path), or packed (none, and its hash, which the packs' index holds).
+    let mut there: BTreeMap<String, (Option<PathBuf>, u64, Option<Hash>)> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(hash) = name.to_str().filter(|n| n.len() == 64).and_then(parse_hash) else { continue };
-            there.insert(hash, (Some(entry.path()), entry.metadata().map_or(0, |m| m.len())));
+            let Some(name) = entry.file_name().to_str().filter(|n| n.len() == 64 && parse_hash(n).is_some()).map(str::to_string) else { continue };
+            there.insert(name, (Some(entry.path()), entry.metadata().map_or(0, |m| m.len()), None));
         }
     }
     if let Some(packs) = store.2.packs() {
         for (hash, len) in packs.hashes() {
-            there.entry(hash).or_insert((None, len));
+            there.entry(at_rest.name(&hash)).or_insert((None, len, Some(hash)));
         }
     }
     // Walked from each deployment's names in turn: a value is kept, and the first deployment's to
@@ -264,8 +268,10 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
     const SHARED: usize = usize::MAX;
     let named = named(deployments)?;
     let mut owner: HashMap<Hash, usize> = HashMap::new();
+    // Each value reached, by the name it is kept under: how a file is told to be named.
+    let mut reached: HashMap<String, Hash> = HashMap::new();
     for (i, (_, hashes, _)) in named.iter().enumerate() {
-        let mut next: Vec<Hash> = hashes.iter().filter(|h| there.contains_key(*h)).copied().collect();
+        let mut next: Vec<Hash> = hashes.iter().filter(|h| there.contains_key(&at_rest.name(h))).copied().collect();
         while let Some(hash) = next.pop() {
             if let Some(o) = owner.get_mut(&hash) {
                 if *o != i {
@@ -274,6 +280,7 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
                 continue;
             }
             owner.insert(hash, i);
+            reached.insert(at_rest.name(&hash), hash);
             let value = match store.get_value(&hash) {
                 Ok(Some(v)) => v,
                 Ok(None) => continue,
@@ -281,7 +288,7 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
             };
             let mut names = BTreeSet::new();
             named_in_value(&value, &mut names);
-            next.extend(names.into_iter().filter(|h| there.contains_key(h) && owner.get(h).is_none_or(|o| *o != i)));
+            next.extend(names.into_iter().filter(|h| owner.get(h).is_none_or(|o| *o != i) && there.contains_key(&at_rest.name(h))));
         }
     }
     let since = now_ms.saturating_sub(spare_ms);
@@ -290,8 +297,8 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
     let mut gone_packed: std::collections::HashSet<Hash> = std::collections::HashSet::new();
     // Named values older than it spares, each its own file: packed by the server's own sweep.
     let mut to_pack: Vec<(Hash, PathBuf)> = Vec::new();
-    for (hash, (path, size)) in there {
-        if let Some(o) = owner.get(&hash) {
+    for (name, (path, size, packed)) in there {
+        if let Some((hash, o)) = packed.or_else(|| reached.get(&name).copied()).and_then(|h| owner.get(&h).map(|o| (h, o))) {
             if let Some(p) = &path
                 && changed_ms(p) < since
             {
@@ -309,12 +316,12 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
         }
         // Held while it is looked at and removed, so no put of it comes between.
         let held = store.0.lock().unwrap();
-        let put = store.2.recent.lock().unwrap().get(&hash).copied().unwrap_or(0);
+        let put = store.2.recent.lock().unwrap().get(&name).copied().unwrap_or(0);
         let Some(path) = path else {
             if put > since {
                 swept.spared += 1;
                 swept.spared_bytes += size;
-            } else {
+            } else if let Some(hash) = packed {
                 gone_packed.insert(hash);
                 swept.values += 1;
                 swept.bytes += size;
@@ -330,7 +337,7 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(format!("can't sweep the value {}: {e}", to_hex(&hash))),
+                Err(e) => return Err(format!("can't sweep the value kept as {name}: {e}")),
             }
         }
         swept.values += 1;
@@ -349,7 +356,7 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
         // by a put) stays.
         let recent_since = |gone: &std::collections::HashSet<Hash>| {
             let recent = store.2.recent.lock().unwrap();
-            gone.iter().filter(|h| recent.get(*h).is_some_and(|put| *put > since)).copied().collect::<std::collections::HashSet<Hash>>()
+            gone.iter().filter(|h| recent.get(&at_rest.name(h)).is_some_and(|put| *put > since)).copied().collect::<std::collections::HashSet<Hash>>()
         };
         let again = recent_since(&gone_packed);
         gone_packed.retain(|h| !again.contains(h));
@@ -375,14 +382,16 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
 const PACK_AT_MOST: usize = 16 * 1024;
 
 /// Move `values` (named, older than a sweep spares, each its own file) into packs, then remove
-/// their files, paced as removals are: a file goes only once its value is in a pack on disk.
+/// their files, paced as removals are: a file goes only once its value is in a pack on disk. Each
+/// file opened as it is read: a pack holds the values as put, and seals its blocks itself.
 fn pack(store: &SharedStore, values: &[(Hash, PathBuf)], swept: &mut Swept) -> Result<(), String> {
     let Some(packs) = store.2.packs() else { return Ok(()) };
     for chunk in values.chunks(PACK_AT_MOST) {
         let (mut read, mut paths) = (Vec::with_capacity(chunk.len()), Vec::with_capacity(chunk.len()));
         for (hash, path) in chunk {
             match std::fs::read(path) {
-                Ok(bytes) => {
+                Ok(sealed) => {
+                    let bytes = packs.at_rest().open(holon_host::role::VALUE, &sealed).map_err(|e| format!("can't pack the value {}: its file doesn't open: {e}", to_hex(hash)))?;
                     read.push((*hash, bytes));
                     paths.push(path);
                 }

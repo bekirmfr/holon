@@ -202,7 +202,7 @@ struct Kept {
 impl Kept {
     fn read(&self) -> Seen {
         let bytes = match &self.file {
-            Some(f) => std::fs::read(f).ok(),
+            Some(f) => crate::at_rest::read_sealed(f, crate::at_rest::role::FEED_SEEN).ok().flatten().map(|b| b.to_vec()),
             None => self.memory.lock().unwrap().get(&self.key).cloned(),
         };
         bytes.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
@@ -214,7 +214,7 @@ impl Kept {
             self.memory.lock().unwrap().insert(self.key.clone(), bytes);
             return;
         };
-        let written = std::fs::create_dir_all(file.parent().expect("a file in a folder")).and_then(|_| write_atomically(file, &bytes));
+        let written = std::fs::create_dir_all(file.parent().expect("a file in a folder")).and_then(|_| crate::at_rest::write_sealed(file, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::FEED_SEEN, &bytes));
         if let Err(e) = written {
             eprintln!("holon: where {} is in its feed wasn't kept: {e}", file.display());
         }

@@ -2,8 +2,9 @@
 //! host beside a deployment's runs, and no effect a run performed: `holon verify` checks a run
 //! without them, and a replay writes none.
 //!
-//! One file for each deployment, `<dir>/<slug>.jsonl`, a line of JSON each, rolled at a size cap
-//! into `<slug>.1.jsonl` and `<slug>.2.jsonl`, the oldest dropped. Lines are buffered and written
+//! One file for each deployment, `<dir>/<slug>.console.jsonl`, a line of JSON each, rolled at a size
+//! cap into `<slug>.console.1.jsonl` and `<slug>.console.2.jsonl`, the oldest dropped. Not
+//! `<slug>.jsonl`, in the same folder: that is the deployment's run log (`recorder::file_for`). Lines are buffered and written
 //! about once a second, on a thread of their own: a run never waits for them, and a crash can
 //! lose the last second. A server that keeps nothing keeps the newest lines in memory.
 //!
@@ -203,9 +204,10 @@ impl Logs {
             None => self.0.slugs.lock().unwrap().get(slug).map(|p| p.memory.iter().cloned().collect()).unwrap_or_default(),
             Some(dir) => {
                 let mut lines = Vec::new();
+                let seal = crate::at_rest::LineSeal::of(slug, crate::at_rest::role::CONSOLE);
                 for n in (0..self.0.caps.files).rev() {
                     let Ok(text) = std::fs::read_to_string(file_of(dir, slug, n)) else { continue };
-                    lines.extend(text.lines().filter_map(|l| serde_json::from_str::<Line>(l).ok()));
+                    lines.extend(seal.open_lines(&text).filter_map(|l| serde_json::from_str::<Line>(&l).ok()));
                 }
                 lines
             }
@@ -334,14 +336,30 @@ fn is_file_name(slug: &str) -> bool {
     !slug.is_empty() && slug.len() <= 128 && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// `<dir>/<slug>.jsonl` for the current file (`n` 0), `<slug>.1.jsonl` for the one before.
+/// Whether a file in the logs folder is console lines, current or rolled, not a run log or events.
+/// `<slug>.console.jsonl` or `<slug>.console.<n>.jsonl`; a slug has no dot (`is_file_name`), so a
+/// deployment named `console` (`console.jsonl`) is not one.
+pub(crate) fn is_console_file(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".jsonl") else { return false };
+    let stem = match stem.rsplit_once('.') {
+        Some((before, n)) if n.parse::<usize>().is_ok() => before,
+        _ => stem,
+    };
+    stem.strip_suffix(".console").is_some_and(is_file_name)
+}
+
+/// `<dir>/<slug>.console.jsonl` for the current file (`n` 0), `<slug>.console.1.jsonl` for the one
+/// before. Not `<slug>.jsonl`: that is the deployment's run log, in the same folder
+/// (`recorder::file_for`).
 fn file_of(dir: &Path, slug: &str, n: usize) -> PathBuf {
-    if n == 0 { dir.join(format!("{slug}.jsonl")) } else { dir.join(format!("{slug}.{n}.jsonl")) }
+    if n == 0 { dir.join(format!("{slug}.console.jsonl")) } else { dir.join(format!("{slug}.console.{n}.jsonl")) }
 }
 
 /// `bytes` added to `slug`'s file, which is rolled first if they would take it past its cap.
 fn append(dir: &Path, slug: &str, bytes: &[u8], caps: &Caps) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    // Each line sealed under the deployment's keys (at_rest.rs, §5.2): the cap counts them sealed.
+    let bytes = &crate::at_rest::LineSeal::of(slug, crate::at_rest::role::CONSOLE).seal_lines(bytes)?;
     let current = file_of(dir, slug, 0);
     let size = std::fs::metadata(&current).map_or(0, |m| m.len());
     if size > 0 && size + bytes.len() as u64 > caps.file_bytes {
@@ -351,7 +369,7 @@ fn append(dir: &Path, slug: &str, bytes: &[u8], caps: &Caps) -> std::io::Result<
             let _ = std::fs::rename(file_of(dir, slug, n), file_of(dir, slug, n + 1));
         }
     }
-    std::fs::OpenOptions::new().create(true).append(true).open(current)?.write_all(bytes)
+    crate::sealing::append_private(&current)?.write_all(bytes)
 }
 
 /// `GET /deployments/<slug>/logs?level=warn&run=17&until=17&after=<at>&limit=200`: a deployment's
@@ -400,6 +418,46 @@ mod tests {
         let logs = Logs::new(Some(dir.to_path_buf()), caps);
         logs.0.flusher.store(true, Ordering::SeqCst);
         logs
+    }
+
+    /// A deployment's console lines and its run log are two files, both beside the deployments
+    /// file: console lines never land in the run log's file, and rolling them never moves it
+    /// (docs/L4s/at-rest-encryption-L4.md §1.1).
+    #[test]
+    fn console_lines_and_the_run_log_are_kept_apart() {
+        use crate::recorder::{file_for, Log, LogEntry};
+        let dir = temp("apart");
+        let deployments = crate::paths::Place::parse(&dir.join("deployments.json").to_string_lossy());
+        let run_log = file_for(&deployments, "shop").unwrap();
+        let mut log = Log::open(Some(run_log.clone()));
+        // Small files, so the console lines roll while the run log is open.
+        let logs = Logs::beside(&deployments, Caps { file_bytes: 200, files: 3, ..Caps::default() });
+        logs.0.flusher.store(true, Ordering::SeqCst);
+        for run in 1..=4u64 {
+            log.push(LogEntry { at_ms: run, kind: "tick".into(), ..LogEntry::default() });
+            logs.write("shop", run, "abcdef0123456789", run, &[("log".into(), text("a console line, long enough to roll the file"))]);
+            logs.flush();
+        }
+        drop(log);
+        let reopened = Log::open(Some(run_log.clone()));
+        assert_eq!(reopened.holds().0, 4, "the run log's file holds its four runs");
+        assert_eq!(reopened.breaks(), &[] as &[u64], "and only its own chained lines");
+        let text = std::fs::read_to_string(&run_log).unwrap();
+        assert!(!text.contains("a console line"), "no console line in the run log's file: {text}");
+        assert!(!logs.read("shop", &Query::default()).is_empty(), "the console lines are read back from their own files");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn console_files_are_told_from_run_logs_and_events_by_name() {
+        let dir = Path::new("d");
+        for n in 0..3 {
+            let name = file_of(dir, "shop", n);
+            assert!(is_console_file(&name.file_name().unwrap().to_string_lossy()), "{name:?}");
+        }
+        for other in ["shop.jsonl", "console.jsonl", "shop.events.jsonl", "console.events.jsonl", "shop.console.jsonl.gz", ".console.jsonl"] {
+            assert!(!is_console_file(other), "{other}");
+        }
     }
 
     #[test]

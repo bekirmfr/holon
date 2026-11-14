@@ -98,6 +98,14 @@ One root, **`~/.holon`** (`%USERPROFILE%\.holon` on Windows), or **`HOLON_HOME`*
      open. A copy shares the key with the original, which is what a backup needs. The cost is
      that `uninstall --purge` of one copy removes the key the other uses too; purge says so
      when it asks.
+   - *Since encryption at rest (docs/L4s/at-rest-encryption-L4.md):* the key is the **root
+     key**, and the file that names it is `keys.json` in the data folder, not `secrets.json`.
+     `keys.json` takes a random `key_id` when it is made (the path hash is gone, as are format 2
+     and the plain-values upgrade); the root is `root-key-<key_id>` in the OS key store or
+     `holon_home()/keys/<key_id>.key`, chosen with `--root-key` (was `--secrets-key`), and
+     `root_check` stands where `key_check` did. It wraps a data key per scope, every table, log,
+     store file and secret value sealed under one; the secrets file is one table among them. A
+     moved, renamed or restored folder still opens, for the reason above.
 4. **`uninstall --purge` removes all of `~/.holon`**: data, keys, run files, tokens and the MCP
    host list (it keeps telling the user which agent hosts' settings still name holon, and how to
    remove them: `holon mcp setup --remove`). Without `--purge` it keeps `~/.holon` and removes

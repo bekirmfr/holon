@@ -1,110 +1,22 @@
-//! The secrets store's encryption at rest (§4.2 of docs/PLATFORM_LAYOUT.md): envelope-style, with
-//! the master key kept apart from the file it protects, so a copy of the file — a backup, a disk
-//! image, a folder zipped up and sent — carries no secret anyone can read.
+//! Where the root key is kept, and the plain file layer under encryption at rest (`at_rest.rs`,
+//! docs/L4s/at-rest-encryption-L4.md §3.1).
 //!
-//! - Each value is sealed with AES-256-GCM under the master key, a fresh random nonce per value,
-//!   and the slug, name and version as associated data: a sealed value moved to another
-//!   deployment, name or version fails to open instead of answering there.
-//! - The master key lives in the OS key store by default (Credential Manager on Windows, the
+//! - The root key lives in the OS key store by default (Credential Manager on Windows, the
 //!   Keychain on macOS), or comes from an environment variable (`env:VAR`: containers, a cloud
 //!   KMS or secret manager injecting it) or a key file (`file:PATH`, owner-only; the default where
 //!   there is no OS key store, kept in `~/.holon/keys`, beside the data folder, not in it).
-//! - The secrets file records the id its key is kept under (`key_id`), so the file can be moved,
-//!   renamed or restored from a backup and still find its key (docs/L4s/holon-home-L4.md §3).
-//! - The file records a check value derived from the key (never the key), so a wrong key is
-//!   told apart from a damaged file, and neither ever starts the server on an empty store that
-//!   would overwrite the real one.
-//! - A value's fingerprint, which the log shows in its place, is keyed by another key derived
-//!   from the master key: the same value has the same one, and without the key a guess can't be
-//!   checked against it.
+//! - It is named by the id `keys.json` records (`holon` / `root-key-<id>`, `<id>.key`), so the
+//!   data folder can be moved, renamed or restored from a backup and still find its root.
+//! - What writes a file here writes it owner-only from its first byte: `write_private`,
+//!   `write_aside`, `append_private`. `at_rest` seals what goes through them.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use zeroize::Zeroizing;
 
-/// A 256-bit master key, wiped from memory when dropped.
+/// A 256-bit key, wiped from memory when dropped.
 pub(crate) type MasterKey = Zeroizing<[u8; 32]>;
-
-/// Seals and opens secret values under one master key.
-pub(crate) struct Sealer {
-    cipher: Aes256Gcm,
-    check: String,
-    /// What fingerprints are keyed by: derived from the master key, never it.
-    prints: Zeroizing<[u8; 32]>,
-}
-
-impl Sealer {
-    pub(crate) fn new(key: &MasterKey) -> Sealer {
-        let check = blake3::keyed_hash(key, b"holon secrets key check").to_hex()[..16].to_string();
-        let prints = Zeroizing::new(blake3::derive_key("holon secrets fingerprints", key.as_slice()));
-        Sealer { cipher: Aes256Gcm::new(key.as_slice().into()), check, prints }
-    }
-
-    /// A sealer under a fresh key that is never stored: an in-memory store's.
-    pub(crate) fn ephemeral() -> Sealer {
-        Sealer::new(&new_key())
-    }
-
-    /// The value the file records to recognise this key by. It reveals nothing about the key.
-    pub(crate) fn check(&self) -> &str {
-        &self.check
-    }
-
-    /// `value`'s fingerprint: 8 hex, keyed by this key, so the log can tell which value a run had
-    /// without holding it.
-    pub(crate) fn fingerprint(&self, value: &str) -> String {
-        blake3::keyed_hash(&self.prints, value.as_bytes()).to_hex()[..8].to_string()
-    }
-
-    /// `plain` sealed for `context` (slug, name and version): (nonce, ciphertext), hex.
-    pub(crate) fn seal(&self, context: &str, plain: &str) -> (String, String) {
-        let mut nonce = [0u8; 12];
-        getrandom::fill(&mut nonce).expect("the OS random source failed");
-        let sealed = self
-            .cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain.as_bytes(), aad: context.as_bytes() })
-            .expect("AES-GCM sealing can't fail for an in-memory value");
-        (to_hex(&nonce), to_hex(&sealed))
-    }
-
-    /// The value sealed for `context`, or why it can't be opened.
-    pub(crate) fn open(&self, context: &str, nonce: &str, sealed: &str) -> Result<Zeroizing<String>, String> {
-        let nonce = from_hex(nonce).filter(|n| n.len() == 12).ok_or("a damaged nonce")?;
-        let sealed = from_hex(sealed).ok_or("a damaged sealed value")?;
-        let plain = Zeroizing::new(
-            self.cipher
-                .decrypt(Nonce::from_slice(&nonce), Payload { msg: &sealed, aad: context.as_bytes() })
-                .map_err(|_| "it doesn't open under this key for this deployment, name and version")?,
-        );
-        String::from_utf8(plain.to_vec()).map(Zeroizing::new).map_err(|_| "not text".into())
-    }
-}
-
-/// What a sealed value is bound to: a value sealed for one place doesn't open in another.
-pub(crate) fn context(slug: &str, name: &str, version: u32) -> String {
-    format!("holon-secret/v2\0{slug}\0{name}\0{version}")
-}
-
-/// The id the key of the secrets file at `secrets_path` is kept under: the one the file records,
-/// else [`path_key_id`], which is what a store records when it is made, and what a file from
-/// before ids were recorded was always keyed by. Two stores made in two places have two keys.
-pub(crate) fn key_id(secrets_path: &str) -> String {
-    std::fs::read(secrets_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("key_id")?.as_str().map(str::to_string))
-        .filter(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_hexdigit()))
-        .unwrap_or_else(|| path_key_id(secrets_path))
-}
-
-/// The id from where the secrets file is: a hash of its absolute path.
-pub(crate) fn path_key_id(secrets_path: &str) -> String {
-    let absolute = std::path::absolute(secrets_path).unwrap_or_else(|_| PathBuf::from(secrets_path));
-    blake3::hash(absolute.to_string_lossy().as_bytes()).to_hex()[..16].to_string()
-}
 
 /// Where key files were kept before `~/.holon/keys`: the user's config directory.
 pub(crate) fn old_keys_dir() -> Option<PathBuf> {
@@ -122,37 +34,32 @@ pub(crate) fn new_key() -> MasterKey {
     key
 }
 
-/// Where the master key is kept (`--secrets-key`).
+/// Where the root key is kept (`--root-key`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum KeySource {
-    /// The OS key store, under an entry named for the secrets file it protects.
+    /// The OS key store, under an entry named for the keyring it opens.
     Os { account: String },
     /// An environment variable holding the key as 64 hex digits; never created here.
     Env(String),
-    /// A key file holding 64 hex digits, owner-only; created when there's no store yet.
+    /// A key file holding 64 hex digits, owner-only; created when there's no keyring yet.
     File(PathBuf),
 }
 
 impl KeySource {
-    /// `arg` (`os`, `env:VAR` or `file:PATH`), or the default for `secrets_path`: the OS key
-    /// store where there is one, else a key file in `~/.holon/keys`. Either is named by the id
-    /// the secrets file records ([`key_id`]).
-    pub(crate) fn parse(arg: Option<&str>, secrets_path: &str) -> Result<KeySource, String> {
-        let id = key_id(secrets_path);
+    /// `arg` (`os`, `env:VAR` or `file:PATH`), or the default for the keyring whose id is `id`:
+    /// the OS key store where there is one, else a key file in `~/.holon/keys`.
+    pub(crate) fn parse(arg: Option<&str>, id: &str) -> Result<KeySource, String> {
         match arg {
-            Some("os") => Ok(KeySource::Os { account: format!("secrets-key-{id}") }),
+            Some("os") => Ok(KeySource::Os { account: format!("root-key-{id}") }),
             Some(a) if a.starts_with("env:") && a.len() > 4 => Ok(KeySource::Env(a[4..].to_string())),
             Some(a) if a.starts_with("file:") && a.len() > 5 => Ok(KeySource::File(PathBuf::from(&a[5..]))),
-            Some(a) => Err(format!("--secrets-key {a:?}: expected os, env:VAR or file:PATH")),
-            None if cfg!(any(windows, target_os = "macos")) => Ok(KeySource::Os { account: format!("secrets-key-{id}") }),
+            Some(a) => Err(format!("--root-key {a:?}: expected os, env:VAR or file:PATH")),
+            None if cfg!(any(windows, target_os = "macos")) => Ok(KeySource::Os { account: format!("root-key-{id}") }),
             None => {
                 let keys = crate::local::holon_home()
                     .map(|h| h.join("keys"))
-                    .ok_or("no OS key store here, and no HOME to keep a key file under: pass --secrets-key env:VAR or file:PATH")?;
-                let file = keys.join(format!("{id}.key"));
-                // One kept where releases before 0.1.0-rc.17 put it, until `holon migrate` moves it.
-                let old = old_keys_dir().map(|d| d.join(format!("{id}.key"))).filter(|o| !file.exists() && o.exists());
-                Ok(KeySource::File(old.unwrap_or(file)))
+                    .ok_or("no OS key store here, and no HOME to keep a key file under: pass --root-key env:VAR or file:PATH")?;
+                Ok(KeySource::File(keys.join(format!("{id}.key"))))
             }
         }
     }
@@ -178,12 +85,19 @@ impl KeySource {
     /// Keep a new key here. An environment variable can't be written: the operator sets it.
     pub(crate) fn create(&self) -> Result<MasterKey, String> {
         let key = new_key();
+        self.keep(&key)?;
+        Ok(key)
+    }
+
+    /// Keep `key` here, in place of any kept before (a root rotation, at_rest.rs). An environment
+    /// variable can't be written: the operator sets it.
+    pub(crate) fn keep(&self, key: &MasterKey) -> Result<(), String> {
         let hex = Zeroizing::new(to_hex(key.as_slice()));
         match self {
             KeySource::Os { account } => os_store::write(account, &hex)?,
             KeySource::Env(var) => {
                 return Err(format!(
-                    "{var} isn't set: set it to a key (holon serve --new-secrets-key prints one) and keep it safe; without it the secrets can't be read"
+                    "{var} isn't set: set it to a key (holon serve --new-root-key prints one) and keep it safe, apart from the data folder; without it nothing in the folder can be read"
                 ));
             }
             KeySource::File(path) => {
@@ -193,7 +107,7 @@ impl KeySource {
                 write_private(path, hex.as_bytes()).map_err(|e| format!("could not write the key file {path:?}: {e}"))?;
             }
         }
-        Ok(key)
+        Ok(())
     }
 
     /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an
@@ -254,7 +168,7 @@ mod os_store {
 mod os_store {
     use zeroize::Zeroizing;
 
-    const NONE: &str = "there is no OS key store on this platform: pass --secrets-key env:VAR or file:PATH";
+    const NONE: &str = "there is no OS key store on this platform: pass --root-key env:VAR or file:PATH";
 
     pub(super) fn read(_account: &str) -> Result<Option<Zeroizing<String>>, String> {
         Err(NONE.into())
@@ -302,7 +216,8 @@ pub(crate) fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf>
 }
 
 /// `path` opened for appending, made if it isn't there, for its owner only (`0o600` where the
-/// system has modes): the server's own logs (its activity, the witness's queue).
+/// system has modes, an owner-only DACL on Windows): the server's own logs (its activity, the
+/// witness's queue and receipts, console lines).
 pub(crate) fn append_private(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
@@ -311,7 +226,12 @@ pub(crate) fn append_private(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)
+    let new = !path.exists();
+    let file = options.open(path)?;
+    if new {
+        restrict_to_owner(path)?;
+    }
+    Ok(file)
 }
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -342,59 +262,11 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// Make `path` readable and writable by its owner only.
-#[cfg(unix)]
-pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-/// Make `path` readable and writable by its owner only: a protected DACL (nothing inherited from
-/// the folder) granting full control to the owner and to SYSTEM, and nobody else.
-#[cfg(windows)]
-pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW};
-
-    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)".encode_utf16().chain(Some(0)).collect();
-    let wide: Vec<u16> = verbatim(path)?.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    // SAFETY: both strings are NUL-terminated and outlive the calls; `sd` is allocated by the
-    // first call and freed with LocalFree, as its documentation asks.
-    unsafe {
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, std::ptr::null_mut()) == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let ok = SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, sd);
-        let error = std::io::Error::last_os_error();
-        LocalFree(sd as _);
-        if ok == 0 {
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-/// `path` as Windows takes a name of any length (`\\?\C:\…`, `\\?\UNC\server\share\…`): a call
-/// given the plain name refuses one past 260 characters, as Rust's own file calls don't.
-#[cfg(windows)]
-fn verbatim(path: &Path) -> std::io::Result<std::path::PathBuf> {
-    let full = std::path::absolute(path)?;
-    let s = full.as_os_str().to_string_lossy();
-    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
-        return Ok(full);
-    }
-    let mut out = std::ffi::OsString::from(if s.starts_with(r"\\") { r"\\?\UNC\" } else { r"\\?\" });
-    out.push(if let Some(share) = s.strip_prefix(r"\\") { std::ffi::OsStr::new(share) } else { full.as_os_str() });
-    Ok(out.into())
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
+/// Make `path` readable and writable by its owner only (`0o600`, or a protected owner-only DACL on
+/// Windows): kept in `holon-host`, whose store writes files too.
+pub(crate) use holon_host::restrict_to_owner;
+#[cfg(all(test, windows))]
+use holon_host::verbatim;
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     holon_core::hex(bytes)
@@ -424,20 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn a_sealed_value_opens_only_where_it_was_sealed() {
-        let sealer = Sealer::ephemeral();
-        let (nonce, sealed) = sealer.seal(&context("api", "key", 1), "sk_live_123456");
-        assert!(!sealed.contains(&to_hex(b"sk_live")), "the value isn't in the clear");
-        assert_eq!(*sealer.open(&context("api", "key", 1), &nonce, &sealed).unwrap(), "sk_live_123456");
-        for elsewhere in [context("other", "key", 1), context("api", "other", 1), context("api", "key", 2)] {
-            assert!(sealer.open(&elsewhere, &nonce, &sealed).is_err(), "moved to {elsewhere:?}");
-        }
-        assert!(Sealer::ephemeral().open(&context("api", "key", 1), &nonce, &sealed).is_err(), "another key");
-        let (again, _) = sealer.seal(&context("api", "key", 1), "sk_live_123456");
-        assert_ne!(nonce, again, "a fresh nonce each time");
-    }
-
-    #[test]
     fn a_key_file_is_created_once_owner_only_and_read_back() {
         let dir = std::env::temp_dir().join(format!("holon-key-{}", std::process::id()));
         let path = dir.join("nested").join("k.key");
@@ -452,9 +310,10 @@ mod tests {
         }
         std::fs::write(&path, "not hex").unwrap();
         assert!(source.read().unwrap_err().contains("64 hex digits"));
-        assert!(KeySource::Env("HOLON_TEST_UNSET_KEY_VAR".into()).create().unwrap_err().contains("--new-secrets-key"));
-        assert!(KeySource::parse(Some("vault"), "x.json").is_err());
-        assert_eq!(KeySource::parse(Some("env:K"), "x.json").unwrap(), KeySource::Env("K".into()));
+        assert!(KeySource::Env("HOLON_TEST_UNSET_KEY_VAR".into()).create().unwrap_err().contains("--new-root-key"));
+        assert!(KeySource::parse(Some("vault"), "0123456789abcdef").is_err());
+        assert_eq!(KeySource::parse(Some("env:K"), "0123456789abcdef").unwrap(), KeySource::Env("K".into()));
+        assert_eq!(KeySource::parse(Some("os"), "0123456789abcdef").unwrap(), KeySource::Os { account: "root-key-0123456789abcdef".into() });
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

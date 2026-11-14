@@ -13,7 +13,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 |---|---|
 | `bin/` | the program |
 | `data/` | the server's state: **the one folder to back up** |
-| `keys/` | the secrets key, where there is no OS key store |
+| `keys/` | the root key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
 | `tokens.json` | the session `holon login` began on each server you signed in to, and the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
 | `mcp-hosts.toml` | agent hosts you added to `holon mcp hosts` |
@@ -22,9 +22,9 @@ In the data folder (`--data`, `HOLON_DATA`):
 
 | File | Holds | Option |
 |---|---|---|
-| `store/` | every unit, by hash | `--store` |
+| `store/` | every unit, and under it the values (`values/`, the long-lived ones packed in `values/packs/`) and the texts of files runs read (`blobs/`): each sealed, and named by a keyed hash of its hash, not the hash itself | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
-| `deployments.logs/` | each deployment's run log: its newest 128 runs as written, `<slug>.jsonl`, and the older ones it keeps sealed, gzipped, in `<slug>.sealed/` (`zcat` reads them) | |
+| `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
@@ -41,8 +41,8 @@ the command that makes it yours alone (`chmod 700 …`); the server leaves it as
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
-To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
-a file (see [The secrets key](#the-secrets-key)).
+To move a server, stop it and copy the data folder; the root key goes with it only if it is in a
+file (see [The root key](#the-root-key)).
 
 ### Stopping it
 
@@ -190,8 +190,10 @@ allow_plain_http = true
   - `backup`: a folder's whole path (an external or second drive, or a folder a cloud client
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
-    within ten seconds made into exports `holon verify` checks, gzipped:
-    `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs
+    within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
+    server's keys as its data folder is (`holon verify --root-key` opens one; keep the root key
+    apart from the backup): `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`,
+    with the units the runs
     ran and the file texts they read that the server keeps. Every file the server writes there
     starts with `holon-archive-`, and the folder may hold other things: the server only ever
     exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>.jsonl`, each
@@ -432,20 +434,66 @@ sign-in of theirs at the provider still is one.
 
 Secrets are set per deployment, by an admin, in the editor (**Settings → secrets**); see
 [Deploying](../guides/deploying.md#secrets). The server keeps them in `secrets.json`, each value
-sealed with AES-256-GCM, the deployment, name and version bound in.
+sealed with XChaCha20-Poly1305, the deployment, name and version bound in.
 
-### The secrets key
+### The root key
 
-`--secrets-key` says where the key is:
+What the server seals in its data folder is sealed under data keys kept in `keys.json`, each
+wrapped by one root key, which is never in the folder: secret values, what a waiting run keeps,
+and every table: the deployments, saved flows and their proposals, the secrets file itself, the
+accounts, `access.json` and each line of its history, the folders, databases, mails, queues and
+feeds bound, and what a deployment has seen of its queues, mailboxes, feeds and folders; and every
+log, a line at a time: each deployment's run log (its older runs gzipped, then sealed whole), its
+events and console lines, the activity and the secrets audit; and the content store: each unit,
+value and kept file text, and a pack's blocks (deflated first) and its index, each file named by a
+keyed hash of its content hash, so a name says nothing of what it holds; and what waits to be
+sent (`mail-spool/`, `queue-spool/`), a removed deployment's records (`removed/`), and what a
+backup holds. Each is sealed for what it is, so
+one is never read as another, and a plain file where a sealed one belongs is refused, not read.
+`keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
+as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.
+`--root-key` says where the root is:
 
 | Value | |
 |---|---|
-| `os` | the OS key store (the default on Windows and macOS) |
-| `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/`) |
-| `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-secrets-key` prints one |
+| `os` | the OS key store, as `holon` / `root-key-<id>` (the default on Windows and macOS) |
+| `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/<id>.key`) |
+| `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-root-key` prints one |
 
-Without the right key the server doesn't start. Back the key up apart from the data: one without
-the other opens nothing.
+`<id>` is the one `keys.json` records. Without the right root the server doesn't start; nor does it
+when `keys.json` is missing beside data it sealed. Back the root up apart from the data: one
+without the other opens nothing. One server at a time runs on a data folder: it holds
+`keys.lock` while it runs, and a second one started on the same folder refuses.
+
+### Rotating and forgetting keys
+
+`keys.json` keeps a data key for each scope: `server` (its tables and store), `secrets`, `names`
+(the store's file names) and `d:<slug>` for what each deployment wrote. Each has versions, and
+each record names the version that sealed it. [`holon key`](cli.md#holon-key) shows and changes
+them; none of it ever shows a key.
+
+- **A new data key**, `holon key rotate <scope>`: what is written from then on is sealed under the
+  new version; what was sealed under the ones before still opens, so they are kept. `names` is
+  never rotated: a store file's name must stay what it was.
+- **A new root**, `holon key rotate --root --to <SOURCE>`, with the server stopped: every data key
+  is wrapped under a new root, kept where `--to` says; start the server with `--root-key` set to
+  it. No data file is touched. A rotation cut short loses nothing: the next start finishes it, or
+  undoes it, whichever root it is given.
+- **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
+  section): its keys leave `keys.json`, so its kept records, its backups and every file it left
+  open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated
+  where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
+  needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
+  a copy; forgetting doesn't reach it. A root in an environment variable can't be changed by the
+  server: it says so, and `holon key rotate --root` does it with the server stopped.
+
+### What the folder still says
+
+Sealing hides what flows were given and kept, not that they ran. Someone with the data folder and
+without the root learns: which deployments exist (file names are slugs), how many runs each kept
+and when (file sizes and times, a segment's sequence range in its name), how large what they keep
+is, and the state heads (hashes, as an export carries them). `holon.toml`, the witness's queue and
+receipts, and the clean-stop mark are kept as they are: none holds run data.
 
 ### Secrets from elsewhere
 

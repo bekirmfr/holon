@@ -247,10 +247,10 @@ impl Queues {
             return Ok(Queues::memory());
         }
         let path = PathBuf::from(file);
-        let bound = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a queues file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
-            Err(e) => return Err(format!("can't read {file}: {e}")),
+        // Sealed under the server's keys (at_rest.rs): addresses, paths, references to secrets.
+        let bound = match crate::at_rest::read_sealed(&path, crate::at_rest::role::QUEUES)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a queues file: {e}"))?,
+            None => Bound::default(),
         };
         let spool = path.with_file_name("queue-spool");
         Ok(Queues::with(Some(path), bound, Some(spool)))
@@ -356,7 +356,7 @@ impl Queues {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.0.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::QUEUES, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a queue it sends to or
@@ -428,7 +428,9 @@ impl Queues {
                 let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
                 kept.push(b'\n');
                 kept.extend_from_slice(body.as_bytes());
-                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::sealing::write_private(file, &kept)) {
+                // Sealed under the deployment's keys (at_rest.rs, §5.5): the message as it is sent.
+                let scope = crate::at_rest::deployment(slug);
+                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_QUEUE, &kept)) {
                     self.note(slug, &spooled.queue, format!("didn't send a message to {}: it couldn't be spooled ({e})", spooled.queue));
                     continue;
                 }
@@ -502,7 +504,16 @@ impl Queues {
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut found: Vec<(Spooled, String, PathBuf)> = Vec::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "msg")) {
-            let Ok(bytes) = std::fs::read(&file) else { continue };
+            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_QUEUE) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => continue,
+                // One that doesn't open (changed, plain, or sealed by another folder's keys): left
+                // as it is, said, never sent.
+                Err(e) => {
+                    eprintln!("holon: the spooled message {} doesn't open, so it isn't sent; left as it is: {e}", file.display());
+                    continue;
+                }
+            };
             let Some(end) = bytes.iter().position(|b| *b == b'\n') else { continue };
             let (Ok(spooled), Ok(body)) = (serde_json::from_slice::<Spooled>(&bytes[..end]), String::from_utf8(bytes[end + 1..].to_vec())) else {
                 let _ = std::fs::remove_file(&file);
@@ -1095,12 +1106,24 @@ mod tests {
         // Two runs spooled, neither sent: one whose record landed, one a crash lost.
         first.hold_sends("app", 1, first.spool_logged("app", &entry("landed"), vec![("payouts".into(), message("kept", None))]));
         first.hold_sends("app", 2, first.spool_logged("app", &entry("lost"), vec![("payouts".into(), message("gone", None))]));
+        // Each sealed under the deployment's keys (at_rest.rs §5.5): no message in clear. One written
+        // plain (the landed run's, as it was before it was sealed) is left as it is, never sent.
+        let spool = dir.join("queue-spool");
+        for f in std::fs::read_dir(&spool).unwrap().flatten() {
+            let bytes = std::fs::read(f.path()).unwrap();
+            assert!(bytes.starts_with(b"HLA1") && !bytes.windows(4).any(|w| w == b"kept" || w == b"gone"), "{}", f.path().display());
+        }
+        let plain = crate::at_rest::read_sealed(&spool.join("app.landed.0.msg"), crate::at_rest::role::SPOOL_QUEUE).unwrap().unwrap();
+        std::fs::write(spool.join("app.plain.0.msg"), &*plain).unwrap();
         let again = Queues::open(file.to_str().unwrap()).unwrap().with_sources(Sources::of(&vars));
         again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
         again.serve(Arc::default());
         until(|| sqs.messages("payouts").len() == 1);
         assert_eq!(sqs.messages("payouts")[0].body, "kept");
-        until(|| std::fs::read_dir(dir.join("queue-spool")).map(|d| d.count() == 0).unwrap_or(false));
+        until(|| std::fs::read_dir(&spool).map(|d| d.count() == 1).unwrap_or(false));
+        assert!(spool.join("app.plain.0.msg").exists(), "the plain one left");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(sqs.messages("payouts").len(), 1, "and not sent");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

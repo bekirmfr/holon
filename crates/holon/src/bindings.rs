@@ -565,24 +565,37 @@ pub(crate) fn history(path: &Path) -> PathBuf {
     path.with_extension("versions.jsonl")
 }
 
+/// The history at `at` as it is on disk, a sealed version a line: empty if there is none.
+fn read_history(at: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(at) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("the access history {at:?}: {e}")),
+    }
+}
+
+/// A line of the history, opened and read: none if it doesn't open (cut short as it was written,
+/// or not sealed) or doesn't parse.
+fn open_version<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
+    let plain = crate::at_rest::keys().open_line(crate::at_rest::SERVER, crate::at_rest::role::ACCESS_HISTORY, line).ok()?;
+    serde_json::from_slice(&plain).ok()
+}
+
 impl Bindings {
     /// The access document at `path`, as its newest version says: the history's last version when
     /// the server stopped after keeping it there but before writing the document; none yet if
     /// neither is there.
     pub(crate) fn open(path: PathBuf) -> Result<Bindings, String> {
-        let read = |p: &Path| match std::fs::read_to_string(p) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("the access file {p:?}: {e}")),
-        };
-        let mut document = match read(&path)? {
-            Some(text) => serde_json::from_str(&text).map_err(|e| format!("the access file {path:?}: {e}"))?,
+        // Both sealed under the server's keys (at_rest.rs): the document whole, the history a
+        // line at a time.
+        let mut document = match crate::at_rest::read_sealed(&path, crate::at_rest::role::ACCESS).map_err(|e| format!("the access file {e}"))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the access file {path:?}: {e}"))?,
             None => Document::default(),
         };
         // The last whole line: one cut short was being written when the server stopped, and was
-        // never in force.
-        let text = read(&history(&path))?.unwrap_or_default();
-        let last = text.lines().rev().find_map(|l| serde_json::from_str::<Document>(l).ok());
+        // never in force. One that doesn't open (cut short, or not sealed) is none.
+        let text = read_history(&history(&path))?;
+        let last = text.lines().rev().find_map(open_version::<Document>);
         if let Some(last) = last.filter(|l| l.version > document.version) {
             document = last;
         }
@@ -651,14 +664,15 @@ impl Bindings {
         match &self.path {
             Some(path) => {
                 let mut line = if self.torn.load(Ordering::SeqCst) { b"\n".to_vec() } else { Vec::new() };
-                serde_json::to_writer(&mut line, &document).map_err(|e| e.to_string())?;
+                let plain = zeroize::Zeroizing::new(serde_json::to_vec(&document).map_err(|e| e.to_string())?);
+                line.extend(crate::at_rest::keys().seal_line(crate::at_rest::SERVER, crate::at_rest::role::ACCESS_HISTORY, &plain)?.into_bytes());
                 line.push(b'\n');
                 let text = serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?;
                 let at = history(path);
                 let appended = crate::sealing::append_private(&at).and_then(|mut f| f.write_all(&line).and_then(|_| f.sync_data()));
                 self.torn.store(appended.is_err(), Ordering::SeqCst);
                 appended.map_err(|e| format!("the access history {at:?}: {e}"))?;
-                if let Err(e) = crate::sealing::write_private(path, &text) {
+                if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::ACCESS, &text) {
                     eprintln!("holon: the access file {path:?}: {e}: version {} is kept in its history, and read from there when the server starts", document.version);
                 }
             }
@@ -675,13 +689,7 @@ impl Bindings {
             let kept = self.kept.lock().unwrap();
             return kept.iter().map(|d| serde_json::to_value(d).and_then(serde_json::from_value).map_err(|e| e.to_string())).collect();
         };
-        let at = history(path);
-        let text = match std::fs::read_to_string(&at) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(format!("the access history {at:?}: {e}")),
-        };
-        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        Ok(read_history(&history(path))?.lines().filter_map(open_version).collect())
     }
 
     /// Each version's number, when, by whom, what and why, newest first.
@@ -1244,11 +1252,17 @@ mod tests {
         let one = next(&access.document(), "ada", "bound admin to ada on this host", |d| d.set_host_role("ada", "admin", "ada", 1));
         access.keep(one.clone()).unwrap();
         let two = next(&one, "ada", "bound editor to bob on this host", |d| d.set_host_role("bob", "editor", "ada", 2));
-        let mut line = serde_json::to_string(&two).unwrap();
-        line.push('\n');
-        std::fs::OpenOptions::new().append(true).open(history(&path)).unwrap().write_all(line.as_bytes()).unwrap();
+        let sealed = |d: &Document| crate::at_rest::keys().seal_line(crate::at_rest::SERVER, crate::at_rest::role::ACCESS_HISTORY, &serde_json::to_vec(d).unwrap()).unwrap();
+        let append = |text: &str| std::fs::OpenOptions::new().append(true).open(history(&path)).unwrap().write_all(text.as_bytes()).unwrap();
+        append(&format!("{}\n", sealed(&two)));
         assert_eq!(*Bindings::open(path.clone()).unwrap().document(), two, "the history's");
-        std::fs::OpenOptions::new().append(true).open(history(&path)).unwrap().write_all(b"{\"version\":3,\"by\":\"ad").unwrap();
+        // A newer version plain is never read: the history is sealed a line at a time.
+        let mut plain = two.clone();
+        plain.version = 9;
+        append(&format!("{}\n", serde_json::to_string(&plain).unwrap()));
+        assert_eq!(*Bindings::open(path.clone()).unwrap().document(), two, "not the plain line");
+        let cut = sealed(&next(&two, "ada", "cut short", |d| d.set_host_role("cy", "viewer", "ada", 3)));
+        append(&cut[..cut.len() - 8]);
         let access = Bindings::open(path.clone()).unwrap();
         assert_eq!(*access.document(), two, "not the line cut short");
         // The next version is on a line of its own, and read back.

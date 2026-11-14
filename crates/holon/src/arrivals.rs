@@ -47,6 +47,8 @@ pub(crate) struct Watch {
     seen: Mutex<BTreeMap<String, Seen>>,
     /// Where what it has seen is kept; none in memory.
     file: Option<PathBuf>,
+    /// Its deployment's scope, what is kept is sealed under (at_rest.rs).
+    scope: String,
 }
 
 /// What happened to a file that starts a run.
@@ -96,11 +98,11 @@ impl Watch {
                 triggers.push(holon_core::FileTrigger { folder: f.clone(), deleted: false, matching: String::new() });
             }
         }
-        let file = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
+        let file: Option<PathBuf> = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
         let mut seen: BTreeMap<String, Seen> =
-            file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+            file.as_ref().and_then(|f| crate::at_rest::read_sealed(f, crate::at_rest::role::ARRIVALS).ok().flatten()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         seen.retain(|f, _| folders.contains(f));
-        Watch { folders, triggers, seen: Mutex::new(seen), file }
+        Watch { folders, triggers, seen: Mutex::new(seen), file, scope: crate::at_rest::deployment(slug) }
     }
 
     /// Whether a change to file `name` of `folder` starts a run.
@@ -124,7 +126,7 @@ impl Watch {
         let Some(file) = &self.file else { return };
         let written = serde_json::to_vec(seen).map_err(|e| e.to_string()).and_then(|bytes| {
             std::fs::create_dir_all(file.parent().expect("a file in a folder")).map_err(|e| e.to_string())?;
-            write_atomically(file, &bytes).map_err(|e| e.to_string())
+            crate::at_rest::write_sealed(file, &self.scope, crate::at_rest::role::ARRIVALS, &bytes).map_err(|e| e.to_string())
         });
         if let Err(e) = written {
             eprintln!("holon: what {} saw of its folders wasn't kept: {e}", file.display());

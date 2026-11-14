@@ -90,34 +90,23 @@ fn random_key() -> [u8; 32] {
     key
 }
 
-/// Read the host key at `path`, or make one and write it there (owner-only where the OS allows);
-/// `":memory:"` keeps a fresh one in memory. Called once, at startup. A file that exists but isn't
-/// a key is an error: replacing it would invalidate every token handed out.
-pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
+/// Read the host key at `path`, or make one and write it there, sealed under the keyring's
+/// `server` scope (owner-only); `":memory:"` keeps a fresh one in memory. Called once, at
+/// startup. A file that exists but doesn't open as a host key is an error: replacing it would
+/// invalidate every token handed out.
+pub(crate) fn load_host_key(path: &str, keys: &crate::at_rest::Keyring) -> Result<(), String> {
+    const ROLE: &str = "host key";
     let key = if path == ":memory:" {
         random_key()
     } else {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                // One written before keys were restricted on every OS is restricted now.
-                let _ = crate::sealing::restrict_to_owner(std::path::Path::new(path));
-                let hex = text.trim();
-                let bytes: Option<Vec<u8>> = (0..hex.len())
-                    .step_by(2)
-                    .map(|i| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()))
-                    .collect();
-                bytes
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or(format!("{path:?} is not a host key (64 hex digits)"))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let file = std::path::Path::new(path);
+        match crate::at_rest::read(keys, file, ROLE)? {
+            Some(bytes) => <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| format!("{path:?} is not a host key (32 bytes)"))?,
+            None => {
                 let key = random_key();
-                let hex: String = holon_core::hex(key);
-                crate::sealing::write_private(std::path::Path::new(path), format!("{hex}\n").as_bytes())
-                    .map_err(|e| format!("could not write {path:?}: {e}"))?;
+                crate::at_rest::write_private(keys, file, crate::at_rest::SERVER, ROLE, &key).map_err(|e| format!("could not write {path:?}: {e}"))?;
                 key
             }
-            Err(e) => return Err(format!("could not read {path:?}: {e}")),
         }
     };
     HOST_KEY.set(key).map_err(|_| "the host key was already loaded".to_string())
@@ -668,20 +657,12 @@ pub(crate) struct ParkedRun {
     /// keeps them (they may hold a secret, a caller's credential, a token); opened again when
     /// the server starts (`open`). Never set on a run in memory that could be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sealed: Option<SealedPart>,
+    pub(crate) sealed: Option<String>,
     /// Whether a resume holds it right now: claimed under the deployments lock when its token
     /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
     /// it arrive together. Never persisted: a restart frees it.
     #[serde(skip)]
     pub(crate) resuming: bool,
-}
-
-/// A parked run's sealed part: AES-256-GCM under the secrets master key, bound to its deployment
-/// and run id (hex).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct SealedPart {
-    pub(crate) nonce: String,
-    pub(crate) data: String,
 }
 
 /// What of a parked run is sealed on disk.
@@ -854,10 +835,11 @@ impl ParkedRun {
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
     }
 
-    /// This run as the deployments file keeps it: what may hold a secret sealed by `sealer`.
-    pub(crate) fn sealed_for_disk(&self, slug: &str, sealer: &crate::sealing::Sealer) -> ParkedRun {
+    /// This run as the deployments file keeps it: what may hold a secret sealed under its
+    /// deployment's keys (`at_rest::deployment`), bound to its run id; or why it can't be.
+    pub(crate) fn sealed_for_disk(&self, slug: &str, keys: &crate::at_rest::Keyring) -> Result<ParkedRun, String> {
         if self.sealed.is_some() {
-            return self.clone();
+            return Ok(self.clone());
         }
         let part = Sealable {
             inputs: self.inputs.clone(),
@@ -868,25 +850,25 @@ impl ParkedRun {
             shown: self.waiting.iter().filter_map(|w| Some((w.name.clone(), w.shown.clone()?))).collect(),
         };
         let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
-        let (nonce, data) = sealer.seal(&parked_context(slug, &self.run_id), &plain);
-        ParkedRun {
+        let sealed = keys.seal_line(&crate::at_rest::deployment(slug), &parked_context(slug, &self.run_id), plain.as_bytes())?;
+        Ok(ParkedRun {
             inputs: Vec::new(),
             sourced: Vec::new(),
             rounds: Vec::new(),
             tokens: BTreeMap::new(),
             events: BTreeMap::new(),
             waiting: self.waiting.iter().map(|w| StoredWaiting { shown: None, ..w.clone() }).collect(),
-            sealed: Some(SealedPart { nonce, data }),
+            sealed: Some(sealed),
             ..self.clone()
-        }
+        })
     }
 
-    /// Open what the deployments file sealed, with `sealer`; nothing to do for a run not sealed.
-    pub(crate) fn open(&mut self, slug: &str, sealer: Option<&crate::sealing::Sealer>) -> Result<(), String> {
+    /// Open what the deployments file sealed, with `keys`; nothing to do for a run not sealed.
+    pub(crate) fn open(&mut self, slug: &str, keys: Option<&crate::at_rest::Keyring>) -> Result<(), String> {
         let Some(sealed) = &self.sealed else { return Ok(()) };
-        let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
-        let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
-        let mut part: Sealable = crate::wire::read_json(plain.as_bytes()).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        let keys = keys.ok_or("it was sealed under keys this server doesn't have")?;
+        let plain = keys.open_line(&crate::at_rest::deployment(slug), &parked_context(slug, &self.run_id), sealed).map_err(|e| e.to_string())?;
+        let mut part: Sealable = crate::wire::read_json(&plain).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
         for w in &mut self.waiting {
             w.shown = part.shown.remove(&w.name).or(w.shown.take());
         }
@@ -1107,7 +1089,7 @@ pub(crate) fn resume_parked(
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
         let mut record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
-        record.open(slug, dep.secrets.lock().unwrap().sealer.as_deref())?;
+        record.open(slug, dep.secrets.lock().unwrap().keys.as_deref())?;
         (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;

@@ -233,8 +233,15 @@ pub(crate) fn export_of(
 }
 
 /// An export from its file: as written, or gzipped (a backup's, storage.rs).
-pub(crate) fn read_export(path: &Path) -> Result<Export, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+/// The export at `path`: plain as `holon export` writes it, gzipped, or sealed as the server
+/// keeps one on disk (a backup's archive, a removed deployment's records; at_rest.rs §5.5), which
+/// `keys` opens: asked for only then, so a plain export needs none.
+pub(crate) fn read_export(path: &Path, keys: impl FnOnce() -> Result<std::sync::Arc<crate::at_rest::Keyring>, String>) -> Result<Export, String> {
+    let mut bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if crate::at_rest::is_sealed(&bytes) {
+        let keys = keys()?;
+        bytes = crate::at_rest::open_export(&keys, &bytes).map(|mut plain| std::mem::take(&mut *plain)).map_err(|e| format!("it is sealed, and doesn't open: {e}"))?;
+    }
     let text = if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text).map_err(|e| format!("it is gzipped, but: {e}"))?;
@@ -1592,18 +1599,37 @@ impl Performer for Offline {
     }
 }
 
-/// `holon verify <export.json> [--head <hex>] [--files DIR]`: check an export, say what was
-/// found, and exit 0 only if it checks, every run in it run again; 3 if nothing in it fails, but
-/// some runs couldn't be run again; 1 if anything doesn't check.
+/// The keys a sealed export opens under (§2.7): `keys.json` in the data folder (`--data`, else
+/// the server's own), its root where `--root-key` says (else the OS key, as the server's). Read
+/// only: a folder with no keys.json is said, never given one.
+pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
+    let data = match data {
+        Some(d) => PathBuf::from(d),
+        None => crate::migrate::data_folder(&crate::local::holon_home().ok_or("no home folder (USERPROFILE or HOME), and no HOLON_HOME")?),
+    };
+    let keys = data.join("keys.json");
+    if !keys.exists() {
+        return Err(format!("it is sealed under a server's keys, and {} isn't there: pass --data with the data folder it came from (and --root-key where its root key is)", keys.display()));
+    }
+    crate::at_rest::Keyring::open(&keys, root_key, &[]).map(std::sync::Arc::new)
+}
+
+/// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
+/// check an export, say what was found, and exit 0 only if it checks, every run in it run again;
+/// 3 if nothing in it fails, but some runs couldn't be run again; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
     let mut dir = None;
+    let mut data = None;
+    let mut root_key = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--head" => head = args.next().cloned(),
             "--files" => dir = args.next().cloned(),
+            "--data" => data = args.next().cloned(),
+            "--root-key" => root_key = args.next().cloned(),
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return 0;
@@ -1619,7 +1645,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
-    let export: Export = match read_export(Path::new(&file)) {
+    let export: Export = match read_export(Path::new(&file), || keys_for(data.as_deref(), root_key.as_deref())) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("holon verify: can't read {file}: {e}");
@@ -1647,7 +1673,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     }
 }
 
-const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR]
+const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR] [--data DIR] [--root-key SOURCE]
 
   Checks a deployment's exported runs (holon export), offline: that its run log's hash chain is
   unbroken, that every unit is what its hash says, and that every run, run again from its log
@@ -1659,11 +1685,18 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
                            it was changed or removed
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
+  --data DIR               for an export the server keeps sealed (a backup's archive, a removed
+                           deployment's records): the data folder whose keys.json sealed it, if
+                           not this machine's server's (HOLON_DATA, or data/ in HOLON_HOME)
+  --root-key SOURCE        where that keys.json's root key is: os, env:VAR or file:PATH (the
+                           server's --root-key); the OS key store if not given. An export
+                           holon export wrote is plain, and needs neither
 
 examples:
   holon verify shop-runs.json
   holon verify shop-runs.json --head \"$(cat witness-head.txt)\"
-  holon verify file-audit-runs.json --files /srv/inbox";
+  holon verify file-audit-runs.json --files /srv/inbox
+  holon verify backup/shop/holon-archive-shop-runs-…json.gz --root-key file:/etc/holon/root.key";
 
 /// What a report says, in a few lines.
 pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {

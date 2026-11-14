@@ -173,10 +173,10 @@ pub(crate) struct Proposals {
 impl Proposals {
     /// The proposals at `path`: none yet if it isn't there.
     pub(crate) fn open(path: PathBuf) -> Result<Proposals, String> {
-        let list = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the access proposals {path:?}: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(format!("the access proposals {path:?}: {e}")),
+        // Sealed under the server's keys, as the access document is (at_rest.rs).
+        let list = match crate::at_rest::read_sealed(&path, crate::at_rest::role::ACCESS_PROPOSALS).map_err(|e| format!("the access proposals {e}"))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the access proposals {path:?}: {e}"))?,
+            None => Vec::new(),
         };
         Ok(Proposals { path: Some(path), list: Mutex::new(list) })
     }
@@ -188,7 +188,7 @@ impl Proposals {
     fn save(&self, list: &[Proposal]) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
         let text = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(path, &text).map_err(|e| format!("the access proposals {path:?}: {e}"))
+        crate::at_rest::write_table(path, crate::at_rest::role::ACCESS_PROPOSALS, &text).map_err(|e| format!("the access proposals {path:?}: {e}"))
     }
 
     /// Every proposal, oldest first.

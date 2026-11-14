@@ -474,7 +474,15 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
             // The log goes on across versions: a run of the old version still in flight logs to it.
             Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
-            None => (Arc::new(LogCell::new(Log::for_deployment(deployments_path, &body.slug))), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
+            None => {
+                let mut log = Log::for_deployment(deployments_path, &body.slug);
+                // Writing what it lets go of to the backup from its first run, not only from the
+                // housekeeping's next look (storage.rs `act`, which also says whether a full disk
+                // may let them go without): or a flow running past its `keep` in its first seconds
+                // lets its oldest go unbacked.
+                log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+                (Arc::new(LogCell::new(log)), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug))
+            }
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
@@ -1276,8 +1284,9 @@ pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64) -> 
 }
 
 /// Write a deployment's log and timeline (`held`: its log, its secrets' redactor, its events and
-/// their head) as an export, gzipped as a backup's is (storage.rs): where it went, or None with
-/// no data folder or nothing on record.
+/// their head) as an export, gzipped and sealed as a backup's is (storage.rs, at_rest.rs §5.5;
+/// `holon verify` opens it with the data folder's keys): where it went, or None with no data
+/// folder or nothing on record.
 fn keep_records(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -1299,7 +1308,7 @@ fn keep_records(
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    crate::sealing::write_private(&to, &bytes).map_err(|e| e.to_string())?;
+    crate::at_rest::write_sealed(&to, &crate::at_rest::deployment(slug), &crate::at_rest::role::export(slug), &bytes).map_err(|e| e.to_string())?;
     Ok(Some(to))
 }
 

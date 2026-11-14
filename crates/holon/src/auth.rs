@@ -160,6 +160,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::sweep::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // The keys the server seals its data under (keys.rs).
+    if let Some(response) = crate::keys::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
     // And the databases (databases.rs).
     if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);

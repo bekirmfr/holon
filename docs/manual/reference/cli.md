@@ -43,6 +43,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon restore`](#holon-restore) | a deployment's versions, and an earlier version's or run's code or state back |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
+| [`holon key`](#holon-key) | the keys the server seals its data under: status, rotation, forgetting |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
 | [`holon feed`](#holon-feed) | bind the feeds flows listen to: server-sent events, WebSockets, Postgres channels |
@@ -173,8 +174,8 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
-| `--secrets-key os\|env:VAR\|file:PATH` | where the secrets file's key is kept (default: the OS key store) |
-| `--new-secrets-key` | print a fresh key for `--secrets-key env:VAR`, and exit |
+| `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
+| `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
@@ -311,7 +312,7 @@ the flow's own route.
 holon run <slug> [--fresh | --session N]
 holon pause <slug>
 holon stop <slug>
-holon remove <slug> --yes
+holon remove <slug> --yes [--forget]
 ```
 
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
@@ -319,8 +320,11 @@ or from the state session N left (`holon state <slug> --sessions` lists them). `
 runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment for good:
 its state, its sessions and its secrets. Its runs' log and timeline are kept: written first, beside
 the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
-where). The slug deployed again starts a new log, and the old one stays as it was.
-Editors and admins.
+where), sealed under the server's keys as everything in its data folder is: `holon verify` opens it
+with `--root-key`. The slug deployed again starts a new log, and the old one stays as it was.
+Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon key
+forget`](#holon-key), which needs `host.operate`): its kept records, its backups and every
+other file it left can't be opened again.
 
 ### `holon call`
 
@@ -880,16 +884,20 @@ export. See [Checking runs](../guides/checking-runs.md).
 ### `holon verify`
 
 ```
-holon verify <export.json | export.json.gz> [--head HEX] [--files DIR]
+holon verify <export.json | export.json.gz> [--head HEX] [--files DIR] [--data DIR] [--root-key SOURCE]
 ```
 
 Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
-texts the export doesn't hold. Exits 0 when it all checks, every run run again; 1 when something
-doesn't check; 3 when nothing fails but some runs couldn't be run again (it says which, and why);
-2 for a file it can't read.
+texts the export doesn't hold. An export `holon export` wrote is plain and needs no key; one the
+server keeps on disk (a backup's, a removed deployment's records) is sealed under its keys, and
+opens with the `keys.json` of the data folder it came from (`--data`, else this machine's
+server's) and its root key (`--root-key`: `os`, `env:VAR` or `file:PATH`, as the server's; the OS
+key store if not given); without them it says which it needs. Exits 0 when it all checks, every
+run run again; 1 when something doesn't check; 3 when nothing fails but some runs couldn't be run
+again (it says which, and why); 2 for a file it can't read.
 
 ## `holon history`
 
@@ -967,6 +975,38 @@ value they name does; and for an hour after it was put, whoever names it. Code i
 Needs an admin. `--dry-run` says how many values and bytes it would remove, removing nothing.
 Prints what it swept, what it keeps, and what it spared as new. An in-memory store
 (`--store :memory:`) has nothing to sweep.
+
+## `holon key`
+
+```
+holon key status [--json] [--server PORT|URL]
+holon key rotate <scope> [--server PORT|URL]
+holon key forget <slug> [--server PORT|URL]
+holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
+```
+
+The keys the server seals its data folder under (`keys.json`, each data key wrapped by the root
+key, which is kept where `--root-key` says, never in the folder). None of these shows a key, or
+anything of one.
+
+- `status` says where the root key is kept and the id it is kept under, each scope's versions and
+  when each was made (`server`: its tables and store; `secrets`; `names`: the store's file names;
+  `d:<slug>`: what each deployment wrote), and the deployments whose keys were forgotten. Admins.
+- `rotate <scope>` makes a new version of a scope's data key: what is written from then on is
+  sealed under it, and what was sealed under the versions before still opens. `names` is never
+  rotated: the store's files are named by it. Needs `host.operate`.
+- `forget <slug>`, for a removed deployment (as `holon remove --forget`): its keys are dropped from
+  `keys.json`, so its kept records, its backups and every other file it left open nowhere again,
+  and say they were forgotten. The root key is then rotated where it is kept, so a copy of the
+  whole folder taken before (which holds the old `keys.json`) needs the old root, which only a
+  copy of it kept elsewhere still has; a root in an environment variable can't be rotated by the
+  server, and it says so. The slug deployed again seals under keys of its own. Needs `host.operate`.
+- `rotate --root` runs with the server stopped (it refuses while one runs on the folder): every
+  data key is wrapped under a new root key, kept in `--to` (`os`, `file:PATH`, or `env:VAR`
+  already holding a new key: `holon serve --new-root-key` prints one). Start the server with
+  `--root-key` set to it after. The old root stays where it was unless `--forget-old`.
+  `--data` is the data folder (else the one under `HOLON_HOME`), `--root-key` where its root is now.
+  A rotation cut short loses nothing: the next start finishes it, or undoes it.
 
 ## `holon database`
 

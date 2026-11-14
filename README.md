@@ -25,7 +25,9 @@ agents or by people. Before a flow runs, and every time it runs:
   pure, so a run replays exactly, node by node, and anyone can check a deployment's runs
   offline. The record is a hash chain: with a witness holding its heads elsewhere, a run changed
   or taken out afterwards shows; without one, an export checks against itself, and whoever holds
-  the server's data could rewrite it whole.
+  the server's data could rewrite it whole. Everything it keeps is encrypted at rest under keys
+  you hold apart from the data (a root key in the OS key store, a file or an environment
+  variable), and a removed deployment's keys can be forgotten, so nothing it left opens again.
 
 > **Status:** pre-release (0.1.0 release candidates). It runs on one machine for one team; see
 > [Status](#status).
@@ -286,7 +288,7 @@ asking (`--yes` skips that).
 ### Where it keeps things
 
 Everything is in one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), or `HOLON_HOME`:
-`bin/` the program, `data/` the server's state (the one folder to back up), `keys/` secrets keys
+`bin/` the program, `data/` the server's state (the one folder to back up), `keys/` root keys
 where there's no OS key store, `run/` a file per running server, `tokens.json` and
 `mcp-hosts.toml`.
 

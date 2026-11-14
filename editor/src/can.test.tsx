@@ -69,6 +69,7 @@ const TABLE: [Button, "host" | "flow", string][] = [
   ["rollBackServerSecret", "host", "✓ · · · ·"],
   ["capServerSecret", "host", /*   */ "✓ · · · ·"],
   ["operate", "host", /*           */ "✓ · · · ·"],
+  ["forgetKeys", "host", /*        */ "✓ · · · ·"],
   ["check", "host", /*             */ "✓ ✓ · · ·"],
   ["reloadPolicy", "host", /*      */ "✓ ✓ · · ·"],
   ["bind", "host", /*              */ "✓ · · · ·"],

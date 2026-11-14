@@ -701,7 +701,7 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
 #[test]
 fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let dir = unique_temp_path("sweep");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -721,6 +721,19 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let files = || std::fs::read_dir(&values).unwrap().count();
     let before = files();
     let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run, false).unwrap().unwrap();
+
+    // At rest (at_rest.rs, docs/L4s/at-rest-encryption-L4.md §5.4): every unit and value sealed,
+    // none named by its hash (the flow's unit, a kept run's state), each by a keyed hash of it.
+    let root = Path::new(&dir);
+    let mut on_disk: Vec<PathBuf> = std::fs::read_dir(root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    on_disk.extend(std::fs::read_dir(&values).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()));
+    assert!(on_disk.len() > 10, "{on_disk:#?}");
+    let plain: Vec<&PathBuf> = on_disk.iter().filter(|f| !std::fs::read(f).unwrap().starts_with(b"HLA1")).collect();
+    assert!(plain.is_empty(), "not sealed: {plain:#?}");
+    for hash in kept.iter().map(|(_, s)| s.as_str()).chain([plan.unit.as_str()]) {
+        assert!(!root.join(hash).exists() && !values.join(hash).exists(), "a file named by its hash, {hash}");
+    }
+    assert!(root.join(crate::at_rest::keys().name(&parse_hash(&plan.unit).unwrap())).exists(), "the unit, by its keyed name");
 
     // Everything is new: spared, whoever names it.
     let new = sweep(sweep::SPARES_MS, false);
@@ -765,7 +778,7 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
 #[test]
 fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     let dir = unique_temp_path("sweep-scheduled");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 2 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -810,7 +823,7 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
 #[test]
 fn the_server_sweeps_as_often_as_its_storage_setting_says() {
     let dir = unique_temp_path("sweep-every");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[storage]\nsweep_every = \"1m\"").unwrap());
@@ -842,7 +855,7 @@ fn the_server_sweeps_as_often_as_its_storage_setting_says() {
 #[test]
 fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
     let dir = unique_temp_path("host-view");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let host = || body_json(route(&state, &req("GET", "/admin/host", vec![])));
@@ -880,7 +893,7 @@ fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
 #[test]
 fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
     let dir = unique_temp_path("holds");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -925,7 +938,7 @@ fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
 #[test]
 fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let dir = unique_temp_path("warnings");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let path = std::path::PathBuf::from(unique_temp_path("warn-policy")).with_extension("toml");
@@ -1047,13 +1060,13 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
 fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
     let dir = unique_temp_path("pack-unreadable");
     {
-        let disk = FileStore::new(&dir).unwrap();
+        let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
         disk.packs().pack(&[([7u8; 32], b"a value".to_vec())]).unwrap();
     }
     let packs = std::path::Path::new(&dir).join("values").join("packs");
     let pack = std::fs::read_dir(&packs).unwrap().flatten().next().unwrap().path();
     std::fs::write(&pack, b"not a pack").unwrap();
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
@@ -1066,7 +1079,7 @@ fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
 #[test]
 fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
     let dir = unique_temp_path("roll-sweep-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let data = unique_temp_path("roll-sweep-data");
@@ -1198,7 +1211,7 @@ fn a_full_disk_rolls_the_log_keeping_the_most() {
 #[test]
 fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let dir = unique_temp_path("backup-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("backup-data");
@@ -1218,8 +1231,9 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
     let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
     assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
-    // The look gives the log the backup; then runs, and the periodic sync's cut-backs.
-    state.sweeps.act(&state, 1);
+    // Runs at once, and the periodic sync's cut-backs: the deploy gave the log the backup, not
+    // only the housekeeping's next look (`Sweeps::act`), or the first runs it lets go of, before
+    // that look, would be let go of unbacked.
     for i in 0..40 {
         assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
         if i % 7 == 0 {
@@ -1234,8 +1248,11 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, if i == 1 { "" } else { "{\"mine\":1}\n" }).unwrap();
     }
-    // A batch that can't be made an export (not text): the others are made all the same, and it
-    // stays, warned of.
+    // A batch that can't be made an export (not sealed, as one the server wrote is): the others
+    // are made all the same, and it stays, warned of.
+    // Each batch the cut-backs wrote, its runs sealed together as one file (at_rest.rs §5.5).
+    let batches: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| storage::is_batch(&p.file_name().unwrap().to_string_lossy())).collect();
+    assert!(!batches.is_empty() && batches.iter().all(|b| std::fs::read(b).unwrap().starts_with(b"HLA1")), "{batches:?}");
     let bad = backup.join("kept").join(storage::batch_name(0, 0));
     std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
     storage::archive(&state);
@@ -1255,8 +1272,19 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| !theirs.contains(p)).collect();
     assert!(!exports.is_empty() && exports.iter().all(|p| { let n = p.file_name().unwrap().to_string_lossy(); n.starts_with("holon-archive-kept-runs-") && n.ends_with(".json.gz") }), "{exports:?}");
     let mut seqs = Vec::new();
+    // Each export sealed (at_rest.rs §5.5), no run in it in clear: it verifies with the keys that
+    // sealed it; without them it says what it needs; under another folder's, it doesn't open.
+    let no_keys = unique_temp_path("backup-no-keys");
     for p in &exports {
-        let export = verify::read_export(p).unwrap();
+        let bytes = std::fs::read(p).unwrap();
+        assert!(bytes.starts_with(b"HLA1"), "{}", p.display());
+        let e = verify::read_export(p, || verify::keys_for(Some(&no_keys), None)).err().unwrap();
+        assert!(e.contains("keys.json") && e.contains("--data") && e.contains("--root-key"), "{e}");
+        let e = verify::read_export(p, || Ok(std::sync::Arc::new(crate::at_rest::Keyring::memory()))).err().unwrap();
+        assert!(e.contains("doesn't open"), "{e}");
+    }
+    for p in &exports {
+        let export = verify::read_export(p, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap();
         assert_eq!(export.deployment, "kept");
         let report = verify::check(&export, None, &BTreeMap::new());
         assert!(report.ok(), "{}", verify::describe(&report, None));
@@ -1264,7 +1292,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         seqs.extend(export.lines.iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq));
     }
     let kept: Vec<u64> = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).iter().map(|e| e.seq).collect();
-    let file: Vec<u64> = std::fs::read_to_string(std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).unwrap().lines().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
+    let file: Vec<u64> = crate::at_rest::testing::open_lines(&std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
     seqs.extend(file.iter().copied());
     seqs.sort_unstable();
     assert_eq!(seqs, (0..40).collect::<Vec<u64>>(), "backed up and still in the file: every run, once");
@@ -1297,7 +1325,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
 #[test]
 fn the_values_a_sweep_keeps_are_packed_and_read_back() {
     let dir = unique_temp_path("pack-store");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
@@ -1351,7 +1379,7 @@ fn the_values_a_sweep_keeps_are_packed_and_read_back() {
 #[test]
 fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let dir = unique_temp_path("sealed-sweep");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("sealed-data");
@@ -1946,9 +1974,9 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     assert_eq!(deploy_json(&state, "w", writer, ack.clone()).status_code, 200);
 
     // As if granted less than it needs: drop an item from the stored grant.
-    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     file[0]["grant"]["items"] = serde_json::json!(["Action(\"put\")"]);
-    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&file).unwrap()).unwrap();
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let w = &reloaded["w"];
     assert_eq!(w.life.status, Status::Paused);
@@ -1963,9 +1991,9 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     assert_eq!(put(&state, "w", "ok").status_code, 200);
 
     // A record without a grant: granted its derived capabilities, by migration.
-    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     file[0].as_object_mut().unwrap().remove("grant");
-    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&file).unwrap()).unwrap();
     let migrated = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(migrated["w"].grant.by, "migrated");
     assert!(migrated["w"].attention.is_none() && migrated["w"].grant.items.contains("StateWrite(\"k\")"));
@@ -2204,7 +2232,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert!(log.contains("‹token:paid›"));
     // It survives a restart, and its record holds no token: it is derived again when needed.
     assert_eq!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains(&token) && !on_disk.contains("\"tokens\""), "a run record holds no token");
     // Holding a value as deep as one may be (an event delivered to it), it survives a restart too:
     // past serde_json's own stop, the deployments file didn't read back, and the server didn't start.
@@ -2213,7 +2241,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let shop = records.as_array_mut().unwrap().iter_mut().find(|r| r["slug"] == "shop").unwrap();
     shop["parked"][0]["events"]["earlier"] = serde_json::to_value(SValue::from_core(&deep)).unwrap();
     let deep_path = unique_temp_path("durable-deep");
-    std::fs::write(&deep_path, serde_json::to_vec(&records).unwrap()).unwrap();
+    crate::at_rest::write_table(Path::new(&deep_path), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&records).unwrap()).unwrap();
     let reloaded = load_deployments(&Place::parse(&deep_path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["shop"].parked.values().next().unwrap().events["earlier"].clone().into_core(), deep);
 
@@ -2873,8 +2901,8 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/deployments.json");
     state.deployments_path = path.clone().into();
-    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
-    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
+    let keys = crate::at_rest::Keyring::open(std::path::Path::new(&format!("{dir}/keys.json")), Some(&format!("file:{dir}/root.key")), &[]).unwrap();
+    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), Arc::new(keys), crate::secret_sources::Sources::none()).unwrap());
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
     let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
     let frozen = |k: &str, v: &str| Param::frozen(k, v);
@@ -2909,14 +2937,14 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
     // A secret set for it rebuilds its vault, as a source read again does: it still seals.
     state.secrets.set("sealed", "api_key", "sk_live_abcdef", Some("ada")).unwrap();
-    assert!(state.deployments.lock().unwrap()["sealed"].secrets.lock().unwrap().sealer.is_some(), "a vault rebuilt keeps its sealer");
+    assert!(state.deployments.lock().unwrap()["sealed"].secrets.lock().unwrap().keys.is_some(), "a vault rebuilt keeps its keys");
     // The order carries its caller's credential, which the waiting run keeps with its request.
     let mut order = fake_data("POST", "/orders", vec![]);
     order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
     let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order).body).unwrap();
     assert!(state.deployments.lock().unwrap()["sealed"].parked.values().next().unwrap().sealed.is_none(), "open in memory");
 
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "{on_disk}");
     #[cfg(unix)]
@@ -2930,11 +2958,11 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     {
         let dep = reloaded.get_mut("sealed").unwrap();
         dep.secrets = state.secrets.vault("sealed");
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         let run = dep.parked.values_mut().next().unwrap();
         assert!(run.sealed.is_some() && run.inputs.is_empty(), "loaded sealed");
-        assert!(run.open("other-slug", sealer.as_deref()).is_err(), "bound to its deployment");
-        run.open("sealed", sealer.as_deref()).unwrap();
+        assert!(run.open("other-slug", keys.as_deref()).is_err(), "bound to its deployment");
+        run.open("sealed", keys.as_deref()).unwrap();
         assert!(format!("{:?}", run.inputs).contains("caller_credential_xyz"), "opened whole");
     }
     *state.deployments.lock().unwrap() = reloaded;
@@ -2980,16 +3008,16 @@ fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
     let mut order = fake_data("POST", "/orders", vec![]);
     order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
     serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order);
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    let on_disk = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "{on_disk}");
     // A restart, with a new in-memory store: its key is another, and the run says so.
     let mut reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let dep = reloaded.get_mut("sealed").unwrap();
     dep.secrets = SecretStore::memory().vault("sealed");
-    let sealer = dep.secrets.lock().unwrap().sealer.clone();
+    let keys = dep.secrets.lock().unwrap().keys.clone();
     let run = dep.parked.values_mut().next().unwrap();
-    assert!(run.open("sealed", sealer.as_deref()).is_err(), "its key went with the server");
+    assert!(run.open("sealed", keys.as_deref()).is_err(), "its key went with the server");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3136,7 +3164,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // A real on-disk store, not MemStore — the deployment definition surviving only means
     // something if the unit it points at is still there too.
-    let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+    let backend: DynStore = Box::new(FileStore::new(&store_dir, crate::at_rest::store()).unwrap());
     let store = SharedStore::new(backend);
 
     // "First run": nothing to load yet, deploy, which persists write-through.
@@ -3330,12 +3358,13 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let path = unique_temp_path("unloadable");
     let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
     for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
-        std::fs::write(&path, &contents).unwrap();
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, contents.as_bytes()).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
         let e = load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().expect("must refuse, not skip");
         assert!(e.contains("deployment"), "{e}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
+        assert_eq!(std::fs::read(&path).unwrap(), on_disk, "file left as it was");
     }
-    std::fs::write(&path, r#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
+    crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::FLOWS, br#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
     assert!(load_flows(&Place::parse(&path)).is_err());
 
     // Regression 2: a redeploy keeps a slug's state across a stateless version, but loading
@@ -3387,7 +3416,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
 
     // The state is kept by its head: a file naming a snapshot of references, the deployments
     // file holding no state at all; and a restart gets the same root back.
-    let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     assert!(file[0].get("state").is_none() && file[0].get("state_refs").is_none(), "no state in the deployments file: {}", file[0]);
     let head = std::fs::read_to_string(state_head_for(&Place::parse(&path), "writer").unwrap()).unwrap();
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
@@ -3418,6 +3447,55 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let _ = std::fs::remove_dir_all(Path::new(&path).with_extension("logs"));
 }
 
+/// Guards: every table the server keeps in its data folder is read only sealed, and only as
+/// itself: an empty one sealed for its role opens; the same text plain on disk, or sealed for
+/// another table, is refused and left as it was (docs/L4s/at-rest-encryption-L4.md, step 2).
+/// Why: a table holds what a deployment may reach (addresses, paths, references to secrets) and
+/// what its runs keep; one read plain would be one anyone who can write the folder can forge,
+/// and one read as another table one whose contents were moved between them.
+/// If it fails: the table it names is read past `at_rest::read_sealed` (or `at_rest::read`), or
+/// its role isn't its own. A new table gets a row here.
+#[test]
+fn every_table_opens_only_sealed_and_only_as_itself() {
+    use crate::at_rest::role;
+    let state = test_state();
+    type Opens<'a> = Box<dyn Fn(&str) -> Result<(), String> + 'a>;
+    let access = serde_json::to_vec(&crate::bindings::Document::default()).unwrap();
+    let tables: Vec<(&str, &str, &[u8], Opens)> = vec![
+        ("deployments", role::DEPLOYMENTS, b"[]", Box::new(|p| load_deployments(&Place::parse(p), &state.store, &state.policy()).map(|_| ()))),
+        ("flows", role::FLOWS, b"[]", Box::new(|p| load_flows(&Place::parse(p)).map(|_| ()))),
+        ("flow proposals", role::FLOW_PROPOSALS, b"[]", Box::new(|p| crate::proposals::Proposals::beside(&Place::parse(&Path::new(p).with_file_name("flows.json").to_string_lossy())).map(|_| ()))),
+        ("folders", role::FOLDERS, b"{}", Box::new(|p| crate::folders::Folders::open(p, &[]).map(|_| ()))),
+        ("databases", role::DATABASES, b"{}", Box::new(|p| crate::databases::Databases::open(p, &[]).map(|_| ()))),
+        ("mails", role::MAILS, b"{}", Box::new(|p| crate::mails::Mails::open(p).map(|_| ()))),
+        ("queues", role::QUEUES, b"{}", Box::new(|p| crate::queues::Queues::open(p).map(|_| ()))),
+        ("feeds", role::FEEDS, b"{}", Box::new(|p| crate::feeds::Feeds::open(p).map(|_| ()))),
+        ("accounts", role::ACCOUNTS, b"{}", Box::new(|p| crate::accounts::Accounts::open(p).map(|_| ()))),
+        ("access", role::ACCESS, &access, Box::new(|p| crate::bindings::Bindings::open(PathBuf::from(p)).map(|_| ()))),
+    ];
+    for (name, own, empty, opens) in &tables {
+        let dir = PathBuf::from(unique_temp_path(&format!("sealed-{}", name.replace(' ', "-"))));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Proposals are found beside the flows (`flows.proposals.json`); the rest where they are named.
+        let file = dir.join(if *name == "flow proposals" { "flows.proposals.json" } else { "table.json" });
+        let path = file.to_str().unwrap();
+        opens(path).unwrap_or_else(|e| panic!("{name}: none at all is an empty table: {e}"));
+        crate::at_rest::write_table(&file, own, empty).unwrap();
+        opens(path).unwrap_or_else(|e| panic!("{name}: sealed for its role, it opens: {e}"));
+        std::fs::write(&file, empty).unwrap();
+        let refused = opens(path).expect_err(name);
+        assert!(refused.contains("not sealed"), "{name}, plain: {refused}");
+        assert_eq!(std::fs::read(&file).unwrap(), *empty, "{name}: left as it was");
+        let other = if *own == role::FLOWS { role::DEPLOYMENTS } else { role::FLOWS };
+        crate::at_rest::write_table(&file, other, empty).unwrap();
+        let sealed = std::fs::read(&file).unwrap();
+        let refused = opens(path).expect_err(name);
+        assert!(refused.contains("doesn't open"), "{name}, sealed as another table: {refused}");
+        assert_eq!(std::fs::read(&file).unwrap(), sealed, "{name}: left as it was");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Regression: a persistence file that failed to parse used to load as an empty table, so
 /// the first deploy or save after startup overwrote every deployment, its state, or every
 /// flow. Loading is now an `Err` (main() refuses to start) and the file is left untouched.
@@ -3426,10 +3504,18 @@ fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
     let state = test_state();
     for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
         let path = unique_temp_path(&format!("corrupt-{label}"));
+        // Plain on disk, and sealed as each table is: refused either way, and left as it was.
         std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file");
-        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file");
+        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().unwrap().contains("not sealed"), "{label} deployments file");
+        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("not sealed"), "{label} flows file");
         assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, contents).unwrap();
+        let sealed = std::fs::read(&path).unwrap();
+        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file, sealed");
+        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("doesn't open"), "a deployments file isn't read as flows");
+        assert_eq!(std::fs::read(&path).unwrap(), sealed, "the bad file must be left as it was");
+        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::FLOWS, contents).unwrap();
+        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file, sealed");
         let _ = std::fs::remove_file(&path);
     }
     // A missing file is still a normal first run, not an error.
@@ -5001,7 +5087,7 @@ fn get_state_404s_for_unknown_slug_and_400s_for_stateless_deployment() {
 fn state_persists_across_a_simulated_restart() {
     let deployments_path = unique_temp_path("state-deployments");
     let store_dir = unique_temp_path("state-store");
-    let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+    let backend: DynStore = Box::new(FileStore::new(&store_dir, crate::at_rest::store()).unwrap());
     let store = SharedStore::new(backend);
 
     // "First run": deploy and run once — writes "before-restart".
@@ -5493,7 +5579,7 @@ fn versions_survive_a_restart() {
     let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "document": { "rev": 1 } });
     assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
     let file: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert!(file[0].get("versions").is_none(), "the old name isn't written");
     let kept = file[0]["versions_kept"].as_array().unwrap();
@@ -5554,17 +5640,18 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     let entries = log["entries"].as_array().unwrap();
     assert_eq!(entries[0].get("prev"), None, "the first run has nothing before it");
     let file = recorder::file_for(&Place::parse(&path), "chained").unwrap();
-    let text = std::fs::read_to_string(&file).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(entries[1]["prev"], recorder::line_hash(lines[0]));
-    assert_eq!(log["head"], recorder::line_hash(lines[2]));
+    let lines = crate::at_rest::testing::open_lines(&file);
+    assert_eq!(entries[1]["prev"], recorder::line_hash(&lines[0]));
+    assert_eq!(log["head"], recorder::line_hash(&lines[2]));
     assert_eq!(log["breaks"], serde_json::json!([]));
     assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["chained"].log.with(|log| log.breaks().is_empty()));
 
     // The first run's body changed in the file: the second no longer follows it.
-    let changed = text.replacen("hello", "jello", 1);
-    assert_ne!(changed, text, "the run's request is in the file");
-    std::fs::write(&file, changed).unwrap();
+    let mut changed = lines.clone();
+    changed[0] = changed[0].replacen("hello", "jello", 1);
+    assert_ne!(changed, lines, "the run's request is in the file");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("hello"), "sealed on disk");
+    crate::at_rest::testing::write_lines(&file, &changed);
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["chained"].log.with(|log| log.breaks().to_vec()), [1]);
 
@@ -6477,7 +6564,10 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
     assert_eq!(kept.parent(), Some(logs.with_file_name("removed").as_path()), "{}", kept.display());
     assert!(!logs.exists(), "its live log goes");
 
-    let export = verify::read_export(&kept).unwrap();
+    // Sealed as the deployment's export (at_rest.rs §5.5): it opens under the server's keys only.
+    assert!(std::fs::read(&kept).unwrap().starts_with(b"HLA1"));
+    assert!(verify::read_export(&kept, || Ok(std::sync::Arc::new(crate::at_rest::Keyring::memory()))).is_err());
+    let export = verify::read_export(&kept, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap();
     assert_eq!((export.lines.len(), export.head.as_str()), (3, head.as_str()));
     assert!(export.events.iter().any(|e| e.contains("\"deploy")), "its timeline: {:?}", export.events);
     let report = verify::check(&export, Some(&head), &BTreeMap::new());
@@ -6489,7 +6579,7 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
     assert_eq!(put(&state, "gone", "anew").status_code, 200);
     let fresh = log_entries(&state, "gone");
     assert_eq!((fresh.len(), fresh[0]["seq"].as_u64(), fresh[0].get("prev")), (1, Some(0), None), "{fresh:?}");
-    assert_eq!(verify::read_export(&kept).unwrap().lines, export.lines);
+    assert_eq!(verify::read_export(&kept, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap().lines, export.lines);
 
     route(&state, &req("POST", "/deployments/gone/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/gone", vec![]));
@@ -12419,7 +12509,7 @@ fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
     let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{keys}/secrets.key")));
     let memory = ":memory:".to_string();
     let secrets = format!("{dir}/conf/secrets.json");
-    let own = server_files(&[&deployments, &memory, &secrets], &deployments, &secrets, Some(&format!("{env}/.env")), &key);
+    let own = server_files(&[&deployments, &memory, &secrets], &deployments, &secrets, Some(&format!("{env}/.env")), Some(&key));
     let folders = crate::folders::Folders::open(":memory:", &own).unwrap();
     let bind = |path: &str| folders.bind("x", path, crate::folders::FolderAccess::Read, crate::folders::Keep::Bytes, None, None);
     let bind_rw = |path: &str| folders.bind("y", path, crate::folders::FolderAccess::ReadWrite, crate::folders::Keep::Bytes, None, None);
@@ -12865,7 +12955,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     };
     assert_eq!(levels(&state), ["GET /broken unrecorded", "GET /health unrecorded", "POST /notes strict"]);
     persist_deployments(&state.deployments_path, &state.deployments);
-    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(state.deployments_path.at().unwrap()).unwrap()).unwrap();
+    let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
     assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
 
@@ -13056,10 +13146,10 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     {
         let dep = reloaded.get_mut(&slug).unwrap();
         dep.secrets = state.secrets.vault(&slug);
-        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let keys = dep.secrets.lock().unwrap().keys.clone();
         let run = dep.parked.values_mut().next().unwrap();
         assert_eq!(run.sent, [("updates".to_string(), r#"{"held":"POST"}"#.to_string())]);
-        run.open(&slug, sealer.as_deref()).unwrap();
+        run.open(&slug, keys.as_deref()).unwrap();
     }
     *state.deployments.lock().unwrap() = reloaded;
     let mut after = subscribe(&state);
@@ -13273,7 +13363,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let file = || std::fs::read(state.deployments_path.at().unwrap()).unwrap();
     let head = |slug: &str| std::fs::read_to_string(state_head_for(&state.deployments_path, slug).unwrap()).ok();
     let counted = |slug: &str| -> (u64, u64) {
-        let on_disk: serde_json::Value = serde_json::from_slice(&file()).unwrap();
+        let on_disk: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
         let kept = on_disk.as_array().unwrap().iter().find(|r| r["slug"] == slug).unwrap()["trigger_count"].as_u64().unwrap();
         (state.deployments.lock().unwrap()[slug].trigger_count, kept)
     };
@@ -13564,7 +13654,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
 
     // On disk: read once from the file, then from memory.
     let dir = unique_temp_path("value-cache");
-    let disk = FileStore::new(&dir).unwrap();
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut store = SharedStore::on_disk(Box::new(disk), values.clone());
     let v = Value::Text("kept".into());
@@ -13579,7 +13669,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
 
     // A run's collection read: the trie's values come from memory the second time.
     let store_dir = unique_temp_path("value-cache-run");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = Place::Nowhere;
@@ -14045,7 +14135,7 @@ fn request_throughput() {
     let secs = std::env::var("HOLON_PERF_SECS").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(5.0);
     // On disk, as a server keeps it: the store, the deployments file and the logs.
     let store_dir = unique_temp_path("throughput-store");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("throughput").into();
@@ -14207,7 +14297,7 @@ route.post("/stats", (req) => {
 #[ignore = "a profile, run by hand: HOLON_PROFILE=notes cargo test --release -p holon -- --ignored profile_one_route --nocapture"]
 fn profile_one_route() {
     let store_dir = unique_temp_path("profile-store");
-    let disk = FileStore::new(&store_dir).unwrap();
+    let disk = FileStore::new(&store_dir, crate::at_rest::store()).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("profile").into();

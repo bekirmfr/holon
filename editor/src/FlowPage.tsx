@@ -80,7 +80,7 @@ export function FlowPage({
     onAction: (action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
     onChanged: () => void;
     focus?: number;
-    onRemove: () => Promise<void>;
+    onRemove: (forget: boolean) => Promise<void>;
   };
 }) {
   const edit = () => navigate({ kind: "editor", slug, view: false, seq: null });

@@ -41,6 +41,7 @@ describe("what the host holds, as the admin page says it", () => {
       at_ms: at,
       store: { values: 432808, bytes: 2 ** 30, on_disk: 2 * 2 ** 30, put_since: 3200 },
       logs: { files: 34, bytes: 192 << 20, on_disk: 192 << 20 },
+      console: { files: 3, bytes: 6 << 20, on_disk: 6 << 20 },
       file_texts: null,
       leftovers: { removed: { files: 3, bytes: 62 << 20, on_disk: 62 << 20 }, waiting: none },
     };
@@ -48,6 +49,7 @@ describe("what the host holds, as the admin page says it", () => {
       "counted 3 min ago",
       "the store: 432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since",
       "logs: 34, 192 MiB on disk",
+      "console lines: 3 files, 6 MiB on disk",
       "left by crashes: 3 files removed (62 MiB), 0 still to remove",
     ]);
     expect(keptLines({ ...kept, at_ms: null, store: null, logs: null, leftovers: { removed: none, waiting: none } }, at)[0]).toContain("not counted yet");

@@ -119,7 +119,7 @@ const server = spawn(
     "--deployments", join(dir, "deployments.json"),
     "--flows", join(dir, "flows.json"),
     "--secrets", join(dir, "secrets.json"),
-    "--secrets-key", `file:${join(dir, "secrets.key")}`,
+    "--root-key", `file:${join(dir, "root.key")}`,
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
     "--policy", policy,

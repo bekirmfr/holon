@@ -8,8 +8,11 @@
 //! 8 MB of disk as files and 128 KB deflated together), each with a 52-byte line of the index.
 //!
 //! A pack is one file, `values/packs/<id>.pack`, written whole aside, synced, then renamed in:
-//! `MAGIC`, the blocks (raw deflate, each), the index (each value's hash, its block's offset and
-//! length, and its place in the inflated block), then the index's offset and `MAGIC` again. The
+//! `MAGIC`, the blocks (each raw deflate, then sealed: `role::PACK_BLOCK`), the index (each value's
+//! hash, its block's offset and length, and its place in the inflated block; sealed whole as one
+//! record, `role::PACK_INDEX`), then the index's offset and `MAGIC` again. Sealed by the store's
+//! `AtRest` (docs/L4s/at-rest-encryption-L4.md §5.4): neither a value nor its hash is in the clear,
+//! and a block deflated before it is sealed still compresses (sealed bytes don't). The
 //! loose files are removed only once their pack is in, so a crash leaves a value in both places,
 //! never in neither. A read looks for the loose file first, then here (`get`): the index is in
 //! memory (about 60 bytes a value), and a few blocks inflated lately are kept.
@@ -25,7 +28,11 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 use holon_core::Hash;
 
-const MAGIC: &[u8; 8] = b"HOLONPK1";
+use crate::{role, AtRest};
+
+/// The second form: blocks and index sealed. A pack of the first (plain) is not one of these, and
+/// is said as unreadable.
+const MAGIC: &[u8; 8] = b"HOLONPK2";
 /// About how many bytes of values a block holds before it is deflated.
 pub const BLOCK: usize = 64 << 10;
 /// How many bytes of inflated blocks are kept for the reads that come next: a read of a packed
@@ -87,6 +94,7 @@ struct NewPack {
 /// run would otherwise fail every read of a packed value after it.
 pub struct Packs {
     dir: PathBuf,
+    at_rest: Arc<dyn AtRest>,
     kept: RwLock<Kept>,
     blocks: Mutex<VecDeque<Inflated>>,
     /// The packs found that couldn't be read as they opened, and why: left as they are, their
@@ -99,20 +107,21 @@ pub struct Packs {
 static OPEN: Mutex<Vec<(PathBuf, Weak<Packs>)>> = Mutex::new(Vec::new());
 
 impl Packs {
-    /// The packs under `values` (`values/packs/`), opened once a process: each pack's index read.
-    /// A pack that can't be read is an error: the values in it would be missing.
-    pub fn shared(values: &Path) -> io::Result<Arc<Packs>> {
+    /// The packs under `values` (`values/packs/`), opened once a process: each pack's index read,
+    /// its blocks and index sealed and opened by `at_rest` (the first to open a folder's packs
+    /// gives it; a process has one keyring). A pack that can't be read is said, and left.
+    pub fn shared(values: &Path, at_rest: Arc<dyn AtRest>) -> io::Result<Arc<Packs>> {
         let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
         open.retain(|(_, w)| w.strong_count() > 0);
         if let Some(p) = open.iter().find(|(dir, _)| dir == values).and_then(|(_, w)| w.upgrade()) {
             return Ok(p);
         }
-        let packs = Arc::new(Packs::open(values)?);
+        let packs = Arc::new(Packs::open(values, at_rest)?);
         open.push((values.to_path_buf(), Arc::downgrade(&packs)));
         Ok(packs)
     }
 
-    fn open(values: &Path) -> io::Result<Packs> {
+    fn open(values: &Path, at_rest: Arc<dyn AtRest>) -> io::Result<Packs> {
         let dir = values.join("packs");
         let mut kept = Kept::default();
         let mut unreadable = Vec::new();
@@ -123,7 +132,7 @@ impl Packs {
                 // One that can't be read (cut short, or changed on disk) is said and left as it
                 // is: the others, and every value of its own file, are read all the same, and a
                 // server whose disk lost a pack still starts.
-                let (entries, size) = match read_index(&path) {
+                let (entries, size) = match read_index(&path, &*at_rest) {
                     Ok(read) => read,
                     Err(e) => {
                         eprintln!("holon: the pack {} can't be read, its values are missing from the store until it is restored: {e}", path.display());
@@ -140,7 +149,12 @@ impl Packs {
                 kept.packs.insert(n, Pack { path, size });
             }
         }
-        Ok(Packs { dir, kept: RwLock::new(kept), blocks: Mutex::new(VecDeque::new()), unreadable })
+        Ok(Packs { dir, at_rest, kept: RwLock::new(kept), blocks: Mutex::new(VecDeque::new()), unreadable })
+    }
+
+    /// How the store's files are sealed and named: the server's sweep names a packed value by it.
+    pub fn at_rest(&self) -> &Arc<dyn AtRest> {
+        &self.at_rest
     }
 
     /// The packs that couldn't be read as they opened, and why.
@@ -188,8 +202,9 @@ impl Packs {
         }
         let mut file = fs::File::open(path)?;
         file.seek(SeekFrom::Start(at.block))?;
-        let mut deflated = vec![0; at.block_len as usize];
-        file.read_exact(&mut deflated)?;
+        let mut sealed = vec![0; at.block_len as usize];
+        file.read_exact(&mut sealed)?;
+        let deflated = self.at_rest.open(role::PACK_BLOCK, &sealed)?;
         let mut block = Vec::new();
         flate2::read::DeflateDecoder::new(&deflated[..]).read_to_end(&mut block)?;
         let block = Arc::new(block);
@@ -223,7 +238,7 @@ impl Packs {
         if values.is_empty() {
             return Ok(None);
         }
-        let (bytes, mut entries) = write_pack(values)?;
+        let (bytes, mut entries) = write_pack(values, &*self.at_rest)?;
         fs::create_dir_all(&self.dir)?;
         let n = {
             let mut kept = self.kept.write().unwrap_or_else(PoisonError::into_inner);
@@ -325,7 +340,7 @@ fn now_ns() -> u128 {
 }
 
 /// A pack's bytes for `values`, and where each is in it (its `pack` number left 0).
-fn write_pack(values: &[&(Hash, Vec<u8>)]) -> io::Result<Written> {
+fn write_pack(values: &[&(Hash, Vec<u8>)], at_rest: &dyn AtRest) -> io::Result<Written> {
     let mut out = MAGIC.to_vec();
     let mut entries = Vec::with_capacity(values.len());
     let mut block: Vec<u8> = Vec::new();
@@ -336,11 +351,11 @@ fn write_pack(values: &[&(Hash, Vec<u8>)]) -> io::Result<Written> {
         }
         let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         z.write_all(block)?;
-        let deflated = z.finish()?;
+        let sealed = at_rest.seal(role::PACK_BLOCK, &z.finish()?)?;
         let at = out.len() as u64;
-        out.extend_from_slice(&deflated);
+        out.extend_from_slice(&sealed);
         for (hash, offset, len) in in_block.drain(..) {
-            entries.push((hash, At { pack: 0, block: at, block_len: deflated.len() as u32, offset, len }));
+            entries.push((hash, At { pack: 0, block: at, block_len: sealed.len() as u32, offset, len }));
         }
         block.clear();
         Ok(())
@@ -354,38 +369,42 @@ fn write_pack(values: &[&(Hash, Vec<u8>)]) -> io::Result<Written> {
     }
     flush(&mut out, &mut block, &mut in_block, &mut entries)?;
     let index_at = out.len() as u64;
-    out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    let mut index = (entries.len() as u64).to_le_bytes().to_vec();
     for (hash, at) in &entries {
-        out.extend_from_slice(hash);
-        out.extend_from_slice(&at.block.to_le_bytes());
-        out.extend_from_slice(&at.block_len.to_le_bytes());
-        out.extend_from_slice(&at.offset.to_le_bytes());
-        out.extend_from_slice(&at.len.to_le_bytes());
+        index.extend_from_slice(hash);
+        index.extend_from_slice(&at.block.to_le_bytes());
+        index.extend_from_slice(&at.block_len.to_le_bytes());
+        index.extend_from_slice(&at.offset.to_le_bytes());
+        index.extend_from_slice(&at.len.to_le_bytes());
     }
+    out.extend_from_slice(&at_rest.seal(role::PACK_INDEX, &index)?);
     out.extend_from_slice(&index_at.to_le_bytes());
     out.extend_from_slice(MAGIC);
     Ok((out, entries))
 }
 
-/// A pack's index, and the pack's size.
-fn read_index(path: &Path) -> io::Result<(Vec<(Hash, At)>, u64)> {
-    let bytes = fs::read(path)?;
+/// A pack's index, opened, and the pack's size.
+fn read_index(path: &Path, at_rest: &dyn AtRest) -> io::Result<(Vec<(Hash, At)>, u64)> {
+    let file = fs::read(path)?;
     let bad = || io::Error::other("not a whole pack");
-    if bytes.len() < 8 + 8 + 8 + 8 || &bytes[..8] != MAGIC || &bytes[bytes.len() - 8..] != MAGIC {
+    if file.len() < 8 + 8 + 8 || &file[..8] != MAGIC || &file[file.len() - 8..] != MAGIC {
         return Err(bad());
     }
+    let index_at = u64::from_le_bytes(file[file.len() - 16..file.len() - 8].try_into().unwrap());
+    let sealed = usize::try_from(index_at).ok().filter(|&i| i >= 8).and_then(|i| file.get(i..file.len() - 16)).ok_or_else(bad)?;
+    let bytes = at_rest.open(role::PACK_INDEX, sealed)?;
     let u64_at = |i: usize| bytes.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()));
     let u32_at = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let index_at = u64_at(bytes.len() - 16).ok_or_else(bad)? as usize;
-    let count = u64_at(index_at).ok_or_else(bad)? as usize;
-    // Checked: the numbers are the file's, which may be anything.
-    let end = count.checked_mul(ENTRY).and_then(|n| n.checked_add(index_at)).and_then(|n| n.checked_add(8 + 16));
+    let count = u64_at(0).ok_or_else(bad)? as usize;
+    // Checked: the numbers are the file's, which may be anything (an index that opens was sealed
+    // by this keyring, but a whole pack is not more than that).
+    let end = count.checked_mul(ENTRY).and_then(|n| n.checked_add(8));
     if end != Some(bytes.len()) {
         return Err(bad());
     }
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
-        let e = index_at + 8 + i * ENTRY;
+        let e = 8 + i * ENTRY;
         let hash: Hash = bytes[e..e + 32].try_into().unwrap();
         let at = At {
             pack: 0,
@@ -396,7 +415,7 @@ fn read_index(path: &Path) -> io::Result<(Vec<(Hash, At)>, u64)> {
         };
         entries.push((hash, at));
     }
-    Ok((entries, bytes.len() as u64))
+    Ok((entries, file.len() as u64))
 }
 
 #[cfg(test)]
@@ -420,7 +439,7 @@ mod tests {
     #[test]
     fn a_panic_holding_the_packs_locks_stops_no_read_after_it() {
         let dir = temp("poisoned");
-        let packs = Packs::open(&dir).unwrap();
+        let packs = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         let vs = values(50);
         packs.pack(&vs).unwrap();
         assert_eq!(packs.get(&vs[0].0).unwrap().as_deref(), Some(&vs[0].1[..]));
@@ -443,7 +462,7 @@ mod tests {
     #[test]
     fn packed_values_read_back_as_put_and_a_rewrite_leaves_the_rest() {
         let dir = temp("roundtrip");
-        let packs = Packs::open(&dir).unwrap();
+        let packs = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         let vs = values(5_000);
         assert_eq!(packs.pack(&vs).unwrap(), 5_000);
         assert_eq!(packs.pack(&vs[..10]).unwrap(), 0, "packed already");
@@ -455,7 +474,7 @@ mod tests {
         // As files of their own, each would take a whole 4 KiB block; packed, its share of a block
         // deflated with the others and its line of the index (52 bytes, most of it its hash).
         assert!(held.on_disk * 30 < 5_000 * 4096, "{held:?}");
-        let again = Packs::open(&dir).unwrap();
+        let again = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         for (h, v) in vs.iter().step_by(101) {
             assert_eq!(again.get(h).unwrap().as_deref(), Some(&v[..]), "read from its file's index");
         }
@@ -484,7 +503,7 @@ mod tests {
     #[test]
     fn a_rewrite_hides_no_value_it_keeps_and_keeps_one_put_again() {
         let dir = temp("rewrite-reads");
-        let packs = Arc::new(Packs::open(&dir).unwrap());
+        let packs = Arc::new(Packs::open(&dir, crate::test_seal::sealing()).unwrap());
         let vs = values(4_000);
         packs.pack(&vs).unwrap();
         let gone: std::collections::HashSet<Hash> = vs.iter().step_by(2).map(|(h, _)| *h).collect();
@@ -520,7 +539,7 @@ mod tests {
         assert_eq!(packs.get(&again).unwrap().as_deref(), Some(&vs[0].1[..]), "put again: kept");
         assert_eq!(packs.get(&vs[2].0).unwrap(), None, "gone");
         assert_eq!(packs.held().values, 2_001);
-        let again_open = Packs::open(&dir).unwrap();
+        let again_open = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         assert_eq!(again_open.held().values, 2_001, "as on disk");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -530,7 +549,7 @@ mod tests {
     #[test]
     fn a_pack_cut_short_is_said_and_the_others_read() {
         let dir = temp("short");
-        let packs = Packs::open(&dir).unwrap();
+        let packs = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         let (first, second) = (values(100), values(200).split_off(100));
         packs.pack(&first).unwrap();
         packs.pack(&second).unwrap();
@@ -538,17 +557,38 @@ mod tests {
         paths.sort();
         let bytes = fs::read(&paths[0]).unwrap();
         fs::write(&paths[0], &bytes[..bytes.len() - 10]).unwrap();
-        let again = Packs::open(&dir).unwrap();
+        let again = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         assert_eq!(again.unreadable().iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), [paths[0].clone()]);
         assert_eq!(again.get(&first[0].0).unwrap(), None, "its values are missing");
         assert_eq!(again.get(&second[0].0).unwrap().as_deref(), Some(&second[0].1[..]), "the other's read");
         assert!(paths[0].exists(), "left as it is, to be restored");
-        // An index whose count is past anything: not a whole pack, and no overflow.
-        let mut bytes = fs::read(&paths[1]).unwrap();
+        // An index whose count is past anything (sealed so: one changed on disk doesn't open): not
+        // a whole pack, and no overflow.
+        let seal = crate::test_seal::Sealing;
+        let bytes = fs::read(&paths[1]).unwrap();
         let index_at = u64::from_le_bytes(bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap()) as usize;
-        bytes[index_at..index_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let mut index = seal.open(role::PACK_INDEX, &bytes[index_at..bytes.len() - 16]).unwrap();
+        index[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let mut forged = bytes[..index_at].to_vec();
+        forged.extend_from_slice(&seal.seal(role::PACK_INDEX, &index).unwrap());
+        forged.extend_from_slice(&bytes[bytes.len() - 16..]);
+        fs::write(&paths[1], &forged).unwrap();
+        assert_eq!(Packs::open(&dir, crate::test_seal::sealing()).unwrap().unreadable().len(), 2);
+        // One changed on disk, or its index sealed as a block: doesn't open, said.
+        let mut changed = bytes.clone();
+        changed[index_at + 12] ^= 1;
+        fs::write(&paths[1], &changed).unwrap();
+        assert_eq!(Packs::open(&dir, crate::test_seal::sealing()).unwrap().unreadable().len(), 2);
+        let mut other = bytes[..index_at].to_vec();
+        other.extend_from_slice(&seal.seal(role::PACK_BLOCK, &seal.open(role::PACK_INDEX, &bytes[index_at..bytes.len() - 16]).unwrap()).unwrap());
+        other.extend_from_slice(&bytes[bytes.len() - 16..]);
+        fs::write(&paths[1], &other).unwrap();
+        assert_eq!(Packs::open(&dir, crate::test_seal::sealing()).unwrap().unreadable().len(), 2);
+        // As written, it reads again; nothing in it is in the clear.
         fs::write(&paths[1], &bytes).unwrap();
-        assert_eq!(Packs::open(&dir).unwrap().unreadable().len(), 2);
+        assert_eq!(Packs::open(&dir, crate::test_seal::sealing()).unwrap().unreadable().len(), 1);
+        assert!(!bytes.windows(32).any(|w| w == second[0].0), "a value's hash");
+        assert!(!bytes.windows(10).any(|w| w == &second[0].1[..10]), "a value's bytes");
         let _ = fs::remove_dir_all(&dir);
     }
 }

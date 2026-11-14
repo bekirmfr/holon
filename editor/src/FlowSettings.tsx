@@ -36,7 +36,7 @@ import {
   type SessionEntry,
   type WaitingRun,
 } from "./server";
-import { Gated, gateOf, type Answer, type Can } from "./can";
+import { Gated, gateOf, useCan, type Answer, type Can } from "./can";
 
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -64,7 +64,7 @@ export function SettingsTab({
   /** Open it in the editor: a setting raised is a new version, made there. */
   onEdit: () => void;
   /** Remove it, every session and its state. */
-  onRemove: () => Promise<void>;
+  onRemove: (forget: boolean) => Promise<void>;
 }) {
   const version = `${entry.unit} ${entry.status} ${entry.attention ?? ""}`;
   const [manifest, setManifest] = useState<ManifestReply | null>(null);
@@ -530,10 +530,14 @@ function Lifecycle({ entry, onAction, can }: { entry: DeploymentEntry; onAction:
 
 /** Removing it: every session and its state go, which can't be undone; its run records stay on the
  *  host, written as an export `holon verify` checks (the server's DELETE). Asked by typing its
- *  name, once it is stopped, by whoever may delete it (`flow.delete`). */
-function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boolean; onRemove: () => Promise<void>; may: Answer }) {
+ *  name, once it is stopped, by whoever may delete it (`flow.delete`). And its keys forgotten,
+ *  if asked, by whoever may operate the host too (`host.operate`, `POST /admin/keys/forget`):
+ *  then nothing it left opens again. */
+function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boolean; onRemove: (forget: boolean) => Promise<void>; may: Answer }) {
   const [typed, setTyped] = useState("");
+  const [forget, setForget] = useState(false);
   const [msg, setMsg] = useState("");
+  const operate = useCan().may("forgetKeys");
   return (
     <section className="hl-flow__section hl-flow__danger" aria-label="remove">
       <h2>Remove</h2>
@@ -541,9 +545,15 @@ function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boole
         Removes the deployment, every session and its state. It can&apos;t be undone. Its run records stay: its log and timeline are kept on the host, as an export{" "}
         <code>holon verify</code> checks, and deployed again, {slug} starts a new log. Its saved flow stays.{stopped ? "" : " Stop it first."}
       </p>
+      {operate === true && (
+        <label className="hl-flow__note">
+          <input type="checkbox" checked={forget} disabled={!stopped} onChange={(e) => setForget(e.target.checked)} /> Forget its keys too: its kept run records, its
+          backups and every other file it left can&apos;t be opened again, here or in a copy of the data folder taken before (the root key is rotated where it is kept).
+        </label>
+      )}
       <div className="hl-flow__bar">
         <input className="hl-flow__filter" aria-label={`type ${slug} to remove it`} placeholder={`type ${slug}`} value={typed} {...gateOf(may, { disabled: !stopped })} onChange={(e) => setTyped(e.target.value)} />
-        <button className="hl-flow__button hl-flow__button--danger" {...gateOf(may, { disabled: !stopped || typed !== slug })} onClick={() => onRemove().catch((e: unknown) => setMsg(say(e)))}>
+        <button className="hl-flow__button hl-flow__button--danger" {...gateOf(may, { disabled: !stopped || typed !== slug })} onClick={() => onRemove(forget && operate === true).catch((e: unknown) => setMsg(say(e)))}>
           Remove {slug}
         </button>
       </div>

@@ -12,9 +12,12 @@
 //!   hash: the run stays provable, not re-runnable.
 //!
 //! On disk, under the content store (`<store>/blobs/`): a text is a small file naming its chunks,
-//! and each chunk a file under `chunks/`, named by its hash. Every read is checked: each chunk
-//! against its name, the text against its own.
+//! and each chunk a file under `chunks/`. Each sealed under the server's keys for what it is, and
+//! named by a keyed hash of its hash (at_rest.rs, docs/L4s/at-rest-encryption-L4.md §5.4), so
+//! neither its bytes nor its name say what it holds. Every read is checked: each chunk opened and
+//! checked against its hash, the text against its own.
 
+use crate::at_rest::role;
 use crate::sync::Mutex;
 
 use crate::*;
@@ -78,8 +81,25 @@ pub(crate) fn chunks(mut bytes: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Whether `s` can name a text or a chunk: 64 lowercase hex digits, and so nothing else on disk.
+/// A file's name is of this shape too (a keyed hash), so it tells a text's file from another.
 fn is_id(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The name of the file a text or chunk `id` (its hash, hex) is kept in: a keyed hash of it.
+fn file_of(id: &str) -> String {
+    let hash: [u8; 32] = std::array::from_fn(|i| u8::from_str_radix(&id[2 * i..2 * i + 2], 16).expect("an id is 64 hex"));
+    crate::at_rest::keys().name(&hash)
+}
+
+/// `plain` sealed under the server's keys for `role`.
+fn seal(role: &str, plain: &[u8]) -> Result<Vec<u8>, String> {
+    crate::at_rest::keys().seal_file(crate::at_rest::SERVER, role, plain)
+}
+
+/// A file sealed for `role`, opened.
+fn open(role: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+    crate::at_rest::keys().open_file(role, sealed).map(|mut plain| std::mem::take(&mut *plain)).map_err(|e| e.to_string())
 }
 
 /// What names a text: its size, and its chunks' hashes in order.
@@ -164,7 +184,7 @@ impl Blobs {
             mem.texts.insert(id.clone(), (Manifest { size: bytes.len() as u64, chunks: names }, now));
             return Ok(id);
         };
-        let text = dir.join(&id);
+        let text = dir.join(file_of(&id));
         if text.is_file() {
             std::fs::File::options()
                 .write(true)
@@ -178,14 +198,14 @@ impl Blobs {
         let mut names = Vec::new();
         for chunk in chunks(bytes) {
             let name = blake3::hash(chunk).to_hex().to_string();
-            let path = dir_of_chunks.join(&name);
+            let path = dir_of_chunks.join(file_of(&name));
             if !path.is_file() {
-                holon_host::write_atomically(&path, chunk).map_err(|e| format!("can't keep a chunk in {}: {e}", dir.display()))?;
+                holon_host::write_atomically(&path, &seal(role::BLOB_CHUNK, chunk)?).map_err(|e| format!("can't keep a chunk in {}: {e}", dir.display()))?;
             }
             names.push(name);
         }
         let manifest = serde_json::to_vec(&Manifest { size: bytes.len() as u64, chunks: names }).map_err(|e| e.to_string())?;
-        holon_host::write_atomically(&text, &manifest).map_err(|e| format!("can't keep a text in {}: {e}", dir.display()))?;
+        holon_host::write_atomically(&text, &seal(role::BLOB_TEXT, &manifest)?).map_err(|e| format!("can't keep a text in {}: {e}", dir.display()))?;
         Ok(id)
     }
 
@@ -203,18 +223,22 @@ impl Blobs {
                 (manifest.clone(), parts)
             }
             Some(dir) => {
-                let manifest: Manifest = match std::fs::read(dir.join(id)) {
-                    Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the kept text {id} is damaged: {e}"))?,
+                let manifest: Manifest = match std::fs::read(dir.join(file_of(id))) {
+                    Ok(bytes) => {
+                        let plain = open(role::BLOB_TEXT, &bytes).map_err(|e| format!("the kept text {id} is damaged: {e}"))?;
+                        serde_json::from_slice(&plain).map_err(|e| format!("the kept text {id} is damaged: {e}"))?
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                     Err(e) => return Err(format!("can't read the kept text {id}: {e}")),
                 };
-                let parts = manifest.chunks.iter().map(|c| if is_id(c) { std::fs::read(dir.join("chunks").join(c)).ok() } else { None }).collect();
+                // A chunk read but not opened is damaged: it fails its hash below.
+                let parts = manifest.chunks.iter().map(|c| if is_id(c) { std::fs::read(dir.join("chunks").join(file_of(c))).ok().map(|b| open(role::BLOB_CHUNK, &b).unwrap_or_default()) } else { None }).collect();
                 (manifest, parts)
             }
         };
         let mut bytes = Vec::with_capacity(manifest.size as usize);
         for (name, part) in manifest.chunks.iter().zip(parts) {
-            let part = part.ok_or_else(|| format!("the kept text {id} is missing its chunk {name}"))?;
+            let part: Vec<u8> = part.ok_or_else(|| format!("the kept text {id} is missing its chunk {name}"))?;
             if blake3::hash(&part).to_hex().as_str() != name {
                 return Err(format!("the kept text {id} has a damaged chunk {name}"));
             }
@@ -242,7 +266,7 @@ impl Blobs {
 
     /// Remove every text not in `live` put before `before_ms`, then every chunk put before it that
     /// no text left names. A text or chunk put since is spared: a run that just kept one may not
-    /// have logged it yet.
+    /// have logged it yet. On disk, each is known by its file's name (a keyed hash of its id).
     pub(crate) fn sweep(&self, live: &BTreeSet<String>, before_ms: u64) -> Result<Swept, String> {
         let _busy = self.busy.lock().unwrap();
         let mut swept = Swept::default();
@@ -262,18 +286,19 @@ impl Blobs {
             return Ok(swept);
         };
         let Ok(entries) = std::fs::read_dir(dir) else { return Ok(swept) };
+        let live: BTreeSet<String> = live.iter().filter(|id| is_id(id)).map(|id| file_of(id)).collect();
         let mut used = BTreeSet::new();
         for entry in entries.flatten() {
-            let Some(id) = entry.file_name().to_str().filter(|n| is_id(n)).map(str::to_string) else { continue };
+            let Some(file) = entry.file_name().to_str().filter(|n| is_id(n)).map(str::to_string) else { continue };
             let path = entry.path();
-            if !live.contains(&id) && changed_ms(&path) < before_ms {
-                std::fs::remove_file(&path).map_err(|e| format!("can't sweep the kept text {id}: {e}"))?;
+            if !live.contains(&file) && changed_ms(&path) < before_ms {
+                std::fs::remove_file(&path).map_err(|e| format!("can't sweep the kept text in {file}: {e}"))?;
                 swept.texts += 1;
                 continue;
             }
             // A text that can't be read names chunks no one can tell: keep them all.
-            match std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Manifest>(&b).ok()) {
-                Some(m) => used.extend(m.chunks),
+            match std::fs::read(&path).ok().and_then(|b| open(role::BLOB_TEXT, &b).ok()).and_then(|b| serde_json::from_slice::<Manifest>(&b).ok()) {
+                Some(m) => used.extend(m.chunks.iter().filter(|c| is_id(c)).map(|c| file_of(c))),
                 None => return Ok(swept),
             }
         }
@@ -285,14 +310,14 @@ impl Blobs {
                 continue;
             }
             let size = entry.metadata().map_or(0, |m| m.len());
-            std::fs::remove_file(&path).map_err(|e| format!("can't sweep the chunk {name}: {e}"))?;
+            std::fs::remove_file(&path).map_err(|e| format!("can't sweep the chunk in {name}: {e}"))?;
             swept.chunks += 1;
             swept.bytes += size;
         }
         Ok(swept)
     }
 
-    /// What it holds now.
+    /// What it holds now: on disk, the chunks' bytes as they are there, sealed.
     pub(crate) fn held(&self) -> Held {
         let Some(dir) = &self.dir else {
             let mem = self.mem.lock().unwrap();
@@ -345,7 +370,8 @@ mod tests {
             assert_eq!(id, blake3::hash(&first).to_hex().to_string());
             assert_eq!(blobs.get(&id).unwrap().as_deref(), Some(&first[..]));
             let held = blobs.held();
-            assert_eq!(held.bytes, first.len() as u64);
+            // On disk, each chunk sealed: its bytes and a header, a nonce and a tag (under 100).
+            assert!((first.len() as u64..first.len() as u64 + 100 * held.chunks as u64).contains(&held.bytes), "{held:?}");
 
             // The same text again: nothing more.
             assert_eq!(blobs.put(&first).unwrap(), id);
@@ -377,10 +403,28 @@ mod tests {
             assert_eq!((all.texts, blobs.held()), (1, Held::default()));
             assert!(!blobs.any_put_before(now_ms() + 1_000), "and once swept, nothing is left to");
         }
-        // A damaged chunk is found, not answered.
+        // On disk, nothing is in the clear: no file named by a hash, none holding its bytes.
         let blobs = Blobs::at(dir.clone());
-        let id = blobs.put(&log(100)).unwrap();
+        let text = log(100);
+        let id = blobs.put(&text).unwrap();
         let chunk = std::fs::read_dir(dir.join("chunks")).unwrap().flatten().next().unwrap().path();
+        let manifest = dir.join(file_of(&id));
+        assert!(!dir.join(&id).exists() && !dir.join("chunks").join(&id).exists(), "named by its hash");
+        for file in [&chunk, &manifest] {
+            let bytes = std::fs::read(file).unwrap();
+            assert!(bytes.starts_with(b"HLA1"), "sealed: {}", file.display());
+            assert!(!bytes.windows(20).any(|w| w == &text[..20]) && !bytes.windows(64).any(|w| w == id.as_bytes()), "in the clear: {}", file.display());
+        }
+        // A chunk sealed as a text, or the text as a chunk: damaged, as one changed is.
+        let (chunk_bytes, manifest_bytes) = (std::fs::read(&chunk).unwrap(), std::fs::read(&manifest).unwrap());
+        std::fs::write(&chunk, seal(role::BLOB_TEXT, &open(role::BLOB_CHUNK, &chunk_bytes).unwrap()).unwrap()).unwrap();
+        assert!(blobs.get(&id).unwrap_err().contains("damaged"));
+        std::fs::write(&chunk, &chunk_bytes).unwrap();
+        std::fs::write(&manifest, seal(role::BLOB_CHUNK, &open(role::BLOB_TEXT, &manifest_bytes).unwrap()).unwrap()).unwrap();
+        assert!(blobs.get(&id).unwrap_err().contains("damaged"));
+        std::fs::write(&manifest, &manifest_bytes).unwrap();
+        assert_eq!(blobs.get(&id).unwrap().as_deref(), Some(&text[..]), "as written, it reads");
+        // A damaged chunk is found, not answered.
         std::fs::write(&chunk, b"something else").unwrap();
         assert!(blobs.get(&id).unwrap_err().contains("damaged"));
         let _ = std::fs::remove_dir_all(&dir);

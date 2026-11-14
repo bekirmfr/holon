@@ -279,6 +279,16 @@ them too, export before they are trimmed, or keep more.
 An event's head is checked the same way: `witnessed head …: event 7, so no event up to it was
 changed or removed`.
 
+An export `holon export` writes is plain: whoever holds the file reads every run in it, and you
+decide how to keep it. The ones the server keeps on disk itself, a backup's archives and a removed
+deployment's records, are sealed under its keys, as everything in its data folder is. `holon
+verify` opens one with the server's root key; on another machine, give it the data folder's
+`keys.json` and where the root key is:
+
+```sh
+holon verify holon-archive-notes-api-runs-…json.gz --data /srv/holon/data --root-key file:/etc/holon/root.key
+```
+
 A run the server couldn't write is said lost in the next line, whose head the witness holds.
 Someone who removes a run and rewrites the lines after it to say it was lost makes a log that
 checks without a witnessed head, as a full disk's does; with one, it fails, the head no longer
