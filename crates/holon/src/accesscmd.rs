@@ -2,6 +2,10 @@
 //! `holon roles` lists and defines roles, `holon groups` makes groups of principals, `holon bind`
 //! and `holon unbind` bind a role to a principal or a group where it holds, and `holon access`
 //! reads every version of it. Each change is a version kept for good, with who made it and why.
+//! While the host has people approve an access change that gives more (`holon access approvals
+//! --changes N`), such a change waits as a proposal (access_proposals.rs): `holon access
+//! proposals` lists them, and a person approves or declines one with `holon access approve` and
+//! `holon access decline`.
 
 use serde_json::{json, Value};
 
@@ -98,6 +102,9 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
        holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
                               [--changes N|off] [--why TEXT]
        holon access local [--as NAME] [--why TEXT]
+       holon access proposals
+       holon access approve <id>
+       holon access decline <id> --reason TEXT
        (each with [--json] [--server PORT|URL])
 
   Who may do what on this server, as kept: every change is a version, with who made it, when, what
@@ -123,6 +130,13 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
                            the server up, until an admin ties it to another
     --as NAME              tie it to NAME, a person here who isn't disabled, as a new version
     --why TEXT             why, kept with the version
+  proposals                the access changes that wait for people, and those decided, newest
+                           first: what each changes and gives, who proposed it, when and why, who
+                           approved it, and who could act as whom it gives more
+  approve <id>             approve an access change, as holon access proposals numbers it: made
+                           once as many people as it waits for have approved it
+  decline <id>             decline it, saying why; its author withdraws it so
+    --reason TEXT          why it is declined
   --json                   print what the server answers, as JSON
   --server PORT|URL        which holon server to ask (see below)
 
@@ -131,6 +145,15 @@ examples:
   holon access show --version 3
   holon access approvals --exclude-deployer on --why \"four eyes on payouts\"
   holon access local --as bob --why \"bob runs this machine now\"
+  holon access proposals
+  holon access approve 4
+  holon access decline 4 --reason \"dee is on leave until March\"
+
+  While --changes is N, an access change that gives more (holon bind, holon roles define, holon
+  groups add, holon people set --role, holon access approvals) waits until N people other than its
+  author approve it: each a person holding people.assign and what it gives, and none who could
+  act as whom it gives more (who made their invite or reset link, set their email, owns them or
+  made their token). An agent never approves one. Taking away applies at once.
 ";
 
 /// The usage, with where the server is, and how to sign in.
@@ -383,7 +406,7 @@ pub(crate) fn unbind(args: &[String]) -> i32 {
 pub(crate) fn access(args: &[String]) -> i32 {
     const WHO: &str = "holon access";
     let usage = usage(ACCESS_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--starter", "--changes", "--as", "--why"], &["--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--version", "--exclude-deployer", "--agents", "--starter", "--changes", "--as", "--why", "--reason"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -453,6 +476,43 @@ pub(crate) fn access(args: &[String]) -> i32 {
                 Ok(v) => {
                     if !as_json(&args, &v) {
                         println!("{} (version {})", tie_line(&v), v["version"]);
+                    }
+                    0
+                }
+                Err(code) => code,
+            }
+        }
+        (Some("proposals"), None) => match cmdline::json(WHO, &args, "GET", "/access/proposals", None) {
+            Ok(v) => {
+                if !as_json(&args, &v) {
+                    proposal_lines(&v).iter().for_each(|l| println!("{l}"));
+                }
+                0
+            }
+            Err(code) => code,
+        },
+        (Some(verb @ ("approve" | "decline")), Some(id)) => {
+            let Ok(id) = id.parse::<u64>() else {
+                eprintln!("{WHO}: an access change is a number, as holon access proposals lists it: not {id:?}");
+                return 2;
+            };
+            let reason = args.value("--reason").map(str::trim);
+            let body = match (verb, reason) {
+                ("decline", Some(reason)) if !reason.is_empty() => json!({ "reason": reason }),
+                ("decline", _) => {
+                    eprintln!("{WHO}: a decline says why: --reason TEXT");
+                    return 2;
+                }
+                (_, Some(_)) => {
+                    eprintln!("{WHO}: --reason says why an access change is declined; an approval takes none");
+                    return 2;
+                }
+                _ => json!({}),
+            };
+            match cmdline::json(WHO, &args, "POST", &format!("/access/proposals/{id}/{verb}"), Some(&body)) {
+                Ok(v) => {
+                    if !as_json(&args, &v) {
+                        println!("{}", decided_line(&v["proposal"]));
                     }
                     0
                 }
@@ -679,6 +739,63 @@ fn approval_lines(v: &Value) -> Vec<String> {
     table(&settings.each().map(|(name, value, said)| vec![name.replace('_', "-"), value, said]))
 }
 
+/// Where an access change `p` stands, as `holon access proposals` lists it: "waits, 1 of 2
+/// approved (bob)", "made as version 12 (approved by bob)", "declined by bob: not this week",
+/// "withdrawn by ada: the wrong flow", "stale: …".
+fn proposal_state(p: &Value) -> String {
+    let approved = words(&p["approvals"].as_array().map(|a| a.iter().map(|a| a["who"].clone()).collect()).unwrap_or(Value::Null));
+    let who = |s: &str| if approved.is_empty() { String::new() } else { format!(" ({s}{})", approved.join(", ")) };
+    let reason = p["reason"].as_str().unwrap_or_default();
+    match p["state"].as_str().unwrap_or_default() {
+        "waiting" => format!("waits, {} of {} approved{}", approved.len(), p["needs"].as_u64().unwrap_or(1), who("")),
+        "applied" => format!("made as version {}{}", p["version"], who("approved by ")),
+        "declined" if p["declined_by"] == p["author"] => format!("withdrawn by {}: {reason}", p["author"].as_str().unwrap_or("-")),
+        "declined" => format!("declined by {}: {reason}", p["declined_by"].as_str().unwrap_or("-")),
+        "stale" => format!("stale: {}", p["stale"].as_str().unwrap_or_default()),
+        other => other.to_string(),
+    }
+}
+
+/// The access changes, newest first, as columns; then each that waits: what it gives, who could
+/// act as whom it gives more (none of whom approves it), and how to decide it.
+fn proposal_lines(v: &Value) -> Vec<String> {
+    let all: Vec<&Value> = v["proposals"].as_array().into_iter().flatten().collect();
+    if all.is_empty() {
+        return vec!["no access change yet: while holon access approvals --changes N is on, one that gives more waits here for N people to approve it".into()];
+    }
+    let mut rows = vec![["id", "state", "what", "by", "at", "why"].map(String::from).to_vec()];
+    for p in &all {
+        rows.push(vec![p["id"].to_string(), proposal_state(p), p["what"].as_str().unwrap_or_default().into(), p["author"].as_str().unwrap_or("-").into(), when(p["at"].as_u64()), p["why"].as_str().unwrap_or("").into()]);
+    }
+    let mut lines = table(&rows);
+    for p in all.iter().filter(|p| p["state"] == "waiting") {
+        let id = &p["id"];
+        lines.push(String::new());
+        lines.push(format!("access change {id} gives {}", words(&p["gives"]).join("; ")));
+        let ways = words(&p["ways_in"]);
+        if !ways.is_empty() {
+            lines.push(format!("  who could act as whom it gives more, and so doesn't approve it: {}", ways.join("; ")));
+        }
+        lines.push(format!("  holon access approve {id}, or holon access decline {id} --reason TEXT"));
+    }
+    lines
+}
+
+/// What deciding the access change `p` did, as the server answers it.
+fn decided_line(p: &Value) -> String {
+    let (id, what) = (&p["id"], p["what"].as_str().unwrap_or_default());
+    match p["state"].as_str().unwrap_or_default() {
+        "waiting" => {
+            let more = p["needs"].as_u64().unwrap_or(1).saturating_sub(p["approvals"].as_array().map_or(0, |a| a.len() as u64));
+            format!("approved access change {id}: it waits for {more} more {} ({what})", if more == 1 { "person" } else { "people" })
+        }
+        "applied" => format!("approved access change {id}, the last approval it waited for: made, as access version {}: {what}", p["version"]),
+        "declined" if p["declined_by"] == p["author"] => format!("withdrew access change {id}: {what}"),
+        "declined" => format!("declined access change {id}: {what}"),
+        other => format!("access change {id} is {other}: {what}"),
+    }
+}
+
 /// Who this machine's run file signs in as, in a version's `local` (the plan's D45).
 fn local_line(local: &Value) -> String {
     match local.as_str() {
@@ -821,6 +938,41 @@ mod tests {
         assert_eq!(waiting(&proposal(2)).as_deref(), Some("bound approver to dee on this host: waits for 2 people other than you to approve it (access change 3)"));
         assert_eq!(waiting(&proposal(1)).as_deref(), Some("bound approver to dee on this host: waits for 1 person other than you to approve it (access change 3)"));
         assert_eq!(waiting(&json!({ "binding": {}, "version": 9 })), None);
+        // The access changes, newest first; those that wait in full.
+        let p = |id: u64, state: Value| {
+            let mut p = json!({ "id": id, "author": "ada", "at": 60, "what": format!("bound approver to dee on \"pay\" ({id})"), "gives": ["run.decide, run.view to dee on \"pay\", as approver"], "needs": 2, "approvals": [] });
+            p.as_object_mut().unwrap().extend(state.as_object().unwrap().clone());
+            p
+        };
+        let waits = p(5, json!({ "state": "waiting", "why": "on call", "approvals": [{ "who": "bob", "at": 61 }], "ways_in": ["ada made dee's invite link"] }));
+        let fresh = p(4, json!({ "state": "waiting", "gives": ["run.decide to eve on this host, as approver", "the approval settings: an access change applies at once"] }));
+        let made = p(3, json!({ "state": "applied", "version": 12, "approvals": [{ "who": "bob", "at": 61 }, { "who": "cy", "at": 62 }] }));
+        let declined = p(2, json!({ "state": "declined", "declined_by": "bob", "reason": "not this week" }));
+        let withdrawn = p(1, json!({ "state": "declined", "declined_by": "ada", "reason": "the wrong flow" }));
+        let stale = p(0, json!({ "state": "stale", "stale": "no role \"approver\"" }));
+        assert_eq!(proposal_lines(&json!({ "proposals": [waits, fresh, made, declined, withdrawn, stale], "version": 12 })), [
+            "id  state                                     what                                by   at                   why",
+            "5   waits, 1 of 2 approved (bob)              bound approver to dee on \"pay\" (5)  ada  1970-01-01T00:01:00  on call",
+            "4   waits, 0 of 2 approved                    bound approver to dee on \"pay\" (4)  ada  1970-01-01T00:01:00",
+            "3   made as version 12 (approved by bob, cy)  bound approver to dee on \"pay\" (3)  ada  1970-01-01T00:01:00",
+            "2   declined by bob: not this week            bound approver to dee on \"pay\" (2)  ada  1970-01-01T00:01:00",
+            "1   withdrawn by ada: the wrong flow          bound approver to dee on \"pay\" (1)  ada  1970-01-01T00:01:00",
+            "0   stale: no role \"approver\"                 bound approver to dee on \"pay\" (0)  ada  1970-01-01T00:01:00",
+            "",
+            "access change 5 gives run.decide, run.view to dee on \"pay\", as approver",
+            "  who could act as whom it gives more, and so doesn't approve it: ada made dee's invite link",
+            "  holon access approve 5, or holon access decline 5 --reason TEXT",
+            "",
+            "access change 4 gives run.decide to eve on this host, as approver; the approval settings: an access change applies at once",
+            "  holon access approve 4, or holon access decline 4 --reason TEXT",
+        ]);
+        assert_eq!(proposal_lines(&json!({ "proposals": [], "version": 1 })), ["no access change yet: while holon access approvals --changes N is on, one that gives more waits here for N people to approve it"]);
+        // What deciding one did.
+        assert_eq!(decided_line(&waits), "approved access change 5: it waits for 1 more person (bound approver to dee on \"pay\" (5))");
+        assert_eq!(decided_line(&fresh), "approved access change 4: it waits for 2 more people (bound approver to dee on \"pay\" (4))");
+        assert_eq!(decided_line(&made), "approved access change 3, the last approval it waited for: made, as access version 12: bound approver to dee on \"pay\" (3)");
+        assert_eq!(decided_line(&declined), "declined access change 2: bound approver to dee on \"pay\" (2)");
+        assert_eq!(decided_line(&withdrawn), "withdrew access change 1: bound approver to dee on \"pay\" (1)");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
         assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false, "changes": 2 })), [

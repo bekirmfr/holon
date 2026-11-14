@@ -1,6 +1,7 @@
 // Who holds what, as the People pages say it (access.ts): each binding in a few words, where it
 // holds and until when, what a principal's bindings give as `can` decides, and what a version of
-// the access document changed.
+// the access document changed. And an access change that waits for people, as Approvals says it:
+// where it stands, what deciding it did, and whether it is plainly not yours to approve.
 import { describe, expect, it } from "vitest";
 import {
   allowsSaid,
@@ -8,10 +9,14 @@ import {
   bindingSaid,
   catalogueOf,
   changesOf,
+  changesToDecide,
+  changeState,
+  decidedChange,
   flowOf,
   givesOf,
   heldBy,
   hostRoleOf,
+  notYours,
   otherBindings,
   rolesFor,
   roleTitle,
@@ -19,9 +24,11 @@ import {
   seesFlow,
   subjectSaid,
   untilOf,
+  waitingOf,
+  waitsSaid,
   type Tagged,
 } from "./access";
-import type { AccessDocument, BindingEntry, HeldBinding, Kind, Principal, RoleEntry, Scope, Subject } from "./server";
+import type { AccessDocument, AccessProposal, BindingEntry, HeldBinding, Kind, Principal, RoleEntry, Scope, Subject } from "./server";
 
 const bound = (role: string, more: Partial<HeldBinding> = {}): HeldBinding => ({ id: 0, role, allows: [], scope: "host", group: null, by: "ada", at: 0, expires_at: null, expired: false, ...more });
 const principal = (bindings: HeldBinding[]): Principal => ({
@@ -371,5 +378,65 @@ describe("what a version of the access document changed", () => {
       { of: "binding", change: "added", said: "admin to ada on this host" },
       { of: "run file", change: "added", said: "the run file signs in as ada" },
     ]);
+  });
+});
+
+describe("an access change that waits for people", () => {
+  const change = (id: number, more: Partial<AccessProposal>): AccessProposal => ({
+    id,
+    author: "ada",
+    at: 60,
+    what: `bound approver to dee on "pay" (${id})`,
+    gives: ['run.decide, run.view to dee on "pay", as approver'],
+    to: ["dee"],
+    base: 3,
+    needs: 2,
+    approvals: [],
+    state: "waiting",
+    ...more,
+  });
+  const waits = change(5, { approvals: [{ who: "bob", at: 61 }], ways_in: ["cy made dee's invite link"] });
+  const fresh = change(4, {});
+  const one = change(6, { needs: 1 });
+  const made = change(3, { state: "applied", version: 12, approvals: [{ who: "bob", at: 61 }, { who: "cy", at: 62 }] });
+  const declined = change(2, { state: "declined", declined_by: "bob", reason: "not this week" });
+  const withdrawn = change(1, { state: "declined", declined_by: "ada", reason: "the wrong flow" });
+  const stale = change(0, { state: "stale", stale: 'no role "approver"' });
+
+  it("says where each stands, and what deciding it did, as holon access proposals and approve do (accesscmd.rs)", () => {
+    const table: [AccessProposal, string, string][] = [
+      [waits, "waits, 1 of 2 approved (bob)", `Approved access change 5: it waits for 1 more person (bound approver to dee on "pay" (5)).`],
+      [fresh, "waits, 0 of 2 approved", `Approved access change 4: it waits for 2 more people (bound approver to dee on "pay" (4)).`],
+      [made, "made as version 12 (approved by bob, cy)", `Approved access change 3, the last approval it waited for: made, as access version 12: bound approver to dee on "pay" (3).`],
+      [declined, "declined by bob: not this week", `Declined access change 2: bound approver to dee on "pay" (2).`],
+      [withdrawn, "withdrawn by ada: the wrong flow", `Withdrew access change 1: bound approver to dee on "pay" (1).`],
+      [stale, 'stale: no role "approver"', `Access change 0 no longer applies: no role "approver".`],
+    ];
+    for (const [p, state, decided] of table) {
+      expect(changeState(p), `${p.id}`).toBe(state);
+      expect(decidedChange(p), `${p.id}`).toBe(decided);
+    }
+  });
+
+  it("says a change kept as one, as holon bind does, and nothing of a change made", () => {
+    expect(waitsSaid(fresh)).toBe(`bound approver to dee on "pay" (4): waits for 2 people other than you to approve it (access change 4)`);
+    expect(waitsSaid(one)).toBe(`bound approver to dee on "pay" (6): waits for 1 person other than you to approve it (access change 6)`);
+    expect(waitingOf({ proposal: one, version: 9 })).toBe(waitsSaid(one));
+    for (const made of [{ binding: {}, version: 9 }, { name: "dee", role: "viewer" }, undefined, null, "done"]) expect(waitingOf(made)).toBeNull();
+  });
+
+  it("says why someone plainly doesn't approve it, as the server would refuse them; else leaves it to the server", () => {
+    const table: [string, string | null][] = [
+      ["ada", "you proposed it: people other than you approve it"],
+      ["bob", "you approved it"],
+      ["cy", "it gives more to someone you could act as (cy made dee's invite link): it is approved by someone who couldn't"],
+      ["c", null],
+      ["eve", null],
+    ];
+    for (const [me, said] of table) expect(notYours(waits, me), me).toBe(said);
+    // Each that waits and isn't plainly not theirs is theirs to decide; the decided never are.
+    expect(changesToDecide([waits, fresh, one, made, declined, withdrawn, stale], "eve")).toBe(3);
+    expect(changesToDecide([waits, fresh, one, made], "bob")).toBe(2);
+    expect(changesToDecide([waits, fresh, one], "ada")).toBe(0);
   });
 });

@@ -784,6 +784,9 @@ holon access show [--version N] [--json]
 holon access approvals [--exclude-deployer on|off] [--agents on|off] [--starter on|off]
                        [--changes N|off] [--why TEXT] [--json]
 holon access local [--as NAME] [--why TEXT] [--json]
+holon access proposals [--json]
+holon access approve <id> [--json]
+holon access decline <id> --reason TEXT [--json]
 ```
 
 Who may do what on this server, as kept: `versions` (what `holon access` does alone) lists every
@@ -825,6 +828,32 @@ this machine's run file signs in as bob (version 9)
 
 Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
 `local:<user>`, and decides no approval.
+
+`proposals` lists the access changes that wait for people, and those decided, newest first (holding
+`people.view` on the host); then each that waits in full: what it gives, who could act as whom it
+gives more (none of whom approves it), and how to decide it:
+
+```
+id  state                                      what                               by   at                   why
+5   waits, 1 of 2 approved (bob)               bound approver to dee on "payout"  ada  2026-11-14T10:02:11  on call
+3   made as version 12 (approved by bob, eve)  bound approver to cy on "refunds"  ada  2026-11-13T16:40:05
+2   declined by bob: not this week             bound editor to fay on this host   ada  2026-11-13T09:12:47
+
+access change 5 gives run.decide to dee on "payout", as approver
+  who could act as whom it gives more, and so doesn't approve it: ada made dee's invite link
+  holon access approve 5, or holon access decline 5 --reason TEXT
+```
+
+`approve <id>` approves one, as a person holding `people.assign` on the host and what it gives;
+the last approval it waits for makes it, checked again then (one that no longer applies is stale,
+saying why). `decline <id> --reason TEXT` declines it; its author withdraws it so. Whoever proposed
+it, and whoever could act as whom it gives more, doesn't approve it; nor does an agent
+([Access changes that wait for people](../guides/people.md#access-changes-that-wait-for-people)):
+
+```sh
+holon access approve 5
+holon access decline 5 --reason "dee is on leave until March"
+```
 
 ## Runs
 

@@ -468,6 +468,8 @@ holon decide SLUG RUN NAME --approve|--decline [--reason …] [--slot N] [--note
 - **People** (step 16 of the editor plan, replaced by this): tabs People, Agents and tokens, Groups,
   Roles, Bindings, History. A principal's page shows its bindings and what they let it do, per flow.
   Granting is a form (who, role, where, until), and a change needing approval shows as waiting.
+- **Approvals › Access changes**: each access change that waits for people, what it gives, who
+  could act as whom it gives more, Approve / Decline (its author's Withdraw), as `can` lets them.
 - **Approvals › Runs waiting**: each row shows its chain, `✓ classifier (refunds-bot: refund, 0.93)
   → ◻ reviewer → ◻ approver`, expiry, and Approve / Decline only for the caller who can fill an open
   slot; "you reviewed" where they already did; the reason dialog (`Dialog.tsx`), required to
@@ -523,8 +525,10 @@ One commit each; the first two change no behaviour.
    do before and after, for as long, through `can`; a route's change that gives more waits (202),
    approved by people holding what it gives, made at the last approval, stale if it no longer
    applies; no one makes a way in to someone else holding what waits, and whoever could act as
-   whom a change gives more doesn't approve it (8e). The CLI, `holon mcp` and the editor follow
-   (8d).
+   whom a change gives more doesn't approve it (8e). *Done (8d):* `holon access proposals`,
+   `approve` and `decline`; Approvals › Access changes in the editor, History's waiting changes,
+   and a change made in People and access that waits says so; `holon mcp` says an agent never
+   approves one.
 9. **The sample and docs.** `approved-payout` on the chain, run live; the manual's access and
    approvals pages; the editor guide.
 

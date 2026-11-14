@@ -8,7 +8,10 @@
 // lets them, which the page then follows; someone who may deploy a flow but not approve what it
 // asks proposes it, told why, and it waits in Approvals. And a flow whose approval no one here can
 // decide says so in its consent and its review, and deploying it asks again, naming it; a step
-// whoever started the run may take (`starter: true`) says so, and deploys without asking.
+// whoever started the run may take (`starter: true`) says so, and deploys without asking. And while
+// this host has people approve an access change, an admin's binding of a role that decides waits,
+// said so, listed in History and by `holon access proposals`; another admin approves it in
+// Approvals, and it then holds; one declined from the command line never does.
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -17,7 +20,7 @@ import { join } from "node:path";
 import type { Browser, Locator } from "@playwright/test";
 import { givesOf, type Tagged } from "../src/access";
 import type { Principal, RoleEntry } from "../src/server";
-import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 import { flowRow, gotoPage, navLink, peopleTab } from "./helpers";
 
 /** A call to the control plane as whoever `token` signs in. */
@@ -483,4 +486,82 @@ test("a step whoever started the run may take says so in words, and with its one
     await control(adminToken, `/deployments/${slug}`, undefined, "DELETE");
     await control(adminToken, `/flows/${slug}`, undefined, "DELETE");
   }
+});
+
+test("while access changes wait for people, an admin's binding of a role that decides waits; another admin approves it in Approvals, and it then holds; one declined from the command line never does", async ({
+  page,
+  browser,
+  adminToken,
+}) => {
+  const n = Date.now().toString(36);
+  const slug = `governed-${n}`;
+  deploy(adminToken, slug, `import { action, flow } from "holon"\n\nflow("${slug}")\n\nexport const shout = action((input) => input.toUpperCase())\n`);
+  // bob, another admin; dee, a viewer; a role that decides the flow's approvals.
+  const [bob, dee, approver] = [`e2e-bob-${n}`, `e2e-dee-${n}`, `e2e-approver-${n}`];
+  const bobToken = await joined(adminToken, bob, "admin");
+  await joined(adminToken, dee);
+  await sure(control(adminToken, `/roles/${approver}`, { allows: ["run.view", "run.decide"], kinds: ["person"], about: "decides" }, "PUT"));
+  /** `holon access args…` as `env` signs in: its output. */
+  const access = (env: NodeJS.ProcessEnv, args: string[]) => execFileSync(HOLON, ["access", ...args, "--server", String(PORTS.server)], { encoding: "utf8", env, stdio: "pipe" });
+  const as = (token: string) => ({ ...process.env, HOLON_TOKEN: token, HOLON_SERVER: "" });
+  // This machine's run file: where the setting is turned off at once.
+  const local = { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" };
+  const holding = async () => (await json<{ bindings: { role: string; scope: unknown }[] }>(control(adminToken, `/bindings?who=${dee}`))).bindings.filter((b) => b.role === approver);
+
+  // One person other than its author approves an access change that gives more.
+  expect(access(as(adminToken), ["approvals", "--changes", "1", "--why", "e2e: four eyes on access"])).toContain(
+    "changes           1    an access change that gives more waits until 1 person other than its author approves it",
+  );
+  try {
+    // The admin binds the role to dee on the flow, through the form on dee's page: it waits.
+    await page.goto(`/#people.who.${dee}`);
+    const form = page.getByRole("region", { name: `${dee}'s page` }).getByRole("form", { name: `bind a role to ${dee}` });
+    await form.getByLabel("bind: role").selectOption(approver);
+    await form.getByLabel("bind: where").selectOption("flow");
+    await form.getByLabel("bind: flow").fill(slug);
+    await form.getByLabel("bind: why").fill("e2e: decides it");
+    await form.getByRole("button", { name: "bind", exact: true }).click();
+    const what = `bound ${approver} to ${dee} on "${slug}"`;
+    await expect(form.getByRole("status")).toContainText(`${what}: waits for 1 person other than you to approve it (access change `);
+    expect(await holding()).toEqual([]);
+
+    // History lists it above the versions; holon access proposals, with what it gives and who
+    // could act as dee: the admin, who made dee's link.
+    await page.goto("/#people.history");
+    await expect(page.getByRole("table", { name: "access changes waiting for people" }).getByRole("row").filter({ hasText: what })).toContainText("waits, 0 of 1 approved");
+    const listed = access(as(adminToken), ["proposals"]);
+    expect(listed).toContain(what);
+    // What waits for people of what the role holds: run.decide, not run.view.
+    expect(listed).toContain(` gives run.decide to ${dee} on "${slug}", as ${approver}\n`);
+    expect(listed).toContain(`${ADMIN.name} made ${dee}'s invite link`);
+
+    // In Approvals, its author withdraws it, and doesn't approve it.
+    await page.goto("/#approvals.access");
+    const mine = page.getByRole("table", { name: "access changes waiting" }).getByRole("row").filter({ hasText: what });
+    await expect(mine.getByRole("button", { name: /^withdraw access change \d+$/ })).toBeEnabled();
+    await expect(mine.getByRole("button", { name: /^approve/ })).toHaveCount(0);
+
+    // bob approves it there, reading who could act as dee: it is made, and the binding holds.
+    const asBob = await editorAs(browser, bobToken, bob);
+    await asBob.goto("/#approvals.access");
+    const his = asBob.getByRole("table", { name: "access changes waiting" }).getByRole("row").filter({ hasText: what });
+    await expect(his).toContainText(`who could act as whom it gives more, and so doesn't approve it: ${ADMIN.name} made ${dee}'s invite link`);
+    await his.getByRole("button", { name: /^approve access change \d+$/ }).click();
+    await asBob.locator('[aria-modal="true"]').getByRole("button", { name: "Approve" }).click();
+    await expect(asBob.getByText(/the last approval it waited for: made, as access version \d+/)).toBeVisible();
+    await expect(asBob.getByRole("table", { name: "access changes decided" }).getByRole("row").filter({ hasText: what })).toContainText(`made as version`);
+    expect(await holding()).toEqual([expect.objectContaining({ scope: { flows: { slug } } })]);
+    await asBob.context().close();
+
+    // Another, declined by bob from the command line, saying why: it never holds.
+    const second = await json<{ proposal: { id: number } }>(control(adminToken, "/bindings", { who: { principal: dee }, role: approver, scope: "host", why: "e2e" }));
+    expect(access(as(bobToken), ["decline", String(second.proposal.id), "--reason", "e2e: the flow is enough"])).toContain(
+      `declined access change ${second.proposal.id}: bound ${approver} to ${dee} on this host`,
+    );
+    expect(await holding()).toHaveLength(1);
+  } finally {
+    // Turned off through this machine's run file, where it applies at once.
+    access(local, ["approvals", "--changes", "off", "--why", "e2e: done"]);
+  }
+  expect((await json<{ approvals: { changes: number | null } }>(control(adminToken, "/access"))).approvals.changes).toBeNull();
 });

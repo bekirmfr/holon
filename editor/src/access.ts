@@ -6,7 +6,7 @@
 // for whoever asks); what a version of the access document changed; and the catalogue, by what
 // each action acts on.
 
-import type { AccessDocument, BindingEntry, HeldBinding, Kind, Principal, RoleEntry, Scope, Subject } from "./server";
+import type { AccessDocument, AccessProposal, BindingEntry, HeldBinding, Kind, Principal, RoleEntry, Scope, Subject } from "./server";
 
 /** Where a binding holds, as the flags write it: nothing for the host, ` on payout`,
  *  ` on tag payments`, ` at payout:ok`. */
@@ -285,3 +285,66 @@ export function changesOf(before: AccessDocument | null, after: AccessDocument):
   }
   return out;
 }
+
+// ── access changes that wait for people ──────────────────────────────────────────────────────
+
+/** "1 person", "2 people". */
+const people = (n: number) => (n === 1 ? "1 person" : `${n} people`);
+
+/** A change the server kept as an access change that waits, as `holon bind` says it
+ *  (accesscmd.rs `waiting`): "bound approver to dee on this host: waits for 2 people other than
+ *  you to approve it (access change 3)". */
+export const waitsSaid = (p: AccessProposal) => `${p.what}: waits for ${people(p.needs)} other than you to approve it (access change ${p.id})`;
+
+/** What a change's answer says, if the server kept it as an access change that waits: else null. */
+export const waitingOf = (answer: unknown): string | null =>
+  typeof answer === "object" && answer !== null && "proposal" in answer ? waitsSaid((answer as { proposal: AccessProposal }).proposal) : null;
+
+/** Where an access change stands, as `holon access proposals` lists it (accesscmd.rs
+ *  `proposal_state`): "waits, 1 of 2 approved (bob)", "made as version 12 (approved by bob)",
+ *  "declined by bob: not this week", "withdrawn by ada: the wrong flow", "stale: …". */
+export function changeState(p: AccessProposal): string {
+  const approved = p.approvals.map((a) => a.who);
+  const who = (s: string) => (approved.length > 0 ? ` (${s}${approved.join(", ")})` : "");
+  switch (p.state) {
+    case "waiting":
+      return `waits, ${approved.length} of ${p.needs} approved${who("")}`;
+    case "applied":
+      return `made as version ${p.version}${who("approved by ")}`;
+    case "declined":
+      return p.declined_by === p.author ? `withdrawn by ${p.author}: ${p.reason ?? ""}` : `declined by ${p.declined_by}: ${p.reason ?? ""}`;
+    case "stale":
+      return `stale: ${p.stale ?? ""}`;
+  }
+}
+
+/** What deciding an access change did, as `holon access approve` says it (accesscmd.rs
+ *  `decided_line`). */
+export function decidedChange(p: AccessProposal): string {
+  switch (p.state) {
+    case "waiting": {
+      const more = Math.max(0, p.needs - p.approvals.length);
+      return `Approved access change ${p.id}: it waits for ${more} more ${more === 1 ? "person" : "people"} (${p.what}).`;
+    }
+    case "applied":
+      return `Approved access change ${p.id}, the last approval it waited for: made, as access version ${p.version}: ${p.what}.`;
+    case "declined":
+      return p.declined_by === p.author ? `Withdrew access change ${p.id}: ${p.what}.` : `Declined access change ${p.id}: ${p.what}.`;
+    case "stale":
+      return `Access change ${p.id} no longer applies: ${p.stale ?? ""}.`;
+  }
+}
+
+/** Why `me` doesn't approve the waiting access change `p`, as the server would refuse it, when it
+ *  is plain from `p` (access_proposals.rs `approve`): they proposed it, approved it already, or
+ *  could act as whom it gives more (a way in that names them first). Null if none of those: the
+ *  server still decides (what it gives, which they must hold). */
+export function notYours(p: AccessProposal, me: string): string | null {
+  if (p.author === me) return "you proposed it: people other than you approve it";
+  if (p.approvals.some((a) => a.who === me)) return "you approved it";
+  const way = (p.ways_in ?? []).find((w) => w.startsWith(`${me} `));
+  return way ? `it gives more to someone you could act as (${way}): it is approved by someone who couldn't` : null;
+}
+
+/** How many access changes wait for `me` to decide: waiting, and not plainly not theirs. */
+export const changesToDecide = (changes: AccessProposal[], me: string) => changes.filter((p) => p.state === "waiting" && notYours(p, me) === null).length;

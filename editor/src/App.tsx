@@ -35,6 +35,7 @@ import {
   manifestTrigger,
   describeItem,
 } from "./holon";
+import { changesToDecide } from "./access";
 import { toDecide } from "./decisions";
 import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
@@ -94,7 +95,7 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, ta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { hostEntries, Shell } from "./ui/Shell";
-import { useCan, type Action } from "./can";
+import { refusal, useCan, type Action } from "./can";
 import { PolicyPage, ResourcesPage } from "./HostPages";
 import { OwnedPage, PeoplePage } from "./PeoplePages";
 import { OverviewPage } from "./OverviewPage";
@@ -622,7 +623,13 @@ function Canvas({
   const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home", asks: page === "approvals" });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
-  const deciding = useMemo(() => toDecide(approvals.runs ?? []), [approvals.runs]);
+  // And the access changes waiting for people that are theirs to decide (access.ts), when they
+  // may decide one (can.ts: approving one asks people.assign on the host).
+  const hostCan = useCan();
+  const deciding = useMemo(
+    () => toDecide(approvals.runs ?? []) + (refusal(hostCan, "approveAccess") === undefined && hostCan !== null ? changesToDecide(approvals.access ?? [], me.name) : 0),
+    [approvals.runs, approvals.access, hostCan, me.name],
+  );
   useEffect(() => onWaiting(approvals.approvals.length + deciding), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
@@ -1298,6 +1305,7 @@ function Canvas({
               approvals={approvals.approvals}
               deployments={deployments}
               runs={approvals.runs}
+              access={approvals.access}
               me={me}
               navigate={navigate}
               onDeclined={approvals.refresh}

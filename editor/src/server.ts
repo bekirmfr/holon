@@ -182,7 +182,10 @@ export const invitePerson = async (name: string, role: string, email: string) =>
 /** A new agent or service, owned by `owner` (by whoever adds it, when empty). */
 export const addPrincipal = async (name: string, kind: Exclude<Kind, "person">, role: string, owner: string) =>
   asJson<Principal>(await post(`${BASE}/people`, { name, kind, role, owner: owner || null }));
-export const changePrincipal = async (name: string, change: { role?: string; disabled?: boolean; email?: string; owner?: string }) => asJson<Principal>(await patch(principalAt(name), change));
+/** `PATCH /people/<name>`: the principal as changed; a role that gives more, while this host has
+ *  people approve such a change, waits instead (202, `proposal`), and the rest is changed. */
+export const changePrincipal = async (name: string, change: { role?: string; disabled?: boolean; email?: string; owner?: string }) =>
+  asJson<Principal & { proposal?: AccessProposal }>(await patch(principalAt(name), change));
 export const resetPerson = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${principalAt(name)}/reset`));
 export async function removePrincipal(name: string): Promise<void> {
   await asJson<void>(await api(principalAt(name), { method: "DELETE" }));
@@ -203,9 +206,10 @@ const put = (url: string, body: unknown) => api(url, { method: "PUT", headers: {
 /** A removal's `?why=`, which its version keeps. */
 const because = (why: string) => (why.trim() ? `?why=${encodeURIComponent(why.trim())}` : "");
 export const listBindings = async () => (await asJson<{ version: number; bindings: BindingEntry[] }>(await api(`${BASE}/bindings`))).bindings;
-/** `POST /bindings`: the binding and the version it made; refused in the server's words: 400 for a
- *  role it doesn't know or one that holds nothing there, 403 for more than its author holds there. */
-export const bind = async (b: NewBinding) => asJson<{ binding: BindingEntry; version: number }>(await post(`${BASE}/bindings`, b));
+/** `POST /bindings`: the binding and the version it made, or the access change it waits as (202);
+ *  refused in the server's words: 400 for a role it doesn't know or one that holds nothing there,
+ *  403 for more than its author holds there. */
+export const bind = async (b: NewBinding) => asJson<{ binding: BindingEntry; version: number } | AccessProposalAnswer>(await post(`${BASE}/bindings`, b));
 /** `DELETE /bindings/<id>`: 403 for one giving what whoever takes it doesn't hold, 409 for the last
  *  admin's. */
 export async function unbind(id: number, why: string): Promise<void> {
@@ -217,13 +221,13 @@ export const listGroups = async () => (await asJson<{ groups: GroupEntry[] }>(aw
 /** `PUT /groups/<name>`, with all its members: 403 for a member added or taken out who'd gain or
  *  lose what its author doesn't hold. */
 export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string }) =>
-  asJson<{ group: GroupEntry; version: number }>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
+  asJson<{ group: GroupEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
 export async function removeGroup(name: string, why: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/groups/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
 }
 /** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds. */
 export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string }) =>
-  asJson<{ role: RoleEntry; version: number }>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
+  asJson<{ role: RoleEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
 /** `DELETE /roles/<name>`: 409 while it is bound. */
 export async function removeRole(name: string, why: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/roles/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
@@ -244,6 +248,45 @@ export type AccessDocument = AccessVersion & {
   local?: string;
 };
 export const getAccessVersion = async (n: number) => asJson<AccessDocument>(await api(`${BASE}/access?version=${n}`));
+/** An access change kept until people approve it (access_proposals.rs): while this host has
+ *  people approve a change that gives someone more (`approvals.changes`), a binding, a role, a
+ *  group's members, a role on the host or a looser approval setting that does waits as one, until
+ *  `needs` people other than its `author` approve it. `what` says it as its version will;
+ *  `gives`, what it gives, in words (whoever approves it holds all of it); `to`, whom; `ways_in`,
+ *  who could act as them ("ada made dee's invite link"), none of whom approves it. */
+export type AccessProposal = {
+  id: number;
+  author: string;
+  at: number;
+  why?: string;
+  what: string;
+  gives: string[];
+  to?: string[];
+  ways_in?: string[];
+  /** The access version it was proposed on. */
+  base: number;
+  needs: number;
+  approvals: { who: string; at: number }[];
+  /** Waiting; made, as access `version`; declined by `declined_by` (its author: withdrawn), saying
+   *  `reason`; or `stale`, saying why it no longer applies. */
+  state: "waiting" | "applied" | "declined" | "stale";
+  version?: number;
+  declined_by?: string;
+  reason?: string;
+  stale?: string;
+  ended_at?: number;
+};
+/** A change kept as an access change (202), or one decided: it, and the access version now. */
+export type AccessProposalAnswer = { proposal: AccessProposal; version: number };
+/** `GET /access/proposals`: every access change, newest first. */
+export const listAccessChanges = async () => (await asJson<{ proposals: AccessProposal[] }>(await api(`${BASE}/access/proposals`))).proposals;
+/** Approve an access change: made with the last approval it waits for, checked again then; 409 if
+ *  it no longer applies (stale, saying why), 403 for whoever proposed it, holds less than it gives
+ *  or could act as whom it gives more. */
+export const approveAccessChange = async (id: number) => (await asJson<AccessProposalAnswer>(await post(`${BASE}/access/proposals/${id}/approve`, {}))).proposal;
+/** Decline one, saying why; its author withdraws it so. */
+export const declineAccessChange = async (id: number, reason: string) =>
+  (await asJson<AccessProposalAnswer>(await post(`${BASE}/access/proposals/${id}/decline`, { reason }))).proposal;
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
  *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
  *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may

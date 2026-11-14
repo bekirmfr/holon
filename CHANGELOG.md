@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Access changes that wait for people are decided in the editor and from the command line.**
+  The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
+  proposed it and why, who could act as whom it gives more, and who approved it so far, with
+  **Approve…** and **Decline…** to whoever may (its author withdraws it), and those decided lately;
+  People and access › History lists those that wait above the versions, and a binding, a role or a
+  group changed in People and access that waits says so, where before the form failed reading the
+  binding it expected. `holon access proposals` lists them, `holon access approve <id>` and
+  `holon access decline <id> --reason TEXT` decide one. `holon mcp` says an agent never approves
+  one.
 - **No one takes over someone whose access waits for people to be given.** While `--changes` is
   on, a way in to someone else who decides runs or holds anything of an admin's isn't made from
   another account: resetting their password, setting their email (a provider matches people by

@@ -113,6 +113,8 @@ A run that waits at an approval (`await approval("payout", { people: 2 })`) wait
 `runs` shows which run waits, who has approved each step so far and what the approval shows
 (its `shows`, or the run's input), and the agent tells you. You
 decide it in the editor's Approvals (Runs waiting) or with [`holon decide`](../reference/cli.md#holon-decide).
+Who may do what is a person's to change, and an access change that waits for people is approved by
+people (Approvals › Access changes, or [`holon access approve`](../reference/cli.md#holon-access)), never by an agent.
 An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
 }`): bind a role of your own to the agent where the flow is (`holon roles define classifier
 --allow run.view,run.decide --kinds agent`, then `holon bind classifier --to bma-agent --flow

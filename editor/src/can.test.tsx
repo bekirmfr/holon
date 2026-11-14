@@ -59,6 +59,8 @@ const TABLE: [Button, "host" | "flow", string][] = [
   ["runAction", "flow", /*         */ "✓ ✓ · · ✓"],
   ["bind", "host", /*              */ "✓ · · · ·"],
   ["unbind", "host", /*            */ "✓ · · · ·"],
+  ["approveAccess", "host", /*     */ "✓ · · · ·"],
+  ["declineAccess", "host", /*     */ "✓ · · · ·"],
   ["people", "host", /*            */ "✓ · · · ·"],
   ["resources", "host", /*         */ "✓ · · · ·"],
   ["policy", "host", /*            */ "✓ ✓ ✓ · ✓"],

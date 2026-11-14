@@ -47,7 +47,11 @@ closes with its ×.
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
 - **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
-  agent's proposal with its why and note, and **Decline with a reason…**), and **Runs waiting**.
+  agent's proposal with its why and note, and **Decline with a reason…**), **Runs waiting**, and
+  **Access changes**: while the host has people approve an access change, each change to who may
+  do what that gives someone more, with what it gives, who proposed it and why, who could act as
+  whom it gives more, and **Approve…** and **Decline…** ([Access changes that wait for
+  people](people.md#access-changes-that-wait-for-people)).
   **Review** opens one: what it may do (first, under *Can't be decided here*, each approval its
   runs would wait at that no one here can decide yet, saying why), its changes, *If approved*, *On
   recent runs* (a deployed flow's new version replayed on its last runs,
@@ -278,7 +282,8 @@ In the nav's second group, each to whoever may view it (an admin, all of them):
   **unbind** (which asks why), and the form that binds one: to a person, an agent, a service or a
   group, on the host, a flow, a tag or one approval point of a flow, until a date or for a while
   (`7d`), and why; **History**, each version of who may do what, who made it, what and why, and
-  each version's page what it changed from the one before; and **Signing in** through an identity
+  each version's page what it changed from the one before, under the access changes that wait for
+  people (a binding that waits says so where it was made); and **Signing in** through an identity
   provider (OpenID Connect). A name in these tables opens that principal's page
   (`#people.who.NAME`): what they are, the groups they are in, their tokens, what is bound to them
   (and through which group), a form binding one more, and what it all lets them do, as the server

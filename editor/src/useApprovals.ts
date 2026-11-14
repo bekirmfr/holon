@@ -2,12 +2,26 @@
 // Approvals or the overview is shown (every 30 s otherwise, for the nav's count), each
 // deployment's events (for an agent's asks) while Approvals is, the runs waiting across flows that
 // whoever is signed in may see or decide (`GET /runs/waiting`: Runs waiting lists them, each
-// approval with the steps they may take; the nav counts them), and the versions of a deployment
-// that has a newer save, so its review has a number.
+// approval with the steps they may take; the nav counts them), the access changes that wait for
+// people (`GET /access/proposals`, to whoever may view people: Access changes lists them), and the
+// versions of a deployment that has a newer save, so its review has a number.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
-import { getEvents, getVersions, listAllWaitingRuns, listFlows, listProposals, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal, type WaitingRun } from "./server";
+import {
+  getEvents,
+  getVersions,
+  listAccessChanges,
+  listAllWaitingRuns,
+  listFlows,
+  listProposals,
+  type AccessProposal,
+  type DeploymentEntry,
+  type DeploymentEvent,
+  type FlowListEntry,
+  type Proposal,
+  type WaitingRun,
+} from "./server";
 
 /** A run waiting in a deployment. */
 export type WaitingRunOf = { slug: string; run: WaitingRun };
@@ -30,6 +44,8 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
   const [runs, setRuns] = useState<WaitingRunOf[] | null>(null);
+  // Every access change, newest first; none to whoever may not view people.
+  const [access, setAccess] = useState<AccessProposal[] | null>(null);
   const now = useRef(deployments);
   now.current = deployments;
 
@@ -48,6 +64,7 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     listProposals()
       .then(setProposals)
       .catch(() => undefined);
+    listAccessChanges().then(setAccess, () => setAccess((was) => was ?? []));
     readRuns();
   }, [readRuns]);
   // Read again as soon as a deployment's count of waiting runs changes.
@@ -104,5 +121,5 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, proposals, runs, keep, refresh };
+  return { approvals, queue, flows, proposals, runs, access, keep, refresh };
 }

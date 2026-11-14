@@ -87,6 +87,9 @@ export const BUTTONS = {
   /** Bind a role (People and access's form). */
   bind: { route: "POST /bindings", action: "people.assign" },
   unbind: { route: "DELETE /bindings/{id}", action: "people.assign" },
+  /** Approve, or decline, an access change that waits for people (Approvals' Access changes). */
+  approveAccess: { route: "POST /access/proposals/{id}/approve", action: "people.assign" },
+  declineAccess: { route: "POST /access/proposals/{id}/decline", action: "people.assign" },
   /** The host's pages. */
   people: { route: "GET /people", action: "people.view" },
   resources: { route: "GET /admin/databases", action: "resource.view" },

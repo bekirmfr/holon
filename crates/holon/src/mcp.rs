@@ -2,7 +2,9 @@
 //! Context Protocol server on stdin and stdout (docs/L4s/agent-surface-L4.md). It speaks the
 //! language's text and answers in sentences; what it computes is holon-author's (`agent.rs`), and
 //! what it asks a server is what the editor asks. The tools never approve: a deploy that needs a
-//! person's approval is kept by the server as a proposal for them (proposals.rs), and says so.
+//! person's approval is kept by the server as a proposal for them (proposals.rs), and says so; an
+//! access change that waits for people (access_proposals.rs) is a person's to approve, and the
+//! server refuses an agent that tries.
 //!
 //! It signs in as an agent, a principal of its own, never as a person: on the server this user
 //! runs, as theirs (`<user>-agent`, made by the run file's admin the first time: mcphosts.rs); on
@@ -34,8 +36,8 @@ const USAGE: &str = "usage: holon mcp [--server PORT|URL]
   a deployment's history, see what a restore would change (only ever a dry run), and decide a
   step of an approval written for an agent. Its tools never approve what a flow may do: a deploy
   that needs approval is a proposal, which waits in the editor's Approvals for a person, and a
-  person's step of an approval is a person's. It signs in as an agent, so the server holds it to
-  proposing too.
+  person's step of an approval is a person's, as is approving an access change that waits for
+  people. It signs in as an agent, so the server holds it to proposing too.
 
   --server PORT|URL        which holon server to ask (see below)
   setup                    add it to a host's settings (holon mcp setup --help says more)
@@ -64,7 +66,9 @@ deploy again. A run that \
 waits at an approval (`await approval(…)`) goes on when its steps are decided: a person's step by \
 a person, in the editor's Approvals or with `holon decide`; a step written for an agent by an \
 agent bound to its role, with `decide`. `runs` shows which run waits, who has approved each step \
-so far, and which steps are yours: tell the user about the rest.";
+so far, and which steps are yours: tell the user about the rest. Who may do what is a person's \
+to change, and an access change that waits for people is approved by people, in the editor's \
+Approvals or with `holon access approve`, never by an agent.";
 
 // ── reaching a server ───────────────────────────────────────────────────────────────────────
 

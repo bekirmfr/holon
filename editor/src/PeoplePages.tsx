@@ -6,16 +6,19 @@
 // document (#people.history.v<n>: what it changed from the one before). A binding is made with one
 // form (who, role, where, until when and why: `holon bind` in the editor), under the bindings it
 // adds to, and taken away from its row, saying why. The server refuses, in its own words, what its
-// author doesn't hold. Shown to whoever may view people (an admin, or a role holding people.view
-// on the host); a person who may not sees the agents and services they own (OwnedPage). Adding
-// someone gives a one-time link for them to set their password; resetting gives a new one. The
-// server refuses any change that would leave no admin.
+// author doesn't hold. While this host has people approve an access change that gives more, such a
+// change isn't made: it waits for them (Approvals' Access changes), the page says so, and History
+// lists those that wait above the versions. Shown to whoever may view people (an admin, or a role
+// holding people.view on the host); a person who may not sees the agents and services they own
+// (OwnedPage). Adding someone gives a one-time link for them to set their password; resetting
+// gives a new one. The server refuses any change that would leave no admin.
 
 import { Fragment, useCallback, useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
 import {
   allowsSaid,
   approvalsOf,
   bindingSaid,
+  changeState,
   catalogueOf,
   changesOf,
   givesOf,
@@ -29,6 +32,8 @@ import {
   subjectSaid,
   untilOf,
   utc,
+  waitingOf,
+  waitsSaid,
   type Gives,
   type Tagged,
 } from "./access";
@@ -46,6 +51,7 @@ import {
   getManifest,
   getOidcSettings,
   invitePerson,
+  listAccessChanges,
   listAccessVersions,
   listBindings,
   listDeployments,
@@ -62,6 +68,7 @@ import {
   ServerError,
   setOidcSettings,
   unbind,
+  type AccessProposal,
   type AccessDocument,
   type AccessVersion,
   type BindingEntry,
@@ -79,8 +86,8 @@ const linkFor = (token: string) => `${location.origin}${location.pathname}?invit
 const link = { color: "var(--accent)", textDecoration: "none" } as const;
 
 /** What People and access reads, and `act`: it does a change, says what failed in the server's
- *  words, and reads everything again. A list the server won't show whoever is signed in (403) is
- *  left empty: they see what they may. */
+ *  words, or that it waits for people (an access change, `note`), and reads everything again. A
+ *  list the server won't show whoever is signed in (403) is left empty: they see what they may. */
 function useAccess() {
   const dialog = useDialog();
   const [principals, setPrincipals] = useState<Principal[]>([]);
@@ -93,8 +100,12 @@ function useAccess() {
   // The deployed flows and their tags: where a tag's binding holds.
   const [flows, setFlows] = useState<Tagged[]>([]);
   const [versions, setVersions] = useState<AccessVersion[]>([]);
+  // Every access change, newest first: those that wait are listed in History.
+  const [changes, setChanges] = useState<AccessProposal[]>([]);
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
   const [msg, setMsg] = useState("");
+  // A change kept as an access change that waits for people, in words.
+  const [note, setNote] = useState("");
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
@@ -109,16 +120,19 @@ function useAccess() {
     listBindings().then(setBindings, failed);
     listDeployments().then((ds) => setFlows(ds.map((d) => ({ slug: d.slug, tags: d.tags ?? [] }))), failed);
     listAccessVersions().then(setVersions, failed);
+    listAccessChanges().then(setChanges, failed);
     getOidcSettings().then(setOidc, failed);
     setVersion((v) => v + 1);
   }, []);
   useEffect(refresh, [refresh]);
 
-  /** Do `f`, say what failed, and read everything again: whether it was done. */
+  /** Do `f`, say what failed or that it waits for people, and read everything again: whether it
+   *  was done (or kept, waiting). */
   const act = async (f: () => Promise<unknown>): Promise<boolean> => {
     setMsg("");
+    setNote("");
     try {
-      await f();
+      setNote(waitingOf(await f()) ?? "");
       return true;
     } catch (e) {
       setMsg(messageOf(e));
@@ -127,7 +141,7 @@ function useAccess() {
       refresh();
     }
   };
-  return { dialog, principals, loaded, roles, groups, bindings, flows, versions, oidc, msg, version, refresh, act };
+  return { dialog, principals, loaded, roles, groups, bindings, flows, versions, changes, oidc, msg, note, say: setNote, version, refresh, act };
 }
 type Access = ReturnType<typeof useAccess>;
 type Act = (f: () => Promise<unknown>) => Promise<unknown>;
@@ -343,6 +357,11 @@ export function PeoplePage({ me, route }: { me: string; route: Route }) {
           </a>
         ))}
       </nav>
+      {a.note && (
+        <div role="status" aria-label="waits for people" style={{ ...about, color: "var(--warn)" }}>
+          {a.note}: <a href={format({ kind: "approvals", tab: "access" })}>Approvals › Access changes</a>
+        </div>
+      )}
       <div style={{ marginTop: 12 }}>
         {route.kind === "principal" ? (
           <PrincipalView key={route.name} name={route.name} me={me} a={a} />
@@ -745,6 +764,14 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
     setSaid(null);
     try {
       const r = await bind({ who: subject, role, scope, ...(ends && "at" in ends ? { expires_at: ends.at } : {}), ...(why.trim() ? { why: why.trim() } : {}) });
+      if ("proposal" in r) {
+        // Kept until people approve it: said here, and listed in Approvals.
+        setSaid({ done: `${waitsSaid(r.proposal)}.` });
+        setWhy("");
+        setUntil("");
+        a.refresh();
+        return;
+      }
       const at = scope !== "host" && "approval" in scope ? scope.approval : null;
       const blind = at && !seesFlow(subject, at.flow.slug, a.principals, a.bindings, a.roles, a.flows) ? { who: subject, flow: at.flow.slug, point: at.name } : undefined;
       const until = r.binding.expires_at ? `, until ${utc(r.binding.expires_at)}` : "";
@@ -1165,7 +1192,7 @@ function RoleForm({ a, role, onDone }: { a: Access; role: RoleEntry | null; onDo
   const submit = async () => {
     setError("");
     try {
-      await defineRole(name.trim(), { about: what.trim() || null, allows, kinds, ...(why.trim() ? { why: why.trim() } : {}) });
+      a.say(waitingOf(await defineRole(name.trim(), { about: what.trim() || null, allows, kinds, ...(why.trim() ? { why: why.trim() } : {}) })) ?? "");
       setWhy("");
       if (role) onDone();
       else {
@@ -1232,8 +1259,43 @@ function RoleForm({ a, role, onDone }: { a: Access; role: RoleEntry | null; onDo
 // ── history ───────────────────────────────────────────────────────────────────────────────────
 
 function HistoryList({ a }: { a: Access }) {
+  const waiting = a.changes.filter((p) => p.state === "waiting");
   return (
     <>
+      {waiting.length > 0 && (
+        <section aria-label="access changes waiting">
+          <div className="hl-host-page__head">waiting for people</div>
+          <div style={about}>
+            Changes that give someone more, kept until people other than whoever proposed them approve them, in{" "}
+            <a href={format({ kind: "approvals", tab: "access" })}>Approvals › Access changes</a> (or <code>holon access approve N</code>). Each is a version once it is made.
+          </div>
+          <table className="hl-table" aria-label="access changes waiting for people">
+            <thead>
+              <tr>
+                <th>access change</th>
+                <th>when</th>
+                <th>by</th>
+                <th>what</th>
+                <th>where it stands</th>
+                <th>why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {waiting.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.id}</td>
+                  <td>{utc(p.at)}</td>
+                  <td>{p.author}</td>
+                  <td>{p.what}</td>
+                  <td>{changeState(p)}</td>
+                  <td>{p.why ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="hl-host-page__head">versions</div>
+        </section>
+      )}
       <div style={about}>
         Every change to who may do what is a version of the access document, kept: who made it, when, what it changed and why. Open one to see what it changed
         from the one before; <code>holon access show --version N</code> prints it whole.

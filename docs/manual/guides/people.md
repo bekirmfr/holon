@@ -230,6 +230,22 @@ may approve it declines it with a reason, and its author withdraws it so. Propos
 beside the access document (`access.proposals.json`), never as versions of it: a proposal changes
 no one's access. The routes are the server's ([The server](../reference/server.md#accounts-and-roles)).
 
+The command that made it says so (`bound approver to dee on "payout": waits for 1 person other
+than you to approve it (access change 5)`), as does the editor's form, and nothing is bound yet.
+It is decided in the editor's **Approvals**, under **Access changes**, or from the command line:
+
+```sh
+holon access proposals          # what waits, what it gives, and who could act as whom it gives more
+holon access approve 5          # bob, another admin
+holon access decline 5 --reason "dee is on leave until March"
+```
+
+**Access changes** lists each that waits: what it changes and gives, who proposed it, when and why,
+who could act as whom it gives more, and who approved it so far, with **Approve…** and
+**Decline…** to whoever may (its author has **Withdraw…**), and those decided lately. People and
+access › **History** lists those that wait above the versions. An agent never approves one, as it
+never approves a deploy.
+
 Taking away applies at once: unbinding, taking someone out of a group, narrowing a role, raising
 `--changes`. So does a change that gives no one more, and a change to these settings made on the
 server's machine through its run file (`holon access approvals` there): it is how a host whose

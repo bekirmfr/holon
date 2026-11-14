@@ -28,6 +28,9 @@ export const RESOURCES_LABELS: Record<ResourcesTab, string> = {
   host: "Host and storage",
   "who-may": "Who may touch what",
 };
+/** Approvals' tabs: `#approvals` its deploys, `#approvals.runs` the runs waiting, `#approvals.access`
+ *  the access changes that wait for people. */
+export type ApprovalsTab = "deploys" | "runs" | "access";
 /** People and access's tabs (access-and-approvals §12): `#people` is its people. */
 export const PEOPLE_TABS = ["people", "agents", "groups", "roles", "bindings", "history", "sign-in"] as const;
 export type PeopleTab = (typeof PEOPLE_TABS)[number];
@@ -43,7 +46,7 @@ export const PEOPLE_LABELS: Record<PeopleTab, string> = {
 
 export type Route =
   | { kind: "overview" }
-  | { kind: "approvals"; tab: "deploys" | "runs" }
+  | { kind: "approvals"; tab: ApprovalsTab }
   /** A version waiting for a person, reviewed: `#approvals.<slug>.v<n>`. */
   | { kind: "review"; slug: string; version: number }
   | { kind: "flows" }
@@ -118,7 +121,7 @@ export function parse(hash: string): Route {
       return done({ kind: head }, 1);
     case "approvals": {
       if (p.length === 1) return { kind: "approvals", tab: "deploys" };
-      if (p[1] === "runs") return done({ kind: "approvals", tab: "runs" }, 2);
+      if (p[1] === "runs" || p[1] === "access") return done({ kind: "approvals", tab: p[1] }, 2);
       const version = /^v(\d+)$/.exec(p[2] ?? "");
       return SLUG.test(p[1]) && version ? done({ kind: "review", slug: p[1], version: Number(version[1]) }, 3) : notFound;
     }
@@ -169,7 +172,7 @@ export function format(r: Route): string {
 function tokens(r: Route): string {
   switch (r.kind) {
     case "approvals":
-      return r.tab === "runs" ? "approvals.runs" : "approvals";
+      return r.tab === "deploys" ? "approvals" : `approvals.${r.tab}`;
     case "review":
       return `approvals.${r.slug}.v${r.version}`;
     case "flow":
@@ -216,7 +219,7 @@ export function parentOf(r: Route): Route | null {
     case "review":
       return { kind: "approvals", tab: "deploys" };
     case "approvals":
-      return r.tab === "runs" ? { kind: "approvals", tab: "deploys" } : { kind: "overview" };
+      return r.tab === "deploys" ? { kind: "overview" } : { kind: "approvals", tab: "deploys" };
     case "run":
       return { kind: "flow", slug: r.slug, tab: "runs" };
     case "flow":
@@ -253,7 +256,7 @@ export function labelOf(r: Route): string {
     case "overview":
       return "Overview";
     case "approvals":
-      return r.tab === "runs" ? "Runs" : "Approvals";
+      return r.tab === "runs" ? "Runs" : r.tab === "access" ? "Access changes" : "Approvals";
     case "review":
       return `${r.slug} v${r.version}`;
     case "flows":

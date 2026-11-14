@@ -8,6 +8,7 @@ const PLACES = [
   "overview",
   "approvals",
   "approvals.runs",
+  "approvals.access",
   "approvals.refunds.v4",
   "flows",
   "refunds",
