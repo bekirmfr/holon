@@ -2389,10 +2389,9 @@ mod tests {
             let Some(op) = Op::of(name) else { continue };
             for v in &big {
                 let inputs = vec![v; ports];
-                for made in [compute(name, &inputs, &[]), compute_given(op, name, inputs.iter().map(|v| Cow::Borrowed(*v)).collect(), &[]).ok()] {
-                    if let Some(made) = made {
-                        assert!(lists::size_within(&made, most), "{name}: of one value at {ports} ports, it made more than {most} bytes");
-                    }
+                let given = compute_given(op, name, inputs.iter().map(|v| Cow::Borrowed(*v)).collect(), &[]).ok();
+                for made in [compute(name, &inputs, &[]), given].into_iter().flatten() {
+                    assert!(lists::size_within(&made, most), "{name}: of one value at {ports} ports, it made more than {most} bytes");
                 }
             }
         }
