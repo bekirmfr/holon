@@ -4,7 +4,7 @@
 
 import { useState, type CSSProperties } from "react";
 import { actionUrl, runAction } from "./server";
-import type { Answer } from "./useCan";
+import type { Answer } from "./can";
 
 const field: CSSProperties = {
   font: "inherit",

@@ -73,7 +73,7 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
   return res;
 }
 
-/** Whether what the buttons follow (can.ts) may have changed with this answer: a change refused
+/** Whether what the buttons follow (can.tsx) may have changed with this answer: a change refused
  *  (what was kept is out of date), or made from here (a binding, a deploy that tags a flow). Not
  *  one's own prefs, sign-in or password, nor staging a unit or previewing a deploy; nor a read
  *  refused, which a list polled every few seconds may be for good (Approvals' deployments, to

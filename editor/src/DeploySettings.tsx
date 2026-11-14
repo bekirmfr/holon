@@ -6,7 +6,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
-import { gate, refusal, useCan } from "./can";
+import { useCan } from "./can";
 import {
   deleteSecret,
   getEnvSecretNames,
@@ -158,7 +158,7 @@ export function secretRollbackReport(slug: string | null, name: string, p: Secre
  * One secret in the deploy settings: its current version and where it comes from (or why it
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
  * history, from which an older version can be rolled back to. Setting, removing and rolling back
- * follow what the server would answer (can.ts): refused, they are disabled, saying why.
+ * follow what the server would answer (can.tsx): refused, they are disabled, saying why.
  */
 export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
@@ -171,7 +171,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const dryRun = useDryRun();
   const can = useCan(slug);
-  const setting = refusal(can, "setSecret");
+  const setting = can.may("setSecret");
   // The row follows where the secret comes from once that's known (the list loads after it).
   useEffect(() => {
     if (info) setKind(kindOf(info.source));
@@ -237,8 +237,8 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
             setText(next !== "env" ? "" : envNames.length === 0 || envNames.includes(suggested) ? suggested : "");
             setTyping(false);
           }}
-          disabled={!slug || setting !== undefined}
-          title={setting ?? k.title}
+          disabled={!slug || setting !== true}
+          title={setting === true ? k.title : setting}
           style={{ ...base, padding: "3px 4px" }}
         >
           {KINDS.map((x) => (
@@ -250,7 +250,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
         {picking ? (
           <select
             value={text}
-            disabled={!slug || setting !== undefined}
+            disabled={!slug || setting !== true}
             onChange={(e) => (e.target.value === OTHER ? (setTyping(true), setText("")) : setText(e.target.value))}
             title="a HOLON_SECRET_… variable of the server's environment or its --dotenv file"
             style={{ ...base, padding: "3px 4px", width: 158 }}
@@ -274,14 +274,14 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
           data-lpignore="true"
           value={text}
           placeholder={k.placeholder(name, !!info)}
-          disabled={!slug || setting !== undefined}
+          disabled={!slug || setting !== true}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && save()}
-          title={setting ?? k.title}
+          title={setting === true ? k.title : setting}
           style={{ ...input, width: 150 }}
         />
         )}
-        <button style={base} onClick={save} {...gate(can, "setSecret", !slug || !text.trim())}>
+        <button style={base} onClick={save} {...can.gate("setSecret", { disabled: !slug || !text.trim() })}>
           set
         </button>
         {info && !theirs && (
@@ -290,7 +290,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
           </button>
         )}
         {info && !theirs && (
-          <button style={base} onClick={remove} {...gate(can, "removeSecret", false, "remove this secret, every version")}>
+          <button style={base} onClick={remove} {...can.gate("removeSecret", { title: "remove this secret, every version" })}>
             ×
           </button>
         )}
@@ -307,7 +307,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
               {v.current ? (
                 <span style={{ color: "var(--ok)", width: 58, textAlign: "right" }}>current</span>
               ) : (
-                <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} {...gate(can, "rollBackSecret", false, `make version ${v.version} current again`)}>
+                <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} {...can.gate("rollBackSecret", { title: `make version ${v.version} current again` })}>
                   roll back
                 </button>
               )}

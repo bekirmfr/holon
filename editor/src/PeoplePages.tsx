@@ -38,7 +38,7 @@ import {
   type Tagged,
 } from "./access";
 import { useDialog } from "./Dialog";
-import { gate, useCan } from "./can";
+import { useCan } from "./can";
 import { HostPage, messageOf } from "./HostPages";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
 import { seenSaid } from "./lastSeen";
@@ -671,7 +671,7 @@ const SubjectLink = ({ who }: { who: Subject }) => (
  *  where, who bound it and when, until when; and unbind, which asks why and keeps it in History.
  *  On a principal's page (`own`), the group a binding holds through instead of whom. */
 function BindingTable({ rows, a, label, own }: { rows: Row[]; a: Access; label: string; own?: boolean }) {
-  // Unbinding, to whoever the server would let (can.ts).
+  // Unbinding, to whoever the server would let (can.tsx).
   const can = useCan();
   if (rows.length === 0) return <div style={{ ...quiet, marginBottom: 8 }}>no binding</div>;
   const unbindIt = async (b: Row) => {
@@ -703,7 +703,7 @@ function BindingTable({ rows, a, label, own }: { rows: Row[]; a: Access; label: 
             </td>
             <td>{b.expires_at ? `${utc(b.expires_at)}${b.expired ? " (expired)" : ""}` : "—"}</td>
             <td>
-              <button style={small} aria-label={`unbind ${b.role} from ${subjectSaid(b.who)} ${scopeSaid(b.scope)}`} onClick={() => void unbindIt(b)} {...gate(can, "unbind")}>
+              <button style={small} aria-label={`unbind ${b.role} from ${subjectSaid(b.who)} ${scopeSaid(b.scope)}`} onClick={() => void unbindIt(b)} {...can.gate("unbind")}>
                 unbind
               </button>
             </td>
@@ -731,7 +731,7 @@ const subjectOf = (key: string): Subject | null => {
  *  the flow, as `holon bind` does, and offers to bind viewer there too. */
 function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
   const id = useId();
-  // Binding, to whoever the server would let (can.ts): anyone else is told why on the button.
+  // Binding, to whoever the server would let (can.tsx): anyone else is told why on the button.
   const can = useCan();
   const [who, setWho] = useState(fixed ? keyOf(fixed) : "");
   const [role, setRole] = useState("");
@@ -873,7 +873,7 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
         )}
         <input aria-label="bind: until" placeholder="until (7d, 2026-12-01)" title="empty: until it is taken away" value={until} onChange={(e) => setUntil(e.target.value)} style={{ ...input, width: 170 }} />
         <input aria-label="bind: why" placeholder="why (History keeps it)" value={why} onChange={(e) => setWhy(e.target.value)} style={{ ...input, flex: 1, minWidth: 140 }} />
-        <button type="submit" style={primary} {...gate(can, "bind", !ready)}>
+        <button type="submit" style={primary} {...can.gate("bind", { disabled: !ready })}>
           bind
         </button>
       </div>

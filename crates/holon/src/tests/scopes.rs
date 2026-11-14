@@ -369,7 +369,7 @@ fn me_can_answers_what_each_route_asks() {
     assert_eq!((code, error_of(&said)), (400, "\"flow.fly\" isn't an action: the catalogue names them as flow.deploy, run.decide…".into()));
 }
 
-/// What the editor's buttons are held to (`editor/src/can.test.ts`, the plan's step 7c): the
+/// What the editor's buttons are held to (`editor/src/can.test.tsx`, the plan's step 7c): the
 /// catalogue, what each route asks, and what `/auth/me/can` answers for every action, with no flow
 /// and on `d`, to an admin (ada), an editor (bob) and a viewer (cy) on the host, someone bound at
 /// `d`'s approval point alone (dee) and an agent (scout). `HOLON_BLESS=1` writes it again; until

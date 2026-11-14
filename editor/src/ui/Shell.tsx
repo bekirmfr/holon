@@ -11,7 +11,7 @@ import { THEMES, type Theme, type Ui } from "../look";
 import { pageOf, type AppPage } from "../Pages";
 import { crumbs, follow, format, labelOf, type Route } from "../routes";
 import { ServerError, getSummary, getVersion, hostAddress, type Summary } from "../server";
-import type { HostPages } from "../useCan";
+import type { HostPages } from "../can";
 
 type Entry = { label: string; to: Route; icon: keyof typeof ICON; key?: number | string };
 
@@ -54,7 +54,7 @@ const HOST: Entry[] = [
 ];
 /** A person who may not see everyone: the agents and services they own, on People and access's page. */
 const OWNED: Entry = { label: "Your agents and services", to: { kind: "people", tab: "people" }, icon: "people", key: 7 };
-/** The host's pages the nav lists, as `can` answers who may view them (useCan.tsx's hostPagesOf). */
+/** The host's pages the nav lists, as `can` answers who may view them (can.tsx's hostPagesOf). */
 export const hostEntries = (pages: HostPages): Entry[] => [
   ...(pages.resources ? [HOST[0]] : []),
   ...(pages.people === "everyone" ? [HOST[1]] : pages.people === "owned" ? [OWNED] : []),
@@ -121,7 +121,7 @@ export function Shell({
   page: AppPage;
   navigate: (r: Route) => void;
   me: Me;
-  /** The host's pages `me` is shown (useCan.tsx's useHostPages). */
+  /** The host's pages `me` is shown (can.tsx's useHostPages). */
   pages: HostPages;
   onNew: () => void;
   /** Open the command palette. */

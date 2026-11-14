@@ -21,7 +21,7 @@ import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { follow, format, type FlowTab, type Route } from "./routes";
 import { downloadRuns, getDeployedDocument, getFlow, getLog, runAction, tickNow, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
-import { gateOf, useCan, type Answer, type Can } from "./useCan";
+import { gateOf, useCan, type Answer, type Can } from "./can";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 import { useKeys, useListKeys } from "./ui/Keys";
@@ -35,20 +35,6 @@ const TABS: [FlowTab, string][] = [
   ["state", "State"],
   ["settings", "Settings"],
 ];
-
-/** What a flow's page asks `can` about, on the flow: each its buttons' routes need (can.rs). The
- *  server's secrets' names (resource.view) are the host's, asked with them. */
-export const FLOW_ACTIONS = [
-  "flow.lifecycle",
-  "flow.delete",
-  "flow.restore",
-  "flow.approve-deploy",
-  "flow.deploy",
-  "run.call",
-  "run.export",
-  "secret.set",
-  "resource.view",
-] as const;
 
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -105,7 +91,7 @@ export function FlowPage({
   };
   useKeys("tabs", { "[": () => tabBeside(-1), "]": () => tabBeside(1) }, { enabled: entry !== undefined });
   useKeys("flow", { e: edit });
-  const can = useCan(FLOW_ACTIONS, { flow: slug });
+  const can = useCan(slug);
   const [failed, setFailed] = useState("");
   const [said, setSaid] = useState("");
   const act = (action: "run" | "pause" | "stop") => {
@@ -127,17 +113,17 @@ export function FlowPage({
         {entry && <span className="hl-flow__starts">{startsSaid(entry.triggers, entry.port, routes)}</span>}
         <span className="hl-flow__spacer" />
         {entry?.status === "running" && (
-          <button className="hl-flow__button" onClick={() => act("pause")} {...can.gate("flow.lifecycle", { title: "stop answering, keep the port and the session" })}>
+          <button className="hl-flow__button" onClick={() => act("pause")} {...can.gate("pause", { title: "stop answering, keep the port and the session" })}>
             Pause
           </button>
         )}
         {entry?.status === "paused" && (
-          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("flow.lifecycle", { title: "continue the same session" })}>
+          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("run", { title: "continue the same session" })}>
             Resume
           </button>
         )}
         {entry?.status === "stopped" && (
-          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("flow.lifecycle", { title: "a new session, from the state the last one left" })}>
+          <button className="hl-flow__button" onClick={() => act("run")} {...can.gate("run", { title: "a new session, from the state the last one left" })}>
             Run
           </button>
         )}
@@ -159,7 +145,7 @@ export function FlowPage({
         </div>
       )}
       {!entry ? (
-        <Draft slug={slug} manifestOf={manifestOf} deployTo={review?.to ?? null} onEdit={edit} navigate={navigate} mayDeploy={can.may("flow.deploy")} />
+        <Draft slug={slug} manifestOf={manifestOf} deployTo={review?.to ?? null} onEdit={edit} navigate={navigate} mayDeploy={can.may("deploy")} />
       ) : (
         <>
           <nav className="hl-flow__tabs" aria-label="flow tabs">
@@ -175,15 +161,15 @@ export function FlowPage({
           {run !== null ? (
             <RunDetail slug={slug} seq={run} navigate={navigate} />
           ) : tab === "runs" ? (
-            <RunsTab slug={slug} navigate={navigate} mayExport={can.may("run.export")} />
+            <RunsTab slug={slug} navigate={navigate} mayExport={can.may("export")} />
           ) : tab === "logs" ? (
             <LogsPane slug={slug} navigate={navigate} />
           ) : tab === "state" ? (
             <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "history" ? (
-            <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} mayRestore={can.may("flow.restore")} />
+            <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} mayRestore={can.may("restore")} />
           ) : tab === "status" ? (
-            <StatusTab slug={slug} entry={entry} navigate={navigate} mayCall={can.may("run.call")} manifestOf={manifestOf} waiting={waiting} />
+            <StatusTab slug={slug} entry={entry} navigate={navigate} mayCall={can.may("runAction")} manifestOf={manifestOf} waiting={waiting} />
           ) : (
             <SettingsTab slug={slug} entry={entry} can={can} focus={card.focus} onChanged={card.onChanged} onAction={card.onAction} onEdit={edit} onRemove={card.onRemove} />
           )}
@@ -207,14 +193,14 @@ function useDocument(slug: string, unit: string | undefined): FlowDocument | nul
   return doc;
 }
 
-/** Run now, for a flow with a clock or an action: a clock ticks now (`flow.lifecycle`), an action
- *  runs with nothing sent (`run.call`); with several, a question asks which. Only while it runs. */
+/** Run now, for a flow with a clock or an action: a clock ticks now (`tick`), an action runs
+ *  with nothing sent (`runAction`); with several, a question asks which. Only while it runs. */
 function useRunNow(slug: string, entry: DeploymentEntry | undefined, can: Can, onSaid: (s: string) => void, onFailed: (s: string) => void): ReactNode {
   const dialog = useDialog();
   const options = entry ? runNowOptions(entry.triggers) : [];
   if (!entry || options.length === 0) return null;
   const running = entry.status === "running";
-  const action = options.every((o) => o.kind === "clock") ? "flow.lifecycle" : "run.call";
+  const button = options.every((o) => o.kind === "clock") ? "tick" : "runAction";
   const go = async () => {
     onFailed("");
     onSaid("");
@@ -234,7 +220,7 @@ function useRunNow(slug: string, entry: DeploymentEntry | undefined, can: Can, o
     }
   };
   return (
-    <button className="hl-flow__button" onClick={() => void go()} {...can.gate(action, { disabled: !running, title: running ? "run it now: a clock ticks, an action runs with nothing sent" : "it isn't running" })}>
+    <button className="hl-flow__button" onClick={() => void go()} {...can.gate(button, { disabled: !running, title: running ? "run it now: a clock ticks, an action runs with nothing sent" : "it isn't running" })}>
       Run now
     </button>
   );

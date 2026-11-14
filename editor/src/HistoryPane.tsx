@@ -33,7 +33,7 @@ import {
   type TimelineItem,
 } from "./timeline";
 import { useDryRun } from "./DryRun";
-import { gateOf, type Answer } from "./useCan";
+import { gateOf, type Answer } from "./can";
 
 const POLL_MS = 3000;
 const dim = "var(--faint)";
