@@ -99,7 +99,7 @@ fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String
 /// tokens, its owner, its role, whether it is enabled, or that it is there. Whoever does could act
 /// as `name` or take from them, so they hold everything `name` holds, as they would to have given
 /// it (D19, both ways).
-fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
+pub(crate) fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
     match holds_more(caller, accounts, name) {
         Some(more) => Err(err(403, format!("{more}: you change, or act as, only someone who holds no more than you"))),
         None => Ok(()),

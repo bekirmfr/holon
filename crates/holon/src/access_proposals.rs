@@ -70,6 +70,8 @@ pub(crate) enum Change {
     HostRole { name: String, role: String },
     /// `PUT /access/approvals`: the settings whole, as they would be.
     Approvals { settings: ApprovalSettings },
+    /// `PUT /access/local`: the person this machine's run file signs in as (D45).
+    Local { account: String },
 }
 
 impl Change {
@@ -81,6 +83,7 @@ impl Change {
             Change::Group { group } => accounts.set_group(group, by, why).map(drop),
             Change::HostRole { name, role } => accounts.set_role(&name, &role, by, why),
             Change::Approvals { settings } => accounts.set_approvals(settings, by, why).map(drop),
+            Change::Local { account } => accounts.set_local(&account, by, why).map(drop),
         }
     }
 
@@ -90,7 +93,7 @@ impl Change {
         match self {
             Change::Role { .. } => Action::RoleDefine,
             Change::HostRole { .. } => Action::PeopleManage,
-            Change::Bind { .. } | Change::Group { .. } | Change::Approvals { .. } => Action::PeopleAssign,
+            Change::Bind { .. } | Change::Group { .. } | Change::Approvals { .. } | Change::Local { .. } => Action::PeopleAssign,
         }
     }
 }
@@ -262,9 +265,39 @@ fn loosened(before: &ApprovalSettings, after: &ApprovalSettings) -> Vec<String> 
     after.each().into_iter().zip(looser).filter(|(_, looser)| *looser).map(|((_, _, said), _)| said).collect()
 }
 
+/// Whom `after` ties this machine's run file to that `before` didn't, in words (D45): whatever it
+/// decides it then decides as them, taking the steps their roles take, so it gives whoever holds
+/// this machine their name and what of theirs waits for people to be given (`gains` from nothing
+/// bound to them): "this machine's run file signs in as cy, holding run.decide on this host, as
+/// approver".
+fn retied(before: &Document, after: &Document, now: u64) -> Vec<String> {
+    let Some((to, _)) = retie(before, after) else { return Vec::new() };
+    let mut none = after.clone();
+    none.bindings.retain(|b| b.who != Subject::Principal(to.clone()));
+    for g in &mut none.groups {
+        g.members.retain(|m| *m != to);
+    }
+    let held = gains(&none, after, &|name: &str| (name == to).then_some(Kind::Person), now);
+    let held: Vec<String> = grouped(&held).into_iter().map(|(g, actions)| format!("{} {}, as {}", actions.join(", "), g.scope.said(), g.role)).collect();
+    match held.is_empty() {
+        true => vec![format!("this machine's run file signs in as {to}")],
+        false => vec![format!("this machine's run file signs in as {to}, holding {}", held.join("; "))],
+    }
+}
+
+/// Whom `after` ties this machine's run file to anew, and whom it signs in as before, if it does.
+fn retie(before: &Document, after: &Document) -> Option<(String, Option<String>)> {
+    after.local.clone().filter(|to| before.local.as_ref() != Some(to)).map(|to| (to, before.local.clone()))
+}
+
 /// `gains` in words, one for each principal, role and scope: "run.decide to eve on this host, as
 /// approver".
 fn said(gains: &[Gain]) -> Vec<String> {
+    grouped(gains).into_iter().map(|(g, actions)| format!("{} to {} {}, as {}", actions.join(", "), g.who, g.scope.said(), g.role)).collect()
+}
+
+/// `gains` by principal, role and scope, each with its actions' names.
+fn grouped(gains: &[Gain]) -> Vec<(&Gain, Vec<&'static str>)> {
     let mut each: Vec<(&Gain, Vec<&str>)> = Vec::new();
     for g in gains {
         match each.iter_mut().find(|(first, _)| first.who == g.who && first.role == g.role && first.scope == g.scope) {
@@ -272,7 +305,7 @@ fn said(gains: &[Gain]) -> Vec<String> {
             None => each.push((g, vec![g.action.name()])),
         }
     }
-    each.into_iter().map(|(g, actions)| format!("{} to {} {}, as {}", actions.join(", "), g.who, g.scope.said(), g.role)).collect()
+    each
 }
 
 /// Whom `gains` gives more, by name, each once.
@@ -341,7 +374,7 @@ pub(crate) enum Governed<T> {
 pub(crate) fn govern<T>(accounts: &Accounts, caller: &Caller, change: Change, why: Option<&str>, make: impl FnOnce() -> Result<T, String>) -> Result<Governed<T>, String> {
     let proposals = accounts.proposals();
     let mut list = proposals.list.lock().unwrap();
-    let run_file = caller.local.is_some() && matches!(change, Change::Approvals { .. });
+    let run_file = caller.local.is_some() && matches!(change, Change::Approvals { .. } | Change::Local { .. });
     if run_file || accounts.access_document().approvals.changes.is_none() {
         return make().map(Governed::Made);
     }
@@ -352,6 +385,7 @@ pub(crate) fn govern<T>(accounts: &Accounts, caller: &Caller, change: Change, wh
     let grants = gains(&before, &after, &kind_of, now);
     let mut gives = said(&grants);
     gives.extend(loosened(&before.approvals, &after.approvals));
+    gives.extend(retied(&before, &after, now));
     let Some(needs) = before.approvals.changes.filter(|_| !gives.is_empty()) else { return make().map(Governed::Made) };
     let id = list.iter().map(|p| p.id).max().unwrap_or(0) + 1;
     let to = to(&grants);
@@ -412,8 +446,11 @@ fn decider(caller: &Caller, p: &Proposal, verb: &str) -> Result<String, Refused>
 /// (accounts.rs `unchanged_since`).
 struct Read {
     before: Arc<Document>,
+    after: Document,
     gained: Vec<Gain>,
     acting: Vec<(String, String, String)>,
+    /// Whom it ties this machine's run file to, and whom it signs in as now (`retie`).
+    retie: Option<(String, Option<String>)>,
     written: u64,
 }
 
@@ -435,6 +472,7 @@ fn read_again(accounts: &Accounts, p: &Proposal, now: u64) -> Result<Read, Strin
     let gained = gains(&before, &after, &kind_of, now);
     let mut gives = said(&gained);
     gives.extend(loosened(&before.approvals, &after.approvals));
+    gives.extend(retied(&before, &after, now));
     let more: Vec<&str> = gives.iter().filter(|g| !p.gives.contains(g)).map(String::as_str).collect();
     let less: Vec<&str> = p.gives.iter().filter(|g| !gives.contains(g)).map(String::as_str).collect();
     match (more.is_empty(), less.is_empty()) {
@@ -453,16 +491,23 @@ fn read_again(accounts: &Accounts, p: &Proposal, now: u64) -> Result<Read, Strin
     if let Some(g) = gained.iter().find(|g| can(&as_author, g.action, &bindings::given_on(g.action, &g.scope)).is_err()) {
         return Err(format!("its author, {}, no longer holds {} {}", p.author, g.action.name(), g.scope.said()));
     }
+    let retie = retie(&before, &after);
+    if let Some((b, a)) = retie.as_ref().and_then(|(to, _)| bindings::beyond(&as_author, &after, Kind::Person, after.reaching(to).map(|(b, _)| b), now)) {
+        return Err(format!("its author, {}, no longer holds {} {}, which holds {} there", p.author, b.role, b.scope.said(), a.name()));
+    }
     let acting = who_could_act(accounts, &to);
     if let Some((_, _, how)) = acting.iter().find(|(whom, _, how)| p.to.contains(whom) && !p.ways_in.contains(how)) {
         return Err(format!("since it was proposed, {how}"));
     }
-    Ok(Read { before, gained, acting, written })
+    Ok(Read { before, after, gained, acting, retie, written })
 }
 
 /// Why `caller` (named `name`) may not approve what `read` gives, if they may not: it gives them
 /// more (whom it gives more doesn't decide giving it), they don't hold what it gives where it
-/// gives it (D6), or they could act as someone it gives more (D13).
+/// gives it (D6), or they could act as someone it gives more (D13). One that ties this machine's
+/// run file to someone gives whoever holds the machine their name and what they hold: it isn't
+/// approved through the run file, nor by whom it signs in as now, nor by someone holding less
+/// than whom it ties it to (D19).
 fn may_not_approve(caller: &Caller, name: &str, id: u64, read: &Read) -> Option<String> {
     if read.gained.iter().any(|g| g.who == name) {
         return Some(format!("access change {id} gives more to you: it is approved by people other than whom it gives more"));
@@ -470,8 +515,18 @@ fn may_not_approve(caller: &Caller, name: &str, id: u64, read: &Read) -> Option<
     if let Some(g) = read.gained.iter().find(|g| can(caller, g.action, &bindings::given_on(g.action, &g.scope)).is_err()) {
         return Some(format!("access change {id} gives {} to {} {}, which you don't hold: an access change is approved only by someone who holds what it gives", g.action.name(), g.who, g.scope.said()));
     }
-    let (_, _, how) = read.acting.iter().find(|(_, who, _)| who == name)?;
-    Some(format!("access change {id} gives more to someone you could act as ({how}): it is approved by someone who couldn't"))
+    if let Some((_, _, how)) = read.acting.iter().find(|(_, who, _)| who == name) {
+        return Some(format!("access change {id} gives more to someone you could act as ({how}): it is approved by someone who couldn't"));
+    }
+    let (to, tied) = read.retie.as_ref()?;
+    if caller.local.is_some() {
+        return Some(format!("access change {id} ties this machine's run file to {to}: it is approved by someone signed in as themself, not through the run file"));
+    }
+    if tied.as_deref() == Some(name) {
+        return Some(format!("access change {id} ties this machine's run file, which signs in as you now, to {to}: it is approved by someone it doesn't sign in as"));
+    }
+    let (b, a) = bindings::beyond(caller, &read.after, Kind::Person, read.after.reaching(to).map(|(b, _)| b), epoch_now())?;
+    Some(format!("access change {id} ties this machine's run file to {to}, who holds {} {}, which holds {} there, which you don't: it is approved only by someone who holds what it gives", b.role, b.scope.said(), a.name()))
 }
 
 /// Whether `who`'s approval, given earlier, still counts against `read`: they are still here, a
@@ -874,6 +929,7 @@ mod tests {
             let gained = gains(doc, &after, &kind_of, now);
             let mut gave = said(&gained);
             gave.extend(loosened(&doc.approvals, &after.approvals));
+            gave.extend(retied(doc, &after, now));
             let mut says = p.gives.clone();
             gave.sort();
             says.sort();
@@ -893,10 +949,19 @@ mod tests {
                     assert!(can(&then, g.action, &bindings::given_on(g.action, &g.scope)).is_ok(), "{case}: {} holds {}", ap.who, g.action.name());
                 }
                 assert!(!p.to.iter().any(|w| a.acting_as(w).iter().any(|(by, _)| *by == ap.who)), "{case}: {} could act as whom it gives more", ap.who);
+                if let Some((to, tied)) = retie(doc, &after) {
+                    assert_ne!(tied.as_deref(), Some(ap.who.as_str()), "{case}: the run file signs in as {}", ap.who);
+                    assert!(bindings::beyond(&then, doc, Kind::Person, doc.reaching(&to).map(|(b, _)| b), now).is_none(), "{case}: {} holds no less than {to}", ap.who);
+                }
             }
         }
+        /// Something changed while it waits, by name.
+        type Meanwhile = (&'static str, fn(&Accounts));
+        /// (changes, what it is, what changed meanwhile, after the first approval) to what became
+        /// of it and who approved it.
+        type Outcomes<'a> = std::collections::HashMap<(u8, &'a str, &'a str, bool), (String, Vec<String>)>;
         let later = epoch_now() + 3 * 86_400;
-        let events: [(&str, fn(&Accounts)); 13] = [
+        let events: [Meanwhile; 13] = [
             ("nothing", |_| {}),
             ("watch bound to fay on pay", |a| {
                 a.bind(to_principal("fay"), "watch", pay(), None, "ada", None).unwrap();
@@ -930,11 +995,12 @@ mod tests {
                 a.bind(to_principal("gus"), "admin", Scope::Host, None, "ada", None).unwrap();
             }),
         ];
-        let mut outcomes: std::collections::HashMap<(u8, &str, &str, bool), (String, Vec<String>)> = std::collections::HashMap::new();
+        let mut outcomes: Outcomes<'_> = Outcomes::new();
         for setting in [1u8, 2] {
             let base = ApprovalSettings { exclude_deployer: true, changes: Some(setting), ..ApprovalSettings::default() };
             let mut kinds: Vec<(&str, Change)> = changes(&base).into_iter().filter(|(_, _, gives, _)| *gives).map(|(what, change, ..)| (what, change)).collect();
             kinds.push(("admin to gus for good, who holds it until later", Change::Bind { who: to_principal("gus"), role: "admin".into(), scope: Scope::Host, expires_at: None }));
+            kinds.push(("this machine's run file tied to dee", Change::Local { account: "dee".into() }));
             for (what, change) in &kinds {
                 for (event, meanwhile) in events {
                     for after_first in [false, true] {
@@ -1000,6 +1066,11 @@ mod tests {
         assert!(undone.starts_with("stale: since it was proposed, it would give"), "{undone}");
         let given = state(1, gus, "admin bound to gus for good");
         assert!(given.starts_with("stale: since it was proposed, it no longer gives"), "{given}");
+        let tied = "this machine's run file tied to dee";
+        assert_eq!(outcome(1, tied, "nothing", false), made_by(&["bob"]));
+        assert_eq!(outcome(2, tied, "nothing", false), made_by(&["bob", "gus"]));
+        let widened = state(1, tied, "approver widened to people.assign");
+        assert!(widened.starts_with("stale: since it was proposed, it would give this machine's run file signs in as dee, holding run.decide, people.assign on this host"), "{widened}");
         // An earlier approval from someone disabled since doesn't count; gus, given more, never
         // approves what gives him more.
         assert_eq!(outcome(2, eve, "bob disabled", true), ("waits".into(), vec!["gus".into()]));
@@ -1026,6 +1097,33 @@ mod tests {
         assert_eq!(made, Some(Ok(())));
         assert_ne!(kept(&a.access_document()), before);
         assert_eq!(a.acting_as("dee"), [("cy".to_string(), "cy made dee's reset link".to_string())]);
+    }
+
+    /// Tying this machine's run file to someone (D45) gives whoever holds the machine their name
+    /// and what they hold: it waits for people, saying so, and isn't approved through the run file,
+    /// nor by whom it signs in as now, nor by someone holding less than whom it ties it to (D19).
+    /// Through the run file itself, the machine's root (D11), it is made at once.
+    #[test]
+    fn tying_the_run_file_to_someone_waits_for_people() {
+        let a = universe(Some(1));
+        a.invite("gus", "admin", None, "ada").unwrap();
+        a.set_local("bob", "ada", None).unwrap();
+        let tie = |to: &str| Change::Local { account: to.into() };
+        let Governed::Waits(p) = govern(&a, &person(&a, "ada"), tie("dee"), None, || tie("dee").make(&a, "ada", None)).unwrap() else { panic!("it waits") };
+        assert_eq!(p.gives.len(), 1);
+        assert!(p.gives[0].starts_with("this machine's run file signs in as dee, holding run.decide on this host, as approver; run.decide "), "{:?}", p.gives);
+        let run_file = Caller { local: Some("bma".into()), ..person(&a, "gus") };
+        let refused = |caller: &Caller| approve(&a, caller, p.id).map(|p| p.state.said());
+        assert_eq!(refused(&run_file), Err((403, format!("access change {} ties this machine's run file to dee: it is approved by someone signed in as themself, not through the run file", p.id))));
+        assert_eq!(refused(&person(&a, "bob")), Err((403, format!("access change {} ties this machine's run file, which signs in as you now, to dee: it is approved by someone it doesn't sign in as", p.id))));
+        let (code, said) = refused(&person(&a, "cy")).unwrap_err();
+        assert!(code == 403 && said.contains("which you don't"), "{said}");
+        assert_eq!(a.access_document().local.as_deref(), Some("bob"), "nothing made yet");
+        assert_eq!(refused(&person(&a, "gus")), Ok(format!("was made, as access version {}", a.access_document().version)));
+        assert_eq!(a.access_document().local.as_deref(), Some("dee"));
+        // Through the run file, at once.
+        assert!(matches!(govern(&a, &run_file, tie("eve"), None, || tie("eve").make(&a, "gus", None)).unwrap(), Governed::Made(())));
+        assert_eq!(a.access_document().local.as_deref(), Some("eve"));
     }
 
     /// Whoever could act as someone a change gives more (D13) doesn't approve it, and the proposal

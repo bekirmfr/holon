@@ -869,7 +869,8 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
 ///   and whether it does now (`tied`: none while they are disabled), with the version;
 /// - `PUT /access/local` (`{account, why?}`): ties it to that person, as a new version: a
-///   handover; answered as the GET is;
+///   handover, by someone holding no less than them; answered as the GET is, or, while the host
+///   has people approve what gives more, 202 with the proposal (but through the run file itself);
 /// - `GET /roles`: every role, the built-in ones first, with how many bindings hold it;
 /// - `PUT /roles/<name>` (`{about?, allows, kinds, why?}`): an admin's role, defined or changed;
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
@@ -1017,13 +1018,21 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Ok(c) => c,
                 Err(r) => return Some(r),
             };
-            match accounts.set_local(&change.account, by, change.why.as_deref()) {
-                Ok(changed) => {
+            // Whoever holds this machine then decides as them (D45): tied only by someone holding
+            // no less (D19), and, while this host has people approve what gives more, through
+            // them (access_proposals.rs), but from the run file itself, the machine's root (D11).
+            if let Err(r) = crate::auth::may_change(caller, accounts, &change.account) {
+                return Some(r);
+            }
+            let proposed = crate::access_proposals::Change::Local { account: change.account.clone() };
+            match govern(accounts, caller, proposed, change.why.as_deref(), || accounts.set_local(&change.account, by, change.why.as_deref())) {
+                Ok(Governed::Made(changed)) => {
                     if changed {
                         recorded("tied the run file", &change.account);
                     }
                     Response::json(&tie())
                 }
+                Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
                 Err(e) => err(400, e),
             }
         }

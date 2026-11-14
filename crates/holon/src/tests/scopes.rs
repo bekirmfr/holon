@@ -524,7 +524,7 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
     type Ask = (&'static str, &'static str, Value);
     // (route, cy refused, (by ada?, the same to someone holding no more)).
     type Case = ((&'static str, &'static str), Ask, (bool, Ask));
-    let cases: [Case; 12] = [
+    let cases: [Case; 13] = [
         (("POST", "/people"), ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })), (false, ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })))),
         (("POST", "/admin/oidc"), ("POST", "/admin/oidc", json!({ "settings": null })), (true, ("POST", "/admin/oidc", json!({ "settings": null })))),
         (("POST", "/people/{name}/tokens"), ("POST", "/people/ci/tokens", json!({ "label": "mine" })), (false, ("POST", "/people/reader/tokens", json!({ "label": "mine" })))),
@@ -539,10 +539,12 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
         // Approving an access change gives what it gives (D6): dee made an admin, which cy isn't;
         // dee given people-admin, which cy holds.
         (("POST", "/access/proposals/{id}/approve"), ("POST", "/access/proposals/{admin-change}/approve", Value::Null), (false, ("POST", "/access/proposals/{assign-change}/approve", Value::Null))),
+        // Whoever holds this machine decides as whom its run file is tied to (D45): bob, an
+        // editor, which cy isn't; dee, a viewer (it waits, as what gives more does here).
+        (("PUT", "/access/local"), ("PUT", "/access/local", json!({ "account": "bob" })), (false, ("PUT", "/access/local", json!({ "account": "dee" })))),
     ];
     let neither = [
         (("PUT", "/access/approvals"), "how this host decides approvals: no one's sign-in, tokens or holdings"),
-        (("PUT", "/access/local"), "whom the run file signs in as, which is admin on the host whoever it is (D45)"),
         (("DELETE", "/roles/{name}"), "refused while the role is bound (D28): it takes from no one"),
         (("DELETE", "/groups/{name}"), "refused while the group is bound (D28): it takes from no one"),
         (("POST", "/access/proposals/{id}/decline"), "a change declined is never made: it gives and takes nothing"),
@@ -625,7 +627,7 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
         (("POST", "/access/proposals/{id}/approve"), "makes what waited, by its author"),
         (("POST", "/access/proposals/{id}/decline"), "makes nothing"),
         (("PUT", "/access/approvals"), "how this host decides approvals: no one's way in"),
-        (("PUT", "/access/local"), "the run file's own way in, which is this machine's: the root here (D11)"),
+        (("PUT", "/access/local"), "the run file's way in, which is this machine's (D11): tied to someone else, it waits for people"),
     ];
     let changing: Vec<(&str, &str)> = ROUTES
         .iter()
