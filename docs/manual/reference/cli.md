@@ -42,6 +42,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon restore`](#holon-restore) | a deployment's versions, and an earlier version's or run's code or state back |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
+| [`holon key`](#holon-key) | the keys the server seals its data under: status, rotation, forgetting |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
 | [`holon feed`](#holon-feed) | bind the feeds flows listen to: server-sent events, WebSockets, Postgres channels |
@@ -308,7 +309,7 @@ the flow's own route.
 holon run <slug> [--fresh | --session N]
 holon pause <slug>
 holon stop <slug>
-holon remove <slug> --yes
+holon remove <slug> --yes [--forget]
 ```
 
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
@@ -318,7 +319,9 @@ its state, its sessions and its secrets. Its runs' log and timeline are kept: wr
 the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
 where), sealed under the server's keys as everything in its data folder is: `holon verify` opens it
 with `--root-key`. The slug deployed again starts a new log, and the old one stays as it was.
-Editors and admins.
+Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon key
+forget`](#holon-key), which needs `host.operate`): its kept records, its backups and every
+other file it left can't be opened again.
 
 ### `holon call`
 
@@ -895,6 +898,38 @@ value they name does; and for an hour after it was put, whoever names it. Code i
 Needs an admin. `--dry-run` says how many values and bytes it would remove, removing nothing.
 Prints what it swept, what it keeps, and what it spared as new. An in-memory store
 (`--store :memory:`) has nothing to sweep.
+
+## `holon key`
+
+```
+holon key status [--json] [--server PORT|URL]
+holon key rotate <scope> [--server PORT|URL]
+holon key forget <slug> [--server PORT|URL]
+holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
+```
+
+The keys the server seals its data folder under (`keys.json`, each data key wrapped by the root
+key, which is kept where `--root-key` says, never in the folder). None of these shows a key, or
+anything of one.
+
+- `status` says where the root key is kept and the id it is kept under, each scope's versions and
+  when each was made (`server`: its tables and store; `secrets`; `names`: the store's file names;
+  `d:<slug>`: what each deployment wrote), and the deployments whose keys were forgotten. Admins.
+- `rotate <scope>` makes a new version of a scope's data key: what is written from then on is
+  sealed under it, and what was sealed under the versions before still opens. `names` is never
+  rotated: the store's files are named by it. Needs `host.operate`.
+- `forget <slug>`, for a removed deployment (as `holon remove --forget`): its keys are dropped from
+  `keys.json`, so its kept records, its backups and every other file it left open nowhere again,
+  and say they were forgotten. The root key is then rotated where it is kept, so a copy of the
+  whole folder taken before (which holds the old `keys.json`) needs the old root, which only a
+  copy of it kept elsewhere still has; a root in an environment variable can't be rotated by the
+  server, and it says so. The slug deployed again seals under keys of its own. Needs `host.operate`.
+- `rotate --root` runs with the server stopped (it refuses while one runs on the folder): every
+  data key is wrapped under a new root key, kept in `--to` (`os`, `file:PATH`, or `env:VAR`
+  already holding a new key: `holon serve --new-root-key` prints one). Start the server with
+  `--root-key` set to it after. The old root stays where it was unless `--forget-old`.
+  `--data` is the data folder (else the one under `HOLON_HOME`), `--root-key` where its root is now.
+  A rotation cut short loses nothing: the next start finishes it, or undoes it.
 
 ## `holon database`
 

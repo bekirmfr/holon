@@ -454,10 +454,144 @@ route.post("/keep", (req) => {{
     assert!(clear.is_empty(), "the canary {canary} in clear, of {} files: {clear:#?}", files.len());
 }
 
+/// `holon serve` on `home`, its root where `root` says (`file:…`), at `port`.
+fn serve(home: &Path, root: &str, port: u16, stderr: Stdio) -> Child {
+    Command::new(HOLON)
+        .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", root])
+        .env("HOLON_HOME", home)
+        .env_remove("HOLON_DATA")
+        .env_remove("HOLON_RUN_DIR")
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .expect("holon serve starts")
+}
+
+/// `holon <args>` with no server named (the offline commands): whether it went, and what it said.
+fn offline(home: &Path, args: &[&str]) -> (bool, String) {
+    let out = Command::new(HOLON).args(args).env("HOLON_HOME", home).env_remove("HOLON_DATA").env_remove("HOLON_RUN_DIR").output().expect("holon runs");
+    (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+/// Guards, against the real server: a deployment's data key rotated, its chain still checks
+/// across the two versions; its keys forgotten with `holon remove --forget`, its kept records say
+/// so, and the old root (rotated in place) opens nothing of the folder; the root rotated with
+/// the server stopped, and not while it runs; a second server on one folder refuses to start.
+/// Why: rotation and forgetting are what an operator does when a key may have leaked or a
+/// customer leaves (docs/L4s/at-rest-encryption-L4.md §2.4); each is a few writes to keys.json
+/// and the root's place, which the unit tests check one by one, and this one through the commands
+/// people run.
+/// If it fails: the step it names; a hang at "a second server" means the folder lock is gone.
+#[test]
+fn keys_are_rotated_and_forgotten_on_the_real_server() {
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("holon-keys-{}-{stamp}", std::process::id()));
+    let (home, texts, export) = (base.join("home"), base.join("texts"), base.join("export"));
+    for d in [&home, &texts, &export] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let root_file = base.join("root.key");
+    let root = format!("file:{}", root_file.display());
+    let port = free_port();
+    let mut server = Server { child: serve(&home, &root, port, Stdio::null()), dirs: vec![base.clone()], port, home: home.clone() };
+    until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let shop_port = free_port();
+    let file = texts.join("shop.holon.ts");
+    std::fs::write(
+        &file,
+        format!(
+            r#"import {{ flow, route }} from "holon"
+import state from "state"
+
+flow("shop", {{ port: {shop_port} }})
+
+route.post("/bump", () => {{
+  state.n = (state.n ?? 0) + 1
+  return state.n
+}})
+"#
+        ),
+    )
+    .unwrap();
+    server.holon(&["deploy", &file.display().to_string(), "--approve"]);
+    until("shop answers", 30, || status(&post(shop_port, "/bump", "{}")) == 200);
+    for _ in 0..3 {
+        assert_eq!(status(&post(shop_port, "/bump", "{}")), 200);
+    }
+
+    // A new data key for the deployment: what it writes from now on is sealed under version 2,
+    // and its chain checks across both.
+    let rotated = server.holon(&["key", "rotate", "d:shop"]);
+    assert!(rotated.contains("now version 2"), "{rotated}");
+    for _ in 0..3 {
+        assert_eq!(status(&post(shop_port, "/bump", "{}")), 200);
+    }
+    let shown = server.holon(&["key", "status"]);
+    assert!(shown.contains("d:shop: version 2") && shown.contains("names: version 1, never rotated") && shown.contains("root.key"), "{shown}");
+    server.holon(&["export", "shop", "--to", &export.display().to_string()]);
+    let mut exported = Vec::new();
+    files_under(&export, &mut exported);
+    let json = exported.iter().find(|f| f.extension().is_some_and(|e| e == "json")).unwrap_or_else(|| panic!("an export: {exported:#?}"));
+    let (checks, said) = offline(&home, &["verify", &json.display().to_string()]);
+    assert!(checks, "the chain across the rotation checks: {said}");
+
+    // A second server on the same folder refuses to start, rather than write keys.json over this
+    // one's; and the root isn't rotated under a running server.
+    let mut second = serve(&home, &root, free_port(), Stdio::piped());
+    let by = Instant::now() + Duration::from_secs(30);
+    while second.try_wait().unwrap().is_none() {
+        if Instant::now() > by {
+            let _ = second.kill();
+            panic!("a second server on the folder started");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut refused = String::new();
+    second.stderr.take().unwrap().read_to_string(&mut refused).unwrap();
+    assert!(!second.wait().unwrap().success() && refused.contains("a server is running"), "{refused}");
+    let new_root = format!("file:{}", base.join("new.key").display());
+    let (went, said) = offline(&home, &["key", "rotate", "--root", "--to", &new_root, "--root-key", &root]);
+    assert!(!went && said.contains("a server is running"), "{said}");
+
+    // Removed, its keys forgotten, the root rotated where it is kept.
+    let old_root = std::fs::read(&root_file).unwrap();
+    server.holon(&["stop", "shop"]);
+    let forgot = server.holon(&["remove", "shop", "--yes", "--forget"]);
+    assert!(forgot.contains("its keys are forgotten") && forgot.contains("the root key is rotated"), "{forgot}");
+    assert_ne!(std::fs::read(&root_file).unwrap(), old_root, "the root rotated in place");
+    let shown = server.holon(&["key", "status"]);
+    assert!(shown.contains("d:shop: forgotten") && !shown.contains("d:shop: version"), "{shown}");
+    server.stop();
+
+    // Its records, kept when it was removed, say they were forgotten.
+    let mut files = Vec::new();
+    files_under(&home, &mut files);
+    let records = files.iter().find(|f| f.to_string_lossy().replace('\\', "/").contains("removed/shop-runs-")).unwrap_or_else(|| panic!("its records: {files:#?}"));
+    let (opened, said) = offline(&home, &["verify", &records.display().to_string(), "--root-key", &root]);
+    assert!(!opened && said.contains("forgotten"), "{said}");
+    // The old root, as a copy of it kept elsewhere would be, opens nothing of the folder now.
+    let old_file = base.join("old.key");
+    std::fs::write(&old_file, &old_root).unwrap();
+    let (went, said) = offline(&home, &["key", "rotate", "--root", "--to", &new_root, "--root-key", &format!("file:{}", old_file.display())]);
+    assert!(!went && said.contains("different root key"), "{said}");
+
+    // The root rotated with the server stopped, to a new place, the old one forgotten there: the
+    // server starts again under the new root, and keeps what it knew.
+    let (went, said) = offline(&home, &["key", "rotate", "--root", "--to", &new_root, "--forget-old", "--root-key", &root]);
+    assert!(went && said.contains("the old root key is gone"), "{said}");
+    assert!(!root_file.exists(), "the old root removed from its file");
+    let port = free_port();
+    let mut again = Server { child: serve(&home, &new_root, port, Stdio::null()), dirs: Vec::new(), port, home: home.clone() };
+    until("holon serve answers under the new root", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let shown = again.holon(&["key", "status"]);
+    assert!(shown.contains("new.key") && shown.contains("d:shop: forgotten"), "{shown}");
+    again.stop();
+}
+
 /// The low-level writers (owner-only, atomic, appending) and the standard library's, outside
 /// test code: each file's count of them, and why it may write past at_rest.rs.
 const WRITERS: &[(&str, usize, &str)] = &[
-    ("at_rest.rs", 5, "where sealing is: it writes what it sealed"),
+    ("at_rest.rs", 6, "where sealing is: it writes what it sealed, and keys.lock, empty"),
     ("bindings.rs", 1, "access.versions.jsonl: lines sealed with seal_line just before"),
     ("blobs.rs", 2, "the file texts' chunks and chunk lists, sealed with seal just before"),
     ("claims.rs", 1, "the state head: a hash, in clear on purpose (§2.5)"),

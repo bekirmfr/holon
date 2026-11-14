@@ -85,6 +85,13 @@ impl KeySource {
     /// Keep a new key here. An environment variable can't be written: the operator sets it.
     pub(crate) fn create(&self) -> Result<MasterKey, String> {
         let key = new_key();
+        self.keep(&key)?;
+        Ok(key)
+    }
+
+    /// Keep `key` here, in place of any kept before (a root rotation, at_rest.rs). An environment
+    /// variable can't be written: the operator sets it.
+    pub(crate) fn keep(&self, key: &MasterKey) -> Result<(), String> {
         let hex = Zeroizing::new(to_hex(key.as_slice()));
         match self {
             KeySource::Os { account } => os_store::write(account, &hex)?,
@@ -100,7 +107,7 @@ impl KeySource {
                 write_private(path, hex.as_bytes()).map_err(|e| format!("could not write the key file {path:?}: {e}"))?;
             }
         }
-        Ok(key)
+        Ok(())
     }
 
     /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an

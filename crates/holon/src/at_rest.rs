@@ -90,9 +90,27 @@ struct KeysFile {
     root_check: String,
     aead: String,
     scopes: BTreeMap<String, ScopeFile>,
-    /// The scopes forgotten, and when: a record sealed under one says so.
+    /// The scopes forgotten, when, and through which version: a record sealed under one of those
+    /// versions says so. The slug deployed again makes its scope anew, from the next version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    forgotten: BTreeMap<String, u64>,
+    forgotten: BTreeMap<String, Forgot>,
+    /// A root rotation under way: every data key wrapped under the next root too, written before
+    /// that root is kept, so a rotation cut short opens under either root ([`Keyring::open`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next: Option<Staged>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct Forgot {
+    at_ms: u64,
+    through: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Staged {
+    root_check: String,
+    /// Each scope's versions, wrapped under the next root (base64url, as [`Wrapped`]).
+    scopes: BTreeMap<String, BTreeMap<u32, String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -118,14 +136,16 @@ struct ScopeKeys {
 struct Inner {
     file: KeysFile,
     open: BTreeMap<String, ScopeKeys>,
+    /// Where the root is kept; none for a keyring kept in memory only.
+    source: Option<KeySource>,
+    /// A memory keyring's root: never written, so what it sealed is gone with the server.
+    memory_root: Option<Key>,
 }
 
 /// The keys the server seals and opens with: shared, as the store is.
 pub(crate) struct Keyring {
-    /// Where `keys.json` is and where its root is kept; none for a keyring kept in memory only.
-    kept: Option<(PathBuf, KeySource)>,
-    /// A memory keyring's root: never written, so what it sealed is gone with the server.
-    memory_root: Option<Key>,
+    /// Where `keys.json` is; none for a keyring kept in memory only.
+    path: Option<PathBuf>,
     inner: RwLock<Inner>,
     /// What the store's file names are keyed by (§2.6).
     names: Key,
@@ -218,9 +238,17 @@ impl Keyring {
         let root = source.read()?.ok_or_else(|| {
             format!("the root key that opens {} isn't in {source}: without it nothing in the data folder can be read (restore the root key, or pass --root-key where it is)", path.display())
         })?;
+        let mut file = file;
+        // A root rotation cut short: finished under the next root if that is the one kept, else
+        // undone (the next root was never kept, or the old one is still passed).
+        let cut_short = file.next.is_some();
         if root_check(&root) != file.root_check {
-            return Err(format!("{source} holds a different root key from the one {} was made under", path.display()));
+            match file.next.take() {
+                Some(next) if next.root_check == root_check(&root) => promote(&mut file, next),
+                _ => return Err(format!("{source} holds a different root key from the one {} was made under", path.display())),
+            }
         }
+        file.next = None;
         let mut open = BTreeMap::new();
         for (scope, kept) in &file.scopes {
             let mut keys = ScopeKeys { current: kept.current, versions: BTreeMap::new() };
@@ -235,7 +263,11 @@ impl Keyring {
         }
         let names = Keyring::unwrap_one(&root, &file, NAMES, NAMES_CONTEXT, path)?;
         let prints = Keyring::unwrap_one(&root, &file, SECRETS, PRINTS_CONTEXT, path)?;
-        Ok(Keyring { kept: Some((path.to_path_buf(), source)), memory_root: None, inner: RwLock::new(Inner { file, open }), names, prints })
+        let keyring = Keyring { path: Some(path.to_path_buf()), inner: RwLock::new(Inner { file, open, source: Some(source), memory_root: None }), names, prints };
+        if cut_short {
+            keyring.persist(&keyring.inner.read().unwrap().file)?;
+        }
+        Ok(keyring)
     }
 
     /// `scope`'s first version's data key, derived for `context`: what never changes with a
@@ -260,7 +292,7 @@ impl Keyring {
             Some(root) => root,
             None => source.create()?,
         };
-        let keyring = Keyring::fresh(&root, key_id, Some((path.to_path_buf(), source)), None);
+        let keyring = Keyring::fresh(&root, key_id, Some(path.to_path_buf()), Some(source), None);
         keyring.persist(&keyring.inner.read().unwrap().file)?;
         Ok(keyring)
     }
@@ -271,10 +303,10 @@ impl Keyring {
         let root = new_key();
         let mut id = [0u8; 8];
         getrandom::fill(&mut id).expect("the OS random source failed");
-        Keyring::fresh(&root, holon_core::hex(id), None, Some(root.clone()))
+        Keyring::fresh(&root, holon_core::hex(id), None, None, Some(root.clone()))
     }
 
-    fn fresh(root: &Key, key_id: String, kept: Option<(PathBuf, KeySource)>, memory_root: Option<Key>) -> Keyring {
+    fn fresh(root: &Key, key_id: String, path: Option<PathBuf>, source: Option<KeySource>, memory_root: Option<Key>) -> Keyring {
         let mut file = KeysFile { format: KEYS_FORMAT, key_id, root_check: root_check(root), aead: AEAD.into(), ..KeysFile::default() };
         let mut open = BTreeMap::new();
         let mut derived = BTreeMap::new();
@@ -286,7 +318,7 @@ impl Keyring {
         }
         let names = derive(NAMES_CONTEXT, derived[NAMES].as_slice());
         let prints = derive(PRINTS_CONTEXT, derived[SECRETS].as_slice());
-        Keyring { kept, memory_root, inner: RwLock::new(Inner { file, open }), names, prints }
+        Keyring { path, inner: RwLock::new(Inner { file, open, source, memory_root }), names, prints }
     }
 
     /// A new data key for `scope` at `version`, and it wrapped under `root`.
@@ -298,70 +330,202 @@ impl Keyring {
 
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
-        let Some((path, _)) = &self.kept else { return Ok(()) };
+        let Some(path) = &self.path else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
         crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
     }
 
-    /// The root, read again where it is kept (and checked): to make a scope.
-    fn root(&self, file: &KeysFile) -> Result<Key, String> {
-        if let Some(root) = &self.memory_root {
+    /// The root, read again where it is kept (and checked): to make a scope or a version.
+    fn root(&self, inner: &Inner) -> Result<Key, String> {
+        if let Some(root) = &inner.memory_root {
             return Ok(root.clone());
         }
-        let (path, source) = self.kept.as_ref().expect("a keyring is kept or in memory");
+        let (path, source) = (self.path.as_deref().unwrap_or(Path::new("keys.json")), inner.source.as_ref().expect("a keyring is kept or in memory"));
         let root = source.read()?.ok_or_else(|| format!("the root key that opens {} isn't in {source} any more", path.display()))?;
-        if root_check(&root) != file.root_check {
+        if root_check(&root) != inner.file.root_check {
             return Err(format!("{source} now holds a different root key from the one {} was made under", path.display()));
         }
         Ok(root)
     }
 
-    /// The id the root is kept under (`holon key status`, step 7).
-    #[allow(dead_code)]
+    /// The id the root is kept under.
     pub(crate) fn key_id(&self) -> String {
         self.inner.read().unwrap().file.key_id.clone()
     }
 
     /// Where the root is kept, if anywhere.
-    pub(crate) fn source(&self) -> Option<&KeySource> {
-        self.kept.as_ref().map(|(_, s)| s)
+    pub(crate) fn source(&self) -> Option<KeySource> {
+        self.inner.read().unwrap().source.clone()
     }
 
     /// `scope`'s current version and its key, the scope made (and `keys.json` written) if it is
-    /// new. A forgotten scope is never made again.
+    /// new. A forgotten scope is made anew from the version after the last one forgotten (its slug
+    /// deployed again), so what was sealed before stays forgotten.
     fn current(&self, scope: &str) -> Result<(u32, Key), String> {
         {
             let inner = self.inner.read().unwrap();
             if let Some(keys) = inner.open.get(scope) {
                 return Ok((keys.current, keys.versions[&keys.current].clone()));
             }
-            if inner.file.forgotten.contains_key(scope) {
-                return Err(format!("the keys of {scope:?} were forgotten: nothing more is sealed under them"));
-            }
         }
         let mut inner = self.inner.write().unwrap();
         if let Some(keys) = inner.open.get(scope) {
             return Ok((keys.current, keys.versions[&keys.current].clone()));
         }
-        let root = self.root(&inner.file)?;
-        let (wrapped, data) = Keyring::new_version(&root, &inner.file.key_id, scope, 1);
+        let version = inner.file.forgotten.get(scope).map_or(1, |f| f.through + 1);
+        let key = self.add_version(&mut inner, scope, version)?;
+        Ok((version, key))
+    }
+
+    /// A new data key for `scope` at `version`, made its current: written to `keys.json` before it
+    /// is used, so nothing is sealed under a key keys.json doesn't keep.
+    fn add_version(&self, inner: &mut Inner, scope: &str, version: u32) -> Result<Key, String> {
+        let root = self.root(inner)?;
+        let (wrapped, data) = Keyring::new_version(&root, &inner.file.key_id, scope, version);
         let mut file = inner.file.clone();
-        file.scopes.insert(scope.to_string(), ScopeFile { current: 1, versions: [(1, wrapped)].into() });
-        // Written before it is used: nothing is sealed under a key keys.json doesn't keep.
+        let kept = file.scopes.entry(scope.to_string()).or_default();
+        kept.current = version;
+        kept.versions.insert(version, wrapped);
         self.persist(&file)?;
         inner.file = file;
         let key = derive(SEAL_CONTEXT, data.as_slice());
-        inner.open.insert(scope.to_string(), ScopeKeys { current: 1, versions: [(1, key.clone())].into() });
-        Ok((1, key))
+        let open = inner.open.entry(scope.to_string()).or_default();
+        open.current = version;
+        open.versions.insert(version, key.clone());
+        Ok(key)
     }
 
     /// The key of `scope` at `version`, or why there is none.
     fn version(&self, scope: &str, version: u32) -> Result<Key, Unreadable> {
         let inner = self.inner.read().unwrap();
-        if let Some(at_ms) = inner.file.forgotten.get(scope) {
-            return Err(Unreadable::Forgotten { scope: scope.into(), at_ms: *at_ms });
+        if let Some(key) = inner.open.get(scope).and_then(|k| k.versions.get(&version)) {
+            return Ok(key.clone());
         }
-        inner.open.get(scope).and_then(|k| k.versions.get(&version)).cloned().ok_or(Unreadable::NoVersion { scope: scope.into(), version })
+        match inner.file.forgotten.get(scope) {
+            Some(f) if version <= f.through => Err(Unreadable::Forgotten { scope: scope.into(), at_ms: f.at_ms }),
+            _ => Err(Unreadable::NoVersion { scope: scope.into(), version }),
+        }
+    }
+
+    /// A new version of `scope`'s data key, sealing from the next write on (`holon key rotate
+    /// <scope>`); the versions before it stay, to open what they sealed. Never `names` (§2.6).
+    pub(crate) fn rotate(&self, scope: &str) -> Result<u32, String> {
+        if scope == NAMES {
+            return Err(
+                "the names key is never rotated: the store's files are named by it, so a new one would lose every value stored before it and store each again (docs/L4s/at-rest-encryption-L4.md §2.6)"
+                    .into(),
+            );
+        }
+        let mut inner = self.inner.write().unwrap();
+        let Some(kept) = inner.file.scopes.get(scope) else {
+            return Err(if inner.file.forgotten.contains_key(scope) {
+                format!("the keys of {scope:?} were forgotten")
+            } else {
+                format!("no keys for {scope:?}: holon key status lists the scopes")
+            });
+        };
+        let version = kept.versions.keys().max().copied().unwrap_or(0) + 1;
+        self.add_version(&mut inner, scope, version)?;
+        Ok(version)
+    }
+
+    /// Forget a deployment's scope (`d:<slug>`): its data keys gone from `keys.json`, so nothing
+    /// sealed under them opens on this server again, in the data folder, the backup folder or the
+    /// removed records ([`Unreadable::Forgotten`]). `Ok(false)`: nothing was ever sealed under it.
+    /// A copy of the whole folder taken before still holds them, wrapped under the root: rotating
+    /// the root after this ([`Keyring::rotate_root`]) is what puts that copy out of reach.
+    pub(crate) fn forget(&self, scope: &str) -> Result<bool, String> {
+        if !scope.starts_with("d:") {
+            return Err(format!("only a deployment's keys are forgotten, not {scope:?}'s"));
+        }
+        let mut inner = self.inner.write().unwrap();
+        let Some(kept) = inner.file.scopes.get(scope) else { return Ok(false) };
+        let through = kept.versions.keys().max().copied().unwrap_or(0);
+        let mut file = inner.file.clone();
+        file.scopes.remove(scope);
+        file.forgotten.insert(scope.to_string(), Forgot { at_ms: now_ms(), through });
+        self.persist(&file)?;
+        inner.file = file;
+        inner.open.remove(scope);
+        Ok(true)
+    }
+
+    /// Every data key wrapped under a new root, kept in `to` (in place when none): the old root
+    /// then opens nothing of this folder. It goes in three writes, so one cut short loses nothing:
+    /// the keys wrapped under the new root are written beside the old (`next`), the new root is
+    /// kept, the old wraps are dropped; [`Keyring::open`] finishes a rotation cut short under the
+    /// new root, or undoes it under the old. An environment variable can't be written: `to` one
+    /// must hold the new root already. The old root stays where it was kept unless that is `to`:
+    /// forgetting it there is the caller's (`holon key rotate --root --forget-old`).
+    pub(crate) fn rotate_root(&self, to: Option<&KeySource>) -> Result<(), String> {
+        self.rotate_root_until(to, true)
+    }
+
+    /// [`Keyring::rotate_root`], stopped after the new root is kept when `finish` is false: a
+    /// rotation cut short, for the tests.
+    fn rotate_root_until(&self, to: Option<&KeySource>, finish: bool) -> Result<(), String> {
+        let mut inner = self.inner.write().unwrap();
+        let old = self.root(&inner)?;
+        let to = to.cloned().or_else(|| inner.source.clone());
+        let new = match &to {
+            Some(source @ KeySource::Env(var)) => source.read()?.ok_or_else(|| format!("{var} isn't set: set it to the new root key (holon serve --new-root-key prints one), then rotate"))?,
+            _ => new_key(),
+        };
+        if root_check(&new) == inner.file.root_check {
+            return Err("that is the root key in use already: a rotation needs a new one".into());
+        }
+        let mut staged = Staged { root_check: root_check(&new), scopes: BTreeMap::new() };
+        for (scope, kept) in &inner.file.scopes {
+            let mut versions = BTreeMap::new();
+            for (version, wrapped) in &kept.versions {
+                let context = wrap_context(&inner.file.key_id, scope, *version);
+                let data = unb64(&wrapped.wrapped)
+                    .and_then(|w| open_with(&old, context.as_bytes(), &w))
+                    .ok_or_else(|| format!("the key of {scope:?} version {version} doesn't open under the root"))?;
+                versions.insert(*version, b64(&seal_with(&new, context.as_bytes(), &data)));
+            }
+            staged.scopes.insert(scope.clone(), versions);
+        }
+        let mut file = inner.file.clone();
+        file.next = Some(staged);
+        self.persist(&file)?;
+        // Kept failing, the old root still opens everything: the staged wraps are dropped on the
+        // next write, or the next open.
+        if let Some(source) = to.as_ref().filter(|s| !matches!(s, KeySource::Env(_))) {
+            source.keep(&new)?;
+        }
+        if inner.memory_root.is_some() {
+            inner.memory_root = Some(new);
+        }
+        if !finish {
+            inner.file = file;
+            inner.source = to;
+            return Ok(());
+        }
+        let next = file.next.take().expect("staged above");
+        promote(&mut file, next);
+        self.persist(&file)?;
+        inner.file = file;
+        inner.source = to;
+        Ok(())
+    }
+
+    /// What `holon key status` shows (`GET /admin/keys`): where the root is kept and the id it is
+    /// kept under, each scope's versions and when each was made, the scopes forgotten. Never a
+    /// key, nor anything of one.
+    pub(crate) fn status(&self) -> serde_json::Value {
+        let inner = self.inner.read().unwrap();
+        serde_json::json!({
+            "key_id": inner.file.key_id,
+            "root": inner.source.as_ref().map_or_else(|| "kept in memory only".to_string(), |s| s.to_string()),
+            "scopes": inner.file.scopes.iter().map(|(scope, kept)| serde_json::json!({
+                "scope": scope,
+                "current": kept.current,
+                "versions": kept.versions.iter().map(|(v, w)| serde_json::json!({ "version": v, "made_ms": w.made_ms })).collect::<Vec<_>>(),
+                "rotates": scope != NAMES,
+            })).collect::<Vec<_>>(),
+            "forgotten": inner.file.forgotten.iter().map(|(scope, f)| serde_json::json!({ "scope": scope, "at_ms": f.at_ms, "through": f.through })).collect::<Vec<_>>(),
+        })
     }
 
     /// `plain` sealed as a whole file under `scope`, for `role`.
@@ -443,6 +607,20 @@ fn line_aad(scope: &str, version: u32, role: &str) -> String {
     format!("a1\0{scope}\0{version}\0{role}")
 }
 
+/// A staged root rotation made the file's: each version's key wrapped under the next root.
+fn promote(file: &mut KeysFile, next: Staged) {
+    for (scope, versions) in next.scopes {
+        if let Some(kept) = file.scopes.get_mut(&scope) {
+            for (version, wrapped) in versions {
+                if let Some(w) = kept.versions.get_mut(&version) {
+                    w.wrapped = wrapped;
+                }
+            }
+        }
+    }
+    file.root_check = next.root_check;
+}
+
 /// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only.
 pub(crate) fn write_private(keys: &Keyring, path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
     let sealed = keys.seal_file(scope, role, bytes).map_err(std::io::Error::other)?;
@@ -472,6 +650,37 @@ pub(crate) fn install(keys: std::sync::Arc<Keyring>) -> Result<(), String> {
 /// The server's keyring.
 pub(crate) fn keys() -> &'static std::sync::Arc<Keyring> {
     KEYS.get_or_init(|| std::sync::Arc::new(Keyring::memory()))
+}
+
+/// The data folder `dir` locked (`keys.lock`, an OS lock, let go when the process ends): a server
+/// holds it while it runs ([`hold_folder`]), so `holon key rotate --root`, which changes
+/// `keys.json` with no server on it, can tell; and a second server on one folder, which would
+/// write `keys.json` over the first's, refuses to start.
+pub(crate) fn lock_folder(dir: &Path) -> Result<std::fs::File, String> {
+    let path = dir.join("keys.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    holon_host::restrict_to_owner(&path).map_err(|e| format!("could not keep {} for its owner alone: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("a server is running on {} (it holds {}): stop it first", dir.display(), path.display())),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("could not lock {}: {e}", path.display())),
+    }
+}
+
+static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// The server's data folder locked for as long as it runs ([`lock_folder`]).
+pub(crate) fn hold_folder(dir: &Path) -> Result<(), String> {
+    let file = lock_folder(dir)?;
+    let _ = HELD.set(file);
+    Ok(())
 }
 
 /// The content store's sealing (holon-host's `AtRest`, §5.4): its units, values and packs sealed
@@ -841,5 +1050,122 @@ mod tests {
         let name = keys.name(&hash);
         assert!(name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{name}");
         assert_ne!(name, holon_core::hex(hash), "not the hash itself");
+    }
+
+    /// Guards: a root rotation leaves every record opening under the new root, and the old root
+    /// opening none of the folder's keys; one cut short after the new root is kept opens under
+    /// the new root (finished) or the old (undone), never neither.
+    /// Why: a rotation that loses a data key loses everything sealed under it; one the old root
+    /// still opens protects nothing (§2.4).
+    #[test]
+    fn a_rotated_root_opens_everything_and_the_old_root_nothing() {
+        let dir = temp("rotate-root");
+        let path = dir.join("keys.json");
+        let made = Keyring::open(&path, Some(&root_arg(&dir, "old.key")), &[]).unwrap();
+        let table = made.seal_file(SERVER, "table: test", b"kept").unwrap();
+        let line = made.seal_line(&deployment("shop"), "log", b"a run").unwrap();
+        made.rotate(&deployment("shop")).unwrap();
+        let later = made.seal_line(&deployment("shop"), "log", b"a later run").unwrap();
+        let name = made.name(&[7; 32]);
+        let new = KeySource::File(dir.join("new.key"));
+        made.rotate_root(Some(&new)).unwrap();
+        assert_eq!(made.source(), Some(new.clone()));
+        // The keyring in use goes on, and makes scopes under the new root.
+        let after = made.seal_line(&deployment("other"), "log", b"x").unwrap();
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(file.get("next").is_none(), "nothing left staged: {file}");
+        let check = |keys: &Keyring| {
+            assert_eq!(keys.open_file("table: test", &table).unwrap().as_slice(), b"kept");
+            assert_eq!(keys.open_line(&deployment("shop"), "log", &line).unwrap().as_slice(), b"a run");
+            assert_eq!(keys.open_line(&deployment("shop"), "log", &later).unwrap().as_slice(), b"a later run");
+            assert_eq!(keys.open_line(&deployment("other"), "log", &after).unwrap().as_slice(), b"x");
+            assert_eq!(keys.name(&[7; 32]), name, "the store's names are the same");
+        };
+        check(&Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap());
+        let old = Keyring::open(&path, Some(&root_arg(&dir, "old.key")), &[]).err().unwrap();
+        assert!(old.contains("different root key"), "{old}");
+        // A rotation in place (to where the root is kept), cut short after the new root is kept:
+        // the next open finishes it.
+        let again = Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap();
+        let before = std::fs::read(dir.join("new.key")).unwrap();
+        again.rotate_root_until(None, false).unwrap();
+        assert_ne!(std::fs::read(dir.join("new.key")).unwrap(), before, "the new root kept in place");
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(file.get("next").is_some(), "cut short: still staged");
+        check(&Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap());
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(file.get("next").is_none(), "finished on open: {file}");
+        // One cut short with the new root kept elsewhere, opened under the old: undone.
+        let third = Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap();
+        third.rotate_root_until(Some(&KeySource::File(dir.join("third.key"))), false).unwrap();
+        check(&Keyring::open(&path, Some(&root_arg(&dir, "new.key")), &[]).unwrap());
+        assert!(Keyring::open(&path, Some(&root_arg(&dir, "third.key")), &[]).is_err(), "undone: the new root opens nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a new version of a scope's data key seals what is written after it, what was
+    /// sealed under the versions before still opens, then and after the server starts again; the
+    /// names key is never rotated.
+    /// Why: a rotation that made old records unreadable would lose the run log; one that didn't
+    /// seal new writes under the new key would rotate nothing.
+    #[test]
+    fn a_new_data_key_version_seals_new_writes_and_old_records_still_open() {
+        let dir = temp("rotate-scope");
+        let path = dir.join("keys.json");
+        let keys = Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[]).unwrap();
+        let first = keys.seal_file(SERVER, "table: test", b"one").unwrap();
+        let line = keys.seal_line(&deployment("shop"), "log", b"a run").unwrap();
+        assert_eq!(keys.rotate(SERVER).unwrap(), 2);
+        assert_eq!(keys.rotate(&deployment("shop")).unwrap(), 2);
+        let second = keys.seal_file(SERVER, "table: test", b"two").unwrap();
+        let later = keys.seal_line(&deployment("shop"), "log", b"a later run").unwrap();
+        assert!(second.starts_with(&file_header(SERVER, 2)), "sealed under version 2");
+        assert!(later.starts_with("a1.2."), "{later}");
+        for keys in [&keys, &Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[]).unwrap()] {
+            assert_eq!(keys.open_file("table: test", &first).unwrap().as_slice(), b"one");
+            assert_eq!(keys.open_file("table: test", &second).unwrap().as_slice(), b"two");
+            assert_eq!(keys.open_line(&deployment("shop"), "log", &line).unwrap().as_slice(), b"a run");
+            assert_eq!(keys.open_line(&deployment("shop"), "log", &later).unwrap().as_slice(), b"a later run");
+        }
+        let names = keys.rotate(NAMES).err().unwrap();
+        assert!(names.contains("never rotated"), "{names}");
+        assert!(keys.rotate("d:never-made").is_err(), "no scope made by a rotation");
+        let status = keys.status();
+        assert_eq!(status["scopes"].as_array().unwrap().iter().find(|s| s["scope"] == SERVER).unwrap()["current"], 2);
+        assert!(!status.to_string().contains("wrapped"), "no key, wrapped or not, in what status shows");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a forgotten deployment's records don't open, and say they were forgotten (not
+    /// damaged), then and after a restart; the slug deployed again seals under a new version,
+    /// and the forgotten ones stay forgotten; the server's own scopes are never forgotten.
+    /// Why: forgetting is the operator's way to make a removed deployment's data unreadable
+    /// everywhere it was copied to by the server (§2.4).
+    #[test]
+    fn a_forgotten_deployment_is_unreadable_everywhere_and_says_so() {
+        let dir = temp("forget");
+        let path = dir.join("keys.json");
+        let keys = Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[]).unwrap();
+        let line = keys.seal_line(&deployment("shop"), "log", b"a run").unwrap();
+        let export = keys.seal_file(&deployment("shop"), "export: shop", b"its records").unwrap();
+        let kept = keys.seal_line(&deployment("kept"), "log", b"another's run").unwrap();
+        assert!(keys.forget(&deployment("shop")).unwrap());
+        assert!(!keys.forget(&deployment("never")).unwrap(), "nothing to forget");
+        assert!(keys.forget(SERVER).is_err() && keys.forget(SECRETS).is_err() && keys.forget(NAMES).is_err());
+        let again = Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[]).unwrap();
+        for keys in [&keys, &again] {
+            assert!(matches!(keys.open_line(&deployment("shop"), "log", &line), Err(Unreadable::Forgotten { .. })));
+            let said = keys.open_file("export: shop", &export).err().unwrap();
+            assert!(matches!(said, Unreadable::Forgotten { .. }) && said.to_string().contains("forgotten"), "{said}");
+            assert_eq!(keys.open_line(&deployment("kept"), "log", &kept).unwrap().as_slice(), b"another's run");
+        }
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(file["scopes"].get("d:shop").is_none() && file["forgotten"]["d:shop"]["through"] == 1, "its keys gone from keys.json: {file}");
+        // The slug deployed again: a new version, and the old records still forgotten.
+        let anew = again.seal_line(&deployment("shop"), "log", b"a new run").unwrap();
+        assert!(anew.starts_with("a1.2."), "{anew}");
+        assert_eq!(again.open_line(&deployment("shop"), "log", &anew).unwrap().as_slice(), b"a new run");
+        assert!(matches!(again.open_line(&deployment("shop"), "log", &line), Err(Unreadable::Forgotten { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

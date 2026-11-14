@@ -1395,6 +1395,17 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry & 
   return asJson<DeploymentEntry & { records: string | null }>(res);
 }
 
+/** What forgetting a removed deployment's keys did (`POST /admin/keys/forget`, keys.rs): whether
+ *  anything was sealed under them, and whether the root key was rotated where it is kept (not when
+ *  it is in an environment variable, `why` says). */
+export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string }; error?: string };
+
+/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: nothing it left opens again. */
+export async function forgetKeys(slug: string): Promise<Forgotten> {
+  const res = await api(`${BASE}/admin/keys/forget`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
+  return asJson<Forgotten>(res);
+}
+
 /** One `(capability, payload)` pair a trigger actually performed — mirrors `PerformedEntry`. */
 export type PerformedEntry = { capability: string; payload: WValue };
 

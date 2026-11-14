@@ -38,7 +38,7 @@ import {
   describeItem,
 } from "./holon";
 import { toDecide, yourSteps } from "./decisions";
-import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, deleteDeployment, forgetKeys, type Forgotten, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
@@ -1708,9 +1708,17 @@ function Canvas({
               card={{
                 onAction: (action, from) => changeDeployment(route.slug, action, from).then(() => refreshDeployments()),
                 onChanged: refreshDeployments,
-                onRemove: async () => {
+                onRemove: async (forget) => {
                   const { records } = await deleteDeployment(route.slug);
-                  toast(`Removed ${route.slug}.${records ? ` Its run records are kept in ${records}.` : ""}`, "ok");
+                  if (!forget) {
+                    toast(`Removed ${route.slug}.${records ? ` Its run records are kept in ${records}.` : ""}`, "ok");
+                  } else {
+                    // Its keys forgotten once it is gone (keys.rs): what it left can't be opened again.
+                    const f: Forgotten = await forgetKeys(route.slug).catch((e: unknown): Forgotten => ({ slug: route.slug, forgotten: false, root: { rotated: false }, error: e instanceof Error ? e.message : String(e) }));
+                    if (f.error) toast(`Removed ${route.slug}, but its keys aren't forgotten: ${f.error}`, "bad");
+                    else if (!f.root.rotated && f.forgotten) toast(`Removed ${route.slug} and forgot its keys. The root key isn't rotated: ${f.root.why ?? ""}`, "bad");
+                    else toast(`Removed ${route.slug} and forgot its keys: nothing it left opens again.`, "ok");
+                  }
                   refreshDeployments();
                   navigate({ kind: "flows" });
                 },

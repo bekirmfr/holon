@@ -82,6 +82,7 @@ mod grants;
 mod heads;
 mod history;
 mod jsonedit;
+mod keys;
 mod flowcmd;
 mod flows;
 mod flowscmd;
@@ -502,6 +503,8 @@ const USAGE: &str = "usage: holon <command>
   feed add|list|remove               bind a name flows listen to to a feed of server-sent events (admin)
   queue add|list|remove              bind a name flows send to and listen to to an SQS queue (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
+  key status|rotate|forget           the keys the server seals its data under: where the root is,
+                                     a new data key, the root rotated (admin)
   host                               what the host holds: memory, its disks, what it keeps (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
@@ -642,6 +645,7 @@ fn main() {
         Some("access") => std::process::exit(accesscmd::access(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
+        Some("key") => std::process::exit(keys::cli(&rest)),
         Some("host") => std::process::exit(storage::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         Some("mail") => std::process::exit(mails::cli(&rest)),
@@ -1006,6 +1010,10 @@ fn serve(args: Vec<String>) {
         if let Err(e) = holon_host::create_private_dir(&dir) {
             refuse_to_start(format!("the data folder {}: {e}", dir.display()));
         }
+        if let Err(e) = at_rest::hold_folder(&dir) {
+            eprintln!("holon: {e}");
+            std::process::exit(1);
+        }
         let sealed: Vec<&Path> = [&secrets_arg, &host_key_arg, &deployments_arg].into_iter().filter(|a| a.as_str() != ":memory:").map(|a| Path::new(a.as_str())).collect();
         at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| refuse_to_start(e))
     } else {
@@ -1062,7 +1070,7 @@ fn serve(args: Vec<String>) {
         &deployments_arg,
         &secrets_arg,
         dotenv_arg.as_deref(),
-        keys.source(),
+        keys.source().as_ref(),
     );
     if kept_anywhere {
         own.push(keys_path.clone());
