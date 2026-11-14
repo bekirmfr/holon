@@ -382,7 +382,38 @@ as they are sealed: an export (`holon export`) is plain, and `holon verify` chec
 
 `<id>` is the one `keys.json` records. Without the right root the server doesn't start; nor does it
 when `keys.json` is missing beside data it sealed. Back the root up apart from the data: one
-without the other opens nothing.
+without the other opens nothing. One server at a time runs on a data folder: it holds
+`keys.lock` while it runs, and a second one started on the same folder refuses.
+
+### Rotating and forgetting keys
+
+`keys.json` keeps a data key for each scope: `server` (its tables and store), `secrets`, `names`
+(the store's file names) and `d:<slug>` for what each deployment wrote. Each has versions, and
+each record names the version that sealed it. [`holon key`](cli.md#holon-key) shows and changes
+them; none of it ever shows a key.
+
+- **A new data key**, `holon key rotate <scope>`: what is written from then on is sealed under the
+  new version; what was sealed under the ones before still opens, so they are kept. `names` is
+  never rotated: a store file's name must stay what it was.
+- **A new root**, `holon key rotate --root --to <SOURCE>`, with the server stopped: every data key
+  is wrapped under a new root, kept where `--to` says; start the server with `--root-key` set to
+  it. No data file is touched. A rotation cut short loses nothing: the next start finishes it, or
+  undoes it, whichever root it is given.
+- **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
+  section): its keys leave `keys.json`, so its kept records, its backups and every file it left
+  open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated
+  where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
+  needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
+  a copy; forgetting doesn't reach it. A root in an environment variable can't be changed by the
+  server: it says so, and `holon key rotate --root` does it with the server stopped.
+
+### What the folder still says
+
+Sealing hides what flows were given and kept, not that they ran. Someone with the data folder and
+without the root learns: which deployments exist (file names are slugs), how many runs each kept
+and when (file sizes and times, a segment's sequence range in its name), how large what they keep
+is, and the state heads (hashes, as an export carries them). `holon.toml`, the witness's queue and
+receipts, and the clean-stop mark are kept as they are: none holds run data.
 
 ### Secrets from elsewhere
 

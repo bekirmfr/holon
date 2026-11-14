@@ -1229,8 +1229,9 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
     let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
     assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
-    // The look gives the log the backup; then runs, and the periodic sync's cut-backs.
-    state.sweeps.act(&state, 1);
+    // Runs at once, and the periodic sync's cut-backs: the deploy gave the log the backup, not
+    // only the housekeeping's next look (`Sweeps::act`), or the first runs it lets go of, before
+    // that look, would be let go of unbacked.
     for i in 0..40 {
         assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
         if i % 7 == 0 {

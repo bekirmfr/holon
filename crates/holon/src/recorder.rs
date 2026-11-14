@@ -705,7 +705,9 @@ impl CutPlan {
         }
         // What it lets go of, written to the backup first: if it can't be, the cut fails, and the
         // cut made holding the lock instead finds the same and doesn't cut (`cut_back`).
-        let gone = opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i]));
+        // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
+        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         keep_aside(self.backup.as_ref(), &self.path, &gone)?;
         let dropped: Vec<&Sealed> = split.drop.iter().map(|j| &self.sealed[*j]).collect();
         keep_segments_aside(self.backup.as_ref(), &self.path, &dropped)?;
@@ -871,7 +873,7 @@ pub(crate) fn sync_logs(deployments: &crate::sync::Mutex<BTreeMap<String, crate:
 /// field and `prev` (left out when empty) its second; so the line is `{"seq":N`, `,"prev":"H"`
 /// when there is one, and the rest as made: exactly what serializing the numbered entry writes,
 /// so the chain hashes the same bytes. Whatever doesn't start so is made again under the lock.
-pub struct Made(Option<String>);
+pub struct Made(Option<String>, Option<String>);
 
 impl Made {
     const START: &'static str = "{\"seq\":0,";
@@ -879,7 +881,7 @@ impl Made {
     /// `entry`'s line, but for its seq and prev: for an entry not yet numbered or chained.
     pub fn of(entry: &LogEntry) -> Made {
         if entry.seq != 0 || !entry.prev.is_empty() || entry.lost_since.is_some() {
-            return Made(None);
+            return Made(None, None);
         }
         // Written into room for this thread's last line (and some), instead of a buffer doubled
         // from nothing: the same bytes (docs/L4s/interpreter-path-L4.md, the per-request
@@ -889,10 +891,10 @@ impl Made {
         }
         let mut buf = Vec::with_capacity(LAST.get().min(1 << 20) + 512);
         if serde_json::to_writer(&mut buf, entry).is_err() {
-            return Made(None);
+            return Made(None, None);
         }
         LAST.set(buf.len());
-        Made(String::from_utf8(buf).ok().filter(|t| t.starts_with(Made::START)))
+        Made(String::from_utf8(buf).ok().filter(|t| t.starts_with(Made::START)), None)
     }
 
     /// Whether its line may hold a `‹`, which redaction would escape where it reads as a mark:
@@ -903,18 +905,25 @@ impl Made {
 
     /// The line numbered `seq`, after the line hashed `prev` (hex, or empty for none).
     pub(crate) fn line(&self, seq: u64, prev: &str) -> Option<String> {
-        let made = self.0.as_deref()?;
-        let rest = &made[Made::START.len() - 1..];
-        let mut line = String::with_capacity(made.len() + prev.len() + 32);
-        line.push_str("{\"seq\":");
-        line.push_str(&seq.to_string());
-        if !prev.is_empty() {
-            line.push_str(",\"prev\":\"");
-            line.push_str(prev);
-            line.push('"');
+        Some(crate::at_rest::rejoin(seq, prev, self.body()?))
+    }
+
+    /// What follows its seq and prev: from the `,` on.
+    fn body(&self) -> Option<&str> {
+        self.0.as_deref().map(|made| &made[Made::START.len() - 1..])
+    }
+
+    /// Its body sealed for the file (`seal`), before the log's lock is taken: under it, the line
+    /// on disk is that and its seq and prev ([`LineSeal::numbered`]). Left as it is if it can't be:
+    /// then the whole line is sealed under the lock, as one not made ahead is.
+    pub(crate) fn sealed(self, seal: Option<&LineSeal>) -> Made {
+        match (seal, self.body()) {
+            (Some(seal), Some(body)) => match seal.seal_body(body) {
+                Ok(sealed) => Made(self.0, Some(sealed)),
+                Err(_) => self,
+            },
+            _ => self,
         }
-        line.push_str(rest);
-        Some(line)
     }
 }
 
@@ -1167,6 +1176,8 @@ pub struct LogCell {
     /// Whether a recent entry's line couldn't be written (`Log::unkept` holds any), as of the
     /// last use of the log: read without its lock.
     lost: AtomicBool,
+    /// Its file's sealing, for a line's body sealed before its lock is taken.
+    seal: Option<LineSeal>,
 }
 
 impl LogCell {
@@ -1174,7 +1185,13 @@ impl LogCell {
         log.defer_cuts = true;
         let next_seq = AtomicU64::new(log.next_seq);
         let synced = Mutex::new(log.next_seq);
-        LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0), lost: AtomicBool::new(false) }
+        let seal = log.line_seal.clone();
+        LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0), lost: AtomicBool::new(false), seal }
+    }
+
+    /// `made` with its body sealed for this log's file, outside its lock ([`Made::sealed`]).
+    pub fn seal_ahead(&self, made: Made) -> Made {
+        made.sealed(self.seal.as_ref())
     }
 
     /// Return once entry `seq` is on disk, with every entry before it: at once if a sync since it
@@ -1687,7 +1704,8 @@ impl Log {
         entry.prev = self.head.clone();
         // After lines that couldn't be written, made here, saying so.
         entry.lost_since = self.lost_since;
-        let made = if entry.lost_since.is_none() { made.line(seq, &entry.prev) } else { None };
+        let (line, ahead) = if entry.lost_since.is_none() { (made.line(seq, &entry.prev), made.1) } else { (None, None) };
+        let made = line;
         let line = match made.map_or_else(|| serde_json::to_string(&entry), Ok) {
             Ok(line) => line,
             Err(e) => {
@@ -1697,8 +1715,11 @@ impl Log {
             }
         };
         // Sealed for the file (at_rest.rs, §5.1); the chain hashes the line as made.
-        let on_disk = match &self.line_seal {
-            Some(seal) => match seal.seal(&line) {
+        let on_disk = match (&self.line_seal, ahead) {
+            // Its body sealed before the lock was taken (`Made::sealed`): only its seq and prev go
+            // in front, in clear.
+            (Some(_), Some(sealed)) => Cow::Owned(LineSeal::numbered(seq, &entry.prev, &sealed)),
+            (Some(seal), None) => match seal.seal(&line) {
                 Ok(sealed) => Cow::Owned(sealed),
                 Err(e) => {
                     eprintln!("holon: could not seal a flow log entry: {e}");
@@ -1706,7 +1727,7 @@ impl Log {
                     return seq;
                 }
             },
-            None => Cow::Borrowed(line.as_str()),
+            (None, _) => Cow::Borrowed(line.as_str()),
         };
         let (at, at_ms) = (LineAt { offset: 0, len: on_disk.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
         self.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
@@ -1949,7 +1970,9 @@ impl Log {
         }
         // What it lets go of, written to the backup first; if it can't be, no cut: the file
         // holds them until it can, and the host warns (storage.rs).
-        let gone = opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i]));
+        // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
+        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         let dropped: Vec<Sealed> = split.drop.iter().map(|j| self.sealed[*j].clone()).collect();
         let aside = keep_aside(self.backup.as_ref(), &path, &gone).and_then(|()| keep_segments_aside(self.backup.as_ref(), &path, &dropped.iter().collect::<Vec<_>>()));
         match aside {
@@ -2301,7 +2324,7 @@ mod tests {
             log.push(entry());
         }
         // Each line sealed on disk (at_rest.rs); the chain is over the lines as made.
-        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.")), "sealed");
+        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.") || l.starts_with("r1.")), "sealed");
         let lines = open_lines(&path);
         let first: LogEntry = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(first.prev, "", "the first entry has nothing before it");

@@ -204,6 +204,9 @@ pub(crate) fn load_deployments(
         println!("loaded deployment {:?} from {file:?} (triggers: {triggers:?})", record.slug);
         let mut log = Log::for_deployment(path, &record.slug);
         log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
+        // Writing what it lets go of to the backup from its first run, as a new deployment's does
+        // (deploy.rs), not only from the housekeeping's first look.
+        log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
             eprintln!(

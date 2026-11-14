@@ -495,6 +495,42 @@ compute on a worker. `nothing_a_run_computes_holds_up_the_data_plane`
 (`crates/holon/tests/data_plane.rs`, against the real server) fails, with a single long run, if
 anything does.
 
+### Encryption at rest (2026-11-14)
+
+Everything the server keeps is sealed (docs/L4s/at-rest-encryption-L4.md): a run log a line at a
+time, the tables, the store's files. Its cost, by the stress-test sample (`holon load`, each route
+2 s warm then 6 s at 16 connections, a fresh home and server each round, the builds in turn, three
+rounds), on the 16-core Windows desktop above, release builds of `7d407fd3` (before) and step 8
+of the L4 (after), requests a second:
+
+| Route | before | after | after ÷ before |
+|---|---:|---:|---:|
+| `GET /strict` | 2,925–3,025 | 2,733–2,847 | 0.90–0.97 (an earlier pair: 0.99) |
+| `GET /lazy` | 24,517–26,046 | 21,819–22,479 | 0.86–0.89 |
+| `GET /unrecorded` | 80,786–82,120 | 79,059–81,829 | 0.97–1.01 |
+
+Strict is the disk's pace, and an unrecorded run seals nothing. Lazy is where it shows: it runs at
+the pace of its log's lock, and a sealed line costs about 7 µs (a 3.9 KB line: 6 µs of
+XChaCha20-Poly1305 and 1 µs of base64, measured in-process). What was found on the way, each
+measured against a control build that writes the log in clear (lazy 24,878–25,646, as before):
+
+- **Sealed under the log's lock, a whole line:** 14,944–15,820, a third lost. The lock is per
+  deployment, and the seal held it. So a line's body (everything after its `seq` and `prev`) is
+  sealed before the lock is taken, beside where the line is made (`Made::sealed`, firing.rs), and
+  under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::numbered`). Seq and prev are in clear
+  on disk; the chain hashes the line as made, so one changed breaks it at the next line
+  (`a_line_sealed_ahead_opens_to_the_line_that_was_made`). This is §7's fallback, and it took lazy
+  back to 21,618–22,440.
+- **A line leaving the log opened for nothing:** a cut-back opened each line it let go of to keep
+  aside for the backup, with no backup set too: one decrypt a run. Now only with a backup.
+- **The core's base64 decoder** looks each character up in its alphabet: 1.75 µs to write 1.5 KB,
+  more to read 5 KB. at_rest.rs has a table-driven base64url of its own, held to the core's by
+  `base64url_here_is_the_cores`.
+
+What is left is CPU: each line is sealed once and opened once more when a cut-back gzips it into a
+segment. A faster AEAD (the crates pick AVX2 at runtime) or a segment made from the lines still in
+memory would be the next places to look.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping

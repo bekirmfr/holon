@@ -386,7 +386,15 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
             // The log goes on across versions: a run of the old version still in flight logs to it.
             Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
-            None => (Arc::new(LogCell::new(Log::for_deployment(deployments_path, &body.slug))), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
+            None => {
+                let mut log = Log::for_deployment(deployments_path, &body.slug);
+                // Writing what it lets go of to the backup from its first run, not only from the
+                // housekeeping's next look (storage.rs `act`, which also says whether a full disk
+                // may let them go without): or a flow running past its `keep` in its first seconds
+                // lets its oldest go unbacked.
+                log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+                (Arc::new(LogCell::new(log)), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug))
+            }
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed

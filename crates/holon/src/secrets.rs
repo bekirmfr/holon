@@ -18,8 +18,8 @@
 //! - Redacted: every value a run logs, and every reply the control plane sends about a
 //!   deployment (its state, its sessions, a trigger's or a "send live" answer), has each secret
 //!   value replaced by `‹secret:name v3 #a1b2c3d4›`: its name, the version the value is of, and
-//!   the value's fingerprint (keyed by the master key, sealing.rs), so which value a run had can
-//!   be told (an old key, the one just set) without the log holding it. Each run's entry also
+//!   the value's fingerprint (keyed by a key derived from the secrets data key, at_rest.rs), so
+//!   which value a run had can be told (an old key, the one just set) without the log holding it. Each run's entry also
 //!   records the versions it was given (`secrets`). Only literal occurrences are caught: a value transformed
 //!   first (hashed, encoded, sliced) can't be recognised. Values shorter than
 //!   [`MIN_SECRET_LEN`] are refused, since they would match ordinary text.

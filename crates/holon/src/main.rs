@@ -1015,7 +1015,11 @@ fn serve(args: Vec<String>) {
             std::process::exit(1);
         }
         let sealed: Vec<&Path> = [&secrets_arg, &host_key_arg, &deployments_arg].into_iter().filter(|a| a.as_str() != ":memory:").map(|a| Path::new(a.as_str())).collect();
-        at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| refuse_to_start(e))
+        // Its refusal says what to do itself: moving `keys.json` aside would lose everything.
+        at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| {
+            eprintln!("holon: {e}");
+            std::process::exit(1);
+        })
     } else {
         at_rest::Keyring::memory()
     });

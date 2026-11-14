@@ -14,7 +14,11 @@
 //!   and the nonce, ciphertext and tag in base64url, so a file of lines still splits on `\n`.
 //!   Each binds what it is for (`role`) as associated data, so a record moved to another role,
 //!   scope or version fails to open; a line's doesn't name its place in a log, so a cut-back
-//!   copies sealed lines byte for byte (§4).
+//!   copies sealed lines byte for byte (§4). A run log's line is sealed apart from its `seq` and
+//!   `prev`, before the log's lock is taken, and they are kept in clear before it
+//!   (`r1.<seq>.<prev>.<v>.<body>`): sealing a whole line under the lock cost lazy runs a third of
+//!   their throughput (§7's fallback, measured in docs/engineering/performance.md). The chain
+//!   still hashes the whole line as made, so a seq or prev changed on disk breaks it.
 //! - **Nothing plain is read where a sealed record belongs**: [`Unreadable::NotSealed`].
 //!
 //! The root key is read when the keyring opens and when a scope is made, and not kept: what the
@@ -38,6 +42,8 @@ pub(crate) type Key = Zeroizing<[u8; 32]>;
 const MAGIC: &[u8; 4] = b"HLA1";
 /// What a sealed line starts with.
 const LINE: &str = "a1.";
+/// What a run log's line sealed apart from its seq and prev starts with.
+const NUMBERED: &str = "r1.";
 const NONCE: usize = 24;
 const KEYS_FORMAT: u32 = 1;
 const AEAD: &str = "xchacha20poly1305";
@@ -157,12 +163,66 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// base64url, unpadded, as `holon_core::bytes_text(_, "base64url")` writes it, by table: every
+/// sealed line and value goes through these, under a log's lock, and the core's decoder looks
+/// each character up in its alphabet one by one (several times slower on a 5 KB line: measured in
+/// docs/engineering/performance.md, encryption at rest). The test holds the two to one another.
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Each byte's place in [`B64`], or 0xff for one that isn't in it.
+const UNB64: [u8; 256] = {
+    let mut t = [0xffu8; 256];
+    let mut i = 0;
+    while i < 64 {
+        t[B64[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
 fn b64(bytes: &[u8]) -> String {
-    holon_core::bytes_text(bytes, "base64url").expect("base64url writes any bytes")
+    let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut chunks = bytes.chunks_exact(3);
+    for c in &mut chunks {
+        let n = u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]);
+        out.extend_from_slice(&[B64[(n >> 18) as usize & 63], B64[(n >> 12) as usize & 63], B64[(n >> 6) as usize & 63], B64[n as usize & 63]]);
+    }
+    match *chunks.remainder() {
+        [a] => out.extend_from_slice(&[B64[usize::from(a >> 2)], B64[usize::from(a & 3) << 4]]),
+        [a, b] => out.extend_from_slice(&[B64[usize::from(a >> 2)], B64[usize::from(a & 3) << 4 | usize::from(b >> 4)], B64[usize::from(b & 15) << 2]]),
+        _ => {}
+    }
+    String::from_utf8(out).expect("base64url is ASCII")
 }
 
+/// The bytes `text` encodes, unpadded base64url; none for any other character, a length no
+/// encoding has, or leftover bits that aren't zero (one text, one decoding, as the core's).
 fn unb64(text: &str) -> Option<Vec<u8>> {
-    holon_core::text_bytes(text, "base64url")
+    let s = text.as_bytes();
+    if s.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3 + 2);
+    let mut chunks = s.chunks_exact(4);
+    for c in &mut chunks {
+        let (a, b, d, e) = (UNB64[c[0] as usize], UNB64[c[1] as usize], UNB64[c[2] as usize], UNB64[c[3] as usize]);
+        if (a | b | d | e) & 0xc0 != 0 {
+            return None;
+        }
+        let n = u32::from(a) << 18 | u32::from(b) << 12 | u32::from(d) << 6 | u32::from(e);
+        out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    }
+    let rest: Vec<u8> = chunks.remainder().iter().map(|c| UNB64[*c as usize]).collect();
+    if rest.iter().any(|v| v & 0xc0 != 0) {
+        return None;
+    }
+    match *rest.as_slice() {
+        [a, b] if b & 15 == 0 => out.push(a << 2 | b >> 4),
+        [a, b, d] if d & 3 == 0 => out.extend_from_slice(&[a << 2 | b >> 4, (b & 15) << 4 | d >> 2]),
+        [] => {}
+        _ => return None,
+    }
+    Some(out)
 }
 
 fn root_check(root: &Key) -> String {
@@ -561,6 +621,23 @@ impl Keyring {
         Ok(format!("{LINE}{version}.{}", b64(&seal_with(&key, line_aad(scope, version, role).as_bytes(), plain))))
     }
 
+    /// A run log line's body (all but its seq and the hash before it) sealed under `scope` for
+    /// `role`, before they are known: `<version>.<base64url>`.
+    pub(crate) fn seal_body(&self, scope: &str, role: &str, body: &[u8]) -> Result<String, String> {
+        let (version, key) = self.current(scope)?;
+        Ok(format!("{version}.{}", b64(&seal_with(&key, body_aad(scope, version, role).as_bytes(), body))))
+    }
+
+    /// A body sealed by [`Keyring::seal_body`] (`<version>.<base64url>`), opened.
+    fn open_body(&self, scope: &str, role: &str, sealed: &str) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
+        let (version, body) = sealed.split_once('.').ok_or_else(|| Unreadable::Damaged("no version".into()))?;
+        let version: u32 = version.parse().map_err(|_| Unreadable::Damaged("its version isn't a number".into()))?;
+        let key = self.version(scope, version)?;
+        let sealed = unb64(body.trim_end()).ok_or_else(|| Unreadable::Damaged("not base64url".into()))?;
+        open_with(&key, body_aad(scope, version, role).as_bytes(), &sealed)
+            .ok_or_else(|| Unreadable::Damaged(format!("it doesn't open as {role:?} under {scope:?} version {version} (changed, or sealed by another folder's keys)")))
+    }
+
     /// A line sealed under `scope` for `role`, opened.
     pub(crate) fn open_line(&self, scope: &str, role: &str, line: &str) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
         let rest = line.strip_prefix(LINE).ok_or(Unreadable::NotSealed)?;
@@ -605,6 +682,25 @@ fn file_aad(header: &[u8], role: &str) -> Vec<u8> {
 
 fn line_aad(scope: &str, version: u32, role: &str) -> String {
     format!("a1\0{scope}\0{version}\0{role}")
+}
+
+fn body_aad(scope: &str, version: u32, role: &str) -> String {
+    format!("r1\0{scope}\0{version}\0{role}")
+}
+
+/// A run log's line from its seq, the hash of the line before (hex, empty for none) and its body
+/// (what follows them, from its `,`): the line as it was made, and is hashed.
+pub(crate) fn rejoin(seq: u64, prev: &str, body: &str) -> String {
+    let mut line = String::with_capacity(body.len() + prev.len() + 32);
+    line.push_str("{\"seq\":");
+    line.push_str(&seq.to_string());
+    if !prev.is_empty() {
+        line.push_str(",\"prev\":\"");
+        line.push_str(prev);
+        line.push('"');
+    }
+    line.push_str(body);
+    line
 }
 
 /// A staged root rotation made the file's: each version's key wrapped under the next root.
@@ -813,9 +909,31 @@ impl LineSeal {
         self.keys.seal_line(&self.scope, &self.role, plain.as_bytes()).map_err(std::io::Error::other)
     }
 
+    /// A run log line's body (from the `,` after its seq and prev) sealed before they are known,
+    /// so outside the log's lock: for [`LineSeal::numbered`] under it.
+    pub(crate) fn seal_body(&self, body: &str) -> std::io::Result<String> {
+        self.keys.seal_body(&self.scope, &self.role, body.as_bytes()).map_err(std::io::Error::other)
+    }
+
+    /// The line on disk for a body sealed ahead: its seq and prev in clear before it.
+    pub(crate) fn numbered(seq: u64, prev: &str, sealed_body: &str) -> String {
+        format!("{NUMBERED}{seq}.{prev}.{sealed_body}")
+    }
+
     /// A line as it is on disk, opened: none if it doesn't (cut short as it was written, changed,
-    /// or plain where a sealed one belongs).
+    /// or plain where a sealed one belongs). A run log's line sealed apart from its seq and prev
+    /// is opened to the whole line, as it was made.
     pub(crate) fn open(&self, line: &str) -> Option<String> {
+        if let Some(numbered) = line.strip_prefix(NUMBERED) {
+            let (seq, rest) = numbered.split_once('.')?;
+            let (prev, sealed) = rest.split_once('.')?;
+            let seq: u64 = seq.parse().ok()?;
+            if !prev.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            let body = self.keys.open_body(&self.scope, &self.role, sealed).ok()?;
+            return Some(rejoin(seq, prev, std::str::from_utf8(&body).ok()?));
+        }
         let plain = self.keys.open_line(&self.scope, &self.role, line).ok()?;
         String::from_utf8(plain.to_vec()).ok()
     }
@@ -1167,5 +1285,62 @@ mod tests {
         assert_eq!(again.open_line(&deployment("shop"), "log", &anew).unwrap().as_slice(), b"a new run");
         assert!(matches!(again.open_line(&deployment("shop"), "log", &line), Err(Unreadable::Forgotten { .. })));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: the table-driven base64url here writes what the core's writes, for every length,
+    /// and reads back exactly what the core's reads: the same texts refused (a character outside
+    /// the alphabet, a length none has, leftover bits set), the same bytes from the rest.
+    /// Why: it replaced the core's on every sealed line for speed; a text one reads and the other
+    /// doesn't would make a sealed record unreadable, or two texts open as one.
+    #[test]
+    fn base64url_here_is_the_cores() {
+        let mut bytes = vec![0u8; 300];
+        getrandom::fill(&mut bytes).unwrap();
+        for len in 0..bytes.len() {
+            let b = &bytes[..len];
+            let core = holon_core::bytes_text(b, "base64url").unwrap();
+            assert_eq!(b64(b), core, "{len} bytes");
+            assert_eq!(unb64(&core).as_deref(), Some(b), "{len} bytes back");
+            // Every last character, and characters outside the alphabet, read as the core reads them.
+            if let Some(last) = core.len().checked_sub(1) {
+                for c in B64.iter().chain(b"=+/ .".iter()) {
+                    let mut t = core.clone().into_bytes();
+                    t[last] = *c;
+                    let t = String::from_utf8(t).unwrap();
+                    assert_eq!(unb64(&t), holon_core::text_bytes(&t, "base64url").filter(|_| !t.contains('=')), "{t:?}");
+                }
+            }
+        }
+        for t in ["A", "AAAAA", "A=", "AA=="] {
+            assert_eq!(unb64(t), None, "{t:?}");
+        }
+    }
+
+    /// Guards: a run log line sealed apart from its seq and prev (before the log's lock) opens to
+    /// the very line that was made and hashed; its seq or prev changed on disk opens to another
+    /// line (whose hash the next line's prev no longer names); its body moved to another
+    /// deployment's log, or another role, doesn't open.
+    /// Why: sealing outside the lock keeps seq and prev in clear; the chain, not the AEAD, is what
+    /// holds them (docs/L4s/at-rest-encryption-L4.md §7).
+    #[test]
+    fn a_line_sealed_ahead_opens_to_the_line_that_was_made() {
+        let keys = std::sync::Arc::new(Keyring::memory());
+        let seal = LineSeal::with(std::sync::Arc::clone(&keys), &deployment("shop"), role::LOG);
+        let body = r#","at_ms":1,"answer":"a secret answer"}"#;
+        let sealed = seal.seal_body(body).unwrap();
+        let prev = "ab".repeat(32);
+        let line = LineSeal::numbered(7, &prev, &sealed);
+        assert!(line.starts_with(&format!("r1.7.{prev}.1.")) && !line.contains("secret"), "{line}");
+        assert_eq!(seal.open(&line).unwrap(), rejoin(7, &prev, body));
+        assert_eq!(rejoin(7, &prev, body), format!(r#"{{"seq":7,"prev":"{prev}","at_ms":1,"answer":"a secret answer"}}"#));
+        assert_eq!(seal.open(&LineSeal::numbered(0, "", &sealed)).unwrap(), format!(r#"{{"seq":0{body}"#), "the first line has no prev");
+        // Changed in clear: another line, so another hash.
+        let moved = seal.open(&LineSeal::numbered(8, &prev, &sealed)).unwrap();
+        assert_ne!(moved, rejoin(7, &prev, body));
+        assert_eq!(seal.open(&line.replacen(&prev, &"cd".repeat(32), 1)).unwrap(), rejoin(7, &"cd".repeat(32), body));
+        assert!(seal.open(&line.replacen(&prev, "not-hex", 1)).is_none(), "a prev that isn't a hash");
+        // Another log, another role.
+        assert!(LineSeal::with(std::sync::Arc::clone(&keys), &deployment("other"), role::LOG).open(&line).is_none());
+        assert!(LineSeal::with(std::sync::Arc::clone(&keys), &deployment("shop"), role::EVENTS).open(&line).is_none());
     }
 }

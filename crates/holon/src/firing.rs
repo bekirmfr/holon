@@ -1194,7 +1194,8 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     entry.session = session;
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
-    let made = redacted_line(&redactor, &mut entry);
+    // And its body sealed, for the same reason (at_rest.rs).
+    let made = log.seal_ahead(redacted_line(&redactor, &mut entry));
     let seq = log.with(|log| {
         // Its packs are held in the log's order, to go out once its record is on disk: the run is
         // over and its writes have landed, and what a subscriber gets is what the log holds, after
