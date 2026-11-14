@@ -517,7 +517,7 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
 - **Sealed under the log's lock, a whole line:** 14,944–15,820, a third lost. The lock is per
   deployment, and the seal held it. So a line's body (everything after its `seq` and `prev`) is
   sealed before the lock is taken, beside where the line is made (`Made::sealed`, firing.rs), and
-  under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::numbered`). Seq and prev are in clear
+  under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::number`). Seq and prev are in clear
   on disk; the chain hashes the line as made, so one changed breaks it at the next line
   (`a_line_sealed_ahead_opens_to_the_line_that_was_made`). This is §7's fallback, and it took lazy
   back to 21,618–22,440.
@@ -527,9 +527,36 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
   more to read 5 KB. at_rest.rs has a table-driven base64url of its own, held to the core's by
   `base64url_here_is_the_cores`.
 
-What is left is CPU: each line is sealed once and opened once more when a cut-back gzips it into a
-segment. A faster AEAD (the crates pick AVX2 at runtime) or a segment made from the lines still in
-memory would be the next places to look.
+That left lazy 11–14% down, and the seal no longer under the lock. Timed inside it (each piece of
+`push_made` and `LogCell::with`'s wait and hold, instrumented builds of both): lazy is the lock's
+pace, a request waiting 380–520 µs for it and each holding it 32–39 µs before, 38–44 µs after;
+those 6 µs are the whole loss. Before: 31 µs of `push_made`, 22 of them the line's write to the
+file, 4.4 its hash, 1.1 the line made again from its parts. After, 4.4 µs more: about 3 the line
+on disk made under the lock (`r1.` and the sealed body, 5 KB, allocated and copied, then copied
+again with its newline to be written), 1.3 the write a third longer (base64).
+
+- **Nothing made or copied under the lock but the prefix:** a body sealed ahead is framed
+  (`at_rest::Framed`): its sealed text and newline after room for what goes in front of it, the
+  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes) is written
+  into that room and the buffer written as it is. And the line as made, which the chain hashes, is
+  no longer made again under the lock to be hashed: `chain_hash` hashes its seq and prev, then its
+  body, held to `line_hash` of the line made whole by
+  `a_line_hashed_in_parts_hashes_as_the_line_made_whole` (2026-11-15). Each `push_made`: 30–32 µs
+  against 29–31 before.
+
+Lazy, rounds in turn (2 s warm, 6 s at 16 connections; seven pairs, the machine 50–60% busy):
+
+| | requests a second | new ÷ before |
+|---|---:|---:|
+| before (`7d407fd3`) | 25,376–29,187 | |
+| the line framed | 23,962–26,957 | 0.88–0.96 (six of seven 0.93–0.96) |
+| sealed ahead, as it was | 23,143–25,542 (three rounds) | 0.83–0.88 |
+
+The CPU a request costs the server is up 27–37 µs (the seal, and its open again when a cut-back
+gzips the line into a segment): off the lock now, so it shows only on a machine the server keeps
+busy. The write itself, 20–22 µs of each hold before encryption as after, is the next place to
+look, for every log: a lazy log could keep its newest lines in memory and write them with its
+sync.
 
 ### Limits
 

@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use holon_core::Value;
 
-use crate::at_rest::{role, LineSeal};
+use crate::at_rest::{role, Framed, LineSeal};
 use crate::paths::Place;
 use std::borrow::Cow;
 use crate::{PerformedEntry, SValue};
@@ -62,6 +62,23 @@ pub fn keep() -> usize {
 /// A line's hash in the chain, hex.
 pub fn line_hash(line: &str) -> String {
     blake3::hash(line.as_bytes()).to_hex().to_string()
+}
+
+/// The hash of the line numbered `seq` after the line hashed `prev` with `body` ([`Made`]), and
+/// its length, as [`line_hash`] of the line made whole would say, without making it: under the
+/// log's lock, nothing is copied that needn't be (docs/engineering/themes/performance.md).
+pub(crate) fn chain_hash(seq: u64, prev: &str, body: &str) -> (String, usize) {
+    let mut digits = [0u8; 20];
+    let seq = crate::at_rest::decimal(seq, &mut digits);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"{\"seq\":").update(seq);
+    let mut len = 7 + seq.len();
+    if !prev.is_empty() {
+        hasher.update(b",\"prev\":\"").update(prev.as_bytes()).update(b"\"");
+        len += 10 + prev.len();
+    }
+    hasher.update(body.as_bytes());
+    (hasher.finalize().to_hex().to_string(), len + body.len())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -873,7 +890,7 @@ pub(crate) fn sync_logs(deployments: &crate::sync::Mutex<BTreeMap<String, crate:
 /// field and `prev` (left out when empty) its second; so the line is `{"seq":N`, `,"prev":"H"`
 /// when there is one, and the rest as made: exactly what serializing the numbered entry writes,
 /// so the chain hashes the same bytes. Whatever doesn't start so is made again under the lock.
-pub struct Made(Option<String>, Option<String>);
+pub struct Made(Option<String>, Option<crate::at_rest::Framed>);
 
 impl Made {
     const START: &'static str = "{\"seq\":0,";
@@ -914,7 +931,7 @@ impl Made {
     }
 
     /// Its body sealed for the file (`seal`), before the log's lock is taken: under it, the line
-    /// on disk is that and its seq and prev ([`LineSeal::numbered`]). Left as it is if it can't be:
+    /// on disk is that and its seq and prev ([`LineSeal::number`]). Left as it is if it can't be:
     /// then the whole line is sealed under the lock, as one not made ahead is.
     pub(crate) fn sealed(self, seal: Option<&LineSeal>) -> Made {
         match (seal, self.body()) {
@@ -1704,43 +1721,53 @@ impl Log {
         entry.prev = self.head.clone();
         // After lines that couldn't be written, made here, saying so.
         entry.lost_since = self.lost_since;
-        let (line, ahead) = if entry.lost_since.is_none() { (made.line(seq, &entry.prev), made.1) } else { (None, None) };
-        let made = line;
-        let line = match made.map_or_else(|| serde_json::to_string(&entry), Ok) {
-            Ok(line) => line,
-            Err(e) => {
-                eprintln!("holon: could not write a flow log entry: {e}");
-                self.unkept(seq);
-                return seq;
+        // The line on disk, framed to be written as it is, sealed for the file (at_rest.rs, §5.1);
+        // and the line as made, which the chain hashes: its hash and its length.
+        let sealing = self.line_seal.is_some();
+        let (mut on_disk, made_len, hash) = match (entry.lost_since, made) {
+            // Its body sealed before the lock was taken (`Made::sealed`): only its seq and prev go
+            // in front, in clear, into the room left for them, and the line as made is hashed in
+            // its parts. Nothing as long as a line is made or copied here: under the lock, a copy
+            // costs every run waiting on it (docs/engineering/themes/performance.md).
+            (None, Made(Some(text), Some(mut framed))) if sealing => {
+                LineSeal::number(&mut framed, seq, &entry.prev);
+                let (hash, len) = chain_hash(seq, &entry.prev, &text[Made::START.len() - 1..]);
+                (framed, len, hash)
+            }
+            (lost_since, made) => {
+                let line = if lost_since.is_none() { made.line(seq, &entry.prev) } else { None };
+                let line = match line.map_or_else(|| serde_json::to_string(&entry), Ok) {
+                    Ok(line) => line,
+                    Err(e) => {
+                        eprintln!("holon: could not write a flow log entry: {e}");
+                        self.unkept(seq);
+                        return seq;
+                    }
+                };
+                let on_disk = match self.line_seal.as_ref().map(|seal| seal.seal(&line)) {
+                    Some(Ok(sealed)) => Framed::of(&sealed),
+                    Some(Err(e)) => {
+                        eprintln!("holon: could not seal a flow log entry: {e}");
+                        self.unkept(seq);
+                        return seq;
+                    }
+                    None => Framed::of(&line),
+                };
+                (on_disk, line.len(), line_hash(&line))
             }
         };
-        // Sealed for the file (at_rest.rs, §5.1); the chain hashes the line as made.
-        let on_disk = match (&self.line_seal, ahead) {
-            // Its body sealed before the lock was taken (`Made::sealed`): only its seq and prev go
-            // in front, in clear.
-            (Some(_), Some(sealed)) => Cow::Owned(LineSeal::numbered(seq, &entry.prev, &sealed)),
-            (Some(seal), None) => match seal.seal(&line) {
-                Ok(sealed) => Cow::Owned(sealed),
-                Err(e) => {
-                    eprintln!("holon: could not seal a flow log entry: {e}");
-                    self.unkept(seq);
-                    return seq;
-                }
-            },
-            (None, _) => Cow::Borrowed(line.as_str()),
-        };
-        let (at, at_ms) = (LineAt { offset: 0, len: on_disk.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
+        let (at, at_ms) = (LineAt { offset: 0, len: on_disk.line().len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
         self.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
         self.note_failed(&entry);
         self.entries.push_back(entry);
-        self.entry_lines.push_back(line.len());
-        self.entry_bytes += line.len() as u64;
+        self.entry_lines.push_back(made_len);
+        self.entry_bytes += made_len as u64;
         self.prune(now_ms());
         // The chain goes on from lines in the file, and the witness is sent only their heads: a
         // line that couldn't be written is said lost by the next that is.
-        match self.keep_line(&on_disk, at) {
+        match self.keep_line(&mut on_disk, at) {
             Ok(()) => {
-                self.head = line_hash(&line);
+                self.head = hash;
                 self.lost_since = None;
                 self.export("run", seq, &self.head, at_ms);
             }
@@ -1766,7 +1793,7 @@ impl Log {
     /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
     /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
     /// file cut back to what it keeps.
-    fn keep_line(&mut self, line: &str, mut at: LineAt) -> std::io::Result<()> {
+    fn keep_line(&mut self, line: &mut Framed, mut at: LineAt) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
         #[cfg(test)]
         if self.fail_writes {
@@ -1780,14 +1807,14 @@ impl Log {
         let past = self.written + 1 > 2 * self.keep.min(self.hot) || self.file_aged(now_ms());
         // Cut holding the lock (a log used on its own); one that couldn't keep what it lets go of
         // aside didn't cut, and the line is appended as any is.
-        if past && !self.defer_cuts && self.cut_back(Some((line, at.clone())))? {
+        if past && !self.defer_cuts && self.cut_back(Some((std::str::from_utf8(line.line()).expect("a line is made from a str"), at.clone())))? {
             return Ok(());
         }
         if self.written == 0 {
             self.file_oldest_ms = at.at_ms;
         }
         let after_cut = std::mem::take(&mut self.cut);
-        let text = if after_cut { format!("\n{line}\n") } else { format!("{line}\n") };
+        let text = line.text(after_cut);
         if self.handle.is_none() {
             let new = !path.exists();
             let mut options = std::fs::OpenOptions::new();
@@ -1803,7 +1830,7 @@ impl Log {
             }
             self.handle = Some(file);
         }
-        let bytes = text.as_bytes();
+        let bytes = text;
         #[cfg(test)]
         let bytes = if self.fail_partway { &bytes[..bytes.len() / 2] } else { bytes };
         let (put, wrote) = write_counted(self.handle.as_mut().expect("opened above"), bytes);
@@ -2247,6 +2274,20 @@ pub fn body_text(body: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::at_rest::testing::{open_lines, seal_of, sealed, write_lines};
+
+    /// Guards: the chain's hash of a line made in parts (its seq and prev, then its body) is the
+    /// hash of the line made whole, and its length the line's: with a prev and without, at seq 0
+    /// and the longest.
+    /// Why: under the log's lock the line as made isn't made again, only hashed in its parts
+    /// (`chain_hash`); a hash that differed would break every chain.
+    #[test]
+    fn a_line_hashed_in_parts_hashes_as_the_line_made_whole() {
+        let body = r#","at_ms":1,"answer":"‹a›"}"#;
+        for (seq, prev) in [(0, String::new()), (7, "ab".repeat(32)), (u64::MAX, "cd".repeat(32))] {
+            let whole = crate::at_rest::rejoin(seq, &prev, body);
+            assert_eq!(chain_hash(seq, &prev, body), (line_hash(&whole), whole.len()), "{whole}");
+        }
+    }
 
     fn entry() -> LogEntry {
         LogEntry {
