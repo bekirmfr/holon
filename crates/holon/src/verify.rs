@@ -52,10 +52,11 @@ pub(crate) const FORMAT: &str = "holon-runs/1";
 pub(crate) const WITHHELD_NODE: &str = "it computed a value from a secret, which the log never keeps: only the secret could compute it again";
 
 /// What of a run's line `holon verify` doesn't hold it to, by field (a field's path, as
-/// `tests::changes_of` names it): when it ran and for how long, which no run again can say.
-/// Anything else changed in a line, and the lines chained again, is found (that test).
+/// `tests::changes_of` names it, `*` any index): when it ran and for how long, and when each of
+/// its steps did, which no run again can say. Anything else changed in a line, and the lines
+/// chained again, is found (that test).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const NOT_HELD: &[&str] = &["at_ms", "duration_ms"];
+pub(crate) const NOT_HELD: &[&str] = &["at_ms", "duration_ms", "timeline/*/start_us", "timeline/*/end_us"];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
 pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
@@ -761,7 +762,8 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         };
         // What it says of its secrets agrees with itself, and with the runs before it.
         let came_to = match (came_to, listed_secrets(entry, line, &mut committed)) {
-            (Rerun::Differs(why), _) => Rerun::Differs(why),
+            (Rerun::Differs(why), Some(also)) => Rerun::Differs(format!("{why}; {also}")),
+            (Rerun::Differs(why), None) => Rerun::Differs(why),
             (_, Some(why)) => Rerun::Differs(why),
             (came_to, None) => came_to,
         };
@@ -1463,19 +1465,33 @@ fn rerun(
         differs.push("its run id");
     }
 
-    // Its outbound requests are answered from the record (the earlier parts', then its own), never
-    // sent again.
-    let parts = || earlier.iter().copied().chain([entry]);
-    let prior: Vec<Round> = parts().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).collect();
+    // Its outbound requests are answered from the record, never sent again: the earlier parts' as
+    // answered before it began, as the server answers them (and, for a run that ran again, its
+    // earlier tries': `firing.rs`, a retry sends nothing twice); its own as it sends them, so it
+    // takes its steps in the rounds it took them (each round's steps are in its timeline).
+    let own: Vec<Round> = entry.rounds.iter().map(|r| round_of(r, marks, entry.escaped)).collect();
+    // Its last try's rounds, the newest: as many as the rounds after the first its steps say.
+    let last_try = match entry.retries {
+        0 => own.len(),
+        _ => entry.timeline.iter().map(|t| t.round as usize).max().unwrap_or(0).min(own.len()),
+    };
+    let (tried, sent) = own.split_at(own.len() - last_try);
+    let prior: Vec<Round> = earlier.iter().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).chain(tried.iter().cloned()).collect();
+    let network = Answering { exchanges: sent.iter().flat_map(|r| &r.exchanges).map(|x| (x.path.clone(), x.request.clone(), x.response.clone())).collect() };
     // Its reads, its own first: a resumed part reads again what it shares (files, databases), and
     // its last part's answers are the ones it finished with.
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
+    // The texts of the files it read that the log keeps by their hash, as a node carries them.
+    let mut kept: Vec<String> = Vec::new();
     let own = entry.reads.iter().map(|r| (r, entry.escaped));
     for (read, escaped) in own.chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped)))) {
         let answer = match texts.answer(read, marks, escaped) {
             Ok(answer) => answer,
             Err(not) => return not,
         };
+        if read.file.is_some() && read.answer.is_none() {
+            kept.extend(answer.as_ref().and_then(carried_text));
+        }
         reads.push((read.path.clone(), marks.read(&read.request, escaped), answer));
     }
     let mut waits = Logged {
@@ -1486,7 +1502,7 @@ fn rerun(
     let limits = rerun_limits();
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
     if observer.belied {
@@ -1531,6 +1547,18 @@ fn rerun(
         .collect();
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
+    }
+    // The steps it took, as the log keeps them. What may be computed from a secret it was given
+    // is withheld as the server withholds it (`firing::without_secret_derived`), from the same
+    // walk of the same unit.
+    let given = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
+    let fed = if given { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
+    kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
+    let again = std::mem::take(&mut observer.timer.timeline);
+    let steps = steps_of(&entry.timeline, &again, &|path| fed.derives(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    if !steps.whole {
+        differs.push("the steps it took (its timeline)");
     }
     // A part that settled waiting: the packs it sent as it parked are what it settled.
     let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
@@ -1619,6 +1647,7 @@ fn rerun(
                 && entry.outputs.iter().zip(&outputs).all(|(kept, again)| kept.is_none() || json(kept) == json(again))
                 && starts(&entry.performed, &performed)
                 && starts(&entry.progress, &progress)
+                && steps.start
                 && (entry.kind != "request" || entry.status.is_none_or(|status| failure(status) || answered() == status));
             match less {
                 true => Rerun::Skipped(format!("it failed, and run again it gets further than its entry says (a limit of the server's stopped it, or dropped what it did): {e}")),
@@ -1737,6 +1766,81 @@ fn nothing_ran(entry: &LogEntry, why: &str) -> Rerun {
     }
 }
 
+/// Whether the steps a run took again agree with the ones its entry says it took.
+struct Steps {
+    /// Each agrees, and there are as many.
+    whole: bool,
+    /// The entry's are the start of them, as far as a limit let the run go (`steps_of`): run
+    /// again, a run a limit stopped goes further.
+    start: bool,
+}
+
+/// Whether the steps a run took again (`again`, as the timer took them) are those its entry says it
+/// took (`logged`), as the log keeps them (`firing::entry_with`): the same nodes in the same order
+/// and rounds, each with what it gave, as the log writes it, and why it gave nothing (a thrown
+/// message, a module's error). Where the log keeps no outputs, a node agrees with any: one that may
+/// compute from a secret the run was given (`withheld`; unless the run marks each value computed
+/// from one, and then the log's stand in for them, `Asserting`); one that carries the text of a
+/// file the log keeps by its hash (`kept`, `firing::without_kept_files`); and one larger than the
+/// log keeps (`Timer::MAX_RECORDED_BYTES`), which a value held by its mark may be, its own size not
+/// known here. Why a node that may compute from a secret gave nothing is withheld too. Where the
+/// run again asked for what the log keeps no outputs for (`short`: a node fed a secret deeper than
+/// the log follows a run's steps), a node that gave nothing again is taken as the log says.
+///
+/// Before, verify read a node's logged outputs only where it stood them in for a node fed a secret:
+/// the steps a run's view shows, each step's values and why one failed, were the line's say-so
+/// (audit R26).
+#[allow(clippy::too_many_arguments)]
+fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], withheld: &dyn Fn(&[u32]) -> bool, kept: &[String], short: bool, marks: &Marks, escaped: bool) -> Steps {
+    let carries_kept = |o: &[Option<SValue>]| serde_json::to_string(o).is_ok_and(|j| kept.iter().any(|t| j.contains(t.as_str())));
+    let nothing = |n: &recorder::NodeTiming| n.outputs.as_ref().is_none_or(|o| o.iter().all(Option::is_none));
+    let agrees = |l: &recorder::NodeTiming, a: &recorder::NodeTiming| {
+        if l.path != a.path || l.round != a.round {
+            return false;
+        }
+        if short && nothing(a) {
+            return true;
+        }
+        let held = withheld(&l.path);
+        let outputs = match (&l.outputs, &a.outputs) {
+            (Some(l), Some(a)) => json(l) == json(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
+            (None, None) => true,
+            (None, Some(a)) => held || carries_kept(a) || a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
+        };
+        let reason = match (&l.reason, &a.reason) {
+            (Some(r), _) if held => r == taint::WITHHELD,
+            (None, _) if held => true,
+            (Some(l), Some(a)) => marks.write(SValue::Text(a.clone())) == SValue::Text(l.clone()),
+            (None, None) => true,
+            _ => false,
+        };
+        outputs && reason
+    };
+    // Where a limit stopped it, the steps it took agree up to the first that gave nothing, where it
+    // stopped. After it, each gave nothing (what the round was in the middle of, a step budget
+    // ending it), or they are the same steps (a module that ran out gave nothing, and the round
+    // went on without it: what they computed from it is less, not checked).
+    let agreed = logged.iter().zip(again).take_while(|(l, a)| agrees(l, a)).count();
+    let same = |(l, a): (&recorder::NodeTiming, &recorder::NodeTiming)| l.path == a.path && l.round == a.round;
+    let after = || logged[agreed..].iter().zip(&again[agreed..]);
+    let start = logged.len() <= again.len()
+        && (agreed == logged.len() || (nothing(&logged[agreed]) && (logged[agreed..].iter().all(nothing) || after().all(same))));
+    Steps { whole: agreed == logged.len() && logged.len() == again.len(), start }
+}
+
+/// A file's text, lines or bytes as a node that carries them is written (`firing::without_kept_files`):
+/// a text as JSON writes it inside its quotes, lines as their list's JSON, bytes as their base64.
+/// None for nothing.
+fn carried_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Text(t) if !t.is_empty() => serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()),
+        Value::List(l) if !l.is_empty() => serde_json::to_string(&SValue::from_core(v)).ok(),
+        Value::Bytes(b) if !b.is_empty() => holon_core::bytes_text(b, "base64"),
+        _ => None,
+    }
+}
+
 /// A logged shape as JSON: values compare as the log writes them.
 fn json<T: Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
@@ -1794,8 +1898,10 @@ impl Waits for Logged {
 /// after that one isn't the run's, so the record is taken, as for any other leaf.
 struct Asserting {
     timer: recorder::Timer,
-    /// Each node's outputs in the last round the log recorded them in, by path.
-    recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
+    /// Each node's outputs, by path and by the round the log recorded them in.
+    recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>>,
+    /// The round being run.
+    round: u32,
     /// Whether a node computed on its placeholders gave other than the log recorded for it.
     belied: bool,
     /// What was taken from the log for a leaf that is a function of its inputs alone, where
@@ -1816,17 +1922,25 @@ struct Asserting {
 
 impl Asserting {
     fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool) -> Asserting {
-        let mut rounds: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
-        let mut recorded = BTreeMap::new();
+        let mut recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>> = BTreeMap::new();
         for t in timeline {
             let Some(outputs) = &t.outputs else { continue };
-            if rounds.get(&t.path).is_some_and(|&r| r > t.round) {
-                continue;
-            }
-            rounds.insert(t.path.clone(), t.round);
-            recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
+            recorded.entry(t.path.clone()).or_default().insert(t.round, outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting { timer: recorder::Timer::new(), recorded, round: 0, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+    }
+
+    /// What the log recorded for the node at `path` in this round, as it ran: in a round it
+    /// recorded none for, the round's before it, else its last. `Err`: it waited on an answer here
+    /// (nothing yet, and something in a later round), so it is run, and asks for it.
+    fn at(&self, path: &[u32]) -> Result<Option<&Vec<Option<Value>>>, ()> {
+        let Some(rounds) = self.recorded.get(path) else { return Ok(None) };
+        let given = |o: &Vec<Option<Value>>| o.iter().any(Option::is_some);
+        match rounds.get(&self.round) {
+            Some(o) if !given(o) && rounds.range(self.round + 1..).any(|(_, o)| given(o)) => Err(()),
+            Some(o) => Ok(Some(o)),
+            None => Ok(rounds.range(..self.round).next_back().or(rounds.iter().next_back()).map(|(_, o)| o)),
+        }
     }
 
     /// Whether `leaf`, fed `inputs`, is computed on the placeholders they carry, and how
@@ -1899,6 +2013,7 @@ impl Observer for Asserting {
         self.timer.produced(path, outputs)
     }
     fn round(&mut self, n: usize) {
+        self.round = n as u32;
         self.timer.round(n)
     }
     fn failed(&mut self, path: &[u32], reason: &str) {
@@ -1919,7 +2034,7 @@ impl Observer for Asserting {
                 }
                 holon_core::taint::OnAMark::Compares => self.compared(name, unit, inputs),
             };
-            match self.recorded.get(path) {
+            match self.at(path).ok().flatten() {
                 Some(recorded) if *recorded != gave && self.unrecorded.is_empty() => {
                     self.belied = true;
                     return Some(gave);
@@ -1929,7 +2044,8 @@ impl Observer for Asserting {
                 _ => return Some(gave),
             }
         }
-        match self.recorded.get(path) {
+        let Ok(at) = self.at(path) else { return None };
+        match at.cloned() {
             Some(outputs) => {
                 let leaf = match &unit.body {
                     holon_core::UnitBody::Primitive { name } => name.clone(),
@@ -1949,7 +2065,7 @@ impl Observer for Asserting {
                 if let holon_core::UnitBody::Primitive { name } = &unit.body
                     && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
                 {
-                    self.misshapen |= !shaped(name, unit, outputs);
+                    self.misshapen |= !shaped(name, unit, &outputs);
                     // After a node that couldn't be computed, the inputs seen here aren't the
                     // run's (two runs that signed two messages both show none): nothing to hold
                     // one record to another by.
@@ -1961,7 +2077,7 @@ impl Observer for Asserting {
                     }
                 }
                 self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
-                Some(outputs.clone())
+                Some(outputs)
             }
             None => {
                 self.unrecorded.insert(path.to_vec());
@@ -2214,6 +2330,24 @@ impl Performer for Offline {
             ("status".to_string(), Value::Number(0.0)),
             ("error".to_string(), Value::Text("not in the log".into())),
         ]))
+    }
+}
+
+/// The network, for a run being checked: each request the log says it sent, by the node that sent
+/// it, answered as the log says; any other as [`Offline`] answers.
+struct Answering {
+    exchanges: Vec<(Vec<u32>, Value, Value)>,
+}
+
+impl Performer for Answering {
+    fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        Offline.perform(request, limits)
+    }
+    fn perform_at(&self, path: &[u32], request: &Value, limits: &Limits) -> Value {
+        match self.exchanges.iter().find(|(p, r, _)| p == path && r == request) {
+            Some((_, _, answer)) => answer.clone(),
+            None => Offline.perform(request, limits),
+        }
     }
 }
 
