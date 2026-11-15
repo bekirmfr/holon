@@ -182,7 +182,8 @@ route.put("/notes/:owner/:id", (req) => {
   delete, both.
 - The filter, the update, the document and the sort are **records written in the call**: their
   fields and operators (`$in`, `$gt`, `$set`, …) are the flow's, fixed when it is deployed, and
-  each value computed from the request goes in as data, never as an operator. A record given as a
+  each value computed from the request goes in as data, never as an operator: inside `$expr`,
+  where a text starting with `$` names a field, it goes in as `$literal`. A record given as a
   value with a field starting with `$` (a request's `{"$ne": null}`) fails the run, and nothing it
   did lands. A record from a value (`notes.find("notes", f)`) or a spread is an error that says
   so, and so are `$where`, `$function` and `$accumulator`, which run code on the server; an update

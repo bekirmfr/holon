@@ -5,7 +5,8 @@
 //!
 //! - **Calls** are the leaves' templates (core's documents.rs) with their holes filled: each `$n`
 //!   becomes its value as a BSON value, so a value is data and never an operator: a record given
-//!   as a value whose field starts with `$` fails the run. `{ "$oid": … }`, `{ "$date": … }`,
+//!   as a value whose field starts with `$` fails the run, and inside `$expr`, where a text
+//!   starting with `$` is a field's path, a value goes in as `$literal`. `{ "$oid": … }`, `{ "$date": … }`,
 //!   `{ "$numberDecimal": … }` and `{ "$numberLong": … }` in a template make the value that type.
 //! - **Values:** whole numbers go as integers (32 bits where they fit), other numbers as doubles,
 //!   records as documents, lists as arrays, none as null. Back: numbers as numbers (a long past
@@ -611,6 +612,13 @@ fn document(t: &Tpl, params: &[Value]) -> Result<Document, Failure> {
 }
 
 fn bson_of(t: &Tpl, params: &[Value]) -> Result<Bson, String> {
+    bson_in(t, params, false)
+}
+
+/// The same, `expr` when it is inside an aggregation expression (`$expr`), where a text starting
+/// with `$` is a field's path (`"$owner"`) and `$$` a variable: a value filled in there is wrapped
+/// in `$literal`, so data is only ever data, as it is in a query's operators.
+fn bson_in(t: &Tpl, params: &[Value], expr: bool) -> Result<Bson, String> {
     Ok(match t {
         Tpl::Null => Bson::Null,
         Tpl::Bool(b) => Bson::Boolean(*b),
@@ -621,17 +629,21 @@ fn bson_of(t: &Tpl, params: &[Value]) -> Result<Bson, String> {
         Tpl::Text(s) => Bson::String(s.clone()),
         Tpl::Hole(n) => {
             let v = params.get(n - 1).ok_or_else(|| format!("the call has ${n} but {} values", params.len()))?;
-            value_bson(v, 0)?
+            match value_bson(v, 0)? {
+                v if expr => Bson::Document(doc! { "$literal": v }),
+                v => v,
+            }
         }
-        Tpl::List(items) => Bson::Array(items.iter().map(|i| bson_of(i, params)).collect::<Result<_, _>>()?),
+        Tpl::List(items) => Bson::Array(items.iter().map(|i| bson_in(i, params, expr)).collect::<Result<_, _>>()?),
+        // A typed value (`{"$oid": $1}`) is one in an expression too: what it wraps is its text.
         Tpl::Object(fields) if fields.len() == 1 && typed(&fields[0].0) => {
             let (kind, inner) = &fields[0];
-            as_typed(kind, bson_of(inner, params)?)?
+            as_typed(kind, bson_in(inner, params, false)?)?
         }
         Tpl::Object(fields) => {
             let mut d = Document::new();
             for (k, v) in fields {
-                d.insert(k.clone(), bson_of(v, params)?);
+                d.insert(k.clone(), bson_in(v, params, expr || k == "$expr")?);
             }
             Bson::Document(d)
         }
@@ -765,6 +777,29 @@ mod tests {
         let nested = Value::Record(BTreeMap::from([("a".to_string(), Value::List(vec![Value::Record(BTreeMap::from([("$where".to_string(), n(1.0))]))]))]));
         assert!(document(&filter, &[nested]).is_err(), "at any depth");
         assert!(document(&filter, &[]).unwrap_err().why.contains("$1 but 0 values"));
+    }
+
+    /// **Guards:** a value filled into an aggregation expression (`$expr`) is data, as it is in a
+    /// query's operators: wrapped in `$literal` at any depth inside one, so `"$owner"` (or
+    /// `"$$ROOT"`) given as a value is that text, never a field's path or a variable; outside one,
+    /// and in a typed value, it is left as it is.
+    /// **Why:** `{ $expr: { $eq: ["$owner", who] } }` with `who` = `"$owner"` compared the field
+    /// with itself and matched every document.
+    /// **If it fails:** a hole inside `$expr` (or a list or an operator in it) isn't wrapped, or one
+    /// outside is.
+    #[test]
+    fn holes_in_an_expression_are_values_never_field_paths() {
+        let sneaky = Value::Text("$owner".into());
+        let literal = |v: Bson| Bson::Document(doc! { "$literal": v });
+        let t = check(Part::Filter, r#"{"$expr":{"$eq":["$owner",$1]}}"#).unwrap().0;
+        assert_eq!(document(&t, &[sneaky.clone()]).unwrap(), doc! { "$expr": { "$eq": ["$owner", literal(Bson::String("$owner".into()))] } });
+        let t = check(Part::Filter, r#"{"$and":[{"$expr":{"$gt":[{"$size":"$tags"},$1]}},{"owner":$2}]}"#).unwrap().0;
+        let d = document(&t, &[n(2.0), sneaky.clone()]).unwrap();
+        assert_eq!(d, doc! { "$and": [{ "$expr": { "$gt": [{ "$size": "$tags" }, literal(Bson::Int32(2))] } }, { "owner": "$owner" }] }, "deep inside one; outside, a query's value");
+        let id = "65a1b2c3d4e5f60718293a4b";
+        let t = check(Part::Filter, r#"{"$expr":{"$eq":["$_id",{"$oid":$1}]}}"#).unwrap().0;
+        let d = document(&t, &[Value::Text(id.into())]).unwrap();
+        assert_eq!(d.get_document("$expr").unwrap().get_array("$eq").unwrap()[1], Bson::ObjectId(ObjectId::parse_str(id).unwrap()), "a typed value is one");
     }
 
     #[test]

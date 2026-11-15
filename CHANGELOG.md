@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A value inside a MongoDB `$expr` is data.** A text starting with `$` there names a field:
+  `{ $expr: { $eq: ["$owner", who] } }` with `who` = `"$owner"` matched every document. Each value
+  computed into an expression goes in as `$literal`.
 - **A cloud's metadata service is never reached.** With private addresses granted, a flow could
   call 169.254.169.254, where a cloud hands out the machine's credentials. It, the rest of
   169.254.0.0/16, `100.100.100.200` and `fd00:ec2::254` are refused however written (mapped,
