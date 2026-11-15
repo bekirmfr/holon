@@ -45,7 +45,7 @@ pub(crate) struct Connection {
 
 /// A session on the database at `url` listening on `channel`, or why there is none.
 pub(crate) fn open(url: &str, channel: &str, idle: Duration) -> Result<Connection, String> {
-    let mut config: postgres::Config = url.parse().map_err(|e| format!("the database's connection isn't a Postgres URL: {e}"))?;
+    let mut config = crate::engines::pg_config(url)?;
     config.connect_timeout(Duration::from_secs(5)).application_name("holon (listen)");
     let mut client = config.connect(crate::engines::pg_tls()).map_err(|e| format!("the database can't be reached: {}", pg_said(&e)))?;
     client.batch_execute(&format!("LISTEN \"{channel}\"")).map_err(|e| format!("the database didn't listen on {channel}: {}", pg_said(&e)))?;
