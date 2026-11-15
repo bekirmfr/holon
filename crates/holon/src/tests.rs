@@ -11361,8 +11361,10 @@ fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
 /// nowhere a redirect points. A canary through each road: a flow's request whose header holds it
 /// with a line break (a header no request can carry); Vault's token, refused the same way, and
 /// sent a redirect; an SQS queue's session token; the witness's token; a Postgres password where
-/// TLS is required and the server refuses it. Each fails, saying why, and none says the canary;
-/// the host Vault redirects to is never asked.
+/// TLS is required and the server refuses it; the command line's token, as `holon deploy`,
+/// `holon mcp` and every other command (`holon export` among them, through `local::request`) sign
+/// in with it. Each fails, saying why, and none says the canary; the host Vault redirects to is
+/// never asked.
 /// **Why:** ureq's message for a header it refuses is the header's whole line (`invalid header
 /// 'X-Vault-Token: …'`), and it went into the error as it was: a `VAULT_TOKEN` or an SQS session
 /// token with a stray `\r` reached the timeline, the live status and the console. And Vault's read
@@ -11435,6 +11437,15 @@ fn a_secret_is_in_nothing_an_integration_says_when_it_fails() {
     });
     let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).map(|_| ());
     said.push(("a Postgres password, TLS refused", format!("{opened:?}")));
+
+    // The command line's token (`HOLON_TOKEN`, a session kept), as each road to a server signs in.
+    let signed_in = || local::Target { server: "http://127.0.0.1:9".into(), token: Some(unsendable.clone()), from: local::TokenFrom::Env };
+    let deploying = mcp::Api::send(&deploycmd::Person(signed_in()), "GET", "/deployments", None);
+    said.push(("holon deploy's token", format!("{deploying:?}")));
+    let agent = mcp::Api::send(&mcp::Http::new("http://127.0.0.1:9", Some(&unsendable)), "GET", "/deployments", None);
+    said.push(("holon mcp's token", format!("{agent:?}")));
+    let command = local::request(&signed_in(), "GET", "/deployments", None, std::time::Duration::from_secs(5)).map(|(status, _)| status);
+    said.push(("a command's token (holon export's among them)", format!("{command:?}")));
 
     for (row, text) in &said {
         assert!(text.contains("Err") || text.contains("error"), "{row} fails: {text}");

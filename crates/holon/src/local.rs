@@ -340,28 +340,35 @@ impl Answer {
 /// ([`target`]), signed in as [`admin_call`] is: the answer, whatever its status; or, said on
 /// stderr, the exit code to end with when there was none.
 pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<(&str, Vec<u8>)>) -> Result<Answer, i32> {
-    let target = target(server).map_err(|e| {
+    let said = |e: String| {
         eprintln!("{who}: {e}");
         1
-    })?;
-    let Target { server, token, from } = target;
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
-    if let Some(token) = &token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    };
+    let target = target(server).map_err(said)?;
+    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), Duration::from_secs(60)).map_err(said)?;
+    let Target { server, from, .. } = target;
+    Ok(Answer { server, status, body: response.into_string().unwrap_or_default(), from })
+}
+
+/// `method` `path` sent to `target`'s server, signed in with its token, given `timeout`: its
+/// status and the answer, whatever the status; or why there is none, told as
+/// [`crate::outbound::said`] tells a failed call, without the token a line break in it would
+/// echo (`HOLON_TOKEN`, a session kept). The one road a command takes to a server, but
+/// `holon deploy`'s and `holon mcp`'s own.
+pub(crate) fn request(target: &Target, method: &str, path: &str, body: Option<(&str, &[u8])>, timeout: Duration) -> Result<(u16, ureq::Response), String> {
+    let mut call = ureq::request(method, &format!("{}{path}", target.server)).timeout(timeout);
+    if let Some(token) = &target.token {
+        call = call.set("Authorization", &format!("Bearer {token}"));
     }
     let answered = match body {
-        Some((content_type, bytes)) => request.set("Content-Type", content_type).send_bytes(&bytes),
-        None => request.call(),
+        Some((content_type, bytes)) => call.set("Content-Type", content_type).send_bytes(bytes),
+        None => call.call(),
     };
-    let (status, response) = match answered {
-        Ok(r) => (r.status(), r),
-        Err(ureq::Error::Status(code, r)) => (code, r),
-        Err(e) => {
-            eprintln!("{who}: can't reach {server}: {}", crate::outbound::said(&e));
-            return Err(1);
-        }
-    };
-    Ok(Answer { server, status, body: response.into_string().unwrap_or_default(), from })
+    match answered {
+        Ok(r) => Ok((r.status(), r)),
+        Err(ureq::Error::Status(code, r)) => Ok((code, r)),
+        Err(e) => Err(format!("can't reach {}: {}", target.server, crate::outbound::said(&e))),
+    }
 }
 
 /// [`target`], given what it reads: testable without a server.
