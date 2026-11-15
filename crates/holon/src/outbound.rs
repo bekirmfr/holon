@@ -3,9 +3,9 @@
 //! says:
 //!
 //! - only hosts the deployment was granted (its `HttpRequest(host)` capabilities), checked again
-//!   on every redirect; a redirect to another host carries none of the flow's credentials (its
-//!   headers but those that say what the body is), and isn't followed when it would resend the
-//!   body (a 307 or 308 of a request that has one), which may hold a secret too;
+//!   on every redirect; a redirect to another host carries none of the flow's headers (any may
+//!   hold a credential or a secret), and isn't followed when it would resend the body (a 307 or
+//!   308 of a request that has one), which may hold a secret too;
 //! - no private, loopback, link-local or metadata addresses, checked on the addresses DNS
 //!   actually returned and the connection actually uses (so DNS rebinding can't get around it);
 //! - HTTPS only, with certificate checks;
@@ -236,12 +236,14 @@ impl Outbound {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
-            // Redirected to another host, only the headers that say what the body is go along:
-            // the rest may be the first host's credentials (`authorization`, an API key).
+            // Redirected to another host, none of the flow's headers go along: any of them may
+            // hold the first host's credentials or another secret (`authorization`, an API key,
+            // what a flow puts in `user-agent`), and a secret's hosts were checked on the URL the
+            // flow named. No body goes there either (below), so none says what one is.
             let elsewhere = target.authority != first;
             for (name, value) in headers {
                 if let Value::Text(v) = value
-                    && (!elsewhere || CARRIED_ELSEWHERE.contains(&name.to_ascii_lowercase().as_str()))
+                    && !elsewhere
                 {
                     call = call.set(name, v);
                 }
@@ -306,9 +308,6 @@ impl Outbound {
         }
     }
 }
-
-/// The flow's headers a redirect to another host still carries.
-const CARRIED_ELSEWHERE: &[&str] = &["content-type", "accept", "accept-language", "user-agent"];
 
 /// Where a redirect's `Location` points: absolute, or a path on the same host.
 fn next_target(from: &Target, location: &str) -> Option<Target> {
@@ -635,8 +634,9 @@ mod tests {
         assert_eq!(field(&out, "error"), &Value::Text("too_many_redirects".into()));
     }
 
-    /// A redirect to another granted host carries only the headers that say what the body is: the
-    /// first host's credentials stay with it. One to the same host carries them all.
+    /// A redirect to another granted host carries none of the flow's headers: the first host's
+    /// credentials stay with it, a custom header's and a well-known one's alike (a secret's hosts
+    /// were checked on the URL the flow named). One to the same host carries them all.
     #[test]
     fn a_redirect_to_another_host_leaves_the_credentials_behind() {
         let target = serve_head(|head| ok(&head.to_ascii_lowercase()));
@@ -655,6 +655,7 @@ mod tests {
                 Value::Record(BTreeMap::from([
                     ("Authorization".to_string(), text("Bearer sk_first_host")),
                     ("x-api-key".to_string(), text("k_first_host")),
+                    ("user-agent".to_string(), text("ua_first_host")),
                     ("content-type".to_string(), text("application/json")),
                 ])),
             );
@@ -662,8 +663,7 @@ mod tests {
         let out = o.perform(&asked, &Limits::request_run());
         let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };
         assert!(seen.starts_with("get /landed"), "a 307 keeps its method: {seen}");
-        assert!(!seen.contains("sk_first_host") && !seen.contains("k_first_host"), "{seen}");
-        assert!(seen.contains("content-type: application/json"), "{seen}");
+        assert!(!seen.contains("first_host") && !seen.contains("application/json"), "none of the flow's headers: {seen}");
 
         // A body isn't resent to another host: it may hold a secret as a header may.
         let landed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

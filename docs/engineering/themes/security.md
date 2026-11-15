@@ -235,7 +235,7 @@ an IPv4 address inside IPv4-mapped, IPv4-compatible or 6to4 forms judged as itse
 and the rest it lists),
 checked on the addresses DNS returned, in the connection's own resolver, so rebinding can't swap one in.
 The host sets `Host`, length and framing headers itself (`refused_header`). A redirect to another
-host carries only `CARRIED_ELSEWHERE` headers and is refused if it would resend a body
+host carries none of the flow's headers and is refused if it would resend a body
 (`blocked_redirect`). A request carrying a secret's value to a host its approval doesn't show it
 going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A redirect to another host carries none of the flow's headers.** It carried `content-type`,
+  `accept`, `accept-language` and `user-agent`, and a secret a flow put in one of them went to a
+  host its approval doesn't name. No body goes there either, so none says what one is.
 - **A header no request can carry is named, never echoed.** A token with a stray line break or
   control character (a `VAULT_TOKEN`, an SQS session token, a header a flow computed from a
   secret) came back whole in the error, which reaches a run's record, the timeline, the live status

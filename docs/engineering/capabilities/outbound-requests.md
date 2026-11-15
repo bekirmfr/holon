@@ -40,8 +40,8 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (
   judged as itself, Teredo refused whole) are filtered from what DNS
   returned, in the client's resolver, so the connection uses only what passed (`blocked_address`).
 - **Redirects** are followed by hand, up to `max_redirects`, each hop checked again. To another
-  host only `CARRIED_ELSEWHERE` (`content-type`, `accept`, `accept-language`, `user-agent`) goes
-  along; a 303, or a 301/302 after a POST, becomes a GET without a body; one that would resend a
+  host none of the flow's headers go along (any may hold a secret: R33 found one put in
+  `user-agent` carried there); a 303, or a 301/302 after a POST, becomes a GET without a body; one that would resend a
   body to another host isn't followed (`blocked_redirect`).
 - **The answer** is `{status, headers, body}` within `max_header_bytes` and `max_response_bytes`;
   `body` is text. A file body is streamed from its folder, hashed as it goes, and must still match
