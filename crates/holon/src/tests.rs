@@ -8255,6 +8255,240 @@ fn a_panic_holding_what_every_run_takes_stops_no_run_after_it() {
     assert_eq!(state.deployments.lock().unwrap()["c"].log.next_seq(), 1 + held as u64, "each run logged");
 }
 
+/// Each way to change one value of a line (its JSON): a leaf changed (a text's last character, a
+/// number by one, a true or false turned), an item of a list dropped or one repeated, a field
+/// taken out, or one the server writes only sometimes put in. Each with where, as `field/0/value`.
+fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    fn walk(at: &str, v: &serde_json::Value, out: &mut Vec<(String, serde_json::Value)>) {
+        use serde_json::Value as J;
+        match v {
+            J::String(s) => {
+                let changed = match s.chars().last() {
+                    None => "x".to_string(),
+                    Some(c) => {
+                        let other = if c == '0' { '1' } else if c.is_ascii_hexdigit() { '0' } else if c == 'x' { 'y' } else { 'x' };
+                        format!("{}{other}", &s[..s.len() - c.len_utf8()])
+                    }
+                };
+                out.push((at.to_string(), J::String(changed)));
+            }
+            J::Number(n) => out.push((at.to_string(), match n.as_u64() {
+                Some(u) => J::from(u + 1),
+                None => J::from(n.as_f64().unwrap_or(0.0) + 0.5),
+            })),
+            J::Bool(b) => out.push((at.to_string(), J::Bool(!b))),
+            J::Null => out.push((at.to_string(), serde_json::json!({ "type": "Number", "value": 1 }))),
+            J::Array(items) => {
+                if let Some(last) = items.last() {
+                    let mut fewer = items.clone();
+                    fewer.pop();
+                    out.push((format!("{at}/-"), J::Array(fewer)));
+                    let mut more = items.clone();
+                    more.push(last.clone());
+                    out.push((format!("{at}/+"), J::Array(more)));
+                }
+                for (i, item) in items.iter().enumerate() {
+                    let mut inner = Vec::new();
+                    walk(&format!("{at}/{i}"), item, &mut inner);
+                    for (where_, changed) in inner {
+                        let mut copy = items.clone();
+                        copy[i] = changed;
+                        out.push((where_, J::Array(copy)));
+                    }
+                }
+            }
+            J::Object(fields) => {
+                for (k, field) in fields {
+                    let mut without = fields.clone();
+                    without.remove(k);
+                    out.push((format!("{at}/{k}/out"), J::Object(without)));
+                    let mut inner = Vec::new();
+                    walk(&format!("{at}/{k}"), field, &mut inner);
+                    for (where_, changed) in inner {
+                        let mut copy = fields.clone();
+                        copy.insert(k.clone(), changed);
+                        out.push((where_, J::Object(copy)));
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let serde_json::Value::Object(fields) = line else { return out };
+    for (k, field) in fields {
+        // `prev` is chained again whatever it was.
+        if k == "prev" {
+            continue;
+        }
+        let mut without = fields.clone();
+        without.remove(k);
+        out.push((format!("{k}/out"), serde_json::Value::Object(without)));
+        let mut inner = Vec::new();
+        walk(k, field, &mut inner);
+        for (where_, changed) in inner {
+            let mut copy = fields.clone();
+            copy.insert(k.clone(), changed);
+            out.push((where_, serde_json::Value::Object(copy)));
+        }
+    }
+    // What the server writes only sometimes: put in where the line has none.
+    let number = serde_json::json!({ "type": "Number", "value": 1 });
+    let sometimes = [
+        ("error", serde_json::json!("x")),
+        ("status", serde_json::json!(500)),
+        ("events", serde_json::json!({ "x": number })),
+        ("sourced", serde_json::json!([["x", number]])),
+        ("parked", serde_json::json!(["x"])),
+        ("by", serde_json::json!("mallory")),
+        ("retries", serde_json::json!(1)),
+        ("lost_since", serde_json::json!(0)),
+        ("state_after", serde_json::json!("00".repeat(32))),
+        ("response_body", serde_json::json!("x")),
+    ];
+    for (k, value) in sometimes {
+        if !fields.contains_key(k) {
+            let mut copy = fields.clone();
+            copy.insert(k.to_string(), value);
+            out.push((format!("{k}/in"), serde_json::Value::Object(copy)));
+        }
+    }
+    out
+}
+
+/// **Guards:** no line of an honest export passes `holon verify` once one value of it is changed
+/// and the lines are chained again (each way `changes_of` knows: a leaf, an item, a field out, a
+/// field the server writes only sometimes put in), but in a field verify says it doesn't hold
+/// ([`verify::NOT_HELD`], said in checking-runs.md): verify ends FAILED. Nor does it pass saying
+/// it checked less of a run than it does of the honest line. With the head a witness holds,
+/// every change fails, those fields included: the chain holds each line whole. The exports are
+/// of the kinds of runs there are: an action's that writes the state, a request's that reads its
+/// query and answers, and an approval's two parts, the second resumed by two people's decisions.
+///
+/// **Why:** verify passed lines changed and chained again by roads one at a time: an `error` and
+/// a status put in (it matched, exit 0), a source it couldn't name, a read's text taken out, a
+/// secret-fed node's outputs deleted (not run again, exit 3, the state it named after it never
+/// checked), decisions put in an entry of any kind (its state then never checked), a resumed part
+/// on its own, lines that aren't runs (`0 runs … ok`). Each was found by hand (audit R26); this
+/// asks every value.
+///
+/// **If it fails:** the change it names passes as checked: what verify says of that field is no
+/// more than the line's say-so, and a forger who can chain the log again (no witness) makes it
+/// say anything there.
+#[test]
+fn no_line_changed_and_chained_again_passes_as_checked() {
+    let mut state = test_state();
+    // An action's runs, each writing the state.
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    for _ in 0..2 {
+        assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200);
+    }
+    // A request's, reading its query and the state, answering.
+    let port = free_port();
+    let text = format!("import {{ flow, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"seen\", {{ port: {port} }})\n\nroute.get(\"/n\", (req) => {{\n  const seen = (state.seen ?? \"\") + req.query.n\n  state.seen = seen\n  return seen\n}})\n");
+    let unit = stage_text(&state, &text);
+    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"seen\")", "StateWrite(\"seen\")"]);
+    assert_eq!(deploy_json(&state, "seen", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    for n in ["a", "b"] {
+        assert_eq!(data_call(&state, "seen", "GET", &format!("/n?n={n}"), "").0, 200);
+    }
+    // An approval's, two people deciding it.
+    let text = r#"import { action, approval, flow } from "holon"
+import state from "state"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", people: 2 })
+  state.decided = decision.approved
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")", "StateWrite(\"decided\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    assert!(run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": 10 })).is_success());
+    let run = body_json(route(&state, &req("GET", "/deployments/payouts/runs", vec![])))["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    for who in [&ada, &bob] {
+        let body = serde_json::to_vec(&serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" })).unwrap();
+        assert_eq!(route(&state, &req_as(who, "POST", &format!("/deployments/payouts/runs/{run}/decide"), body)).status_code, 200);
+    }
+
+    // A field verify doesn't hold by running the run again (`verify::NOT_HELD`, a `*` for any
+    // index), and the steps of R26 still to come.
+    let not_held = |at: &str| {
+        verify::NOT_HELD.iter().any(|f| {
+            let (at, f): (Vec<&str>, Vec<&str>) = (at.split('/').collect(), f.split('/').collect());
+            f.len() <= at.len() && f.iter().zip(&at).all(|(f, a)| f == a || *f == "*")
+        })
+    };
+    let open = |at: &str| OPEN.iter().any(|f| at == *f || at.starts_with(&format!("{f}/")));
+    // What a report says of each run: whether it checked it, and how far.
+    let account = |r: &verify::Report| format!("{:?} {:?} {:?} {:?} {}", r.reruns, r.states, r.given, r.ids_given, r.complete());
+    let (mut tried, mut passed, mut leaks, mut said_less, mut witnessed) = (0, 0, Vec::new(), Vec::new(), Vec::new());
+    let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
+    for slug in ["c", "seen", "payouts"] {
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let honest = verify::check(&export, None, &BTreeMap::new());
+        assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None));
+        let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        for (i, line) in values.iter().enumerate() {
+            let seq = line["seq"].as_u64().unwrap();
+            // What the line says, as verify reads it: a change it reads back the same is none.
+            let read = |v: &serde_json::Value| crate::wire::read_json::<recorder::LogEntry>(serde_json::to_string(v).unwrap().as_bytes()).ok().map(|e| serde_json::to_value(e).unwrap());
+            let said = read(line);
+            for (at, changed) in changes_of(line) {
+                if said.is_some() && read(&changed) == said {
+                    continue;
+                }
+                tried += 1;
+                let mut lines: Vec<String> = Vec::new();
+                for (j, v) in values.iter().enumerate() {
+                    let mut v = if j == i { changed.clone() } else { v.clone() };
+                    if let Some(before) = lines.last() {
+                        v["prev"] = recorder::line_hash(before).into();
+                    }
+                    lines.push(serde_json::to_string(&v).unwrap());
+                }
+                let head = recorder::line_hash(lines.last().unwrap());
+                let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+                // With the head a witness holds, every change fails, a field verify doesn't hold
+                // included: the chain holds the line whole.
+                if verify::check(&copy, Some(&export.head), &BTreeMap::new()).ok() {
+                    witnessed.push(format!("{slug} run {seq}: {at}"));
+                }
+                // Without one, a change passes only as a field verify says it doesn't hold.
+                let report = verify::check(&copy, None, &BTreeMap::new());
+                if !report.ok() {
+                    continue;
+                }
+                passed += 1;
+                *by_field.entry(at.split('/').next().unwrap_or_default().to_string()).or_insert(0) += 1;
+                if not_held(&at) || open(&at) {
+                    continue;
+                }
+                match account(&report) == account(&honest) {
+                    true => leaks.push(format!("{slug} run {seq}: {at}")),
+                    // Visible: it says it checked less of a run than it does of the honest line.
+                    false => said_less.push(format!("{slug} run {seq}: {at}")),
+                }
+            }
+        }
+    }
+    eprintln!("{tried} changes tried, {passed} pass verify without the head ({by_field:?}); {} as checked, {} saying less", leaks.len(), said_less.len());
+    assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
+    assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));
+    assert!(said_less.is_empty(), "{} of {tried} changes pass, saying less was checked:\n{}", said_less.len(), said_less.join("\n"));
+}
+
+/// What [`no_line_changed_and_chained_again_passes_as_checked`] doesn't hold verify to yet: the
+/// fields R26's later steps hold (audit R26).
+const OPEN: &[&str] = &["timeline", "response_body", "parked", "events", "state_after", "commit", "session", "retries", "by", "grant"];
+
 /// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
 /// that follows. A run that failed is run again: what it computed is checked, and what its writes
 /// made of its state (none, if its error says they were refused). Run again, it may get further
@@ -8418,11 +8652,12 @@ fn every_run_an_entry_can_say_it_was_comes_to_a_verdict_and_the_exit_says_the_wo
             failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
             emptied(v);
         })), vec![m, m, n], 0),
-        // A line naming no commit it began after is taken to have begun after the line before it.
+        // A run that kept the state it left committed it, and its line says where (audit R26):
+        // one naming no commit isn't a line the server writes, whatever running it again finds.
         ("the middle one failed after it finished, and the last's line names no commit", Box::new(|lines: &mut [serde_json::Value]| {
             failed(&mut lines[1], written.clone());
             lines[2].as_object_mut().unwrap().remove("commit");
-        }), vec![m, m, m], 0),
+        }), vec![m, m, m], 1),
         ("the middle one turned away, its line saying it did nothing", on(1, Box::new(|v| {
             failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
             emptied(v);
