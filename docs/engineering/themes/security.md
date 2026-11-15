@@ -41,12 +41,15 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   than refusing them (2 s turned some away on a loaded two-core CI runner). At most
   `CHECKS_WAITING` (64) wait, and one more is answered busy at once (`Slots`), so sign-ins under
   ever new names hold no more than 68 of the requests answered at once and the rest of the control
-  plane answers on; one address (an IPv6 one by its /64: `auth::address`) has at most
+  plane answers on; one client (`Access::client`: its address, an IPv6 one by its /64, or
+  behind a proxy the server trusts, `--trust-proxy`, the one it forwarded for) has at most
   `CHECKS_FROM_ONE` (8) checked or waiting, under any names (`counted`), so it can't take the
   line. An invite link is checked before its password is hashed (`accept`): what a cheap check
   refuses (a link made up or used, a wrong setup code, a locked name) waits for no check.
-- **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
-  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work. A body is read
+- **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once,
+  and `MAX_FROM_ONE` (64) from one client (`Slots`, `Admitted`); one more is answered 503 with
+  `Retry-After: 1`, before any work, saying which. One client's bodies that stop or trickle hold
+  its share, not every place. A body is read
   by `BODY_DEADLINE` (30 s, as the data plane's `body_timeout`): `read_body`, the only reader
   (a test says so), reads on a thread of its own and answers 408 at the deadline, so a body that
   trickles or stops gives its place back. Rouille hides the socket, so the reader is left to the
@@ -424,8 +427,14 @@ What is not defended, or only partly:
   A proxy that forwards the name it was reached by needs that name given (`--allow-host`).
 - **The control plane's limits under load**: each request still has a thread of its own (rouille's
   default), and a stream's answer, once its handler returns, isn't among the `MAX_IN_FLIGHT`; a
-  sign-in's lock is per address, so many addresses each get their tries (5 a minute a name each),
-  and behind a proxy it is the name's for everyone, as setting up is the proxy's; many addresses
+  sign-in's lock is per client, so many addresses each get their tries (5 a minute a name each),
+  and so do their places at once (64 each): many addresses together still fill them. Behind a
+  proxy the server trusts (`--trust-proxy`), each client it forwards for is its own; behind one
+  it doesn't, they are all the proxy, the lock is the name's for everyone and the places are the
+  proxy's 64, as setting up is (the server says so once, at the first request forwarded). A
+  trusted proxy's address chooses whom it is counted as: any program connecting from it (any
+  local one, for `127.0.0.1`) can write a new address each time, and so has the tries and places
+  of as many clients. Many addresses
   sending sign-ins under ever new names fill the line of checks, and sign-ins are told busy while
   they do (the rest of the control plane answers on).
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.

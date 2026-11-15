@@ -4643,7 +4643,7 @@ on.file.created(inbox, (f) => {{
             Err(e) => panic!("{e}"),
         }
     };
-    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &std::sync::atomic::AtomicUsize::new(0), 1).status_code);
+    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &crate::Slots::new(1, 1)).status_code);
     let passes = Cell::new(0u64);
     let tick = || {
         passes.set(passes.get() + 2);
@@ -6415,13 +6415,12 @@ fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
 fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     use std::io::Write as _;
     use std::net::TcpStream;
-    use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
     use std::time::Instant;
-    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
     let paths = ["/unit", "/flows", "/admin/storage"];
     let most = paths.len();
+    let slots: &'static crate::Slots = Box::leak(Box::new(crate::Slots::new(most, most)));
     let state: &'static AppState = Box::leak(Box::new(test_state()));
-    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
+    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, slots)).unwrap();
     let at = server.server_addr();
     let (_, stop) = server.stoppable();
     let send = |path: &str, body: &[u8], length: usize| {
@@ -6448,10 +6447,10 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     // place: these say they are longer.)
     let long = 100_000;
     let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
-    until("every route reads its body", Duration::from_secs(5), &|| IN_FLIGHT.load(Acquire) == most);
+    until("every route reads its body", Duration::from_secs(5), &|| slots.taken() == most);
     assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
     // ...and each gives it back by the deadline.
-    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| slots.taken() == 0);
 
     // A body that trickles in, a byte every 100ms, is told 408 at the deadline.
     for path in paths {
@@ -6470,7 +6469,7 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
         let took = started.elapsed();
         assert!(took >= BODY_DEADLINE && took < BODY_DEADLINE + Duration::from_secs(2), "{path}: told after {took:?}");
     }
-    until("a trickled body held its place", Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    until("a trickled body held its place", Duration::from_secs(2), &|| slots.taken() == 0);
 
     // A whole body is read as before: the route answers it.
     for path in paths {
@@ -14965,14 +14964,163 @@ fn a_flows_port_answers_only_an_address_localhost_or_a_name_it_was_given() {
     assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
 }
 
-/// Past `MAX_IN_FLIGHT` requests being answered at once, the control plane admits no more until
-/// one ends.
+/// The control plane's places at once, against a model: past `most` requests being answered at
+/// once, or `from_one` from one client, one more isn't admitted, and it is told which; one that
+/// ends gives its place back, to its client and in all, and a client holding none is forgotten.
 #[test]
-fn the_control_plane_admits_so_many_requests_at_once() {
-    let in_flight = std::sync::atomic::AtomicUsize::new(0);
-    let held: Vec<_> = (0..3).map(|_| crate::Admitted::take(&in_flight, 3).expect("room")).collect();
-    assert!(crate::Admitted::take(&in_flight, 3).is_none(), "a fourth isn't admitted");
-    drop(held);
-    assert_eq!(in_flight.load(std::sync::atomic::Ordering::Acquire), 0);
-    assert!(crate::Admitted::take(&in_flight, 3).is_some(), "admitted again once they end");
+fn the_control_plane_admits_so_many_requests_at_once_and_so_many_from_one_client() {
+    let (most, from_one) = (7, 3);
+    let slots = crate::Slots::new(most, from_one);
+    let clients = ["a", "b", "c", "d", "e"];
+    let mut held: Vec<(&str, crate::Admitted)> = vec![];
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let (mut refused_all, mut refused_one) = (0, 0);
+    for step in 0..4000 {
+        if next(5) < 3 {
+            let client = clients[next(clients.len())];
+            let mine = held.iter().filter(|(c, _)| *c == client).count();
+            let expected = if mine >= from_one {
+                Err(crate::TOO_MANY_FROM_ONE)
+            } else if held.len() >= most {
+                Err(crate::TOO_MANY)
+            } else {
+                Ok(())
+            };
+            match crate::Admitted::take(&slots, client) {
+                Ok(admitted) => {
+                    assert_eq!(expected, Ok(()), "step {step}: {client} admitted holding {mine}, {} in all", held.len());
+                    held.push((client, admitted));
+                }
+                Err(told) => {
+                    assert_eq!(expected, Err(told), "step {step}: {client} refused holding {mine}, {} in all", held.len());
+                    if told == crate::TOO_MANY { refused_all += 1 } else { refused_one += 1 }
+                }
+            }
+        } else if !held.is_empty() {
+            let at = next(held.len());
+            held.swap_remove(at);
+        }
+        assert_eq!(slots.taken(), held.len(), "step {step}");
+    }
+    assert!(refused_all > 0 && refused_one > 0, "both refusals were reached: {refused_all} in all, {refused_one} from one");
+    held.clear();
+    assert_eq!(slots.taken(), 0);
+    assert!(slots.places.lock().unwrap().from.is_empty(), "a client holding no place is forgotten");
+}
+
+/// Whom the control plane counts a request as (its places at once, its sign-in tries): the
+/// address it connected from, or, from a proxy it trusts, the one that proxy forwarded for, read
+/// from the end of `X-Forwarded-For`, past the proxies it trusts, so what a client wrote there
+/// itself is never read.
+#[test]
+fn a_client_is_whom_a_trusted_proxy_forwarded_for_and_otherwise_its_address() {
+    let trusted = access::Access::default().trusting(vec!["127.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap(), "::1".parse().unwrap()]);
+    let none = access::Access::default();
+    let xff = |v: &str| ("X-Forwarded-For".to_string(), v.to_string());
+    type Row<'a> = (&'a access::Access, &'a str, Vec<(String, String)>, &'a str);
+    #[rustfmt::skip]
+    let rows: Vec<Row> = vec![
+        // Not from a proxy it trusts: the address it connected from, whatever it says.
+        (&none, "203.0.113.9:5000", vec![], "203.0.113.9"),
+        (&none, "127.0.0.1:5000", vec![xff("198.51.100.7")], "127.0.0.1"),
+        (&trusted, "203.0.113.9:5000", vec![xff("198.51.100.7")], "203.0.113.9"),
+        (&trusted, "[2001:db8:1:2:3:4:5:6]:5000", vec![xff("198.51.100.7")], "2001:db8:1:2::/64"),
+        // From a proxy it trusts: the address it forwarded for...
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![("x-forwarded-for".into(), "198.51.100.7".into())], "198.51.100.7"),
+        (&trusted, "[::ffff:127.0.0.1]:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "[::1]:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7:4711")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("2001:db8:9:8:7:6:5:4")], "2001:db8:9:8::/64"),
+        (&trusted, "127.0.0.1:5000", vec![xff("[2001:db8:9:8::1]:4711")], "2001:db8:9:8::/64"),
+        // ...the last, never what the client wrote before it, on one line or another...
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6, 198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6"), xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("10.0.0.2, 198.51.100.7")], "198.51.100.7"),
+        // ...past the proxies it trusts, in a chain of them...
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6, 198.51.100.7, 10.0.0.2")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("10.0.0.2")], "10.0.0.2"),
+        // ...and the proxy itself when it forwarded for no one it can read.
+        (&trusted, "127.0.0.1:5000", vec![], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("unknown")], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("")], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7, unknown")], "127.0.0.1"),
+    ];
+    for (access, from, headers, expected) in rows {
+        let request = Request::fake_http_from(from.parse().unwrap(), "POST", "/auth/sign-in", [vec![host_header()], headers.clone()].concat(), b"{}".to_vec());
+        assert_eq!(access.client(&request), expected, "from {from} with {headers:?}, trusting {:?}", access.proxies);
+    }
+}
+
+/// Behind a proxy the server trusts, each client it forwards for is counted as itself: its
+/// places at once (one client's bodies that stop part way hold its share, and another's request
+/// is still answered) and its sign-in tries (five wrong lock the name from that client, not from
+/// another). Behind one it doesn't trust, every client is the proxy and shares both.
+#[test]
+fn behind_a_trusted_proxy_each_client_has_its_own_places_and_tries() {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    use std::time::Instant;
+    let pw = "correct horse battery";
+    for trust in [true, false] {
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+        let mut state = test_state();
+        state.access = access::Access::new(accounts, vec![], vec![]).trusting(if trust { vec!["127.0.0.1".parse().unwrap()] } else { vec![] });
+        let slots: &'static crate::Slots = Box::leak(Box::new(crate::Slots::new(8, 2)));
+        let state: &'static AppState = Box::leak(Box::new(state));
+        let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, slots)).unwrap();
+        let at = server.server_addr();
+        let (_, stop) = server.stoppable();
+        let send = |client: &str, path: &str, body: &[u8], length: usize| {
+            let mut s = TcpStream::connect(at).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nX-Forwarded-For: {client}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+            s.write_all(body).unwrap();
+            s
+        };
+        let answer = |s: &mut TcpStream| {
+            let mut all = String::new();
+            let _ = s.read_to_string(&mut all);
+            all
+        };
+        let started = Instant::now();
+        // A's bodies that stop part way hold A's share (a body of 1 KiB or less tiny_http reads
+        // itself before handing the request on, holding no place: these say they are longer)...
+        let stopped: Vec<TcpStream> = (0..2).map(|_| send("198.51.100.7", "/auth/sign-in", b"{\"a\"", 100_000)).collect();
+        while slots.taken() < 2 {
+            assert!(started.elapsed() < Duration::from_secs(5), "A's bodies are being read");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let a_again = answer(&mut send("198.51.100.7", "/auth/sign-in", b"{}", 2));
+        assert!(a_again.starts_with("HTTP/1.1 503") && a_again.contains(crate::TOO_MANY_FROM_ONE), "trust {trust}: a third from A: {a_again}");
+        // ...and B, another client of the proxy, is answered only when it is counted as itself.
+        let b = answer(&mut send("203.0.113.9", "/auth/sign-in", b"{}", 2));
+        assert_eq!(!b.starts_with("HTTP/1.1 503"), trust, "trust {trust}: B while A holds its share: {b}");
+        drop(stopped);
+        while slots.taken() > 0 {
+            assert!(started.elapsed() < BODY_DEADLINE + Duration::from_secs(5), "A's places are given back");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Five wrong passwords from A lock ada from A; from B she signs in only if B is itself.
+        let sign_in = |client: &str, password: &str| {
+            let body = serde_json::to_vec(&serde_json::json!({ "name": "ada", "password": password })).unwrap();
+            answer(&mut send(client, "/auth/sign-in", &body, body.len()))
+        };
+        for _ in 0..5 {
+            assert!(sign_in("198.51.100.7", "not her password").starts_with("HTTP/1.1 401"));
+        }
+        let a_locked = sign_in("198.51.100.7", pw);
+        assert!(a_locked.starts_with("HTTP/1.1 401") && a_locked.contains("too many wrong"), "trust {trust}: A after five wrong: {a_locked}");
+        let b = sign_in("203.0.113.9", pw);
+        assert_eq!(b.starts_with("HTTP/1.1 200"), trust, "trust {trust}: B after A's five wrong: {b}");
+        let _ = stop.send(());
+    }
 }

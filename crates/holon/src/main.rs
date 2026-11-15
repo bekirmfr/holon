@@ -20,9 +20,11 @@
 //! `Origin` it knows (localhost, or a name given with `--allow-host` / `--allow-origin`): CORS
 //! never `*`. CORS alone never stopped a request from *running*, so every request first passes
 //! `reject_untrusted` (Host, Origin, Content-Type), bodies are capped at `MAX_BODY_BYTES`, and
-//! no more than `MAX_IN_FLIGHT` are answered at once. Everyone signs in (access.rs): accounts
-//! with roles, API tokens, an identity provider, or this machine's own user through the run file
-//! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
+//! no more than `MAX_IN_FLIGHT` are answered at once, `MAX_FROM_ONE` from one client (its
+//! address, or behind a proxy given with `--trust-proxy` the one it forwarded for). Everyone signs
+//! in (access.rs): accounts with roles, API tokens, an identity provider, or this machine's own
+//! user through the run file (local.rs); docs/engineering/themes/security.md says what each guards
+//! and what it doesn't.
 
 /// Counts the bytes each thread holds, so a round is held to the memory it is granted
 /// (`max_memory`, holon_core::memory).
@@ -540,6 +542,9 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --allow-host HOST        a host name it answers to besides localhost, on its own port and each
                            flow's (repeatable): one a proxy in front forwards
   --allow-origin ORIGIN    an editor origin it answers besides localhost's (repeatable)
+  --trust-proxy IP         a proxy in front, by the address it connects from, whose
+                           X-Forwarded-For says whom it forwards for: each client is then
+                           counted as itself, not as the proxy (repeatable)
   --keep-runs N            runs each deployment's log keeps (default 500) [HOLON_KEEP_RUNS]
   --log-stdout             also print each line a flow writes with console.log, as it is kept
                            [HOLON_LOG_STDOUT]
@@ -721,6 +726,7 @@ fn serve(args: Vec<String>) {
     let mut editor_dir: Option<String> = std::env::var("HOLON_EDITOR").ok().filter(|v| !v.trim().is_empty());
     let mut allow_hosts: Vec<String> = Vec::new();
     let mut allow_origins: Vec<String> = Vec::new();
+    let mut trust_proxies: Vec<std::net::IpAddr> = Vec::new();
     let mut host_key_arg = ".holon-host-key".to_string();
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
@@ -843,6 +849,17 @@ fn serve(args: Vec<String>) {
                 match a.as_str() {
                     "--allow-host" => allow_hosts.push(v),
                     _ => allow_origins.push(v),
+                }
+            }
+        } else if a == "--trust-proxy" {
+            // A proxy in front whose X-Forwarded-For says whom it forwards for (access.rs,
+            // `client`): each of its clients is then counted as itself.
+            let v = args.next().unwrap_or_default();
+            match v.trim().parse::<std::net::IpAddr>() {
+                Ok(ip) => trust_proxies.push(ip),
+                Err(_) => {
+                    eprintln!("holon: --trust-proxy takes the address the proxy connects from, such as 127.0.0.1 or 10.0.0.5, not {v:?}");
+                    std::process::exit(2);
                 }
             }
         } else if a == "--dotenv" {
@@ -998,7 +1015,7 @@ fn serve(args: Vec<String>) {
     let server = {
         let cell = Arc::clone(&state_cell);
         rouille::Server::new(&addr, move |request| {
-            admitted(cell.get().expect("the server runs once its state is set"), request, &IN_FLIGHT, MAX_IN_FLIGHT)
+            admitted(cell.get().expect("the server runs once its state is set"), request, &IN_FLIGHT)
         })
     }
     .unwrap_or_else(|e| {
@@ -1194,7 +1211,7 @@ fn serve(args: Vec<String>) {
     }
     // The names a flow's port answers to as well (dataplane.rs `host_allowed`).
     data_limits.names = allow_hosts.clone();
-    let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
+    let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins).trusting(trust_proxies);
     let activity = activity::Activity::beside(&deployments_at);
     store.1.connect(Arc::clone(&deployments), deployments_at.clone());
     let state = AppState {
@@ -1292,47 +1309,100 @@ fn open_to_others(dir: &std::path::Path) -> Option<String> {
     }
 }
 
-/// The control plane's requests being answered now, and how many may be at once: a request past
-/// it is answered 503 at once (`Admitted::take`), so a flood takes threads that end at once, not
-/// work (a run, a sign-in's hash). A stream's answer, once its handler has returned, isn't
-/// counted.
-static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The control plane's requests being answered now, in all and from each client, and how many may
+/// be at once: past `most` in all, or `from_one` from one client (`Access::client`: the address it
+/// connected from, or the one a proxy the server trusts forwarded for), one more is answered 503 at
+/// once (`Admitted::take`). A flood takes threads that end at once, not work (a run, a sign-in's
+/// hash), and one client's bodies that trickle in hold its share of the places, not all of them
+/// (each also gives its place back by `http::BODY_DEADLINE`). A stream's answer, once its handler
+/// has returned, isn't counted.
+pub(crate) struct Slots {
+    places: crate::sync::Mutex<Taken>,
+    most: usize,
+    from_one: usize,
+}
+
+/// The places `Slots` has given out: in all, and to each client that holds one.
+struct Taken {
+    all: usize,
+    from: std::collections::BTreeMap<String, usize>,
+}
+
+impl Slots {
+    pub(crate) const fn new(most: usize, from_one: usize) -> Slots {
+        Slots { places: crate::sync::Mutex::new(Taken { all: 0, from: std::collections::BTreeMap::new() }), most, from_one }
+    }
+
+    /// Requests being answered now.
+    #[cfg(test)]
+    pub(crate) fn taken(&self) -> usize {
+        self.places.lock().unwrap().all
+    }
+}
+
+static IN_FLIGHT: Slots = Slots::new(MAX_IN_FLIGHT, MAX_FROM_ONE);
 const MAX_IN_FLIGHT: usize = 512;
+const MAX_FROM_ONE: usize = MAX_IN_FLIGHT / 8;
 
 /// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
-/// past `most` being answered at once, one more is told to try again rather than given work,
-/// signed in or not. Its body is read by a deadline (`http::BODY_DEADLINE`), so a slow one gives
-/// its place back. Every answer, a refusal too, goes out with CORS's headers and the guards
-/// (http.rs `guarded`).
-pub(crate) fn admitted(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
-    guarded(with_cors(&state.access, request, answer(state, request, in_flight, most)))
+/// past what `slots` admit at once, in all or from its client, one more is told to try again
+/// rather than given work, signed in or not. Its body is read by a deadline
+/// (`http::BODY_DEADLINE`), so a slow one gives its place back. Every answer, a refusal too, goes
+/// out with CORS's headers and the guards (http.rs `guarded`).
+pub(crate) fn admitted(state: &AppState, request: &Request, slots: &Slots) -> Response {
+    guarded(with_cors(&state.access, request, answer(state, request, slots)))
 }
 
 /// `admitted`'s answer, before its headers.
-fn answer(state: &AppState, request: &Request, in_flight: &std::sync::atomic::AtomicUsize, most: usize) -> Response {
+fn answer(state: &AppState, request: &Request, slots: &Slots) -> Response {
     // A server stopping (stopping.rs) takes no more work: a run, a deploy, a decision.
     if state.store.1.stopping() {
         return rouille::Response::json(&serde_json::json!({ "error": stopping::REFUSED })).with_status_code(503).with_additional_header("Retry-After", "5");
     }
-    let Some(_admitted) = Admitted::take(in_flight, most) else {
-        return rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1");
+    let _admitted = match Admitted::take(slots, &state.access.client(request)) {
+        Ok(admitted) => admitted,
+        Err(full) => return rouille::Response::json(&serde_json::json!({ "error": full })).with_status_code(503).with_additional_header("Retry-After", "1"),
     };
     route(state, request)
 }
 
-/// One request counted in `IN_FLIGHT` while it is answered.
-pub(crate) struct Admitted<'a>(&'a std::sync::atomic::AtomicUsize);
+/// What a request past `Slots` is told: past all it admits, or past one client's share.
+pub(crate) const TOO_MANY: &str = "the server is answering too many requests at once: try again in a moment";
+pub(crate) const TOO_MANY_FROM_ONE: &str = "the server is answering too many requests from your address at once: try again once some have ended";
+
+/// One request counted in `Slots` while it is answered, for its client.
+pub(crate) struct Admitted<'a> {
+    slots: &'a Slots,
+    from: String,
+}
 
 impl<'a> Admitted<'a> {
-    /// Count one more in `in_flight`, unless `most` are there already.
-    pub(crate) fn take(in_flight: &'a std::sync::atomic::AtomicUsize, most: usize) -> Option<Admitted<'a>> {
-        use std::sync::atomic::Ordering;
-        in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < most).then_some(n + 1)).ok().map(|_| Admitted(in_flight))
+    /// Count one more from `from`, unless `slots.from_one` from it, or `slots.most` in all, are
+    /// there already: then what it is told.
+    pub(crate) fn take(slots: &'a Slots, from: &str) -> Result<Admitted<'a>, &'static str> {
+        let mut taken = slots.places.lock().unwrap();
+        let mine = taken.from.get(from).copied().unwrap_or(0);
+        if mine >= slots.from_one {
+            return Err(TOO_MANY_FROM_ONE);
+        }
+        if taken.all >= slots.most {
+            return Err(TOO_MANY);
+        }
+        taken.all += 1;
+        taken.from.insert(from.to_string(), mine + 1);
+        Ok(Admitted { slots, from: from.to_string() })
     }
 }
 
 impl Drop for Admitted<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        let mut taken = self.slots.places.lock().unwrap();
+        taken.all -= 1;
+        if let Some(n) = taken.from.get_mut(&self.from) {
+            *n -= 1;
+            if *n == 0 {
+                taken.from.remove(&self.from);
+            }
+        }
     }
 }

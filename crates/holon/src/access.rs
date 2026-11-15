@@ -22,8 +22,11 @@
 //! this run, good as an admin until it stops, that only that user can read.
 //!
 //! Hosts and origins: the server answers as loopback, and as the hosts and editor origins named
-//! with `--allow-host` / `--allow-origin`. Tokens are never logged or echoed.
+//! with `--allow-host` / `--allow-origin`. Tokens are never logged or echoed. A client is counted
+//! by its address, or, behind a proxy named with `--trust-proxy`, by the one that proxy forwarded
+//! for (`client`).
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +93,17 @@ impl Caller {
     }
 }
 
+/// Whether a request that says it was forwarded, from a proxy the server doesn't trust, has been
+/// told of (`Access::client`): once a run.
+static FORWARDED_UNTRUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// An address as a proxy writes it in `X-Forwarded-For`: `203.0.113.9`, `2001:db8::1`, and with
+/// a port, `203.0.113.9:4711` or `[2001:db8::1]:4711`. None for anything else (`unknown`).
+fn forwarded_address(entry: &str) -> Option<IpAddr> {
+    let ip = entry.parse::<IpAddr>().ok().or_else(|| entry.parse::<std::net::SocketAddr>().ok().map(|at| at.ip()))?;
+    Some(ip.to_canonical())
+}
+
 /// The control plane's access settings.
 #[derive(Default)]
 pub(crate) struct Access {
@@ -99,15 +113,60 @@ pub(crate) struct Access {
     pub(crate) hosts: Vec<String>,
     /// Editor origins it answers CORS for besides localhost's (`https://holon.example.com`).
     pub(crate) origins: Vec<String>,
+    /// The proxies in front it trusts to say whom they forward for (`--trust-proxy`), as
+    /// `to_canonical` writes them.
+    pub(crate) proxies: Vec<IpAddr>,
 }
 
 impl Access {
     pub(crate) fn new(accounts: Arc<Accounts>, hosts: Vec<String>, origins: Vec<String>) -> Access {
-        Access { accounts: Some(accounts), hosts, origins }
+        Access { accounts: Some(accounts), hosts, origins, proxies: vec![] }
+    }
+
+    /// Trusting `proxies` to say whom they forward for (`client`).
+    pub(crate) fn trusting(mut self, proxies: Vec<IpAddr>) -> Access {
+        self.proxies = proxies.into_iter().map(|ip| ip.to_canonical()).collect();
+        self
     }
 
     pub(crate) fn accounts(&self) -> Option<&Arc<Accounts>> {
         self.accounts.as_ref()
+    }
+
+    /// Whom `request` comes from, as the control plane counts a client: its places at once
+    /// (main.rs, `Slots`) and its tries of a way in (accounts.rs, `counted`). The address it
+    /// connected from; or, connected from a proxy it trusts (`--trust-proxy`), the address that
+    /// proxy forwarded for: the nearest in `X-Forwarded-For`, read from the end, that isn't a
+    /// proxy it trusts itself (each proxy adds the address it was reached from at the end, so
+    /// what a client wrote there itself is never read). A list it can't read is the proxy's
+    /// address. An IPv6 address counts by its /64, which one client is commonly given whole.
+    ///
+    /// Behind a proxy it doesn't trust, every client is the proxy, and shares its places and its
+    /// tries: the first request that says it was forwarded tells the server's output so, once.
+    pub(crate) fn client(&self, request: &Request) -> String {
+        let peer = request.remote_addr().ip().to_canonical();
+        let forwarded = request.headers().filter(|(name, _)| name.eq_ignore_ascii_case("x-forwarded-for")).flat_map(|(_, list)| list.split(',')).map(str::trim);
+        let mut from = peer;
+        if self.proxies.contains(&peer) {
+            for entry in forwarded.collect::<Vec<_>>().into_iter().rev() {
+                let Some(ip) = forwarded_address(entry) else { break };
+                from = ip;
+                if !self.proxies.contains(&ip) {
+                    break;
+                }
+            }
+        } else if forwarded.count() > 0 && !FORWARDED_UNTRUSTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "holon: a request from {peer} says it was forwarded (X-Forwarded-For), and {peer} isn't a proxy the server was told to trust: every client it forwards for counts as {peer}, sharing its requests at once and its sign-in tries. If it is your proxy, start the server with --trust-proxy {peer}"
+            );
+        }
+        match from {
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+            ip => ip.to_string(),
+        }
     }
 
     /// Who `request` comes from, once its route lets them, or why it may not go on.
@@ -320,7 +379,7 @@ mod tests {
 
     #[test]
     fn unnamed_hosts_and_origins_are_refused() {
-        let access = Access { accounts: None, hosts: vec!["api.example.com".into()], origins: vec!["https://holon.example.com".into()] };
+        let access = Access { accounts: None, hosts: vec!["api.example.com".into()], origins: vec!["https://holon.example.com".into()], proxies: vec![] };
         assert!(access.allows_host("api.example.com:7420", 7420) && access.allows_host("localhost:7420", 7420));
         assert!(!access.allows_host("evil.example.com:7420", 7420));
         assert!(access.allows_origin("https://holon.example.com") && access.allows_origin("http://localhost:5173"));

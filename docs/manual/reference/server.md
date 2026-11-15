@@ -374,13 +374,15 @@ of "payout": each step of an approval is someone else's`).
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
-  behind a proxy, every address is the proxy's), and five wrong setup codes lock setting up from
+  behind a proxy, the address it forwarded for if the server trusts it, `--trust-proxy`, and
+  otherwise every address is the proxy's), and five wrong setup codes lock setting up from
   that address the same way. A few passwords are checked at once: past that, a sign-in waits its
   turn, and past thirty seconds is told the server is busy (503). While 64 wait, or 8 from one
   address (an IPv6 address by its /64), whatever the names, one more is told so at once: a flood
   of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
   checked before its password is.
-- The server answers up to 512 requests at once; one more is told to try again (503). A request's
+- The server answers up to 512 requests at once, and 64 from one address (counted as for
+  sign-ins); one more is told to try again (503). A request's
   body must arrive within 30 seconds, or it is told 408 and its place goes back.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given

@@ -995,8 +995,9 @@ impl Accounts {
 
     /// Sign `name` in with `password`, sent from `from` (the client's address): a session token,
     /// or why not (never saying which was wrong). Wrong passwords lock the name for that address
-    /// only, so someone elsewhere who knows the name can't keep its owner out; behind a proxy every
-    /// address is the proxy's, and the lock is the name's, as it was.
+    /// only, so someone elsewhere who knows the name can't keep its owner out. Behind a proxy the
+    /// server trusts, the address is the client's it forwarded for (`Access::client`); behind one
+    /// it doesn't, every address is the proxy's, and the lock is the name's.
     pub(crate) fn sign_in_from(&self, name: &str, password: &str, from: &str) -> Result<(String, Principal), String> {
         let account = hold(&self.book).users.iter().find(|u| u.name == name).cloned();
         let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());

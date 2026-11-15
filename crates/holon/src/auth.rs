@@ -129,18 +129,6 @@ fn may_take_over(caller: &Caller, accounts: &Accounts, name: &str, what: &str) -
     Err(err(403, crate::access_proposals::taken_over(name, &held, what, n, &instead)))
 }
 
-/// Where `request` came from, as the tries of a way in are counted (accounts.rs, `counted`): its
-/// address, or for IPv6 its /64, which one client is commonly given whole.
-fn address(request: &Request) -> String {
-    match request.remote_addr().ip() {
-        std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => {
-            let s = v6.segments();
-            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
-        }
-        ip => ip.to_canonical().to_string(),
-    }
-}
-
 /// A session begun: its token, whose it is, and when it ends (`holon login` says so).
 fn signed_in(token: &str, p: &Principal, accounts: &Accounts) -> Response {
     Response::json(&serde_json::json!({
@@ -230,7 +218,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<Setup>(request).and_then(|s| {
-                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
+                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &state.access.client(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
                 state.activity.record("set up the server", &a.name, Some(&a.name));
                 Ok(signed_in(&token, &a, accounts))
             }));
@@ -242,7 +230,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<SignIn>(request).and_then(|s| {
-                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
+                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &state.access.client(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
                 Ok(signed_in(&token, &a, accounts))
             }));
         }

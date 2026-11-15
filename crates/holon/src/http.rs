@@ -102,7 +102,7 @@ pub(crate) fn guarded(response: Response) -> Response {
 }
 
 /// How long a request's body may take to arrive, all of it. Past it the client is told 408 and
-/// the request lets go of its admission (`IN_FLIGHT`, main.rs), so bodies that trickle in or stop
+/// the request lets go of its admission (`Slots`, main.rs), so bodies that trickle in or stop
 /// can't hold every slot and lock everyone out, signing in included. The data plane's is its
 /// `body_timeout`, the same 30 seconds.
 pub(crate) const BODY_DEADLINE: Duration = if cfg!(test) { Duration::from_millis(600) } else { Duration::from_secs(30) };
