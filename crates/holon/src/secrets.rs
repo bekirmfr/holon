@@ -54,6 +54,12 @@ pub(crate) struct Resolved {
     /// name → how the log tells its current value apart: the version it is of and its
     /// fingerprint (`v3 #a1b2c3d4`, [`mark`]).
     pub(crate) shown: BTreeMap<String, String>,
+    /// name → the salt of its current value: 32 random bytes, drawn when the value was first
+    /// seen and sealed in the store (`SecretStore::salt_of`). What a run's record will commit
+    /// its secrets with, and key the marks of what it computes from them
+    /// (docs/L4s/secret-verification-L4.md §8.1, items A and H). Not there for a value whose
+    /// kept salt doesn't open.
+    pub(crate) salts: BTreeMap<String, Zeroizing<[u8; 32]>>,
     /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
     /// The names whose current value is the server's ([`SERVER`]: the deployment has none of its
@@ -99,7 +105,27 @@ struct SecretsFile {
     /// and databases (`db:shop`). One not listed may go wherever its flows' approvals show.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     caps: BTreeMap<String, BTreeSet<String>>,
+    /// The salt of each value a secret has had, by deployment ([`SaltOf`]). A section of its
+    /// own, and not a field of a version: a reference's value changes under one version, and a
+    /// salt outlives the version it was drawn for. A file from before it has none, and each is
+    /// drawn as its value is next read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    salts: BTreeMap<String, Vec<SaltOf>>,
 }
+
+/// One value's salt, as the file keeps it: whose it is (the secret's name and version, and the
+/// value's fingerprint, since a reference has more than one value under a version), and the 32
+/// bytes sealed under the keyring's `secrets` scope for [`salt_context`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SaltOf {
+    name: String,
+    version: u32,
+    print: String,
+    sealed: String,
+}
+
+/// A salt in the store: the deployment, the secret's name and version, the value's fingerprint.
+type SaltKey = (String, String, u32, String);
 
 /// Where the server's own secrets are kept in the store, beside each deployment's: one bound for
 /// every deployment that reads it (`holon secret bind stripe_key`), as a folder or a database is,
@@ -111,6 +137,12 @@ const FORMAT: u32 = 4;
 /// What a sealed value is bound to: a value sealed for one place doesn't open in another.
 fn context(slug: &str, name: &str, version: u32) -> String {
     format!("holon-secret/v3\0{slug}\0{name}\0{version}")
+}
+
+/// What a sealed salt is bound to: the value it is of, by its fingerprint, beside what the value
+/// is bound to. A salt moved to another value's place doesn't open.
+fn salt_context(slug: &str, name: &str, version: u32, print: &str) -> String {
+    format!("holon-secret-salt/v1\0{slug}\0{name}\0{version}\0{print}")
 }
 
 #[derive(Default)]
@@ -223,6 +255,12 @@ pub(crate) struct SecretStore {
     slugs: Mutex<BTreeMap<String, Slug>>,
     /// Where each of the server's secrets may go ([`SecretsFile::caps`]). Locked after `slugs`.
     caps: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// Each value's salt, sealed ([`SecretsFile::salts`]). Locked after `slugs` and `caps`.
+    salts: Mutex<BTreeMap<SaltKey, String>>,
+    /// Whether a salt was drawn that the file doesn't hold yet: one is drawn where a value is
+    /// read (`resolve`), under `slugs`, and the file is written once that is let go
+    /// (`keep_salts`).
+    unsaved: std::sync::atomic::AtomicBool,
 }
 
 /// Whether `d` is where a secret may be said to go: a host, with a port if it isn't 443
@@ -254,6 +292,8 @@ impl SecretStore {
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
             slugs: Mutex::new(BTreeMap::new()),
             caps: Mutex::new(BTreeMap::new()),
+            salts: Mutex::new(BTreeMap::new()),
+            unsaved: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -278,17 +318,27 @@ impl SecretStore {
         }
         let seal = at_rest::LineSeal::with(Arc::clone(&keys), at_rest::SECRETS, at_rest::role::SECRETS_AUDIT);
         let audit = Audit { path: Some((Path::new(path).with_extension("audit.jsonl"), seal)), kept: Mutex::new(Vec::new()) };
-        let store = |caps| SecretStore { path: path.into(), keys: Arc::clone(&keys), sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
+        let store = |caps, salts| SecretStore {
+            path: path.into(),
+            keys: Arc::clone(&keys),
+            sources,
+            audit,
+            slugs: Mutex::new(BTreeMap::new()),
+            caps: Mutex::new(caps),
+            salts: Mutex::new(salts),
+            unsaved: std::sync::atomic::AtomicBool::new(false),
+        };
         // Sealed whole under the server's keys (which secrets each deployment has, their sources),
         // each local value in it under the secrets scope.
-        let Some(bytes) = at_rest::read(&keys, Path::new(path), at_rest::role::SECRETS)? else { return Ok(store(BTreeMap::new())) };
+        let Some(bytes) = at_rest::read(&keys, Path::new(path), at_rest::role::SECRETS)? else { return Ok(store(BTreeMap::new(), BTreeMap::new())) };
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
         let format = parsed.get("format").and_then(serde_json::Value::as_u64);
         if format != Some(u64::from(FORMAT)) {
             return Err(format!("{path:?} is secrets format {}, this server reads {FORMAT}", format.map_or("(none)".into(), |f| f.to_string())));
         }
         let file: SecretsFile = serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
-        let store = store(file.caps);
+        let salts = file.salts.into_iter().flat_map(|(slug, salts)| salts.into_iter().map(move |s| ((slug.clone(), s.name, s.version, s.print), s.sealed))).collect();
+        let store = store(file.caps, salts);
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -296,6 +346,9 @@ impl SecretStore {
             }
             store.resolve_all(&slugs);
         }
+        // A value read for the first time (a file from before salts, a reference's new value)
+        // had its salt drawn: it is kept before a run is given it.
+        store.keep_salts();
         Ok(store)
     }
 
@@ -310,6 +363,7 @@ impl SecretStore {
             }
             Arc::clone(&slugs[slug].vault)
         };
+        self.keep_salts();
         {
             let mut v = vault.lock().unwrap();
             v.keys.get_or_insert_with(|| Arc::clone(&self.keys));
@@ -516,6 +570,9 @@ impl SecretStore {
                 self.resolve(slug, entry, server.filter(|_| slug != SERVER));
             }
         }
+        drop(slugs);
+        // A reference whose value changed where it is kept has a salt of its own.
+        self.keep_salts();
     }
 
     /// Recompute the vaults a change to `slug`'s secrets reaches: its own, and for the server's
@@ -575,6 +632,9 @@ impl SecretStore {
     /// Forget all of `slug`'s secrets: its deployment was deleted.
     pub(crate) fn forget(&self, slug: &str, by: Option<&str>) -> Result<(), String> {
         let removed = self.slugs.lock().unwrap().remove(slug);
+        // Its salts with it: nothing of a deleted deployment is kept. (A secret removed, or a
+        // version let go of, keeps its salt: a run that named it is still held to its value.)
+        self.salts.lock().unwrap().retain(|(of, ..), _| of != slug);
         if let Some(s) = removed {
             *s.vault.lock().unwrap() = Resolved::default();
             self.persist()?;
@@ -616,6 +676,7 @@ impl SecretStore {
             match self.value_of(owner, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
                     resolved.shown.insert(name.clone(), self.shown(current.version, &value));
+                    resolved.salts.extend(self.salt_of(owner, name, current.version, &value).map(|salt| (name.clone(), salt)));
                     resolved.current.insert(name.clone(), value);
                     resolved.fetched.insert(name.clone(), (current.version, now));
                 }
@@ -627,6 +688,7 @@ impl SecretStore {
                         let ago = now.duration_since(at).as_secs();
                         resolved.problems.insert(name.clone(), format!("{e}; using the value read {ago}s ago"));
                         resolved.shown.insert(name.clone(), self.shown(version, &value));
+                        resolved.salts.extend(self.salt_of(owner, name, version, &value).map(|salt| (name.clone(), salt)));
                         resolved.current.insert(name.clone(), value);
                         resolved.fetched.insert(name.clone(), (version, at));
                     }
@@ -659,6 +721,44 @@ impl SecretStore {
         *entry.vault.lock().unwrap() = resolved;
     }
 
+    /// The salt of `value`, version `version` of `owner`'s secret `name`: drawn the first time
+    /// the value is read, and sealed in the store from then on, so it is the same after a
+    /// restart, and for a reference's value that comes back after another. A reference's value
+    /// changes under one version, so a salt is a value's, told by its fingerprint. None when the
+    /// one kept doesn't open (a damaged file, another keyring): another is never drawn in its
+    /// place, which would give one value two salts.
+    fn salt_of(&self, owner: &str, name: &str, version: u32, value: &str) -> Option<Zeroizing<[u8; 32]>> {
+        let print = self.keys.fingerprint(value);
+        let role = salt_context(owner, name, version, &print);
+        let mut salts = self.salts.lock().unwrap();
+        let mut salt = Zeroizing::new([0u8; 32]);
+        match salts.entry((owner.to_string(), name.to_string(), version, print)) {
+            std::collections::btree_map::Entry::Occupied(kept) => {
+                let plain = self.keys.open_line(at_rest::SECRETS, &role, kept.get()).ok()?;
+                if plain.len() != salt.len() {
+                    return None;
+                }
+                salt.copy_from_slice(&plain);
+            }
+            std::collections::btree_map::Entry::Vacant(new) => {
+                getrandom::fill(salt.as_mut_slice()).expect("the OS random source failed");
+                new.insert(self.keys.seal_line(at_rest::SECRETS, &role, salt.as_slice()).ok()?);
+                self.unsaved.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Some(salt)
+    }
+
+    /// Write the file if a salt was drawn that it doesn't hold. Called with `slugs` let go.
+    fn keep_salts(&self) {
+        if self.unsaved.load(std::sync::atomic::Ordering::SeqCst)
+            && let Err(e) = self.persist()
+        {
+            eprintln!("holon: a secret's salt isn't kept yet: {e}");
+            self.unsaved.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// How the log tells `value`, version `version` of a secret, apart: `v3 #a1b2c3d4`.
     fn shown(&self, version: u32, value: &str) -> String {
         format!("v{version} #{}", self.keys.fingerprint(value))
@@ -668,6 +768,10 @@ impl SecretStore {
         if self.path == ":memory:" {
             return Ok(());
         }
+        // Whatever was drawn is in what is written now; one drawn while it is written is said
+        // again.
+        self.unsaved.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut salts: BTreeMap<String, Vec<SaltOf>> = BTreeMap::new();
         let file = SecretsFile {
             format: FORMAT,
             deployments: self
@@ -679,6 +783,12 @@ impl SecretStore {
                 .map(|(slug, s)| (slug.clone(), s.secrets.clone()))
                 .collect(),
             caps: self.caps.lock().unwrap().clone(),
+            salts: {
+                for ((slug, name, version, print), sealed) in self.salts.lock().unwrap().iter() {
+                    salts.entry(slug.clone()).or_default().push(SaltOf { name: name.clone(), version: *version, print: print.clone(), sealed: sealed.clone() });
+                }
+                salts
+            },
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         at_rest::write_private(&self.keys, Path::new(&self.path), at_rest::SERVER, at_rest::role::SECRETS, &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
@@ -1252,6 +1362,98 @@ mod tests {
         assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
         assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap().contains("not sealed"));
+    }
+
+    /// Guards: each value of a secret has one salt, for as long as the store is kept. Drawn when
+    /// the value is first read, the same after a restart, another for another version (a
+    /// roll-back's too: it is a new version), and for a reference one for each value it has had,
+    /// the first again when that value comes back. Sealed in the file, gone with a deleted
+    /// deployment, kept when a secret is removed.
+    /// Why: a run's record will commit its secrets with it and key the marks of what it computes
+    /// from them. A salt drawn again for a value it already had would make two records of one
+    /// value read as two values, and one kept in the clear lets a weak value be guessed.
+    /// If it fails: the case named says which of those no longer holds.
+    #[test]
+    fn a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts() {
+        let salt = |store: &SecretStore, slug: &str, name: &str| store.vault(slug).lock().unwrap().salts.get(name).map(|s| s.to_vec());
+        let hex = |salt: &[u8]| salt.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+        // A value set here.
+        let (path, key) = temp("salts");
+        let open = |sources: Sources| SecretStore::open(&path, Arc::clone(&key), sources).unwrap();
+        let store = open(Sources::none());
+        store.set("api", "k", "the-first-value", None).unwrap();
+        let first = salt(&store, "api", "k").expect("a value set has a salt");
+        assert_eq!(first.len(), 32);
+        assert_ne!(first, vec![0u8; 32], "drawn, not left empty");
+        assert_eq!(salt(&store, "api", "k"), Some(first.clone()), "read again, the same");
+        let text = opened(&key, &path);
+        assert!(text.contains("\"salts\"") && !text.contains(&hex(&first)), "kept in the file, sealed: {text}");
+        assert_eq!(salt(&open(Sources::none()), "api", "k"), Some(first.clone()), "after a restart, the same");
+
+        // Another version has another; a roll-back is a new version of the old value.
+        store.set("api", "k", "the-second-value", None).unwrap();
+        let second = salt(&store, "api", "k").unwrap();
+        assert_ne!(second, first);
+        store.rollback("api", "k", 1, None).unwrap();
+        let back = salt(&store, "api", "k").unwrap();
+        assert!(back != first && back != second, "version 3 holds version 1's value, and is version 3");
+        // Removed, its salts are kept (a run that named it is still held to its value); the
+        // deployment deleted, they are gone.
+        assert!(store.remove("api", "k", None).unwrap());
+        assert!(opened(&key, &path).contains("\"salts\""));
+        store.set("api", "k", "the-first-value", None).unwrap();
+        assert_eq!(salt(&store, "api", "k"), Some(first.clone()), "the same name, version and value: the salt it had");
+        store.forget("api", None).unwrap();
+        assert!(!opened(&key, &path).contains("\"salts\""), "{}", opened(&key, &path));
+
+        // A reference: its value changes where it is kept, under one version.
+        let env = |value: &str| Sources::of(&[("HOLON_SECRET_K", value)]);
+        let store = open(env("value-one-from-env"));
+        assert_eq!(store.set_from("web", "k", "env:HOLON_SECRET_K", None).unwrap(), 1);
+        let one = salt(&store, "web", "k").unwrap();
+        let store = open(env("value-two-from-env"));
+        let two = salt(&store, "web", "k").unwrap();
+        assert_ne!(two, one, "another value, another salt, under the same version");
+        assert_eq!(salt(&open(env("value-two-from-env")), "web", "k"), Some(two), "kept as it was drawn, at the open that read it");
+        assert_eq!(salt(&open(env("value-one-from-env")), "web", "k"), Some(one), "the first value back: its first salt");
+
+        // The server's secret, read by a deployment with none of its own: one salt, the server's.
+        let store = open(Sources::none());
+        store.set(SERVER, "shared", "the-servers-value", None).unwrap();
+        assert_eq!(salt(&store, "one", "shared"), salt(&store, "two", "shared"));
+        assert!(salt(&store, "one", "shared").is_some());
+
+        // A file from before salts opens, and each value gets one as it is read.
+        let (old_path, old_key) = temp("salts-before");
+        let old = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        old.set("api", "k", "a-value-from-before", None).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&opened(&old_key, &old_path)).unwrap();
+        file.as_object_mut().unwrap().remove("salts").expect("it had the section");
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        let again = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        let drawn = salt(&again, "api", "k").expect("drawn at the open that first reads it");
+        assert!(opened(&old_key, &old_path).contains("\"salts\""), "and written then");
+        assert_eq!(salt(&SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap(), "api", "k"), Some(drawn.clone()));
+
+        // One that doesn't open (sealed for somewhere else) is never drawn again: the value has
+        // no salt, at this open and the next, and what the file holds is left as it is.
+        let mut file: serde_json::Value = serde_json::from_str(&opened(&old_key, &old_path)).unwrap();
+        let elsewhere = old_key.seal_line(at_rest::SECRETS, "sealed for somewhere else", &[7u8; 32]).unwrap();
+        file["salts"]["api"][0]["sealed"] = serde_json::json!(elsewhere);
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        for _ in 0..2 {
+            let damaged = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+            assert_eq!(salt(&damaged, "api", "k"), None, "never another in its place");
+            assert_eq!(*damaged.vault("api").lock().unwrap().current["k"], "a-value-from-before", "the value itself still reads");
+            assert!(opened(&old_key, &old_path).contains(&elsewhere));
+        }
+        // One filed under another value's fingerprint isn't this value's: this one gets its own.
+        file["salts"]["api"][0]["print"] = serde_json::json!("00000000");
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        let moved = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        assert!(salt(&moved, "api", "k").is_some_and(|s| s != drawn));
+        assert!(opened(&old_key, &old_path).contains(&elsewhere), "and the other is left as it was");
     }
 
     /// The server's secret is read by a deployment with none of its own, overridden by one it

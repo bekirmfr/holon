@@ -65,6 +65,15 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   old one current as a new version. Every change, and a source that stops or starts reading, is a
   line of `<secrets>.audit.jsonl`: what, when, version and source, never a value. A value under
   `MIN_SECRET_LEN` (6) is refused: it would match ordinary text.
+- **A salt for each value.** The first time a value is read (set here, or fetched from where it
+  is kept), the store draws it 32 random bytes and seals them as it seals a value, bound to the
+  secret's name and version and the value's fingerprint (`SecretStore::salt_of`,
+  `SecretsFile::salts`). A reference's value changes under one version, so a salt is a value's:
+  one that comes back has its first salt again. It is the same after a restart, kept when its
+  version is dropped or its secret removed, and gone with a deleted deployment. A deployment's
+  current salts are in memory beside its values (`Resolved::salts`). Nothing reads them yet:
+  they are what a run's record will commit its secrets with
+  ([secret verification](../../L4s/secret-verification-L4.md) §8.1, items A and H).
 - **The server's own** are kept under `SERVER` (`*`) and read by a deployment with none of its
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
 - **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
@@ -129,7 +138,8 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 5. What the tests hold
 
-- secrets.rs: `a_store_keeps_values_sealed_and_survives_a_restart`,
+- secrets.rs: `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
+  `a_store_keeps_values_sealed_and_survives_a_restart`,
   `a_missing_or_wrong_key_refuses_instead_of_starting_empty`, `versions_are_kept_and_old_values_still_redacted`,
   `a_mark_names_the_version_and_a_fingerprint_of_the_value`, `a_vault_value_follows_its_source_and_outlives_an_outage_only_briefly`,
   `a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited`,
