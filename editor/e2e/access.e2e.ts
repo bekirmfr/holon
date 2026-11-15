@@ -467,7 +467,7 @@ test("a step whoever started the run may take says so in words, and with its one
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text(`{ role: "${role}", starter: true }`));
     // Compiled: what it may do says so (in the bottom pane, closed).
-    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, or acting for them, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
     // Saved a second after the deploy at least (both are kept in seconds).
     await page.waitForTimeout(1_100);
     const saved = page.waitForResponse((r) => r.request().method() !== "GET" && new URL(r.url()).pathname.startsWith("/flows"));
@@ -475,7 +475,7 @@ test("a step whoever started the run may take says so in words, and with its one
     expect((await saved).ok()).toBe(true);
     await page.goto(`/#approvals.${slug}.v2`);
     const may = page.getByRole("region", { name: "what it may do" });
-    await expect(may).toContainText(`approval ok: +approved by a person holding ${role}, who may be whoever started the run, −approved by a person holding ${role}`);
+    await expect(may).toContainText(`approval ok: +approved by a person holding ${role}, who may be whoever started the run, or acting for them, −approved by a person holding ${role}`);
     await expect(may).not.toContainText("can't be decided");
     await expect(page.getByRole("group", { name: "Can't be decided here" })).toHaveCount(0);
     const decide = page.getByRole("complementary", { name: "decision" });

@@ -741,7 +741,7 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
         ("PUT", "/groups/team", json!({ "members": ["cy", "gil"] }), "changed the group team: cy, gil"),
         ("PUT", "/roles/keeper", json!({ "allows": ["run.view", "secret.set"], "kinds": ["person"] }), "changed the role keeper: run.view, secret.set, held by a person"),
         ("PATCH", "/people/ivy", json!({ "role": "editor", "display": "Ivy" }), "bound editor to ivy on this host"),
-        ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once"),
+        ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; whoever started a run, or one of their party, may take a step of it that says so; an access change applies at once"),
     ];
     for (n, (method, path, body, what)) in waiting.iter().enumerate() {
         let (code, said) = ada(method, path, body.clone());

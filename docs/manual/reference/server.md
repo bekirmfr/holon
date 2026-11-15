@@ -274,9 +274,10 @@ answers one whole. Each change is also in the activity log.
 `PUT /access/approvals` (`{"exclude_deployer": true, "agents": false, "starter": false,
 "changes": 2, "why": "…"}`, any of them; `people.assign` on the host) sets how the host decides
 approvals beyond each step's role, as a new version: with `exclude_deployer`, whoever deployed the
-version a run is on decides none of its approvals; with `agents` false, no agent decides one, and
-a deploy whose approval has a step for an agent is refused; with `starter` false, no step takes
-whoever started the run, and a deploy whose approval has a step that would is refused; with
+version a run is on, and their party, decide none of its approvals; with `agents` false, no agent
+decides one, and a deploy whose approval has a step for an agent is refused; with `starter` false,
+no step takes whoever started the run nor their party, and a deploy whose approval has a step that
+would is refused; with
 `changes` N (1 to 5; `null` turns it off), an access change that gives more waits for N people.
 They are `false`, `true`, `true` and `null` by default, and `GET /access` has them, `approvals`.
 

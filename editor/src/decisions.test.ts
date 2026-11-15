@@ -45,7 +45,7 @@ const review = (drafted: string[]): WaitingPoint => ({
   name: "shape",
   expires_at: 0,
   steps: "agent:drafter>person:editor^",
-  said: "an agent holding drafter, then a person holding editor, who may be whoever started the run",
+  said: "an agent holding drafter, then a person holding editor, who may be whoever started the run, or acting for them",
   slots: [step(0, 1, drafted, drafted.length === 0, "drafter", "agent"), step(1, 1, [], drafted.length > 0, "editor", "person", true)],
   decisions: drafted.map((b) => ({ ...took(b, 0, "drafter"), kind: "agent" as const })),
 });
@@ -121,8 +121,8 @@ describe("an approval in steps, as its chain", () => {
     ["the agent's note, its label and confidence", noted(chain(["scout"], []), { label: "invoice", confidence: 0.93 }), "✓ classifier (scout, invoice, 0.93) → ◻ reviewer (2 people) → ◻ approver (not open yet)"],
     ["a note of anything else, not in the chain", noted(chain(["scout"], ["ada"]), { checked: ["po"] }), "✓ classifier (scout) → ◻ reviewer (1 of 2: ada) → ◻ approver (not open yet)"],
     ["a confidence alone", noted(chain(["scout"], ["ada", "bob"]), { confidence: 0.5 }), "✓ classifier (scout, 0.5) → ✓ reviewer (ada and bob) → ◻ approver"],
-    ["a step whoever started the run may take, not open yet", review([]), "◻ drafter → ◻ editor (whoever started it may take it, not open yet)"],
-    ["and open", review(["scout"]), "✓ drafter (scout) → ◻ editor (whoever started it may take it)"],
+    ["a step whoever started the run may take, not open yet", review([]), "◻ drafter → ◻ editor (whoever started it, or one acting for them, may take it, not open yet)"],
+    ["and open", review(["scout"]), "✓ drafter (scout) → ◻ editor (whoever started it, or one acting for them, may take it)"],
   ];
   it.each(rows)("%s", (_, w, said) => {
     expect(chainSaid(w)).toBe(said);

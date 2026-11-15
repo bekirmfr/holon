@@ -2627,8 +2627,9 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
 
 /// **Guards:** an approval in steps is decided a step at a time through the route (D36 to D40):
 /// the step named, or the one open step the caller may fill, of their kind, bound to its role
-/// where the approval is (at the flow, or at the point itself); never by the run's starter; a
-/// note given to the run with the decision, at most 16 KiB.
+/// where the approval is (at the flow, or at the point itself); never by the run's starter, nor
+/// two steps by one party (an agent and its owner, the audit's R18); a note given to the run with
+/// the decision, at most 16 KiB.
 /// **Why:** who decides each step is what the deploy's permission named, and the record of it is
 /// the evidence: the route must hold to it whoever asks.
 #[test]
@@ -2653,15 +2654,16 @@ export const pay = action(async (order) => {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     // Viewers on the host: what lets them decide is the role each step names.
     let viewer = |name: &str| accounts.accept(&accounts.invite(name, "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let (bob, cy, dee) = (viewer("bob"), viewer("cy"), viewer("dee"));
-    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
-    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    let (bob, cy, dee, eve) = (viewer("bob"), viewer("cy"), viewer("dee"), viewer("eve"));
+    // eve's agent, its token hers: one party with her.
+    accounts.add("scout", Kind::Agent, "agent", "eve", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "eve").unwrap().0;
     for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person), ("approver", Kind::Person)] {
         accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
     }
     let flow = Scope::Flows(Selector::Slug("payouts".into()));
     let point = Scope::Approval { flow: Selector::Slug("payouts".into()), name: "payout".into() };
-    for (who, role, at) in [("scout", "classifier", &flow), ("bob", "reviewer", &flow), ("dee", "reviewer", &flow), ("dee", "approver", &flow), ("cy", "approver", &point)] {
+    for (who, role, at) in [("scout", "classifier", &flow), ("bob", "reviewer", &flow), ("dee", "reviewer", &flow), ("dee", "approver", &flow), ("cy", "approver", &point), ("eve", "reviewer", &flow)] {
         accounts.bind(Subject::Principal(who.into()), role, at.clone(), None, "ada", None).unwrap();
     }
     let ask = |token: &str, method: &str, path: &str, body: Value| {
@@ -2702,8 +2704,9 @@ export const pay = action(async (order) => {
     let (code, said) = decide(&scout, approve(None, Some(note.clone())));
     assert_eq!((code, &said["slot"], &said["outcome"]), (200, &json!(0), &json!("waiting")), "{said}");
     assert_eq!(open(&said["slots"]), [false, true, true], "{said}");
-    assert_eq!([yours(&scout), yours(&bob), yours(&cy), yours(&dee)], [json!([]), json!([1]), json!([2]), json!([1, 2])], "{said}");
+    assert_eq!([yours(&scout), yours(&bob), yours(&cy), yours(&dee), yours(&eve)], [json!([]), json!([1]), json!([2]), json!([1, 2]), json!([])], "eve none: one party with scout; {said}");
     refused(&scout, approve(Some(1), None), 403, "scout is an agent, and slot 1 (reviewer) of \"payout\" is a person's");
+    refused(&eve, approve(Some(1), None), 403, "eve and scout are one party (eve owns scout), and scout decided slot 0 (classifier) of \"payout\": each step of an approval is another party's");
     refused(&dee, approve(None, None), 409, "dee may fill slot 1 (reviewer) and slot 2 (approver) of \"payout\": say which, with slot");
     refused(&bob, approve(Some(2), None), 403, "slot 2 (approver) of \"payout\" takes someone bound to approver here, and bob isn't");
     assert_eq!(decide(&dee, approve(Some(1), None)).1["outcome"], "waiting");
@@ -2760,8 +2763,9 @@ export const pay = action(async (order) => {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     let invited = |name: &str, role: &str| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let (bob, eve) = (invited("bob", "viewer"), invited("eve", "editor"));
-    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
-    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    // bob's agent, its token his: ada, who takes the reviewer's step, is another party.
+    accounts.add("scout", Kind::Agent, "agent", "bob", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "bob").unwrap().0;
     for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person)] {
         accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
     }
@@ -2816,7 +2820,7 @@ export const pay = action(async (order) => {
     let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
     assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
     let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
-    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once";
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; whoever started a run, or one of their party, may take a step of it that says so; an access change applies at once";
     assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
     assert_eq!(decide(&scout).1["outcome"], "waiting");
     assert_eq!(decide(&ada).1["outcome"], "approved");
@@ -11105,9 +11109,9 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
 
 /// The approved-payout sample: a deposit while the payout waits at its steps goes ahead (the
 /// waiting run holds nothing); an agent bound to classifier on the tag classifies it, with a note,
-/// a person bound to reviewer reviews it, and the account that set the server up, bound to
-/// approver, approves it through the run file (`holon decide` on its machine), each only in turn,
-/// and the run pays from the balance as it then is, with the classifier's note; a deposit while
+/// a person bound to reviewer reviews it, and another bound to approver approves it, each only in
+/// turn; the account that set the server up owns the agent, and so takes no step (one party, the
+/// audit's R18). The run pays from the balance as it then is, with the classifier's note; a deposit while
 /// the payout is in flight waits for the row the run holds, and runs again after it. The payout
 /// went out once; no deposit is written over; the resumed part's log entry holds each decision
 /// with the binding that let it. A second payout, declined by the reviewer, pays nothing.
@@ -11123,15 +11127,16 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
     // From here on, people sign in, as the sample's comment sets them up: three roles, each bound on
-    // the tag, to an agent, a person and ada, who set the server up, whose run file approves.
+    // the tag, to an agent, ada's, and two people; ada, who set the server up, takes no step.
     let accounts = Arc::new(crate::accounts::Accounts::memory());
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
     let local = accounts.new_local("bma");
     let bob = accounts.accept(&accounts.invite("bob", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     accounts.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
     let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
     let payments = crate::bindings::Scope::Flows(crate::bindings::Selector::Tag("payments".into()));
-    for (role, kind, who) in [("classifier", crate::accounts::Kind::Agent, "scout"), ("reviewer", crate::accounts::Kind::Person, "bob"), ("approver", crate::accounts::Kind::Person, "ada")] {
+    for (role, kind, who) in [("classifier", crate::accounts::Kind::Agent, "scout"), ("reviewer", crate::accounts::Kind::Person, "bob"), ("approver", crate::accounts::Kind::Person, "cy")] {
         accounts.define_role(crate::bindings::RoleText { name: role.into(), about: None, allows: vec!["run.decide".into()], kinds: vec![kind] }, "ada", None).unwrap();
         accounts.bind(crate::bindings::Subject::Principal(who.into()), role, payments.clone(), None, "ada", None).unwrap();
     }
@@ -11158,8 +11163,9 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
     let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
     // Only in turn, and only whoever is bound to the step's role: not the approver before the
-    // review, in a session or through the run file, not the reviewer before the classifier.
-    for (who, token) in [("ada", &ada), ("the run file", &local), ("bob", &bob)] {
+    // review, not the reviewer before the classifier, and not ada, in a session or through the run
+    // file, bound to none of them.
+    for (who, token) in [("ada", &ada), ("the run file", &local), ("bob", &bob), ("cy", &cy)] {
         let (code, said) = decide(token, &run, true, None);
         assert!(code >= 400, "{who}: {said}");
     }
@@ -11169,7 +11175,7 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
     assert_eq!(hits_of(&hits, "/slow"), 0, "two steps of three pay nothing");
     let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| decide(&local, &run, true, Some("the invoice matches")));
+        let approved = s.spawn(|| decide(&cy, &run, true, Some("the invoice matches")));
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
         approved.join().unwrap()
@@ -11184,8 +11190,8 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
     let outputs = resumed["outputs"].to_string();
-    assert!(outputs.contains(r#"{"type":"Text","value":"scout"},{"type":"Text","value":"bob"},{"type":"Text","value":"ada"}"#), "who approved it: {resumed}");
-    assert!(resumed.to_string().contains(r#"\"by\":[\"scout\",\"bob\",\"ada\"],\"class\":{\"confidence\":0.93,\"label\":\"invoice\"}"#), "the payout sent, with the classifier's note: {resumed}");
+    assert!(outputs.contains(r#"{"type":"Text","value":"scout"},{"type":"Text","value":"bob"},{"type":"Text","value":"cy"}"#), "who approved it: {resumed}");
+    assert!(resumed.to_string().contains(r#"\"by\":[\"scout\",\"bob\",\"cy\"],\"class\":{\"confidence\":0.93,\"label\":\"invoice\"}"#), "the payout sent, with the classifier's note: {resumed}");
     // Each decision as the run was given it, with the binding that let it and the access version.
     let events = resumed["events"]["payout"].to_string();
     assert_eq!((events.matches(r#""binding""#).count(), events.matches(r#""access""#).count()), (3, 3), "{events}");

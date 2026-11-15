@@ -4771,9 +4771,8 @@ route.post("/hook", async (req) => {
             ("{ steps: [{ role: \"a b\" }] }", "\"a b\" isn't a role's name: letters, digits, - and _, at most 64"),
             ("{ steps: [{ role: approver }] }", "a step's role is a name in quotes: { role: \"reviewer\" }"),
             ("{ steps: [{ role: \"a\", who: \"ada\" }] }", "a step's fields are role, kind, people and starter, not \"who\""),
-            ("{ steps: [{ role: \"a\", starter: false }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
-            ("{ steps: [{ role: \"a\", starter: \"yes\" }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
-            ("{ steps: [{ role: \"a\", kind: \"agent\", starter: true }] }", "an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", starter: false }] }", "starter: true lets whoever started the run, or one acting for them, take the step; left out, they may not: { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", starter: \"yes\" }] }", "starter: true lets whoever started the run, or one acting for them, take the step; left out, they may not: { role: \"editor\", starter: true }"),
             (six.as_str(), "an approval has at most 5 steps, not 6"),
             (long.as_str(), &format!("\"{}\" isn't a role's name: letters, digits, - and _, at most 64", "r".repeat(65))),
         ] {

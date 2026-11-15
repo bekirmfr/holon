@@ -106,9 +106,9 @@ impl ApprovalSettings {
     /// that means here.
     pub(crate) fn each(&self) -> [(&'static str, String, String); 4] {
         let on = |b: bool| if b { "on" } else { "off" }.to_string();
-        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
+        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on, and their party, decide none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
         let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
-        let starter = if self.starter { "a person who started a run may take a step of it that says so" } else { "whoever started a run takes no step of it" };
+        let starter = if self.starter { "whoever started a run, or one of their party, may take a step of it that says so" } else { "whoever started a run, and their party, take no step of it" };
         let changes = match self.changes {
             Some(1) => "an access change that gives more waits until 1 person other than its author approves it".to_string(),
             Some(n) => format!("an access change that gives more waits until {n} people other than its author approve it"),

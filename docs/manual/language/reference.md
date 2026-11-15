@@ -1004,10 +1004,12 @@ misled, the compiler refuses instead.
   steps, `steps: [{ role: "reviewer" }, { role: "approver" }]`, names who takes each step by the
   role they hold, and its permission names the steps,
   `Approval("name/person:reviewer>person:approver")`; `people: n` is its short form. Each step
-  is taken in turn, by a principal of its kind bound to its role where the approval is, never
-  whoever started the run but on a step that says `starter: true` (`{ role: "editor", starter:
-  true }`, `^` in its permission: an output review, the one who asked checking what was made),
-  and then a person: an agent never decides a run it started. Each decision is kept with the
+  is taken in turn, by a principal of its kind bound to its role where the approval is, one
+  step a party (an agent or a service is one party with whoever owns it or made a token of it),
+  never whoever started the run nor their party but on a step that says `starter: true` (`{
+  role: "editor", starter: true }`, `^` in its permission: an output review, the one who asked
+  checking what their own agent made), which the starter's party fills, one principal each: an
+  agent never decides a run it started. Each decision is kept with the
   binding that let it (`binding`,
   `access`), in the run's log and its export. Those who decide it see what they approve:
   `shows: { amount, payee }`, or the run's input when it names nothing, redacted as the run's log

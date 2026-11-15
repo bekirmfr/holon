@@ -2104,8 +2104,10 @@ mod tests {
         let p = with_people(&mut state);
         let accounts = state.access.accounts().unwrap();
         let dee = accounts.accept(&accounts.invite("dee", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
-        accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
-        let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+        // fay's agent, its token hers: neither ada, who starts the run, nor dee is its party.
+        accounts.invite("fay", "viewer", None, "ada").unwrap();
+        accounts.add("scout", Kind::Agent, "agent", "fay", "ada").unwrap();
+        let scout = accounts.create_token("scout", "Scout", "fay").unwrap().0;
         for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person)] {
             accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
         }

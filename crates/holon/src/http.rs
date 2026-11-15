@@ -289,7 +289,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "GET" && url == "/runs/waiting" {
-        return durable::handle_get_waiting(&state.deployments, &caller, &crate::bindings::approval_settings(state));
+        return durable::handle_get_waiting(&state.deployments, &caller, &durable::Rules::of(state));
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
@@ -307,7 +307,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {
-            return durable::handle_get_runs(&state.deployments, slug, &caller, &crate::bindings::approval_settings(state));
+            return durable::handle_get_runs(&state.deployments, slug, &caller, &durable::Rules::of(state));
         }
         if let Some(slug) = rest.strip_suffix("/logs")
             && method == "GET"

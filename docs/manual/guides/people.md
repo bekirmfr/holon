@@ -192,10 +192,13 @@ holds what reaches the pages of those it changes within seconds, without signing
 ## Who decides an approval
 
 An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"
-}]`), and each principal takes one step, once, never of a run they started but a step that says
-`starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft approves it as it
-reads), and an agent never of one it started. The host says four things more, for every flow,
-kept with the roles and bindings:
+}]`), and each principal takes one step, once, and each party one step: an agent or a service is
+one party with whoever owns it or made a token of it, so whoever owns the agent that classifies a
+payout doesn't also approve it. Neither whoever started a run nor their party takes a step of it
+but one that says `starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft
+approves it as it reads, and their own agent may draft it), which the starter's party fills, one
+principal each; an agent never takes a step of a run it started. The host says four things more,
+for every flow, kept with the roles and bindings:
 
 ```sh
 holon access approvals --exclude-deployer on --why "who ships a payout doesn't sign it off"
@@ -204,13 +207,14 @@ holon access approvals --starter off --why "whoever asks for something never sig
 holon access approvals --changes 2 --why "two more sign off whoever is given more"
 ```
 
-- `--exclude-deployer on`: whoever deployed the version a run is on decides none of its
-  approvals, whatever they hold. Off by default.
+- `--exclude-deployer on`: whoever deployed the version a run is on, and their party, decide
+  none of its approvals, whatever they hold. Off by default.
 - `--agents off`: no agent decides an approval. A flow whose approval has a step for an agent
   doesn't deploy, and an agent takes no step of a run already waiting. On by default.
-- `--starter off`: whoever started a run takes no step of it, whatever the step says. A flow whose
-  approval has a step that lets them (`starter: true`) doesn't deploy, and a run already waiting
-  goes by it at once. On by default: a person who started a run may take a step that says so.
+- `--starter off`: whoever started a run, and their party, take no step of it, whatever the step
+  says. A flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
+  already waiting goes by it at once. On by default: whoever started a run, or one of their party, may take a
+  step that says so.
 - `--changes N`: an access change that gives someone more waits until N people other than its
   author approve it, 1 to 5 ([below](#access-changes-that-wait-for-people)). Off by default: a
   change applies at once.

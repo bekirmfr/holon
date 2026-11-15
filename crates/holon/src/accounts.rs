@@ -29,7 +29,7 @@
 //!
 //! Only hashes of tokens are kept, never the tokens; passwords only as argon2id hashes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -114,6 +114,35 @@ fn may_own(book: &Book, owner: &str, local: Option<&str>) -> Result<(), String> 
         Some(p) if p.disabled => Err(format!("{owner} is disabled: an owner is a person who can sign in")),
         Some(_) => Ok(()),
         None => Err(format!("there is no person {owner:?} here to own it")),
+    }
+}
+
+/// Who answers for each agent and service, by name, each with how in words ("bob owns scout"): its
+/// owner, and whoever else made a token of it. Two principals are one party when one answers for
+/// the other, or someone answers for both (the audit's R18): an approval takes one step of each
+/// party, and whoever started a run, or deployed its version where the host keeps them out, keeps
+/// their party out with them. A way in made to a person (their link, their email) makes no party:
+/// the takeover guard holds those (auth.rs).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Parties(BTreeMap<String, Vec<(String, String)>>);
+
+impl Parties {
+    /// How `a` and `b`, two principals, are one party, in words, if they are: "bob owns scout", or
+    /// for two whom one person answers for, "bob owns scout, and bob made pup's token \"x\"". None
+    /// for the same principal, which isn't another party's.
+    pub(crate) fn joined(&self, a: &str, b: &str) -> Option<String> {
+        let of = |x: &str| self.0.get(x).map(Vec::as_slice).unwrap_or_default();
+        if a == b {
+            return None;
+        }
+        let answers = |x: &str, y: &str| of(x).iter().find(|(who, _)| who == y).map(|(_, how)| how.clone());
+        answers(a, b).or_else(|| answers(b, a)).or_else(|| of(a).iter().find_map(|(who, how)| Some(format!("{how}, and {}", answers(b, who)?))))
+    }
+
+    /// Parties of the given answers, for the tests: each agent or service with who answers for it.
+    #[cfg(test)]
+    pub(crate) fn of(each: &[(&str, &[(&str, &str)])]) -> Parties {
+        Parties(each.iter().map(|(name, who)| (name.to_string(), who.iter().map(|(w, how)| (w.to_string(), how.to_string())).collect())).collect())
     }
 }
 
@@ -1309,6 +1338,23 @@ impl Accounts {
         hold(&self.book).users.iter().find(|u| u.name == name).cloned()
     }
 
+    /// Who answers for each agent and service here (`Parties`): its owner, and whoever else made a
+    /// token of it while the token is there.
+    pub(crate) fn parties(&self) -> Parties {
+        let book = hold(&self.book);
+        let mut each: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for p in book.users.iter().filter(|p| p.kind != Kind::Person) {
+            let answers = each.entry(p.name.clone()).or_default();
+            answers.extend(p.owner.as_ref().map(|owner| (owner.clone(), format!("{owner} owns {}", p.name))));
+        }
+        for t in book.credentials.iter().filter(|t| t.created_by != t.principal) {
+            if let Some(answers) = each.get_mut(&t.principal).filter(|a| !a.iter().any(|(who, _)| *who == t.created_by)) {
+                answers.push((t.created_by.clone(), format!("{} made {}'s token {:?}", t.created_by, t.principal, t.label)));
+            }
+        }
+        Parties(each)
+    }
+
     /// The agents and services `name` owns, by name: whoever acts as `name` makes their tokens,
     /// and so acts as them too. An owner is a person and an agent or a service owns nothing, so
     /// this is all that acting as `name` reaches.
@@ -2196,6 +2242,29 @@ mod tests {
         assert_eq!(acting("bot"), [owner[0], owner[1], "ada: ada made bot's token \"ada's\""]);
         a.revoke_token("bot", &theirs.id).unwrap();
         assert_eq!(acting("bot"), owner);
+    }
+
+    /// An agent or a service is one party with whoever answers for it (`parties`, the audit's
+    /// R18): its owner, and whoever else made a token of it while the token is there; two it has
+    /// one owner of are one party. A way in to a person (their link, their email) makes none.
+    #[test]
+    fn an_agent_and_whoever_answers_for_it_are_one_party() {
+        let (a, _) = set_up();
+        a.invite("bob", "viewer", None, "ada").unwrap();
+        a.invite("cy", "viewer", None, "ada").unwrap();
+        a.add("bot", Kind::Agent, "agent", "bob", "ada").unwrap();
+        a.add("pup", Kind::Service, "viewer", "bob", "ada").unwrap();
+        let p = a.parties();
+        assert_eq!((p.joined("bot", "bob").as_deref(), p.joined("bob", "bot").as_deref()), (Some("bob owns bot"), Some("bob owns bot")));
+        assert_eq!(p.joined("bot", "pup").as_deref(), Some("bob owns bot, and bob owns pup"));
+        assert_eq!(p.joined("bot", "bot"), None, "the same principal");
+        assert_eq!(p.joined("bob", "ada"), None, "ada invited bob: a way in, no party");
+        assert_eq!(p.joined("bot", "cy"), None);
+        let (_, theirs) = a.create_token("bot", "cy's", "cy").unwrap();
+        assert_eq!(a.parties().joined("cy", "bot").as_deref(), Some("cy made bot's token \"cy's\""));
+        assert_eq!(a.parties().joined("cy", "bob").as_deref(), None, "two people are two parties, whatever they both answer for");
+        a.revoke_token("bot", &theirs.id).unwrap();
+        assert_eq!(a.parties().joined("cy", "bot"), None, "while the token is there");
     }
 
     #[test]

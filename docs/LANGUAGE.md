@@ -495,8 +495,9 @@ Each step is taken after the one before. `order: "any"` takes them in any order;
 { role: "b" }], { role: "c" }]`. A step with no role is anyone holding `run.decide` there, a
 person; an agent's step (`kind: "agent"`) names its role, and a service never takes one. Up to 5
 steps, each taken by 1 to 5 different principals (`people`). `starter: true` lets whoever started
-the run take that step, a person (`{ role: "editor", starter: true }`: an output review, the one
-who asked checking what was made); left out, they may not, and an agent's step can't say it.
+the run, or one acting for them, take that step (`{ role: "editor", starter: true }`: an output
+review, the one who asked checking what was made, or their own agent drafting it); left out, they
+may not. An agent's step may say it too.
 `people: N` is the short form of one step with no role, which the starter doesn't take, and
 `people` beside `steps` is refused, as are an empty stage, a stage of one
 step and `order` with stages, each saying what to write.
@@ -514,11 +515,14 @@ The host decides each step in its order (§8.3, §8.4): a step opens once every 
 filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
 role, directly or through a group, on the host, the flow or the approval itself, and holding
 `run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
-step of an approval, once, and not of a run they started but a step that says `starter: true`; an
-agent never decides a run it started. One decline ends it. A decision names its step (`slot`), or
+step of an approval, once, and each party one step: an agent or a service is one party with
+whoever owns it or made a token of it, and with another agent or service one of them answers for.
+Whoever started the run, and their party, take no step but one that says `starter: true`, which
+the starter's party fills, one principal each; an agent never decides a run it started. One
+decline ends it. A decision names its step (`slot`), or
 takes the one open step its decider may fill. The host's approval settings say three things more,
 for every flow (§8.4, `holon access approvals`): with `exclude_deployer`, whoever deployed the
-version a run is on decides none of its steps; with `agents` off, no agent decides one, and a flow
+version a run is on, and their party, decide none of its steps; with `agents` off, no agent decides one, and a flow
 whose approval has an agent's step doesn't deploy; with `starter` off, whoever started a run takes
 no step of it, and a flow whose approval has a `starter` step doesn't deploy.
 

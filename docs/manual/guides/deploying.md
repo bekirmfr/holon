@@ -62,9 +62,10 @@ folder or database not bound here (or bound read-only, and the flow writes it), 
 that isn't deployed here, or whose action you may not run yourself (a call runs it under that
 flow's grant, with what this flow sends, so someone who may run it deploys the version), a host or
 limit this server's policy refuses, an approval whose steps no one here can take (`approver: 1
-person holds it here; it needs 2`, or `a run pat starts can't be decided`: whoever starts a run
-decides none of its steps but one that says `starter: true`, nor, where the host says so, whoever
-deploys the version), or that this host refuses (a step for an agent where it lets no agent
+person holds it here; it needs 2`, or `a run pat starts can't be decided`: whoever starts a run,
+and their party, decide none of its steps but one that says `starter: true`, nor, where the host
+says so, whoever deploys the version and theirs; one party takes one step, an agent or a service
+counted with whoever owns it or made its token), or that this host refuses (a step for an agent where it lets no agent
 decide, a `starter` step where it lets no step take whoever started the run). When no
 run could be decided there, the editor asks again before deploying it, naming each such
 approval, and its runs wait there until someone is bound to take each step; when only the runs

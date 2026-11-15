@@ -96,7 +96,7 @@ export function chainOf(w: WaitingPoint): ChainStep[] {
       }),
     );
     const many = s.people > 1 ? `${s.people} people` : null;
-    const starter = s.starter ? "whoever started it may take it" : null;
+    const starter = s.starter ? "whoever started it, or one acting for them, may take it" : null;
     const words = (...parts: (string | null)[]) => parts.filter((x) => x !== null).join(", ") || null;
     if (filled(s)) return { slot: s.slot, name: stepName(s), state: "done", detail: took, decisions };
     if (s.open) return { slot: s.slot, name: stepName(s), state: "open", detail: s.by.length > 0 ? words(`${s.by.length} of ${s.people}: ${took}`, starter) : words(many, starter), decisions };

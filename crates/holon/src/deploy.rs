@@ -917,28 +917,38 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
 /// For each approval a version of `slug` waits at whose steps can't all be taken here, why (the
 /// access design's §9): a step takes a principal of its kind bound to its role where the approval
 /// is (none named: to a role that decides there), as the version's tags would make it, and not
-/// disabled; one principal a step, as many as the step's `people`. Whoever deploys it takes none
-/// on a host that keeps them out (`approvals.exclude_deployer`), nor whoever starts a run, which,
-/// for an approval in one of its actions, may be anyone who may run that action, but for a step
-/// that says `starter: true`, a person, where the host lets one (`approvals.starter`). None
-/// worked out on a server without accounts. With why, which of its runs would wait there undecided: `every
-/// run` (a step no one here may take, or too few), or `some runs` (those a principal starts who
-/// would then take no step of them: a run a route, a schedule or a file starts has no starter, and
-/// can be decided), which deploying in the editor doesn't ask about again.
+/// disabled; one principal a step, as many as the step's `people`, and one party a step
+/// (accounts.rs `Parties`: whoever is one party with another through an agent or a service counts
+/// as one with them here, so this may count fewer than there are). Whoever deploys it, and their
+/// party, take none on a host that keeps them out (`approvals.exclude_deployer`), nor whoever
+/// starts a run and their party, which, for an approval in one of its actions, may be anyone who
+/// may run that action, but for a step that says `starter: true`, where the host lets one
+/// (`approvals.starter`): those the starter's party fills, one principal each, and never an agent
+/// that started it. None worked out on a server without accounts. With why, which of its runs
+/// would wait there undecided: `every run` (a step no one here may take, or too few, whoever
+/// starts it), or `some runs` (those a principal starts who would then take no step of them, or,
+/// when a route, a schedule or a file starts runs too, which have no starter, those), which
+/// deploying in the editor doesn't ask about again.
 fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver, deployer: Option<&str>) -> BTreeMap<String, (String, &'static str)> {
     use crate::accounts::Kind;
     use holon_core::approval::{SlotKind, Steps};
     let Some(accounts) = state.access.accounts() else { return BTreeMap::new() };
     let settings = accounts.access_document().approvals.clone();
+    let parties = accounts.parties();
+    let kept_out = |name: &str| settings.exclude_deployer && deployer.is_some_and(|d| d == name || parties.joined(name, d).is_some());
     let callers: Vec<Caller> = accounts
         .principals()
         .into_iter()
-        .filter(|p| !p.disabled && p.kind != Kind::Service && !(settings.exclude_deployer && deployer == Some(p.name.as_str())))
+        .filter(|p| !p.disabled && p.kind != Kind::Service && !kept_out(&p.name))
         .map(|p| {
             let holds: Arc<[crate::bindings::Held]> = accounts.holding(&p.name).iter().map(|h| as_tagged(h, slug, &server.tags)).collect();
             Caller { name: Some(p.name), kind: Some(p.kind), holds: Some(holds), local: None }
         })
         .collect();
+    let named = |i: usize| callers[i].name.as_deref().unwrap_or_default();
+    let party = parties_of(callers.len(), |a, b| parties.joined(named(a), named(b)).is_some());
+    // Runs that no one starts: a route's, a schedule's, a file's.
+    let starterless = server.handlers().any(|(_, _, h)| !server.actions.iter().any(|a| a.handler == h));
     let mut unready = BTreeMap::new();
     for item in items {
         let Some((name, steps)) = item.strip_prefix("Approval(\"").and_then(|r| r.strip_suffix("\")")).and_then(|r| r.split_once('/')) else { continue };
@@ -958,28 +968,66 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
                 Taking { slot, who }
             })
             .collect();
-        if let Some(why) = untaken(&takes) {
-            unready.insert(item.clone(), (why, "every run"));
-            continue;
-        }
-        // Whoever may start a run that waits there, set aside.
+        // A run no one started: one party a step.
+        let strict = untaken(&takes, |p, _| party[p]);
+        // Whoever may start a run that waits there, and their party, set aside from each step that
+        // doesn't take them; on one that does, each of their party takes a step of their own.
         let started = server.actions.iter().filter(|a| resolver.resolve(&a.handler).is_some_and(|h| holon_core::capabilities(h, resolver).iter().any(|c| holon_core::consent_name(&c) == *item)));
         let starters = started.flat_map(|a| {
             let agents_may = items.contains(&format!("AgentRuns({:?})", a.name));
             let callers = &callers;
             (0..callers.len()).filter(move |&i| can(&callers[i], Action::RunCall, &Resource::Action { slug, name: &a.name, agents_may }).is_ok())
         });
+        let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter;
+        let (mut decided, mut undecided) = (false, None);
         for i in starters.collect::<BTreeSet<_>>() {
-            // Set aside from each step that doesn't take whoever started the run.
-            let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter && callers[i].kind == Some(Kind::Person);
-            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| p != i || takes_them(t.slot)).collect() }).collect();
-            if let Some(why) = untaken(&theirs) {
-                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()), "some runs"));
-                break;
+            let ours = |p: usize| p == i || parties.joined(named(p), named(i)).is_some();
+            let agent = callers[i].kind == Some(Kind::Agent);
+            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| if takes_them(t.slot) { !(p == i && agent) } else { !ours(p) }).collect() }).collect();
+            match untaken(&theirs, |p, slot| if takes_them(slot) && ours(p) { callers.len() + p } else { party[p] }) {
+                None => decided = true,
+                Some(why) => {
+                    let with: Vec<&str> = (0..callers.len()).filter(|&p| p != i && ours(p) && takes.iter().any(|t| t.who.contains(&p))).map(named).collect();
+                    undecided.get_or_insert((i, with, why));
+                }
             }
+        }
+        match (strict, undecided) {
+            (Some(why), _) if !decided => {
+                unready.insert(item.clone(), (why, "every run"));
+            }
+            (Some(why), _) if starterless => {
+                unready.insert(item.clone(), (format!("a run a route, a schedule or a file starts can't be decided: {why}"), "some runs"));
+            }
+            (_, Some((i, with, why))) => {
+                let who = if with.is_empty() { "they take".to_string() } else { format!("they and {} take", with.join(" and ")) };
+                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as {who} no step of it: {why}", named(i)), "some runs"));
+            }
+            _ => {}
         }
     }
     unready
+}
+
+/// Each of `n` principals' party, by number (the least of its members): those `joined` says are
+/// one party, and on through each of them.
+fn parties_of(n: usize, joined: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    fn root(party: &[usize], mut p: usize) -> usize {
+        while party[p] != p {
+            p = party[p];
+        }
+        p
+    }
+    let mut party: Vec<usize> = (0..n).collect();
+    for a in 0..n {
+        for b in a + 1..n {
+            if joined(a, b) {
+                let (ra, rb) = (root(&party, a), root(&party, b));
+                party[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    (0..n).map(|p| root(&party, p)).collect()
 }
 
 /// A step of an approval, and who may take it (by their place in a list).
@@ -990,8 +1038,9 @@ struct Taking<'a> {
 
 /// Why `takes` can't all be taken, one principal a step and as many as each needs: a step fewer
 /// may take than it needs ("approver: 1 person holds it here; it needs 2"), or fewer different
-/// principals than the steps need together.
-fn untaken(takes: &[Taking]) -> Option<String> {
+/// principals than the steps need together, each of another party: `party` of a principal on a
+/// step.
+fn untaken(takes: &[Taking], party: impl Fn(usize, &holon_core::approval::Slot) -> usize) -> Option<String> {
     use holon_core::approval::SlotKind;
     for Taking { slot, who } in takes {
         let n = who.len();
@@ -1010,10 +1059,10 @@ fn untaken(takes: &[Taking]) -> Option<String> {
             None => format!("its step: {who} may decide it here{needs}"),
         });
     }
-    // One seat a person a step needs; each principal takes one seat at most (Kuhn's matching).
-    let seats: Vec<&Vec<usize>> = takes.iter().flat_map(|t| std::iter::repeat_n(&t.who, t.slot.people as usize)).collect();
-    fn seat(s: usize, seats: &[&Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
-        for &p in seats[s] {
+    // One seat a person a step needs; each principal, or party, takes one seat at most (Kuhn's
+    // matching).
+    fn seat(s: usize, seats: &[Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
+        for &p in &seats[s] {
             if !seen.insert(p) {
                 continue;
             }
@@ -1025,9 +1074,24 @@ fn untaken(takes: &[Taking]) -> Option<String> {
         }
         false
     }
-    let mut taken = BTreeMap::new();
-    let all = (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken));
-    (!all).then(|| format!("its steps take {} different principals, one a step, and fewer can here", seats.len()))
+    let seated = |of: &dyn Fn(usize, &holon_core::approval::Slot) -> usize| {
+        let seats: Vec<Vec<usize>> = takes
+            .iter()
+            .flat_map(|t| {
+                let mut who: Vec<usize> = t.who.iter().map(|&p| of(p, t.slot)).collect();
+                who.sort_unstable();
+                who.dedup();
+                std::iter::repeat_n(who, t.slot.people as usize)
+            })
+            .collect();
+        let mut taken = BTreeMap::new();
+        (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken))
+    };
+    let n: usize = takes.iter().map(|t| t.slot.people as usize).sum();
+    if !seated(&|p, _| p) {
+        return Some(format!("its steps take {n} different principals, one a step, and fewer can here"));
+    }
+    (!seated(&party)).then(|| format!("its steps take {n} principals of different parties, one a step, and fewer can here (an agent or a service is one party with whoever owns it or made its token)"))
 }
 
 /// `held` as a version of `slug` tagged `tags` would make it (D22): a binding on a tag covers the

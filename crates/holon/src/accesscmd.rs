@@ -115,14 +115,15 @@ const ACCESS_USAGE: &str = "usage: holon access [versions]
     --version N            that version (the newest by default)
   approvals                how this server decides approvals, beyond each step's role; with a
                            flag, set it, as a new version
-    --exclude-deployer on  whoever deployed the version a run is on decides none of its approvals
-                           (off by default)
+    --exclude-deployer on  whoever deployed the version a run is on, and their party, decide
+                           none of its approvals (off by default)
     --agents off           no agent decides an approval, and a flow whose approval has a step
                            for one doesn't deploy (on by default)
-    --starter off          whoever started a run takes no step of it, and a flow whose approval
-                           has a step that lets them (starter: true) doesn't deploy (on by
-                           default: a person who started a run may take a step that says so; an
-                           agent never decides a run it started)
+    --starter off          whoever started a run, and their party, take no step of it, and a
+                           flow whose approval has a step that lets them (starter: true)
+                           doesn't deploy (on by default: whoever started a run, or one of
+                           their party, may take a step that says so; an agent never decides a
+                           run it started)
     --changes N            an access change that gives more waits until N people other than its
                            author approve it, 1 to 5 (off by default: it applies at once)
     --why TEXT             why, kept with the version
@@ -925,7 +926,7 @@ mod tests {
             "this machine's run file signs in as ada",
             "exclude-deployer  off  whoever deployed the version a run is on may decide its approvals",
             "agents            on   agents take the steps written for them",
-            "starter           on   a person who started a run may take a step of it that says so",
+            "starter           on   whoever started a run, or one of their party, may take a step of it that says so",
             "changes           off  an access change applies at once",
             "",
             "group     bound  members",
@@ -978,9 +979,9 @@ mod tests {
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": "ada" })), "this machine's run file signs in as ada");
         assert_eq!(tie_line(&json!({ "local": "ada", "tied": null })), "this machine's run file is tied to ada, who is disabled: it operates the host, and decides no approval");
         assert_eq!(approval_lines(&json!({ "exclude_deployer": true, "agents": false, "starter": false, "changes": 2 })), [
-            "exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals",
+            "exclude-deployer  on   whoever deployed the version a run is on, and their party, decide none of its approvals",
             "agents            off  no agent decides an approval",
-            "starter           off  whoever started a run takes no step of it",
+            "starter           off  whoever started a run, and their party, take no step of it",
             "changes           2    an access change that gives more waits until 2 people other than its author approve it",
         ]);
     }

@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use holon_core::approval::{Slot, SlotKind, Steps};
 use holon_host::{Exchange, Waits, Waiting};
 
-use crate::accounts::Kind;
+use crate::accounts::{Kind, Parties};
 use crate::bindings::{ApprovalSettings, Bound};
 use crate::*;
 
@@ -556,7 +556,8 @@ impl StoredWaiting {
             return Vec::new();
         }
         let fills = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, slot)| excluded.may_fill(by, slot, "").is_ok());
-        self.slots().iter().filter(|s| s.open && fills(s.slot)).map(|s| s.slot).collect()
+        let apart = |n: u8| excluded.apart(by.who, n, &steps, &self.decisions, |_| String::new()).is_ok();
+        self.slots().iter().filter(|s| s.open && fills(s.slot) && apart(s.slot)).map(|s| s.slot).collect()
     }
 
     /// Step `n` as a refusal names it: `slot 1 (reviewer) of "payout"`, or `"payout"` when it is
@@ -909,15 +910,16 @@ impl ParkedRun {
         })
     }
 
-    /// Who decides none of its approvals, or only some steps, as this host's `settings` say: who
-    /// started it (a step that says so, where the host lets one), and who deployed the version it
-    /// is on (of its deployment's `versions`) when they are excluded.
-    fn excluded(&self, versions: &[wire::Version], settings: &ApprovalSettings) -> Excluded {
+    /// Who decides none of its approvals, or only some steps, as this host's `rules` say: who
+    /// started it and their party (a step that says so, where the host lets one), and who deployed
+    /// the version it is on (of its deployment's `versions`) and theirs, when they are excluded.
+    fn excluded(&self, versions: &[wire::Version], rules: &Rules) -> Excluded {
         Excluded {
             starter: self.started_by.clone(),
-            deployer: settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(),
-            no_agents: !settings.agents,
-            no_starter_steps: !settings.starter,
+            deployer: rules.settings.exclude_deployer.then(|| deployer_of(versions, &self.version, self.parked_at)).flatten(),
+            no_agents: !rules.settings.agents,
+            no_starter_steps: !rules.settings.starter,
+            parties: Arc::clone(&rules.parties),
         }
     }
 }
@@ -930,16 +932,17 @@ fn deployer_of(versions: &[wire::Version], unit: &str, at: u64) -> Option<String
 }
 
 /// Who decides none of a run's approvals, or only some of its steps, whatever they hold (the
-/// design's §8.4): who started it, but for a person's step that says `starter: true` on a host
-/// that lets one (`no_starter_steps` off), an agent never; whoever deployed the version it is on
-/// when this host excludes them; and every agent when it lets none decide (bindings.rs
-/// `ApprovalSettings`).
+/// design's §8.4): who started it and their party (`Parties`), but for a step that says
+/// `starter: true` on a host that lets one (`no_starter_steps` off), and an agent that started it
+/// never; whoever deployed the version it is on, and their party, when this host excludes them;
+/// and every agent when it lets none decide (bindings.rs `ApprovalSettings`).
 #[derive(Default)]
 struct Excluded {
     starter: Option<String>,
     deployer: Option<String>,
     no_agents: bool,
     no_starter_steps: bool,
+    parties: Arc<Parties>,
 }
 
 impl Excluded {
@@ -948,36 +951,92 @@ impl Excluded {
         self.starter.as_deref() == Some(by.who)
     }
 
-    /// Whether `slot` takes `by` as whoever started the run: it says so, this host lets it, and
-    /// they are a person (an agent never decides a run it started).
-    fn takes_starter(&self, by: &Decider, slot: &Slot) -> bool {
-        slot.starter && !self.no_starter_steps && by.kind == Kind::Person
+    /// Whether `who` started the run or is one party with whoever did, in words: "dee started
+    /// this run", "quill and dee, who started this run, are one party (dee owns quill)".
+    fn with_starter(&self, who: &str) -> Option<String> {
+        let starter = self.starter.as_deref()?;
+        if starter == who {
+            return Some(format!("{who} started this run"));
+        }
+        let how = self.parties.joined(who, starter)?;
+        Some(format!("{who} and {starter}, who started this run, are one party ({how})"))
+    }
+
+    /// Whether `who` deployed the version the run is on, where the host keeps them out, or is one
+    /// party with whoever did, in words.
+    fn with_deployer(&self, who: &str) -> Option<String> {
+        let deployer = self.deployer.as_deref()?;
+        if deployer == who {
+            return Some(format!("{who} deployed the version this run is on"));
+        }
+        let how = self.parties.joined(who, deployer)?;
+        Some(format!("{who} and {deployer}, who deployed the version this run is on, are one party ({how})"))
+    }
+
+    /// Whether `slot` takes whoever started the run, or one party with them: it says so, and this
+    /// host lets it (an agent that started the run is kept out by name, `excludes`).
+    fn takes_starter(&self, slot: &Slot) -> bool {
+        slot.starter && !self.no_starter_steps
     }
 
     /// Why `by` decides none of the approval `name`, with `steps`, if they don't: they started the
-    /// run and no step takes them; the host keeps whoever deployed the version out; or it lets no
-    /// agent decide.
+    /// run, an agent, or they or their party did and no step takes them; the host keeps whoever
+    /// deployed the version, and their party, out; or it lets no agent decide.
     fn excludes(&self, by: &Decider, name: &str, steps: &Steps) -> Option<String> {
         if self.started(by) && by.kind == Kind::Agent {
-            Some(format!("{} started this run, and an agent never decides a run it started: someone else decides its approval {name:?}", by.who))
-        } else if self.started(by) && !steps.slots().any(|(_, _, s)| self.takes_starter(by, s)) {
-            Some(format!("{} started this run: someone else decides its approval {name:?}", by.who))
-        } else if self.deployer.as_deref() == Some(by.who) {
-            Some(format!("{} deployed the version this run is on: on this host, someone else decides its approval {name:?}", by.who))
-        } else if self.no_agents && by.kind == Kind::Agent {
-            Some(format!("{} is an agent, and this host lets no agent decide an approval", by.who))
-        } else {
-            None
+            return Some(format!("{} started this run, and an agent never decides a run it started: someone else decides its approval {name:?}", by.who));
         }
+        if let Some(who) = self.with_starter(by.who).filter(|_| !steps.slots().any(|(_, _, s)| self.takes_starter(s))) {
+            return Some(format!("{who}: someone else decides its approval {name:?}"));
+        }
+        if let Some(who) = self.with_deployer(by.who) {
+            return Some(format!("{who}: on this host, someone else decides its approval {name:?}"));
+        }
+        (self.no_agents && by.kind == Kind::Agent).then(|| format!("{} is an agent, and this host lets no agent decide an approval", by.who))
     }
 
     /// Whether `by` may fill `slot`, `named` as a refusal says it: as their kind and roles let them
-    /// (`Decider::may_fill`), and, when they started the run, only a step that takes them.
+    /// (`Decider::may_fill`), and, when they or their party started the run, only a step that
+    /// takes them.
     fn may_fill(&self, by: &Decider, slot: &Slot, named: &str) -> Result<(), String> {
-        if self.started(by) && !self.takes_starter(by, slot) {
-            return Err(format!("{} started this run, and {named} doesn't take whoever started it", by.who));
+        if let Some(who) = self.with_starter(by.who).filter(|_| !self.takes_starter(slot)) {
+            let party = if self.started(by) { "" } else { ", nor one party with them" };
+            return Err(format!("{who}, and {named} doesn't take whoever started it{party}"));
         }
         by.may_fill(slot, named)
+    }
+
+    /// Why `by` may not take step `n` of `steps` beside `decisions` (its decisions so far), if they
+    /// may not: one of them is one party with `by`, and decided another step (`named`, as a
+    /// refusal says a step). An approval takes one step of each party; the starter's party fills
+    /// every step that takes whoever started the run, one principal each.
+    fn apart(&self, by: &str, n: u8, steps: &Steps, decisions: &[Decided], named: impl Fn(u8) -> String) -> Result<(), String> {
+        let starts = |n: u8| steps.slots().nth(usize::from(n)).is_some_and(|(_, _, s)| self.takes_starter(s));
+        for d in decisions.iter().filter(|d| d.who != by) {
+            let Some(how) = self.parties.joined(by, &d.who) else { continue };
+            if starts(n) && starts(d.slot) && self.with_starter(by).is_some() && self.with_starter(&d.who).is_some() {
+                continue;
+            }
+            return Err(format!("{by} and {} are one party ({how}), and {} decided {}: each step of an approval is another party's", d.who, d.who, named(d.slot)));
+        }
+        Ok(())
+    }
+}
+
+/// What decides who takes an approval's steps here, besides what each holds: this host's approval
+/// settings, and who answers for each agent and service (`Parties`). Read before the deployments
+/// lock is taken, as the accounts are their own.
+#[derive(Default)]
+pub(crate) struct Rules {
+    pub(crate) settings: ApprovalSettings,
+    pub(crate) parties: Arc<Parties>,
+}
+
+impl Rules {
+    /// This server's, as they are now.
+    pub(crate) fn of(state: &AppState) -> Rules {
+        let parties = state.access.accounts().map(|a| a.parties()).unwrap_or_default();
+        Rules { settings: crate::bindings::approval_settings(state), parties: Arc::new(parties) }
     }
 }
 
@@ -1262,22 +1321,22 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
 /// (`yours`, by number), as the decide route says under this host's `settings`. All of them to
 /// whoever views the flow's runs; to whoever only decides, each run waiting at an approval they
 /// may decide, with those points alone: what they decide, and nothing else of the flow's runs.
-pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
+pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, caller: &access::Caller, rules: &Rules) -> Response {
     let table = deployments.lock().unwrap();
     let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-    Response::json(&serde_json::json!({ "runs": waiting_runs(dep, slug, caller, settings) }))
+    Response::json(&serde_json::json!({ "runs": waiting_runs(dep, slug, caller, rules) }))
 }
 
 /// `GET /runs/waiting`: every deployment's waiting runs as [`waiting_runs`] lists them to
 /// `caller`, each with its deployment's slug. Someone who only decides an approval (bound at it,
 /// or holding run.decide alone) may list no flow (`GET /deployments` asks flow.view), so this is
 /// how the editor's Runs waiting finds what waits for them.
-pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment>>, caller: &access::Caller, settings: &ApprovalSettings) -> Response {
+pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment>>, caller: &access::Caller, rules: &Rules) -> Response {
     let table = deployments.lock().unwrap();
     let runs: Vec<serde_json::Value> = table
         .iter()
         .flat_map(|(slug, dep)| {
-            waiting_runs(dep, slug, caller, settings).into_iter().map(move |mut run| {
+            waiting_runs(dep, slug, caller, rules).into_iter().map(move |mut run| {
                 run["slug"] = slug.as_str().into();
                 run
             })
@@ -1290,13 +1349,13 @@ pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment
 /// waits at to whoever views its runs; to whoever only decides one of its approvals, the runs
 /// waiting at an approval they may decide, those points alone, and nothing delivered to its
 /// events. Each approval says which of its steps are the caller's to take (`yours`).
-fn waiting_runs(dep: &Deployment, slug: &str, caller: &access::Caller, settings: &ApprovalSettings) -> Vec<serde_json::Value> {
+fn waiting_runs(dep: &Deployment, slug: &str, caller: &access::Caller, rules: &Rules) -> Vec<serde_json::Value> {
     use crate::can::{Action, Resource, can};
     let views = can(caller, Action::RunView, &Resource::Flow(slug)).is_ok();
     let decides = |w: &StoredWaiting| !w.is_event() && can(caller, Action::RunDecide, &Resource::Approval { slug, name: Some(&w.name) }).is_ok();
     dep.parked.values().filter_map(|run| {
         let mut listed = run.summary();
-        let excluded = run.excluded(&dep.versions, settings);
+        let excluded = run.excluded(&dep.versions, rules);
         let points = listed["waiting"].as_array_mut()?;
         let mut kept = Vec::new();
         for (w, mut point) in run.waiting.iter().zip(std::mem::take(points)) {
@@ -1408,7 +1467,8 @@ impl StoredWaiting {
         let slots = self.slots();
         let fills = |s: &SlotState| -> Result<(), String> {
             let (_, _, slot) = steps.slots().nth(usize::from(s.slot)).expect("a slot of the steps");
-            excluded.may_fill(by, slot, &self.step_said(&slots, s.slot))
+            excluded.may_fill(by, slot, &self.step_said(&slots, s.slot))?;
+            excluded.apart(by.who, s.slot, steps, &self.decisions, |n| self.step_said(&slots, n))
         };
         if let Some(n) = named {
             let s = slots.get(usize::from(n)).ok_or((409, format!("{:?} has {} steps, from slot 0: there is no slot {n}", self.name, slots.len())))?;
@@ -1439,7 +1499,7 @@ pub(crate) fn decide<'a>(
     name: &str,
     by: &Decider,
     decision: Decision,
-    settings: &ApprovalSettings,
+    rules: &Rules,
 ) -> Result<Outcome<'a>, (u16, String)> {
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or((404, format!("no deployment {slug:?}")))?;
@@ -1450,7 +1510,7 @@ pub(crate) fn decide<'a>(
     if run.resuming {
         return Err((409, format!("run {run_id} of {slug:?} is going on right now: try again in a moment")));
     }
-    let excluded = run.excluded(&dep.versions, settings);
+    let excluded = run.excluded(&dep.versions, rules);
     let w = run.waiting.iter_mut().find(|w| w.name == name).ok_or((404, format!("run {run_id} of {slug:?} isn't waiting at {name:?}")))?;
     let (slot, taken) = w.decide(&excluded, by, decision)?;
     let slots = w.slots();
@@ -1541,7 +1601,7 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
     let recorded = |state: &AppState, slot: u8| state.activity.record(if body.approve { "approved" } else { "declined" }, &format!("{slug} run {run_id} at {:?}, slot {slot}", body.name), Some(&by));
     let reply = |slot: u8, slots: &[SlotState], outcome: &str| serde_json::json!({ "name": body.name, "slot": slot, "slots": slots, "outcome": outcome });
     let decision = Decision { approve: body.approve, slot: body.slot, reason, note: body.note, at: epoch_now() };
-    match decide(deployments, slug, run_id, &body.name, &decider, decision, &crate::bindings::approval_settings(state)) {
+    match decide(deployments, slug, run_id, &body.name, &decider, decision, &Rules::of(state)) {
         Err((code, why)) => err(code, why),
         Ok(Outcome::Waits { slot, slots }) => {
             recorded(state, slot);
@@ -1712,24 +1772,30 @@ mod tests {
     }
 
     /// **T6** (docs/L4s/approval-steps-plan.md §7): who decides which step of an approval, over a
-    /// cast and steps of each shape (a chain, any order, a step of two, people alone). Each row
-    /// is decisions in turn, each naming its step or not, and taking a step (and whether that
-    /// decides it) or refused with its status and sentence; then what the run is given: its
-    /// decision, or, undecided, the expiry with the approvals so far (`decisions` is T5's).
+    /// cast and steps of each shape (a chain, any order, a step of two, people alone), and the
+    /// parties among them (the audit's R18: one party a step, the starter's kept out but where a
+    /// step takes them). Each row is decisions in turn, each naming its step or not, and taking a
+    /// step (and whether that decides it) or refused with its status and sentence; then what the
+    /// run is given: its decision, or, undecided, the expiry with the approvals so far
+    /// (`decisions` is T5's).
     #[test]
     fn each_step_is_decided_in_its_order_by_its_kind_and_role() {
         use serde_json::json;
         // Who's who: their kind, and the roles they are bound to where the approval is. The admin
-        // holds everything, and no role by name; sam starts the runs that have a starter.
+        // holds everything, and no role by name; sam starts the runs that have a starter. quill is
+        // sam's agent, and ana made pip's token: each is one party with them.
         let cast: &[(&str, Kind, &[&str])] = &[
             ("ana", Kind::Person, &["reviewer"]),
             ("ben", Kind::Person, &["reviewer"]),
             ("cy", Kind::Person, &["approver"]),
             ("dee", Kind::Person, &["reviewer", "approver"]),
+            ("pip", Kind::Agent, &["classifier"]),
+            ("quill", Kind::Agent, &["classifier", "drafter"]),
             ("root", Kind::Person, &[]),
             ("sam", Kind::Person, &["reviewer"]),
-            ("scout", Kind::Agent, &["classifier"]),
+            ("scout", Kind::Agent, &["classifier", "drafter"]),
         ];
+        let parties = Arc::new(Parties::of(&[("pip", &[("ana", "ana made pip's token \"pip\"")]), ("quill", &[("sam", "sam owns quill")]), ("scout", &[])]));
         let chain = "agent:classifier>person:reviewer>person:approver";
         let (ok, no) = (|slot: u8, decides: bool| Ok((slot, decides)), |code: u16, why: &'static str| Err((code, why)));
         // (who, the step named, approves), then what it does.
@@ -1841,6 +1907,78 @@ mod tests {
                 vec![("scout", None, true, no(403, "scout started this run, and an agent never decides a run it started: someone else decides its approval \"payout\""))],
                 json!({ "approved": false, "by": [], "expired": true }),
             ),
+            (
+                "one party, one step: an agent and whoever made its token",
+                chain,
+                None,
+                true,
+                vec![
+                    ("pip", None, true, ok(0, false)),
+                    ("ana", None, true, no(403, "ana and pip are one party (ana made pip's token \"pip\"), and pip decided slot 0 (classifier) of \"payout\": each step of an approval is another party's")),
+                    ("ana", Some(1), true, no(403, "ana and pip are one party (ana made pip's token \"pip\"), and pip decided slot 0 (classifier) of \"payout\": each step of an approval is another party's")),
+                    ("ben", None, true, ok(1, false)),
+                    ("cy", None, true, ok(2, true)),
+                ],
+                json!({ "approved": true, "by": ["pip", "ben", "cy"] }),
+            ),
+            (
+                "whoever started the run keeps their party out",
+                chain,
+                Some("sam"),
+                true,
+                vec![
+                    ("quill", None, true, no(403, "quill and sam, who started this run, are one party (sam owns quill): someone else decides its approval \"payout\"")),
+                    ("scout", None, true, ok(0, false)),
+                    ("ana", None, true, ok(1, false)),
+                    ("cy", None, true, ok(2, true)),
+                ],
+                json!({ "approved": true, "by": ["scout", "ana", "cy"] }),
+            ),
+            (
+                "a step that doesn't take the starter's party, and one that does",
+                "agent:classifier>person:reviewer^",
+                Some("sam"),
+                true,
+                vec![
+                    ("quill", Some(0), true, no(403, "quill and sam, who started this run, are one party (sam owns quill), and slot 0 (classifier) of \"payout\" doesn't take whoever started it, nor one party with them")),
+                    ("scout", None, true, ok(0, false)),
+                    ("sam", None, true, ok(1, true)),
+                ],
+                json!({ "approved": true, "by": ["scout", "sam"] }),
+            ),
+            (
+                "the starter's party fills each step that takes them, one principal each: their agent drafts, they read it",
+                "agent:drafter^>person:reviewer^",
+                Some("sam"),
+                true,
+                vec![("quill", None, true, ok(0, false)), ("sam", None, true, ok(1, true))],
+                json!({ "approved": true, "by": ["quill", "sam"] }),
+            ),
+            (
+                "but not another's party: sam's agent drafted a run dee started",
+                "agent:drafter^>person:reviewer^",
+                Some("dee"),
+                true,
+                vec![
+                    ("quill", None, true, ok(0, false)),
+                    ("sam", None, true, no(403, "sam and quill are one party (sam owns quill), and quill decided slot 0 (drafter) of \"payout\": each step of an approval is another party's")),
+                    ("dee", None, true, ok(1, true)),
+                ],
+                json!({ "approved": true, "by": ["quill", "dee"] }),
+            ),
+            (
+                "an agent's step may take the starter's party, and never an agent that started it",
+                "agent:drafter^>person:reviewer",
+                Some("quill"),
+                true,
+                vec![
+                    ("quill", None, true, no(403, "quill started this run, and an agent never decides a run it started: someone else decides its approval \"payout\"")),
+                    ("sam", Some(1), true, no(403, "sam and quill, who started this run, are one party (sam owns quill), and slot 1 (reviewer) of \"payout\" doesn't take whoever started it, nor one party with them")),
+                    ("scout", None, true, ok(0, false)),
+                    ("ana", None, true, ok(1, true)),
+                ],
+                json!({ "approved": true, "by": ["scout", "ana"] }),
+            ),
             ("an event", "", None, true, vec![("ana", None, true, no(409, "\"payout\" is an event, which its route delivers: nobody decides it"))], json!({ "approved": false, "by": [], "expired": true })),
             (
                 "steps this host can't read",
@@ -1859,7 +1997,7 @@ mod tests {
                 let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
                 let by = Decider { who, kind: *kind, holds: &holds, via: None };
                 let decision = Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 + i as u64 };
-                let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, ..Default::default() };
+                let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, parties: Arc::clone(&parties), ..Default::default() };
                 let got = w.decide(&excluded, &by, decision);
                 let got = got.as_ref().map(|(slot, taken)| (*slot, taken.is_some())).map_err(|(code, why)| (*code, why.as_str()));
                 assert_eq!(got, then, "{what}: decision {i}, {who}");
@@ -1870,6 +2008,32 @@ mod tests {
             given.as_object_mut().unwrap().remove("decisions");
             assert_eq!(given, want, "{what}");
         }
+
+        // What each may take now says so too (`yours`): pip took the classifier's step, so ana,
+        // one party with pip, takes none; ben the reviewer's.
+        let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: chain.into(), decisions: Vec::new(), shown: None };
+        let excluded = Excluded { parties: Arc::clone(&parties), ..Default::default() };
+        let decider = |who: &'static str| {
+            let (_, kind, roles) = *cast.iter().find(|(name, ..)| *name == who).unwrap();
+            (who, kind, roles)
+        };
+        let yours = |w: &StoredWaiting, who: &'static str| {
+            let (who, kind, roles) = decider(who);
+            let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
+            w.yours(&excluded, &Decider { who, kind, holds: &holds, via: None })
+        };
+        let (who, kind, roles) = decider("pip");
+        let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
+        w.decide(&excluded, &Decider { who, kind, holds: &holds, via: None }, Decision { approve: true, slot: None, reason: None, note: None, at: 1 }).unwrap();
+        assert_eq!((yours(&w, "ana"), yours(&w, "ben")), (vec![], vec![1]));
+
+        // Where the host keeps whoever deployed the version out, their party too.
+        let excluded = Excluded { deployer: Some("sam".into()), parties: Arc::clone(&parties), ..Default::default() };
+        let (who, kind, roles) = decider("quill");
+        let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
+        let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: chain.into(), decisions: Vec::new(), shown: None };
+        let refused = w.decide(&excluded, &Decider { who, kind, holds: &holds, via: None }, Decision { approve: true, slot: None, reason: None, note: None, at: 1 });
+        assert_eq!(refused, Err((403, "quill and sam, who deployed the version this run is on, are one party (sam owns quill): on this host, someone else decides its approval \"payout\"".into())));
     }
 
     /// Who deployed the version a run is on, which `exclude_deployer` keeps from its approvals:

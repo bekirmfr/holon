@@ -42,10 +42,11 @@ pub struct Slot {
     pub role: Option<String>,
     /// How many different principals fill it, 1 to [`MAX_PEOPLE`].
     pub people: u8,
-    /// Whether whoever started the run may take it (`starter: true`): an output review, where the
-    /// one who asked checks what was made. Left out, they may not: a request check, where whoever
-    /// asks is never the one who says yes (the design's §8.4). A person's step only: an agent
-    /// never decides a run it started.
+    /// Whether whoever started the run, or one party with them (an agent they own), may take it
+    /// (`starter: true`): an output review, where the one who asked checks what was made, or their
+    /// own agent drafts it. Left out, they may not: a request check, where whoever asks is never
+    /// the one who says yes (the design's §8.4). An agent's step may say it too; an agent that
+    /// started the run never decides it, whatever its steps say.
     pub starter: bool,
 }
 
@@ -90,7 +91,8 @@ impl Steps {
     }
 
     /// Who decides it, in words: "2 people", "an agent holding classifier, then a person holding
-    /// reviewer", "a person holding editor, who may be whoever started the run".
+    /// reviewer", "a person holding editor, who may be whoever started the run, or acting for
+    /// them".
     pub fn said(&self) -> String {
         let slot = |s: &Slot| {
             let who = match (s.kind, s.people) {
@@ -105,8 +107,8 @@ impl Steps {
             };
             match (s.starter, s.people) {
                 (false, _) => who,
-                (true, 1) => format!("{who}, who may be whoever started the run"),
-                (true, _) => format!("{who}, who may include whoever started the run"),
+                (true, 1) => format!("{who}, who may be whoever started the run, or acting for them"),
+                (true, _) => format!("{who}, who may include whoever started the run, or those acting for them"),
             }
         };
         let stage = |slots: &Vec<Slot>| match slots.as_slice() {
@@ -152,9 +154,6 @@ impl Steps {
                 None if s.kind == SlotKind::Agent => return Some("an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }".into()),
                 _ => {}
             }
-            if s.starter && s.kind == SlotKind::Agent {
-                return Some("an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }".into());
-            }
         }
         None
     }
@@ -189,7 +188,7 @@ pub fn is_role(name: &str) -> bool {
 }
 
 /// Steps enough to try every rule on, a few hundred: every slot variant (a person with no role or
-/// a role, either whoever started the run may take or not, an agent with a role; 1, 2 or 5 of
+/// a role, an agent with a role, either whoever started the run may take or not; 1, 2 or 5 of
 /// them) in every shape of stages (one to three, of one to three slots, five at most), from each
 /// starting variant. For the round trips' tests, here and in the language's.
 #[doc(hidden)]
@@ -204,6 +203,7 @@ pub fn universe() -> Vec<Steps> {
         (person, Some("reviewer"), true),
         (SlotKind::Agent, Some("reviewer"), false),
         (SlotKind::Agent, Some("x-1"), false),
+        (SlotKind::Agent, Some("reviewer"), true),
     ] {
         for people in [1, 2, 5] {
             variants.push(Slot { kind, role: role.map(str::to_string), people, starter });
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn every_steps_text_reads_back_as_the_steps_and_no_two_share_one() {
         let all = universe();
-        assert!((400..500).contains(&all.len()), "{}", all.len());
+        assert!((500..600).contains(&all.len()), "{}", all.len());
         let mut texts = BTreeSet::new();
         for steps in &all {
             assert_eq!(steps.problem(), None, "{steps:?}");
@@ -314,11 +314,12 @@ mod tests {
         for text in [
             "", "person*1", "person*02", "person*6", "person*0", "person:", "agent", "agent*2", "service:x", "Person", "person:a:b", "person*2*2", ">person",
             "person>", "person++person", "person >person", "person:a b", "person+person+person+person+person+person", &long,
-            // whoever started the run: once, last, and never an agent's step
-            "person^^", "person^*2", "^person", "person:a^b", "agent:a^", "agent:a*2^", "person^ ",
+            // whoever started the run: once, and last
+            "person^^", "person^*2", "^person", "person:a^b", "agent:a^^", "agent^", "agent:a^*2", "person^ ",
         ] {
             assert_eq!(Steps::parse(text), None, "{text:?}");
         }
+        assert!(Steps::parse("agent:a^").is_some_and(|s| s.slots().all(|(_, _, s)| s.starter && s.kind == SlotKind::Agent)), "an agent's step may take whoever started the run's party");
         assert_eq!(Steps::parse("person"), Some(Steps::people(1)));
         assert_eq!(Steps::parse("person*2").and_then(|s| s.short()), Some(2));
         assert_eq!(Steps::parse("person:approver*2").and_then(|s| s.short()), None, "a role is the long form");
@@ -334,8 +335,9 @@ mod tests {
         assert_eq!(said("agent:classifier>person:reviewer>person:approver"), "an agent holding classifier, then a person holding reviewer, then a person holding approver");
         assert_eq!(said("person:a+person:b>person:c*2"), "a person holding a and a person holding b, in any order, then 2 people holding c");
         assert_eq!(said("agent:a*2+person+person:b"), "2 agents holding a, a person and a person holding b, in any order");
-        assert_eq!(said("agent:drafter>person:editor^"), "an agent holding drafter, then a person holding editor, who may be whoever started the run");
-        assert_eq!(said("person*2^"), "2 people, who may include whoever started the run");
+        assert_eq!(said("agent:drafter>person:editor^"), "an agent holding drafter, then a person holding editor, who may be whoever started the run, or acting for them");
+        assert_eq!(said("person*2^"), "2 people, who may include whoever started the run, or those acting for them");
+        assert_eq!(said("agent:drafter^>person:editor^"), "an agent holding drafter, who may be whoever started the run, or acting for them, then a person holding editor, who may be whoever started the run, or acting for them");
         let numbered: Vec<(usize, usize)> = Steps::parse("person:a+person:b>person:c").unwrap().slots().map(|(n, stage, _)| (n, stage)).collect();
         assert_eq!(numbered, [(0, 0), (1, 0), (2, 1)]);
     }

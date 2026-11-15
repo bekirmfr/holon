@@ -492,9 +492,11 @@ export const pay = action(async (order) => {{
 
 /// §9: the review says an approval is not ready when its steps can't all be taken here: a step
 /// takes a principal of its kind bound to its role where the approval is (as the version's tags
-/// would make it), not disabled, one principal a step; whoever deploys it takes none on a host that
-/// keeps them out; nor does whoever starts its run, here anyone who may run its action, but for a
-/// step that says `starter: true` on a host that lets one (then refusing the version). Each row:
+/// would make it), not disabled, one principal a step and one party a step (an agent is one party
+/// with whoever owns it or made its token, the audit's R18); whoever deploys it, and their party,
+/// take none on a host that keeps them out; nor do whoever starts its run, here anyone who may run
+/// its action, and their party, but for a step that says `starter: true` on a host that lets one
+/// (then refusing the version), which the starter's party fills, one principal each. Each row:
 /// a flow, who is bound to what on it, and what the review says of its approval as ada: why it is
 /// not ready, and which of its runs would wait there undecided (every run, or some runs: those its
 /// starter takes no step of, which the editor's deploy doesn't ask about again).
@@ -505,6 +507,10 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
         person(&book, name);
     }
     agent(&book, "scout");
+    // kit, fay's agent, its token hers: one party with her.
+    person(&book, "fay");
+    book.add("kit", Kind::Agent, "agent", "fay", "ada").unwrap();
+    book.create_token("kit", "kit", "fay").unwrap();
     for (role, kind) in [("approver", "person"), ("reviewer", "person"), ("classifier", "agent")] {
         let (code, said) = send(&state, &ada, "PUT", &format!("/roles/{role}"), json!({ "allows": ["run.decide"], "kinds": [kind] }));
         assert_eq!(code, 200, "{said}");
@@ -522,19 +528,32 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
     bind(&book, "pat", "approver", slug("p7"));
     bind(&book, "eve", "approver", slug("p8"));
     book.set_disabled("eve", true).unwrap();
+    for s in ["p11", "p12", "p13"] {
+        bind(&book, "kit", "classifier", slug(s));
+    }
+    bind(&book, "fay", "approver", slug("p11"));
+    bind(&book, "dee", "approver", slug("p12"));
+    bind(&book, "fay", "editor", slug("p12"));
+    bind(&book, "fay", "approver", slug("p13"));
+    bind(&book, "fay", "editor", slug("p13"));
+    bind(&book, "scout", "classifier", slug("p14"));
 
     let tagged = ", { tags: [\"payments\"] }";
     let one = "{ steps: [{ role: \"approver\" }], expires: \"1h\" }";
     let two = "{ steps: [{ role: \"approver\", people: 2 }], expires: \"1h\" }";
     let none = |role: &str| format!("{role}: no person holds it here");
     let theirs = "{ steps: [{ role: \"approver\", starter: true }], expires: \"1h\" }";
+    let classified = "{ steps: [{ role: \"classifier\", kind: \"agent\" }, { role: \"approver\" }], expires: \"1h\" }";
+    let both_theirs = "{ steps: [{ role: \"classifier\", kind: \"agent\", starter: true }, { role: \"approver\", starter: true }], expires: \"1h\" }";
+    let class = "{ steps: [{ role: \"classifier\", kind: \"agent\" }], expires: \"1h\" }";
+    let parties = "its steps take 2 principals of different parties, one a step, and fewer can here (an agent or a service is one party with whoever owns it or made its token)";
     // What, the flow, its settings, its approval, whether the host keeps the deployer out, and
     // lets a step take whoever started the run, and why the review says it is not ready (none: it
     // is), with which of its runs would wait there.
     let every = |why: &str| Some(("every run", why.to_string()));
     let some = |why: String| Some(("some runs", why));
     type Row<'a> = (&'a str, &'a str, &'a str, &'a str, bool, bool, Option<(&'a str, String)>);
-    let rows: [Row; 13] = [
+    let rows: [Row; 18] = [
         ("one approver, and dee holds it", "p1", "", one, false, true, None),
         ("two approvers, and dee alone holds it", "p2", "", two, false, true, every("approver: 1 person holds it here; it needs 2")),
         ("two, and the version's tag brings cy", "p3", tagged, two, false, true, None),
@@ -548,6 +567,11 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
         ("two people, of whom only ada decides here", "p9", "", "{ people: 2, expires: \"1h\" }", false, true, every("its step: 1 person may decide it here; it needs 2")),
         ("ada, the one approver, may take a step that says so", "p10", "", theirs, false, true, None),
         ("not on a host that lets no step take whoever started it", "p10", "", theirs, false, false, some(format!("a run ada starts can't be decided, as they take no step of it: {}", none("approver")))),
+        ("kit classifies, and fay, its owner, alone approves: one party", "p11", "", classified, false, true, every(parties)),
+        ("fay may start a run, and kit, hers, alone classifies", "p12", "", classified, false, true, some("a run fay starts can't be decided, as they and kit take no step of it: classifier: no agent holds it here".into())),
+        ("fay's party fills both steps that take it, and only in her runs", "p13", "", both_theirs, false, true, some(format!("a run ada starts can't be decided, as they take no step of it: {parties}"))),
+        ("scout, ada's, alone classifies, and ada may start a run", "p14", "", class, false, true, some("a run ada starts can't be decided, as they and scout take no step of it: classifier: no agent holds it here".into())),
+        ("scout, ada's, with ada kept out as the deployer", "p14", "", class, true, true, every(&none("approver").replace("approver: no person", "classifier: no agent"))),
     ];
     for (what, s, settings, asked, exclude_deployer, starter, said) in rows {
         let (code, answer) = send(&state, &ada, "PUT", "/access/approvals", json!({ "exclude_deployer": exclude_deployer, "agents": true, "starter": starter, "why": what }));
@@ -559,7 +583,7 @@ fn an_approval_whose_steps_no_one_here_can_take_is_not_ready() {
         // A step that lets the starter in, on a host that lets none: refused, saying how to let it.
         let (_, preview) = send(&state, &ada, "POST", "/deploy/preview", json!({ "slug": s, "unit": unit }));
         let refused = (!starter && asked == theirs).then_some(
-            "this host lets no step take whoever started the run, and \"payout\" asks for a person holding approver, who may be whoever started the run (holon access approvals --starter on)",
+            "this host lets no step take whoever started the run, and \"payout\" asks for a person holding approver, who may be whoever started the run, or acting for them (holon access approvals --starter on)",
         );
         assert_eq!(preview["refused"].as_str(), refused, "{what}");
     }
