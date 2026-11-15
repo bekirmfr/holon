@@ -495,6 +495,18 @@ compute on a worker. `nothing_a_run_computes_holds_up_the_data_plane`
 (`crates/holon/tests/data_plane.rs`, against the real server) fails, with a single long run, if
 anything does.
 
+**Nor does a worker wait on a lock whose holders do I/O** (release audit R45, D5). A worker took
+the deployments table's lock for each request (the origins a deployment answers, whether its path
+is a websocket's, a subscription's channel), and the table's holders write and seal (an event's
+line, a deploy). One slow holder caught every worker that reached it, and the server went deaf
+just as with a long run inline. What a request needs of the table is now read on the blocking
+pool, with its run: the origin before the run starts (a streamed answer's head needs it), a
+subscription's channel after it ends, a GET on a websocket's path that isn't a handshake refused
+426 there; a handshake's websocket is looked up on the pool before it is switched. No hop is
+added: the run's own carries them. `no_data_plane_worker_waits_on_the_deployments_table`
+(`tests.rs`) holds the table with twice as many requests waiting on it as there are cores, and
+fails if the server then takes no connection.
+
 ### Encryption at rest (2026-11-14)
 
 Everything the server keeps is sealed (docs/L4s/at-rest-encryption-L4.md): a run log a line at a
@@ -612,7 +624,11 @@ sync.
 - **The timeline is 63% of a line** and stays: the log holds what each step gave (Q16, below).
 - **The throughput check leaves out hyper and the hop**; at 64 connections hyper and the client
   bound `/health`.
-- **The witness export** costs 4–13%; its `pending.jsonl` is synced with the logs, once a second.
+- **The witness export** costs 4–13%; its `pending.jsonl` is written and synced with the logs,
+  once a second. A run queues its head in memory under the queue's lock and does nothing else
+  there: before release audit R45 (D15) it appended to the file under it, and after each batch the
+  witness took, the file was written afresh and synced under it, every deployment's runs waiting,
+  each under its own log's lock (`a_head_is_queued_in_memory_and_written_by_the_sync_which_no_run_waits_on`).
 
 ### Tried and left
 

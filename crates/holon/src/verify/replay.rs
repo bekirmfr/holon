@@ -87,7 +87,8 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
     if read_server(loaded.resolve(&unit).expect("resolved above"), &resolver).is_err() {
         return err(400, "this unit isn't a flow's version: it has no routes, clocks or actions to replay");
     }
-    let lines = log.with(|log| log.lines());
+    // Read with the log's lock released: its runs go on meanwhile (release audit R45).
+    let (lines, _) = log.lines_to_head();
     // The file texts its runs read, as an export ships them (none holding a secret).
     let export = match export_of(store, folders, Some(&redactor), slug, lines, String::new(), Vec::new(), String::new(), u64::MAX) {
         Ok(export) => export,

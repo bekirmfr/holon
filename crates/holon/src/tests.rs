@@ -4185,6 +4185,44 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
     Some((head, got.split_off(head_end)))
 }
 
+/// **Guards:** no data-plane worker waits on the deployments table's lock (release audit R45,
+/// D5). With the table held (as a holder writing, sealing or syncing holds it) and more requests
+/// waiting on it than the runtime has workers, the server still takes a connection and answers
+/// what needs no run; and every request waiting goes on once the table is let go.
+///
+/// **Why:** a worker took the table's lock for each request (the origins it answers, a
+/// websocket's path, a subscription's channel) before handing the run to the blocking pool. One
+/// slow holder blocked every worker it caught, and with them every listener: no connection
+/// accepted and no byte read, on any port.
+///
+/// **If it fails:** a slow disk under the deployments table, or one long hold, makes the whole
+/// server deaf until it ends.
+#[test]
+fn no_data_plane_worker_waits_on_the_deployments_table() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"held\", {{ port: {port} }})\n\nroute.get(\"/ok\", () => \"ok\")\n");
+    deploy_plain_text(&state, &text);
+    sync_listeners(&state);
+    assert!(raw_http(port, b"GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200"));
+    let waiting = 2 * std::thread::available_parallelism().map_or(8, |n| n.get());
+    let table = state.deployments.lock().unwrap();
+    let callers: Vec<_> = (0..waiting).map(|_| std::thread::spawn(move || raw_http(port, b"GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://page.example\r\nConnection: close\r\n\r\n"))).collect();
+    std::thread::sleep(Duration::from_millis(300));
+    // Answered on a worker, with no run: a name the server doesn't answer to.
+    let t0 = std::time::Instant::now();
+    let refused = raw_http(port, b"GET /ok HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
+    assert!(refused.starts_with("HTTP/1.1 421"), "the server took no connection while the table was held: {refused:?}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "answered at once: {:?}", t0.elapsed());
+    drop(table);
+    for caller in callers {
+        let answer = caller.join().unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200") && answer.ends_with("ok"), "{answer:?}");
+    }
+    assert_eq!(route(&state, &req("POST", "/deployments/held/stop", vec![])).status_code, 200);
+}
+
 /// One raw HTTP/1.1 exchange on `port`: everything the server sends back until it closes.
 fn raw_http(port: u16, request: &[u8]) -> String {
     use std::io::Write;

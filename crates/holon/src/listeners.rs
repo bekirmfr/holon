@@ -43,6 +43,9 @@ pub(crate) fn serve_data_forwarding(
     forward: Option<outbound::Forwarder>,
     allowed: Option<String>,
 ) -> DataResponse {
+    if let Some(refused) = websockets::without_upgrade(deployments, slug, &request.method, &request.url) {
+        return refused;
+    }
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {

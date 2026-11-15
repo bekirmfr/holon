@@ -26,8 +26,12 @@
 //! `<deployments>.heads/pending.jsonl`, so a restart or an outage loses none; a failing witness is
 //! tried again after a growing pause, up to five minutes, and said so once until it recovers.
 //!
-//! The queue file is synced with the logs, every second (`sync`): a power loss loses what it
-//! loses of them. A receipt is synced as it is kept. While the witness is down the queue doesn't
+//! A run queues its head in memory only, under a lock held for that alone: every run of every
+//! deployment takes it, under its own log's lock, so nothing is written or synced under it (release
+//! audit R45, D15). The queue file is written with the logs' sync, every second (`sync`), what came
+//! since appended and synced, or the file written afresh after a batch is taken or the queue cut:
+//! a stop or a crash loses what it loses of the logs, and at most the heads of the last second,
+//! which the next head of each chain stands for. A receipt is synced as it is kept. While the witness is down the queue doesn't
 //! grow without end: past [`MAX_PENDING`] heads, each deployment's newest of each kind stands for
 //! the ones before it (`compact`), of each of its lives apart: a removal's head ends one. A head
 //! stands for every line before it in its chain, so what the witness then takes pins every run it
@@ -67,8 +71,11 @@ pub struct Exporter {
     token: Option<String>,
     /// Where the queue and the receipts are kept (none: in memory only).
     dir: Option<PathBuf>,
-    /// The heads not yet taken by the witness, oldest first, kept in step with `pending.jsonl`.
+    /// The heads not yet taken by the witness, oldest first; `pending.jsonl` holds them as of the
+    /// last sync.
     pending: Mutex<Queue>,
+    /// The queue file, written by the sync (see the module docs).
+    file: Mutex<QueueFile>,
     /// How many may wait before the queue is cut ([`MAX_PENDING`]; fewer in a test).
     most: usize,
     agent: ureq::Agent,
@@ -107,17 +114,28 @@ fn address_of(url: &str) -> String {
 /// A step run before each batch is sent; an error sends nothing.
 pub type Hook = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
 
-/// The heads waiting for the witness, and `pending.jsonl` open for appending them: one write a
-/// head, under the lock that already orders them (docs/L4s/request-path-plan.md, step 6b).
+/// The heads waiting for the witness, in memory: nothing is written under its lock, which every
+/// run takes (see the module docs).
 #[derive(Default)]
 struct Queue {
     heads: VecDeque<Head>,
-    /// Closed when the file is rewritten after a batch is taken, so the next head opens the new one.
-    file: Option<std::fs::File>,
+    /// How many of the first heads `pending.jsonl` holds, in order: the next sync appends the rest.
+    written: usize,
+    /// The file is to be written afresh with every head that waits: a batch was taken off the
+    /// front, the queue was cut, or a write failed.
+    rewrite: bool,
     /// How many of the first heads are being sent: left as they are by a cut, since the batch's
     /// heads are taken off the front once the witness takes it.
     sending: usize,
-    /// Whether the file has heads appended since it was last synced.
+}
+
+/// `pending.jsonl`, open for appending the heads queued since it was last written, and whether it
+/// was written since it was last synced: under a lock of its own, which the sync holds while it
+/// writes, so two syncs write in order and no run waits on either.
+#[derive(Default)]
+struct QueueFile {
+    /// Closed when the file is written afresh, so the next append opens the new one.
+    file: Option<std::fs::File>,
     unsynced: bool,
 }
 
@@ -175,17 +193,22 @@ impl Exporter {
             url: url.to_string(),
             token: token.filter(|t| !t.is_empty()),
             dir,
-            pending: Mutex::new(Queue { heads: pending, ..Queue::default() }),
+            pending: Mutex::new(Queue { written: pending.len(), heads: pending, ..Queue::default() }),
+            file: Mutex::new(QueueFile::default()),
             most: MAX_PENDING,
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
             before_send: OnceLock::new(),
             taken_ms: std::sync::atomic::AtomicU64::new(0),
         };
-        {
-            // A queue a server before this one let grow past the bound.
+        // A queue a server before this one let grow past the bound.
+        let cut = {
             let mut queue = exporter.pending.lock().unwrap();
-            if queue.heads.len() > exporter.most {
-                exporter.compact(&mut queue);
+            (queue.heads.len() > exporter.most).then(|| exporter.compact(&mut queue))
+        };
+        if let Some(cut) = cut {
+            exporter.said_cut(cut);
+            if let Err(e) = exporter.sync() {
+                eprintln!("holon: {e}");
             }
         }
         Ok(exporter)
@@ -196,25 +219,28 @@ impl Exporter {
         let _ = self.before_send.set(hook);
     }
 
-    /// Queue `head`, on disk too; past `most` waiting, the queue cut ([`Exporter::compact`]).
+    /// Queue `head`, in memory: written to the queue file by the next sync. Past `most` waiting,
+    /// the queue cut ([`Exporter::compact`]). Nothing else is done under the queue's lock, which
+    /// every run takes under its log's (see the module docs).
     pub fn note(&self, head: Head) {
-        let mut queue = self.pending.lock().unwrap();
-        if let Err(e) = self.append(&mut queue, &head) {
-            eprintln!("holon: could not queue a run's head for the witness: {e}");
-        }
-        queue.heads.push_back(head);
-        if queue.heads.len() > self.most {
-            self.compact(&mut queue);
+        let cut = {
+            let mut queue = self.pending.lock().unwrap();
+            queue.heads.push_back(head);
+            (queue.heads.len() > self.most).then(|| self.compact(&mut queue))
+        };
+        if let Some(cut) = cut {
+            self.said_cut(cut);
         }
     }
 
     /// Keep of the waiting heads each deployment's newest of each kind, in the order they came,
-    /// and the queue file rewritten to them: a run's head stands for every run before it in its
-    /// log, an event's for every event before it, a cut-back's for every cut-back before it. Each
-    /// of a slug's lives apart: a head before a removal's is of the chain removed, and one after it
-    /// stands for none of that chain's runs (release audit R41). The heads of a batch being sent
-    /// are left as they are, to be taken off once it is taken.
-    fn compact(&self, queue: &mut Queue) {
+    /// the queue file to be written afresh with them by the next sync: a run's head stands for
+    /// every run before it in its log, an event's for every event before it, a cut-back's for
+    /// every cut-back before it. Each of a slug's lives apart: a head before a removal's is of the
+    /// chain removed, and one after it stands for none of that chain's runs (release audit R41).
+    /// The heads of a batch being sent are left as they are, to be taken off once it is taken.
+    /// How many waited, and how many wait now.
+    fn compact(&self, queue: &mut Queue) -> (usize, usize) {
         let was = queue.heads.len();
         let mut seen = BTreeSet::new();
         // Newest first: each removal's head begins (going back) an older life of its deployment.
@@ -227,57 +253,69 @@ impl Exporter {
         let newest: Vec<Head> = queue.heads.iter().skip(queue.sending).rev().filter(|h| newest_of(h)).cloned().collect();
         queue.heads.truncate(queue.sending);
         queue.heads.extend(newest.into_iter().rev());
-        eprintln!("holon: {was} heads waited for the witness at {}: each deployment's newest stands for the ones before it, {} wait now", address_of(&self.url), queue.heads.len());
-        if let Err(e) = self.rewrite(queue) {
-            eprintln!("holon: the witness's queue couldn't be rewritten to the heads that wait: {e}");
-        }
+        queue.rewrite = true;
+        (was, queue.heads.len())
     }
 
-    /// The queue file rewritten to the heads that wait now, synced.
-    fn rewrite(&self, queue: &mut Queue) -> std::io::Result<()> {
-        // Closed first: a handle would go on appending to the old file (and Windows won't replace
-        // an open file).
-        queue.file = None;
-        let Some(dir) = &self.dir else { return Ok(()) };
-        std::fs::create_dir_all(dir)?;
-        let mut rest = String::new();
-        for head in &queue.heads {
-            rest.push_str(&serde_json::to_string(head).map_err(std::io::Error::other)?);
-            rest.push('\n');
-        }
-        crate::sealing::write_private(&dir.join("pending.jsonl"), rest.as_bytes())?;
-        queue.unsynced = false;
-        Ok(())
+    /// Say that the queue was cut, with no lock held.
+    fn said_cut(&self, (was, now): (usize, usize)) {
+        eprintln!("holon: {was} heads waited for the witness at {}: each deployment's newest stands for the ones before it, {now} wait now", address_of(&self.url));
     }
 
-    /// Sync the queue file if heads were appended to it since it was last synced; no lock held
-    /// while it syncs. A failure leaves it to be synced the next time.
+    /// Write the heads queued since the last sync to the queue file, then sync it: appended, or
+    /// the file written afresh with every head that waits after a batch was taken or the queue
+    /// cut. What is to be written is copied under the queue's lock, and written with only the
+    /// file's held, so no run waits while it is written or synced. A write that fails has the
+    /// next sync write the file afresh; a sync that fails is tried again the next time.
     pub fn sync(&self) -> Result<(), String> {
         let Some(dir) = &self.dir else { return Ok(()) };
-        if !std::mem::take(&mut self.pending.lock().unwrap().unsynced) {
-            return Ok(());
-        }
-        crate::recorder::sync_file(&dir.join("pending.jsonl")).map_err(|e| {
-            self.pending.lock().unwrap().unsynced = true;
-            format!("the witness's queue couldn't be synced: {e}")
-        })
-    }
-
-    fn append(&self, queue: &mut Queue, head: &Head) -> std::io::Result<()> {
-        let Some(dir) = &self.dir else { return Ok(()) };
-        let line = serde_json::to_string(head).map_err(std::io::Error::other)? + "\n";
-        if queue.file.is_none() {
+        let mut file = self.file.lock().unwrap();
+        let (whole, heads) = {
+            let mut queue = self.pending.lock().unwrap();
+            let whole = std::mem::take(&mut queue.rewrite);
+            let from = if whole { 0 } else { queue.written.min(queue.heads.len()) };
+            let heads: Vec<Head> = queue.heads.range(from..).cloned().collect();
+            queue.written = queue.heads.len();
+            (whole, heads)
+        };
+        let path = dir.join("pending.jsonl");
+        let wrote = (|| {
+            let mut text = String::new();
+            for head in &heads {
+                text.push_str(&serde_json::to_string(head).map_err(std::io::Error::other)?);
+                text.push('\n');
+            }
             std::fs::create_dir_all(dir)?;
-            queue.file = Some(crate::sealing::append_private(&dir.join("pending.jsonl"))?);
+            if whole {
+                // Closed first: a handle would go on appending to the old file (and Windows won't
+                // replace an open file). Written whole and synced.
+                file.file = None;
+                crate::sealing::write_private(&path, text.as_bytes())?;
+                file.unsynced = false;
+            } else if !text.is_empty() {
+                if file.file.is_none() {
+                    file.file = Some(crate::sealing::append_private(&path)?);
+                }
+                use std::io::Write;
+                let written = file.file.as_mut().expect("opened above").write_all(text.as_bytes());
+                if written.is_err() {
+                    // Opened again for the next write, in case the file went away under it.
+                    file.file = None;
+                }
+                written?;
+                file.unsynced = true;
+            }
+            Ok::<(), std::io::Error>(())
+        })();
+        if let Err(e) = wrote {
+            self.pending.lock().unwrap().rewrite = true;
+            return Err(format!("the witness's queue couldn't be written: {e}"));
         }
-        use std::io::Write;
-        let written = queue.file.as_mut().expect("opened above").write_all(line.as_bytes());
-        if written.is_err() {
-            // Opened again for the next head, in case the file went away under it.
-            queue.file = None;
+        if file.unsynced {
+            crate::recorder::sync_file(&path).map_err(|e| format!("the witness's queue couldn't be synced: {e}"))?;
+            file.unsynced = false;
         }
-        queue.unsynced = true;
-        written
+        Ok(())
     }
 
     /// How many heads wait for the witness.
@@ -302,13 +340,19 @@ impl Exporter {
                 return Ok(sent);
             }
             let receipt = self.send(&batch);
-            let mut queue = self.pending.lock().unwrap();
-            queue.sending = 0;
+            {
+                let mut queue = self.pending.lock().unwrap();
+                queue.sending = 0;
+                if receipt.is_ok() {
+                    queue.heads.drain(..batch.len());
+                    queue.rewrite = true;
+                }
+            }
             let (id, receipt) = receipt?;
-            queue.heads.drain(..batch.len());
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             self.taken_ms.store(now, std::sync::atomic::Ordering::Relaxed);
-            if let Err(e) = self.rewrite(&mut queue).and_then(|()| self.keep(&id, &receipt)) {
+            // What still waits written afresh, and the receipt kept, with no run waiting on either.
+            if let Err(e) = self.sync().and_then(|()| self.keep(&id, &receipt).map_err(|e| e.to_string())) {
                 eprintln!("holon: the witness took a batch of heads, but keeping what still waits, or its receipt, failed: {e}");
             }
             sent += batch.len();
@@ -423,6 +467,7 @@ mod tests {
         exporter.note(head(1));
         assert!(exporter.flush().unwrap_err().contains("503"));
         assert_eq!(exporter.waiting(), 2, "a witness that fails takes nothing");
+        assert_eq!(exporter.sync(), Ok(()), "written to the queue file, as the logs' sync does each second");
 
         // A restart: the queue comes back from disk.
         let again = Exporter::new(&url, Some("t0ken".into()), Some(dir.clone())).unwrap();
@@ -504,6 +549,7 @@ mod tests {
         assert_eq!(exporter.flush(), Ok(2), "taken, and the queue file rewritten empty");
         exporter.note(head(2));
         exporter.note(head(3));
+        assert_eq!(exporter.sync(), Ok(()));
         let again = Exporter::new(&url, None, Some(dir.clone())).unwrap();
         assert_eq!(again.waiting(), 2, "the heads queued after the rewrite are in the file");
         assert_eq!(again.flush(), Ok(2));
@@ -544,6 +590,7 @@ mod tests {
             assert!(exporter.waiting() <= 100, "bounded: {} wait after {seq}", exporter.waiting());
         }
         assert!(exporter.flush().is_err());
+        assert_eq!(exporter.sync(), Ok(()));
         let on_disk = std::fs::read_to_string(dir.join("pending.jsonl")).unwrap();
         assert_eq!(on_disk.lines().count(), exporter.waiting(), "the file holds what waits");
         assert_eq!(Exporter::new(&url, None, Some(dir.clone())).unwrap().waiting(), exporter.waiting(), "and a restart reads it back");
@@ -624,21 +671,51 @@ mod tests {
         assert_eq!(rest.last(), Some(&head(1299)), "the newest of what came meanwhile waits");
     }
 
-    /// A queue file appended to is synced by the next `sync`; one that can't be is tried again.
+    /// **Guards:** a run's head is queued in memory, and nothing is written or synced under the
+    /// queue's lock (release audit R45, D15): a sync writing the queue file, however slowly, holds
+    /// up no run. The sync writes what came since, appended; a write that fails has the next write
+    /// the file afresh, so a restart reads back every head that waits.
+    ///
+    /// **Why:** every run of every deployment queues its head under its own log's lock. The queue
+    /// was appended to under its lock, and written afresh and synced under it after each batch the
+    /// witness took: every deployment's runs waited on the disk.
+    ///
+    /// **If it fails:** with a witness, a slow disk under the heads' folder stalls every flow; or
+    /// a head queued is lost from the file, and a restart sends the witness less than it should.
     #[test]
-    fn the_queue_is_synced_once_appended_to_and_again_after_a_failure() {
+    fn a_head_is_queued_in_memory_and_written_by_the_sync_which_no_run_waits_on() {
         let dir = std::env::temp_dir().join(format!("holon-heads-sync-{}-{}", std::process::id(), rand::random::<u32>()));
-        let exporter = Exporter::new("http://127.0.0.1:9/heads", None, Some(dir.clone())).unwrap();
-        exporter.note(head(0));
-        assert!(exporter.pending.lock().unwrap().unsynced);
+        let exporter = Arc::new(Exporter::new("http://127.0.0.1:9/heads", None, Some(dir.clone())).unwrap());
+        let on_disk = || std::fs::read_to_string(dir.join("pending.jsonl")).map_or(0, |t| t.lines().count());
+        {
+            // A sync writing the file, its lock held as through a slow write or fsync.
+            let _writing = exporter.file.lock().unwrap();
+            let noting = Arc::clone(&exporter);
+            let (done, noted) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for seq in 0..3 {
+                    noting.note(head(seq));
+                }
+                let _ = done.send(());
+            });
+            assert!(noted.recv_timeout(Duration::from_secs(10)).is_ok(), "a run waited on the queue file being written");
+        }
+        assert_eq!(on_disk(), 0, "nothing written as heads are queued");
         assert_eq!(exporter.sync(), Ok(()));
-        assert!(!exporter.pending.lock().unwrap().unsynced, "synced");
-        exporter.note(head(1));
-        exporter.pending.lock().unwrap().file = None;
+        assert_eq!(on_disk(), 3, "the sync writes what came");
+        exporter.note(head(3));
+        assert_eq!(exporter.sync(), Ok(()));
+        assert_eq!(on_disk(), 4, "and appends what came since");
+        // A write that fails (a folder stands where the file was): the next one writes it afresh.
+        exporter.note(head(4));
+        exporter.file.lock().unwrap().file = None;
         std::fs::remove_file(dir.join("pending.jsonl")).unwrap();
         std::fs::create_dir(dir.join("pending.jsonl")).unwrap();
-        assert!(exporter.sync().is_err(), "a file that can't be synced");
-        assert!(exporter.pending.lock().unwrap().unsynced, "is synced the next time");
+        assert!(exporter.sync().is_err(), "a file that can't be written");
+        std::fs::remove_dir(dir.join("pending.jsonl")).unwrap();
+        assert_eq!(exporter.sync(), Ok(()));
+        let again = Exporter::new("http://127.0.0.1:9/heads", None, Some(dir.clone())).unwrap();
+        assert_eq!(again.pending.lock().unwrap().heads, (0..5).map(head).collect::<VecDeque<_>>(), "every head that waits, after a restart");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

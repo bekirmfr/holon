@@ -12,6 +12,12 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A slow lock holder no longer stalls the server.** A data-plane worker no longer takes the
+  deployments table's lock: what a request needs of it is read with its run, on the blocking pool,
+  so a holder writing or sealing can't leave every port deaf. An export, a replay and a removed
+  deployment's records read and open the log with its lock released, so exporting a big log no
+  longer holds up its runs. With a witness, a run queues its head in memory only; the queue file
+  is written with the logs' sync each second, never under the lock every run takes.
 - **A removed deployment's life ends whole, and its slug used again starts apart.** A backup of
   the runs a log lets go of is named by its last run's hash as well as its runs' numbers, so a slug
   removed and deployed again, numbering its runs from 0 again, no longer overwrites the old one's

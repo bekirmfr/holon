@@ -1326,7 +1326,8 @@ fn keep_records(
     (log, redactor, events, events_head): (Arc<recorder::LogCell>, crate::secrets::Redactor, Vec<String>, String),
 ) -> Result<Option<PathBuf>, String> {
     let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let (lines, head, max_age_ms) = log.with(|log| (log.lines(), log.head().to_string(), log.max_age_ms()));
+    let (lines, head) = log.lines_to_head();
+    let max_age_ms = log.with(|log| log.max_age_ms());
     let Some(to) = removed_file(deployments_path, slug, at_ms, max_age_ms.map(|age| at_ms.saturating_add(age))) else { return Ok(None) };
     if lines.is_empty() && events.is_empty() {
         return Ok(None);

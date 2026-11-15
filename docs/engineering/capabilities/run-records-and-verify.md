@@ -107,8 +107,11 @@ heads, named by their hash (`batch`) so a retry is harmless. `kind` is `run`, `e
 or `trim`, sent when a cut-back drops runs (its `seq` the oldest kept, its `head` the hash of the
 last dropped): runs before it are gone by the host's choice. Only heads leave the server. Before a
 batch goes, the server syncs its logs (`Exporter::before_send`, `sync_logs`), so a witness never
-holds a head the disk lacks. Until a 2xx, the heads wait in `<deployments>.heads/pending.jsonl`,
-synced with the logs every second (`heads::sync`); the witness's answer is kept as a line of
+holds a head the disk lacks. A run queues its head in memory, nothing written under the queue's
+lock, which every run takes under its log's (release audit R45). Until a 2xx, the heads wait in
+`<deployments>.heads/pending.jsonl`, written and synced with the logs every second (`heads::sync`,
+under the file's own lock: appended, or written afresh after a batch is taken or the queue cut);
+the witness's answer is kept as a line of
 `receipts.jsonl`, synced; a failing witness is tried again after a growing pause, up to
 `MAX_BACKOFF` (five minutes). Past `MAX_PENDING` (10,000) heads waiting, each deployment's newest
 of each kind stands for the ones before it (`Exporter::compact`): a head pins every line before it
@@ -117,7 +120,10 @@ is taken off the front once taken. `HOLON_EXPORT_HEADS_TOKEN` is sent as a beare
 
 ### Exports
 
-`handle_get_export` takes the log's lines and head under one lock and calls `export_of`, which the
+`handle_get_export` takes the log's head with its file under the lock, reads the lines with the
+lock released to that head (`LogCell::lines_to_head`; a replay and a removal's records too, so
+reading and opening a big sealed log holds up none of its runs, release audit R45), and calls
+`export_of`, which the
 backup shares: an `Export` (format `holon-runs/1`, `FORMAT`) of the lines exactly as written,
 the head, every unit the runs ran as canonical bytes, the texts of files they read that their log
 keeps by hash (`blobs`, up to `?max_files_bytes=N`, none with `?without_files=1`; none holding one

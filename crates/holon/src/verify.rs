@@ -126,8 +126,8 @@ pub(crate) fn handle_get_export(
         Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
-    // The lines and their head under one lock, so the export's chain ends at its head.
-    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    // The lines end at the head taken with them, read with the log's lock released.
+    let (lines, head) = log.lines_to_head();
     let (lines, head, events, events_head, file) = match run {
         None => (lines, head, events, events_head, format!("{slug}-runs.json")),
         Some(n) => match lines.into_iter().find(|l| seq_of(l) == Some(n)) {

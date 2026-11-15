@@ -1446,6 +1446,23 @@ impl LogCell {
         self.with(|log| log.its_lines()).each(f)
     }
 
+    /// The log's lines as `Log::lines` has them, and the head they end at: the head taken with
+    /// the file under the lock, the lines read with it released ([`each_line`](LogCell::each_line)),
+    /// so an export, a replay or a removal's records of a big sealed log, each line opened, holds
+    /// up none of its runs (release audit R45). Lines written after the head was taken are left
+    /// out: the lines end at the head, as they did read under the lock. Lines that don't reach it
+    /// (the file changed outside holon) are given as read, for the check to say so.
+    pub fn lines_to_head(&self) -> (Vec<String>, String) {
+        let (its, head) = self.with(|log| (log.its_lines(), log.head().to_string()));
+        let mut lines = Vec::new();
+        its.each(|l| lines.push(l.to_string()));
+        // From the newest: the head is the last line, or one of the few written since.
+        if let Some(at) = lines.iter().rposition(|l| line_hash(l) == head) {
+            lines.truncate(at + 1);
+        }
+        (lines, head)
+    }
+
     /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
     pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
         self.with(|log| log.its_lines()).each_kept(f)
@@ -2285,7 +2302,9 @@ impl Log {
 
     /// The log's lines exactly as written, oldest first, so a copy checks against the chain: the
     /// file's (every line it holds, a cut one too), or, kept in memory only, each entry as it was
-    /// written.
+    /// written. Read under the lock: what the server reads is read with it released
+    /// (`LogCell::lines_to_head`); the tests hold that to this.
+    #[cfg(test)]
     pub fn lines(&self) -> Vec<String> {
         if let Some(path) = &self.file {
             // Its sealed segments' first, oldest first, then its file's.
@@ -3372,6 +3391,7 @@ mod tests {
                 read.push(l.to_string());
             });
             assert_eq!(read, cell.with(|log| log.lines()));
+            assert_eq!(cell.lines_to_head(), cell.with(|log| (log.lines(), log.head().to_string())), "as read under the lock (release audit R45)");
             assert_eq!(cell.lines_holding("\"at_ms\":1003").len(), 1);
         }
         let _ = std::fs::remove_file(&path);
@@ -3396,6 +3416,11 @@ mod tests {
             let whole = lines.len().saturating_sub(1);
             let seqs: Vec<u64> = lines[..whole].iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("a line before the last is whole").seq).collect();
             assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            // Read to the head taken with them: every line whole, the last the head's.
+            let (lines, head) = cell.lines_to_head();
+            let seqs: Vec<u64> = lines.iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("every line to the head is whole").seq).collect();
+            assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            assert_eq!(lines.last().map_or(String::new(), |l| line_hash(l)), head, "ending at the head (none before the first run)");
             reads += 1;
         }
         for w in writers {
