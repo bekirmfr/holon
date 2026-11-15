@@ -3,6 +3,9 @@
 //! did asks it, and refuses whoever doesn't hold it, never answering them a thinner run. The list of
 //! runs (when, what started each, its status, how long, who by) stays `run.view`'s. The agent role
 //! doesn't hold it: a person gives it, binding a role that does where the flow is.
+//!
+//! What a flow keeps in its state is `state.view`'s the same way (R56): no route answers a value of
+//! it, or one a run read or left, to whoever holds the flow's runs but not its state.
 
 use super::access_table::ask;
 use super::*;
@@ -38,16 +41,16 @@ fn send(state: &AppState, token: &str, method: &str, path: &str, body: Value) ->
     ask(state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() })
 }
 
-/// `FLOW` deployed as ada, approving what it asks for.
-fn deploy(state: &AppState, ada: &str) {
-    let plan = holon_author::agent::plan(FLOW).unwrap_or_else(|e| panic!("{e}"));
+/// `text` deployed as `slug` by ada, approving what it asks for.
+fn deploy(state: &AppState, ada: &str, slug: &str, text: &str) {
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
     for unit in &plan.units {
         assert_eq!(ask(state, Some(ada), "POST", "/unit", unit.clone()).0, 200);
     }
-    let (code, preview) = send(state, ada, "POST", "/deploy/preview", json!({ "slug": "steps", "unit": plan.unit }));
+    let (code, preview) = send(state, ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": plan.unit }));
     assert_eq!(code, 200, "{preview}");
     let preview: Value = serde_json::from_str(&preview).unwrap();
-    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": "steps", "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
+    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
     assert_eq!(code, 200, "{said}");
 }
 
@@ -68,7 +71,7 @@ fn server() -> (AppState, Arc<Accounts>, BTreeMap<&'static str, String>) {
     let (code, said) = send(&state, &ada, "POST", "/people/scout/tokens", json!({ "label": "its tools" }));
     assert_eq!(code, 200, "{said}");
     let scout = serde_json::from_str::<Value>(&said).unwrap()["token"].as_str().unwrap().to_string();
-    deploy(&state, &ada);
+    deploy(&state, &ada, "steps", FLOW);
     let request = json!({ "method": "POST", "url": format!("/check?also={CANARY}"), "headers": [["content-type", "application/json"]], "body": json!({ "key": CANARY }).to_string() });
     let (code, said) = send(&state, &ada, "POST", "/deployments/steps/request", request);
     assert_eq!(code, 200, "{said}");
@@ -78,12 +81,12 @@ fn server() -> (AppState, Arc<Accounts>, BTreeMap<&'static str, String>) {
     (state, book, tokens)
 }
 
-/// Every route a principal may be answered on: each GET of the table, its parts named as the flow.
-fn every_get() -> Vec<String> {
+/// Every route a principal may be answered on: each GET of the table, its parts named as `slug`.
+fn every_get(slug: &str) -> Vec<String> {
     crate::can::ROUTES
         .iter()
         .filter(|r| r.method == "GET" && r.path != "*")
-        .map(|r| r.path.split('/').map(|s| if s.starts_with('{') { "steps" } else { s }).collect::<Vec<_>>().join("/"))
+        .map(|r| r.path.split('/').map(|s| if s.starts_with('{') { slug } else { s }).collect::<Vec<_>>().join("/"))
         .collect()
 }
 
@@ -133,7 +136,7 @@ fn tool(state: &AppState, token: &str, name: &str, args: &Value) -> Result<Strin
 fn a_runs_steps_and_values_are_read_only_with_run_steps() {
     let (state, book, tokens) = server();
     for who in ["scout", "wes"] {
-        for path in every_get() {
+        for path in every_get("steps") {
             let (code, said) = send(&state, &tokens[who], "GET", &path, Value::Null);
             assert!(!said.contains(CANARY), "{who} GET {path} ({code}) answers the canary: {said}");
             if STEPS.contains(&path.as_str()) {
@@ -231,6 +234,60 @@ fn the_list_of_runs_says_what_it_names() {
     assert_eq!(keys, BTreeSet::from(named));
     assert!(!head.to_string().contains(CANARY), "{head}");
     assert_eq!((head["failed"].as_bool(), head["route"].as_str(), head["status"].as_u64()), (Some(true), Some("POST /check"), Some(500)));
+}
+
+/// What the flow `kept` keeps in its state (R56): read by whoever holds state.view, by no one else.
+const KEPT_CANARY: &str = "kept_canary_4d2b";
+
+/// A flow that keeps what it is sent, and a clock that copies it, so a tick's outputs carry it.
+const KEPT: &str = r#"import { every, flow, route } from "holon"
+import state from "state"
+
+flow("kept", { port: 18099 })
+
+route.post("/note", (req) => {
+  state.note = req.json.note
+  return "kept"
+})
+
+every("1h", () => {
+  state.seen = state.note
+})
+"#;
+
+/// The class, for a flow's state (R56): rob holds `kept`'s flow and its runs (flow.view, run.view)
+/// but not its state, and no GET route answers him a value it keeps: not its state, a cell's
+/// changes, a session's snapshot, nor a clock tick's outputs. The routes that answer them refuse
+/// him, naming what they ask. cy, a viewer, reads the value on each.
+#[test]
+fn a_flows_state_is_read_only_with_state_view() {
+    let (state, book, tokens) = server();
+    let runs = ["flow.view", "run.view"];
+    book.define_role(RoleText { name: "runs".into(), about: None, allows: runs.map(String::from).to_vec(), kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let rob = book.accept(&book.invite("rob", "runs", None, "ada").unwrap(), PW).unwrap().0;
+    let ada = &tokens["ada"];
+    deploy(&state, ada, "kept", KEPT);
+    let request = json!({ "method": "POST", "url": "/note", "headers": [["content-type", "application/json"]], "body": json!({ "note": KEPT_CANARY }).to_string() });
+    let (code, said) = send(&state, ada, "POST", "/deployments/kept/request", request);
+    assert!(code == 200 && said.contains("kept"), "{code} {said}");
+    let (code, said) = send(&state, ada, "POST", "/deployments/kept/tick", json!({ "clock": "every 1h" }));
+    assert_eq!(code, 200, "{said}");
+    // A session that ended, its state kept with it; then the next.
+    for lifecycle in ["stop", "run"] {
+        let (code, said) = send(&state, ada, "POST", &format!("/deployments/kept/{lifecycle}"), Value::Null);
+        assert_eq!(code, 200, "{lifecycle}: {said}");
+    }
+    let asked = ["/deployments/kept/changes?name=note", "/deployments/kept/changes?name=seen"];
+    for path in every_get("kept").into_iter().chain(asked.map(String::from)) {
+        let (code, said) = send(&state, &rob, "GET", &path, Value::Null);
+        assert!(!said.contains(KEPT_CANARY), "rob GET {path} ({code}) answers what the flow keeps: {said}");
+    }
+    for (path, action) in [("/deployments/kept/state", "state.view"), ("/deployments/kept/changes?name=note", "state.view"), ("/deployments/kept/sessions", "state.view"), ("/deployments/kept/history", "run.steps")] {
+        let (code, said) = send(&state, &rob, "GET", path, Value::Null);
+        assert!(code == 403 && error_of(&said).contains(action), "rob GET {path}: {code} {said}");
+        let (code, said) = send(&state, &tokens["cy"], "GET", path, Value::Null);
+        assert!(code == 200 && said.contains(KEPT_CANARY), "cy, a viewer, GET {path}: {code} {said}");
+    }
 }
 
 /// The `error` an answer says, or nothing.

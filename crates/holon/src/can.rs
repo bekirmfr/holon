@@ -658,8 +658,10 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/queues", StateView, On::Slug),
     asks("GET", "/deployments/{slug}/channels", StateView, On::Slug),
     asks("POST", "/deployments/{slug}/runs/{id}/decide", RunDecide, On::Approvals),
-    asks("GET", "/deployments/{slug}/changes", FlowView, On::Slug),
-    asks("GET", "/deployments/{slug}/history", FlowView, On::Slug),
+    // A cell's values, before and after each run that changed it: the state's (R56).
+    asks("GET", "/deployments/{slug}/changes", StateView, On::Slug),
+    // The last clock ticks, each with its outputs and effects: runs' values (R56, as R55's log).
+    asks("GET", "/deployments/{slug}/history", RunSteps, On::Slug),
     asks("GET", "/deployments/{slug}/state", StateView, On::Slug),
     // A run's steps and values are run.steps' (R55): the whole log, and the evidence made of it.
     // The list of runs, each without its values, is run.view's.
@@ -675,7 +677,8 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/manifest", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/grant", FlowView, On::Slug),
     asks("POST", "/deployments/{slug}/grant", FlowApproveDeploy, On::Slug),
-    asks("GET", "/deployments/{slug}/sessions", RunView, On::Slug),
+    // Each session with the state it ended with (R56).
+    asks("GET", "/deployments/{slug}/sessions", StateView, On::Slug),
     asks("POST", "/deployments/{slug}/run", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/pause", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/stop", FlowLifecycle, On::Slug),

@@ -456,6 +456,8 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals; what a point shows, `run.steps` or deciding it | §8.7 |
 | `GET /deployments/<slug>/log` · `…/log/heads` | `run.steps` / `run.view` | a run's steps and values / the list of runs (R55) |
 | `GET /deployments/<slug>/export` · `…/replay` | `run.steps` and `run.export` | evidence, made of a run's steps |
+| `GET /deployments/<slug>/history` | `run.steps` | the last clock ticks, each with its outputs and effects (R56) |
+| `GET /deployments/<slug>/state` · `…/changes` · `…/sessions` | `state.view` | its state; a cell's values before and after each run that changed it; each session with the state it ended with (R56) |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
 
 `/admin/accounts…` and `/admin/tokens…` go (replaced). A change to access that needs approval

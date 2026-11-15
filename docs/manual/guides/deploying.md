@@ -460,8 +460,9 @@ balances["a"], oldest first, now 101:
 A run that only read it isn't named, nor one that changed another item. A restore or a deploy
 that moved it between two runs is a row of its own, so each value follows from the one before.
 For a whole collection, each run's row names the items it changed. `GET
-/deployments/<slug>/changes?name=balances&item=a` answers it as JSON, newest first; it reads the
-newest 2000 runs the log keeps, and `before=SEQ` reads further back.
+/deployments/<slug>/changes?name=balances&item=a` answers it as JSON, newest first, to whoever may
+read the flow's state (`state.view`); it reads the newest 2000 runs the log keeps, and `before=SEQ`
+reads further back.
 
 In the editor, **⧗** beside a cell or a collection's item in view mode's **Flow state** (and in
 its full state) opens the same history, newest first; a run's row opens that run. The sample
