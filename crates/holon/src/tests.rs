@@ -156,9 +156,13 @@ fn body_json(response: Response) -> serde_json::Value {
 /// directory or file by itself — `FileStore::new` creates the directory it needs;
 /// `std::fs::write` creates the file it needs.
 fn unique_temp_path(label: &str) -> String {
+    // Two tests started in the same tick of a coarse clock (Windows') got the same path, and wrote
+    // and removed each other's files: a count tells them apart.
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = MADE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let mut path = std::env::temp_dir();
-    path.push(format!("holon-server-test-{label}-{}-{nanos}", std::process::id()));
+    path.push(format!("holon-server-test-{label}-{}-{nanos}-{n}", std::process::id()));
     path.to_string_lossy().to_string()
 }
 

@@ -56,18 +56,27 @@ export function approvalSaid(w: WaitingPoint): string {
   return `approval "${w.name}" (${w.said ?? w.steps}): ${slots.map((s) => `${stepName(s)} ${state(s)}`).join("; ")}`;
 }
 
-/** What an approval shows those who decide it, in words: what its flow named (`shows`), or else
- *  what its run was started with; a record of plain values as `amount 30 · payee acme`, anything
- *  else as JSON. Null when it shows nothing. */
-export function shownSaid(w: WaitingPoint): { label: string; text: string } | null {
+/** The most of a key or a value a row of what an approval shows says, in characters: past it,
+ *  how many more. */
+export const SHOWN_CHARS = 120;
+
+/** `s`, past `SHOWN_CHARS`, cut, saying how much more there is. */
+export const clipped = (s: string, most = SHOWN_CHARS) => (s.length > most ? `${s.slice(0, most)}… +${s.length - most} characters` : s);
+
+/** What an approval shows those who decide it, a row each: what its flow named (`shows`), or else
+ *  what its run was started with. A record of plain values is a field a row, `payee "acme"`, a key
+ *  as it is when it is a name and quoted when not; anything else, one row of JSON. Each text is
+ *  quoted and each row cut past `SHOWN_CHARS`, so a value can't pass for the fields beside it, nor
+ *  push them out of sight (R42). Null when it shows nothing. */
+export function shownSaid(w: WaitingPoint): { label: string; rows: string[] } | null {
   const named = w.shows !== undefined;
   const value = named ? w.shows : w.input;
   if (value === undefined) return null;
   const plain = (v: unknown) => v === null || ["string", "number", "boolean"].includes(typeof v);
-  const one = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
   const record = typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0 && Object.values(value).every(plain);
-  const text = record ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k} ${one(v)}`).join(" · ") : one(value);
-  return { label: named ? "shows" : "started with", text };
+  const key = (k: string) => clipped(/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : JSON.stringify(k));
+  const rows = record ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${key(k)} ${clipped(JSON.stringify(v))}`) : [clipped(JSON.stringify(value))];
+  return { label: named ? "shows" : "started with", rows };
 }
 
 /** One step of an approval in its chain, as it stands: taken (`done`), `open`, or not open yet

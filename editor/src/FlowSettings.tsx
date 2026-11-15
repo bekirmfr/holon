@@ -461,7 +461,12 @@ function Waiting({ slug, count }: { slug: string; count: number }) {
               return (
                 shown && (
                   <div key={w.name} className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
-                    "{w.name}" {shown.label}: {shown.text}
+                    &quot;{w.name}&quot; {shown.label}:{" "}
+                    {shown.rows.map((row, i) => (
+                      <span key={i} className="hl-flow__shown-row">
+                        {row}
+                      </span>
+                    ))}
                   </div>
                 )
               );

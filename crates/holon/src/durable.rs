@@ -272,8 +272,62 @@ pub(crate) enum Shown {
     Input(serde_json::Value),
 }
 
-/// The most an approval shows, as JSON text: past it, only how large it is.
+/// The most an approval shows, as JSON text: past it, each value is cut down (`cut_down`), and
+/// past it still, only how large it is.
 const SHOWN_MAX: usize = 16 * 1024;
+
+/// Cut down, a text past this many bytes shows its head and how many more; a list or a record past
+/// this many items, its first, and how many more.
+const SHOWN_TEXT: usize = 1024;
+const SHOWN_ITEMS: usize = 64;
+
+/// What an approval shows of `v`, already redacted (R42): itself within `SHOWN_MAX`; else cut
+/// down, so a field padded past the bound hides none beside it; else how large it was. Cut only
+/// once redacted: a secret a cut runs through would leave its head in clear.
+fn bounded(v: serde_json::Value) -> serde_json::Value {
+    let size = v.to_string().len();
+    if size <= SHOWN_MAX {
+        return v;
+    }
+    let cut = cut_down(v);
+    if cut.to_string().len() <= SHOWN_MAX {
+        return cut;
+    }
+    format!("‹{size} bytes, more than an approval shows ({} KiB)›", SHOWN_MAX / 1024).into()
+}
+
+/// `v` with each text past `SHOWN_TEXT` bytes cut to its head, and each list and record past
+/// `SHOWN_ITEMS` items to its first, each cut saying how much more there was.
+fn cut_down(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    let text = |s: String| {
+        if s.len() <= SHOWN_TEXT {
+            return s;
+        }
+        let at = (0..=SHOWN_TEXT).rev().find(|i| s.is_char_boundary(*i)).unwrap_or(0);
+        format!("{}‹… {} more bytes›", &s[..at], s.len() - at)
+    };
+    match v {
+        J::String(s) => J::String(text(s)),
+        J::Array(items) => {
+            let more = items.len().saturating_sub(SHOWN_ITEMS);
+            let mut kept: Vec<J> = items.into_iter().take(SHOWN_ITEMS).map(cut_down).collect();
+            if more > 0 {
+                kept.push(J::String(format!("‹{more} more items›")));
+            }
+            J::Array(kept)
+        }
+        J::Object(fields) => {
+            let more = fields.len().saturating_sub(SHOWN_ITEMS);
+            let mut kept: serde_json::Map<String, J> = fields.into_iter().take(SHOWN_ITEMS).map(|(k, v)| (text(k), cut_down(v))).collect();
+            if more > 0 {
+                kept.insert("‹more›".into(), J::String(format!("‹{more} more fields›")));
+            }
+            J::Object(kept)
+        }
+        other => other,
+    }
+}
 
 impl Shown {
     fn value(&self) -> &serde_json::Value {
@@ -294,8 +348,8 @@ impl Shown {
 /// `shows` put there, withheld whole when a secret may have made it, or else the run's input
 /// (`input_of`); each redacted as the run's log entry is (the run's `tokens`, the credentials its
 /// calls were handed, and `redaction`: the deployment's secrets and the keys its flow taints), and
-/// past `SHOWN_MAX`, how large it is. None for an event, and for a run with no input that names
-/// nothing to show.
+/// past `SHOWN_MAX`, cut down (`bounded`). None for an event, and for a run with no input that
+/// names nothing to show.
 pub(crate) fn shown_of(
     kind: &str,
     inputs: &[Option<Value>],
@@ -321,9 +375,6 @@ pub(crate) fn shown_of(
     };
     let json = |v: &Value| -> serde_json::Value {
         let Some(text) = holon_core::stringify_json(v) else { return "‹it has no JSON form›".into() };
-        if text.len() > SHOWN_MAX {
-            return format!("‹{} bytes, more than an approval shows ({} KiB)›", text.len(), SHOWN_MAX / 1024).into();
-        }
         serde_json::from_str(&text).unwrap_or_default()
     };
     run.waiting
@@ -335,9 +386,10 @@ pub(crate) fn shown_of(
                 Some(v) => Shown::Shows(json(v)),
                 None => Shown::Input(json(&input_of(kind, inputs, sourced)?)),
             };
+            // Redacted whole, then cut down: never the other way round.
             Some(shown.map(|mut v| {
                 redactor.json(&mut v);
-                v
+                bounded(v)
             }))
         })
         .collect()

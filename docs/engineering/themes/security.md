@@ -127,9 +127,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   its runs lists only the runs waiting at one they may decide, those points alone (the runs
   route's `Rule::Either`; `durable::waiting_runs`, which `GET /runs/waiting` lists across flows
   through as well, to anyone signed in), each with what it shows, kept at park as the log
-  keeps it: redacted by the log's redactor, withheld when a secret may have made it, sized past
-  16 KiB, sealed with the run (`durable::shown_of`, the launch review's H6); a person manages the
-  tokens of an agent or a service they own.
+  keeps it: redacted by the log's redactor, withheld when a secret may have made it, past 16 KiB
+  cut down once redacted (a text to its first KiB, a list or record to its first 64 items, each
+  saying how much more; past it still, its size: `durable::bounded`), sealed with the run
+  (`durable::shown_of`, the launch review's H6). The console shows it a field a row, each text
+  quoted and each row cut at 120 characters (`decisions.ts` `shownSaid`), and the question that
+  decides it names the run and repeats it: a value its starter sends can't pass for another field
+  or push one out of sight (R42). A person manages the tokens of an agent or a service they own.
 
 ### 2.2 The request gate (http.rs)
 
@@ -513,8 +517,10 @@ What is not defended, or only partly:
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
   `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails),
   `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
-  tainted field redacted, a value made from a secret withheld, past 16 KiB its size, sealed on
-  disk and listed again after a reload),
+  tainted field redacted, a value made from a secret withheld, past 16 KiB cut down, and past it
+  still its size, sealed on disk and listed again after a reload),
+  `padding_hides_nothing_beside_it_of_what_an_approval_shows` (a field padded past the bound shows
+  its head, the field beside it whole; a secret a cut would run through redacted first),
   `whoever_decides_an_approval_sees_what_it_shows_and_nothing_else_of_the_flows_runs`.
 - **Tainted values**: `a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`
   (a request's every part, a call's request and answer and the cookie it sets, a WebSocket's

@@ -542,7 +542,9 @@ before it waits: `shows: { account: account.id, amount: asked.amount }` is the l
 see what the run was started with: the action's argument, a request's record without its headers,
 or what a source delivered; a run a clock started shows nothing. Either is kept when the run parks,
 as its log keeps it: a field tainted by a secret's mark redacted as the log redacts it
-(`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB its size instead.
+(`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB cut down (a
+text to its first KiB, a list or record to its first 64 items, each saying how much more), and
+past that still, its size.
 Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
 decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
 `run.view` lists only the runs waiting at an approval they may decide, those points alone: the

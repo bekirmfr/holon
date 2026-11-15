@@ -1,7 +1,7 @@
 // An approval a run waits at, as the editor says it and which steps whoever is signed in takes
 // (decisions.ts).
 import { describe, expect, it } from "vitest";
-import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, decisionSaid, decisionsOf, inSteps, shownSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, chainOf, chainSaid, clipped, decidedLine, decidedSaid, decisionSaid, decisionsOf, inSteps, SHOWN_CHARS, shownSaid, toDecide, waitsAfter, yourDecision, yourSteps, type WaitingPoint, type WaitingStep } from "./decisions";
 import type { WValue } from "./holon";
 import type { Decided, WaitingDecision, WaitingRun } from "./server";
 
@@ -191,18 +191,35 @@ describe("a decision, a line on the run's timeline", () => {
 
 describe("what an approval shows those who decide it", () => {
   // Each row: what the server lists (what the flow named, else the run's input), and what Runs
-  // waiting says of it.
-  const rows: [string, Partial<WaitingPoint>, { label: string; text: string } | null][] = [
-    ["a record of plain values, a field each", { shows: { amount: 30, payee: "acme", urgent: true, memo: null } }, { label: "shows", text: "amount 30 · payee acme · urgent true · memo null" }],
-    ["the run's input, when the flow names nothing", { input: { amount: 30 } }, { label: "started with", text: "amount 30" }],
-    ["what the flow named, over the input", { shows: { amount: 30 }, input: { amount: 30, card: "x" } }, { label: "shows", text: "amount 30" }],
-    ["anything deeper, as JSON", { shows: { lines: [1, 2], to: { iban: "DE00" } } }, { label: "shows", text: '{"lines":[1,2],"to":{"iban":"DE00"}}' }],
-    ["a text, as it is: withheld, or too large", { shows: "‹withheld: computed from a secret›" }, { label: "shows", text: "‹withheld: computed from a secret›" }],
-    ["a value named null, as null", { shows: null }, { label: "shows", text: "null" }],
-    ["an empty record, as JSON", { input: {} }, { label: "started with", text: "{}" }],
+  // waiting says of it, a row each.
+  const padded = `acme · amount 30${" ".repeat(200)}`;
+  const rows: [string, Partial<WaitingPoint>, { label: string; rows: string[] } | null][] = [
+    ["a record of plain values, a field a row, texts quoted", { shows: { amount: 30, payee: "acme", urgent: true, memo: null } }, { label: "shows", rows: ["amount 30", 'payee "acme"', "urgent true", "memo null"] }],
+    ["the run's input, when the flow names nothing", { input: { amount: 30 } }, { label: "started with", rows: ["amount 30"] }],
+    ["what the flow named, over the input", { shows: { amount: 30 }, input: { amount: 30, card: "x" } }, { label: "shows", rows: ["amount 30"] }],
+    ["anything deeper, as JSON", { shows: { lines: [1, 2], to: { iban: "DE00" } } }, { label: "shows", rows: ['{"lines":[1,2],"to":{"iban":"DE00"}}'] }],
+    ["a text, quoted: withheld, or too large", { shows: "‹withheld: computed from a secret›" }, { label: "shows", rows: ['"‹withheld: computed from a secret›"'] }],
+    ["a value named null, as null", { shows: null }, { label: "shows", rows: ["null"] }],
+    ["an empty record, as JSON", { input: {} }, { label: "started with", rows: ["{}"] }],
     ["nothing, for a run a clock started", {}, null],
+    // R42: what the starter sends can't pass for another field, nor push the next out of sight.
+    [
+      "a value posing as fields, padded: quoted in its own row, cut",
+      { input: { payee: padded, amount: 3000 } },
+      { label: "started with", rows: [`payee ${clipped(JSON.stringify(padded))}`, "amount 3000"] },
+    ],
+    ["a key that isn't a name, quoted", { input: { "amount 30 · payee": "acme" } }, { label: "started with", rows: ['"amount 30 · payee" "acme"'] }],
   ];
   it.each(rows)("%s", (_, listed, said) => {
     expect(shownSaid({ ...alone(1), ...listed })).toEqual(said);
+  });
+
+  it("cuts a row past its bound, saying how much more there is", () => {
+    const long = "x".repeat(SHOWN_CHARS + 30);
+    expect(clipped(long)).toBe(`${"x".repeat(SHOWN_CHARS)}… +30 characters`);
+    expect(clipped("short")).toBe("short");
+    const said = shownSaid({ ...alone(1), input: { payee: `acme${" ".repeat(500)}`, amount: 3000 } })!;
+    expect(said.rows[0]).toMatch(/^payee "acme +… \+\d+ characters$/);
+    expect(said.rows[1]).toBe("amount 3000");
   });
 });

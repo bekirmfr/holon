@@ -419,7 +419,9 @@ what its flow named (`await approval("payout", { shows: { amount, payee } })`, t
 `shows` input), or else `input`, what the run was started with (an action's argument, a request
 without its headers, what a source delivered; nothing for a clock). Either is kept at park as the
 run's log keeps it: redacted by the log's redactor (a tainted field `‹taint:card›`), withheld whole
-when a secret may have made it, its size past 16 KiB, sealed on disk with the run. The route takes
+when a secret may have made it, past 16 KiB cut down (a text to its first KiB, a list or record
+to its first 64 items, each saying how much more; past it still, its size), sealed on disk with the
+run. The console shows it a field a row, texts quoted (R42). The route takes
 `run.view` on the flow or `run.decide` on its approvals: one who only decides sees the runs waiting
 at an approval they may decide, those points alone, nothing delivered, and no other run.
 
