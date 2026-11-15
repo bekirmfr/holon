@@ -425,6 +425,28 @@ native evaluator as above (`evalbench`, eval under `Budgeted`, before and after 
 work, each round's ratio ranging 0.81 to 1.78: not a measurement to a few percent. The editor's
 wasm wasn't timed.
 
+### The process's memory count (2026-11-15)
+
+The same allocator also counts every thread's bytes into one count for the process, which the
+server holds to `--max-memory` ([resilience](resilience.md), G2b; audit R16): at each allocation
+and free a thread adds to what it hasn't yet added, and once that passes 64 KiB either way it adds
+it to an atomic; a thread's first count arranges, once, for the rest to be added as it ends. A
+round reads the process's count where it reads the clock, and a parser every 4,096 values it
+makes. Callgrind in WSL as [above](#the-step-budget-2026-11-12), `23a4848` against the change;
+instructions a run:
+
+| Route | before | three thread-locals | one |
+|---|---:|---:|---:|
+| `crunch`, 1,000 items | 34.68 M | 35.34 M (×1.019) | 35.10 M (×1.012) |
+| `hello` | 100.9 K | 109.4 K (×1.084) | 105.9 K (×1.049) |
+
+The first version read three thread-locals at each allocation and free: the thread's count, what
+it hadn't added, and whether its ending was arranged. Now the two counts are one thread-local, and
+a thread's first count is found by where what it hasn't added begins (`BEGUN`, far past anything a
+thread moves, so the first count takes the way a count past 64 KiB does), with no flag to read at
+every other. What is left is an add, a compare and a store a count; `hello` allocates for its
+request and its answer and computes little, so it pays most.
+
 ### A step is a unit of work (2026-11-15)
 
 A step was a node or an application of a function, whatever its leaf did. A leaf that scans what it

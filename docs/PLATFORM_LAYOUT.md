@@ -879,6 +879,9 @@ strings and bytes), so `axum` would add nothing. Every connection and request is
 | Body read timeout | 30 s | Matches the outbound request timeout; a slow body gets `408`. |
 | Request body | 10 MiB | As §4.2.1 sets for inbound (matching the outbound limit); over it is `413`, before reading when `Content-Length` says so. |
 | Connections per listener | 1,024 | Past it, connections wait in the OS accept queue instead of each taking a thread. |
+| Connections in all | 4,096, or what the open-file limit leaves past 256 (raised to the hard limit on unix) | Every listener's together, a WebSocket's while it is open (audit R16): past it, connections wait in the accept queue, and the server never runs out of files. |
+| A failed accept | tried again after 5 ms, doubling to 1 s | A loop that tried again at once spun on a core, printing each failure. |
+| Memory in all | `--max-memory`: half the machine's, or 3/4 of its container's | Every run's together (the allocator's process count): past it a run fails and a request is answered 503 before its body is read (audit R16). |
 
 A run is synchronous, so the handler runs on the runtime's blocking pool, bounded by its run
 budget. Listeners bind `127.0.0.1` unless the operator opens another address (`--data-host 0.0.0.0`).

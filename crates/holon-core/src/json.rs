@@ -55,6 +55,11 @@ impl Parser<'_> {
         if self.made > crate::MAX_ITEMS {
             return None;
         }
+        // A parse makes about 80 times its text in values, all in one step: it asks whether the
+        // round may make more as it goes, not only once it is done (audit R16).
+        if self.made.is_multiple_of(crate::memory::ASK_EVERY) && !crate::memory::room() {
+            return None;
+        }
         self.ws();
         match *self.s.get(self.i)? {
             b'{' => self.object(depth + 1),

@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use holon_core::{
-    eval_observed, hash_value, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS,
+    eval_observed, hash_value, memory, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS,
     MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING,
 };
 
@@ -173,6 +173,10 @@ pub enum RunError {
     FuelBudget { max: u64 },
     /// A round came to hold more memory than its limit (`max_memory`).
     MemoryBudget { max: u64 },
+    /// The server came to hold more than it may in all (`--max-memory`,
+    /// [`memory::set_process_cap`](holon_core::memory::set_process_cap)) as a round ran: every
+    /// run's together, so the run fails, as for its own budget, and the server goes on.
+    ServerMemory { cap: u64 },
 }
 
 impl RunError {
@@ -185,12 +189,15 @@ impl RunError {
             RunError::StepBudget { max } => format!("{STEP_BUDGET}{max} steps in one round (max_steps)"),
             RunError::FuelBudget { max } => format!("{STEP_BUDGET}{max} instructions of js and module code in one round (max_fuel)"),
             RunError::MemoryBudget { max } => format!("{STEP_BUDGET}{max} bytes of memory in one round (max_memory)"),
+            RunError::ServerMemory { cap } => {
+                format!("{STEP_BUDGET}its share of the server's memory: the server held more than the {cap} bytes it may (--max-memory)")
+            }
         }
     }
 }
 
 /// What the error of a run whose round took more steps, more of its modules' fuel or more memory
-/// than its limit starts with.
+/// than its limit starts with, or that ran as the server held more memory than it may.
 pub const STEP_BUDGET: &str = "the run took more than ";
 
 /// What a run produced: its outputs (all absent if it failed), the requests each round made,
@@ -317,7 +324,12 @@ pub fn run_rounds(
             late: false,
             clock_in: CLOCK_EVERY,
         };
+        // The round's thread is held to its budget, and the process to its cap, by a leaf that
+        // makes many values in a step as by the steps ([`memory::room`]).
+        let hold = memory::Hold::new(asking.budget.at_most);
         let outputs = eval_observed(root, inputs, &resolver, &mut asking).into_vec();
+        let stopped = memory::stopped();
+        drop(hold);
         if asking.late {
             return fail(rounds, RunError::TimeBudget { budget: limits.run_budget });
         }
@@ -327,7 +339,12 @@ pub fn run_rounds(
         if asking.budget.out_of_fuel {
             return fail(rounds, RunError::FuelBudget { max: limits.max_fuel });
         }
-        if asking.budget.out_of_memory {
+        if stopped == Some(memory::Over::Process) {
+            return fail(rounds, RunError::ServerMemory { cap: memory::process_cap() });
+        }
+        // A leaf stopped for the round's own memory as the round's last node: no step came after
+        // it to say so.
+        if asking.budget.out_of_memory || stopped == Some(memory::Over::Round) {
             return fail(rounds, RunError::MemoryBudget { max: limits.max_memory });
         }
         let (pending, waiting) = (asking.pending, asking.waiting);
@@ -452,7 +469,12 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         self.clock_in = match self.clock_in.checked_sub(1) {
             Some(left) if !self.late => left,
             _ if self.late() => return false,
-            _ => CLOCK_EVERY,
+            _ => {
+                // With the clock, the process's memory: past its cap, the budget refuses this
+                // step and every one after it (`Budgeted` reads `memory::stopped`).
+                memory::room();
+                CLOCK_EVERY
+            }
         };
         self.budget.step()
     }
@@ -460,6 +482,7 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         if want > 0 && self.late() {
             return 0;
         }
+        memory::room();
         self.budget.take_steps(want)
     }
     fn give_back(&mut self, steps: u32) {

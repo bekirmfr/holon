@@ -521,6 +521,7 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 | the server stopping | 503 |
 | more runs waiting at `await` than allowed | 503 |
 | the flow already answering `max_concurrent_runs` runs (64), or the server 448 | 503, with `Retry-After: 1` |
+| the server holding all the memory it may (`--max-memory`) | 503, with `Retry-After: 1` |
 | a resume token that isn't valid | 404 |
 | the route's answer has no value | 404, or the status its `?? status(…)` says |
 
@@ -528,6 +529,12 @@ A browser page from another site may call the routes only if the flow lists its 
 `browsers` (or the deploy settings' **web pages from**).
 
 Every request is a run in the log, even one no route took.
+
+The server holds every flow's connections together to 4,096 at once (1,024 a port), fewer where
+the open-file limit leaves less room: on Linux and macOS it raises its own limit to the most the
+system allows as it starts, and keeps 256 files for its own. An open WebSocket holds its
+connection's place until it closes. Past these, a caller waits in the system's queue until a
+connection closes, and isn't refused.
 
 ## The run log
 
@@ -580,3 +587,11 @@ Every run has a time budget (25 seconds for a request, 60 for a clock run or a n
 default), a number
 of outbound requests, and size limits on what it sends and receives. A run past its budget fails,
 and performs nothing. The defaults and ceilings are in [Permissions](permissions.md#limits).
+
+Every run's memory together, with the server's caches, is held to `--max-memory` (half the
+machine's memory by default, or three quarters of what its container may hold, whichever is
+less; `holon serve` says what it holds itself to as it starts). A run that is going on as the
+server passes it fails, its error ending `(--max-memory)`, and performs nothing; a request that
+comes meanwhile is answered 503 with `Retry-After: 1`. A parse of a big body (`JSON.parse`,
+`csv_parse`, `xml_parse`) stops as it passes either the run's `max_memory` or the server's, not
+once it is done.

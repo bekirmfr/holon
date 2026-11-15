@@ -74,6 +74,40 @@ deployment's log has its own lock, and the line is made before taking it.
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
   `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`.
 
+### G2b. The server keeps to its memory and its open files
+
+A round is held to its own `max_memory`; the server holds every round together, and all else it
+holds, to `--max-memory` (half the machine's memory by default, or three quarters of its
+container's limit, `bounds.rs`). The allocator counts each thread's bytes into one process count
+too (`holon_core::memory`: an atomic add per 64 KiB a thread moves, and its last moves added as
+the round ends and as the thread does). A round that finds the process past its cap fails
+(`RunError::ServerMemory`, its error naming `--max-memory`, which `holon verify` reads as not run
+to its end, as one stopped for time); a request arriving meanwhile is answered 503 with
+`Retry-After: 1` before its body is read. A round reads the count where it reads the clock, and a
+leaf that makes many values in one step (`json_parse`, `csv_parse`, `xml_parse`) asks every 4,096
+values whether the round may make more (`memory::room`), so a parse stops inside its step, past
+the round's budget or the server's, not once it has made 80 times its text. Connections are held
+to `max_connections_total`, every listener's together, a WebSocket's while it is open (`Places`):
+4,096, or what the open-file limit leaves past 256 for the server's own files (on unix the soft
+limit is raised to the hard one first, as Go's runtime does). An accept that fails is tried again
+after 5 ms, doubling to 1 s, and said once a run of failures (audit R16).
+
+- **Why.** 448 runs at once might each hold 256 MiB, and a parse made 80 times its text in one
+  step before a check; a WebSocket held no connection place, so a server's open sockets ran past
+  its open-file limit, where every accept failed and its loop spun on a core printing each time.
+- **Cost.** One more thread-local read an allocation (the thread's ending arranged), one atomic
+  add a 64 KiB moved; a round's clock reading also reads the count.
+- **Limits.** The count is the allocator's: what a module's engine maps for itself, the threads'
+  stacks and the allocator's own overhead are outside it, which is why the default leaves half the
+  machine. A run going on as the server passes its cap fails, whether or not it grew most. A
+  request's body is still copied into its record (`data::request_record`): counted now, not
+  avoided. Each listener takes its places before it accepts, so each holds one as it waits.
+- **Tests.** `the_runs_together_are_held_to_the_memory_the_server_may_hold`
+  (`crates/holon/tests/data_plane.rs`), `no_server_holds_more_connections_open_than_its_total`,
+  `each_parser_stops_inside_the_leaf_past_the_round_or_the_process`,
+  `a_thread_that_ends_leaves_the_process_count_as_its_moves_do`
+  (`crates/holon-core/tests/process_memory.rs`), `the_default_bounds_are_ones_a_server_runs_within`.
+
 ### G3. A panic ends its run and nothing else
 
 A panic is caught where every run passes, `fire_with_state` (firing.rs), whatever started the run:

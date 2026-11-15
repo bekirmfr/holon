@@ -269,11 +269,12 @@ impl Budgeted {
         Budgeted { at_most: crate::memory::held().saturating_add(bytes), ..self }
     }
 
-    /// Whether the thread holds more than it may: once it has, for good, so a round stopped for
-    /// its memory doesn't go on as what it drops frees some.
+    /// Whether the thread holds more than it may, or a leaf of the round stopped for memory
+    /// ([`memory::room`](crate::memory::room)): once it has, for good, so a round stopped for its
+    /// memory doesn't go on as what it drops frees some.
     #[inline]
     fn over_memory(&mut self) -> bool {
-        if !self.out_of_memory && crate::memory::held() > self.at_most {
+        if !self.out_of_memory && (crate::memory::held() > self.at_most || crate::memory::stopped().is_some()) {
             self.out_of_memory = true;
         }
         self.out_of_memory

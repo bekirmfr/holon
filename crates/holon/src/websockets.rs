@@ -457,7 +457,9 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
     let Some(upgrade) = parts.extensions.remove::<hyper::upgrade::OnUpgrade>() else {
         return dropped(500, "this connection can't be switched to a WebSocket".into()).await;
     };
-    tokio::spawn(serve(conn, upgrade, closing, first, subscription, limits));
+    // Its places in the listener's connections and the server's, held while it is open.
+    let places = parts.extensions.get::<dataplane::Places>().and_then(dataplane::Places::keep);
+    tokio::spawn(serve(conn, upgrade, closing, first, subscription, limits, places));
     Some(DataResponse {
         status: 101,
         headers: vec![
@@ -473,7 +475,16 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
 
 /// Serve one accepted connection once it is switched: its messages run by `message` in order, as
 /// [`work`] runs them, then `close` with how it ended.
-async fn serve(conn: Arc<Conn>, upgrade: hyper::upgrade::OnUpgrade, closing: mpsc::UnboundedReceiver<Closing>, first: Option<String>, subscription: Option<channels::Subscription>, limits: SocketLimits) {
+#[allow(clippy::too_many_arguments)]
+async fn serve(
+    conn: Arc<Conn>,
+    upgrade: hyper::upgrade::OnUpgrade,
+    closing: mpsc::UnboundedReceiver<Closing>,
+    first: Option<String>,
+    subscription: Option<channels::Subscription>,
+    limits: SocketLimits,
+    places: Option<[tokio::sync::OwnedSemaphorePermit; 2]>,
+) {
     let (queue, queued) = mpsc::channel(QUEUE);
     let (outbox, replies) = mpsc::channel(QUEUE);
     let worker = tokio::spawn(work(Arc::clone(&conn), queued, outbox));
@@ -481,6 +492,8 @@ async fn serve(conn: Arc<Conn>, upgrade: hyper::upgrade::OnUpgrade, closing: mps
         Ok(upgraded) => talk(TokioIo::new(upgraded), closing, first, subscription, &limits, queue, replies).await,
         Err(_) => (1006, String::new()),
     };
+    // The connection is closed: its places go back.
+    drop(places);
     // The messages that came before its end have run.
     let _ = worker.await;
     let admitted = conn.share.admit().await;

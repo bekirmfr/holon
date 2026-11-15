@@ -7,8 +7,12 @@
 //!   `body_timeout` (408), or the connection is closed.
 //! - **Large bodies:** a body over `max_body_bytes` is refused (413), before it is read when its
 //!   `Content-Length` says so.
-//! - **Many connections:** at most `max_connections` per listener; more wait in the OS's accept
-//!   queue rather than each taking a thread.
+//! - **Many connections:** at most `max_connections` per listener and `max_connections_total` in
+//!   all (a WebSocket's for as long as it is open, [`Places`]); more wait in the OS's accept queue
+//!   rather than each taking a thread. An accept that fails (no file handle left) is tried again
+//!   after a wait, doubled at each failure to a second, never at once.
+//! - **Memory:** while the server holds more than it may in all (`--max-memory`), a request is
+//!   answered 503 before its body is read, and a run running fails (holon_core::memory).
 //! - **Slow readers:** a write that makes no progress within `write_timeout` (a caller that stopped
 //!   reading a file, a stream or any answer) closes the connection, and nothing waits on a caller
 //!   on a thread: a file is read a piece at a time on the pool and sent from a task.
@@ -67,6 +71,25 @@ pub(crate) struct DataLimits {
     pub(crate) max_runs: usize,
     /// Those runs, counted: one count for every listener of the server ([`Share`]).
     pub(crate) runs: Arc<Running>,
+    /// Open connections, every listener's together, a WebSocket's for as long as it is open
+    /// (`bounds::max_connections_total`): more wait in the OS's accept queue.
+    pub(crate) max_connections_total: usize,
+    /// Those connections' places: one for every listener of the server ([`Places`]).
+    pub(crate) connections: Arc<Semaphore>,
+}
+
+/// A connection's places: its listener's and the server's ([`DataLimits::connections`]), given
+/// back as it closes. hyper is done with a connection switched to a WebSocket as it switches, so
+/// the WebSocket takes them ([`Places::keep`]) and holds them while it is open: without them a
+/// server held any number of open sockets past its counts, each a file (audit R16).
+#[derive(Clone)]
+pub(crate) struct Places(Arc<Mutex<Option<[tokio::sync::OwnedSemaphorePermit; 2]>>>);
+
+impl Places {
+    /// The places, for whoever holds the connection from now on; none once taken.
+    pub(crate) fn keep(&self) -> Option<[tokio::sync::OwnedSemaphorePermit; 2]> {
+        self.0.lock().unwrap().take()
+    }
 }
 
 /// The threads the data plane's runs, file reads and WebSocket blocks share: tokio's default,
@@ -266,9 +289,16 @@ impl Default for DataLimits {
             write_timeout: Duration::from_secs(30),
             max_runs: MAX_RUNS as usize,
             runs: Arc::new(Running::default()),
+            max_connections_total: crate::bounds::CONNECTIONS,
+            connections: Arc::new(Semaphore::new(crate::bounds::CONNECTIONS)),
         }
     }
 }
+
+/// How long a listener waits after an accept fails before it tries again, doubled at each failure
+/// in a row to [`ACCEPT_WAIT_MOST`] (as Go's `net/http` does).
+const ACCEPT_WAIT_FIRST: Duration = Duration::from_millis(5);
+const ACCEPT_WAIT_MOST: Duration = Duration::from_secs(1);
 
 /// A listener's stop signal: sending (or dropping it) stops accepting and frees the port.
 /// Requests already being answered finish.
@@ -326,27 +356,60 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
     });
     runtime.spawn(async move {
         let permits = Arc::new(Semaphore::new(listener.limits.max_connections));
+        let connections = Arc::clone(&listener.limits.connections);
+        // Accepts failed in a row (out of file handles, say), and how long to wait before the next.
+        let mut failing: Option<(u64, Duration)> = None;
         loop {
-            let permit = tokio::select! {
-                p = Arc::clone(&permits).acquire_owned() => p.expect("the semaphore is never closed"),
+            // A place in the listener's connections, then in the server's: past either, a caller
+            // waits in the OS's accept queue.
+            let places = tokio::select! {
+                places = async {
+                    let mine = Arc::clone(&permits).acquire_owned().await;
+                    let all = Arc::clone(&connections).acquire_owned().await;
+                    [mine.expect("the semaphore is never closed"), all.expect("the semaphore is never closed")]
+                } => places,
                 _ = stopped.changed() => break,
             };
             let stream = tokio::select! {
                 accepted = socket.accept() => match accepted {
-                    Ok((stream, _)) => stream,
+                    Ok((stream, _)) => {
+                        if let Some((failed, _)) = failing.take() {
+                            eprintln!("holon: {:?} accepts connections again, after {failed} that failed", listener.slug);
+                        }
+                        stream
+                    }
                     Err(e) => {
-                        eprintln!("holon: {:?} could not accept a connection: {e}", listener.slug);
+                        // Waited on, not tried again at once: an accept that fails (no file
+                        // handle left) fails again at once, and a loop trying spun on a core and
+                        // printed a line each time (audit R16). Said once a run of failures.
+                        let (failed, wait) = match failing {
+                            None => {
+                                eprintln!("holon: {:?} could not accept a connection: {e}; trying again, less often while it fails", listener.slug);
+                                (1, ACCEPT_WAIT_FIRST)
+                            }
+                            Some((failed, wait)) => (failed + 1, (wait * 2).min(ACCEPT_WAIT_MOST)),
+                        };
+                        failing = Some((failed, wait));
+                        drop(places);
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = stopped.changed() => break,
+                        }
                         continue;
                     }
                 },
                 _ = stopped.changed() => break,
             };
             let listener = Arc::clone(&listener);
+            let places = Places(Arc::new(Mutex::new(Some(places))));
             tokio::spawn(async move {
                 let header_timeout = listener.limits.header_timeout;
                 let write_timeout = listener.limits.write_timeout;
-                let service = service_fn(move |request| {
+                let held = places.clone();
+                let service = service_fn(move |mut request: hyper::Request<Incoming>| {
                     let listener = Arc::clone(&listener);
+                    // For a WebSocket to keep, should the connection switch to one.
+                    request.extensions_mut().insert(held.clone());
                     async move { Ok::<_, Infallible>(answer(listener, request).await) }
                 });
                 let _ = http1::Builder::new()
@@ -355,7 +418,8 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
                     .serve_connection(TokioIo::new(Deadlined::new(stream, write_timeout)), service)
                     .with_upgrades()
                     .await;
-                drop(permit);
+                // Given back, unless a WebSocket kept them.
+                drop(places);
             });
         }
     });
@@ -581,6 +645,9 @@ impl Body for Answer {
     }
 }
 
+/// What a request is answered (503) while the server holds more memory than it may in all.
+pub(crate) const SHORT_OF_MEMORY: &str = "the server holds as much memory as it may (--max-memory): try again";
+
 /// Read one request within the limits, answer it with `serve_data` on the blocking pool, and turn
 /// the answer into an HTTP response.
 async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> hyper::Response<Answer> {
@@ -592,6 +659,13 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             421,
             &format!("Host {host:?} isn't a name this server answers to (a page loaded from a name pointed at this machine can't read a flow's answers): reach it by its address or localhost, or start the server with --allow-host {}", host.rsplit_once(':').map_or(host, |(n, _)| n)),
         ));
+    }
+    // A server holding more memory than it may in all takes on no more: no body read, no run, no
+    // WebSocket opened, until its runs have let some go (audit R16).
+    if holon_core::memory::process_over() {
+        let mut busy = DataResponse::json_error(503, SHORT_OF_MEMORY);
+        busy.headers.push(("retry-after".into(), "1".into()));
+        return to_hyper(busy);
     }
     // A connection a page opens on one of its websockets' paths is the flow's from here on.
     if let Some(answered) = websockets::open(&listener.store, &listener.deployments, &listener.slug, &listener.share, &mut parts).await {
@@ -618,7 +692,8 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
             .collect(),
-        body: body.to_vec(),
+        // Without a copy where the body came in one piece.
+        body: Vec::from(body),
         by: None,
     };
     let deployments = Arc::clone(&listener.deployments);

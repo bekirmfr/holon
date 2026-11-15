@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The server keeps to its memory and its open files.** A run was held to its own `max_memory`,
+  and nothing held the runs together: many at once, or a few parsing a megabyte or two of JSON
+  each (a parse makes about 80 times its text, all in one step), took the server's memory until
+  the system ended it. Now the server holds every run's memory together, with its caches, to
+  `--max-memory` (`HOLON_MAX_MEMORY`; by default half the machine's memory, or three quarters of
+  its container's): past it a run fails, saying so, and a request is answered `503` with
+  `Retry-After: 1` until the runs let some go. `JSON.parse`, `csv_parse` and `xml_parse` stop as
+  they pass the run's memory or the server's, not once they are done. Connections are held to
+  4,096 in all (fewer where the open-file limit leaves less room; on Linux and macOS the server
+  raises its own limit as it starts), an open WebSocket's among them, and a connection the server
+  can't take is tried again a little later rather than at once, over and over.
 - **A deployment answers at most its share of runs at once, and a caller that stops reading is
   let go.** Every deployment's runs share the data plane's 512 threads, so one flooded with
   requests, or whose runs wait on a slow upstream, held the others' requests queued with no

@@ -4227,6 +4227,78 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// No server holds more connections open than its total, every listener's together, a WebSocket's
+/// for as long as it is open (audit R16): with a total of two, a kept-alive connection to one
+/// deployment and a WebSocket open on another, a third caller is not answered (it waits in the
+/// accept queue) until the WebSocket closes, and then is.
+/// Why: each listener held 1,024 connections and nothing held them together, and hyper is done
+/// with a connection switched to a WebSocket as it switches, so a WebSocket held no place at all:
+/// a server's open sockets, each a file, ran past its open-file limit, where every accept failed
+/// and its loop spun printing.
+/// If it fails: on the third answered at once, the accept loop doesn't take a place in
+/// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
+/// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
+/// the connection ends.
+#[test]
+fn no_server_holds_more_connections_open_than_its_total() {
+    use std::io::{Read, Write};
+    use tungstenite::client::IntoClientRequest;
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_connections_total = 2;
+    state.data_limits.connections = Arc::new(tokio::sync::Semaphore::new(2));
+    let (one, other) = (free_port(), free_port());
+    for (name, port) in [("one", one), ("other", other)] {
+        let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{name}\", {{ port: {port} }})\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n");
+        let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": name, "unit": plan.unit })).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(&state, name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked }));
+        assert_eq!(r.status_code, 200);
+    }
+    sync_listeners(&state);
+    let answered = |stream: &mut std::net::TcpStream| {
+        let mut got = Vec::new();
+        let mut piece = [0u8; 1024];
+        while !got.ends_with(b"hi") {
+            match stream.read(&mut piece) {
+                Ok(n) if n > 0 => got.extend_from_slice(&piece[..n]),
+                _ => break,
+            }
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    };
+    // One place: a connection to "one", answered and kept alive.
+    let mut kept = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    kept.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+    let first = answered(&mut kept);
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    // The other: a WebSocket open on "other", switched, and talking.
+    let stream = std::net::TcpStream::connect(("127.0.0.1", other)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{other}/ws").into_client_request().unwrap(), stream).unwrap();
+    ws.send(tungstenite::Message::text("m1")).unwrap();
+    assert!(matches!(ws.read(), Ok(tungstenite::Message::Text(t)) if t.contains("echo m1")));
+    // A third caller waits: nothing answers it while both are open.
+    let mut third = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
+    third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+    let early = answered(&mut third);
+    assert_eq!(early, "", "answered past the server's two connections, a WebSocket's among them");
+    // The WebSocket closed: its places go back, and the third is answered.
+    ws.close(None).unwrap();
+    while ws.read().is_ok() {}
+    drop(ws);
+    third.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let late = answered(&mut third);
+    assert!(late.starts_with("HTTP/1.1 200") && late.ends_with("hi"), "the third, once the WebSocket closed: {late:?}");
+    drop(kept);
+}
+
 /// A flow's WebSockets through a real socket (host-capabilities L4 §5.12.14): a GET there without
 /// the upgrade is a 426, a page from another site a 403, an open block's refusal its own status;
 /// one accepted runs `open` (the first message its answer, or a subscription), each message

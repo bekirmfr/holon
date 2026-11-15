@@ -173,6 +173,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--log-size SIZE`, `--log-files N`, `--log-rate N` | how each deployment's log lines are kept: the size of each file (`64K` at least; default `2M`), how many files (1 to 10; default 3), and the most lines a second it writes (default 1000), the rest dropped and counted; or `HOLON_LOG_SIZE`, `HOLON_LOG_FILES`, `HOLON_LOG_RATE` ([`holon logs`](#holon-logs)) |
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
+| `--max-memory SIZE` | the memory the server holds in all, every run's together with its caches: `512M`, `4G` (at least `64M`; or `HOLON_MAX_MEMORY`). Past it a run fails, its error saying so (`holon verify` reads it as one not run to its end, as one stopped for time), and a request is answered `503` with `Retry-After: 1` until the runs let some go. Default: half the machine's memory, or three quarters of what its container may hold, whichever is less ([Limits a run has](server.md#limits-a-run-has)) |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
@@ -1179,6 +1180,7 @@ Code extension starts it.
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
 | `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
+| `HOLON_MAX_MEMORY` | `holon serve --max-memory` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |
