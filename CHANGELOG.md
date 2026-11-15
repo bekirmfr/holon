@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A run's record says nothing of what a secret chose.** A run whose log can't mark what it
+  computed from a secret no longer lists the steps only one way of a choice the secret decides
+  takes (`key.startsWith("live_") ? a : b`); a read by one (a collection's key, a file's name
+  computed from it) keeps which collection, folder or database it read and withholds the rest of
+  what it asked and found, but a database's rows; a header named by one withholds the request's
+  headers whole; and `sort` and `unique` of a list holding a secret give something computed from
+  it. In any run, a key a secret chose is withheld where the log lists what the run claimed and
+  in the 503 a run kept waiting on it answers, and a read that failed by one says only that it
+  failed. A route that reads
+  its flow's own data by a secret asks `SecretAnswer`, as whether it found, waited or failed tells
+  its caller something of it; a deployed flow that does waits for it to be granted. A database's
+  answer to a secret stays the database's, its failing included, as its approval says.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

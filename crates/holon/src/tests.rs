@@ -7628,25 +7628,35 @@ route.post("/go", (req) => {
 /// computes from its secret in each way a flow does (encoded into a header, beside headers that
 /// are nobody's secret, into a JSON body, answered to the caller, encoded twice and joined,
 /// compared with what the caller sent; and a number, a true or false, a short text, and inside
-/// a function applied to each item) is run with one secret, then with another. (Each row
-/// computes a value; none chooses its steps by one: which steps a run took isn't held here.) Its two records
-/// read the same, but for the marks' prints and the hashes and commitments its entry lists:
-/// which of two secrets a run had can't be told from anything else in it. Where every computed
-/// value is a text of six characters or more, the record shows a mark for each and `holon
-/// verify` runs the run again; where one isn't, it withholds what follows and says why.
+/// a function applied to each item), or chooses by it (a branch, a header's name, the order of a
+/// sort, a collection's key read, and claimed before a call, a file's name whose read fails), is
+/// run with one secret, then with another. Its two records read the same, but for the marks'
+/// prints and the hashes and commitments its entry lists: which of two secrets a run had can't
+/// be told from anything else in it, the steps it took included. Where every computed value is a
+/// text of six characters or more, the record shows a mark for each and `holon verify` runs the
+/// run again; where one isn't, it withholds what follows and says why.
 ///
 /// **Why:** before a computed value had a mark, everything computed from a secret was left out
 /// whole, by the graph alone. Marking is by value: a value the record didn't know was computed
 /// (one a step gave that wasn't kept, one no mark stands for) would be written as it is. This
 /// holds the two together: any difference between the two records is a leak, whatever made it.
 ///
-/// **If it fails:** the row and the place named differ between two runs that differ only in
-/// their secret: that place holds something computed from it, in the clear. Or a run that could
-/// be run again no longer is, or one that can't be is said to differ.
+/// **If it fails:** the row and the places named differ between two runs that differ only in
+/// their secret: each holds something computed from it, or chosen by it, in the clear. Or a run
+/// that could be run again no longer is, or one that can't be is said to differ.
 #[test]
 fn a_runs_record_reads_the_same_whatever_its_secret() {
     let (host, _) = counting_server();
     let state = claims_state("");
+    // A folder whose files a row reads by a name the secret chooses: neither is text, so the
+    // read fails the run, whichever it reads.
+    let dir = std::env::temp_dir().join(format!("holon-whatever-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["liv", "tes"] {
+        std::fs::write(dir.join(name), [0xff, 0xfe, 0x00]).unwrap();
+    }
+    let folder = serde_json::json!({ "name": "notes", "path": dir.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
     // (the route, what it does with the secret `k`, what a caller sends given the secret,
     // whether its record marks every value it computed)
     type Sent = fn(&str) -> String;
@@ -7667,10 +7677,19 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("bool", "const got = await host.get(\"/a\", { headers: { \"x-live\": String(k.startsWith(\"live_\")) } })\n  return { status: got.status }", nothing, false),
         ("short", "const got = await host.get(\"/a\", { headers: { \"x-start\": k.slice(0, 3) } })\n  return { status: got.status }", nothing, false),
         ("each", "const got = await host.post(\"/a\", { body: [\"a\", \"b\"].map((p) => btoa(p + k)).join(\",\") })\n  return { status: got.status }", nothing, false),
+        ("ternary", "const got = await host.get(\"/a\", { headers: { \"x-mode\": k.startsWith(\"live_\") ? \"live mode\" : \"test mode\" } })\n  return { status: got.status }", nothing, false),
+        ("name", "const got = await host.get(\"/a\", { headers: { [`x-${k.slice(0, 3)}`]: \"1\" } })\n  return { status: got.status }", nothing, false),
+        ("order", "const got = await host.post(\"/a\", { body: [k, \"m\"].toSorted()[0] })\n  return { status: got.status }", nothing, false),
+        ("read", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  return { prior }", nothing, false),
+        ("claim", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  const got = await host.get(\"/a\")\n  return { status: got.status, prior }", nothing, false),
+        ("failure", "const text = notes[k.slice(0, 3)]\n  return { text }", nothing, false),
     ];
-    let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect();
+    // And a route that writes the collection the rows read, never called: the deployment may write
+    // it, so a run that reads it claims what it read before it calls out.
+    let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect::<String>()
+        + "route.put(\"/keep\", (req) => {\n  seen[\"last\"] = { n: 1 }\n  return { kept: true }\n})\n";
     let text = format!(
-        "import {{ flow, route, secure_equals, status }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
+        "import {{ flow, route, secure_equals, status }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
     );
     let slug = deploy_text(&state, &text, &host);
     // Two secrets that differ in every way a row looks at: how long, how they begin.
@@ -7680,14 +7699,17 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         assert_eq!(route(&state, &set).status_code, 200);
         for (path, _, sent, _) in &rows {
             let (status, body, _) = data_call(&state, &slug, "POST", &format!("/{path}"), &sent(secret));
-            assert_eq!(status, 200, "{path}: {body}");
+            // The failure row's read fails, whichever file the secret names.
+            assert_eq!(status, if *path == "failure" { 500 } else { 200 }, "{path}: {body}");
         }
     }
 
     // A record as it reads but for what is the secret's own by design: a mark's version and
     // print, the hashes and commitments its entry lists; and what any two runs differ in (when,
-    // how long, which run, the bytes each drew).
-    const OWN: [&str; 13] = ["seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived"];
+    // how long, which run, the bytes each drew, which commit, how long a claim waited and held).
+    const OWN: [&str; 16] = [
+        "seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived", "commit", "waited_ms", "held_ms",
+    ];
     fn but_marks(v: &serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::String(s) => secrets::read_marked(s, true)
@@ -7704,15 +7726,22 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             other => other.clone(),
         }
     }
-    // Where two records differ, by path: the first place.
-    fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String) -> Option<String> {
+    // Where two records differ, by path: every place.
+    fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String, out: &mut Vec<String>) {
         match (a, b) {
             (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
                 let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
-                keys.into_iter().find_map(|k| differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}")))
+                for k in keys {
+                    differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}"), out);
+                }
             }
-            (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => x.iter().zip(y).enumerate().find_map(|(i, (x, y))| differs(x, y, format!("{at}[{i}]"))),
-            _ => (a != b).then_some(at),
+            (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => {
+                for (i, (x, y)) in x.iter().zip(y).enumerate() {
+                    differs(x, y, format!("{at}[{i}]"), out);
+                }
+            }
+            _ if a != b => out.push(format!("{at}: {a} | {b}")),
+            _ => {}
         }
     }
     let entries = log_entries(&state, &slug);
@@ -7721,20 +7750,29 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     let export: verify::Export = serde_json::from_str(&export_text).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     let said = verify::describe(&report, None);
+    let mut wrong: Vec<String> = Vec::new();
     for (i, (path, _, _, marked)) in rows.iter().enumerate() {
         let (one, other) = (&entries[i], &entries[rows.len() + i]);
         assert_eq!(one["url"], format!("/{path}"), "{one}");
-        assert_eq!(differs(&but_marks(one), &but_marks(other), String::new()), None, "{path}: two secrets, two records\n{one}\n{other}");
+        let mut at = Vec::new();
+        differs(&but_marks(one), &but_marks(other), String::new(), &mut at);
+        if !at.is_empty() {
+            wrong.push(format!("{path}: two secrets, two records:\n  {}", at.join("\n  ")));
+        }
         for (entry, rerun) in [(one, &report.reruns[i].1), (other, &report.reruns[rows.len() + i].1)] {
             let line = entry.to_string();
-            assert_eq!(line.contains(secrets::DERIVED_MARK) && !line.contains("‹withheld"), *marked, "{path}: {line}");
+            if (line.contains(secrets::DERIVED_MARK) && !line.contains("‹withheld")) != *marked {
+                wrong.push(format!("{path}: marked isn't {marked}: {line}"));
+            }
             match (marked, rerun) {
                 (true, verify::Rerun::Matched) => {}
-                (false, verify::Rerun::Skipped(why)) => assert!(why.ends_with(verify::MARK_STANDS_FOR) || why.contains("inside a function applied to each item"), "{path}: {why}"),
-                other => panic!("{path}: {other:?}\n{said}"),
+                (false, verify::Rerun::Skipped(why)) if why.ends_with(verify::MARK_STANDS_FOR) || why.contains("inside a function applied to each item") => {}
+                other => wrong.push(format!("{path}: {other:?}")),
             }
         }
     }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(wrong.is_empty(), "{}\n{said}", wrong.join("\n"));
     // And nothing of either secret, or of what the rows encode of it, anywhere in the log or
     // an export of it.
     let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();

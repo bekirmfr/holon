@@ -2048,6 +2048,8 @@ mod tests {
                     proof: vec![t()],
                 }),
             }),
+            // A flag the host sets: no run data.
+            withheld: false,
         };
         let mut e = LogEntry {
             seq: 1,

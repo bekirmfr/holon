@@ -410,7 +410,9 @@ What is not defended, or only partly:
 - **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
-  never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
+  never written, as the secret is (taint.rs: `selects`); which steps it takes is left out of a
+  log that can't mark what it computed (`SecretFed::chosen`), and a route that reads its flow's
+  own data by it asks `SecretAnswer`. Only the one-way leaves (`sha256`,
   `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
   they compute from it as clean. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.

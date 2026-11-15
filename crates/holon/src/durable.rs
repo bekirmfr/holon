@@ -155,6 +155,9 @@ pub(crate) struct RunWaits {
     /// Why a read failed the run (a file too big, a folder not bound…), if one did: the run's
     /// error, as it starts (`folders::READ_FAILED`, `databases::READ_FAILED`).
     pub(crate) failed: Option<String>,
+    /// The path of the read that failed it: a secret may have chosen what it asked for, and then
+    /// why it failed is withheld (firing.rs).
+    pub(crate) failed_at: Option<Vec<u32>>,
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
     pub(crate) claiming: Option<claims::Claiming>,
@@ -195,6 +198,7 @@ impl Waits for RunWaits {
             match self.files.as_mut().map(|f| f.answer(request, true)) {
                 Some(Ok(seen)) => seen,
                 Some(Err(e)) => {
+                    self.failed_at.get_or_insert_with(|| path.to_vec());
                     self.failed.get_or_insert(format!("{}{e}", folders::READ_FAILED));
                     (None, None)
                 }
@@ -204,6 +208,7 @@ impl Waits for RunWaits {
             match self.databases.as_mut().map(|d| d.answer(request)) {
                 Some(Ok(answer)) => (answer, None),
                 Some(Err(e)) => {
+                    self.failed_at.get_or_insert_with(|| path.to_vec());
                     self.failed.get_or_insert(format!("{}{e}", databases::READ_FAILED));
                     (None, None)
                 }

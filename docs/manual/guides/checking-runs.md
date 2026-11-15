@@ -230,6 +230,17 @@ api_password: only a text of 6 characters or more is carried through a replay". 
 checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
 secret whole with `secure_equals`.
 
+Nor does the log of a run like that say what a secret chose. Where one decides which steps a run takes
+(`key.startsWith("live_") ? a : b`, `c && d`), the steps only one way takes are left out of the
+log, whichever way it went. A read by one (a collection's item under a key computed from it, a
+file it names) keeps which collection, folder or database it read and withholds the rest of what
+it asked and what it found, but a database's rows. A header whose name is computed from one
+withholds the request's headers, names and all. And `sort` and `unique` of a list that holds a
+secret give something computed from it: where it came in the order. In any run, a key a secret
+chose reads `seen[‹withheld: computed from a secret›]` where the log lists what the run claimed,
+and in the 503 a run kept waiting on it answers; a read that failed by one says only that the
+read failed.
+
 A value computed from a secret is never kept, marked or not: a state, collection, database,
 channel or file write of it is refused, as a write of the secret itself is.
 A part of a file a run read that holds a secret isn't kept in the log, and a file text that holds

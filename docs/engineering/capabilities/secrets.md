@@ -114,6 +114,20 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   `FiredRun::withholds_output`, `withholds_effect`, `withholds_input`; a node's outputs left out
   by `without_secret_derived`), and the marks it does have still cover those values wherever
   else they turn up.
+- **What a secret chooses is left out.** A choice decided by what a secret reaches (`guard`,
+  `coalesce`, `and`, `or`, which core runs lazily) runs only the branch it takes; the nodes only
+  that branch needs (`SecretFed::chosen`) are left out of the timeline of a run not marked whole
+  (`without_secret_derived`). Such a run's read whose request a secret reaches (`SecretFed::fed`)
+  keeps its collection, folder, database, query, `one` and `bytes` and withholds the rest
+  (`taint::withhold_read`), and what it found, but a database's rows (`LoggedRead.withheld`,
+  `FiredRun::withholds_read`); a request's headers are withheld whole, names and all. In any run,
+  a claim on a key such a read chose reads `seen[‹withheld…›]` in the log and the 503's answer
+  (`ClaimKey::shown`), and a read that failed by one says which kind of read failed, no more
+  (`RunWaits.failed_at`). `sort` and `unique` give what a tainted input reaches derived (`ORDERS`).
+  A route that reads its flow's own data by a secret (`SecretFed::reads_by_a_secret`: a
+  collection's item, a folder's file) answers its caller something of it, found, waited on or
+  failed, so it asks `SecretAnswer` (`answered_secrets`); a database's read doesn't, the database
+  being where the approval says the secret goes.
 - **Where it goes.** `taint::sent_secrets` names each secret's destinations (hosts, `db:` for a
   database read's parameters, `answer:` for what a call answers to it); the approval says them
   ("read the secret "slack_webhook_path", and send it to https://hooks.slack.com",
@@ -159,6 +173,14 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 - **No run-time check on a database's parameters**: they go where the graph says, to the
   database the admin bound (secret destinations §8). A cap covers the server's secret, not what is
   answered to it, and names no deployment.
+- **A database answers what its query makes of a secret.** Its rows, and its failing, are the
+  database's, approved as where the secret goes: a route that answers them, or fails with them,
+  may tell its caller something of the secret without `SecretAnswer` (the audit's F10, by the
+  owner's choice).
+- **A request a secret's choice sends still shows.** The steps only a secret's choice takes are
+  left out of the timeline, but a request one of them sends is in the run's rounds (the parts a
+  secret reaches withheld), so whether it was sent says which way the choice went. Its host is one
+  the approval names. Nor is a run's timing covered.
 - **A revoked Vault value works for up to `STALE_AFTER`**; a source read fails loudly, once, in
   the audit.
 - **In memory in the clear** while the server runs (`Zeroizing`, wiped when dropped).
