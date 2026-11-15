@@ -127,6 +127,25 @@ export const BUTTONS = {
   forgetKeys: { route: "POST /admin/keys/forget", action: "host.operate" },
   /** Read holon.toml again (Policy). */
   reloadPolicy: { route: "POST /permissions/reload", action: "policy.edit" },
+  // ── people (People and access) ──
+  /** Add a person (an invite) or an agent or a service. */
+  addPrincipal: { route: "POST /people", action: "people.manage" },
+  /** Give a role on the host, adding someone or changing theirs: binding it asks people.assign
+   *  in the handler (auth.rs's `may_give`). */
+  giveRole: { route: ["POST /people", "PATCH /people/{name}"], action: "people.assign", inside: true },
+  /** Change someone: their email, disabled, an agent's owner (a role, `giveRole` too). */
+  changePrincipal: { route: "PATCH /people/{name}", action: "people.manage" },
+  resetPerson: { route: "POST /people/{name}/reset", action: "people.manage" },
+  removePrincipal: { route: "DELETE /people/{name}", action: "people.manage" },
+  /** Make or revoke an agent's or a service's tokens: its owner may too (can.rs's `owns`), which
+   *  the host's answer can't say (`mayTokens` in PeoplePages). */
+  tokens: { route: ["POST /people/{name}/tokens", "DELETE /people/{name}/tokens/{id}"], action: "people.manage" },
+  /** The identity provider people sign in through. */
+  oidc: { route: "POST /admin/oidc", action: "people.manage" },
+  /** Make, change or remove a group (its members too). */
+  groups: { route: ["PUT /groups/{name}", "DELETE /groups/{name}"], action: "people.assign" },
+  /** Define, change or remove a role. */
+  roles: { route: ["PUT /roles/{name}", "DELETE /roles/{name}"], action: "role.define" },
   /** Bind a role (People and access's form). */
   bind: { route: "POST /bindings", action: "people.assign" },
   unbind: { route: "DELETE /bindings/{id}", action: "people.assign" },

@@ -38,7 +38,7 @@ import {
   type Tagged,
 } from "./access";
 import { useDialog } from "./Dialog";
-import { useCan } from "./can";
+import { gateOf, Gated, useCan, type Answer, type Can } from "./can";
 import { HostPage, messageOf } from "./HostPages";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
 import { seenSaid } from "./lastSeen";
@@ -160,6 +160,13 @@ type Act = (f: () => Promise<unknown>) => Promise<unknown>;
 /** A token just made: whose and what for, and its value, shown once. */
 type MadeToken = { label: string; token: string };
 
+/** The first of `answers` refused, or true: for a control whose request asks two actions. */
+const both = (...answers: Answer[]): Answer => answers.find((x) => x !== true) ?? true;
+
+/** Whether whoever is signed in may make and revoke `p`'s tokens: its owner may (can.rs's `owns`),
+ *  which the host's answer can't say, and whoever holds people.manage. */
+const mayTokens = (can: Can, p: Principal, me: string): Answer => (p.owner === me ? true : can.may("tokens"));
+
 /** Disable a principal, or enable it again, once asked: one click on the row's button ended
  *  someone's sign-ins, yours too, or let someone disabled back in (R43). */
 async function switchDisabled(p: Principal, me: string, dialog: ReturnType<typeof useDialog>, act: Act) {
@@ -215,7 +222,7 @@ function Seen({ what, at }: { what: "last seen" | "last used"; at: number | null
 
 /** `p`'s tokens, each revoked from its row, with when each was last used; or that it has none, so
  *  it can't sign in yet. */
-function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: Act }) {
+function TokenRows({ p, dialog, act, may }: { p: Principal; dialog: ReturnType<typeof useDialog>; act: Act; may: Answer }) {
   const tokens = p.tokens ?? [];
   if (tokens.length === 0) return <div style={{ ...quiet, margin: "-2px 0 8px 24px" }}>{p.name} has no token: it can&apos;t sign in yet</div>;
   return (
@@ -230,6 +237,7 @@ function TokenRows({ p, dialog, act }: { p: Principal; dialog: ReturnType<typeof
           <button
             style={small}
             aria-label={`revoke ${p.name}'s token ${t.label}`}
+            {...gateOf(may)}
             onClick={async () => {
               if (await dialog.confirm(`Revoke ${p.name}'s token "${t.label}"? Whatever signs in with it stops working.`, "Revoke")) void act(() => revokeToken(p.name, t.id));
             }}
@@ -320,7 +328,7 @@ export function OwnedPage() {
               make token
             </button>
           </div>
-          <TokenRows p={p} dialog={dialog} act={act} />
+          <TokenRows p={p} dialog={dialog} act={act} may={true} />
         </Fragment>
       ))}
       <ConnectingAnAgent />
@@ -334,6 +342,7 @@ export function OwnedPage() {
  *  turned over it, changed it at once (R43). Cancelled, the list shows the role it holds. */
 function RoleSelect({ p, me, a }: { p: Principal; me: string; a: Access }) {
   const { roles, dialog, act } = a;
+  const can = useCan();
   const now = hostRoleOf(p);
   const pick = async (role: string) => {
     const allows = roleTitle(roles, role);
@@ -345,7 +354,13 @@ function RoleSelect({ p, me, a }: { p: Principal; me: string; a: Access }) {
     if (await dialog.confirm(asked.filter(Boolean).join(" "), "Change the role")) void act(() => changePrincipal(p.name, { role }));
   };
   return (
-    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => void pick(e.target.value)}>
+    <select
+      aria-label={`${p.name}'s role`}
+      value={now}
+      style={input}
+      {...gateOf(both(can.may("changePrincipal"), can.may("giveRole")), { title: roleTitle(roles, now) })}
+      onChange={(e) => void pick(e.target.value)}
+    >
       {now === "" && (
         <option value="" disabled>
           no role on the host
@@ -447,6 +462,7 @@ export function PeoplePage({ me, route }: { me: string; route: Route }) {
 
 function PeopleList({ me, a }: { me: string; a: Access }) {
   const { principals, roles, dialog, act } = a;
+  const can = useCan();
   const [invite, setInvite] = useState<{ name: string; url: string } | null>(null);
   const [draft, setDraft] = useState({ name: "", role: "editor", email: "" });
   const people = principals.filter((p) => p.kind === "person");
@@ -488,7 +504,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
             <Seen what="last seen" at={p.last_seen} />
             <button
               style={small}
-              title="the email they sign in with through the identity provider"
+              {...can.gate("changePrincipal", { title: "the email they sign in with through the identity provider" })}
               onClick={async () => {
                 const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
                 if (email !== null) void act(() => changePrincipal(p.name, { email }));
@@ -498,7 +514,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
             </button>
             <button
               style={small}
-              title="a new link to set a new password; their sign-ins end"
+              {...can.gate("resetPerson", { title: "a new link to set a new password; their sign-ins end" })}
               onClick={async () => {
                 if (!(await dialog.confirm(`Reset ${p.name}'s password? Their sign-ins end, and you get a new link for them.`, "Reset"))) return;
                 void act(async () => {
@@ -509,12 +525,12 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
             >
               reset
             </button>
-            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} {...can.gate("changePrincipal", { title: p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={owns.length > 0 ? "give what they own another owner first" : "remove them"}
+              {...can.gate("removePrincipal", { title: owns.length > 0 ? "give what they own another owner first" : "remove them" })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? What they deployed stays, and says who did it. This can't be undone.`, "Remove")) void act(() => removePrincipal(p.name));
               }}
@@ -524,6 +540,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
           </div>
         );
       })}
+      <Gated may={both(can.may("addPrincipal"), can.may("giveRole"))}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -548,12 +565,14 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
           add person
         </button>
       </form>
+      </Gated>
     </>
   );
 }
 
 function AgentsList({ me, a }: { me: string; a: Access }) {
   const { principals, roles, dialog, act } = a;
+  const can = useCan();
   const [made, setMade] = useState<MadeToken | null>(null);
   // An agent or a service being added: its owner empty for whoever adds it.
   const [draft, setDraft] = useState({ name: "", kind: "agent" as Exclude<Kind, "person">, role: "agent", owner: "" });
@@ -581,7 +600,7 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
               aria-label={`${p.name}'s owner`}
               value={p.owner ?? ""}
               style={input}
-              title="the person answerable for it"
+              {...can.gate("changePrincipal", { title: "the person answerable for it" })}
               onChange={async (e) => {
                 // Asked first, as a role is: an arrow key on the focused list changed it (R43).
                 const owner = e.target.value;
@@ -601,15 +620,15 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
               {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
             </span>
             <Seen what="last seen" at={p.last_seen} />
-            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setMade)}>
+            <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(mayTokens(can, p, me), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, dialog, act, setMade)}>
               make token
             </button>
-            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
+            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} {...can.gate("changePrincipal", { title: p.disabled ? "let its tokens sign in again" : "refuse its tokens" })}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
               style={small}
-              title={`remove the ${p.kind}`}
+              {...can.gate("removePrincipal", { title: `remove the ${p.kind}` })}
               onClick={async () => {
                 if (await dialog.confirm(`Remove ${p.name}? Its tokens stop working. This can't be undone.`, "Remove")) void act(() => removePrincipal(p.name));
               }}
@@ -617,9 +636,10 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
               ×
             </button>
           </div>
-          <TokenRows p={p} dialog={dialog} act={act} />
+          <TokenRows p={p} dialog={dialog} act={act} may={mayTokens(can, p, me)} />
         </Fragment>
       ))}
+      <Gated may={both(can.may("addPrincipal"), can.may("giveRole"))}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -664,12 +684,14 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
           add {draft.kind}
         </button>
       </form>
+      </Gated>
       <ConnectingAnAgent />
     </>
   );
 }
 
 function SignIn({ a }: { a: Access }) {
+  const can = useCan();
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   useEffect(() => {
@@ -683,6 +705,7 @@ function SignIn({ a }: { a: Access }) {
         Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client with PKCE and this
         page&apos;s address as its redirect. Someone signing in is matched to the person with their email (set under People).
       </div>
+      <Gated may={can.may("oidc")}>
       <div style={{ ...row, background: "transparent", flexWrap: "wrap" }}>
         <input aria-label="issuer" placeholder="issuer (https://id.example.com/realms/x)" value={issuer} onChange={(e) => setIssuer(e.target.value)} style={{ ...input, flex: 2, minWidth: 220 }} />
         <input aria-label="client id" placeholder="client id" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...input, flex: 1, minWidth: 120 }} />
@@ -695,6 +718,7 @@ function SignIn({ a }: { a: Access }) {
           </button>
         )}
       </div>
+      </Gated>
       <div style={{ color: "var(--faint)", fontSize: 11 }}>{a.oidc ? `on: ${a.oidc.issuer} as ${a.oidc.client_id}` : "off"}</div>
     </>
   );
@@ -983,6 +1007,7 @@ function BindForm({ a, who: fixed }: { a: Access; who?: Subject }) {
  *  its bindings with the form to add one, and what they let it do. */
 function PrincipalView({ name, me, a }: { name: string; me: string; a: Access }) {
   const [made, setMade] = useState<MadeToken | null>(null);
+  const can = useCan();
   const p = a.principals.find((x) => x.name === name);
   if (!p) return <div style={quiet}>{a.loaded ? `No one here is named ${name}.` : "reading…"}</div>;
   const groups = a.groups.filter((g) => g.members.includes(p.name)).map((g) => g.name);
@@ -1025,11 +1050,11 @@ function PrincipalView({ name, me, a }: { name: string; me: string; a: Access })
           <div className="hl-host-page__head">tokens</div>
           {made && <MadeTokenBox made={made} onDone={() => setMade(null)} />}
           <div style={{ ...row, background: "transparent" }}>
-            <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, a.dialog, a.act, setMade)}>
+            <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(mayTokens(can, p, me), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, a.dialog, a.act, setMade)}>
               make token
             </button>
           </div>
-          <TokenRows p={p} dialog={a.dialog} act={a.act} />
+          <TokenRows p={p} dialog={a.dialog} act={a.act} may={mayTokens(can, p, me)} />
         </>
       )}
       <div className="hl-host-page__head">bindings</div>
@@ -1082,6 +1107,7 @@ function MayDo({ gives, roles }: { gives: Gives; roles: RoleEntry[] }) {
 
 function GroupsList({ a }: { a: Access }) {
   const [draft, setDraft] = useState({ name: "", about: "" });
+  const can = useCan();
   return (
     <>
       <div style={about}>
@@ -1100,6 +1126,7 @@ function GroupsList({ a }: { a: Access }) {
           <button
             style={small}
             aria-label={`remove the group ${g.name}`}
+            {...can.gate("groups")}
             onClick={async () => {
               const why = await a.dialog.prompt(`Remove the group ${g.name}?\n\nWhy (History keeps it):`, "", "Remove", "optional");
               if (why !== null) void a.act(() => removeGroup(g.name, why));
@@ -1109,6 +1136,7 @@ function GroupsList({ a }: { a: Access }) {
           </button>
         </div>
       ))}
+      <Gated may={can.may("groups")}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -1125,6 +1153,7 @@ function GroupsList({ a }: { a: Access }) {
           make group
         </button>
       </form>
+      </Gated>
     </>
   );
 }
@@ -1133,6 +1162,7 @@ function GroupsList({ a }: { a: Access }) {
  *  else (`PUT /groups/<name>` takes them all), and what is bound to it, with the form to add to it. */
 function GroupView({ name, a }: { name: string; a: Access }) {
   const [adding, setAdding] = useState("");
+  const can = useCan();
   const g = a.groups.find((x) => x.name === name);
   if (!g) return <div style={quiet}>{a.loaded ? `No group here is named ${name}.` : "reading…"}</div>;
   const set = (members: string[]) => a.act(() => putGroup(name, { about: g.about, members, base: a.read.groups }));
@@ -1150,6 +1180,7 @@ function GroupView({ name, a }: { name: string; a: Access }) {
           <button
             style={small}
             aria-label={`take ${m} out of ${name}`}
+            {...can.gate("groups")}
             onClick={async () => {
               if (await a.dialog.confirm(`Take ${m} out of ${name}? They lose what is bound to it.`, "Take out")) void set(g.members.filter((x) => x !== m));
             }}
@@ -1158,6 +1189,7 @@ function GroupView({ name, a }: { name: string; a: Access }) {
           </button>
         </div>
       ))}
+      <Gated may={can.may("groups")}>
       <form
         style={{ ...row, background: "transparent" }}
         onSubmit={(e) => {
@@ -1179,6 +1211,7 @@ function GroupView({ name, a }: { name: string; a: Access }) {
           add
         </button>
       </form>
+      </Gated>
       <div className="hl-host-page__head">bindings</div>
       <BindingTable rows={a.bindings.filter((b) => "group" in b.who && b.who.group === name)} a={a} label={`what is bound to ${name}`} />
       <BindForm a={a} who={{ group: name }} />
@@ -1190,6 +1223,7 @@ function GroupView({ name, a }: { name: string; a: Access }) {
 
 function RolesList({ a }: { a: Access }) {
   const [editing, setEditing] = useState<RoleEntry | null>(null);
+  const can = useCan();
   return (
     <>
       <div style={about}>
@@ -1219,12 +1253,13 @@ function RolesList({ a }: { a: Access }) {
               <td style={{ whiteSpace: "nowrap" }}>
                 {!r.builtin && (
                   <>
-                    <button style={small} aria-label={`change the role ${r.name}`} onClick={() => setEditing(r)}>
+                    <button style={small} aria-label={`change the role ${r.name}`} {...can.gate("roles")} onClick={() => setEditing(r)}>
                       change
                     </button>{" "}
                     <button
                       style={small}
                       aria-label={`remove the role ${r.name}`}
+                      {...can.gate("roles")}
                       onClick={async () => {
                         const why = await a.dialog.prompt(`Remove the role ${r.name}? A role still bound can't be.\n\nWhy (History keeps it):`, "", "Remove", "optional");
                         if (why !== null) void a.act(() => removeRole(r.name, why));
@@ -1239,7 +1274,9 @@ function RolesList({ a }: { a: Access }) {
           ))}
         </tbody>
       </table>
-      <RoleForm key={editing?.name ?? ""} a={a} role={editing} onDone={() => setEditing(null)} />
+      <Gated may={can.may("roles")}>
+        <RoleForm key={editing?.name ?? ""} a={a} role={editing} onDone={() => setEditing(null)} />
+      </Gated>
     </>
   );
 }
