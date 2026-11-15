@@ -71,9 +71,16 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   `SecretsFile::salts`). A reference's value changes under one version, so a salt is a value's:
   one that comes back has its first salt again. It is the same after a restart, kept when its
   version is dropped or its secret removed, and gone with a deleted deployment. A deployment's
-  current salts are in memory beside its values (`Resolved::salts`). Nothing reads them yet:
-  they are what a run's record will commit its secrets with
-  ([secret verification](../../L4s/secret-verification-L4.md) §8.1, items A and H).
+  current salts are in memory beside its values (`Resolved::salts`).
+- **A commitment in each run's entry.** Beside the version and fingerprint of each secret a run
+  was given (`secrets`), its entry holds what the secret is held to (`committed`,
+  `recorder::Committed`): `local` or `reference`, and `secrets::commitment`, a SHA-256 over the
+  secret's owner (the deployment, or the server), name and version, the value's salt and the
+  value, each with its length. Whoever later holds the value and its salt computes it again;
+  without the salt it says nothing of the value. `holon verify` holds an export to it as far as
+  it can without the value: one value, one commitment in every run, and each mark of a secret
+  set here reading the fingerprint its entry lists (`verify::listed_secrets`)
+  ([secret verification](../../L4s/secret-verification-L4.md) §8.1, items F and H).
 - **The server's own** are kept under `SERVER` (`*`) and read by a deployment with none of its
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
 - **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
@@ -139,6 +146,7 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 ## 5. What the tests hold
 
 - secrets.rs: `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
+  `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,
   `a_store_keeps_values_sealed_and_survives_a_restart`,
   `a_missing_or_wrong_key_refuses_instead_of_starting_empty`, `versions_are_kept_and_old_values_still_redacted`,
   `a_mark_names_the_version_and_a_fingerprint_of_the_value`, `a_vault_value_follows_its_source_and_outlives_an_outage_only_briefly`,

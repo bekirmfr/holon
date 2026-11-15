@@ -60,6 +60,9 @@ pub(crate) struct Resolved {
     /// (docs/L4s/secret-verification-L4.md §8.1, items A and H). Not there for a value whose
     /// kept salt doesn't open.
     pub(crate) salts: BTreeMap<String, Zeroizing<[u8; 32]>>,
+    /// name → what a run given its current value records of it (`recorder::Committed`): where
+    /// it is kept, and the commitment to it under its salt. There where its salt is.
+    pub(crate) committed: BTreeMap<String, crate::recorder::Committed>,
     /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
     /// The names whose current value is the server's ([`SERVER`]: the deployment has none of its
@@ -137,6 +140,38 @@ const FORMAT: u32 = 4;
 /// What a sealed value is bound to: a value sealed for one place doesn't open in another.
 fn context(slug: &str, name: &str, version: u32) -> String {
     format!("holon-secret/v3\0{slug}\0{name}\0{version}")
+}
+
+/// The commitment to `value`, version `version` of `owner`'s secret `name`, under its `salt`:
+/// SHA-256, in hex, of a domain, the owner (a deployment's slug, or [`SERVER`]), the name, the
+/// version, the salt and the value, each with its length before it, so no two fields read as
+/// one. Whoever holds the value and the salt computes it again and knows the value is the one a
+/// run recorded; without the salt (32 random bytes) it says nothing of the value, however weak.
+pub(crate) fn commitment(owner: &str, name: &str, version: u32, salt: &[u8; 32], value: &str) -> String {
+    let mut of = Zeroizing::new(Vec::new());
+    for field in [b"holon-secret-commitment/v1".as_slice(), owner.as_bytes(), name.as_bytes(), &version.to_le_bytes(), salt.as_slice(), value.as_bytes()] {
+        of.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        of.extend_from_slice(field);
+    }
+    // Core's SHA-256 takes a value: the bytes are moved into one, and wiped once hashed.
+    let mut given = holon_core::Value::Bytes(std::mem::take(&mut *of));
+    let hashed = holon_core::primitives::compute("sha256", &[&given], &[holon_core::Param::frozen("encoding", "hex")]);
+    if let holon_core::Value::Bytes(bytes) = &mut given {
+        zeroize::Zeroize::zeroize(bytes);
+    }
+    match hashed {
+        Some(holon_core::Value::Text(hex)) => hex,
+        _ => unreachable!("sha256 of bytes, in hex, is a text"),
+    }
+}
+
+/// What a run given `value`, the version `v` of `owner`'s secret `name`, records of it.
+fn committed(owner: &str, name: &str, v: &Stored, salt: &[u8; 32], value: &str) -> crate::recorder::Committed {
+    crate::recorder::Committed {
+        kind: if v.source == "local" { "local" } else { "reference" }.into(),
+        commitment: commitment(owner, name, v.version, salt, value),
+        server: owner == SERVER,
+    }
 }
 
 /// What a sealed salt is bound to: the value it is of, by its fingerprint, beside what the value
@@ -676,7 +711,10 @@ impl SecretStore {
             match self.value_of(owner, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
                     resolved.shown.insert(name.clone(), self.shown(current.version, &value));
-                    resolved.salts.extend(self.salt_of(owner, name, current.version, &value).map(|salt| (name.clone(), salt)));
+                    if let Some(salt) = self.salt_of(owner, name, current.version, &value) {
+                        resolved.committed.insert(name.clone(), committed(owner, name, current, &salt, &value));
+                        resolved.salts.insert(name.clone(), salt);
+                    }
                     resolved.current.insert(name.clone(), value);
                     resolved.fetched.insert(name.clone(), (current.version, now));
                 }
@@ -688,7 +726,10 @@ impl SecretStore {
                         let ago = now.duration_since(at).as_secs();
                         resolved.problems.insert(name.clone(), format!("{e}; using the value read {ago}s ago"));
                         resolved.shown.insert(name.clone(), self.shown(version, &value));
-                        resolved.salts.extend(self.salt_of(owner, name, version, &value).map(|salt| (name.clone(), salt)));
+                        if let Some(salt) = self.salt_of(owner, name, version, &value) {
+                            resolved.committed.insert(name.clone(), committed(owner, name, current, &salt, &value));
+                            resolved.salts.insert(name.clone(), salt);
+                        }
                         resolved.current.insert(name.clone(), value);
                         resolved.fetched.insert(name.clone(), (version, at));
                     }
@@ -1456,6 +1497,58 @@ mod tests {
         assert!(opened(&old_key, &old_path).contains(&elsewhere), "and the other is left as it was");
     }
 
+    /// Guards: what a run records of a secret it is given (`Resolved::committed`): where the
+    /// value is kept, and a commitment that whoever holds the value and its salt computes again
+    /// (`commitment`), and that is another for another value, version, owner or salt.
+    /// Why: it is what later holds the server to the value a run had. One that left a field out
+    /// would be the same for two values; one made without the salt could be guessed from.
+    /// If it fails: the case named is a commitment that no longer tells two things apart, or a
+    /// kind that says the wrong place.
+    #[test]
+    fn what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt() {
+        let (path, key) = temp("committed");
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::of(&[("HOLON_SECRET_K", "kept-in-the-environment")])).unwrap();
+        store.set("api", "here", "kept-in-the-store", None).unwrap();
+        store.set_from("api", "there", "env:HOLON_SECRET_K", None).unwrap();
+        store.set(SERVER, "shared", "the-servers-value", None).unwrap();
+        let vault = store.vault("api");
+        let v = vault.lock().unwrap();
+        let of = |name: &str| (v.committed[name].clone(), *v.salts[name].clone());
+        for (name, kind, server, owner, value) in [("here", "local", false, "api", "kept-in-the-store"), ("there", "reference", false, "api", "kept-in-the-environment"), ("shared", "local", true, SERVER, "the-servers-value")] {
+            let (said, salt) = of(name);
+            assert_eq!((said.kind.as_str(), said.server), (kind, server), "{name}");
+            assert_eq!(said.commitment, commitment(owner, name, 1, &salt, value), "{name}: computed again from the value and its salt");
+            assert_eq!(said.commitment.len(), 64);
+            // Another for anything else: a value, a version, a name, an owner, a salt.
+            let mut other_salt = salt;
+            other_salt[0] ^= 1;
+            for (what, another) in [
+                ("another value", commitment(owner, name, 1, &salt, "kept-somewhere-else")),
+                ("another version", commitment(owner, name, 2, &salt, value)),
+                ("another name", commitment(owner, "other", 1, &salt, value)),
+                ("another owner", commitment("web", name, 1, &salt, value)),
+                ("another salt", commitment(owner, name, 1, &other_salt, value)),
+            ] {
+                assert_ne!(said.commitment, another, "{name}: {what}");
+            }
+        }
+        // No field reads as part of the next: the lengths are in it.
+        let salt = [7u8; 32];
+        assert_ne!(commitment("ab", "c", 1, &salt, "value-1"), commitment("a", "bc", 1, &salt, "value-1"));
+        // The same value under two names, or in two deployments, isn't one commitment. (The
+        // vault is let go first: setting a secret takes it.)
+        drop(v);
+        store.set("api", "twin", "kept-in-the-store", None).unwrap();
+        store.set("web", "here", "kept-in-the-store", None).unwrap();
+        let (api, web) = (store.vault("api"), store.vault("web"));
+        let here = api.lock().unwrap().committed["here"].commitment.clone();
+        assert_ne!(here, api.lock().unwrap().committed["twin"].commitment);
+        assert_ne!(here, web.lock().unwrap().committed["here"].commitment);
+        // And it is the same after a restart, as its salt is.
+        let again = SecretStore::open(&path, Arc::clone(&key), Sources::of(&[("HOLON_SECRET_K", "kept-in-the-environment")])).unwrap();
+        assert_eq!(again.vault("api").lock().unwrap().committed["here"].commitment, here);
+    }
+
     /// The server's secret is read by a deployment with none of its own, overridden by one it
     /// has, kept sealed with where it may go, and seen by a running deployment as it changes.
     #[test]
@@ -1844,6 +1937,7 @@ mod tests {
             claims: vec![LoggedClaim { key: t(), waited_ms: 1.0, overtaken: false, held_ms: Some(1.0) }],
             by: Some(t()),
             secrets: BTreeMap::from([(t(), t())]),
+            committed: BTreeMap::from([(t(), crate::recorder::Committed { kind: t(), commitment: t(), server: true })]),
             escaped: false,
             // Never written with the line: each goes its own way, redacted there (firing.rs's
             // `push_run`, mails.rs, queues.rs).
@@ -1893,8 +1987,9 @@ mod tests {
             // the flow names it, each capability, waiting point and state.
             ".kind", ".route", ".sourced[][]", ".performed[].capability", ".progress[].capability", ".parked[]", ".state_before.{}", ".events.{}",
             // Who sent it (a principal's name), and the secrets it was given, by name, version and
-            // fingerprint.
-            ".by", ".secrets.{}",
+            // fingerprint; and what each is held to, a word for where it is kept and a hash the
+            // host makes of it under a salt.
+            ".by", ".secrets.{}", ".committed.{}", ".committed.{}.kind", ".committed.{}.commitment",
             // A file read's hashes: the file's, its text's in the blob store, the proof's.
             ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
         ]

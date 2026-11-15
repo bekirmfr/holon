@@ -111,6 +111,9 @@ pub(crate) struct FiredRun {
     pub(crate) secret_fed: taint::SecretFed,
     /// The secrets it was given, by name: the version and fingerprint of each (`v3 #a1b2c3d4`).
     pub(crate) secrets: BTreeMap<String, String>,
+    /// What each of those is held to: where it is kept, and a commitment to its value
+    /// (`recorder::Committed`).
+    pub(crate) committed: BTreeMap<String, recorder::Committed>,
     /// The credentials its calls answered to requests that held a secret (`secrets::answered_tokens`).
     pub(crate) answered: recorder::AnswerTokens,
     /// The state it left, once committed: a snapshot's hash (`restore::save_snapshot`).
@@ -674,6 +677,7 @@ fn run_attempt(
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
     let mut given = BTreeMap::new();
+    let mut committed = BTreeMap::new();
     let mut granted = Vec::new();
     let vault = secrets.lock().unwrap();
     for (name, value) in vault.current.iter() {
@@ -681,6 +685,7 @@ fn run_attempt(
         if permit.allows(&cap) {
             granted.push((cap, Value::Text(value.to_string())));
             given.extend(vault.shown.get(name).map(|shown| (name.clone(), shown.clone())));
+            committed.extend(vault.committed.get(name).map(|c| (name.clone(), c.clone())));
         }
     }
     drop(vault);
@@ -850,6 +855,7 @@ fn run_attempt(
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
         secrets: given,
+        committed,
         answered: recorder::AnswerTokens(answered),
         state_after: None,
         commit: None,
@@ -1409,6 +1415,7 @@ fn entry_with(
             .collect(),
         by: None,
         secrets: run.secrets.clone(),
+        committed: run.committed.clone(),
         answered: run.answered.clone(),
         mails: mails::of(&run.performed),
         // A line computed from a secret is withheld, as an effect's payload is in `performed`.
@@ -1468,6 +1475,7 @@ impl FiredRun {
             claims: vec![],
             secret_fed: taint::SecretFed::default(),
             secrets: BTreeMap::new(),
+            committed: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),
             state_after: None,
             commit: None,

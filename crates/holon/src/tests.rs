@@ -7176,6 +7176,81 @@ route.get("/me", (req) => {
     assert!(!report.ok());
 }
 
+/// A run's entry commits to each secret it was given: where its value is kept and a commitment
+/// to it, beside the version and fingerprint its marks name. Whoever holds the value and its
+/// salt computes the commitment again; the line holds neither. And `verify` holds an export to
+/// it: one value, one commitment, and a commitment that is one.
+#[test]
+fn a_runs_entry_commits_to_its_secrets_and_an_export_is_held_to_it() {
+    let state = claims_state("");
+    let text = r#"import { flow, hmac_sha256, route, status } from "holon"
+import signing_key from "secret:signing_key"
+
+flow("committing", { port: 18197 })
+
+route.post("/sign", (req) => hmac_sha256(signing_key, req.body) ?? status(400))
+"#;
+    let (first, second) = ("the-first-signing-key", "the-second-signing-key");
+    let set = |value: &str| route(&state, &req("POST", "/deployments/committing/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap())).status_code;
+    assert_eq!(set(first), 200);
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let sign = |body: &str| data_call(&state, &slug, "POST", "/sign", body).0;
+    assert_eq!((sign("one"), sign("two")), (200, 200));
+    let salt_of = || *state.secrets.vault(&slug).lock().unwrap().salts["signing_key"].clone();
+    let salt = salt_of();
+    assert_eq!(set(second), 200);
+    assert_eq!(sign("three"), 200);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let entries: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = |i: usize| (entries[i]["secrets"]["signing_key"].as_str().unwrap().to_string(), entries[i]["committed"]["signing_key"].clone());
+    // The first two runs had one value: one commitment, the value's under its salt.
+    let commitment = secrets::commitment(&slug, "signing_key", 1, &salt, first);
+    assert_eq!(said(0).1, serde_json::json!({ "kind": "local", "commitment": commitment }), "{}", export.lines[0]);
+    assert_eq!(said(0), said(1));
+    assert!(said(0).0.starts_with("v1 #"), "beside what its marks read: {:?}", said(0));
+    // The third had another, under another version and salt.
+    assert_eq!(said(2).1["commitment"], serde_json::json!(secrets::commitment(&slug, "signing_key", 2, &salt_of(), second)));
+    assert_ne!(said(2).1, said(0).1);
+    // Nothing a value can be had from: not the value, not its salt.
+    let salts = [salt, salt_of()].map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    for line in &export.lines {
+        assert!(!line.contains(first) && !line.contains(second) && salts.iter().all(|s| !line.contains(s.as_str())), "{line}");
+    }
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok(), "{}", verify::describe(&report, None));
+
+    // The second line's commitment changed, the line chained again and the third after it: the
+    // first run recorded another for the same value.
+    let rechained = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut second: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
+        edit(&mut second);
+        let second = serde_json::to_string(&second).unwrap();
+        let mut third: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+        third["prev"] = serde_json::json!(recorder::line_hash(&second));
+        let third = serde_json::to_string(&third).unwrap();
+        let head = recorder::line_hash(&third);
+        let forged = verify::Export { lines: vec![export.lines[0].clone(), second, third], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut report = verify::check(&forged, Some(&head), &BTreeMap::new());
+        assert!(report.breaks.is_empty(), "re-chained, it links: {}", verify::describe(&report, None));
+        let ok = report.ok();
+        (report.reruns.remove(1).1, ok)
+    };
+    let print = said(1).0.split_once(" #").unwrap().1.to_string();
+    let (came_to, ok) = rechained(&|v| v["committed"]["signing_key"]["commitment"] = serde_json::json!("0".repeat(64)));
+    assert_eq!(came_to, verify::Rerun::Differs(format!("the commitment its entry has for the secret signing_key v1 #{print}: run 0 recorded another for the same value")));
+    assert!(!ok);
+    // To something that is no commitment.
+    let (came_to, ok) = rechained(&|v| v["committed"]["signing_key"]["commitment"] = serde_json::json!("not one"));
+    assert_eq!(came_to, verify::Rerun::Differs("what its entry says the secret \"signing_key\" is held to isn't a kind and a commitment".into()));
+    assert!(!ok);
+    // Taken out: a run from before commitments has none, and that alone fails nothing.
+    let (came_to, ok) = rechained(&|v| {
+        v.as_object_mut().unwrap().remove("committed");
+    });
+    assert_eq!((came_to, ok), (verify::Rerun::Matched, true));
+}
+
 /// What `verify` takes from the log it can't compute again, but a leaf is a function of its
 /// inputs. So two runs that record other for one leaf and the same inputs can't both be the
 /// leaf's, and a signature that isn't 32 bytes is no HMAC's: each differs. A record rewritten
@@ -9788,9 +9863,16 @@ fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched), (1, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
     assert!(report.ok(), "{}", verify::describe(&report, None));
 
-    // An entry from before: no versions in it, its marks bare. Rechained, it checks as it did.
+    // An entry from before: no versions in it, nor what each secret is held to, its marks bare.
+    // Rechained, it checks as it did. (With the commitment left in and the versions taken out
+    // it is a line no server writes, and differs: `verify::listed_secrets`.)
     let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
     v.as_object_mut().unwrap().remove("secrets");
+    let no_list = recorder::line_hash(&v.to_string());
+    let odd = verify::Export { lines: vec![v.to_string()], head: no_list.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&odd, Some(&no_list), &BTreeMap::new());
+    assert!(matches!(&report.reruns[0].1, verify::Rerun::Differs(why) if why.contains("doesn't list which version")), "{}", verify::describe(&report, None));
+    v.as_object_mut().unwrap().remove("committed").expect("a run given a secret commits to it");
     let bare = v.to_string().replace(&format!(" {}›", given[0]), "›");
     assert!(bare.contains("‹secret:signing_key›") && !bare.contains(&given[0]), "{bare}");
     let head = recorder::line_hash(&bare);

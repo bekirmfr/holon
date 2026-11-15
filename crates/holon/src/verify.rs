@@ -377,6 +377,83 @@ struct Left {
     collections: BTreeSet<String>,
 }
 
+/// A secret's mark, as its parts: `‹secret:name v3 #a1b2c3d4›` is the name, 3 and the
+/// fingerprint. None for a mark of another kind, or one from before marks named a version.
+fn secret_mark(mark: &str) -> Option<(&str, u32, &str)> {
+    let (name, shown) = mark.strip_prefix("‹secret:")?.strip_suffix('›')?.split_once(' ')?;
+    let (version, print) = shown_parts(shown)?;
+    Some((name, version, print))
+}
+
+/// `v3 #a1b2c3d4`, as an entry's list of secrets has it, as the version and the fingerprint.
+fn shown_parts(shown: &str) -> Option<(u32, &str)> {
+    let (version, print) = shown.strip_prefix('v')?.split_once(" #")?;
+    Some((version.parse().ok()?, print))
+}
+
+/// Whether what `entry` says of its secrets holds together, and with the runs before it: why
+/// not, if it doesn't.
+///
+/// - Its list is well made: a kind that is one, a commitment that is a SHA-256's hex.
+/// - A mark anywhere in its line that names the version the run was given of a secret kept here
+///   carries the fingerprint its list has for it: one version, one value. (Not held of a
+///   reference, whose value can change under a version while a run goes on.) And two marks of
+///   one other version carry one fingerprint.
+/// - One value has one commitment: the same owner, name, version and fingerprint, in any run of
+///   the export, is the same commitment (`committed`: the first seen of each).
+///
+/// It doesn't say the commitment is the value's: that takes the value and its salt.
+fn listed_secrets(entry: &LogEntry, line: &str, committed: &mut BTreeMap<(bool, String, u32, String), (u64, String)>) -> Option<String> {
+    for (name, c) in &entry.committed {
+        if !matches!(c.kind.as_str(), "local" | "reference") || c.commitment.len() != 64 || !c.commitment.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Some(format!("what its entry says the secret {name:?} is held to isn't a kind and a commitment"));
+        }
+        let Some((version, print)) = entry.secrets.get(name).and_then(|shown| shown_parts(shown)) else {
+            return Some(format!("its entry commits to the secret {name:?} and doesn't list which version it was given"));
+        };
+        match committed.get(&(c.server, name.clone(), version, print.to_string())) {
+            Some((first, other)) if *other != c.commitment => {
+                return Some(format!("the commitment its entry has for the secret {name} v{version} #{print}: run {first} recorded another for the same value"));
+            }
+            Some(_) => {}
+            None => {
+                committed.insert((c.server, name.clone(), version, print.to_string()), (entry.seq, c.commitment.clone()));
+            }
+        }
+    }
+    if !line.contains("‹secret:") {
+        return None;
+    }
+    // Every mark in the line as the log wrote it: its request, its outputs, its nodes' records.
+    let mut prints: BTreeMap<(String, u32), String> = BTreeMap::new();
+    for (name, shown) in &entry.secrets {
+        if entry.committed.get(name).is_some_and(|c| c.kind == "local")
+            && let Some((version, print)) = shown_parts(shown)
+        {
+            prints.insert((name.clone(), version), print.to_string());
+        }
+    }
+    let mut odd = None;
+    let mut texts = vec![serde_json::from_str::<serde_json::Value>(line).ok()?];
+    while let Some(v) = texts.pop() {
+        match v {
+            serde_json::Value::String(s) => {
+                for (piece, mark) in secrets::read_marked(&s, entry.escaped) {
+                    let Some((name, version, print)) = mark.then(|| secret_mark(&piece)).flatten() else { continue };
+                    let kept = prints.entry((name.to_string(), version)).or_insert_with(|| print.to_string());
+                    if kept != print {
+                        odd = odd.or(Some(format!("a mark of the secret {name} v{version} reads #{print}, where its entry, or another mark of it, has #{kept}")));
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => texts.extend(items),
+            serde_json::Value::Object(fields) => texts.extend(fields.into_iter().flat_map(|(k, v)| [serde_json::Value::String(k), v])),
+            _ => {}
+        }
+    }
+    odd
+}
+
 /// What the log's record stood in for, running one run again.
 #[derive(Default)]
 struct Given {
@@ -532,7 +609,10 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     // What each leaf taken from the log gave, by the leaf and its inputs: the first run that
     // recorded it, and what it recorded.
     let mut taken: BTreeMap<[u8; 32], (u64, Vec<Option<Value>>)> = BTreeMap::new();
-    for (i, (entry, _)) in entries.iter().enumerate() {
+    // The commitment each value of a secret was recorded with: by whose secret it is, its name
+    // and version and the value's fingerprint, the first run that recorded it, and what.
+    let mut committed: BTreeMap<(bool, String, u32, String), (u64, String)> = BTreeMap::new();
+    for (i, (entry, line)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
         let mut given = Given::default();
@@ -558,6 +638,12 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         let came_to = match (came_to, belied) {
             (Rerun::Differs(why), _) => Rerun::Differs(why),
             (_, Some((leaf, first))) => Rerun::Differs(format!("what the log recorded for {leaf}, taken from it: run {first} recorded other for the same inputs")),
+            (came_to, None) => came_to,
+        };
+        // What it says of its secrets agrees with itself, and with the runs before it.
+        let came_to = match (came_to, listed_secrets(entry, line, &mut committed)) {
+            (Rerun::Differs(why), _) => Rerun::Differs(why),
+            (_, Some(why)) => Rerun::Differs(why),
             (came_to, None) => came_to,
         };
         if !given.nodes.is_empty() {
@@ -2416,6 +2502,66 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: what an entry says of its secrets holds together (`listed_secrets`). Its list is a
+    /// kind and a commitment for a version it names; a mark of the version a run was given of a
+    /// secret kept here reads the fingerprint its list has; two marks of one version read one
+    /// fingerprint; and one value has one commitment in every run of an export.
+    /// Why: a run computed on its marks (`Asserting::computes`) and a commitment a reader later
+    /// checks a value against both rest on the marks and the list saying the same thing. An
+    /// entry put together from parts of two runs, or a commitment changed in one line, would
+    /// otherwise pass.
+    /// If it fails: the row named says which of those a line can now break unseen, or which
+    /// sound line is now said to differ (a reference's mark, a look-alike the run wrote itself).
+    #[test]
+    fn what_an_entry_says_of_its_secrets_holds_together() {
+        let hex = |c: char| c.to_string().repeat(64);
+        let kept = |kind: &str, commitment: &str| recorder::Committed { kind: kind.into(), commitment: commitment.into(), server: false };
+        let entry = |seq: u64, shown: &str, c: recorder::Committed| LogEntry {
+            seq,
+            secrets: BTreeMap::from([("k".to_string(), shown.to_string())]),
+            committed: BTreeMap::from([("k".to_string(), c)]),
+            escaped: true,
+            ..LogEntry::default()
+        };
+        let line = |texts: &[&str]| serde_json::json!({ "request": { "headers": texts, "nested": [{ "deep": texts }] } }).to_string();
+        let same = "‹secret:k v2 #aaaaaaaa›";
+        // (what the entry says, the texts its line holds, why it doesn't hold together)
+        let rows: Vec<(&str, LogEntry, Vec<&str>, Option<&str>)> = vec![
+            ("no mark at all", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec!["plain"], None),
+            ("marks that read as the list does", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "Bearer ‹secret:k v2 #aaaaaaaa›"], None),
+            ("a mark of the given version with another fingerprint", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹secret:k v2 #bbbbbbbb›"], Some("a mark of the secret k v2 reads #bbbbbbbb")),
+            ("an older version's mark, alone", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹secret:k v1 #cccccccc›"], None),
+            ("an older version's marks, two fingerprints", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec!["‹secret:k v1 #cccccccc›", "‹secret:k v1 #dddddddd›"], Some("a mark of the secret k v1 reads #")),
+            ("a reference's mark, other than it was given: its value may change under a version", entry(1, "v2 #aaaaaaaa", kept("reference", &hex('1'))), vec!["‹secret:k v2 #bbbbbbbb›"], None),
+            ("a reference's marks, two fingerprints in one line", entry(1, "v2 #aaaaaaaa", kept("reference", &hex('1'))), vec!["‹secret:k v2 #bbbbbbbb›", "‹secret:k v2 #cccccccc›"], Some("a mark of the secret k v2 reads #")),
+            ("a look-alike the run wrote itself, escaped", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹‹secret:k v2 #bbbbbbbb›"], None),
+            ("another secret's mark", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹secret:other v2 #bbbbbbbb›"], None),
+            ("a token's mark and a tainted value's", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹token:answer access_token #bbbbbbbb›", "‹taint:authorization›"], None),
+            ("a kind that isn't one", entry(1, "v2 #aaaaaaaa", kept("here", &hex('1'))), vec![same], Some("isn't a kind and a commitment")),
+            ("a commitment cut short", entry(1, "v2 #aaaaaaaa", kept("local", "abcd")), vec![same], Some("isn't a kind and a commitment")),
+            ("a commitment that isn't hex", entry(1, "v2 #aaaaaaaa", kept("local", &hex('z'))), vec![same], Some("isn't a kind and a commitment")),
+            ("a commitment to a version it doesn't list", entry(1, "the second", kept("local", &hex('1'))), vec![], Some("doesn't list which version")),
+        ];
+        for (what, entry, texts, why) in rows {
+            let said = listed_secrets(&entry, &line(&texts), &mut BTreeMap::new());
+            match why {
+                None => assert_eq!(said, None, "{what}"),
+                Some(why) => assert!(said.as_deref().is_some_and(|s| s.contains(why)), "{what}: {said:?}"),
+            }
+        }
+        // Across an export: one value, one commitment; another version, another value of a
+        // reference under one version, and the server's secret of the same name each have their own.
+        let mut seen = BTreeMap::new();
+        let mut says = |e: LogEntry| listed_secrets(&e, &line(&[]), &mut seen);
+        assert_eq!(says(entry(0, "v2 #aaaaaaaa", kept("local", &hex('1')))), None);
+        assert_eq!(says(entry(1, "v2 #aaaaaaaa", kept("local", &hex('1')))), None, "the same again");
+        assert_eq!(says(entry(2, "v3 #aaaaaaaa", kept("local", &hex('2')))), None, "another version");
+        assert_eq!(says(entry(3, "v2 #bbbbbbbb", kept("reference", &hex('3')))), None, "another value");
+        assert_eq!(says(entry(4, "v2 #aaaaaaaa", recorder::Committed { server: true, ..kept("local", &hex('4')) })), None, "the server's");
+        let other = says(entry(5, "v2 #aaaaaaaa", kept("local", &hex('5'))));
+        assert_eq!(other.as_deref(), Some("the commitment its entry has for the secret k v2 #aaaaaaaa: run 0 recorded another for the same value"));
+    }
 
     /// Guards: every leaf `verify` computes on a placeholder (`Asserting::computes`, by core's
     /// `taint::on_a_mark`) gives with the placeholder what it gives with the value: computed

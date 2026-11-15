@@ -184,6 +184,11 @@ pub struct LogEntry {
     /// logged none, and `holon verify` stands in the same marks. Absent in entries logged before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, String>,
+    /// What each secret it was given is held to, by name ([`Committed`]): where its value is
+    /// kept, and a commitment to the value. Beside `secrets`, which stays what a mark reads as.
+    /// Absent in entries logged before, and for a secret whose salt the store couldn't open.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub committed: BTreeMap<String, Committed>,
     /// Whether text the run had looked like a mark the log writes in place of a value it never
     /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
     /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
@@ -279,6 +284,24 @@ impl std::fmt::Debug for AnswerTokens {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AnswerTokens({} kept out of sight)", self.0.len())
     }
+}
+
+/// What a run's entry says of one secret it was given, beyond the version and fingerprint
+/// its marks name: enough for whoever is later handed the value and its salt to know it is the
+/// one the run had, and nothing a value can be guessed from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Committed {
+    /// Where the value is kept: `local` (sealed in the store, one value for a version) or
+    /// `reference` (kept elsewhere, where it can change under one version).
+    pub kind: String,
+    /// `secrets::commitment` of the value: SHA-256 over the secret's owner, name and version,
+    /// the value's salt and the value, in hex. The salt is 32 random bytes sealed in the store,
+    /// so the value can't be guessed from it.
+    pub commitment: String,
+    /// Whether it is the server's own secret, read by a deployment with none of that name: its
+    /// owner in the commitment is then the server (`secrets::SERVER`), not the deployment.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub server: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -2326,6 +2349,7 @@ mod tests {
             claims: vec![],
             by: None,
             secrets: BTreeMap::new(),
+            committed: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
             mails: Vec::new(),
