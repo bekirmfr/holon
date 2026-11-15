@@ -230,10 +230,11 @@ api_password: only a text of 6 characters or more is carried through a replay". 
 checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
 secret whole with `secure_equals`.
 
-Nor does the log of a run like that say what a secret chose. Where one decides which steps a run takes
-(`key.startsWith("live_") ? a : b`, `c && d`), the steps only one way takes are left out of the
-log, whichever way it went. A read by one (a collection's item under a key computed from it, a
-file it names) keeps which collection, folder or database it read and withholds the rest of what
+A run's steps show which way a choice went, a choice by a secret included:
+`key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:
+whoever approves a flow reads what it chooses by, and reading a run's steps is a grant of its
+own. What a secret chose to ask by is kept out of the log of a run like that. A read by one (a
+collection's item under a key computed from it, a file it names) keeps which collection, folder or database it read and withholds the rest of what
 it asked and what it found, but a database's rows. A header whose name is computed from one
 withholds the request's headers, names and all. And `sort` and `unique` of a list that holds a
 secret give something computed from it: where it came in the order. In any run, a key a secret

@@ -7628,13 +7628,16 @@ route.post("/go", (req) => {
 /// computes from its secret in each way a flow does (encoded into a header, beside headers that
 /// are nobody's secret, into a JSON body, answered to the caller, encoded twice and joined,
 /// compared with what the caller sent; and a number, a true or false, a short text, and inside
-/// a function applied to each item), or chooses by it (a branch, a header's name, the order of a
-/// sort, a collection's key read, and claimed before a call, a file's name whose read fails), is
-/// run with one secret, then with another. Its two records read the same, but for the marks'
-/// prints and the hashes and commitments its entry lists: which of two secrets a run had can't
-/// be told from anything else in it, the steps it took included. Where every computed value is a
-/// text of six characters or more, the record shows a mark for each and `holon verify` runs the
-/// run again; where one isn't, it withholds what follows and says why.
+/// a function applied to each item), or chooses by it (a header's name, the order of a sort, a
+/// collection's key read, and claimed before a call, a file's name whose read fails, each with
+/// the secret recoded whole too), is run with one secret, then with another. Its two records
+/// read the same, but for the marks' prints and the hashes and commitments its entry lists:
+/// which of two secrets a run had can't be told from anything else in it. A branch a secret
+/// chooses (the row "ternary") shows in the run's steps, as the owner decided (whoever approves
+/// the flow reads what it chooses by, and reading a run's steps is a grant of its own), and in
+/// nothing else of its record. Where every computed value is a text of six characters or more,
+/// the record shows a mark for each and `holon verify` runs the run again; where one isn't, it
+/// withholds what follows and says why.
 ///
 /// **Why:** before a computed value had a mark, everything computed from a secret was left out
 /// whole, by the graph alone. Marking is by value: a value the record didn't know was computed
@@ -7642,8 +7645,9 @@ route.post("/go", (req) => {
 /// holds the two together: any difference between the two records is a leak, whatever made it.
 ///
 /// **If it fails:** the row and the places named differ between two runs that differ only in
-/// their secret: each holds something computed from it, or chosen by it, in the clear. Or a run
-/// that could be run again no longer is, or one that can't be is said to differ.
+/// their secret: each holds something computed from it, or chosen by it, in the clear (for
+/// "ternary", a place outside its steps, or its steps no longer show the branch it took). Or a
+/// run that could be run again no longer is, or one that can't be is said to differ.
 #[test]
 fn a_runs_record_reads_the_same_whatever_its_secret() {
     let (host, _) = counting_server();
@@ -7764,6 +7768,14 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         assert_eq!(one["url"], format!("/{path}"), "{one}");
         let mut at = Vec::new();
         differs(&but_marks(one), &but_marks(other), String::new(), &mut at);
+        // A branch a secret chose shows in the run's steps (the branch's own, and the clean
+        // constants they give), and nowhere else.
+        if *path == "ternary" {
+            if !at.iter().any(|d| d.starts_with(".timeline")) {
+                wrong.push(format!("{path}: its steps don't show the branch it took"));
+            }
+            at.retain(|d| !d.starts_with(".timeline"));
+        }
         if !at.is_empty() {
             wrong.push(format!("{path}: two secrets, two records:\n  {}", at.join("\n  ")));
         }

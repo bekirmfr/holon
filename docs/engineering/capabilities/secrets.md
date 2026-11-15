@@ -114,11 +114,14 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   `FiredRun::withholds_output`, `withholds_effect`, `withholds_input`; a node's outputs left out
   by `without_secret_derived`), and the marks it does have still cover those values wherever
   else they turn up.
-- **What a secret chooses is left out.** A choice decided by what a secret reaches (`guard`,
-  `coalesce`, `and`, `or`, which core runs lazily) runs only the branch it takes; the nodes only
-  that branch needs (`SecretFed::chosen`) are left out of the timeline of a run not marked whole
-  (`without_secret_derived`). Such a run's read whose request a secret reaches (`SecretFed::fed`)
-  keeps its collection, folder, database, query, `one` and `bytes` and withholds the rest
+- **What a secret chooses.** A choice decided by what a secret reaches (`guard`, `coalesce`,
+  `and`, `or`, which core runs lazily) runs only the branch it takes, and the run's timeline keeps
+  the steps it took (`SecretFed::chosen`): a run's steps show which way a choice went, a secret's
+  included, as the owner decided. Whoever approves a flow reads what it chooses by
+  (`SecretFed::deciders`, each choice a secret decides, given that secret through
+  `SecretFed::of_secret`), and reading a run's steps is a grant of its own. A run not marked
+  whole keeps out what a secret chose to ask by: its read whose request a secret reaches
+  (`SecretFed::fed`) keeps its collection, folder, database, query, `one` and `bytes` and withholds the rest
   (`taint::withhold_read`), and what it found, but a database's rows (`LoggedRead.withheld`,
   `FiredRun::withholds_read`); a request's headers are withheld whole, names and all. In any run,
   a claim on a key such a read chose reads `seen[‹withheld…›]` in the log and the 503's answer
@@ -177,10 +180,10 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   database's, approved as where the secret goes: a route that answers them, or fails with them,
   may tell its caller something of the secret without `SecretAnswer` (the audit's F10, by the
   owner's choice).
-- **A request a secret's choice sends still shows.** The steps only a secret's choice takes are
-  left out of the timeline, but a request one of them sends is in the run's rounds (the parts a
-  secret reaches withheld), so whether it was sent says which way the choice went. Its host is one
-  the approval names. Nor is a run's timing covered.
+- **A caller can tell which way a secret's choice went by time, and by a 503.** The steps
+  that show it are a reader's, under a grant; a caller sees none, but how long the run took is
+  not covered, nor a 503 answered when a key only one branch reads, clean itself, is held by
+  another run.
 - **A revoked Vault value works for up to `STALE_AFTER`**; a source read fails loudly, once, in
   the audit.
 - **In memory in the clear** while the server runs (`Zeroizing`, wiped when dropped).

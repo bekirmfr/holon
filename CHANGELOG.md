@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-- **A run's record says nothing of what a secret chose.** A run whose log can't mark what it
-  computed from a secret no longer lists the steps only one way of a choice the secret decides
-  takes (`key.startsWith("live_") ? a : b`); a read by one (a collection's key, a file's name
-  computed from it) keeps which collection, folder or database it read and withholds the rest of
-  what it asked and found, but a database's rows; a header named by one withholds the request's
-  headers whole; and `sort` and `unique` of a list holding a secret give something computed from
-  it. In any run, a key a secret chose is withheld where the log lists what the run claimed and
+- **A run's record keeps out what a secret chose to ask by.** In a run whose log can't mark
+  what it computed from a secret, a read by one (a collection's key, a file's name computed from
+  it) keeps which collection, folder or database it read and withholds the rest of what it asked
+  and found, but a database's rows; a header named by one withholds the request's headers whole;
+  and `sort` and `unique` of a list holding a secret give something computed from it. Which way
+  a choice by a secret went (`key.startsWith("live_") ? a : b`) shows in the run's steps, as any
+  choice's does: whoever approves a flow reads what it chooses by. In any run, a key a secret chose is withheld where the log lists what the run claimed and
   in the 503 a run kept waiting on it answers, and a read that failed by one says only that it
   failed. A route that reads
   its flow's own data by a secret asks `SecretAnswer`, as whether it found, waited or failed tells

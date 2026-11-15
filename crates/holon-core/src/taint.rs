@@ -22,7 +22,9 @@
 //! that is, for an input that only chooses what comes out ([`selects`]), and one that orders what
 //! it is handed ([`ORDERS`]). Which steps a run takes is chosen too: a choice decided by a
 //! secret (`guard`, `coalesce`, `and`, `or`) runs only the branch it takes, so the steps only it
-//! needs are [chosen](SecretFed::chosen), and a log that showed them would say which way it went.
+//! needs are [chosen](SecretFed::chosen), and the choice is one of the
+//! [deciders](SecretFed::deciders). A run's steps show which way it went, as any choice's do:
+//! the person approving a flow is told what it chooses by a secret.
 //!
 //! The same walk, one secret at a time, finds what a route may answer its caller with
 //! ([`answered_secrets`]): each such secret is a permission of its own, `SecretAnswer("name")`,
@@ -180,6 +182,8 @@ pub struct SecretFed {
     makers: BTreeSet<Vec<u32>>,
     /// The nodes a run takes only when a choice decided by a secret takes them ([`SecretFed::chosen`]).
     chosen: BTreeSet<Vec<u32>>,
+    /// The choices decided by a secret ([`SecretFed::deciders`]).
+    deciders: BTreeSet<Vec<u32>>,
     /// The nodes that read the flow's own data (a collection's items, a folder's files) by what
     /// a secret reaches, and a node not followed that could ([`SecretFed::reads_by_a_secret`]).
     own_reads: BTreeSet<Vec<u32>>,
@@ -316,6 +320,15 @@ impl SecretFed {
     /// choice went; so does anything inside it.
     pub fn chosen(&self, path: &[u32]) -> bool {
         self.chosen.iter().any(|c| path.starts_with(c))
+    }
+
+    /// The choices (`guard`, `coalesce`, `and`, `or`: a ternary, `??`, `&&`, `||`, an `if` that
+    /// returns) whose decision may carry a secret, each by its path: what runs after them is
+    /// chosen by it ([`SecretFed::chosen`]). Given one secret ([`SecretFed::of_secret`]), the
+    /// choices it decides, for a person approving the flow to be told. A value a secret picks
+    /// (`rec[k]`, `list[i]`) isn't a choice of what runs: it is derived ([`selects`]).
+    pub fn deciders(&self) -> impl Iterator<Item = &[u32]> {
+        self.deciders.iter().map(Vec::as_slice)
     }
 
     /// Whether the run reads its flow's own data (a collection's items, a folder's files) by
@@ -659,16 +672,19 @@ fn decided_by_a_secret(choice: &str, port: usize, inputs: &[Taint]) -> bool {
     deciding.iter().any(|t| *t > Taint::Clean)
 }
 
-/// The children of a composite at `path` (`n` of them, wired by `edges`) that run only when a
-/// choice decided by a secret takes them ([`SecretFed::chosen`]): those no road reaches from what
-/// the composite gives (the children wired to its outputs, and those nothing consumes) but through
-/// an input such a choice reads only as its decision goes. `choices`: each child that is a choice,
-/// and its inputs' taint.
+/// The children of a composite at `path` (`n` of them, wired by `edges`) that are choices decided
+/// by a secret ([`SecretFed::deciders`]), and those that run only when such a choice takes them
+/// ([`SecretFed::chosen`]): those no road reaches from what the composite gives (the children
+/// wired to its outputs, and those nothing consumes) but through an input such a choice reads
+/// only as its decision goes. `choices`: each child that is a choice, and its inputs' taint.
 fn chosen_among(n: usize, edges: &[crate::Edge], choices: &[Option<(&str, Vec<Taint>)>], path: &[u32], fed: &mut SecretFed) {
     let lazy = |to: usize, port: usize| choices[to].as_ref().is_some_and(|(choice, inputs)| decided_by_a_secret(choice, port, inputs));
-    if !(0..n).any(|ci| choices[ci].as_ref().is_some_and(|(choice, inputs)| (1..inputs.len()).any(|p| decided_by_a_secret(choice, p, inputs)))) {
+    let at = |ci: usize| path.iter().copied().chain([ci as u32]).collect::<Vec<u32>>();
+    let deciders: Vec<usize> = (0..n).filter(|&ci| choices[ci].as_ref().is_some_and(|(_, inputs)| (1..inputs.len()).any(|p| lazy(ci, p)))).collect();
+    if deciders.is_empty() {
         return;
     }
+    fed.deciders.extend(deciders.into_iter().map(at));
     let child = |c: u32| (c != BOUNDARY && (c as usize) < n).then_some(c as usize);
     let mut reached = vec![false; n];
     let mut stack: Vec<usize> = (0..n)
@@ -687,13 +703,7 @@ fn chosen_among(n: usize, edges: &[crate::Edge], choices: &[Option<(&str, Vec<Ta
             }
         }
     }
-    for (ci, reached) in reached.iter().enumerate() {
-        if !reached {
-            let mut at = path.to_vec();
-            at.push(ci as u32);
-            fed.chosen.insert(at);
-        }
-    }
+    fed.chosen.extend((0..n).filter(|&ci| !reached[ci]).map(at));
 }
 
 /// Kahn's algorithm over the child→child edges: an order in which every child comes after those
@@ -872,7 +882,8 @@ mod tests {
     }
 
     /// Guards: which steps run only when a choice decided by a secret takes them
-    /// ([`SecretFed::chosen`]). `c ? a : b` lowers to `coalesce(guard(c, a), b)`, and the
+    /// ([`SecretFed::chosen`]), and which choices it decides ([`SecretFed::deciders`], all of
+    /// them and given the secret alone). `c ? a : b` lowers to `coalesce(guard(c, a), b)`, and the
     /// evaluator runs `a` only when `c` is true, `b` only when the guard gave nothing; `c && d`
     /// runs `d` only when `c` is true. With `c` computed from the secret, `a`, `b` and `d` are
     /// chosen, and nothing else is; with `c` the caller's, nothing is.
@@ -929,8 +940,14 @@ mod tests {
             assert_eq!(fed.chosen(&[node]), chosen, "node {node}: {why}");
         }
         assert!(fed.chosen(&[3, 0]), "inside a chosen step is chosen");
+        // The guard (by its condition), the coalesce (by the guard's value, chosen) and the and.
+        let deciders = |fed: &SecretFed| fed.deciders().map(<[u32]>::to_vec).collect::<Vec<_>>();
+        assert_eq!(deciders(&fed), vec![vec![2], vec![4], vec![6]], "the choices the secret decides");
+        assert_eq!(deciders(&SecretFed::of_secret(&root(0), &r, "k")), deciders(&fed), "given the secret alone");
+        assert!(deciders(&SecretFed::of_secret(&root(0), &r, "other")).is_empty(), "another secret decides none");
         let caller = SecretFed::of(&root(BOUNDARY), &r);
         assert!((0..8).all(|node| !caller.chosen(&[node])), "the caller's condition chooses nothing a secret decides");
+        assert!(deciders(&caller).is_empty(), "nor decides any");
     }
 
     /// Guards: a route that reads its flow's own data by what a secret reaches (a collection's

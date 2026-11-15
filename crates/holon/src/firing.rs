@@ -1311,15 +1311,12 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
 /// nothing (a thrown message, a module's error) withheld; and, unless the run's record marks
 /// every value it computed from one (`marked`, `recorder::Born::whole`), with those nodes'
 /// outputs left out: redaction finds a secret's value, and what is computed from it only where
-/// the run kept each such value (taint.rs, `secrets::born`). Then, too, the steps a choice
-/// decided by a secret took are left out (`SecretFed::chosen`): which of them ran says which
-/// way it went. (A run that marks every value has no such choice: what decides one is a true or
-/// false, or a value absent, which no mark stands for.)
+/// the run kept each such value (taint.rs, `secrets::born`). Its steps are all kept, those a
+/// choice decided by a secret took too (`SecretFed::chosen`): a run's steps show which way a
+/// choice went, a secret's included, as the owner decided; whoever approves the flow reads what
+/// it chooses by, and reading a run's steps is a grant of its own.
 fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed, marked: bool) -> Vec<recorder::NodeTiming> {
     if !fed.is_empty() {
-        if !marked {
-            timeline.retain(|node| !fed.chosen(&node.path));
-        }
         for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
             if !marked {
                 node.outputs = None;
