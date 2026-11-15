@@ -138,18 +138,24 @@ impl Sources {
                 let addr = self.var("VAULT_ADDR").ok_or("VAULT_ADDR isn't set: the server doesn't know where Vault is")?;
                 let token = self.var("VAULT_TOKEN").ok_or("VAULT_TOKEN isn't set: the server can't read from Vault")?;
                 let url = format!("{}/v1/{mount}/data/{path}", addr.trim_end_matches('/'));
-                let mut request = ureq::get(&url).timeout(Duration::from_secs(5)).set("X-Vault-Token", &token);
+                warn_if_plain(&addr);
+                // A Vault that sends the read on elsewhere isn't followed: its token would go along.
+                let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(5)).redirects(0).build();
+                let mut request = agent.get(&url).set("X-Vault-Token", &token);
                 if let Some(ns) = self.var("VAULT_NAMESPACE") {
                     request = request.set("X-Vault-Namespace", &ns);
                 }
                 let body: serde_json::Value = match request.call() {
+                    Ok(r) if (300..400).contains(&r.status()) => {
+                        return Err(format!("Vault answered {} for {mount}/{path}, sending the read elsewhere: it isn't followed, as the token would go along", r.status()));
+                    }
                     Ok(r) => r
                         .into_string()
                         .ok()
                         .and_then(|t| serde_json::from_str(&t).ok())
                         .ok_or_else(|| format!("Vault's answer for {mount}/{path} isn't JSON"))?,
                     Err(ureq::Error::Status(code, _)) => return Err(format!("Vault answered {code} for {mount}/{path}")),
-                    Err(e) => return Err(format!("Vault at {} can't be reached: {e}", addr.as_str())),
+                    Err(e) => return Err(format!("Vault at {} can't be reached: {}", addr.as_str(), crate::outbound::said(&e))),
                 };
                 match &body["data"]["data"][field.as_str()] {
                     serde_json::Value::String(s) => Ok(Zeroizing::new(s.clone())),
@@ -180,6 +186,18 @@ pub(crate) fn parse_dotenv(text: &str) -> BTreeMap<String, Zeroizing<String>> {
         vars.insert(key.trim().to_string(), Zeroizing::new(value.to_string()));
     }
     vars
+}
+
+/// Say once, on the server's output, that `VAULT_ADDR` is plain `http://` to another machine:
+/// its token and every secret read go in the clear (Vault's dev server is plain `http://`, so it
+/// is said, not refused).
+fn warn_if_plain(addr: &str) {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    let Some(rest) = addr.strip_prefix("http://") else { return };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if !crate::oauth::is_loopback(host) {
+        SAID.call_once(|| eprintln!("holon: VAULT_ADDR is plain http:// to {host}: its token and the secrets read from it go in the clear (https:// keeps them)"));
+    }
 }
 
 #[cfg(test)]

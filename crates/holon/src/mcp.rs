@@ -120,7 +120,7 @@ impl Api for Http {
         let response = match result {
             Ok(r) => r,
             Err(ureq::Error::Status(_, r)) => r,
-            Err(e) => return Err(format!("can't reach {}: {e}. Is holon serve running? (holon mcp --server takes the port or address it printed)", self.server)),
+            Err(e) => return Err(format!("can't reach {}: {}. Is holon serve running? (holon mcp --server takes the port or address it printed)", self.server, crate::outbound::said(&e))),
         };
         let status = response.status();
         let mut bytes = Vec::new();

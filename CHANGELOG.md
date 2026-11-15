@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A header no request can carry is named, never echoed.** A token with a stray line break or
+  control character (a `VAULT_TOKEN`, an SQS session token, a header a flow computed from a
+  secret) came back whole in the error, which reaches a run's record, the timeline, the live status
+  and the console: ureq's message is the header's whole line. Every failed call is now told one
+  way (`outbound::said`), naming no header's value. A Vault that answers with a redirect isn't
+  followed, as its token went along, and a plain `http://` `VAULT_ADDR` to another machine is
+  said once on the server's output.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

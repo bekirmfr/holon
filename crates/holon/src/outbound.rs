@@ -400,12 +400,18 @@ fn transport_failure(t: &ureq::Transport) -> Value {
             _ => "transport",
         }
     };
-    failure(error, without_url(t))
+    failure(error, transport_said(t))
 }
 
-/// What went wrong, without the URL ureq puts first: its path and query may hold what is computed
-/// from a secret (a key in the query), and the message is logged as the call's answer.
-fn without_url(t: &ureq::Transport) -> String {
+/// What a transport failure says, the one way a failed call to anywhere is told: without the URL
+/// ureq puts first (its path and query may hold what is computed from a secret, a key in the
+/// query), and without the header ureq refused, whose line its message holds whole (`invalid
+/// header 'X-Vault-Token: …'`): a header's value is a secret as often as not, and the message
+/// goes to a run's record, the timeline, the live status and the console.
+pub(crate) fn transport_said(t: &ureq::Transport) -> String {
+    if t.kind() == ureq::ErrorKind::BadHeader {
+        return "a header's value isn't one a request can carry: a line break, a control character or a byte past ASCII in it".to_string();
+    }
     let mut said = t.kind().to_string();
     if let Some(m) = t.message() {
         said = format!("{said}: {m}");
@@ -416,6 +422,15 @@ fn without_url(t: &ureq::Transport) -> String {
         source = s.source();
     }
     said
+}
+
+/// What a failed call says: the status it was answered, or its transport failure as
+/// [`transport_said`] tells it.
+pub(crate) fn said(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("it answered {code}"),
+        ureq::Error::Transport(t) => transport_said(t),
+    }
 }
 
 /// Whether `ip` is somewhere a flow must not reach by default: this machine, its network, or a

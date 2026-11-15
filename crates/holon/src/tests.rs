@@ -11355,6 +11355,93 @@ fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+// ── Secrets in what an integration says (R33) ──
+
+/// **Guards:** a secret given to an integration is in nothing it says when it fails, and goes
+/// nowhere a redirect points. A canary through each road: a flow's request whose header holds it
+/// with a line break (a header no request can carry); Vault's token, refused the same way, and
+/// sent a redirect; an SQS queue's session token; the witness's token; a Postgres password where
+/// TLS is required and the server refuses it. Each fails, saying why, and none says the canary;
+/// the host Vault redirects to is never asked.
+/// **Why:** ureq's message for a header it refuses is the header's whole line (`invalid header
+/// 'X-Vault-Token: …'`), and it went into the error as it was: a `VAULT_TOKEN` or an SQS session
+/// token with a stray `\r` reached the timeline, the live status and the console. And Vault's read
+/// followed a redirect, its token along.
+/// **If it fails:** the row named says the canary: a failure there is told some other way than
+/// `outbound::said` (or `transport_said`), or Vault follows a redirect again.
+#[test]
+fn a_secret_is_in_nothing_an_integration_says_when_it_fails() {
+    use std::io::{Read, Write};
+    use holon_host::{Limits, Performer};
+    use zeroize::Zeroizing;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const CANARY: &str = "cAnArY-5ecret";
+    let unsendable = format!("{CANARY}\r\nx");
+    let mut said: Vec<(&str, String)> = Vec::new();
+
+    // A flow's request, a header holding it.
+    let nowhere: BTreeSet<String> = ["127.0.0.1:9".to_string()].into();
+    let o = outbound::Outbound { allowed: nowhere.clone(), revoked: BTreeSet::new(), plain_http: nowhere, allow_private: true };
+    let request = Value::Record(BTreeMap::from([
+        ("method".to_string(), Value::Text("GET".into())),
+        ("url".to_string(), Value::Text("http://127.0.0.1:9/".into())),
+        ("headers".to_string(), Value::Record(BTreeMap::from([("x-api-key".to_string(), Value::Text(unsendable.clone()))]))),
+        ("body".to_string(), Value::Text(String::new())),
+    ]));
+    said.push(("a flow's request", format!("{:?}", o.perform(&request, &Limits::request_run()))));
+
+    // Vault's token, refused; and a Vault that sends the read elsewhere.
+    let vault = secret_sources::Reference::parse("vault:secret/payments#signing").unwrap();
+    let refused = secret_sources::Sources::of(&[("VAULT_ADDR", "http://127.0.0.1:9"), ("VAULT_TOKEN", &unsendable)]).fetch(&vault).map(|_| ());
+    said.push(("Vault's token", format!("{refused:?}")));
+    let asked_elsewhere = Arc::new(AtomicBool::new(false));
+    let elsewhere = rouille::Server::new("127.0.0.1:0", {
+        let asked = Arc::clone(&asked_elsewhere);
+        move |_| {
+            asked.store(true, Ordering::SeqCst);
+            rouille::Response::json(&serde_json::json!({ "data": { "data": { "signing": "x" } } }))
+        }
+    })
+    .unwrap();
+    let there = format!("http://{}", elsewhere.server_addr());
+    let (_elsewhere, stop_elsewhere) = elsewhere.stoppable();
+    let redirecting = rouille::Server::new("127.0.0.1:0", move |r| rouille::Response::redirect_307(format!("{there}{}", r.url()))).unwrap();
+    let addr = format!("http://{}", redirecting.server_addr());
+    let (_redirecting, stop_redirecting) = redirecting.stoppable();
+    let redirected = secret_sources::Sources::of(&[("VAULT_ADDR", &addr), ("VAULT_TOKEN", CANARY)]).fetch(&vault).map(|_| ());
+    assert!(redirected.as_ref().is_err_and(|e| e.contains("307") && e.contains("isn't followed")), "{redirected:?}");
+    assert!(!asked_elsewhere.load(Ordering::SeqCst), "the host Vault points to is never asked, the token along");
+    said.push(("Vault, redirecting", format!("{redirected:?}")));
+    let _ = (stop_elsewhere.send(()), stop_redirecting.send(()));
+
+    // An SQS queue's session token.
+    let queue = sqs::Queue::parse(&format!("http://AKID:s3cret@127.0.0.1:9/123/q?region=us-east-1&token={CANARY}%0D%0Ax")).unwrap();
+    said.push(("an SQS queue's session token", format!("{:?}", queue.attributes().map(|_| ()))));
+
+    // The witness's token.
+    let witness = heads::Exporter::new("http://127.0.0.1:9/heads", Some(unsendable.clone()), None).unwrap();
+    witness.note(heads::Head { deployment: "d".into(), kind: "run".into(), seq: 0, head: "h".into(), at_ms: 0 });
+    said.push(("the witness's token", format!("{:?}", witness.flush())));
+
+    // A Postgres password, TLS required and refused.
+    let refusing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let pg = refusing.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut conn, _)) = refusing.accept() {
+            let mut ssl_request = [0u8; 8];
+            let _ = conn.read_exact(&mut ssl_request);
+            let _ = conn.write_all(b"N");
+        }
+    });
+    let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).map(|_| ());
+    said.push(("a Postgres password, TLS refused", format!("{opened:?}")));
+
+    for (row, text) in &said {
+        assert!(text.contains("Err") || text.contains("error"), "{row} fails: {text}");
+        assert!(!text.contains(CANARY), "{row} says the secret: {text}");
+    }
+}
+
 // ── Mail received (host-capabilities 1.3b) ──
 
 /// The remittance-mail sample (host-capabilities L4 §5.2.4): refused until its mail is bound with

@@ -2505,7 +2505,7 @@ pub(crate) fn export(args: &[String]) -> i32 {
             return 1;
         }
         Err(e) => {
-            eprintln!("holon export: can't reach {server}: {e}");
+            eprintln!("holon export: can't reach {server}: {}", crate::outbound::said(&e));
             eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
             return 1;
         }

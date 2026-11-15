@@ -357,7 +357,7 @@ pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, bo
         Ok(r) => (r.status(), r),
         Err(ureq::Error::Status(code, r)) => (code, r),
         Err(e) => {
-            eprintln!("{who}: can't reach {server}: {e}");
+            eprintln!("{who}: can't reach {server}: {}", crate::outbound::said(&e));
             return Err(1);
         }
     };
