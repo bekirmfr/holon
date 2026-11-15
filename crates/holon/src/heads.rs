@@ -14,9 +14,11 @@
 //! `kind` is `"run"` for a run's head, `"event"` for the head of the deployment's events (events.rs:
 //! their own chain, `seq` the event's), or `"trim"` when a log is cut back to what it keeps (its
 //! `seq` the oldest run kept, its `head` the hash of the last run dropped): runs before it are gone
-//! by the host's choice. No run data leaves the server: heads only. `batch` names the batch, so a
-//! witness can take a retried one again harmlessly. With `HOLON_EXPORT_HEADS_TOKEN` set, the request
-//! carries it as `Authorization: Bearer <token>`.
+//! by the host's choice; or `"removed"` when the deployment is removed (its `seq` the run it would
+//! have numbered next, its `head` its last run's): the slug deployed again starts a new chain at 0,
+//! and the heads after it are of that one. No run data leaves the server: heads only. `batch`
+//! names the batch, so a witness can take a retried one again harmlessly. With
+//! `HOLON_EXPORT_HEADS_TOKEN` set, the request carries it as `Authorization: Bearer <token>`.
 //!
 //! A witness answering 2xx has taken the batch; whatever JSON it answers is its receipt, kept as a
 //! line of `<deployments>.heads/receipts.jsonl` beside the logs (a witness that signs what it took
@@ -27,10 +29,11 @@
 //! The queue file is synced with the logs, every second (`sync`): a power loss loses what it
 //! loses of them. A receipt is synced as it is kept. While the witness is down the queue doesn't
 //! grow without end: past [`MAX_PENDING`] heads, each deployment's newest of each kind stands for
-//! the ones before it (`compact`). A head stands for every line before it in its chain, so what the
-//! witness then takes pins every run it would have, in fewer steps.
+//! the ones before it (`compact`), of each of its lives apart: a removal's head ends one. A head
+//! stands for every line before it in its chain, so what the witness then takes pins every run it
+//! would have, in fewer steps.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use crate::sync::Mutex;
@@ -42,12 +45,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Head {
     pub deployment: String,
-    /// `"run"`, `"event"` or `"trim"` (see the module docs).
+    /// `"run"`, `"event"`, `"trim"` or `"removed"` (see the module docs).
     pub kind: String,
     pub seq: u64,
     pub head: String,
     pub at_ms: u64,
 }
+
+/// The kind of a removal's head: it ends a deployment's chain (see the module docs).
+pub(crate) const REMOVED: &str = "removed";
 
 /// The most heads sent in one batch.
 const MAX_BATCH: usize = 1000;
@@ -204,12 +210,21 @@ impl Exporter {
 
     /// Keep of the waiting heads each deployment's newest of each kind, in the order they came,
     /// and the queue file rewritten to them: a run's head stands for every run before it in its
-    /// log, an event's for every event before it, a cut-back's for every cut-back before it. The
-    /// heads of a batch being sent are left as they are, to be taken off once it is taken.
+    /// log, an event's for every event before it, a cut-back's for every cut-back before it. Each
+    /// of a slug's lives apart: a head before a removal's is of the chain removed, and one after it
+    /// stands for none of that chain's runs (release audit R41). The heads of a batch being sent
+    /// are left as they are, to be taken off once it is taken.
     fn compact(&self, queue: &mut Queue) {
         let was = queue.heads.len();
         let mut seen = BTreeSet::new();
-        let newest: Vec<Head> = queue.heads.iter().skip(queue.sending).rev().filter(|h| seen.insert((h.deployment.clone(), h.kind.clone()))).cloned().collect();
+        // Newest first: each removal's head begins (going back) an older life of its deployment.
+        let mut lives: BTreeMap<String, u32> = BTreeMap::new();
+        let mut newest_of = |h: &Head| {
+            let life = lives.entry(h.deployment.clone()).or_default();
+            *life += u32::from(h.kind == REMOVED);
+            seen.insert((h.deployment.clone(), h.kind.clone(), *life))
+        };
+        let newest: Vec<Head> = queue.heads.iter().skip(queue.sending).rev().filter(|h| newest_of(h)).cloned().collect();
         queue.heads.truncate(queue.sending);
         queue.heads.extend(newest.into_iter().rev());
         eprintln!("holon: {was} heads waited for the witness at {}: each deployment's newest stands for the ones before it, {} wait now", address_of(&self.url), queue.heads.len());
@@ -543,6 +558,37 @@ mod tests {
             assert!(sent.contains(newest), "{deployment}'s newest {kind} head is given: {newest:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+
+        // A slug removed and deployed again while the witness is down: each life's newest heads
+        // are given, the removal's between them (release audit R41). The new chain numbers from 0
+        // again, and its heads stand for none of the old one's runs.
+        let (url, got) = witness(Arc::clone(&status));
+        let mut exporter = Exporter::new(&url, None, None).unwrap();
+        exporter.most = 10;
+        *status.lock().unwrap() = 503;
+        let mut noted = Vec::new();
+        for (life, kind) in [(0, "run"), (0, "event"), (0, "run"), (0, REMOVED), (1, "run"), (1, "event"), (1, "run"), (1, REMOVED), (2, "run")] {
+            for seq in 0..5u64 {
+                if kind == REMOVED && seq > 0 {
+                    break;
+                }
+                let head = Head { deployment: "d".into(), kind: kind.into(), seq, head: format!("{life}-{kind}-{seq}"), at_ms: seq };
+                exporter.note(head.clone());
+                noted.push((life, head));
+            }
+        }
+        assert!(exporter.flush().is_err());
+        *status.lock().unwrap() = 200;
+        assert!(exporter.flush().is_ok());
+        let sent = taken(&got);
+        for life in 0..3 {
+            for kind in ["run", "event", REMOVED] {
+                if let Some((_, newest)) = noted.iter().rev().find(|(l, h)| *l == life && h.kind == kind) {
+                    assert!(sent.contains(newest), "life {life}'s newest {kind} head is given: {newest:?} of {sent:?}");
+                }
+            }
+        }
+        assert!(exporter.waiting() == 0 && sent.len() <= 9, "cut all the same: {sent:?}");
     }
 
     /// **Guards:** a cut while a batch is out leaves that batch's heads as they are.

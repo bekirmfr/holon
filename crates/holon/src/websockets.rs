@@ -296,6 +296,10 @@ impl Conn {
                 eprintln!("holon: {slug:?} {}: the run failed, as what it sends couldn't be spooled: {e}", block.label);
                 return Some(DataResponse::json_error(500, "the block ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why"));
             }
+            // Its deployment removed while it ran: a strict run's record is kept nowhere.
+            None if block.log == holon_core::LogLevel::Strict => {
+                return Some(DataResponse::json_error(500, &format!("the block ran, but {slug:?} was removed meanwhile, so its record isn't kept")));
+            }
             _ => {}
         }
         Some(answer)

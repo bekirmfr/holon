@@ -12,6 +12,15 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A removed deployment's life ends whole, and its slug used again starts apart.** A backup of
+  the runs a log lets go of is named by its last run's hash as well as its runs' numbers, so a slug
+  removed and deployed again, numbering its runs from 0 again, no longer overwrites the old one's
+  archives (the manual said they stayed). A run still going as its deployment is removed writes no
+  line after the removed deployment's records are taken, and a strict one is answered 500, not 200
+  with no record anywhere. Those records are counted by `holon host` and the console, kept as long
+  as the deployment's retention would have kept its runs, then moved to the backup or let go of;
+  before, they were kept for good, unseen. The witness is sent a `removed` head with the old
+  chain's last, and a queue cut while it is down keeps each life's newest heads apart.
 - **What is sealed opens only where it was sealed.** A run log's line, sealed apart from its seq and
   the hash before it so the log's lock isn't held while it is sealed, now carries a keyed hash
   binding the two to its body (`r2.` lines): before, the last line's body could be swapped for an

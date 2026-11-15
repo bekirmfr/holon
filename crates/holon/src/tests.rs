@@ -1326,16 +1326,16 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     // Each batch the cut-backs wrote, its runs sealed together as one file (at_rest.rs §5.5).
     let batches: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| storage::is_batch(&p.file_name().unwrap().to_string_lossy())).collect();
     assert!(!batches.is_empty() && batches.iter().all(|b| std::fs::read(b).unwrap().starts_with(b"HLA1")), "{batches:?}");
-    let bad = backup.join("kept").join(storage::batch_name(0, 0));
+    let bad = backup.join("kept").join(storage::batch_name(0, 0, &recorder::line_hash("a batch")));
     std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
-    storage::archive(&state);
+    storage::archive(&state, 0);
     assert!(bad.exists(), "the batch that can't be made an export stays");
     let batches_left = std::fs::read_dir(backup.join("kept")).unwrap().flatten().filter(|e| e.path() != bad && storage::is_batch(&e.file_name().to_string_lossy())).count();
     assert_eq!(batches_left, 0, "the other batches made exports all the same");
     let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
     assert!(w.as_array().unwrap().iter().any(|w| w["key"] == "backup-export" && w["says"].as_str().unwrap().contains(&bad.display().to_string())), "{w}");
     std::fs::remove_file(&bad).unwrap();
-    storage::archive(&state);
+    storage::archive(&state, 0);
     let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
     assert!(!w.as_array().unwrap().iter().any(|w| w["key"] == "backup-export"), "no longer warned of once it is gone: {w}");
     for p in &theirs {
@@ -1389,6 +1389,124 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&backup);
     let _ = std::fs::remove_file(&blocked);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// **Guards:** a removed deployment's life ends whole, and its slug used again starts apart
+/// (release audit R41). Its records hold every run its log did, none after: a run still in flight
+/// writes no line once they are taken, and is told its record isn't kept; nor does its log come
+/// back as a file. The slug deployed again and cut back over the same run numbers writes backups of
+/// its own: the removed one's stay, byte for byte. The records are counted in the host's census,
+/// kept as long as the deployment's retention would have kept its runs, then moved to the backup,
+/// where they still open.
+///
+/// **Why:** archives were named by slug and run range, and a new deployment numbers its runs from
+/// 0, so the new one's overwrote the old; the records were taken before a run in flight wrote its
+/// line, which was then deleted with the file, while the run answered 200; and `logs/removed/`
+/// was kept for good, outside retention and the census.
+///
+/// **If it fails:** a removed deployment's backed-up runs are silently replaced by another's; a
+/// strict run is answered as recorded with no record anywhere; or a deployment kept a day keeps
+/// its whole log forever where no one sees it.
+#[test]
+fn a_removed_deployments_life_ends_whole_and_its_slug_used_again_starts_apart() {
+    let dir = unique_temp_path("again-store");
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let data = unique_temp_path("again-data");
+    std::fs::create_dir_all(&data).unwrap();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
+    let path = std::path::PathBuf::from(unique_temp_path("again-policy")).with_extension("toml");
+    state.policy_path = path.display().to_string().into();
+    let backup = std::path::PathBuf::from(unique_temp_path("again-backup"));
+    let set = serde_json::to_vec(&serde_json::json!({ "backup": backup.display().to_string() })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/admin/storage", set)).status_code, 200);
+    let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"again\", { keep: { runs: 5, days: 1 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n";
+    let open = |p: &std::path::Path| verify::read_export(p, || Ok(std::sync::Arc::clone(crate::at_rest::keys()))).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let seqs_of = |export: &verify::Export| -> Vec<u64> { export.lines.iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect() };
+    let exports = || -> BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(backup.join("again")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("holon-archive-again-runs-")).map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap())).collect()
+    };
+    // A life: deployed, 20 runs with cut-backs between, its batches made into exports.
+    let life = || {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        let requirements = plan.requirements.clone().unwrap();
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "again", "unit": plan.unit, "requirements": requirements })).unwrap())));
+        let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+        assert_eq!(deploy_json(&state, "again", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+        for i in 0..20 {
+            assert_eq!(route(&state, &req("POST", "/trigger/again/bump", b"{}".to_vec())).status_code, 200);
+            if i % 7 == 0 {
+                crate::recorder::sync_logs(&state.deployments).unwrap();
+            }
+        }
+        crate::recorder::sync_logs(&state.deployments).unwrap();
+        storage::archive(&state, 0);
+    };
+    life();
+    let first = exports();
+    assert!(!first.is_empty(), "the first life's cut-backs were backed up");
+
+    // Removed, a run still in flight: it took the log before the removal, and writes after.
+    assert_eq!(route(&state, &req("POST", "/deployments/again/stop", vec![])).status_code, 200);
+    let in_flight = Arc::clone(&state.deployments.lock().unwrap()["again"].log);
+    let removed = body_json(route(&state, &req("DELETE", "/deployments/again", vec![])));
+    let records = std::path::PathBuf::from(removed["records"].as_str().unwrap_or_else(|| panic!("{removed}")));
+    let seq = in_flight.with(|log| log.push(recorder::LogEntry { at_ms: 1, ..Default::default() }));
+    let said = in_flight.sync_through(seq).expect_err("a line after the removal is refused");
+    assert!(said.contains("couldn't be written"), "{said}");
+    assert!(!std::path::Path::new(&data).join("deployments.logs/again.jsonl").exists(), "the removed log doesn't come back as a file");
+    // Its records: every run its log held, and with the backups every run there was, once.
+    let name = records.file_name().unwrap().to_string_lossy().into_owned();
+    let (removed_at, until) = name.strip_prefix("again-runs-").and_then(|n| n.strip_suffix(".json.gz")).and_then(|n| n.split_once("-until-")).unwrap_or_else(|| panic!("{name}"));
+    let (removed_at, until): (u64, u64) = (removed_at.parse().unwrap(), until.parse().unwrap());
+    assert_eq!(until, removed_at + 86_400_000, "kept as long as its retention, a day, would have kept its newest run");
+    let record = open(&records);
+    let report = verify::check(&record, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let mut seqs = seqs_of(&record);
+    assert!(!seqs.contains(&seq), "the run after the removal isn't in its records");
+    for name in first.keys() {
+        seqs.extend(seqs_of(&open(&backup.join("again").join(name))));
+    }
+    seqs.sort_unstable();
+    assert_eq!(seqs, (0..20).collect::<Vec<u64>>(), "backed up and in its records: every run, once");
+    let census = || body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    assert_eq!(census()["kept"]["removed_deployments"]["files"], 1, "{}", census()["kept"]);
+
+    // The slug deployed again, cut back over the same run numbers: the removed one's backups stay.
+    life();
+    let both = exports();
+    for (name, bytes) in &first {
+        assert_eq!(both.get(name), Some(bytes), "{name}: the removed deployment's backup, as it was");
+    }
+    let range = |name: &str| name.rsplit_once('-').unwrap().0.to_string();
+    let second: Vec<&String> = both.keys().filter(|n| !first.contains_key(*n)).collect();
+    assert!(second.iter().any(|n| first.keys().any(|f| range(f) == range(n))), "the same runs' numbers backed up twice, apart: {both:?}");
+    let mut seqs: Vec<u64> = second.iter().flat_map(|n| seqs_of(&open(&backup.join("again").join(n)))).collect();
+    seqs.extend(crate::at_rest::testing::open_lines(&std::path::Path::new(&data).join("deployments.logs/again.jsonl")).iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq));
+    seqs.sort_unstable();
+    assert_eq!(seqs, (0..20).collect::<Vec<u64>>(), "the new life's runs, each once, from 0");
+
+    // Its time up, its records go to the backup, and still open there.
+    let held = std::fs::read(&records).unwrap();
+    storage::archive(&state, until - 1);
+    assert!(records.exists(), "kept until its time");
+    storage::archive(&state, until);
+    assert!(!records.exists(), "let go of once its time is up");
+    let moved = backup.join("again").join(format!("holon-archive-again-removed-{removed_at}.json.gz"));
+    assert_eq!(std::fs::read(&moved).unwrap(), held, "to the backup first, as it was");
+    assert_eq!(seqs_of(&open(&moved)), seqs_of(&record));
+    let host = census();
+    assert_eq!(host["kept"]["removed_deployments"]["files"], 0, "{}", host["kept"]);
+    assert_eq!(host["backup"]["exports"].as_u64(), Some(both.len() as u64 + 1), "{}", host["backup"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&backup);
     let _ = std::fs::remove_file(&path);
 }
 

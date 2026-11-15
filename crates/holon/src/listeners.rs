@@ -332,6 +332,9 @@ fn serve_flow(
         Some(Logged { unsent: Some(_), .. }) => {
             answer = data::DataResponse::json_error(500, "the request ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why")
         }
+        // Its deployment removed while it ran: a strict run's record is kept nowhere (release
+        // audit R41).
+        None if level == holon_core::LogLevel::Strict => answer = data::DataResponse::json_error(500, &format!("the request ran, but {slug:?} was removed meanwhile, so its record isn't kept")),
         _ => {}
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments

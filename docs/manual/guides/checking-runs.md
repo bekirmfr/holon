@@ -257,10 +257,13 @@ HOLON_EXPORT_HEADS_TOKEN=… holon serve --export-heads https://witness.example.
 ```
 
 Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`,
-`kind` `run`, or `event` for the events' chain) with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
+`kind` `run`, `event` for the events' chain, `trim` when a log is cut back, or `removed` when the
+deployment is removed, its last run's head: the slug deployed again starts a new chain at 0) with
+`Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
 answered. If the witness can't be reached, the heads wait in a queue and are sent later. Past
-10,000 waiting, each deployment's newest head stands for the ones before it: it pins every run
-before it, so the witness is given fewer heads, and loses no run.
+10,000 waiting, each deployment's newest head stands for the ones before it (of each of its lives
+apart: a `removed` head ends one): it pins every run before it, so the witness is given fewer
+heads, and loses no run.
 
 A witness can be any service that keeps what it is sent. The **witness** sample is one, written as
 a flow: deploy it on another machine, set its `witness_key` secret to the same token, and point

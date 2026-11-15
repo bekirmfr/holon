@@ -321,7 +321,13 @@ runs, its state kept; `stop` ends its session. `remove` deletes a stopped deploy
 its state, its sessions and its secrets. Its runs' log and timeline are kept: written first, beside
 the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`; it says
 where), sealed under the server's keys as everything in its data folder is: `holon verify` opens it
-with `--root-key`. The slug deployed again starts a new log, and the old one stays as it was.
+with `--root-key`. A run still going as it is removed isn't in them, and a strict one is answered
+500, not as recorded. They are kept as long as its retention would have kept its runs (with `keep:
+{ days: … }`, the name says until when: `…-until-<ms>.json.gz`; with none, for good), then moved
+to the backup when there is one (`<backup>/<slug>/holon-archive-<slug>-removed-<ms>.json.gz`), or
+let go of; `holon host` counts them. The slug deployed again starts a new log, and the old one and
+its backups stay as they were: a backup is named by its last run's hash as well as its runs'
+numbers, which the new log starts again at 0.
 Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon key
 forget`](#holon-key), which needs `host.operate`): its kept log, events, records and backups
 can't be opened again; the values only it named are swept from the shared content store, and its

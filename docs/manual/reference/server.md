@@ -192,15 +192,19 @@ allow_plain_http = true
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
     within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
-    server's keys as its data folder is: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`.
+    server's keys as its data folder is: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>-<head>.json.gz`,
+    `<head>` the first 16 hex digits of the last run's hash, so a slug removed and deployed again,
+    its runs numbered from 0 again, never takes the place of the old one's archives. A removed
+    deployment's records go there too once its retention's time is up
+    (`<slug>/holon-archive-<slug>-removed-<ms>.json.gz`).
     The folder keeps a copy of `keys.json` too, `<backup>/holon-archive-keys.json` (every key in it
     wrapped under the root, as in the data folder), written again as it changes, so the backup and
     the root key alone open every archive in it, the data folder lost: `holon verify <archive>
     --root-key …` finds the copy beside it. Keep the root key apart from the backup. Each archive
     holds the units its runs ran and the file texts they read that the server keeps. Every file the server writes there
     starts with `holon-archive-`, and the folder may hold other things: the server only ever
-    exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>.jsonl`, each
-    seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360
+    exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>-<head>.jsonl`,
+    each seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360
     bytes (13 times smaller than its line), a listing's about 2 KB (30 times). If it can't be
     written to, a log doesn't cut back: it keeps the runs until it can, and the host warns; only
     `roll` past `full_at` lets them go without. Object storage (`s3://`) is to come, and Holon

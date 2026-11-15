@@ -674,6 +674,11 @@ pub struct Log {
     /// The seqs of the recent entries whose line couldn't be written to the file, so a strict run
     /// isn't told its record is on disk (`LogCell::sync_through`). The newest few.
     unkept: VecDeque<u64>,
+    /// Its deployment is being removed (deploy.rs): no line is written from then on, so the
+    /// records kept of it hold every line its file will (release audit R41). A run still in flight
+    /// is told its record couldn't be written, as on a full disk: a strict one isn't answered as
+    /// done.
+    closed: bool,
     /// A test's: the next lines' writes fail, as a full disk fails them.
     #[cfg(test)]
     pub(crate) fail_writes: bool,
@@ -820,13 +825,15 @@ impl CutPlan {
 }
 
 /// Write the lines a cut-back lets go of (`gone`, the file at `path`'s, opened) to `backup`, when
-/// there is one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>.jsonl`, the lines sealed
-/// together as one file under the deployment's keys (at_rest.rs §5.5), written whole then renamed
-/// in, so the same cut made again writes the same runs; the housekeeping turns it into an export
-/// `holon verify` checks, gzipped and sealed (storage.rs). An error if it can't be written, unless
+/// there is one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>-<head>.jsonl`, the lines
+/// sealed together as one file under the deployment's keys (at_rest.rs §5.5), written whole then
+/// renamed in, so the same cut made again writes the same runs; the housekeeping turns it into an
+/// export `holon verify` checks, gzipped and sealed (storage.rs). `<head>` is of the last line's
+/// hash: a slug deployed again numbers its runs from 0 again, and its batches never take the
+/// place of the removed deployment's (release audit R41). An error if it can't be written, unless
 /// the cut may go on without (`backup`'s flag).
 fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &LineAt)]) -> std::io::Result<()> {
-    let (Some((dir, may_drop)), Some((_, first)), Some((_, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
+    let (Some((dir, may_drop)), Some((_, first)), Some((last_line, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
     let written = (|| {
         let slug = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| std::io::Error::other("a log file without a name"))?;
         let dir = dir.join(slug);
@@ -836,7 +843,8 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &
             bytes.extend_from_slice(b);
             bytes.push(b'\n');
         }
-        crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
+        let head = line_hash(&String::from_utf8_lossy(last_line));
+        crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq, &head)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
     })();
     match written {
         Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
@@ -1563,6 +1571,7 @@ impl Log {
             file_len: 0,
             dirty: false,
             unkept: VecDeque::new(),
+            closed: false,
             #[cfg(test)]
             fail_writes: false,
             #[cfg(test)]
@@ -1966,6 +1975,9 @@ impl Log {
     /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
     /// file cut back to what it keeps.
     fn keep_line(&mut self, line: &mut Framed, mut at: LineAt) -> std::io::Result<()> {
+        if self.closed {
+            return Err(std::io::Error::other("its deployment is being removed"));
+        }
         let Some(path) = self.file.clone() else { return Ok(()) };
         #[cfg(test)]
         if self.fail_writes {
@@ -2300,6 +2312,25 @@ impl Log {
     pub fn breaks(&self) -> &[u64] {
         let oldest = self.kept.front().map_or(u64::MAX, |(seq, ..)| *seq);
         &self.breaks[self.breaks.partition_point(|seq| *seq < oldest)..]
+    }
+
+    /// Write no line from now on: its deployment is being removed, and what is kept of it is
+    /// taken next (`closed`). Undone by [`reopen`](Log::reopen) if the removal doesn't go through.
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Write lines again: its deployment's removal didn't go through. The lines refused meanwhile
+    /// are said lost by the next one written.
+    pub fn reopen(&mut self) {
+        self.closed = false;
+    }
+
+    /// Tell the witness its deployment is removed (heads.rs, `"removed"`): `seq` the run it would
+    /// have numbered next, `head` the hash of its last line. The slug deployed again starts a new
+    /// chain at 0, and what the witness holds of the old one stays apart from it.
+    pub fn note_removed(&self) {
+        self.export(crate::heads::REMOVED, self.next_seq, &self.head, now_ms());
     }
 
     /// Delete the file: its deployment was deleted.
