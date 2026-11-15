@@ -47,7 +47,7 @@ fn snapshot_record(state: &State) -> Value {
 pub(crate) fn snapshot_refs(hex: &str, store: &SharedStore) -> Result<BTreeMap<String, Hash>, String> {
     let hash = parse_hash(hex).ok_or("its snapshot isn't a hash")?;
     let Some(Value::Record(refs)) = store.get_value(&hash).map_err(|e| format!("{e:?}"))? else {
-        return Err("its snapshot isn't in the store".into());
+        return Err("its snapshot isn't in the store (as its run ended, the store couldn't keep it: its line names it, by its hash)".into());
     };
     refs.into_iter()
         .map(|(k, v)| match v {

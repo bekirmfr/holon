@@ -1050,8 +1050,22 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         let unrecorded = &light(b).unrecorded;
         // Numbered, an unrecorded handler's commits are counted too.
         let (ran_beside, side_by_side) = (side_by_side, side_by_side || (landed_beside.is_none() && !unrecorded.is_empty()));
+        // Its writes landed on the state the commit before its own left (each commit's state is
+        // kept, then counted, the state's lock held: firing.rs). A resumed part's land on the
+        // state as it is by then, as one's beside another run's do.
+        let on_the_one_before = b.commit.as_ref().and_then(|c| state_at(entries, lefts, &began, &c.cell, c.n?.checked_sub(1)?));
+        if left.collections.is_empty()
+            && let Some(then) = on_the_one_before
+            && (resumed || side_by_side)
+        {
+            match written_on(then, left) {
+                Some(h) if &h == after => states.left.push(b.seq),
+                _ => states.breaks.push((b.seq, "the state it left isn't the one the commit before its own left, its writes applied".into())),
+            }
+            continue;
+        }
         if resumed {
-            states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
+            states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then, and the commit before its own isn't here", b.seq);
             continue;
         }
         if !side_by_side && left.collections.is_empty() {
@@ -1086,6 +1100,41 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         }
     }
     Some(states)
+}
+
+/// The state the commit numbered `k` of `cell` left (0: the one the server loaded), where this
+/// log shows it whole: as a run that began after it found it, or as the run that made it left it
+/// (its writes run again, or a run that began from it), by the hash its line names.
+fn state_at<'a>(entries: &[(LogEntry, &str)], lefts: &'a [Option<Left>], began: &'a [Option<(String, State)>], cell: &str, k: u64) -> Option<&'a State> {
+    let commit = |e: &LogEntry| e.commit.clone().filter(|c| c.cell == cell);
+    let after_it = entries.iter().zip(began).find(|((e, _), _)| ran(e) && commit(e).is_some_and(|c| c.after == Some(k)));
+    if let Some((_, Some((_, state)))) = after_it {
+        return Some(state);
+    }
+    let (i, (made, _)) = entries.iter().enumerate().find(|(_, (e, _))| ran(e) && commit(e).is_some_and(|c| c.n == Some(k)))?;
+    let kept = made.state_after.as_ref()?;
+    began.iter().flatten().find(|(h, _)| h == kept).map(|(_, s)| s).or_else(|| {
+        lefts[i].as_ref().filter(|l| l.collections.is_empty() && restore::snapshot_hash(&l.state).ok().as_ref() == Some(kept)).map(|l| &l.state)
+    })
+}
+
+/// The hash of the state `left`'s writes make of `then`, as the commit writes them: every one, or
+/// none if one can't be (firing.rs).
+fn written_on(then: &State, left: &Left) -> Option<String> {
+    let mut on = then.clone();
+    for k in &left.wrote {
+        let landed = match left.state.get(k) {
+            Some(v) => on.insert(k.clone(), v.clone()).is_ok(),
+            None => {
+                on.remove(k);
+                true
+            }
+        };
+        if !landed {
+            return restore::snapshot_hash(then).ok();
+        }
+    }
+    restore::snapshot_hash(&on).ok()
 }
 
 /// The run whose commit `b` began after (`recorder::Commit`), wherever its line is; none for a
@@ -1548,11 +1597,12 @@ fn rerun(
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
-    // The steps it took, as the log keeps them. What may be computed from a secret it was given
-    // is withheld as the server withholds it (`firing::without_secret_derived`), from the same
-    // walk of the same unit.
+    // What may be computed from a secret it was given is withheld as the server withholds it
+    // (`firing::without_secret_derived`, `FiredRun::withholds_output`), from the same walk of
+    // the same unit.
     let given = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
     let fed = if given { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    // The steps it took, as the log keeps them.
     kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
     kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
     let again = std::mem::take(&mut observer.timer.timeline);
@@ -1592,6 +1642,28 @@ fn rerun(
         && answered() != status
     {
         differs.push("the status it answered");
+    }
+    // What it answered, as its line keeps it, made again where its status is: a run that
+    // finished. A kind that answers nothing keeps none.
+    if entry.error.is_none() && !answered_as_said(entry, outcome.outputs.first().and_then(Option::as_ref), fed.derives_output(0), marks) {
+        differs.push("what it answered");
+    }
+    // Where it waits: the points it settled waiting at, as it parked (`durable::park_if_waiting`),
+    // or none, where parking it failed (its error says so).
+    let waits_at: Vec<&str> = outcome.waiting.iter().map(|w| w.name.as_str()).collect();
+    let parked: Vec<&str> = entry.parked.iter().map(String::as_str).collect();
+    if parked != waits_at && (entry.error.is_none() || !parked.is_empty()) {
+        differs.push("where it waits");
+    }
+    // A run that finished and changed its state kept the state it left (`firing::keep_state`), or
+    // failed saying why: a line that keeps none is no such run's.
+    let changed = host.performed.iter().any(|(c, p)| match c {
+        Capability::StateWrite(key) => state.get(key) != Some(p),
+        Capability::CollectionWrite(_) => true,
+        _ => false,
+    });
+    if entry.error.is_none() && outcome.error.is_none() && changed && entry.state_after.is_none() {
+        differs.push("the state it left (its line keeps none)");
     }
     // One that failed may have failed here too, or after it finished: at its commit, or past a
     // limit of the server's.
@@ -1740,12 +1812,59 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
             (Some(_), _) if kind == "resume" => return Some("it is a resumed part, and its commit says it began after one".into()),
             (None, _) if kind != "resume" => return Some("its commit doesn't say which it began after".into()),
             (_, None) if entry.state_after.is_some() => return Some("it kept the state it left, and its commit isn't numbered".into()),
+            // Each commit counted names the state it left (`firing::keep_state`), kept or not.
+            (_, Some(_)) if entry.state_after.is_none() => return Some("its commit is numbered, and it names no state it left".into()),
             _ => {}
         }
     } else if entry.state_after.is_some() {
         return Some("it kept the state it left, and says no commit".into());
     }
     None
+}
+
+/// Whether `entry`'s answer (`response_body`) is the one its run gives with `first`, its first
+/// output run again, as its line keeps it (listeners.rs, deploy.rs, websockets.rs): a request's
+/// body, or the file it answered with; an action's answer as JSON; a WebSocket block's reply, its
+/// open block's answer, a close block's none. Withheld where it may be computed from a secret
+/// (`derived`), the run marking none of it (`FiredRun::withholds_output`). A kind that answers
+/// nothing keeps none. A body past what the line keeps (64 KiB), cut at a length a mark's value
+/// isn't known at, is compared up to its first mark.
+fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, marks: &Marks) -> bool {
+    let kept = |body: &[u8]| recorder::body_text(body);
+    let made = match entry.kind.as_str() {
+        "request" => {
+            let answer = data::respond(first);
+            Some(answer.file.as_ref().map_or_else(|| kept(&answer.body), data::Served::line))
+        }
+        "trigger" => Some(deploy::action_json(deploy::action_answer(first.cloned()).1.as_ref()).unwrap_or_default()),
+        "websocket" => match entry.route.as_deref().and_then(|r| r.rsplit(' ').next()) {
+            Some("open") => Some(kept(&data::respond(first).body)),
+            Some("message") => Some(kept(websockets::reply_of(first).unwrap_or_default().as_bytes())),
+            _ => None,
+        },
+        _ => None,
+    };
+    let (Some(made), Some(said)) = (made, &entry.response_body) else {
+        return entry.response_body.is_none() && made_none(entry);
+    };
+    if derived && said == taint::WITHHELD {
+        return true;
+    }
+    let SValue::Text(made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
+    match made.ends_with('…') && made.contains('‹') {
+        true => made.split('‹').next() == said.split('‹').next(),
+        false => made == *said,
+    }
+}
+
+/// Whether `entry`'s kind keeps no answer: a WebSocket's close block, and every kind but a
+/// request, an action and a WebSocket's.
+fn made_none(entry: &LogEntry) -> bool {
+    match entry.kind.as_str() {
+        "request" | "trigger" => false,
+        "websocket" => entry.route.as_deref().and_then(|r| r.rsplit(' ').next()) == Some("close"),
+        _ => true,
+    }
 }
 
 /// Whether an entry says its run did anything: computed, did, sent, called out, read or wrote.

@@ -6799,7 +6799,7 @@ fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
     let head = recorder::line_hash(&line);
     let forged = verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
     let report = verify::check(&forged, Some(&head), &BTreeMap::new());
-    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs, the steps it took (its timeline)".into()))], "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs, the steps it took (its timeline), what it answered".into()))], "{}", verify::describe(&report, None));
 }
 
 /// A run that received a real secret or a real token was given its id from the value, which the
@@ -8487,7 +8487,7 @@ export const pay = action(async (order) => {
 
 /// What [`no_line_changed_and_chained_again_passes_as_checked`] doesn't hold verify to yet: the
 /// fields R26's later steps hold (audit R26).
-const OPEN: &[&str] = &["response_body", "parked", "events", "state_after", "commit", "session", "retries", "by", "grant"];
+const OPEN: &[&str] = &["events", "commit", "session", "retries", "by", "grant"];
 
 /// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
 /// that follows. A run that failed is run again: what it computed is checked, and what its writes

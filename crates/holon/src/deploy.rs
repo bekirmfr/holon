@@ -1400,6 +1400,26 @@ impl ActionRan {
     }
 }
 
+/// An action's answer, from its run's first output: the respond's envelope's status and body, or
+/// (an action that only writes) an effect's 200 and nothing; anything else, a 200 and itself.
+/// What its line says (`response_body`, [`action_json`]), and what `holon verify` makes again.
+pub(crate) fn action_answer(first: Option<Value>) -> (u16, Option<Value>) {
+    match first {
+        Some(Value::Record(f)) if matches!(f.get("status"), Some(Value::Number(_))) => {
+            let Some(Value::Number(n)) = f.get("status") else { unreachable!() };
+            (*n as u16, f.get("body").cloned())
+        }
+        Some(Value::Effect { .. }) => (200, None),
+        Some(other) => (200, Some(other)),
+        None => (500, None),
+    }
+}
+
+/// An action's answer as JSON, `null` for none; none for one with no JSON form.
+pub(crate) fn action_json(answer: Option<&Value>) -> Option<String> {
+    answer.map_or(Some("null".to_string()), holon_core::stringify_json)
+}
+
 /// Run the deployment `slug`'s action `name` with `input` (or why that isn't one: a 400), as `by`,
 /// and say what came of it. `chain` is the flows whose calls led here, the first being the caller
 /// that started it (empty for a person's or an agent's run): the run carries it, so a flow called
@@ -1463,21 +1483,12 @@ pub(crate) fn run_action(
     waits.unrecorded = permit.log_level(Some(&action.label), action.log) == holon_core::LogLevel::Unrecorded;
     let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
 
-    // Output 0 is the respond's envelope, or (an action that only writes) an effect.
-    let (status, answer) = match run.outputs.first().cloned().flatten() {
-        Some(Value::Record(f)) if matches!(f.get("status"), Some(Value::Number(_))) => {
-            let Some(Value::Number(n)) = f.get("status") else { unreachable!() };
-            (*n as u16, f.get("body").cloned())
-        }
-        Some(Value::Effect { .. }) => (200, None),
-        Some(other) => (200, Some(other)),
-        None => (500, None),
-    };
+    let (status, answer) = action_answer(run.outputs.first().cloned().flatten());
     let mut entry = run_entry("trigger", started, &sourced, &run);
     entry.route = Some(action.label.clone());
     entry.request = Some(SValue::from_core(&input));
     entry.by = by.map(String::from);
-    let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
+    let answer_json = action_json(answer.as_ref());
     entry.response_body = Some(if run.withholds_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
     match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
