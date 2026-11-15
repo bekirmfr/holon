@@ -26,7 +26,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
     let records: Vec<DeploymentRecord> = deployments
         .lock()
         .unwrap()
-        .iter()
+        .iter_mut()
         .map(|(slug, dep)| {
             DeploymentRecord {
                 slug: slug.clone(),
@@ -51,24 +51,38 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 grant: Some(dep.grant.clone()),
                 // What a waiting run keeps that may hold a secret is sealed under its
                 // deployment's keys, whose root is kept apart from this file: a backup of it
-                // carries none. With what each sent as it parked, which its channels hold. One
-                // that can't be sealed is left out, never written in the clear.
+                // carries none. Sealed once, as it parked (`keep_waiting`), not again here: a save
+                // under the table's lock writes what each holds (release audit D4). With what
+                // each sent as it parked, which its channels hold. One that can't be sealed is
+                // left out, never written in the clear.
                 parked: {
                     let keys = dep.secrets.lock().unwrap().keys.clone();
+                    let channels = Arc::clone(&dep.channels);
                     dep.parked
-                        .values()
+                        .values_mut()
                         .filter_map(|p| {
-                            let kept = match keys.as_deref() {
-                                Some(keys) => p.sealed_for_disk(slug, keys),
-                                None => Ok(p.clone()),
+                            let sent = channels.waiting_sent(&p.run_id);
+                            // One whose sealed part didn't open as the server started: as it was.
+                            // On a server without keys (a test's), as it is.
+                            let Some(keys) = keys.as_deref().filter(|_| p.sealed.is_none()) else {
+                                return Some(ParkedRun { sent, ..p.clone() });
                             };
-                            match kept {
-                                Ok(kept) => Some(ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..kept }),
-                                Err(e) => {
-                                    eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
-                                    None
-                                }
-                            }
+                            let part = match p.sealed_part.clone().filter(|part| part.sealed.is_some()) {
+                                Some(part) => part,
+                                None => match seal_waiting(slug, Some(keys), p) {
+                                    Ok(part) => {
+                                        p.sealed_part = Some(Arc::clone(&part));
+                                        part
+                                    }
+                                    Err(e) => {
+                                        eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
+                                        return None;
+                                    }
+                                },
+                            };
+                            #[cfg(debug_assertions)]
+                            check_sealed(slug, p, &part);
+                            Some(ParkedRun { sent, ..p.sealed_for_disk(part.sealed.as_deref().unwrap_or_default()) })
                         })
                         .collect()
                 },
@@ -84,6 +98,87 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         }
         Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
+    }
+}
+
+/// A waiting run's part that may hold a secret (its inputs, sourced values, requests, tokens,
+/// events and what its points show: `ParkedRun::plain_part`), sealed once under its deployment's
+/// keys as it parks or parks again (`keep_waiting`), and written as it is by every save
+/// (`persist_deployments`) until it changes.
+pub(crate) struct SealedPart {
+    /// Sealed, bound to its run; none on a server without keys (a test's).
+    pub(crate) sealed: Option<String>,
+    /// The BLAKE3 of what was sealed: a debug build checks at each save that the run still holds
+    /// it (`check_sealed`), so a path that changed the part without sealing it again fails a
+    /// test. Its nonce makes the sealed form no witness of that.
+    of: [u8; 32],
+    /// How long what was sealed is: what `max_waiting_bytes` counts.
+    pub(crate) bytes: u64,
+}
+
+impl std::fmt::Debug for SealedPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SealedPart")
+    }
+}
+
+/// `run`'s part sealed under `keys` (none: only measured).
+fn seal_waiting(slug: &str, keys: Option<&crate::at_rest::Keyring>, run: &ParkedRun) -> Result<Arc<SealedPart>, String> {
+    let plain = run.plain_part();
+    let sealed = match keys {
+        Some(keys) => Some(keys.seal_line(&crate::at_rest::deployment(slug), &crate::durable::parked_context(slug, &run.run_id), plain.as_bytes())?),
+        None => None,
+    };
+    Ok(Arc::new(SealedPart { sealed, of: *blake3::hash(plain.as_bytes()).as_bytes(), bytes: plain.len() as u64 }))
+}
+
+/// The bytes `run` takes of its deployment's `max_waiting_bytes`: its part's, sealed or not.
+fn waiting_bytes(run: &ParkedRun) -> u64 {
+    match (&run.sealed_part, &run.sealed) {
+        (Some(part), _) => part.bytes,
+        (None, Some(sealed)) => sealed.len() as u64,
+        (None, None) => run.plain_part().len() as u64,
+    }
+}
+
+/// Keep `run` waiting in `dep`, in place of what it was: its part sealed once, here, and every
+/// waiting run's within the bytes `dep`'s may hold in all (`max_waiting_bytes`); or `dep` left as
+/// it was, and why. Every path that parks a run, or changes what a waiting run keeps sealed,
+/// comes through here (durable.rs).
+pub(crate) fn keep_waiting(slug: &str, dep: &mut Deployment, mut run: ParkedRun) -> Result<(), String> {
+    let keys = dep.secrets.lock().unwrap().keys.clone();
+    let part = seal_waiting(slug, keys.as_deref(), &run)?;
+    let others: u64 = dep.parked.values().filter(|p| p.run_id != run.run_id).map(waiting_bytes).sum();
+    let most = dep.permit.durable.max_waiting_bytes;
+    if others.saturating_add(part.bytes) > most {
+        return Err(format!("{slug:?}'s waiting runs would hold more than the {most} bytes they may (max_waiting_bytes)"));
+    }
+    run.sealed_part = Some(part);
+    dep.parked.insert(run.run_id.clone(), run);
+    Ok(())
+}
+
+/// That `run` still holds what `part` sealed: a path that changed its sealed part without keeping
+/// it through `keep_waiting` would have a save write it as it was.
+#[cfg(debug_assertions)]
+fn check_sealed(slug: &str, run: &ParkedRun, part: &SealedPart) {
+    let now = blake3::hash(run.plain_part().as_bytes());
+    assert!(
+        now.as_bytes() == &part.of,
+        "waiting run {} of {slug:?} changed what it keeps sealed without persist::keep_waiting: a save would write it as it was",
+        run.run_id
+    );
+}
+
+/// Each waiting run of `dep` that opened as the server started, its part sealed again
+/// (`keep_waiting`'s, with no cap to hold to: it was within it), for a save to write as it is.
+pub(crate) fn seal_opened(slug: &str, dep: &mut Deployment) {
+    let keys = dep.secrets.lock().unwrap().keys.clone();
+    for run in dep.parked.values_mut().filter(|p| p.sealed.is_none()) {
+        match seal_waiting(slug, keys.as_deref(), run) {
+            Ok(part) => run.sealed_part = Some(part),
+            Err(e) => eprintln!("holon: waiting run {} of {slug:?} can't be sealed: {e}", run.run_id),
+        }
     }
 }
 

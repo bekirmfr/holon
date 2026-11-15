@@ -1156,6 +1156,7 @@ fn serve(args: Vec<String>) {
                 eprintln!("holon: waiting run {} of {slug:?} can't be opened: {e}", run.run_id);
             }
         }
+        persist::seal_opened(slug, dep);
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     // The mail its runs sent that wasn't delivered when the server stopped, sent now: what its

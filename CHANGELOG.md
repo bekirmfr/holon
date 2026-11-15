@@ -12,6 +12,12 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **Waiting runs are sealed once, and capped by bytes.** A run waiting at `await` is sealed as it
+  parks or parks again, and every save of the deployments file writes that sealed form, instead
+  of sealing every waiting run of every deployment again under the table's lock. A new limit,
+  `max_waiting_bytes` (64 MiB by default, 1 GiB at most), caps what a deployment's waiting runs
+  keep in all: past it a run that would wait fails as one past `max_waiting_runs` does, and a
+  waiting run whose next part would keep more waits on as it was, its event deliverable again.
 - **A caller decides nothing of how big a run log gets.** A request body longer than 64 KiB, as
   the log's line writes it, is kept by hash beside the log (sealed, with the file texts runs
   read), and the entry names it; `holon verify` and a replay put it back from the export. Before,

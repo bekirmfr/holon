@@ -13244,6 +13244,114 @@ route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
+/// A waiting run is sealed once, as it parks or parks again, and its deployment's waiting runs keep
+/// within their bytes (release audit D4): a save writes the sealed form it holds, sealing nothing
+/// again (each save checks, in a debug build, that the run still holds what was sealed); a run
+/// that would wait past `max_waiting_bytes` fails as one past `max_waiting_runs` does; one whose
+/// next part would hold too much waits on exactly as it was, its event deliverable again; and a
+/// server starting reads each back as it was kept.
+#[test]
+fn a_waiting_run_is_sealed_once_and_its_deployments_waiting_runs_keep_within_their_bytes() {
+    let mut state = claims_state("[limits]\nmax_waiting_bytes = 20000\n");
+    state.deployments_path = unique_temp_path("waiting-bytes").into();
+    let text = r#"import { action, event, flow, route } from "holon"
+
+flow("waits", { port: 18243 })
+
+export const hold = action(async (input) => {
+  const a = await event("a", { expires: "1h" })
+  const b = await event("b", { expires: "1h" })
+  return { pad: input.pad, a: a.method, b: b.method }
+})
+
+route.post("/a/:token", () => "ok", { resumes: "a" })
+
+route.post("/b/:token", () => "ok", { resumes: "b" })
+"#;
+    let slug = deploy_plain_text(&state, text);
+    let hold = |pad: usize| {
+        let input = Value::Record(BTreeMap::from([("pad".to_string(), Value::Text("p".repeat(pad)))]));
+        run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(input), None, None, &[])
+    };
+    let waiting = || state.deployments.lock().unwrap()[&slug].parked.clone();
+    let part = |run_id: &str| waiting()[run_id].sealed_part.clone().expect("sealed as it parked");
+    let save = || persist_deployments(&state.deployments_path, &state.deployments);
+    let on_disk = |run_id: &str| -> serde_json::Value {
+        let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
+        let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap().clone();
+        record["parked"].as_array().unwrap().iter().find(|p| p["run_id"] == run_id).cloned().unwrap_or_default()
+    };
+
+    // Parked: sealed once. Saved three times, it is written as that one sealing, not sealed again.
+    let held = hold(4000);
+    assert_eq!(held.status, 202, "{}", held.reply);
+    let run_id = waiting().keys().next().unwrap().clone();
+    let first = part(&run_id);
+    let sealed = first.sealed.clone().expect("its deployment has keys");
+    for _ in 0..3 {
+        save();
+        assert!(Arc::ptr_eq(&part(&run_id), &first), "a save seals nothing again");
+        assert_eq!(on_disk(&run_id)["sealed"], sealed.as_str(), "it writes what was sealed");
+    }
+    assert!(on_disk(&run_id)["inputs"].as_array().is_none_or(Vec::is_empty), "nothing of it in the clear");
+
+    // A second run that would take its waiting runs past their bytes fails, as one past their count.
+    let refused = hold(30_000);
+    assert_eq!((refused.status, refused.waiting), (500, false), "{}", refused.reply);
+    let failed = log_entries(&state, &slug).into_iter().find(|e| e["status"] == 500).expect("logged");
+    assert!(failed["error"].as_str().is_some_and(|e| e.contains("max_waiting_bytes")), "{failed}");
+    assert_eq!(waiting().len(), 1);
+
+    // Its next part would hold too much: it waits on exactly as it was, at "a", its event
+    // deliverable again, and its sealed form the one it had.
+    let a = format!("/a/{}", crate::durable::token_for(&run_id, "a"));
+    // (Its route answers first; the run goes on after.)
+    let (status, answer, _) = data_call(&state, &slug, "POST", &a, &"x".repeat(30_000));
+    assert_eq!(status, 200, "{answer}");
+    let kept = &waiting()[&run_id];
+    assert!(kept.events.is_empty() && !kept.resuming && kept.waiting.iter().any(|w| w.name == "a"), "{kept:?}");
+    assert!(Arc::ptr_eq(&part(&run_id), &first), "not half kept");
+    save();
+    assert_eq!(on_disk(&run_id)["sealed"], sealed.as_str());
+
+    // Delivered again, within its bytes: it parks again at "b", sealed again, once.
+    let (status, answer, _) = data_call(&state, &slug, "POST", &a, "small");
+    assert_eq!(status, 200, "{answer}");
+    let second = part(&run_id);
+    assert!(!Arc::ptr_eq(&second, &first) && waiting()[&run_id].events.contains_key("a"), "parked again, sealed again");
+    save();
+    save();
+    assert!(Arc::ptr_eq(&part(&run_id), &second));
+    assert_eq!(on_disk(&run_id)["sealed"], second.sealed.as_deref().unwrap());
+
+    // A server starting reads it back as it was kept, and seals it again for its saves.
+    let mut loaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+    let dep = loaded.get_mut(&slug).unwrap();
+    dep.secrets = state.secrets.vault(&slug);
+    let keys = dep.secrets.lock().unwrap().keys.clone();
+    dep.parked.get_mut(&run_id).unwrap().open(&slug, keys.as_deref()).unwrap();
+    persist::seal_opened(&slug, dep);
+    let back = &dep.parked[&run_id];
+    assert_eq!(*back.plain_part(), *waiting()[&run_id].plain_part(), "as it was kept");
+    assert!(back.sealed_part.is_some());
+
+    // And its last part runs: it waits no more.
+    let b = format!("/b/{}", crate::durable::token_for(&run_id, "b"));
+    assert_eq!(data_call(&state, &slug, "POST", &b, "done").0, 200);
+    assert!(waiting().is_empty());
+
+    // A path that changed what a waiting run keeps sealed without keeping it again through
+    // `keep_waiting` is caught by the next save, in a debug build (every test).
+    assert_eq!(hold(10).status, 202);
+    if let Some(run) = state.deployments.lock().unwrap().get_mut(&slug).unwrap().parked.values_mut().next() {
+        run.events.insert("a".into(), SValue::Text("changed behind its back".into()));
+    }
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(save));
+    assert!(caught.is_err(), "a stale sealed part is caught");
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
+}
+
 /// What a waiting run sent as it parked is kept with its record, as a logged run's is in its log:
 /// after a restart, an unrecorded run's later part doesn't send it again.
 #[test]

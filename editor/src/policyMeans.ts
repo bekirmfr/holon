@@ -24,6 +24,7 @@ export const LIMIT_MEANINGS: Record<string, string> = {
   max_memory: "The memory a run may come to hold between two of its calls out, in bytes.",
   max_await_seconds: "How long one waiting point (an approval, an event) may wait.",
   max_waiting_runs: "The runs of one deployment that may wait at once.",
+  max_waiting_bytes: "What the runs of one deployment waiting at once may keep, in bytes.",
   max_call_depth: "How deep a chain of flows calling flows may go.",
   inline_file_bytes: "The largest file a run reads whole, and the largest range it reads of one.",
   max_file_read_bytes: "What a run reads from files, in all.",

@@ -658,6 +658,12 @@ pub(crate) struct ParkedRun {
     /// the server starts (`open`). Never set on a run in memory that could be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) sealed: Option<String>,
+    /// That part sealed once, as it parked or parked again (`persist::keep_waiting`), for every
+    /// save to write as it is: whatever changes its inputs, sourced values, requests, tokens,
+    /// events or what a point shows keeps it through `keep_waiting` again (a debug build checks
+    /// at each save, `persist::check_sealed`). Never persisted: a server starting seals each again.
+    #[serde(skip)]
+    pub(crate) sealed_part: Option<std::sync::Arc<crate::persist::SealedPart>>,
     /// Whether a resume holds it right now: claimed under the deployments lock when its token
     /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
     /// it arrive together. Never persisted: a restart frees it.
@@ -679,7 +685,7 @@ struct Sealable {
     shown: BTreeMap<String, Shown>,
 }
 
-fn parked_context(slug: &str, run_id: &str) -> String {
+pub(crate) fn parked_context(slug: &str, run_id: &str) -> String {
     format!("holon-parked/v1\0{slug}\0{run_id}")
 }
 
@@ -769,6 +775,7 @@ impl ParkedRun {
             sent: Vec::new(),
             started_by: waits.started_by.clone(),
             sealed: None,
+            sealed_part: None,
             resuming: false,
         })
     }
@@ -835,12 +842,9 @@ impl ParkedRun {
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
     }
 
-    /// This run as the deployments file keeps it: what may hold a secret sealed under its
-    /// deployment's keys (`at_rest::deployment`), bound to its run id; or why it can't be.
-    pub(crate) fn sealed_for_disk(&self, slug: &str, keys: &crate::at_rest::Keyring) -> Result<ParkedRun, String> {
-        if self.sealed.is_some() {
-            return Ok(self.clone());
-        }
+    /// What of it the deployments file keeps sealed, in the clear: what `persist::keep_waiting`
+    /// seals, and checks against.
+    pub(crate) fn plain_part(&self) -> zeroize::Zeroizing<String> {
         let part = Sealable {
             inputs: self.inputs.clone(),
             sourced: self.sourced.clone(),
@@ -849,18 +853,24 @@ impl ParkedRun {
             events: self.events.clone(),
             shown: self.waiting.iter().filter_map(|w| Some((w.name.clone(), w.shown.clone()?))).collect(),
         };
-        let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
-        let sealed = keys.seal_line(&crate::at_rest::deployment(slug), &parked_context(slug, &self.run_id), plain.as_bytes())?;
-        Ok(ParkedRun {
-            inputs: Vec::new(),
-            sourced: Vec::new(),
-            rounds: Vec::new(),
-            tokens: BTreeMap::new(),
-            events: BTreeMap::new(),
-            waiting: self.waiting.iter().map(|w| StoredWaiting { shown: None, ..w.clone() }).collect(),
-            sealed: Some(sealed),
-            ..self.clone()
-        })
+        zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default())
+    }
+
+    /// This run as the deployments file keeps it, its part `sealed` (`persist::SealedPart`): none
+    /// of what that holds copied, even for a moment (set aside while the rest is).
+    pub(crate) fn sealed_for_disk(&mut self, sealed: &str) -> ParkedRun {
+        let inputs = std::mem::take(&mut self.inputs);
+        let sourced = std::mem::take(&mut self.sourced);
+        let rounds = std::mem::take(&mut self.rounds);
+        let tokens = std::mem::take(&mut self.tokens);
+        let events = std::mem::take(&mut self.events);
+        let shown: Vec<Option<Shown>> = self.waiting.iter_mut().map(|w| w.shown.take()).collect();
+        let kept = ParkedRun { sealed: Some(sealed.to_string()), sealed_part: None, ..self.clone() };
+        (self.inputs, self.sourced, self.rounds, self.tokens, self.events) = (inputs, sourced, rounds, tokens, events);
+        for (w, shown) in self.waiting.iter_mut().zip(shown) {
+            w.shown = shown;
+        }
+        kept
     }
 
     /// Open what the deployments file sealed, with `keys`; nothing to do for a run not sealed.
@@ -1024,7 +1034,8 @@ pub(crate) fn park_if_waiting(
         w.expires_at = w.expires_at.min(record.parked_at + limits.max_await_seconds);
     }
     let names = record.waiting.iter().map(|w| w.name.clone()).collect();
-    dep.parked.insert(record.run_id.clone(), record);
+    // Sealed once, and within the bytes its waiting runs may hold (`max_waiting_bytes`).
+    crate::persist::keep_waiting(slug, dep, record)?;
     Ok(names)
 }
 
@@ -1128,6 +1139,9 @@ pub(crate) fn resume_parked(
         l.said(slug);
     }
 
+    // Kept as it was when what it learned is past the bytes its deployment's waiting runs may
+    // hold: it waits on where it waited, its event deliverable again.
+    let mut not_kept = None;
     {
         let mut table = deployments.lock().unwrap();
         if let Some(dep) = table.get_mut(slug) {
@@ -1138,7 +1152,7 @@ pub(crate) fn resume_parked(
                 eprintln!("holon: run {run_id} in {slug:?} waits on: its event can be delivered again");
             } else if run.waiting.is_empty() || run.error.is_some() {
                 dep.parked.remove(run_id);
-            } else if let Some(kept) = dep.parked.get_mut(run_id) {
+            } else if let Some(mut kept) = dep.parked.get(run_id).cloned() {
                 // Still waiting: what it learned is kept; a point it was already waiting at keeps
                 // its deadline.
                 let now = epoch_now();
@@ -1156,11 +1170,16 @@ pub(crate) fn resume_parked(
                         }
                     })
                     .collect();
+                // Sealed again, in place of what it was, or not at all.
+                if let Err(e) = crate::persist::keep_waiting(slug, dep, kept) {
+                    eprintln!("holon: run {run_id} in {slug:?} waits on as it was, its event deliverable again: {e}");
+                    not_kept = Some(e);
+                }
             }
         }
     }
     persist_deployments(deployments_path, deployments);
-    match run.error {
+    match run.error.or(not_kept) {
         Some(e) => Err(e),
         None => Ok(()),
     }

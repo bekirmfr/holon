@@ -43,6 +43,10 @@ pub(crate) const MODULE_MEMORY_CEILING: u64 = 16 * holon_core::DEFAULT_MODULE_ME
 pub(crate) struct DurableLimits {
     pub(crate) max_await_seconds: u64,
     pub(crate) max_waiting_runs: u64,
+    /// How many bytes its waiting runs may keep, in all (what each keeps sealed: its inputs,
+    /// requests and events): past it a run that would wait fails as one past `max_waiting_runs`
+    /// does, and one parking again waits on as it was (release audit D4).
+    pub(crate) max_waiting_bytes: u64,
     /// How many flows a run may call down a chain (`shop` calls `billing` calls `ledger` is two
     /// deep): past it a call answers `too_deep` (docs/L4s/triggers-L4.md §9).
     pub(crate) max_call_depth: u64,
@@ -52,12 +56,12 @@ impl DurableLimits {
     /// What a deployment gets without asking: a month's wait (a 7-day `await` fits), and as many
     /// waiting runs as before this was a limit.
     pub(crate) fn defaults() -> DurableLimits {
-        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_call_depth: 3 }
+        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_waiting_bytes: 64 << 20, max_call_depth: 3 }
     }
 
-    /// What no grant can exceed: core's longest wait, and ten times the default number.
+    /// What no grant can exceed: core's longest wait, ten times the default number, and 1 GiB.
     pub(crate) fn ceilings() -> DurableLimits {
-        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_call_depth: 8 }
+        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_waiting_bytes: 1 << 30, max_call_depth: 8 }
     }
 }
 
@@ -204,6 +208,7 @@ fn limits_to_numbers(
         ("max_memory".into(), request.max_memory),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
+        ("max_waiting_bytes".into(), durable.max_waiting_bytes),
         ("max_call_depth".into(), durable.max_call_depth),
         ("inline_file_bytes".into(), files.inline_file_bytes),
         ("max_file_read_bytes".into(), files.max_file_read_bytes),
@@ -266,6 +271,7 @@ fn numbers_to_durable(base: &DurableLimits, numbers: &BTreeMap<String, u64>) -> 
     DurableLimits {
         max_await_seconds: numbers.get("max_await_seconds").copied().unwrap_or(base.max_await_seconds),
         max_waiting_runs: numbers.get("max_waiting_runs").copied().unwrap_or(base.max_waiting_runs),
+        max_waiting_bytes: numbers.get("max_waiting_bytes").copied().unwrap_or(base.max_waiting_bytes),
         max_call_depth: numbers.get("max_call_depth").copied().unwrap_or(base.max_call_depth),
     }
 }
