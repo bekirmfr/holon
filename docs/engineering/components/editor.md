@@ -138,6 +138,16 @@ edits, checks and formats files.
   ([text-graph-link L4](../../L4s/text-graph-link-L4.md), decisions 1 and 2).
 - **In-page dialogs** (`Dialog.tsx`): an embedded browser suppresses `window.confirm`, which then
   answers "cancel" at once, so deletes and first saves did nothing there.
+- **A question waits before it takes an answer** (`Dialog.tsx`'s `ARM_MS`, 500 ms, Chrome's
+  guard on its own prompts): a deploy's consent opened a moment after Ctrl+D, which sits beside
+  Ctrl+S, and the next Enter or `y` typed for the page approved it unread. A key pressed while it
+  waits starts the wait again, its answers look disabled till then, no is taken at once, and a
+  held key never answers. End-to-end tests answer with `enter(page)` (`e2e/helpers.ts`), which
+  waits as a click does by itself (R43).
+- **What can't be taken back, or changes what someone may do, is asked first**: a removal, an
+  unbinding, a token revoked, a person disabled, a role or an owner picked from a list.
+  `askedFirst.test.ts` reads every such call of the console and finds a question awaited before
+  it, or a line saying where it is asked (R43).
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

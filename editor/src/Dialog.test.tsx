@@ -2,12 +2,13 @@
 // Esc cancels, and a yes/no question takes y and n, shown as chips that stay out of the buttons'
 // names. Keys that answer it don't reach the page beneath; typing in a prompt still reaches its
 // field. A choice takes each answer's letter, and a notice has one button, and its letter. (Tab
-// staying in it is every modal's: modals.test.tsx.)
+// staying in it is every modal's: modals.test.tsx.) It takes no answer but no until it has been
+// shown a moment with no key pressed: the last describe.
 
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { DialogProvider, useDialog } from "./Dialog";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ARM_MS, DialogProvider, useDialog } from "./Dialog";
 import { lap, press } from "./ui/pressKey";
 
 beforeAll(() => {
@@ -24,8 +25,9 @@ afterEach(() => {
 
 type Dialogs = ReturnType<typeof useDialog>;
 
-/** The dialogs, over a page with a control of its own: where a Tab that left the dialog would go. */
-function mount(): Dialogs {
+/** The dialogs, over a page with a control of its own: where a Tab that left the dialog would go.
+ *  Its questions take an answer at once, unless `armMs` says how long they wait first. */
+function mount(armMs = 0): Dialogs {
   container = document.createElement("div");
   document.body.appendChild(container);
   let dialogs: Dialogs | null = null;
@@ -36,7 +38,7 @@ function mount(): Dialogs {
   root = createRoot(container);
   act(() =>
     root!.render(
-      <DialogProvider>
+      <DialogProvider armMs={armMs}>
         <button>the page's own button</button>
         <Grab />
       </DialogProvider>,
@@ -281,5 +283,143 @@ describe("the focused control answers", () => {
       await press("Escape");
       expect(second).toBe(false);
     }
+  });
+});
+
+describe("a question that opens while you type", () => {
+  // Guards: a question takes no answer but no until it has been shown ARM_MS with no key pressed,
+  // for every kind and every control that answers it; a key or a click on an answer while it waits
+  // starts the wait again, a held key never answers, and the letters typed into a prompt's field
+  // still reach it. Needed because a question can open a moment after the key that asked for it,
+  // with the focus on its yes (a deploy's consent, read after Ctrl+D, which sits beside Ctrl+S):
+  // the next Enter or y typed for the page answered it unread (R43). If it fails, a key or a click
+  // meant for something else answers a question before it is read, or a no is held up.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  /** A key pressed as the browser sends it, without `press`'s waits: the clock is the test's. */
+  const key = (k: string, init: KeyboardEventInit = {}, at: Element = document.activeElement ?? document.body) => {
+    const event = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
+    act(() => {
+      at.dispatchEvent(event);
+    });
+    return event;
+  };
+  const later = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  const flush = () => act(async () => {});
+  const waiting = () => buttons().filter((b) => b.getAttribute("aria-disabled") === "true").map(nameOf);
+  /** The control a table row names, in the open question. */
+  const control = (name: string) => [...dialog()!.querySelectorAll("button, input, [data-own-keys]")].find((el) => called(el) === name) as HTMLElement;
+
+  it.each(KINDS)("$kind: Enter and a click answer only once the wait is over; Cancel at once", async ({ open, answers }) => {
+    const d = mount(ARM_MS);
+    for (const [name, answer] of Object.entries(answers)) {
+      if (answer === UNANSWERED) continue;
+      let answered: unknown = UNANSWERED;
+      await ask(() => open(d).then((a) => (answered = a)));
+      control(name).focus();
+      const enter = key("Enter");
+      await flush();
+      expect(enter.defaultPrevented, `Enter on ${name} is kept from the button`).toBe(true);
+      if (name === "Cancel") {
+        expect(answered, "Cancel answers at once").toEqual(answer);
+        continue;
+      }
+      expect(answered, `Enter on ${name} at once`).toBe(UNANSWERED);
+      expect(waiting().length, "its answers look disabled").toBeGreaterThan(0);
+      if (control(name) instanceof HTMLButtonElement) {
+        act(() => control(name).click());
+        await flush();
+        expect(answered, `a click on ${name} at once`).toBe(UNANSWERED);
+      }
+      later(ARM_MS);
+      expect(waiting()).toEqual([]);
+      control(name).focus();
+      key("Enter");
+      await flush();
+      expect(answered, `Enter on ${name} once the wait is over`).toEqual(answer);
+      expect(dialog()).toBeNull();
+    }
+  });
+
+  it("waits again after each key pressed while it waits, and takes no answer from a held key", async () => {
+    const d = mount(ARM_MS);
+    let answered: unknown = UNANSWERED;
+    await ask(() => d.confirm('Deploy "shop"?', "Approve and deploy").then((a) => (answered = a)));
+    control("Approve and deploy").focus();
+    later(ARM_MS - 100);
+    key("e");
+    later(200);
+    key("y");
+    await flush();
+    expect(answered, "a y typed 200 ms after another key").toBe(UNANSWERED);
+    later(ARM_MS - 1);
+    expect(waiting()).toEqual(["Approve and deploy"]);
+    later(1);
+    expect(waiting()).toEqual([]);
+    key("y", { repeat: true });
+    key("Enter", { repeat: true });
+    await flush();
+    expect(answered, "a held key").toBe(UNANSWERED);
+    key("y");
+    await flush();
+    expect(answered).toBe(true);
+  });
+
+  it("takes no at once: n, Esc, Cancel, a click beside it", async () => {
+    const d = mount(ARM_MS);
+    const nos: [string, () => void][] = [
+      ["n", () => key("n")],
+      ["Esc", () => key("Escape")],
+      ["Cancel", () => act(() => control("Cancel").click())],
+      ["a click beside it", () => act(() => void dialog()!.parentElement!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })))],
+    ];
+    for (const [what, no] of nos) {
+      let answered: unknown = UNANSWERED;
+      await ask(() => d.confirm("Remove it?", "Remove").then((a) => (answered = a)));
+      no();
+      await flush();
+      expect(answered, what).toBe(false);
+    }
+  });
+
+  it("lets a prompt's field be typed into while it waits, the letters not starting it again", async () => {
+    const d = mount(ARM_MS);
+    let answered: unknown = UNANSWERED;
+    await ask(() => d.prompt("Name this flow:", "", "Name it").then((a) => (answered = a)));
+    const field = document.querySelector<HTMLInputElement>("[aria-modal=true] input")!;
+    later(ARM_MS - 100);
+    expect(key("s", {}, field).defaultPrevented, "the letter reaches the field").toBe(false);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "shout");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    later(100);
+    key("Enter", {}, field);
+    await flush();
+    expect(answered).toBe("shout");
+  });
+
+  it("waits again for the question an answer opens", async () => {
+    const d = mount(ARM_MS);
+    let second: unknown = UNANSWERED;
+    await ask(() => d.confirm("Save it?", "Save").then(() => d.confirm("Deploy it now?", "Deploy").then((a) => (second = a))));
+    later(ARM_MS);
+    key("y");
+    await flush();
+    expect(dialog()?.textContent).toContain("Deploy it now?");
+    key("y");
+    await flush();
+    expect(second).toBe(UNANSWERED);
+    later(ARM_MS);
+    key("y");
+    await flush();
+    expect(second).toBe(true);
   });
 });

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser } from "@playwright/test";
 import { expect, HOLON, PORTS, SERVER, test } from "./fixtures";
-import { newFlow } from "./helpers";
+import { enter, newFlow } from "./helpers";
 
 test("a flow saved and never deployed waits under Deploys; reviewed, ticked and approved, it is deployed", async ({ page }) => {
   const name = `review-${Date.now().toString(36)}`;
@@ -24,7 +24,7 @@ test("a flow saved and never deployed waits under Deploys; reviewed, ticked and 
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
   await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
 
   // Approvals lists it, and the nav counts what waits.

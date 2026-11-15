@@ -160,6 +160,18 @@ type Act = (f: () => Promise<unknown>) => Promise<unknown>;
 /** A token just made: whose and what for, and its value, shown once. */
 type MadeToken = { label: string; token: string };
 
+/** Disable a principal, or enable it again, once asked: one click on the row's button ended
+ *  someone's sign-ins, yours too, or let someone disabled back in (R43). */
+async function switchDisabled(p: Principal, me: string, dialog: ReturnType<typeof useDialog>, act: Act) {
+  const person = p.kind === "person";
+  const asked = p.disabled
+    ? `Enable ${p.name}? ${person ? "They can sign in again." : "Its tokens work again."}`
+    : p.name === me
+      ? "Disable yourself? Your sign-ins end, this one too, until someone who may enable you does."
+      : `Disable ${p.name}? ${person ? "Their sign-ins end, and they can't sign in until enabled again." : "Its tokens are refused until it is enabled again."}`;
+  if (await dialog.confirm(asked, p.disabled ? "Enable" : "Disable")) void act(() => changePrincipal(p.name, { disabled: !p.disabled }));
+}
+
 /** An agent's or a service's tokens: its owner or an admin makes them, each shown once (`show`). */
 async function makeToken(p: Principal, dialog: ReturnType<typeof useDialog>, act: Act, show: (made: MadeToken) => void) {
   const label = await dialog.prompt(`What is ${p.name}'s new token for? (GitHub CI, a laptop…)`, "", "make token");
@@ -317,11 +329,23 @@ export function OwnedPage() {
 }
 
 /** A principal's own role on the host, to change: the roles its kind may hold, the ones an admin
- *  defined included. None when it holds one only through a group or elsewhere (Bindings). */
-function RoleSelect({ p, roles, act }: { p: Principal; roles: RoleEntry[]; act: Act }) {
+ *  defined included. None when it holds one only through a group or elsewhere (Bindings). A role
+ *  picked is asked first, saying what it allows: an arrow key on the focused list, or a wheel
+ *  turned over it, changed it at once (R43). Cancelled, the list shows the role it holds. */
+function RoleSelect({ p, me, a }: { p: Principal; me: string; a: Access }) {
+  const { roles, dialog, act } = a;
   const now = hostRoleOf(p);
+  const pick = async (role: string) => {
+    const allows = roleTitle(roles, role);
+    const asked = [
+      `${p.name === me ? "Give yourself" : `Give ${p.name}`} the role ${role} on the host, in place of ${now || "none"}?`,
+      allows && `${role}: ${allows}.`,
+      p.name === me && "You may not be able to change it back.",
+    ];
+    if (await dialog.confirm(asked.filter(Boolean).join(" "), "Change the role")) void act(() => changePrincipal(p.name, { role }));
+  };
   return (
-    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => void act(() => changePrincipal(p.name, { role: e.target.value }))}>
+    <select aria-label={`${p.name}'s role`} value={now} style={input} title={roleTitle(roles, now)} onChange={(e) => void pick(e.target.value)}>
       {now === "" && (
         <option value="" disabled>
           no role on the host
@@ -453,7 +477,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
               <Who name={p.name} />
               {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
             </span>
-            <RoleSelect p={p} roles={roles} act={act} />
+            <RoleSelect p={p} me={me} a={a} />
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
               <HeldElsewhere p={p} />
               {p.email ?? ""}
@@ -485,7 +509,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
             >
               reset
             </button>
-            <button style={small} onClick={() => void act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
+            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} title={p.disabled ? "let them sign in again" : "stop them signing in; their sign-ins end"}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button
@@ -552,8 +576,19 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
           <div style={row}>
             <Who name={p.name} style={{ minWidth: 90 }} />
             <span style={quiet}>{p.kind}</span>
-            <RoleSelect p={p} roles={roles} act={act} />
-            <select aria-label={`${p.name}'s owner`} value={p.owner ?? ""} style={input} title="the person answerable for it" onChange={(e) => void act(() => changePrincipal(p.name, { owner: e.target.value }))}>
+            <RoleSelect p={p} me={me} a={a} />
+            <select
+              aria-label={`${p.name}'s owner`}
+              value={p.owner ?? ""}
+              style={input}
+              title="the person answerable for it"
+              onChange={async (e) => {
+                // Asked first, as a role is: an arrow key on the focused list changed it (R43).
+                const owner = e.target.value;
+                const asked = `Make ${owner} the owner of ${p.name}, in place of ${p.owner ?? "nobody"}? Its owner answers for it, and makes and revokes its tokens.`;
+                if (await dialog.confirm(asked, "Change the owner")) void act(() => changePrincipal(p.name, { owner }));
+              }}
+            >
               {owners(p.owner).map((o) => (
                 <option key={o} value={o}>
                   owned by {o}
@@ -569,7 +604,7 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
             <button style={small} aria-label={`make a token for ${p.name}`} title="a new token for it, shown once" onClick={() => makeToken(p, dialog, act, setMade)}>
               make token
             </button>
-            <button style={small} onClick={() => void act(() => changePrincipal(p.name, { disabled: !p.disabled }))} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
+            <button style={small} onClick={() => void switchDisabled(p, me, dialog, act)} title={p.disabled ? "let its tokens sign in again" : "refuse its tokens"}>
               {p.disabled ? "enable" : "disable"}
             </button>
             <button

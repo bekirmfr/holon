@@ -136,7 +136,11 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await peopleTab(ada, "People");
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
+  // Asked first, saying what it does: one click no longer ends someone's sign-ins (R43).
   await cyRow.getByRole("button", { name: "disable" }).click();
+  const asked = ada.locator('[aria-modal="true"]');
+  await expect(asked).toContainText("Disable cy? Their sign-ins end, and they can't sign in until enabled again.");
+  await asked.getByRole("button", { name: "Disable", exact: true }).click();
   await expect(cyRow).toContainText("· disabled");
   await menuEntry(cy, "library").click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
@@ -145,6 +149,8 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await cy.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await expect(cy.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("don't match");
   await cyRow.getByRole("button", { name: "enable" }).click();
+  await expect(asked).toContainText("Enable cy? They can sign in again.");
+  await asked.getByRole("button", { name: "Enable", exact: true }).click();
   await expect(cyRow).not.toContainText("· disabled");
 });
 

@@ -179,3 +179,12 @@ export async function viewNewestRun(page: Page) {
 export function notices(page: Page): Locator {
   return page.getByRole("region", { name: "notices" });
 }
+
+/** Answer the question open in the page with Enter, once it takes an answer. A question waits a
+ *  moment after it shows, and after each key pressed while it waits, its answers disabled till
+ *  then (Dialog.tsx's ARM_MS): the Enter someone was typing for the page can't answer it. A click
+ *  waits for that by itself; a key pressed does not. */
+export async function enter(page: Page) {
+  await expect(page.locator('[aria-modal="true"] button[aria-disabled="true"]')).toHaveCount(0);
+  await page.keyboard.press("Enter");
+}

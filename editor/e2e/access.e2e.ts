@@ -21,7 +21,7 @@ import type { Browser, Locator } from "@playwright/test";
 import { givesOf, type Tagged } from "../src/access";
 import type { Principal, RoleEntry } from "../src/server";
 import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, peopleTab } from "./helpers";
+import { enter, flowRow, gotoPage, navLink, peopleTab } from "./helpers";
 
 /** A call to the control plane as whoever `token` signs in. */
 const control = (token: string, path: string, data?: unknown, method?: string) =>
@@ -326,7 +326,7 @@ test("someone who may deploy a flow but not approve what it asks proposes it fro
     await expect(deployButton).toBeEnabled();
     await deployButton.dispatchEvent("click");
     await asPia.locator('[aria-modal="true"]').locator("input").fill(slug);
-    await asPia.keyboard.press("Enter");
+    await enter(asPia);
     await asPia.getByRole("dialog").getByRole("button", { name: "Update", exact: true }).click();
     const asked = asPia.getByRole("dialog");
     await expect(asked).toContainText(`Propose "${slug}"?`);
@@ -376,7 +376,7 @@ test("a flow whose approval no one here can decide says so, and deploying it ask
       await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
       if (!named) {
         await page.locator('[aria-modal="true"]').locator("input").fill(slug);
-        await page.keyboard.press("Enter");
+        await enter(page);
       }
       const consent = page.getByRole("dialog");
       await expect(consent).toContainText(`approval ok: approved by a person holding ${first}`);
@@ -453,7 +453,7 @@ test("a step whoever started the run may take says so in words, and with its one
     // others start can be, so approving it deploys without asking again.
     await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
     await page.locator('[aria-modal="true"]').locator("input").fill(slug);
-    await page.keyboard.press("Enter");
+    await enter(page);
     const consent = page.getByRole("dialog");
     await expect(consent).toContainText(`approval ok: approved by a person holding ${role}`);
     await expect(consent).toContainText(`a run ${ADMIN.name} starts can't be decided, as they take no step of it`);

@@ -6,6 +6,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
+import { useDialog } from "./Dialog";
 import { useCan } from "./can";
 import {
   deleteSecret,
@@ -170,6 +171,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
   const picking = kind === "env" && envNames.length > 0 && !typing;
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const dryRun = useDryRun();
+  const dialog = useDialog();
   const can = useCan(slug);
   const setting = can.may("setSecret");
   // The row follows where the secret comes from once that's known (the list loads after it).
@@ -194,11 +196,15 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
       })
       .catch(fail);
   };
-  const remove = () =>
-    slug &&
+  // Every version goes, none left to roll back to: asked first (R43).
+  const remove = async () => {
+    if (!slug) return;
+    const asked = `Remove ${slug}'s secret "${name}"? Every version of it is forgotten: none can be rolled back to. From its next run it reads the server's "${name}" if the server has one, and nothing otherwise.`;
+    if (!(await dialog.confirm(asked, "Remove"))) return;
     deleteSecret(slug, name)
       .then(() => changed("removed"))
       .catch(fail);
+  };
   // A dry run first, its result shown; rolled back once approved.
   const rollback = async (to: number) => {
     if (!slug) return;

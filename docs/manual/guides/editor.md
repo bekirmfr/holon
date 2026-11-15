@@ -369,7 +369,7 @@ formatting. The VS Code extension (`holon-vscode.vsix`, on each release) starts 
 | j k, ← → | step through a run, a node at a time (viewing runs) |
 | , . | the run before, or after |
 | [ ] | the version waiting before, or after (a review) |
-| y, Enter / n, Esc | a dialog's yes, or no |
+| y, Enter / n, Esc | a dialog's yes, or no; its yes once it has been shown half a second with no key pressed, so a key you were typing can't answer it |
 | Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | undo / redo |
 | Delete, Backspace | remove the selection |
 | Shift+Alt+F | format the text |

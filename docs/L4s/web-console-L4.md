@@ -339,7 +339,7 @@ the current page. A page's keys come before the anywhere keys.
 | The editor | `e`; `c x v b i`; `l` | Edit or View runs; the panes; Statements or Nodes |
 | The editor | `Ctrl S`, `Ctrl D`, `Shift Alt F` | save, deploy (a review first), format |
 | View runs | `j` `k`, `Home` `End`, `=` | step through the run; its ends; values |
-| A dialog | a button's letter, `Enter`, `Esc` | press it; the highlighted one; cancel |
+| A dialog | a button's letter, `Enter`, `Esc` | press it; the highlighted one; cancel (an answer but cancel once it has been shown 500 ms with no key pressed: R43) |
 
 `d` is Docs anywhere, Decline on Approvals, and the diff in a review. A page's key wins. Each page
 says its own `d` in the status bar.
