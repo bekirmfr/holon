@@ -1216,7 +1216,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 
 /// `DELETE /deployments/<slug>` — closes the named gap from the clock-deploy L4's Fork 4: the
 /// only way to stop a `Clock`-triggered deployment used to be killing the whole server. Removing
-/// the slug from the table is sufficient — `run_due_clock_ticks` only ever acts on what's
+/// the slug from the table is sufficient — `start_due_clock_ticks` only ever acts on what's
 /// currently in the table, so there's no separate "cancel" signal to build; the deployment
 /// simply stops being something the scheduler can find. For an `Ingress`-triggered deployment,
 /// `POST /trigger/<slug>` starts 404ing immediately afterward, the same 404 it already gives a

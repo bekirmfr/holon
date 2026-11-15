@@ -53,11 +53,16 @@ deployment's log has its own lock, and the line is made before taking it.
   it weighed: [performance](performance.md#nothing-computes-on-a-data-plane-worker-2026-11-13).
 - **Cost.** Every run pays the pool's hop: 20–30 µs at one connection on a trivial route, about a
   quarter of its throughput there; under load, even or ahead.
+- **Clocks.** A clock's tick goes on by itself, and the deadlines of waiting runs have a thread of
+  their own (scheduler.rs): a tick waiting on a call holds its own clock alone. Until R34 the loop
+  waited for every tick it started, then looked at the deadlines: one tick waiting 30 s held every
+  clock and every deadline on the server as long.
 - **Limits.** CPU is shared: 64 connections of `crunch` slow every route ("overload", RA §2.1).
   The pool runs as many runs as are computing, up to its 512 threads, the cores shared among
   them; what one run may compute is its round's budgets (B5).
 - **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
-  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
+  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
+  `a_slow_run_the_clock_loop_starts_holds_no_other_clock_or_deadline`.
 
 ### G3. A panic ends its run and nothing else
 

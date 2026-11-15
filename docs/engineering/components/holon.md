@@ -96,7 +96,7 @@ up to `VALUE_CACHE_LARGEST`. Both count memory, not encoded bytes
 |---|---|---|
 | a thread per control-plane request | `rouille::Server::new` (rouille 3.6's default executor, `Executor::Threaded`) | the control plane |
 | `holon-data` runtime, and its blocking pool | `dataplane::runtime`, with the first listener | the data plane: each request read on a worker and run on `spawn_blocking`, however short (nothing computes on a worker: [G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)) |
-| the clock | `spawn_clock_scheduler` | every second, `run_due_clock_ticks` (the deployments due, fanned out on `thread::scope`), then `durable::expire_waiting` |
+| the clock | `spawn_clock_scheduler` | two threads, every second: one starts the clocks due (`start_due_clock_ticks`, a thread per tick, one per clock at most, not waited for); the other `durable::expire_waiting` |
 | the file watcher | `arrivals::spawn_watcher` | every `POLL` (1 s), new files in watched folders start runs |
 | the syncer | `serve` | every `SYNC_EVERY` (1 s): writes the deployments file when tallies changed, then `recorder::sync_logs` (syncs each log, makes the cut-backs runs asked for) |
 | the secrets refresh | `serve` | every `secret_sources::REFRESH` (60 s), `SecretStore::refresh` reads references again |

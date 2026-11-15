@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A slow clock tick holds its own clock alone.** The clock loop waited for every tick it started
+  before the next pass, and looked at waiting runs' deadlines after it on the same thread: one tick
+  waiting 30 s on a call held every deployment's clocks, and every deadline, as long. Each tick now
+  goes on by itself (a clock isn't fired again over its own tick), and the deadlines have a thread
+  of their own.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

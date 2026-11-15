@@ -408,6 +408,86 @@ fn delete_unknown_deployment_is_404() {
     assert_eq!(body_json(answer)["error"], "no deployment \"nope\"", "it says why, for holon remove to print");
 }
 
+// ── the clock loop, in real time: a slow run holds nothing else of it ──────────────────
+
+/// **Guards:** a slow run the clock loop starts holds nothing else of it. While a clock's tick
+/// waits on a call: another deployment's clock ticks on, and the waiting clock isn't fired again
+/// over its own tick. While that goes on, a waiting run past its deadline is expired; resumed, it
+/// waits on a call too, and the clocks tick on. Let go, the held clock ticks again.
+/// **Why:** a pass joined every tick it started before the next pass began, and the deadlines
+/// were looked at after it on the same thread: one tick waiting 30 s on a call held every
+/// deployment's clocks and every waiting run's deadline as long, and a run resumed at its deadline
+/// held the clocks while it went on.
+/// **If it fails:** the steady clock stopped while a call was held (a pass waits for its ticks, or
+/// the deadlines share the clocks' thread), the waiting run wasn't expired under a held tick, the
+/// held clock was fired again over its own tick, or it never ticked again once let go (its clock
+/// not freed when its tick ended).
+#[test]
+fn a_slow_run_the_clock_loop_starts_holds_no_other_clock_or_deadline() {
+    use std::time::Instant;
+    let (host, hits, gate) = gated_counting_server();
+    gate.shut();
+    let state = claims_state("");
+    let held = format!(
+        r#"import {{ action, event, every, flow }} from "holon"
+import state from "state"
+import api from "host:{host}"
+
+flow("held")
+
+every("1s", async () => {{
+  const r = await api.get("/slow")
+  state.ticked = r.body
+}})
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  const r = await api.get(go.expired ? "/slow" : "/fast")
+  state.later = r.body
+}})
+"#
+    );
+    let steady = "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"steady\")\n\nevery(\"1s\", () => {\n  state.ticks = (state.ticks ?? 0) + 1\n})\n";
+    assert_eq!(deploy_text_to(&state, &held, &[&host]), "held");
+    assert_eq!(deploy_text_to(&state, steady, &[]), "steady");
+    assert_eq!(run_action_named(&state, "held", "later", serde_json::json!(null)).status_code, 202, "it waits");
+    assert_eq!(state.deployments.lock().unwrap()["held"].parked.len(), 1, "the run waits for its event");
+
+    let within = |secs: u64, done: &dyn Fn() -> bool| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while !done() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        done()
+    };
+    let steady_ticks = || state.deployments.lock().unwrap()["steady"].trigger_count;
+    let slow_calls = || hits.lock().unwrap().get("/slow").copied().unwrap_or(0);
+    scheduler::spawn_clock_scheduler(state.store.clone(), Arc::clone(&state.deployments), state.deployments_path.clone());
+
+    // A clock's tick waits on its call.
+    assert!(gate.out_at_once(1), "the held clock's tick calls out");
+    let was = steady_ticks();
+    assert!(within(10, &|| steady_ticks() >= was + 2), "the steady clock ticks on while a tick waits on a call");
+    assert_eq!(slow_calls(), 1, "the held clock isn't fired again over its own tick");
+
+    // A waiting run at its deadline, the tick still held: expired, and resumed, it calls out.
+    for p in state.deployments.lock().unwrap().get_mut("held").unwrap().parked.values_mut() {
+        for w in &mut p.waiting {
+            w.expires_at = 0;
+        }
+    }
+    assert!(gate.out_at_once(2), "the waiting run is expired while a tick waits on a call, and its resumed run calls out");
+    let was = steady_ticks();
+    assert!(within(10, &|| steady_ticks() >= was + 2), "the clocks tick on while a resumed run waits on a call");
+    assert_eq!(slow_calls(), 2, "{:?}", hits.lock().unwrap());
+
+    // Let go: both end, and the held clock ticks again.
+    gate.open();
+    assert!(within(10, &|| slow_calls() >= 3), "the held clock ticks again once its tick ended");
+    let shown = |key: &str| body_json(route(&state, &req("GET", "/deployments/held/state", vec![])))["state"][key]["value"].clone();
+    assert!(within(10, &|| shown("later") == "slow" && shown("ticked") == "slow"), "both runs went on to their ends");
+}
+
 // ── capability-consent ───────────────────────────────────────────────────────────────
 
 /// A deploy acknowledges the whole manifest its unit derives, or is refused: none of it, or part
