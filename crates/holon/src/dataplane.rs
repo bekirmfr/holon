@@ -134,6 +134,11 @@ pub(crate) struct Share {
     deployment: Arc<Running>,
     data_plane: Arc<Running>,
     max_runs: usize,
+    /// The deployment's `max_concurrent_runs` as its grant said when last read: what a run is held
+    /// to while another holds the deployments table (a writer writing, sealing or syncing it), so
+    /// no worker waits on the table's lock (release audit R45, D5). A grant changed meanwhile is
+    /// read by the next request to find the table free.
+    known: Arc<AtomicUsize>,
 }
 
 /// A run admitted ([`Share`]): its place in the deployment's share and the data plane's, given
@@ -151,10 +156,16 @@ impl Drop for Admitted {
 }
 
 impl Share {
-    /// The deployment's share as its grant says now; none once it is gone.
+    /// The deployment's share as its grant says now, or as it said when last read if the table
+    /// is held: this runs on a worker, which never waits on the table ([`Share::known`]). None
+    /// once the deployment is gone.
     fn most(&self) -> Option<usize> {
-        let table = self.deployments.lock().unwrap();
-        table.get(&self.slug).map(|d| usize::try_from(d.permit.durable.max_concurrent_runs).unwrap_or(usize::MAX))
+        let Some(table) = self.deployments.try_lock() else {
+            return Some(self.known.load(Ordering::Relaxed));
+        };
+        let most = table.get(&self.slug).map(|d| usize::try_from(d.permit.durable.max_concurrent_runs).unwrap_or(usize::MAX))?;
+        self.known.store(most, Ordering::Relaxed);
+        Some(most)
     }
 
     fn admit_within(&self, most: usize) -> Result<Admitted, String> {
@@ -328,8 +339,9 @@ struct Listener {
 }
 
 /// Start the data-plane listener for `slug` on `port`, returning its stop signal. The port is
-/// bound here, so a port in use is reported to the caller rather than lost in a task.
-pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<Stop, String> {
+/// bound here, so a port in use is reported to the caller rather than lost in a task. `most` is
+/// the deployment's `max_concurrent_runs` as the caller read it from the table.
+pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16, most: usize) -> Result<Stop, String> {
     let limits = state.data_limits.clone();
     let bound = std::net::TcpListener::bind((limits.host, port)).map_err(|e| e.to_string())?;
     bound.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -345,6 +357,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
         deployment: Arc::new(Running::default()),
         data_plane: Arc::clone(&limits.runs),
         max_runs: limits.max_runs,
+        known: Arc::new(AtomicUsize::new(most)),
     };
     let listener = Arc::new(Listener {
         store: state.store.clone(),
