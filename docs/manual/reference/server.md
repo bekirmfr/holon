@@ -319,23 +319,26 @@ An admin also defines roles of their own, and groups:
   taking one out, or changing a role that is defined (holding what it allows before and after).
   **Nor changes anyone who holds more**: whoever changes a principal (`PATCH` or
   `DELETE /people/<name>`, its email, owner, role or whether it is enabled; resetting its password;
-  making or revoking its tokens) holds all it holds, since they could then act as it, or is
-  refused (403, `ada holds admin on this host, which holds flow.edit there, which you don't: you
-  change, or act as, only someone who holds no more than you`). So a role that manages people
+  making or revoking its tokens) holds all it holds, and all that each agent or service it owns
+  holds (whose tokens it makes), since they could then act as it, or is refused (403, `ada holds
+  admin on this host, which holds flow.edit there, which you don't: you change, or act as, only
+  someone who holds no more than you`; for an owner, `bob owns bot, which holds editor on this
+  host, …`). So a role that manages people
   without holding everything an admin does can't make, become or lock out an admin. An agent's
   or a service's owner still makes and revokes its tokens. Setting the identity provider takes
   holding what each person holds.
 - **Nor makes a way in to anyone whose access waits for people to be given**, while `changes` is
   N: resetting the password of, setting the email of, making a token of (but its owner), or giving
-  another owner to someone else who holds `run.decide` or anything of an admin's, or setting the
-  identity provider while another person does, is refused (403, `bob holds run.decide on this
-  host, as admin, and giving that waits here for 1 person other than its giver: whoever resets
-  bob's password could act as bob, counted as another person, so it is done only through this
-  server's machine (its run file); or take that from bob first, which applies at once, and give it
-  back after, which waits`). They do it themselves, or this machine's run file does. `GET /people`
+  another owner to someone else who holds `run.decide` or anything of an admin's, or owns an
+  agent or a service that does, or setting the identity provider while another person does, is
+  refused (403, `bob holds run.decide on this host, as admin, and giving that waits here for 1
+  person other than its giver: whoever resets bob's password could act as bob, counted as another
+  person, so it is done only through this server's machine (its run file); or take that from bob
+  first, which applies at once, and give it back after, which waits`; for an owner, `bob owns bot,
+  which holds run.decide on this host, as classifier, …; or take that from bot first, …`). They do it themselves, or this machine's run file does. `GET /people`
   answers who could act as each principal, `ways_in`: whoever made the link a person's password
-  was last set from, whoever set their email, an agent's or a service's owner and whoever else
-  made a token of it.
+  was last set from, whoever set their email, an agent's or a service's owner, whoever made its
+  owner's way in, and whoever else made a token of it.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
   or manages people, roles, resources or the host.

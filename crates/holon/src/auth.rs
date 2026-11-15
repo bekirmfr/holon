@@ -87,12 +87,19 @@ fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Resp
     crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
 }
 
-/// What `name` holds that `caller` doesn't, in words, if anything (D19).
+/// What `name` holds that `caller` doesn't, in words, if anything (D19): or what an agent or a
+/// service `name` owns holds, whose tokens whoever acts as `name` makes.
 fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String> {
-    let p = accounts.principal(name)?;
     let document = accounts.access_document();
-    let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now())?;
-    Some(format!("{name} holds {} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+    let more = |who: &str| -> Option<String> {
+        let p = accounts.principal(who)?;
+        let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(who).map(|(b, _)| b), crate::deploy::epoch_now())?;
+        Some(format!("{} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+    };
+    match more(name) {
+        Some(more) => Some(format!("{name} holds {more}")),
+        None => accounts.owned(name).iter().find_map(|o| Some(format!("{name} owns {o}, which holds {}", more(o)?))),
+    }
 }
 
 /// Why `caller` may not change `name`, if they may not: its sign-in (a reset, its email), its
@@ -117,8 +124,8 @@ fn may_take_over(caller: &Caller, accounts: &Accounts, name: &str, what: &str) -
         return Ok(());
     }
     let Some(n) = accounts.access_document().approvals.changes else { return Ok(()) };
-    let Some(held) = crate::access_proposals::governing(accounts, name) else { return Ok(()) };
-    let instead = format!("or take that from {name} first, which applies at once, and give it back after, which waits");
+    let Some(held) = crate::access_proposals::governing_as(accounts, name) else { return Ok(()) };
+    let instead = format!("or take that from {} first, which applies at once, and give it back after, which waits", held.0);
     Err(err(403, crate::access_proposals::taken_over(name, &held, what, n, &instead)))
 }
 
@@ -365,7 +372,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 if s.settings.is_some()
                     && caller.local.is_none()
                     && let Some(n) = accounts.access_document().approvals.changes
-                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing(accounts, &p.name)?)))
+                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing_as(accounts, &p.name)?)))
                 {
                     let instead = "or turn off access changes waiting for people first (holon access approvals --changes off), which waits too";
                     return Err(err(403, crate::access_proposals::taken_over(&name, &held, "sets the identity provider, which says who each person here is,", n, instead)));

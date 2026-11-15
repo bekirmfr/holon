@@ -174,11 +174,12 @@ No one gives more than they hold: you define a role, bind it, or add someone to 
 only holding all it allows there yourself. Nor do you take more than you hold: you change or
 unbind a role, or take someone out of a group bound it, only holding what it allows there. And
 you change someone (their email, role, owner, password, tokens, whether they are enabled or
-there) only holding all they hold, since you could then act as them: a role that manages people
-doesn't make its holder an admin. Setting the identity provider says who everyone is, so it takes
-holding what each person holds: an admin sets it. Whatever an agent is bound, it never approves, starts,
-stops, deletes or restores, sets a secret, decides a person's step of an approval, or manages
-people; a service never decides an approval. A binding's **unbind**, which asks why, or `holon
+there) only holding all they hold, since you could then act as them, and all that each agent or
+service they own holds, whose tokens they make: a role that manages people doesn't make its
+holder an admin, nor take over a stronger agent through its owner. Setting the identity provider
+says who everyone is, so it takes holding what each person holds: an admin sets it. Whatever an
+agent is bound, it never approves, starts, stops, deletes or restores, sets a secret, decides a
+person's step of an approval, or manages people; a service never decides an approval. A binding's **unbind**, which asks why, or `holon
 unbind ID` takes it away, and an expired one holds nothing. A binding, a role or a group change
 refused says why in the server's words, in the editor as on the command line.
 
@@ -263,10 +264,10 @@ as a viewer and then give them the role, which waits.
 ## No one takes over someone
 
 While `--changes` is on, no one makes a way in to someone else who decides runs or holds anything
-of an admin's (an editor, an admin, or a role of yours that does): their password **reset**, their
-**email** set (a provider matches people by it), a **token** made of their agent or service by
-anyone but its owner, another **owner** given to it, or the **identity provider** set, which says
-who everyone is. Whoever did it could sign in as them, and count as a second person wherever
+of an admin's (an editor, an admin, or a role of yours that does), or owns an agent or a service
+that does, whose tokens they make: their password **reset**, their **email** set (a provider
+matches people by it), a **token** made of their agent or service by anyone but its owner,
+another **owner** given to it, or the **identity provider** set, which says who everyone is. Whoever did it could sign in as them, and count as a second person wherever
 people are counted. The server refuses it (403), saying so; with the setting off, an admin does
 it as before.
 
@@ -285,8 +286,9 @@ holon people set bob --role admin      # waits for another admin to approve it
 
 A proposal says whom it gives more and who could act as them: "ada made bob's reset link".
 Whoever made someone's way in (their invite or reset link, their email; an agent's or a
-service's owner, or one who made a token of it) doesn't approve giving them more, whoever
-proposed it, and a way in made to one of them while it waits makes it stale. The People page
+service's owner, whoever made its owner's way in, or one who made a token of it) doesn't approve
+giving them more, whoever proposed it, and a way in made to one of them while it waits makes it
+stale. The People page
 says, for each person, who made their way in.
 
 Each decision is kept with what let it: the binding its principal took the step through, by its

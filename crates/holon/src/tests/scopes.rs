@@ -420,9 +420,9 @@ fn the_editor_is_held_to_what_can_answers() {
 /// No one gives more than they hold (D19), whichever route gives it: cy, holding a role that
 /// manages and assigns people on the host and a viewer's besides, doesn't make an admin or an
 /// editor by inviting, setting a role or adding to a group bound admin, and doesn't reset or make
-/// the tokens of someone holding more, so as to act as them, nor change or remove them. What holds
-/// no more than cy holds, cy gives and changes; an owner makes its service's tokens, as the design
-/// has it.
+/// the tokens of someone holding more, so as to act as them, nor change or remove them, nor someone
+/// who owns a service holding more, whose tokens they make. What holds no more than cy holds, cy
+/// gives and changes; an owner makes its service's tokens, as the design has it.
 #[test]
 fn no_one_gives_or_changes_more_than_they_hold() {
     let (state, t, _, _) = server();
@@ -451,6 +451,14 @@ fn no_one_gives_or_changes_more_than_they_hold() {
     assert_eq!(ada("POST", "/people/ci/tokens", json!({ "label": "CI" })).0, 200);
     assert_eq!(ada("POST", "/people", json!({ "name": "bot", "kind": "service", "role": "editor", "owner": "bob" })).0, 200);
     assert_eq!(send(&state, &t.bob, "POST", "/people/bot/tokens", json!({ "label": "bob's bot" })).0, 200, "its owner, holding less");
+    // Nor someone who owns more (the audit's R19): whoever acts as bob, a viewer now, makes bot's
+    // tokens, and so holds what bot holds. Not his password, email or whether he is enabled.
+    let owns = (403, "bob owns bot, which holds editor on this host, which holds flow.edit there, which you don't: you change, or act as, only someone who holds no more than you".to_string());
+    for (method, path, body) in [("POST", "/people/bob/reset", Value::Null), ("PATCH", "/people/bob", json!({ "email": "bob@example.com" })), ("PATCH", "/people/bob", json!({ "disabled": true }))] {
+        assert_eq!(refusal(cy(method, path, body.clone())), owns, "{method} {path} {body}");
+    }
+    assert_eq!(ada("PATCH", "/people/bot", json!({ "role": "viewer" })).0, 200);
+    assert_eq!(cy("POST", "/people/bob/reset", Value::Null).0, 200, "bot holding no more than cy");
 
     // Nor change someone holding more, so as to sign in as them, own them, or take from them (the
     // launch review's B4): not the admin's email, which a provider matches, nor whether they are
@@ -677,8 +685,21 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
         assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", same.clone()).0, 200, "{same}");
     }
     // That way, through the rules there are: taken away at once, reset, and given back, which
-    // waits, its proposal saying who made bob's link.
+    // waits, its proposal saying who made bob's link. Taken from bob, it is still held by bot,
+    // which bob owns and whose tokens whoever acts as bob makes (the audit's R19): each way in to
+    // bob is refused, saying so, until it is taken from bot too.
     assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "viewer" })).0, 200);
+    assert_eq!(
+        refusal(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null)),
+        (403, "bob owns bot, which holds run.decide on this host, as classifier, and giving that waits here for 1 person other than its giver: whoever resets bob's password could act as bob, counted as another person, so it is done only through this server's machine (its run file); or take that from bot first, which applies at once, and give it back after, which waits".into())
+    );
+    for (method, path, body) in [("PATCH", "/people/bob", json!({ "email": "someone@example.com" })), ("POST", "/admin/oidc", json!({ "settings": { "issuer": "http://127.0.0.1:9", "client_id": "holon" } }))] {
+        let (code, said) = refusal(send(&state, &t.ada, method, path, body));
+        assert!(code == 403 && said.starts_with("bob owns bot, which holds run.decide on this host, as classifier, and giving that waits"), "{path}: {code} {said}");
+    }
+    let classifier = state.access.accounts().unwrap().bindings_of("bot").into_iter().find(|b| b.role == "classifier").unwrap().id;
+    let (code, said) = send(&state, &t.ada, "DELETE", &format!("/bindings/{classifier}"), Value::Null);
+    assert!((200..300).contains(&code), "taken from bot, at once: {code} {said}");
     assert_eq!(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null).0, 200);
     let (code, said) = send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "admin" }));
     assert_eq!(code, 202, "{said}");

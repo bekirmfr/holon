@@ -1115,24 +1115,30 @@ impl Accounts {
     /// Who besides `name` could sign in or act as them, each with how in words ("bob made eve's
     /// reset link"): for a person, whoever made the link their password was last set from and
     /// whoever set the email a provider matches them by (`WayIn`); for an agent or a service, its
-    /// owner and whoever else made a token of it.
+    /// owner, whoever could act as its owner (who makes its tokens), and whoever else made a token
+    /// of it.
     pub(crate) fn acting_as(&self, name: &str) -> Vec<(String, String)> {
         let book = hold(&self.book);
         let Some(p) = book.users.iter().find(|u| u.name == name) else { return Vec::new() };
-        let mut who: Vec<(String, String)> = p
-            .ways_in
-            .iter()
-            .map(|w| {
-                let how = match w.way {
-                    Way::Invite => format!("made {name}'s invite link"),
-                    Way::Reset => format!("made {name}'s reset link"),
-                    Way::Email => format!("set {name}'s email"),
-                };
-                (w.by.clone(), format!("{} {how}", w.by))
-            })
-            .collect();
+        let ways_in = |p: &Principal| -> Vec<(String, String)> {
+            let name = &p.name;
+            p.ways_in
+                .iter()
+                .map(|w| {
+                    let how = match w.way {
+                        Way::Invite => format!("made {name}'s invite link"),
+                        Way::Reset => format!("made {name}'s reset link"),
+                        Way::Email => format!("set {name}'s email"),
+                    };
+                    (w.by.clone(), format!("{} {how}", w.by))
+                })
+                .collect()
+        };
+        let mut who = ways_in(p);
         if let Some(owner) = &p.owner {
             who.push((owner.clone(), format!("{owner} owns {name}")));
+            let theirs = book.users.iter().find(|u| &u.name == owner).into_iter().flat_map(ways_in);
+            who.extend(theirs.map(|(by, how)| (by, format!("{how}, and {owner} owns {name}"))));
         }
         for t in book.credentials.iter().filter(|t| t.principal == name && t.created_by != name && Some(&t.created_by) != p.owner.as_ref()) {
             who.push((t.created_by.clone(), format!("{} made {name}'s token {:?}", t.created_by, t.label)));
@@ -1301,6 +1307,13 @@ impl Accounts {
 
     pub(crate) fn principal(&self, name: &str) -> Option<Principal> {
         hold(&self.book).users.iter().find(|u| u.name == name).cloned()
+    }
+
+    /// The agents and services `name` owns, by name: whoever acts as `name` makes their tokens,
+    /// and so acts as them too. An owner is a person and an agent or a service owns nothing, so
+    /// this is all that acting as `name` reaches.
+    pub(crate) fn owned(&self, name: &str) -> Vec<String> {
+        hold(&self.book).users.iter().filter(|u| u.owner.as_deref() == Some(name)).map(|u| u.name.clone()).collect()
     }
 
     /// Set a new password, knowing the current one. Every other session of theirs ends (one opened
@@ -2151,7 +2164,8 @@ mod tests {
     /// password was last set from, an invite's or a reset's, and whoever set their email, the
     /// latest of each sort and none of their own; a password they set themselves or a provider's
     /// sign-in changes neither, as who held the link can't be told. For an agent or a service, its
-    /// owner and whoever else made a token of it, while the token is there.
+    /// owner, whoever could act as its owner (who makes its tokens), and whoever else made a token
+    /// of it, while the token is there.
     #[test]
     fn who_could_act_as_someone_else_is_whoever_made_their_way_in() {
         let (a, _) = set_up();
@@ -2175,12 +2189,13 @@ mod tests {
 
         a.invite("bob", "viewer", None, "ada").unwrap();
         a.add("bot", Kind::Agent, "agent", "bob", "ada").unwrap();
-        assert_eq!(acting("bot"), ["bob: bob owns bot"]);
+        let owner = ["bob: bob owns bot", "ada: ada made bob's invite link, and bob owns bot"];
+        assert_eq!(acting("bot"), owner, "and whoever could act as bob, who makes its tokens");
         a.create_token("bot", "bob's", "bob").unwrap();
         let (_, theirs) = a.create_token("bot", "ada's", "ada").unwrap();
-        assert_eq!(acting("bot"), ["bob: bob owns bot", "ada: ada made bot's token \"ada's\""]);
+        assert_eq!(acting("bot"), [owner[0], owner[1], "ada: ada made bot's token \"ada's\""]);
         a.revoke_token("bot", &theirs.id).unwrap();
-        assert_eq!(acting("bot"), ["bob: bob owns bot"]);
+        assert_eq!(acting("bot"), owner);
     }
 
     #[test]

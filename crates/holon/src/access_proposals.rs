@@ -340,12 +340,20 @@ pub(crate) fn governing(accounts: &Accounts, name: &str) -> Option<String> {
     })
 }
 
-/// Why `what` ("resets bob's password") isn't done here but through the run file: `name` holds
-/// `held` (`governing`), whose giving waits for `n` people other than its giver, and whoever did it
-/// could act as `name`, counted as another person (D12); `instead` says what else to do.
-pub(crate) fn taken_over(name: &str, held: &str, what: &str, n: u8, instead: &str) -> String {
+/// What whoever acts as `name` could use whose giving waits for people (`governing`), and whose it
+/// is: `name`'s own, or else an agent's or a service's `name` owns, whose tokens they make.
+pub(crate) fn governing_as(accounts: &Accounts, name: &str) -> Option<(String, String)> {
+    std::iter::once(name.to_string()).chain(accounts.owned(name)).find_map(|who| Some((who.clone(), governing(accounts, &who)?)))
+}
+
+/// Why `what` ("resets bob's password") isn't done here but through the run file: `whose` (`name`,
+/// or an agent or a service `name` owns) holds `held` (`governing_as`), whose giving waits for `n`
+/// people other than its giver, and whoever did it could act as `name`, counted as another person
+/// (D12); `instead` says what else to do.
+pub(crate) fn taken_over(name: &str, (whose, held): &(String, String), what: &str, n: u8, instead: &str) -> String {
+    let holds = if whose == name { format!("{name} holds") } else { format!("{name} owns {whose}, which holds") };
     format!(
-        "{name} holds {held}, and giving that waits here for {} other than its giver: whoever {what} could act as {name}, counted as another person, so it is done only through this server's machine (its run file); {instead}",
+        "{holds} {held}, and giving that waits here for {} other than its giver: whoever {what} could act as {name}, counted as another person, so it is done only through this server's machine (its run file); {instead}",
         people(n)
     )
 }
@@ -1168,12 +1176,16 @@ mod tests {
         assert_eq!(status(approve(&a, &person(&a, "cy"), p.id)), (200, "is stale: since it was proposed, bob made dee's reset link".into()));
         assert_eq!(kept(&a.access_document()), before);
 
-        // An agent: its owner could act as it.
+        // An agent: its owner could act as it, and whoever could act as its owner, who makes its
+        // tokens (the audit's R19).
         a.define_role(RoleText { kinds: vec![Kind::Agent], ..role("classifier", &["run.decide", "run.view"]) }, "ada", None).unwrap();
         a.add("bot", Kind::Agent, "viewer", "bob", "ada").unwrap();
+        a.invite("gus", "admin", None, "ada").unwrap();
+        a.reset("bob", "gus").unwrap();
         let p = propose("bot", "classifier");
-        assert_eq!(p.ways_in, ["bob owns bot"]);
+        assert_eq!(p.ways_in, ["bob owns bot", "gus made bob's reset link, and bob owns bot"]);
         assert!(status(approve(&a, &person(&a, "bob"), p.id)).1.contains("(bob owns bot)"));
+        assert!(status(approve(&a, &person(&a, "gus"), p.id)).1.contains("(gus made bob's reset link, and bob owns bot)"));
 
         assert_eq!(governing(&a, "dee").as_deref(), Some("run.decide on this host, as approver"));
         assert_eq!(governing(&a, "eve").as_deref(), Some("people.view on this host, as assigner"), "given just now");
