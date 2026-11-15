@@ -882,6 +882,14 @@ fn serve(args: Vec<String>) {
             std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
             println!("wrote {} bytes to {path}", bytes.len());
             return;
+        } else if a == "--secrets-key" || a == "--new-secrets-key" || a.starts_with("--secrets-key=") {
+            // Gone with 0.1.0-rc.35: said, not just refused, since a start script from then has it.
+            eprintln!(
+                "holon serve: {a} is gone: this release seals its whole data folder, under a root key (--root-key, \
+                 --new-root-key), not the secrets alone. It doesn't read a folder written by 0.1.0-rc.35 or earlier, \
+                 which kept its secrets under that key: keep running that release on such a folder, or start over"
+            );
+            std::process::exit(2);
         } else {
             eprintln!("holon serve: no option {a:?}
 

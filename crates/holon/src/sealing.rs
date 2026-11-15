@@ -173,6 +173,31 @@ impl KeySource {
     }
 }
 
+/// Where a release from before the server sealed its data (0.1.0-rc.35 and earlier) kept the key
+/// of the secrets file at `secrets`, as it chose it with no `--secrets-key`: under the id the file
+/// records (written in clear then), else a hash of the file's absolute path; in the OS key store
+/// as `secrets-key-<id>`, else as `~/.holon/keys/<id>.key`. None for a file this release sealed,
+/// or none there. What `uninstall --purge` removes with the folder, so it isn't left behind.
+pub(crate) fn old_secrets_key(secrets: &Path) -> Option<KeySource> {
+    let bytes = std::fs::read(secrets).ok()?;
+    if crate::at_rest::is_sealed(&bytes) {
+        return None;
+    }
+    let id = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("key_id")?.as_str().map(str::to_string))
+        .filter(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| {
+            let absolute = std::path::absolute(secrets).unwrap_or_else(|_| secrets.to_path_buf());
+            blake3::hash(absolute.to_string_lossy().as_bytes()).to_hex()[..16].to_string()
+        });
+    if cfg!(any(windows, target_os = "macos")) {
+        Some(KeySource::Os { account: format!("secrets-key-{id}") })
+    } else {
+        crate::local::holon_home().map(|h| KeySource::File(h.join("keys").join(format!("{id}.key"))))
+    }
+}
+
 /// Where a key file's keyrings are listed ([`KeySource::keyrings`]): beside it.
 fn keyrings_file(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();

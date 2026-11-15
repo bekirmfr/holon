@@ -604,7 +604,7 @@ const WRITERS: &[(&str, usize, &str)] = &[
     ("locks.rs", 1, "a lock file: empty"),
     ("logs.rs", 1, "console lines, sealed by its LineSeal before they are appended"),
     ("mcphosts.rs", 1, "an MCP client's config file, written where a person asked"),
-    ("migrate.rs", 1, "holon migrate: a server's files moved byte for byte, as they are"),
+    ("migrate.rs", 1, "holon migrate: key files an older release kept in the config folder, moved as they are"),
     ("recorder.rs", 7, "the run log: its lines and segments sealed (LineSeal) before any of these writes them"),
     ("sealing.rs", 5, "the writers themselves, the root key's own file, and the keys files listed beside it: paths, kept with the root, never in the data folder"),
     ("selfmanage.rs", 1, "holon's own install, edited on update"),

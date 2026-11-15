@@ -395,12 +395,23 @@ impl Keyring {
                 return Err(format!("{} isn't there: this folder has no keys to read with", path.display()));
             }
             if let Some(there) = sealed.iter().find(|p| p.exists()) {
-                return Err(format!(
-                    "{} is missing, and {} is there: it was sealed under its keys, or written before the server sealed its data. \
-                     Restore keys.json beside it, or move the data folder aside to start over",
-                    path.display(),
-                    there.display()
-                ));
+                return Err(match sealed.iter().find(|p| written_in_clear(p)) {
+                    // Nothing to restore: no keys.json was ever made for it.
+                    Some(clear) => format!(
+                        "{} is written in clear: a release from before the server sealed its data (0.1.0-rc.35 or earlier) made this \
+                         folder, and this one reads none of it, nor converts it (holon migrate doesn't either). Keep running that \
+                         release on it; or move the folder aside and start over, which leaves its accounts, secrets, state and runs \
+                         behind (what that release kept in the OS key store, holon / secrets-key-<id>, can then be removed)",
+                        clear.display()
+                    ),
+                    None => format!(
+                        "{} is missing, and {} is there, sealed under its keys: nothing in the folder opens without it. Restore the \
+                         keys.json that goes with this folder (a backup folder keeps a copy, holon-archive-keys.json); moving the \
+                         folder aside to start over leaves everything in it behind",
+                        path.display(),
+                        there.display()
+                    ),
+                });
             }
             return Keyring::create(path, root_arg);
         };
@@ -1176,6 +1187,13 @@ pub(crate) fn open_export(keys: &Keyring, bytes: &[u8]) -> Result<Zeroizing<Vec<
     keys.open_file(&role::export(slug), bytes).map_err(|e| e.to_string())
 }
 
+/// Whether the file at `path` is a table written in clear, as releases before the server sealed
+/// its data (0.1.0-rc.35 and earlier) wrote them: there, not empty, and not sealed. A folder
+/// is a log folder, not a table.
+fn written_in_clear(path: &Path) -> bool {
+    path.is_file() && std::fs::read(path).is_ok_and(|b| !b.is_empty() && !is_sealed(&b))
+}
+
 /// Whether `bytes` are sealed whole (§4): what `holon verify` needs keys for.
 pub(crate) fn is_sealed(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC.as_slice())
@@ -1444,13 +1462,19 @@ mod tests {
         assert!(missing.contains("isn't in"), "{missing}");
         assert!(!dir.join("absent.key").exists(), "no root made beside a keyring that has one");
         assert_eq!(std::fs::read(&path).unwrap(), kept, "nothing written");
-        // keys.json gone, data beside it.
+        // keys.json gone, data sealed under it beside it: restore it.
         let data = dir.join("deployments.json");
-        std::fs::write(&data, b"sealed").unwrap();
+        std::fs::write(&data, &sealed).unwrap();
         std::fs::remove_file(&path).unwrap();
         let gone = Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[&data]).err().unwrap();
-        assert!(gone.contains("is missing") && gone.contains("deployments.json"), "{gone}");
+        assert!(gone.contains("is missing") && gone.contains("deployments.json") && gone.contains("holon-archive-keys.json"), "{gone}");
         assert!(!path.exists(), "no new keyring made over sealed data");
+        // A table in clear beside it: a folder an older release wrote (0.1.0-rc.35 or earlier),
+        // told apart, since there is no keys.json to restore (R10).
+        std::fs::write(&data, br#"{"deployments":[]}"#).unwrap();
+        let older = Keyring::open(&path, Some(&root_arg(&dir, "root.key")), &[&dir.join("host.key"), &data]).err().unwrap();
+        assert!(older.contains("0.1.0-rc.35") && older.contains("deployments.json") && !older.contains("Restore"), "{older}");
+        assert!(!path.exists(), "no new keyring made over an older release's data");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

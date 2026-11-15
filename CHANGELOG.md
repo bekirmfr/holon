@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+- **Upgrading from 0.1.0-rc.35 or earlier: this release doesn't read that data folder.** The
+  server now seals everything in its data folder (below), and a folder written in clear by an
+  older release is refused at start, saying so; nothing in it is changed (only `keys.lock` is
+  written). There is no conversion: keep running the release that wrote it on it, or move it aside
+  and start over, which leaves its accounts, tokens, secrets, state, waiting runs and run logs
+  behind. `--secrets-key` and `--new-secrets-key` are gone (`--root-key`, `--new-root-key`), and
+  say so. `holon migrate` no longer moves a server's `.holon-*` files (every release that kept
+  them wrote them in clear): it names them and refuses; it still moves old key files.
+  `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
+  store's `holon / secrets-key-<id>`) with the folder.
+- **Everything in the data folder is sealed at rest, under a root key kept apart from it.** Every
+  table, the content store (its files named by a keyed hash), the run logs, events and console
+  lines (a line at a time), secrets, waiting runs, the host key, spools, removed records and
+  backups are sealed (XChaCha20-Poly1305) under data keys, one per scope (`server`, `secrets`,
+  `names`, `d:<slug>` for each deployment), kept in `keys.json` wrapped by a root key. The root
+  is kept where `--root-key` says (`os`, the default on Windows and macOS; a file in
+  `~/.holon/keys` elsewhere; `env:VAR`; `file:PATH`), never in the data folder: the first start
+  makes it and says where, and a root file inside the folder is refused. Back it up apart:
+  `holon key export --to file:PATH` copies it, from the OS key store too. The backup folder keeps
+  a copy of `keys.json` (`holon-archive-keys.json`), so a backup and the root open its archives
+  alone; `holon verify` finds it beside an archive, or takes `--data` and `--root-key`. A run
+  log's line is sealed outside the log's lock; sealing costs lazy runs about 11-14% of their
+  throughput (docs/engineering/performance.md).
+- **`holon key`: status, rotate, forget, export, and a new root.** `holon key status` says where
+  the root is and each scope's versions; `rotate <scope>` makes a new data key that seals from
+  then on; `forget <slug> --yes` (or `holon remove <slug> --forget`, or the editor's remove box)
+  drops a removed deployment's keys, so its records, backups and leftovers open nowhere again and
+  say they were forgotten, then rotates the root where it is kept, and says to back the new one
+  up. `rotate --root --to <SOURCE>`, with the server stopped, wraps every key under a new root: it
+  never writes over a key it didn't make, a rotation cut short at any write is finished or undone
+  at the next start, and a root that another data folder opens too (a copy, or a second server on
+  the same `--root-key`) is never rotated in place, naming that folder.
+- **A `keys.json` older than its data is refused, never taken as empty.** A run log, events or a
+  sealed segment holding a line whose key `keys.json` doesn't have stops the start, naming the
+  deployment, the line and the version, and a deploy onto it is refused; nothing of it is skipped,
+  numbered again from 0 or cut. A log that is there but can't be read refuses the same way. A
+  mailbox, queue, feed or folder watch whose record of what it has seen doesn't open holds: it
+  runs nothing and marks nothing seen, and says why, where before it ran everything again or
+  marked what waited as seen.
+- **Removing a flow keeps its run records.** `DELETE /deployments/<slug>` first writes its log,
+  timeline, units and file texts as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`),
+  and removes nothing if it can't. One run exports alone: `GET /deployments/<slug>/export?run=N`,
+  `holon export --run N`, and `holon verify` checks it. A witnessed head now says which runs it
+  proves ("no run from 3 to 5 was changed or removed"), and that it says nothing of runs a trimmed
+  log let go.
+- **Who started a waiting run, when each account was last seen, when each flow last ran.** A run
+  that parks keeps who started it (`by` in `/runs`; "started by ada" in `holon decide`,
+  `holon runs --waiting` and the MCP tools). Each account keeps `last_seen` and each token
+  `last_used`, written at most once a minute. `/summary` gives each flow's `last_ms`, which the
+  Overview's and Flows' Last run show. `GET /deployments/<slug>/channels` counts each channel's
+  kept packs and subscribers, which Resources shows.
+- **The editor's canvas.** Nodes is the flow, edited; Statements and Grouped are read-only views
+  of it. A node clicked brings its code into view, and the code's cursor its node; the mouse is
+  the same in Edit and View (middle drag pans, left drag selects). A failed run draws red only
+  where it failed, and what never ran is faint; a waiting run replays as itself. View runs shows
+  the runs and the run picked side by side; the Inspector and bottom pane fold. Every button asks
+  the server what it may send through one hook, and a run started by another flow's run is named
+  by its first eight characters.
+- **Dialogs answer Enter with the focused control, and keep the focus.** Enter answered every
+  in-page dialog yes wherever the focus was: tabbing to Cancel on a delete or a deploy's consent
+  and pressing Enter went ahead. Now it does what a click on the focused control would, and every
+  modal keeps Tab inside it.
+- **No other page can frame the editor or the API, and the editor's fonts come with it.** The
+  server answers with `X-Frame-Options: DENY` and a `frame-ancestors 'none'` policy, so a hostile
+  page can't show the signed-in editor and lure a click onto Approve; the fonts are served by the
+  server, not fetched from Google.
+- **Text nested past 128 levels is refused at its place.** 1,000 nested parentheses overflowed
+  the stack of `holon check`, `holon lsp`, the MCP server's `check` and the editor; now it is an
+  error at the line and column where it goes too deep.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

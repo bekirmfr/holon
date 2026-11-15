@@ -1181,8 +1181,8 @@ Code extension starts it.
 |---|---|
 | `holon version` | this build's version (also `--version`, `-V`) |
 | `holon update [--check] [--to VERSION] [--pre]` | install the newest release over this one; `--check` only says whether there is one. A pre-release build follows pre-releases; `--pre` makes a full release follow them too |
-| `holon uninstall [--purge] [--yes]` | remove the program, its PATH entry and install receipt. The data stays; `--purge` removes all of `~/.holon` too, after asking you to type `purge` (`--yes` skips asking) |
-| `holon migrate [--yes] [--check] [--from DIR]` | move what releases before 0.1.0-rc.17 left elsewhere (`.holon-*` files in a folder, old secrets keys) into `~/.holon` |
+| `holon uninstall [--purge] [--yes]` | remove the program, its PATH entry and install receipt. The data stays; `--purge` removes all of `~/.holon` too, with the root key the server kept in the OS key store (and the secrets key 0.1.0-rc.35 or earlier kept there), after asking you to type `purge` (`--yes` skips asking) |
+| `holon migrate [--yes] [--check] [--from DIR]` | move old key files from `~/.config/holon/keys` into `~/.holon/keys`; name a server's `.holon-*` files (written in clear by a release this one doesn't read) and refuse them |
 
 ## Environment
 

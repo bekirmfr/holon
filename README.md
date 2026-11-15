@@ -279,9 +279,10 @@ asking (`--yes` skips that).
   `gh attestation verify holon-x86_64-unknown-linux-gnu.tar.xz --repo bekirmfr/holon`.
 - Releases up to 0.1.0-rc.3 installed it as `holon-server`. `holon-server update` installs
   `holon` in its place and keeps a `holon-server` beside it that runs `holon serve`.
-- Releases before 0.1.0-rc.17 kept a server's state as `.holon-*` files in the folder it was
-  started from. `holon migrate` (run there, or with `--from DIR`) moves them into
-  `~/.holon/data`; `holon serve` says so when it sees them.
+- This release seals its data folder at rest, and doesn't read one written in clear by 0.1.0-rc.35
+  or earlier (nor the `.holon-*` files releases before 0.1.0-rc.17 kept in the folder they were
+  started from): `holon serve` refuses it, saying so, and changes nothing in it. Keep running
+  the release that wrote it on it, or start over.
 
 </details>
 
