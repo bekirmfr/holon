@@ -698,6 +698,79 @@ fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
     assert_eq!(summary["chain"]["checked"]["runs"], 3);
 }
 
+/// **Guards:** what a forget says it reaches is what it reaches (release audit R30). A removed
+/// deployment's keys forgotten, the shared content store is swept as it is: each state it left
+/// that nothing else names is gone; a value another deployment names too stays, and so does that
+/// one's every state; the forgotten one's code stays, as the forget says; what was written in the
+/// last hour is left to the next sweep, and counted as spared.
+///
+/// **Why:** forget said nothing the deployment left opens again, while its states and code stayed
+/// in the content store, sealed under the server's keys, until a sweep an hour or more later, or
+/// for good with sweeps off.
+///
+/// **If it fails:** a forgotten customer's state still opens on the server; or a forget sweeps a
+/// value another deployment needs, and that one's state no longer loads.
+#[test]
+fn a_forget_reaches_what_it_says_and_leaves_what_others_name() {
+    let dir = unique_temp_path("forget-store");
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true
+").unwrap());
+    let deploy = |slug: &str, own: &str| {
+        let text = format!(
+            "import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"{slug}\")\n\nexport const bump = action(() => {{\n  state.shared = \"both deployments hold this\"\n  state.own = \"{own}\"\n  state.n = (state.n ?? 0) + 1\n}})\n"
+        );
+        assert_eq!(deploy_text(&state, &text, "x"), slug);
+        for _ in 0..3 {
+            assert_eq!(route(&state, &req("POST", &format!("/trigger/{slug}/bump"), b"{}".to_vec())).status_code, 200);
+        }
+        holon_author::agent::plan(&text).unwrap().unit
+    };
+    let gone_unit = deploy("gone", "only the forgotten one holds this");
+    deploy("stays", "only the one that stays holds this");
+    let states = |slug: &str| -> Vec<String> {
+        let log = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
+        log["entries"].as_array().unwrap().iter().map(|e| e["state_after"].as_str().unwrap().to_string()).collect()
+    };
+    let (gone, stays) = (states("gone"), states("stays"));
+    assert_eq!((gone.len(), stays.len()), (3, 3));
+    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
+    let files = || std::fs::read_dir(&values).unwrap().count();
+    let before = files();
+
+    // Forgotten now: everything is new, so the sweep spares it, and says so.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let said = crate::keys::forget(&state, "gone", "ada", now);
+    assert_eq!(said["forgotten"], true, "{said}");
+    assert!(said["store"]["spared"].as_u64().unwrap() > 0 && said["store"]["swept"] == 0, "{said}");
+    assert_eq!(files(), before);
+    // Forgotten again an hour and more later (the slug deployed and removed again in between, as
+    // a second forget needs keys to forget): what only it named is gone.
+    let later = now + 2 * sweep::SPARES_MS;
+    deploy("gone", "only the forgotten one holds this");
+    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
+    let said = crate::keys::forget(&state, "gone", "ada", later);
+    assert!(said["store"]["swept"].as_u64().unwrap() >= 3, "at least its three states: {said}");
+    assert!(files() < before, "{said}");
+    for snapshot in &gone {
+        assert!(restore::load_snapshot(snapshot, &state.store).is_err(), "a state only the forgotten one named still loads");
+    }
+    // What the one that stays names stays, the value both held with it.
+    for snapshot in &stays {
+        let kept = restore::load_snapshot(snapshot, &state.store).unwrap_or_else(|e| panic!("a state of the one that stays: {e}"));
+        assert_eq!(kept.get("shared"), Some(&Value::Text("both deployments hold this".into())));
+    }
+    // Its code stays in the store, as the forget says.
+    assert!(Path::new(&dir).join(crate::at_rest::keys().name(&parse_hash(&gone_unit).unwrap())).exists(), "its unit");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let dir = unique_temp_path("sweep");

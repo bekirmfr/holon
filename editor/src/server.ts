@@ -1545,10 +1545,19 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry & 
  *  it is in an environment variable, `why` says). */
 /** What a forget did. `root.rotated`: the root key was rotated where it is kept, so backups and
  *  copies of the data folder taken before need the old one (`pending`: rotated, `keys.json`'s last
- *  write left to the next start). */
-export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string; pending?: string }; error?: string };
+ *  write left to the next start). `store`: the content store swept as it was forgotten, the values
+ *  nothing else names removed (`swept`) and those written in the last hour left to the next sweep
+ *  (`spared`), or why it wasn't. */
+export type Forgotten = {
+  slug: string;
+  forgotten: boolean;
+  root: { rotated: boolean; why?: string; pending?: string };
+  store?: { swept?: number; spared?: number; why?: string };
+  error?: string;
+};
 
-/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: nothing it left opens again. */
+/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: its log, records and backups
+ *  open nowhere again, and the content store's values nothing else names are swept. */
 export async function forgetKeys(slug: string): Promise<Forgotten> {
   const res = await api(`${BASE}/admin/keys/forget`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
   return asJson<Forgotten>(res);

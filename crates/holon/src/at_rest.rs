@@ -720,7 +720,8 @@ impl Keyring {
 
     /// Forget a deployment's scope (`d:<slug>`): its data keys gone from `keys.json`, so nothing
     /// sealed under them opens on this server again, in the data folder, the backup folder or the
-    /// removed records ([`Unreadable::Forgotten`]). `Ok(false)`: nothing was ever sealed under it.
+    /// removed records ([`Unreadable::Forgotten`]). Not the content store, sealed under the
+    /// server's keys (`keys::forget` sweeps it). `Ok(false)`: nothing was ever sealed under it.
     /// A copy of the whole folder taken before still holds them, wrapped under the root: rotating
     /// the root after this ([`Keyring::rotate_root`]) is what puts that copy out of reach.
     pub(crate) fn forget(&self, scope: &str) -> Result<bool, String> {

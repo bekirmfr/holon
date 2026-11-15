@@ -323,8 +323,9 @@ the server's logs, as an export `holon verify` checks (`removed/<slug>-runs-<ms>
 where), sealed under the server's keys as everything in its data folder is: `holon verify` opens it
 with `--root-key`. The slug deployed again starts a new log, and the old one stays as it was.
 Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon key
-forget`](#holon-key), which needs `host.operate`): its kept records, its backups and every
-other file it left can't be opened again.
+forget`](#holon-key), which needs `host.operate`): its kept log, events, records and backups
+can't be opened again; the values only it named are swept from the shared content store, and its
+code stays there.
 
 ### `holon call`
 
@@ -998,8 +999,10 @@ anything of one.
   rotated: the store's files are named by it. Needs `host.operate`.
 - `forget <slug> --yes`, for a removed deployment (as `holon remove --forget`; it can't be undone,
   so it asks for `--yes`): its keys are dropped from
-  `keys.json`, so its kept records, its backups and every other file it left open nowhere again,
-  and say they were forgotten. The root key is then rotated where it is kept, so a copy of the
+  `keys.json`, so its kept log, events, records and backups open nowhere again, and say they
+  were forgotten. The content store, which every deployment shares and the server's keys seal, isn't forgotten:
+  the values nothing else names are swept from it at once (those written in the last hour by
+  the next sweep), and the flow's code stays in it. The root key is then rotated where it is kept, so a copy of the
   whole folder taken before (which holds the old `keys.json`) needs the old root, which only a
   copy of it kept elsewhere still has; a root in an environment variable can't be rotated by the
   server, and it says so; nor is a root another data folder still opens (below). Back the new root

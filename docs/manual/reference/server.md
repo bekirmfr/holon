@@ -500,8 +500,10 @@ them; none of it ever shows a key.
   rotate --root --data <its folder> --to file:PATH`), or delete it. A rotation cut short loses nothing: the next start finishes it, or undoes it,
   whichever root it is given.
 - **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
-  section): its keys leave `keys.json`, so its kept records, its backups and every file it left
-  open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated
+  section): its keys leave `keys.json`, so its kept log, events, records and backups open
+  nowhere again, and say they were forgotten rather than damaged. The content store, which every deployment shares and the server's keys seal, isn't forgotten:
+  the values nothing else names are swept from it at once (those written in the last hour by
+  the next sweep), and the flow's code stays in it. Then the root is rotated
   where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
   needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
   a copy; forgetting doesn't reach it. Back the new root up then (`holon key export`). A root in an

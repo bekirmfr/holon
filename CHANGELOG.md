@@ -12,6 +12,12 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A forget says what it reaches, and sweeps the content store.** Forgetting a removed
+  deployment's keys makes its log, events, records and backups open nowhere again; the content
+  store, which every deployment shares and the server's keys seal, isn't forgotten. The forget now
+  sweeps it at once: the values nothing else names are removed (those written in the last hour by
+  the next sweep, as any sweep spares them), and it says how many. The flow's code stays in the
+  store. The CLI, the editor, the README and the manual said nothing it left opened again.
 - **A write that fails is never taken as done.** An event the server couldn't write (a full disk)
   no longer breaks the events' chain for good: the chain goes on from the last line written, the
   next event says which were lost, and `holon verify` lists them (and calls events missing that

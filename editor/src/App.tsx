@@ -1732,7 +1732,7 @@ function Canvas({
                     else if (!f.root.rotated && f.forgotten) toast(`Removed ${route.slug} and forgot its keys. The root key isn't rotated: ${f.root.why ?? ""}`, "bad");
                     else
                       toast(
-                        `Removed ${route.slug} and forgot its keys: nothing it left opens again. The root key changed: back up the new one (holon key export --to file:PATH); backups and copies of the data folder taken before open only with the old.${f.root.pending ? ` ${f.root.pending}` : ""}`,
+                        `Removed ${route.slug} and forgot its keys: its log, records and backups open nowhere again; its code stays in the content store. The root key changed: back up the new one (holon key export --to file:PATH); backups and copies of the data folder taken before open only with the old.${f.root.pending ? ` ${f.root.pending}` : ""}`,
                         "ok",
                       );
                   }

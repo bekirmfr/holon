@@ -532,7 +532,7 @@ function Lifecycle({ entry, onAction, can }: { entry: DeploymentEntry; onAction:
  *  host, written as an export `holon verify` checks (the server's DELETE). Asked by typing its
  *  name, once it is stopped, by whoever may delete it (`flow.delete`). And its keys forgotten,
  *  if asked, by whoever may operate the host too (`host.operate`, `POST /admin/keys/forget`):
- *  then nothing it left opens again. */
+ *  then its log, records and backups open nowhere again (its code stays in the content store). */
 function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boolean; onRemove: (forget: boolean) => Promise<void>; may: Answer }) {
   const [typed, setTyped] = useState("");
   const [forget, setForget] = useState(false);

@@ -43,7 +43,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
             if state.deployments.lock().unwrap().contains_key(&slug) {
                 return Some(err(409, format!("{slug:?} is deployed: remove it first (holon remove {slug} --yes --forget)")));
             }
-            Response::json(&forget(state, &slug, by))
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            Response::json(&forget(state, &slug, by, now_ms))
         }
         _ => Response::empty_404(),
     })
@@ -51,7 +52,14 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 
 /// A removed deployment's keys forgotten, then the root rotated in place, so a copy of the whole
 /// folder taken before (which holds the old `keys.json`) needs a root that is no longer kept.
-fn forget(state: &AppState, slug: &str, by: &str) -> Value {
+///
+/// What it reaches is what was sealed under the deployment's keys: its log, events, console
+/// lines, spools, the records kept when it was removed, its exports and their backups. Not the
+/// content store, sealed under the server's keys and shared by every deployment of the same code
+/// or the same value (release audit R30): the values nothing else names are swept from it at once
+/// (`now_ms`), but those written in the last hour, which the next sweep takes; its code (units)
+/// stays, as units are never swept.
+pub(crate) fn forget(state: &AppState, slug: &str, by: &str, now_ms: u64) -> Value {
     let keys = crate::at_rest::keys();
     let scope = crate::at_rest::deployment(slug);
     let had = match keys.forget(&scope) {
@@ -73,7 +81,12 @@ fn forget(state: &AppState, slug: &str, by: &str) -> Value {
         },
     };
     state.activity.record("forgot a deployment's keys", slug, Some(by));
-    json!({ "slug": slug, "forgotten": had, "root": root })
+    let store = match crate::sweep::sweep(&state.store, &state.deployments, now_ms, crate::sweep::SPARES_MS, false, true) {
+        Ok(Some(swept)) => json!({ "swept": swept.values, "spared": swept.spared }),
+        Ok(None) => json!({ "swept": 0, "spared": 0 }),
+        Err(e) => json!({ "why": e }),
+    };
+    json!({ "slug": slug, "forgotten": had, "root": root, "store": store })
 }
 
 /// A text field of the request's JSON body, or the answer that says it is missing.
@@ -94,9 +107,11 @@ const USAGE: &str = "holon key: the keys the server seals its data under (never 
                                     written from now on is sealed under it, and what was sealed
                                     before still opens (names is never rotated)
   holon key forget <slug> --yes     a removed deployment's keys forgotten (as holon remove --forget):
-                                    nothing it left opens again, for good, and the root key is
-                                    rotated where it is kept, so every backup and copy of the data
-                                    folder taken before needs the old root: back up the new one
+                                    its log, events, records and backups open nowhere again, for
+                                    good; the content store's values nothing else names are swept
+                                    (its code stays); and the root key is rotated where it is
+                                    kept, so every backup and copy of the data folder taken before
+                                    needs the old root: back up the new one
   holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
                                     a copy of the root key, written owner-only to PATH, which must
                                     hold none: the way to back up a root kept in the OS key store.
@@ -136,7 +151,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         (Some("export"), None, false) => export_root(&args),
         (Some("forget"), Some(slug), false) if !args.flag("--yes") => {
             eprintln!(
-                "{WHO}: forgetting {slug}'s keys can't be undone: nothing it left (its kept log, its backups, its records) opens again, \
+                "{WHO}: forgetting {slug}'s keys can't be undone: its kept log, events, records and backups open nowhere again, \
                  and the root key is rotated where it is kept, so every backup and copy of the data folder taken before needs the old root. \
                  Run it again with --yes to forget them"
             );
@@ -179,7 +194,16 @@ pub(crate) fn print_forgotten(v: &Value) -> i32 {
         println!("{slug}: nothing was ever sealed under its keys");
         return 0;
     }
-    println!("{slug}: its keys are forgotten: nothing it left (its kept log, its backups, its records) opens on this server again");
+    println!("{slug}: its keys are forgotten: its kept log, events, records and backups open nowhere again");
+    let store = &v["store"];
+    match store["why"].as_str() {
+        Some(why) => eprintln!("the content store wasn't swept: {why}; its state values stay until the next sweep"),
+        None => println!(
+            "the content store, sealed under the server's keys, is swept: {} values nothing else names removed, {} written in the last hour left to the next sweep; its code stays in the store",
+            store["swept"].as_u64().unwrap_or(0),
+            store["spared"].as_u64().unwrap_or(0)
+        ),
+    }
     let root = &v["root"];
     if root["rotated"].as_bool() == Some(true) {
         println!("the root key is rotated where it is kept: backups and copies of the data folder taken before open only with the old root, if a copy of it was kept");
