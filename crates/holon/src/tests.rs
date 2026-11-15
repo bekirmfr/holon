@@ -4802,9 +4802,9 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(call("GET", "/nope", ""), 404);
 
     let log = body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])));
-    assert_eq!(log["next"], 3);
+    assert_eq!(log["next"], 2);
     let entries = log["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 2);
     let second = &entries[1];
     assert_eq!((second["kind"].as_str(), second["route"].as_str(), second["status"].as_u64()), (Some("request"), Some("POST /todos"), Some(200)));
     assert_eq!(second["unit"], to_hex(&api), "the version: the server's unit, not its route's endpoint");
@@ -4812,7 +4812,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(second["response_body"], r#"{"title":"b"}"#);
     assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the record with one item");
     assert_eq!(second["performed"][0]["capability"], "StateWrite(\"todos\")");
-    assert_eq!((entries[2]["status"].as_u64(), entries[2]["route"].is_null()), (Some(404), true), "an unrouted request is logged too");
+    assert_eq!(log["tallies"][crate::firing::RAN_NOTHING]["last_failure"]["status"], 404, "an unrouted request is counted, not logged: {log}");
     // Each step's timing. This fixture's endpoint holds its 7 nodes directly ([k]); the stored
     // record a store_read reads is injected as a small composite, timed one level down.
     let paths: Vec<Vec<u64>> = second["timeline"]
@@ -4826,7 +4826,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(top, vec![0, 1, 2, 3, 4, 5, 6], "one timing per node");
     assert!(paths.iter().all(|p| p.len() <= recorder::Timer::DEPTH));
     assert!(second["timeline"].as_array().unwrap().iter().all(|t| t["end_us"].as_f64() >= t["start_us"].as_f64()));
-    let newer = body_json(route(&state, &req("GET", "/deployments/todo/log?after=1", vec![])));
+    let newer = body_json(route(&state, &req("GET", "/deployments/todo/log?after=0", vec![])));
     assert_eq!(newer["entries"].as_array().unwrap().len(), 1);
 
     // Replay: the entry alone (request, state read, sourced values) reproduces the run.
@@ -4863,7 +4863,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     }))
     .unwrap();
     assert_eq!(route(&state, &req("POST", "/deploy", again)).status_code, 200);
-    assert_eq!(body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])))["next"], 3);
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])))["next"], 2);
     assert_eq!(route(&state, &req("GET", "/deployments/todo/document", vec![])).status_code, 200, "kept");
 }
 
@@ -6585,6 +6585,127 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
     route(&state, &req("DELETE", "/deployments/gone", vec![]));
     let _ = std::fs::remove_dir_all(logs.parent().unwrap());
     let _ = std::fs::remove_file(&path);
+}
+
+/// A caller decides nothing of how big a log line is (release audit D1, class 2's caller side):
+/// whatever body a request is sent, of any size and any bytes JSON writes long (`\u0001`, six
+/// to one), with a look-alike of a mark or a tainted value in it, to a route that never reads it
+/// or one that does, its run's line is held under a bound of the server's, not the caller's. A
+/// body past `BODY_INLINE` is kept by hash in the blob store, redacted as the entry is, and named
+/// by the entry; the run verifies and replays as itself from it, and a sweep keeps it while its
+/// run is kept.
+#[test]
+fn a_caller_decides_nothing_of_how_big_a_log_line_is() {
+    use crate::recorder::BODY_INLINE;
+    let state = claims_state("");
+    let text = "import { flow, route } from \"holon\"
+
+flow(\"bodies\", { port: 18241, taint: [\"number\"] })
+
+route.post(\"/drop\", (req) => \"ok\")
+
+route.post(\"/name\", (req) => req.json.name)
+";
+    deploy_text(&state, text, "127.0.0.1:9");
+    let card = "4111111111111111";
+    // Each body: as many of `fill` as make it `n` bytes or so, as JSON when `json`.
+    let body = |fill: &str, n: usize, json: bool| {
+        let pad = fill.repeat(n.div_ceil(fill.len()));
+        if json { serde_json::json!({ "name": "Ada", "number": card, "pad": pad }).to_string() } else { pad }
+    };
+    let mut sent = Vec::new();
+    for n in [10, BODY_INLINE / 6, BODY_INLINE / 2, BODY_INLINE, BODY_INLINE + 1, 1 << 20] {
+        for fill in ["a", "\u{1}", "‹taint:number› ‹"] {
+            sent.push(("/drop", body(fill, n, false)));
+            sent.push(("/name", body(fill, n, true)));
+        }
+    }
+    for (url, b) in &sent {
+        let (status, answer, _) = data_call(&state, "bodies", "POST", url, b);
+        assert_eq!(status, 200, "{url} with {} bytes: {answer}", b.len());
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+
+    let get = |path: &str| body_json(route(&state, &req("GET", path, vec![])));
+    let export = get("/deployments/bodies/export");
+    let lines: Vec<String> = serde_json::from_value(export["lines"].clone()).unwrap();
+    assert_eq!(lines.len(), sent.len());
+    // A body the entry holds, as its line writes it, twice (its request and its ingress), and room
+    // for the rest of the entry.
+    let bound = 2 * BODY_INLINE + 16 * 1024;
+    for (line, (url, b)) in lines.iter().zip(&sent) {
+        assert!(line.len() <= bound, "{url} with {} bytes made a line of {}", b.len(), line.len());
+        let entry: crate::recorder::LogEntry = serde_json::from_str(line).unwrap();
+        assert!(!line.contains(card), "a tainted value is marked, kept by hash or not");
+        // As its line writes it: a control character six bytes.
+        let written = serde_json::to_string(b).unwrap().len() - 2;
+        match &entry.body {
+            None => assert!(written <= BODY_INLINE, "{url} with {} bytes is in the entry", b.len()),
+            Some(kept) => {
+                assert!(written > BODY_INLINE, "{url} with {} bytes is kept by hash", b.len());
+                assert!(line.len() < 16 * 1024, "{url}: a body kept by hash leaves the line its own size: {}", line.len());
+                let blob = kept.blob.as_ref().expect("kept in the blob store");
+                let held = export["blobs"][blob].as_str().expect("the export ships it");
+                assert_eq!(held.len() as u64, kept.size);
+                assert!(!held.contains(card) && (!b.contains(card) || held.contains("‹taint:number›")), "kept redacted");
+            }
+        }
+    }
+    // Every run runs again as it ran, its body put back, and replays as itself.
+    let report = verify::check(&serde_json::from_value(export.clone()).unwrap(), None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let not_matched: Vec<_> = report.reruns.iter().filter(|(_, r)| *r != verify::Rerun::Matched).collect();
+    assert!(not_matched.is_empty(), "{not_matched:?}");
+    assert!(replays_as_it_verifies(&state, "bodies").contains("request"));
+    // An export that leaves the texts out: its runs kept by hash are skipped, not taken as differing.
+    let without = verify::check(&serde_json::from_value(get("/deployments/bodies/export?without_files=1")).unwrap(), None, &BTreeMap::new());
+    assert!(without.reruns.iter().all(|(_, r)| matches!(r, verify::Rerun::Matched | verify::Rerun::Skipped(_))), "{:?}", without.reruns);
+    assert!(without.reruns.iter().any(|(_, r)| matches!(r, verify::Rerun::Skipped(_))));
+    // A sweep keeps them while their runs are kept.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    folders::sweep(&state.folders, &state.deployments, now + 3_600_000, 0).unwrap();
+    let again = verify::check(&serde_json::from_value(get("/deployments/bodies/export")).unwrap(), None, &BTreeMap::new());
+    assert!(again.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", again.reruns);
+}
+
+/// A request that runs nothing never takes a run's place in the log (release audit D10, class 2's
+/// caller side): whatever anyone who reaches the port sends that no handler runs (a path no route
+/// takes, a method its route doesn't, a body that isn't text), the runs the log keeps stay, and
+/// those requests are counted under `RAN_NOTHING`, with the last one's status and path.
+#[test]
+fn a_request_that_runs_nothing_never_takes_a_runs_place_in_the_log() {
+    let state = claims_state("[limits]\nkeep_runs = 5\n");
+    let text = "import { flow, route } from \"holon\"
+
+flow(\"tallied\", { port: 18242 })
+
+route.post(\"/drop\", (req) => \"ok\")
+";
+    deploy_text(&state, text, "127.0.0.1:9");
+    let call = |method: &str, url: &str, body: &[u8]| serve_data(&state.store, &state.deployments, &state.deployments_path, "tallied", &fake_data(method, url, body.to_vec())).status;
+    for _ in 0..5 {
+        assert_eq!(call("POST", "/drop", b"hi"), 200);
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let log = Arc::clone(&state.deployments.lock().unwrap()["tallied"].log);
+    let runs = || log.after(None, usize::MAX).iter().map(|e| e.seq).collect::<Vec<_>>();
+    assert_eq!(runs(), [0, 1, 2, 3, 4]);
+    let nothing: [(&str, &str, &[u8], u16); 4] =
+        [("POST", "/nowhere?token=x", b"", 404), ("GET", "/drop", b"", 405), ("POST", "/drop/more", b"x", 404), ("POST", "/drop", b"\xff\xfe", 400)];
+    for _ in 0..20 {
+        for (method, url, body, status) in nothing {
+            assert_eq!(call(method, url, body), status, "{method} {url}");
+        }
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    assert_eq!(runs(), [0, 1, 2, 3, 4], "the runs it keeps stay");
+    assert_eq!(log.next_seq(), 5, "and none was logged");
+    let tally = state.deployments.lock().unwrap()["tallied"].tallies.get(crate::firing::RAN_NOTHING).cloned().expect("counted");
+    assert_eq!((tally.runs, tally.failed), (80, 80));
+    let last = tally.last_failure.expect("the last one kept");
+    assert_eq!((last.status, last.error.as_deref()), (400, Some("POST /drop")), "its status and path, not its query");
+    let page = body_json(route(&state, &req("GET", "/deployments/tallied/log", vec![])));
+    assert_eq!(page["tallies"][crate::firing::RAN_NOTHING]["runs"], 80, "{page}");
 }
 
 /// A run that computes with a secret (here, signing the body under it) can't be computed again
@@ -12864,12 +12985,12 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert_eq!(action("report"), 200);
     assert_eq!(call("GET", "/nowhere", ""), 404);
     assert_eq!(call("DELETE", "/health", ""), 405);
-    assert_eq!((log.syncs(), synced()), (3, false), "a lazy action, and requests no route took, likewise");
+    assert_eq!((log.syncs(), synced()), (3, false), "a lazy action likewise; requests no route took are only counted");
     assert!(!events_synced(), "its events (its deploy's) are the syncer's too");
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
-    assert_eq!((log.syncs(), synced()), (4, true), "one sync for all four");
+    assert_eq!((log.syncs(), synced()), (4, true), "one sync for both");
     assert!(events_synced(), "and its events with them");
-    assert_eq!(log.next_seq(), 7, "every run is in the log");
+    assert_eq!(log.next_seq(), 5, "every run is in the log, and nothing of the requests that ran nothing");
 
     // Many strict runs at once: each on disk when it answers, never more than one sync each.
     let before = log.syncs();

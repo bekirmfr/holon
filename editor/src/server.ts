@@ -1210,6 +1210,10 @@ export type LogEntry = {
   url: string | null;
   status: number | null;
   request: WValue | null;
+  /** Its request's body, when longer than 64 KiB as the log writes it: kept by hash (its BLAKE3,
+   *  size, and where its text is kept, if it is), its places in `request` and `NetworkIngress`
+   *  then empty. */
+  body?: { hash: string; size: number; blob?: string };
   /** By capability: "Clock", "Random", "NetworkIngress". */
   sourced: [string, WValue][];
   state_before: Record<string, WValue>;

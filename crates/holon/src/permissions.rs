@@ -1174,7 +1174,8 @@ impl Permit {
     /// strict otherwise.
     pub(crate) fn log_level(&self, label: Option<&str>, declared: holon_core::LogLevel) -> holon_core::LogLevel {
         match declared {
-            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l)) => holon_core::LogLevel::Strict,
+            // A request that ran nothing is only ever counted (`firing::RAN_NOTHING`).
+            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l) || l == crate::firing::RAN_NOTHING) => holon_core::LogLevel::Strict,
             level => level,
         }
     }

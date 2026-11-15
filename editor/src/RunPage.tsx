@@ -156,6 +156,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
         <Section title="In">
           {run.url && <Line name="request">{`${run.method ?? ""} ${run.url}`}</Line>}
           {run.request && <Value v={run.request} />}
+          {run.body && <Line name="body">{`${run.body.size} bytes, kept by hash ${run.body.hash.slice(0, 12)}`}</Line>}
           {given
             .filter(([, v]) => decisionSaid(v) === null)
             .map(([name, v]) => (

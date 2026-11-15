@@ -12,6 +12,14 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A caller decides nothing of how big a run log gets.** A request body longer than 64 KiB, as
+  the log's line writes it, is kept by hash beside the log (sealed, with the file texts runs
+  read), and the entry names it; `holon verify` and a replay put it back from the export. Before,
+  a 1 MiB body made a line of up to 17 MB, held in memory and read whole at start. A request that
+  runs nothing (no route takes it, a method its route doesn't, a body that isn't text) is counted
+  under `(ran nothing)` in the log's tallies instead of logged, so it can't push a deployment's
+  runs out of its log. A server starting reads a log's runs a line at a time to rebuild its
+  channels and its spooled mail and messages, instead of three whole copies.
 - **Everything in the data folder is sealed at rest, under a root key kept apart from it.** Every
   table, the content store (its files named by a keyed hash), the run logs, events and console
   lines (a line at a time), secrets, waiting runs, the host key, spools, removed records and

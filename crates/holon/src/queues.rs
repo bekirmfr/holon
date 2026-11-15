@@ -498,7 +498,7 @@ impl Queues {
     /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
     /// deployed), and each unlogged one. Another's run a crash lost before its record was on
     /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<Vec<LogEntry>>) {
+    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
         let Some(dir) = &self.0.spool else { return };
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -522,7 +522,7 @@ impl Queues {
             let landed = spooled.unlogged
                 || logged
                     .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default().into_iter().filter(|e| e.error.is_none() && e.parked.is_empty()).map(|e| e.run_id).collect())
+                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
                     .contains(&spooled.run);
             if !landed {
                 let _ = std::fs::remove_file(&file);
@@ -1116,7 +1116,7 @@ mod tests {
         let plain = crate::at_rest::read_sealed(&spool.join("app.landed.0.msg"), crate::at_rest::role::SPOOL_QUEUE).unwrap().unwrap();
         std::fs::write(spool.join("app.plain.0.msg"), &*plain).unwrap();
         let again = Queues::open(file.to_str().unwrap()).unwrap().with_sources(Sources::of(&vars));
-        again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
+        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
         again.serve(Arc::default());
         until(|| sqs.messages("payouts").len() == 1);
         assert_eq!(sqs.messages("payouts")[0].body, "kept");

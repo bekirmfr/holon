@@ -113,6 +113,14 @@ pub struct LogEntry {
     pub status: Option<u16>,
     /// The request record the endpoint received.
     pub request: Option<SValue>,
+    /// Its body, when it was longer than [`BODY_INLINE`]: kept by hash in the blob store (blobs.rs),
+    /// as a file text is, and not in the entry. Its places here (`request`'s `body`, the sourced
+    /// `NetworkIngress`) then hold an empty text, and what runs it again puts it back
+    /// ([`LogEntry::put_body`]). A caller decides how big a body is, and the log's lines, the
+    /// entries a log keeps in memory and what reads them hold none of it (release audit D1).
+    /// Its `blob` is absent when it couldn't be kept: the run stays provable by its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<LoggedFile>,
     /// The sourced values the run saw, by capability (`"Clock"`, `"Random"`, `"NetworkIngress"`).
     pub sourced: Vec<(String, SValue)>,
     /// The deployment's state when the run began: what every `store_read` saw.
@@ -227,7 +235,69 @@ pub struct Commit {
     pub n: Option<u64>,
 }
 
+/// The longest request body a log entry holds itself, as its line writes it (`json_len`): a longer
+/// one is kept by hash ([`LogEntry::body`]).
+pub(crate) const BODY_INLINE: usize = 64 * 1024;
+
+/// How many bytes `s` takes in a JSON string, its quotes left out: a quote, a backslash and the
+/// control characters with a short escape two, the other control characters six. Counted, not
+/// written; past `BODY_INLINE` it stops counting.
+pub(crate) fn json_len(s: &str) -> usize {
+    let mut n = 0;
+    for b in s.bytes() {
+        n += match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0..0x20 => 6,
+            _ => 1,
+        };
+        if n > BODY_INLINE {
+            break;
+        }
+    }
+    n
+}
+
 impl LogEntry {
+    /// The places its request's body is in: `request`'s `body` and the sourced `NetworkIngress`,
+    /// each a text.
+    fn body_places(&mut self) -> Vec<&mut String> {
+        let mut places = Vec::new();
+        if let Some(SValue::Record(fields)) = &mut self.request
+            && let Some((_, SValue::Text(body))) = fields.iter_mut().find(|(k, _)| k == "body")
+        {
+            places.push(body);
+        }
+        for (name, value) in &mut self.sourced {
+            if name == "NetworkIngress"
+                && let SValue::Text(body) = value
+            {
+                places.push(body);
+            }
+        }
+        places
+    }
+
+    /// Its request's body taken out, when it is longer than [`BODY_INLINE`] as the log writes it
+    /// (`json_len`: a control character is six bytes there) and every place holds it: each place
+    /// left an empty text. None: it stays where it is.
+    pub(crate) fn take_body(&mut self) -> Option<String> {
+        let mut places = self.body_places();
+        let first = places.first()?;
+        if json_len(first) <= BODY_INLINE || places.iter().any(|p| **p != **first) {
+            return None;
+        }
+        let body = std::mem::take(*places.first_mut()?);
+        places.iter_mut().skip(1).for_each(|p| p.clear());
+        Some(body)
+    }
+
+    /// `body` put back in each of its places ([`LogEntry::take_body`]).
+    pub(crate) fn put_body(&mut self, body: &str) {
+        for place in self.body_places() {
+            *place = body.to_string();
+        }
+    }
+
     /// Each value the entry holds of what its run had, whatever started it: its request (a
     /// message, an input), what it read and was given, each node's outputs, what it performed and
     /// sent, each call it made and its answer. What a redactor goes over (`Redactor::entry`), and
@@ -1112,6 +1182,68 @@ fn split(sealed: &[Sealed], hot: &[(&[u8], &LineAt)], keep: usize, hot_keep: usi
 /// lines in memory, bounded by no cache's size).
 pub(crate) const IN_MEMORY: usize = 32;
 
+/// What reading a log's lines a line at a time needs, taken under its lock (`Log::its_lines`) and
+/// read with it released: its file opened, its sealed segments named, how its lines are sealed,
+/// and the first run it keeps. A log kept in memory only, its lines.
+pub struct Lines {
+    file: Option<std::io::Result<std::fs::File>>,
+    segments: Vec<PathBuf>,
+    seal: Option<LineSeal>,
+    memory: Vec<String>,
+    first_kept: Option<u64>,
+}
+
+impl Lines {
+    /// Each line, oldest first, opened, to `f`: a segment's, then the file's, a line at a time; one
+    /// that doesn't open (being written, cut short) isn't whole, and is left out.
+    fn each(self, mut f: impl FnMut(&str)) {
+        use std::io::BufRead;
+        let Some(file) = self.file else {
+            return self.memory.iter().for_each(|l| f(l));
+        };
+        for p in self.segments {
+            if let Ok(text) = read_segment(&p) {
+                text.lines().for_each(&mut f);
+            }
+        }
+        let Ok(file) = file else { return };
+        let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
+            let Ok(text) = std::str::from_utf8(bytes.strip_suffix(b"\r").unwrap_or(bytes)) else { continue };
+            match &self.seal {
+                Some(seal) => {
+                    if let Some(plain) = seal.open(text) {
+                        f(&plain);
+                    }
+                }
+                None => f(text),
+            }
+        }
+    }
+
+    /// Each run it keeps, oldest first, read and parsed a line at a time: none of the others held
+    /// meanwhile (release audit D11: read into lists, a server starting held a log's runs whole,
+    /// three times over). A line its file holds past what it keeps (until the next cut-back) is
+    /// left out, as `Log::after` leaves it.
+    fn each_kept(self, mut f: impl FnMut(LogEntry)) {
+        let Some(first) = self.first_kept else { return };
+        self.each(|line| {
+            if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
+                && entry.seq >= first
+            {
+                f(entry);
+            }
+        })
+    }
+}
+
 /// What a read of a log's runs needs, planned under its lock (`Log::plan`) and read with it
 /// released (`Wanted::read`): the runs it keeps in memory, cloned, and where in its file the
 /// older ones are, the file opened. A file is only ever replaced whole, renamed over, so the one
@@ -1299,42 +1431,29 @@ impl LogCell {
     /// over, by a cut-back), so what is read is one file's lines; the newest may be one being
     /// written, cut short, which `f` finds isn't whole. A log kept in memory only is read under
     /// the lock.
-    pub fn each_line(&self, mut f: impl FnMut(&str)) {
-        use std::io::BufRead;
+    pub fn each_line(&self, f: impl FnMut(&str)) {
         // Its file opened and its segments named under the lock, so they agree: a cut sealing lines
         // after this leaves them in the file opened, and one letting a segment go drops runs no
         // longer kept.
-        let (file, segments, seal) = self.with(|log| (log.file.as_ref().map(std::fs::File::open), log.sealed.iter().map(|s| s.path.clone()).collect::<Vec<_>>(), log.line_seal.clone()));
-        let Some(file) = file else {
-            let lines: Vec<String> = self.with(|log| log.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect());
-            return lines.iter().for_each(|l| f(l));
-        };
-        for p in segments {
-            if let Ok(text) = read_segment(&p) {
-                text.lines().for_each(&mut f);
+        self.with(|log| log.its_lines()).each(f)
+    }
+
+    /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
+    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
+        self.with(|log| log.its_lines()).each_kept(f)
+    }
+
+    /// The ids of the runs it keeps that finished: no error, not waiting. What a mail or a
+    /// queue's message spooled by one is sent again for, as a server starts (mails.rs,
+    /// queues.rs), read a run at a time.
+    pub fn landed_runs(&self) -> BTreeSet<String> {
+        let mut landed = BTreeSet::new();
+        self.each_kept(|e| {
+            if e.error.is_none() && e.parked.is_empty() {
+                landed.insert(e.run_id);
             }
-        }
-        let Ok(file) = file else { return };
-        let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
-            let Ok(text) = std::str::from_utf8(bytes.strip_suffix(b"\r").unwrap_or(bytes)) else { continue };
-            // Each line opened: one that doesn't (being written, cut short) isn't whole.
-            match &seal {
-                Some(seal) => {
-                    if let Some(plain) = seal.open(text) {
-                        f(&plain);
-                    }
-                }
-                None => f(text),
-            }
-        }
+        });
+        landed
     }
 
     /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
@@ -2198,6 +2317,26 @@ impl Log {
         self.plan(after, limit).read()
     }
 
+    /// What reading its lines needs (`Lines`), taken here, with whatever lock it is under held.
+    pub fn its_lines(&self) -> Lines {
+        let file = self.file.as_ref().map(std::fs::File::open);
+        let memory = if file.is_none() { self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect() } else { Vec::new() };
+        Lines {
+            file,
+            segments: self.sealed.iter().map(|s| s.path.clone()).collect(),
+            seal: self.line_seal.clone(),
+            memory,
+            first_kept: self.kept.front().map(|(seq, ..)| *seq),
+        }
+    }
+
+    /// Each run it keeps, oldest first, read a line at a time (`Lines::each_kept`): what a
+    /// server starting rebuilds from its log (channels.rs, mails.rs, queues.rs), with no more
+    /// than a run held at once.
+    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
+        self.its_lines().each_kept(f)
+    }
+
     /// What reading the runs it keeps after `after`, the newest `limit` of them, needs (`Wanted`).
     pub fn plan(&self, after: Option<u64>, limit: usize) -> Wanted {
         let newer = self.kept.iter().filter(|(seq, ..)| after.is_none_or(|a| *seq > a));
@@ -2360,6 +2499,7 @@ mod tests {
             url: None,
             status: None,
             request: None,
+            body: None,
             sourced: vec![],
             state_before: BTreeMap::new(),
             state_after: None,
@@ -3061,6 +3201,18 @@ mod tests {
                     assert_eq!(lines(cell.after(after, limit)), want, "the cell, after {after:?}, the newest {limit}, at run {i}");
                     assert_eq!(lines(held.after(after, limit)), want, "held, after {after:?}, the newest {limit}, at run {i}");
                 }
+                // Read a run at a time, as a server starting rebuilds from them (D11): the same
+                // runs, its file holding more than it keeps (until the next cut-back) or not.
+                let want = lines(in_memory.after(None, usize::MAX));
+                let (mut from_cell, mut from_held, mut from_memory) = (Vec::new(), Vec::new(), Vec::new());
+                cell.each_kept(|e| from_cell.push(e));
+                held.each_kept(|e| from_held.push(e));
+                in_memory.each_kept(|e| from_memory.push(e));
+                assert_eq!(lines(from_cell), want, "the cell's, a run at a time, at run {i}");
+                assert_eq!(lines(from_held), want, "held, a run at a time, at run {i}");
+                assert_eq!(lines(from_memory), want, "in memory, a run at a time, at run {i}");
+                let landed: BTreeSet<String> = in_memory.after(None, usize::MAX).into_iter().map(|e| e.run_id).collect();
+                assert_eq!(cell.landed_runs(), landed);
             }
         }
         let (segments, sealed_runs, sealed_bytes) = cell.with(|l| l.sealed_holds());

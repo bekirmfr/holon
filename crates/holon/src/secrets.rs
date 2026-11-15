@@ -963,6 +963,12 @@ impl Redactor {
         Some(write_marked(&pieces))
     }
 
+    /// `s` as the log writes it ([`Redactor::logged`]), and whether a look-alike of a mark was
+    /// escaped: what [`Redactor::entry`] makes of a text the entry holds.
+    pub(crate) fn logged_text(&self, s: String) -> (String, bool) {
+        self.logged(&s).unwrap_or((s, false))
+    }
+
     /// `json` as the log writes it: each text as [`Redactor::logged`] writes it, its keys too, and
     /// each number that is a tainted value as its mark.
     fn logged_json(&self, json: &mut serde_json::Value, escaped: &mut bool) {
@@ -1620,6 +1626,7 @@ mod tests {
             url: Some(t()),
             status: Some(200),
             request: Some(v()),
+            body: Some(LoggedFile { hash: t(), size: 1, blob: Some(t()), range: None }),
             sourced: vec![(t(), v())],
             state_before: BTreeMap::from([(t(), v())]),
             state_after: Some(t()),
@@ -1695,6 +1702,8 @@ mod tests {
             ".by", ".secrets.{}",
             // A file read's hashes: the file's, its text's in the blob store, the proof's.
             ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
+            // A request body kept by hash: its hash, and its text's in the blob store.
+            ".body.hash", ".body.blob",
         ]
         .into_iter()
         .map(String::from)

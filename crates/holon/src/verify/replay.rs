@@ -140,6 +140,12 @@ enum Replay {
 }
 
 fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits) -> Replay {
+    let filled = match texts.with_body(entry) {
+        Ok(filled) => filled,
+        Err(Rerun::Skipped(why) | Rerun::Differs(why)) => return Replay::CantTell(why),
+        Err(_) => return Replay::CantTell("its request's body can't be put back".into()),
+    };
+    let entry = filled.as_ref().unwrap_or(entry);
     if let Some(e) = &entry.error {
         return Replay::CantTell(format!("it failed then: {e}"));
     }

@@ -270,12 +270,19 @@ fn serve_flow(
         (answer, file_error) = serve_file(answer, &permit, waits.folders.as_deref(), &request.headers);
     }
     record_trigger(deployments, slug, answer.status >= 500);
-    // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler. Its
-    // entry is made only where it is logged: an unrecorded run that didn't fail is counted.
+    // A request that ran a handler is logged, as its level says; its entry is made only where it
+    // is logged: an unrecorded run that didn't fail is counted. One that ran nothing (no route
+    // took it, 404 or 405, or its body wasn't text) is counted under `RAN_NOTHING`, never logged:
+    // anyone who reaches the port could push the deployment's runs out of its log with them
+    // (release audit D10). Its tally keeps the last one's status and path.
     let route = ran.as_ref().map(|r| r.route.clone());
     let error = match &parked {
         Err(e) => Some(e.clone()),
         Ok(_) => file_error.clone().or_else(|| ran.as_ref().and_then(|r| r.error.clone())),
+    };
+    let (route, error, level) = match &ran {
+        Some(_) => (route, error, level),
+        None => (Some(crate::firing::RAN_NOTHING.to_string()), Some(format!("{method} {path}")), holon_core::LogLevel::Unrecorded),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
     // Whether an unrecorded run sent packs or mail, which go out even though it isn't logged.

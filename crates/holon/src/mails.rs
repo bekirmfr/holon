@@ -672,7 +672,7 @@ impl Mails {
     /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
     /// deployed), and each unlogged one. Another's run a crash lost before its record was on
     /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<Vec<LogEntry>>) {
+    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
         let Some(dir) = &self.0.spool else { return };
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -695,7 +695,7 @@ impl Mails {
             let landed = spooled.unlogged
                 || logged
                     .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default().into_iter().filter(|e| e.error.is_none() && e.parked.is_empty()).map(|e| e.run_id).collect())
+                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
                     .contains(&spooled.run);
             if !landed {
                 let _ = std::fs::remove_file(&file);
@@ -1312,7 +1312,7 @@ mod tests {
         std::fs::write(spool.join("app.plain.0.mail"), &*plain).unwrap();
         // The log holds the first run only: the second's record a crash lost.
         let again = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap();
-        again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
+        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
         let mut left: Vec<String> = std::fs::read_dir(&spool).unwrap().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, ["app.landed.0.mail", "app.plain.0.mail", "app.unlogged.0.mail"]);

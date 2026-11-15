@@ -58,8 +58,9 @@ pub(crate) struct Export {
     pub(crate) lines: Vec<String>,
     /// Every unit the runs ran, by hash (hex): its canonical bytes (hex).
     pub(crate) units: BTreeMap<String, String>,
-    /// The text of each file a run read that its log entry keeps by hash, by its place in the
-    /// content store (hex): checked against the file's hash, so it can't stand in for another.
+    /// The text of each file a run read that its log entry keeps by hash, and of each request body
+    /// it keeps so (`LogEntry::body`), by its place in the content store (hex): checked against
+    /// the file's or the body's hash, so it can't stand in for another.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) blobs: BTreeMap<String, String>,
     /// The bytes of each file a run read as bytes (`file_read_bytes`) that its log entry keeps by
@@ -173,6 +174,8 @@ pub(crate) fn export_of(
     let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
     let read_files = entries.iter().flat_map(|e| &e.reads).filter_map(|r| Some((r.file.as_ref()?.blob.as_ref()?, reads_bytes(&r.request))));
+    // And each request body kept by hash (`LogEntry::body`), as a text: shipped as a file's is.
+    let read_files = read_files.chain(entries.iter().filter_map(|e| Some((e.body.as_ref()?.blob.as_ref()?, false))));
     for (blob, bytes) in read_files {
         if !seen.insert((blob.clone(), bytes)) {
             continue;
@@ -945,6 +948,25 @@ fn reads_bytes(request: &SValue) -> bool {
 }
 
 impl Texts<'_> {
+    /// `entry` with its request's body put back, when its entry keeps it by hash
+    /// (`LogEntry::body`): from the export's texts, checked against its hash. None: it keeps its
+    /// own. `Err`: the export doesn't hold it, or holds another text under its name.
+    fn with_body(&self, entry: &LogEntry) -> Result<Option<LogEntry>, Rerun> {
+        let Some(body) = &entry.body else { return Ok(None) };
+        let Some(text) = body.blob.as_ref().and_then(|b| self.blobs.get(b)) else {
+            return Err(Rerun::Skipped(format!(
+                "its request's body ({} bytes) is kept by hash, and the export doesn't hold it (the server couldn't keep it, or the export left it out)",
+                body.size
+            )));
+        };
+        if blake3::hash(text.as_bytes()).to_hex().as_str() != body.hash {
+            return Err(Rerun::Differs("the text kept for its request's body isn't the body it was sent".into()));
+        }
+        let mut filled = entry.clone();
+        filled.put_body(text);
+        Ok(Some(filled))
+    }
+
     /// The text a logged file read answered: the entry's own, or found by its blob or its hash.
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
     /// `marks`, `escaped`: an answer the entry holds is read as the run had it (`Marks::read`).
@@ -1100,6 +1122,11 @@ fn rerun(
     if entry.run_id.is_empty() {
         return nothing_ran(entry, "no route took the request");
     }
+    let filled = match texts.with_body(entry) {
+        Ok(filled) => filled,
+        Err(why) => return why,
+    };
+    let entry = filled.as_ref().unwrap_or(entry);
     match &entry.error {
         Some(e) if e.ends_with(firing::TURNED_AWAY) => return nothing_ran(entry, "it was turned away before it began (a run lock)"),
         // As the server writes it (`firing::panicked`): nothing it did is in it, so nothing is
@@ -2095,7 +2122,8 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
 
   Writes a deployment's runs to a file for holon verify: its run log exactly as written, and
   every unit its runs ran. With them come the texts of the files they read that their log keeps
-  only by hash (a big file, or part of one); it says what it left out.
+  only by hash (a big file, or part of one), and of the request bodies it keeps so (past 64 KiB);
+  it says what it left out.
 
   --to FOLDER              the folder to write in (default this one; made if it isn't there)
   --as NAME                the file's name (default <slug>-runs.json, <slug>-run-N.json)

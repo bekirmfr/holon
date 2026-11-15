@@ -1160,9 +1160,9 @@ fn serve(args: Vec<String>) {
     }
     // The mail its runs sent that wasn't delivered when the server stopped, sent now: what its
     // deployment's log holds of it (mails.rs).
-    folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
+    folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
     // And the messages to its queues (queues.rs).
-    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
+    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));

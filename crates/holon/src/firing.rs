@@ -984,6 +984,11 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     Some(Logged { seq: Some(seq), kept })
 }
 
+/// The tally a request that ran nothing is counted in (no route took it, or its body wasn't
+/// text): such a request is never logged (release audit D10). Not a route's label, which starts
+/// with its method.
+pub(crate) const RAN_NOTHING: &str = "(ran nothing)";
+
 /// What counting an unrecorded run takes: its route (none: no route took it), when it ran, how
 /// long it took, its answer's status and its error, if any: it failed with an error, or a 5xx.
 pub(crate) struct Counted<'a> {
@@ -1115,7 +1120,9 @@ fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_
     }
     let failure = counted.failed().then(|| wire::Failure {
         at_ms: counted.at_ms,
-        status: counted.status.max(if counted.error.is_some() { 500 } else { 0 }),
+        // A request that ran nothing keeps the status it was answered (404, 405, 400), its path
+        // said in its error.
+        status: if counted.route == Some(RAN_NOTHING) { counted.status } else { counted.status.max(if counted.error.is_some() { 500 } else { 0 }) },
         error: counted.error.map(|e| {
             const MOST: usize = 300;
             let e = Redactor::of(&dep.secrets).text(&run(e));
@@ -1192,6 +1199,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     let queued = folders.all.queues.spool_logged(slug, &entry, queued);
     entry.answered = Default::default();
     entry.session = session;
+    keep_body_by_hash(&mut entry, &redactor, &folders.all.blobs);
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
     // And its body sealed, for the same reason (at_rest.rs).
@@ -1211,6 +1219,26 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     let lines: Vec<(String, String)> = lines.iter().map(|(level, v)| (level.clone(), redactor.text(&crate::logs::text_of(v)))).collect();
     folders.all.logs.write(slug, seq, &unit, at_ms, &lines);
     Some(Some(Pushed { log, seq, level, channels, permit, folders }))
+}
+
+/// A request body longer than [`recorder::BODY_INLINE`] taken out of `entry` and kept by hash in
+/// `blobs`, redacted as the entry is (`Redactor::logged_text`): the entry names it
+/// (`LogEntry::body`). A caller decides how big a body is, and the log holds none of it: a line is
+/// as big as what the flow made of it (release audit D1). One that can't be kept is named by its
+/// hash alone, and said on the console: the run is provable, not re-runnable.
+fn keep_body_by_hash(entry: &mut LogEntry, redactor: &Redactor, blobs: &crate::blobs::Blobs) {
+    let Some(body) = entry.take_body() else { return };
+    let (body, escaped) = redactor.logged_text(body);
+    entry.escaped |= escaped;
+    let hash = blake3::hash(body.as_bytes()).to_hex().to_string();
+    let blob = match blobs.put(body.as_bytes()) {
+        Ok(blob) => Some(blob),
+        Err(e) => {
+            eprintln!("holon: warning: a request body ({} bytes) couldn't be kept, and its run is logged by its hash alone: {e}", body.len());
+            None
+        }
+    };
+    entry.body = Some(recorder::LoggedFile { hash, size: body.len() as u64, blob, range: None });
 }
 
 /// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a
@@ -1375,6 +1403,7 @@ fn entry_with(
         url: None,
         status: None,
         request: None,
+        body: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.start_state.iter().flat_map(State::iter).map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
         state_after: run.state_after.clone(),

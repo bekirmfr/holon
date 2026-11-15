@@ -221,9 +221,11 @@ that read a file whose text the export doesn't hold, and a run that wrote a secr
 the server refused). A failed run's entry may say less than the run does again, never other: the
 same run id, each output it keeps as computed, what it did and sent the start of what it does
 again, and the status it answered either that or a failure's (a 5xx, or 409 for an unmet
-`expect:`). One that says other differs, as a run that didn't fail would. A request no route took, and a run turned away before it began (a resource
-an admin set to `run` was held), ran nothing: their entries are checked to say they did nothing,
-and neither counts.
+`expect:`). One that says other differs, as a run that didn't fail would. A run turned away before it began (a resource
+an admin set to `run` was held) ran nothing: its entry is checked to say it did nothing, and it
+doesn't count; neither does a request no route took in a log from before such requests were only
+counted. A run whose request body its entry keeps by hash is run again with the body the export
+holds, checked against its hash; an export without it (`--without-files`) skips the run.
 
 ### Files
 

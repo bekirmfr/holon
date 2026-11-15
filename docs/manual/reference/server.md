@@ -548,7 +548,10 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 A browser page from another site may call the routes only if the flow lists its origin in
 `browsers` (or the deploy settings' **web pages from**).
 
-Every request is a run in the log, even one no route took.
+Every request that runs a handler is a run in the log. One that runs nothing (no route takes
+it, its route doesn't take its method, or its body isn't text) is counted instead, under
+`(ran nothing)` in the log's `tallies` (how many, and the last one's time, status and path), and
+leaves no entry: whoever reaches the port can't push a deployment's runs out of its log with them.
 
 ## The run log
 
@@ -561,7 +564,11 @@ are cut from the front of the file, which keeps its newest line, so the chain go
 hears a `trim`. An entry holds the
 run's request, what it read (clock, randomness, state, files, each outbound response), its
 outputs, the effects it performed, its answer (up to 64 KiB of the body), its timings, the unit
-and the grant it ran under, and who started it. Secrets and resume tokens are replaced by
+and the grant it ran under, and who started it. A request body longer than 64 KiB as the line
+writes it is kept by hash beside the log, sealed with the server's file texts, and the entry
+names it (`body`: its hash, size and place) instead of holding it: what a caller sends decides
+nothing of how big a line is. An export ships it with the file texts (`blobs`), and `holon
+verify` and a replay put it back. Secrets and resume tokens are replaced by
 `‹secret:name v3 #a1b2c3d4›` (the version and a keyed fingerprint of the value; the entry's
 `secrets` lists each it was given) and `‹token:name›` before anything is written, and so are the
 values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
@@ -576,7 +583,7 @@ or not. Runs at once share the sync, so a busy deployment syncs its log far less
 a run. A handler may say `lazy` on its line ([Language
 reference](../language/reference.md#clocks-files-and-actions)): its runs' entries are written
 before the answer and synced within a second, as the deployment's events are, so a power loss can
-lose the last second of them, never more (a stop syncs them first: [Stopping it](#stopping-it)). So are requests no route took (a 404, a 405). A run
+lose the last second of them, never more (a stop syncs them first: [Stopping it](#stopping-it)). A run
 whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
 on record. The next entry written says which runs before it weren't, so `holon verify` reads them
 as lost, not as the log changed.
