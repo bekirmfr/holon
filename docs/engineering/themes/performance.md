@@ -23,7 +23,8 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
 1. **hyper** reads the request on a shared tokio runtime (`dataplane.rs`); the CORS origin is
    checked once and passed down (12.3).
 2. **On the pool** (`answer`, `dataplane.rs`): every run goes to the blocking pool
-   (`spawn_blocking`, up to 512 threads), however short; the workers only move bytes. A short
+   (`spawn_blocking`, up to 512 threads), however short, each run in a place of its deployment's
+   share (`max_concurrent_runs`, a 503 past it); the workers only move bytes. A short
    route was answered on its worker once (12.1) and is no more: see
    [Nothing computes on a data-plane worker](#nothing-computes-on-a-data-plane-worker-2026-11-13).
 3. **A snapshot of the deployment** under the table lock (taken about 5 times a request).

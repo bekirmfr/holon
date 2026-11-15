@@ -520,6 +520,7 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 | paused or stopped | 503 |
 | the server stopping | 503 |
 | more runs waiting at `await` than allowed | 503 |
+| the flow already answering `max_concurrent_runs` runs (64), or the server 448 | 503, with `Retry-After: 1` |
 | a resume token that isn't valid | 404 |
 | the route's answer has no value | 404, or the status its `?? status(…)` says |
 

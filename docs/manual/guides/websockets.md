@@ -91,11 +91,12 @@ opening the host refuses never runs `open`, and is answered with an HTTP status:
 |---|---|
 | 426 | a GET on the path that isn't a WebSocket's opening |
 | 403 | a page from another site: its `Origin` must be the flow's own host or one its `browsers` names (a program that sends no `Origin` may connect) |
-| 503 | the flow isn't running, or holds `max_websockets` already |
+| 503 | the flow isn't running, or holds `max_websockets` already, or `open` would run past the flow's `max_concurrent_runs` (with `Retry-After`) |
 
 An opening `open` accepts but the host can't hold after all (its channel has all the subscribers
 it may) is answered 503 too, and its `close` runs, as a dropped connection's does, so what `open`
-kept is let go. A connection the host ends is closed with a code that says why, and its `close`
+kept is let go. A message, or a `close`, that comes while the flow already answers
+`max_concurrent_runs` runs waits its turn, and runs when one ends. A connection the host ends is closed with a code that says why, and its `close`
 runs with that code:
 
 | Code | Why |

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A deployment answers at most its share of runs at once, and a caller that stops reading is
+  let go.** Every deployment's runs share the data plane's 512 threads, so one flooded with
+  requests, or whose runs wait on a slow upstream, held the others' requests queued with no
+  answer; and a caller that stopped reading a big file held a thread for good. Now a deployment
+  runs at most `max_concurrent_runs` at once (64 by default, at most 448, the data plane's total
+  for runs): past it, or past the total, a request is answered `503` with `Retry-After: 1` at once,
+  and a WebSocket's message waits its turn. A write a caller doesn't take within 30 s closes its
+  connection, whatever the answer (whole, a file, a streamed reply, a subscription), and a file is
+  sent without a thread waiting on its caller. A flow that answers more than 64 slow requests at
+  once asks for more: `flow("api", { port: 8080, limits: { max_concurrent_runs: 200 } })`.
+
 - **A step is a unit of work, and a run's time is read as it computes.** A step was a node, or an
   item a function is applied to, whatever its leaf did, so a leaf that scans what it is handed,
   called for each item of a list, was the square of its work in a count of steps:

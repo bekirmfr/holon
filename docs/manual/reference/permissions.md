@@ -104,6 +104,7 @@ can change both columns
 | `max_memory` | bytes a run may come to hold between two of its outbound calls: what it made since the last and keeps (a `js()` call's own memory is its `module_memory`, freed as it answers) | 268435456 (256 MiB) | 4294967296 (4 GiB) |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
+| `max_concurrent_runs` | runs answered at once (a request's, a WebSocket's block): past it a request is answered 503 with `Retry-After`, a WebSocket's message waits its turn | 64 | 448 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
 | `inline_file_bytes` | a file a run reads whole, or a range of one; a file a route answers with up to this is read before it is sent | 1048576 (1 MiB) | 16777216 |
 | `max_file_read_bytes` | bytes a run reads from files | 67108864 (64 MiB) | 1073741824 |

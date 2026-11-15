@@ -7,6 +7,9 @@
 //!   is a 426. A page's origin must be the request's own host or one the flow answers pages from
 //!   (`browsers`), else 403: a page can open a WebSocket to any site, with its cookies, and CORS
 //!   doesn't apply. Past `max_websockets` open connections it is a 503, before `open` runs.
+//! - **Each block's run takes a place** in its deployment's share of the data plane's runs
+//!   (`max_concurrent_runs`, [`dataplane::Share`]): an `open` past it is a 503 to try again; a
+//!   message or a `close` waits for a place, on its task, holding no thread.
 //! - **`open` answers as a route does:** a subscription accepts and subscribes the connection, a
 //!   status of 300 or more refuses it with that response, any other answer accepts it and is its
 //!   first message, a 204 none. The 101 goes out once the run's record is where its level puts it.
@@ -161,6 +164,9 @@ struct Conn {
     params: Value,
     query: Value,
     sockets: Arc<Sockets>,
+    /// Its deployment's share of the pool, which each of its runs takes a place in
+    /// ([`dataplane::Share`]): its messages and its close wait for one, holding no thread.
+    share: dataplane::Share,
 }
 
 impl Conn {
@@ -335,7 +341,7 @@ fn same_origin(origin: &str, host: Option<&str>) -> bool {
 /// The answer to a request on one of `slug`'s websocket paths: the refusal, or the 101 that
 /// switches its connection to a WebSocket, served from then on. None for a request on any other
 /// path, or not a GET, which the routes answer.
-pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, slug: &str, parts: &mut Parts) -> Option<DataResponse> {
+pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, slug: &str, share: &dataplane::Share, parts: &mut Parts) -> Option<DataResponse> {
     if parts.method != hyper::Method::GET {
         return None;
     }
@@ -388,12 +394,26 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
         url: url.clone(),
         request_path: path.to_string(),
         sockets,
+        share: share.clone(),
     });
 
     // Without an open block, a connection is accepted as it is.
     let ran = Arc::clone(&conn);
     let answer = if has_open {
-        tokio::task::spawn_blocking(move || ran.run("open", opening)).await.unwrap_or_else(|_| Some(DataResponse::json_error(500, "the WebSocket's open block failed")))
+        // Its open block is a request's run: refused to try again past the deployment's share.
+        match conn.share.try_admit() {
+            Ok(admitted) => tokio::task::spawn_blocking(move || {
+                let _admitted = admitted;
+                ran.run("open", opening)
+            })
+            .await
+            .unwrap_or_else(|_| Some(DataResponse::json_error(500, "the WebSocket's open block failed"))),
+            Err(why) => {
+                let mut busy = DataResponse::json_error(503, &why);
+                busy.headers.push(("retry-after".into(), "1".into()));
+                Some(busy)
+            }
+        }
     } else {
         None
     };
@@ -411,7 +431,12 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
         let ran = Arc::clone(&conn);
         async move {
             let answer = DataResponse::json_error(status, &why);
-            let _ = tokio::task::spawn_blocking(move || ran.closed(1006, &why)).await;
+            let admitted = ran.share.admit().await;
+            let _ = tokio::task::spawn_blocking(move || {
+                let _admitted = admitted;
+                ran.closed(1006, &why)
+            })
+            .await;
             Some(answer)
         }
     };
@@ -458,7 +483,12 @@ async fn serve(conn: Arc<Conn>, upgrade: hyper::upgrade::OnUpgrade, closing: mps
     };
     // The messages that came before its end have run.
     let _ = worker.await;
-    let _ = tokio::task::spawn_blocking(move || conn.closed(code, &reason)).await;
+    let admitted = conn.share.admit().await;
+    let _ = tokio::task::spawn_blocking(move || {
+        let _admitted = admitted;
+        conn.closed(code, &reason)
+    })
+    .await;
 }
 
 /// Run each message `message` as it is queued, one at a time, and hand its answer to `outbox`. A
@@ -466,7 +496,9 @@ async fn serve(conn: Arc<Conn>, upgrade: hyper::upgrade::OnUpgrade, closing: mps
 async fn work(conn: Arc<Conn>, mut queued: mpsc::Receiver<String>, outbox: mpsc::Sender<String>) {
     while let Some(text) = queued.recv().await {
         let ran = Arc::clone(&conn);
+        let admitted = conn.share.admit().await;
         let answer = tokio::task::spawn_blocking(move || {
+            let _admitted = admitted;
             if !ran.has("message") {
                 ran.sockets.close(&ran.id, (1003, "this WebSocket takes no messages"));
                 return None;

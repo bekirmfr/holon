@@ -53,11 +53,26 @@ deployment's log has its own lock, and the line is made before taking it.
   it weighed: [performance](performance.md#nothing-computes-on-a-data-plane-worker-2026-11-13).
 - **Cost.** Every run pays the pool's hop: 20–30 µs at one connection on a trivial route, about a
   quarter of its throughput there; under load, even or ahead.
+- **A share each.** The pool is one for every deployment, so a deployment flooded, or whose runs
+  wait on a slow upstream (25 s a run fills 512 threads at about 20 requests a second), held every
+  other's requests in its queue, unanswered (audit R15). Each run now takes a place in its
+  deployment's `max_concurrent_runs` (64 by default, at most 448) and in the data plane's 448
+  (`Share`, `dataplane.rs`): past either a request is answered 503 with `Retry-After: 1` at once,
+  never queued, and a WebSocket's message or close waits for a place on a task, holding no
+  thread. The 64 threads past the 448 are for a file's reads, which take no place.
+- **Callers that stop reading.** Every connection's writes must make progress within 30 s
+  (`write_timeout`, `Deadlined`): past it the connection is closed. A file is sent from a task, each
+  64 KiB piece read on the pool; it was sent from a pool thread that waited on its caller, so
+  callers that stopped reading big files held the pool for good. A streamed reply's run still waits
+  on its caller for each piece, at most the deadline: then its caller is gone, and the run reads
+  the rest of its upstream (bounded by the call's own limits) and ends.
 - **Limits.** CPU is shared: 64 connections of `crunch` slow every route ("overload", RA §2.1).
-  The pool runs as many runs as are computing, up to its 512 threads, the cores shared among
-  them; what one run may compute is its round's budgets (B5).
+  The pool runs as many runs as are computing, up to its 448 places, the cores shared among
+  them; what one run may compute is its round's budgets (B5). A run whose caller went away is not
+  stopped: it holds its place until it ends, within its run budget.
 - **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
-  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
+  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
+  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`.
 
 ### G3. A panic ends its run and nothing else
 
