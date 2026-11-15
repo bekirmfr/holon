@@ -1615,9 +1615,20 @@ export async function sendRequest(slug: string, request: HttpRequest): Promise<H
   return asJson<HttpResponse>(res);
 }
 
+/** A tick, as `POST …/tick` answers it: what it did (`performed`), or, to whoever doesn't hold
+ *  run.steps on the flow, `left_out` instead, saying it was left out and what would give it (R57). */
+export type Ticked = { at_epoch_seconds: number; label?: string; performed?: unknown[]; left_out?: string };
+
+/** What the editor says of a tick of `clock`. */
+export function tickSaid(clock: string, t: Ticked): string {
+  if (!t.performed) return `${clock}: ticked; ${t.left_out ?? "what it did is left out"}`;
+  const n = t.performed.length;
+  return `${clock}: ticked, ${n} effect${n === 1 ? "" : "s"} performed`;
+}
+
 /** `POST /deployments/<slug>/tick` — that clock of a deployed flow (its label, `every 2s`) ticks
  *  now, its next tick a period later; answers the tick's history entry. */
-export async function tickNow(slug: string, clock: string): Promise<{ at_epoch_seconds: number; label?: string; performed: unknown[] }> {
+export async function tickNow(slug: string, clock: string): Promise<Ticked> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/tick`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

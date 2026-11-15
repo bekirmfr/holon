@@ -422,7 +422,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/tick") {
             if method == "POST" {
-                return scheduler::handle_post_tick(state, slug, request);
+                return scheduler::handle_post_tick(state, slug, request, &caller);
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest);

@@ -458,6 +458,8 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /deployments/<slug>/export` · `…/replay` | `run.steps` and `run.export` | evidence, made of a run's steps |
 | `GET /deployments/<slug>/history` | `run.steps` | the last clock ticks, each with its outputs and effects (R56) |
 | `GET /deployments/<slug>/state` · `…/changes` · `…/sessions` | `state.view` | its state; a cell's values before and after each run that changed it; each session with the state it ended with (R56) |
+| `POST /deployments/<slug>/tick` | `flow.lifecycle`; its outputs and effects, `run.steps` | a clock ticks now; without `run.steps`, when and which, and what was left out (R57) |
+| `POST /deployments/<slug>/restore` | `flow.restore-dry-run` (a restore, `flow.restore`); with `"state": true`, `state.view` too | a state put back, or what it would change (R57) |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
 
 `/admin/accounts…` and `/admin/tokens…` go (replaced). A change to access that needs approval

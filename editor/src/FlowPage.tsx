@@ -20,7 +20,7 @@ import { firstComment, runNowOptions, startsSaid, wentOut } from "./flowFacts";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { follow, format, type FlowTab, type Route } from "./routes";
-import { downloadRuns, getDeployedDocument, getFlow, getLogHeads, runAction, tickNow, type DeploymentEntry, type FlowDocument, type LogEntry, type RunHead } from "./server";
+import { downloadRuns, getDeployedDocument, getFlow, getLogHeads, runAction, tickNow, tickSaid, type DeploymentEntry, type FlowDocument, type LogEntry, type RunHead } from "./server";
 import { gateOf, useCan, type Answer, type Can } from "./can";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
@@ -210,7 +210,7 @@ function useRunNow(slug: string, entry: DeploymentEntry | undefined, can: Can, o
     try {
       if (o.kind === "clock") {
         const t = await tickNow(slug, o.name);
-        onSaid(`${o.name}: ticked, ${t.performed.length} effect${t.performed.length === 1 ? "" : "s"} performed`);
+        onSaid(tickSaid(o.name, t));
       } else {
         const r = await runAction(slug, o.name, "");
         onSaid(`${o.name}: run #${r.seq}${r.waiting ? ", waiting" : ""}`);

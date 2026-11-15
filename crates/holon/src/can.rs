@@ -673,6 +673,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/events", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/versions", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/holds", StateView, On::Slug),
+    // With "state": true, its handler asks state.view as well: a state's values (R57).
     asks("POST", "/deployments/{slug}/restore", FlowRestoreDryRun, On::Slug),
     asks("GET", "/deployments/{slug}/manifest", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/grant", FlowView, On::Slug),
@@ -684,6 +685,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("POST", "/deployments/{slug}/stop", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/request", RunCall, On::Slug),
     asks("POST", "/deployments/{slug}/settings", FlowDeploy, On::Slug),
+    // Its outputs, a run's values, only to whoever holds run.steps: to anyone else, left out (R57).
     asks("POST", "/deployments/{slug}/tick", FlowLifecycle, On::Slug),
     asks("DELETE", "/deployments/{slug}", FlowDelete, On::Slug),
     // It answers how its actions are run: a deployer's question (the plan's D4).

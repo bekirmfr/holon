@@ -73,7 +73,10 @@ and the pass ends when all have. `fire_one_clock_tick` fires the handler with no
 sourced and the clock budget, logs a `tick` under the handler's label, keeps the last 20 ticks
 (`history`), and sets the next due a period after the pass's `now`. `arm_clocks` makes every clock
 due at once: at deploy, at load, and when a deployment runs again. **Tick now** is
-`POST /deployments/<slug>/tick` with `{"clock": "every 2s"}` (`handle_post_tick`, `holon tick`).
+`POST /deployments/<slug>/tick` with `{"clock": "every 2s"}` (`handle_post_tick`, `holon tick`),
+which flow.lifecycle lets. It answers the tick's history entry; its outputs and what it did, a
+run's values, only to a caller who holds run.steps. To anyone else it answers when it ticked and
+which clock, and `left_out`, saying what would give the rest (`TickHead`, R57).
 
 ### Files
 

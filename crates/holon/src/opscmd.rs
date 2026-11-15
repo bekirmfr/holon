@@ -92,7 +92,8 @@ examples:
 const TICK_USAGE: &str = "usage: holon tick <slug> <clock> [--server PORT|URL]
 
   Fires one of a flow's clocks now, by its label as holon deployments shows it (\"every 2s\"),
-  and prints what it produced and what it did.
+  and prints what it produced and what it did: its run's values, which take run.steps on the flow.
+  Without it, it says they were left out, and what would give them.
 
   --server PORT|URL        which holon server to ask (see below)
 
@@ -578,6 +579,10 @@ pub(crate) fn session_lines(slug: &str, v: &Value) -> Vec<String> {
 /// A run's outputs and what it did (`{outputs, performed}`), a line each: an output that is an
 /// effect is said once, as what it did.
 pub(crate) fn produced_lines(v: &Value) -> Vec<String> {
+    // To whoever doesn't read the flow's runs' steps, what was left out and what would give it (R57).
+    if let Some(left_out) = v["left_out"].as_str() {
+        return vec![left_out.to_string()];
+    }
     let mut lines: Vec<String> = v["outputs"].as_array().into_iter().flatten().filter(|o| o["type"] != "Effect").map(|o| format!("output     {}", show(o))).collect();
     lines.extend(v["performed"].as_array().into_iter().flatten().map(|p| format!("did        {} {}", p["capability"].as_str().unwrap_or_default(), show(&p["payload"]))));
     if lines.is_empty() {
@@ -752,6 +757,9 @@ mod tests {
         let v = json!({ "outputs": [{ "type": "Number", "value": 3.0 }, null, { "type": "Effect", "value": { "sink": "store_write:a", "payload": { "type": "Text", "value": "hi" } } }], "performed": [{ "capability": "StateWrite(\"a\")", "payload": { "type": "Text", "value": "hi" } }] });
         assert_eq!(produced_lines(&v), ["output     3", "output     nothing", "did        StateWrite(\"a\") \"hi\""]);
         assert_eq!(produced_lines(&json!({ "outputs": [], "performed": [] })), ["it ran: no output, nothing done outside"]);
+        // Its run's values left out (R57): why, in their place.
+        let left_out = "its outputs and what it did are its run's values, left out: rob may not read them";
+        assert_eq!(produced_lines(&json!({ "at_epoch_seconds": 1, "label": "every 1h", "left_out": left_out })), [left_out]);
     }
 
     #[test]

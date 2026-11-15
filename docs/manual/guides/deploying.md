@@ -359,7 +359,8 @@ Nothing is rewritten: what a restore replaces stays restorable in turn.
   update again.
 - Restoring is an editor's or an admin's: an agent can't (`POST /deployments/<slug>/restore`,
   `{"version": N}` or `{"run": SEQ}`, with `"code": true`, `"state": true` or both, and
-  `"dry_run": true` or `"acknowledge": […]`).
+  `"dry_run": true` or `"acknowledge": […]`). A state, restored or its dry run, is read as the
+  state is: it takes `state.view` on the flow too.
 
 The sample **price-rollback** walks through it; **stock-sheet** restores a state whose runs also
 wrote a file.

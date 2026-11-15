@@ -5,7 +5,8 @@
 //! doesn't hold it: a person gives it, binding a role that does where the flow is.
 //!
 //! What a flow keeps in its state is `state.view`'s the same way (R56): no route answers a value of
-//! it, or one a run read or left, to whoever holds the flow's runs but not its state.
+//! it, or one a run read or left, to whoever holds the flow's runs but not its state. Nor does a
+//! route that does something (R57): every route that answers anything is swept, a GET or not.
 
 use super::access_table::ask;
 use super::*;
@@ -255,15 +256,152 @@ every("1h", () => {
 })
 "#;
 
-/// The class, for a flow's state (R56): rob holds `kept`'s flow and its runs (flow.view, run.view)
-/// but not its state, and no GET route answers him a value it keeps: not its state, a cell's
-/// changes, a session's snapshot, nor a clock tick's outputs. The routes that answer them refuse
-/// him, naming what they ask. cy, a viewer, reads the value on each.
+/// What the sweep of every route sends that the server made: a version of `kept` to deploy (its
+/// units, its unit and its document), the run of `steps` waiting at its approval, an agent's
+/// proposal, and the run of `kept` that kept the value, to go back to.
+#[derive(Default)]
+struct Got {
+    units: Vec<Vec<u8>>,
+    unit: String,
+    document: Value,
+    waiting: String,
+    proposal: u64,
+    seq: u64,
+}
+
+/// Every route that isn't a GET, as rob sends it in the sweep (R57), in an order that leaves each
+/// something to do, `kept` deleted last: its method, its path, its body, and what it answers him
+/// (202 for an action that waits at its approval; 403 for a state put back, which he may not read;
+/// 400 for the route that says how a flow's actions are run; 204 for a secret deleted).
+/// A route of the table that isn't here is named in `UNSENT`, or `every_route_is_swept` fails.
+fn every_other(got: &Got) -> Vec<(&'static str, String, Vec<u8>, u16)> {
+    let j = |v: Value| serde_json::to_vec(&v).unwrap();
+    let mut sent: Vec<(&'static str, String, Vec<u8>, u16)> = got.units.iter().map(|u| ("POST", "/unit".to_string(), u.clone(), 200)).collect();
+    let check = json!({ "method": "POST", "url": "/check", "headers": [["content-type", "application/json"]], "body": json!({ "key": "test_key" }).to_string() });
+    let at = |seq: u64, what: Value| {
+        let mut body = json!({ "run": seq });
+        body.as_object_mut().unwrap().extend(what.as_object().unwrap().clone());
+        j(body)
+    };
+    sent.extend([
+        ("POST", "/deploy/preview".into(), j(json!({ "slug": "kept", "unit": got.unit })), 200),
+        ("POST", "/deploy".into(), j(json!({ "slug": "kept", "unit": got.unit, "document": got.document })), 200),
+        ("POST", "/flows".into(), j(json!({ "name": "rob-saved", "document": {} })), 200),
+        ("DELETE", "/flows/rob-saved".into(), vec![], 200),
+        ("POST", format!("/proposals/{}/decline", got.proposal), j(json!({ "reason": "not now" })), 200),
+        ("POST", "/summary/check".into(), vec![], 200),
+        ("POST", "/permissions/reload".into(), vec![], 200),
+        // It answers, as a 400, how its actions are run.
+        ("POST", "/trigger/steps".into(), vec![], 400),
+        ("POST", "/trigger/steps/pay".into(), j(json!({ "key": "test_key" })), 202),
+        ("POST", "/deployments/steps/request".into(), j(check), 200),
+        ("POST", format!("/deployments/steps/runs/{}/decide", got.waiting), j(json!({ "name": "payout", "approve": true })), 200),
+        ("POST", "/deployments/kept/tick".into(), j(json!({ "clock": "every 1h" })), 200),
+        ("POST", "/deployments/kept/restore".into(), at(got.seq, json!({ "state": true, "dry_run": true })), 403),
+        ("POST", "/deployments/kept/restore".into(), at(got.seq, json!({ "state": true })), 403),
+        ("POST", "/deployments/kept/restore".into(), at(got.seq, json!({ "code": true, "dry_run": true })), 200),
+        ("POST", "/deployments/kept/restore".into(), at(got.seq, json!({ "code": true })), 200),
+        ("POST", "/deployments/kept/settings".into(), j(json!({ "agents_propose": false })), 200),
+        ("POST", "/deployments/kept/grant".into(), j(json!({ "revoke": ["StateWrite(\"seen\")"] })), 200),
+        ("POST", "/deployments/kept/grant".into(), j(json!({ "grant": ["StateWrite(\"seen\")"] })), 200),
+        ("POST", "/deployments/kept/secrets/k".into(), j(json!({ "value": "first-value" })), 200),
+        ("POST", "/deployments/kept/secrets/k".into(), j(json!({ "value": "second-value" })), 200),
+        ("POST", "/deployments/kept/secrets/k/rollback".into(), j(json!({ "version": 1 })), 200),
+        ("DELETE", "/deployments/kept/secrets/k".into(), vec![], 204),
+        ("POST", "/deployments/kept/pause".into(), vec![], 200),
+        ("POST", "/deployments/kept/run".into(), vec![], 200),
+        ("POST", "/deployments/kept/stop".into(), vec![], 200),
+        ("DELETE", "/deployments/kept".into(), vec![], 200),
+    ]);
+    sent
+}
+
+/// Why each route that isn't a GET isn't sent in the sweep: none reads a flow's runs or its state.
+const HOST: &str = "a resource of the host's, bound or let go: no flow's runs or state";
+const PEOPLE: &str = "who signs in and what each holds: no flow's runs or state";
+const SELF: &str = "the caller's own sign-in: no flow's runs or state";
+const UNSENT: &[(&str, &str, &str)] = &[
+    ("OPTIONS", "*", "a CORS preflight: headers, no body"),
+    ("POST", "/auth/setup", SELF),
+    ("POST", "/auth/sign-in", SELF),
+    ("POST", "/auth/invite", SELF),
+    ("POST", "/auth/password", SELF),
+    ("POST", "/auth/prefs", SELF),
+    ("POST", "/auth/sign-out", SELF),
+    ("POST", "/admin/folders", HOST),
+    ("POST", "/admin/folders/sweep", HOST),
+    ("POST", "/admin/folders/pick", HOST),
+    ("DELETE", "/admin/folders/{name}", HOST),
+    ("POST", "/admin/storage", HOST),
+    ("POST", "/admin/store/sweep", HOST),
+    ("POST", "/admin/keys/rotate", HOST),
+    ("POST", "/admin/keys/forget", HOST),
+    ("POST", "/admin/databases", HOST),
+    ("DELETE", "/admin/databases/{name}", HOST),
+    ("POST", "/admin/mails", HOST),
+    ("DELETE", "/admin/mails/{name}", HOST),
+    ("POST", "/admin/feeds", HOST),
+    ("DELETE", "/admin/feeds/{name}", HOST),
+    ("POST", "/admin/queues", HOST),
+    ("DELETE", "/admin/queues/{name}", HOST),
+    ("POST", "/admin/secrets/{name}", HOST),
+    ("POST", "/admin/secrets/{name}/rollback", HOST),
+    ("POST", "/admin/secrets/{name}/cap", HOST),
+    ("DELETE", "/admin/secrets/{name}", HOST),
+    ("POST", "/people", PEOPLE),
+    ("POST", "/admin/oidc", PEOPLE),
+    ("POST", "/people/{name}/tokens", PEOPLE),
+    ("DELETE", "/people/{name}/tokens/{id}", PEOPLE),
+    ("POST", "/people/{name}/reset", PEOPLE),
+    ("DELETE", "/people/{name}", PEOPLE),
+    ("PATCH", "/people/{name}", PEOPLE),
+    ("POST", "/bindings", PEOPLE),
+    ("DELETE", "/bindings/{id}", PEOPLE),
+    ("PUT", "/access/approvals", PEOPLE),
+    ("POST", "/access/proposals/{id}/approve", PEOPLE),
+    ("POST", "/access/proposals/{id}/decline", PEOPLE),
+    ("PUT", "/access/local", PEOPLE),
+    ("PUT", "/roles/{name}", PEOPLE),
+    ("DELETE", "/roles/{name}", PEOPLE),
+    ("PUT", "/groups/{name}", PEOPLE),
+    ("DELETE", "/groups/{name}", PEOPLE),
+];
+
+/// Every route of the table is swept (R57): a GET by `every_get`, any other sent by
+/// `every_other`, or named in `UNSENT`, with why; never both. A new route fails this until it is
+/// one or the other.
+#[test]
+fn every_route_is_swept() {
+    let sent = every_other(&Got { units: vec![vec![]], waiting: "r1".into(), ..Default::default() });
+    let mut wrong = vec![];
+    for route in crate::can::ROUTES {
+        let named = UNSENT.iter().any(|(method, path, _)| (*method, *path) == (route.method, route.path));
+        let swept = route.method == "GET" && route.path != "*" || sent.iter().any(|(method, path, _, _)| crate::can::find(method, path).is_some_and(|(r, _)| std::ptr::eq(r, route)));
+        if named == swept {
+            wrong.push(format!("{} {}: {}", route.method, route.path, if named { "both swept and named unsent" } else { "neither swept nor named unsent" }));
+        }
+    }
+    for (method, path, _) in UNSENT {
+        if !crate::can::ROUTES.iter().any(|r| (r.method, r.path) == (*method, *path)) {
+            wrong.push(format!("{method} {path}: named unsent, and no route of the table"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The class, for a flow's state (R56) and every route that answers anything (R57): rob holds
+/// every action but state.view and run.steps, and no route answers him a value `kept` keeps, nor
+/// one of `steps`' runs: not a GET (its state, a cell's changes, a session's snapshot, a clock
+/// tick's history), nor any other, each sent so that it does what it does (a clock ticked now, a
+/// restore, a deploy, an approval decided, the flow deleted). The routes that answer them refuse
+/// him, naming what they ask, but for ticking, which answers him when it ticked and which clock,
+/// and that its outputs were left out, naming run.steps. cy, a viewer, reads the value on each
+/// GET; ada, an admin, on a tick and on a state restore's dry run.
 #[test]
 fn a_flows_state_is_read_only_with_state_view() {
     let (state, book, tokens) = server();
-    let runs = ["flow.view", "run.view"];
-    book.define_role(RoleText { name: "runs".into(), about: None, allows: runs.map(String::from).to_vec(), kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let all_but: Vec<String> = crate::can::Action::ALL.iter().filter(|a| !matches!(a, crate::can::Action::RunSteps | crate::can::Action::StateView)).map(|a| a.name().to_string()).collect();
+    book.define_role(RoleText { name: "runs".into(), about: None, allows: all_but, kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
     let rob = book.accept(&book.invite("rob", "runs", None, "ada").unwrap(), PW).unwrap().0;
     let ada = &tokens["ada"];
     deploy(&state, ada, "kept", KEPT);
@@ -271,7 +409,7 @@ fn a_flows_state_is_read_only_with_state_view() {
     let (code, said) = send(&state, ada, "POST", "/deployments/kept/request", request);
     assert!(code == 200 && said.contains("kept"), "{code} {said}");
     let (code, said) = send(&state, ada, "POST", "/deployments/kept/tick", json!({ "clock": "every 1h" }));
-    assert_eq!(code, 200, "{said}");
+    assert!(code == 200 && said.contains(KEPT_CANARY), "ada's tick answers its outputs: {code} {said}");
     // A session that ended, its state kept with it; then the next.
     for lifecycle in ["stop", "run"] {
         let (code, said) = send(&state, ada, "POST", &format!("/deployments/kept/{lifecycle}"), Value::Null);
@@ -287,6 +425,41 @@ fn a_flows_state_is_read_only_with_state_view() {
         assert!(code == 403 && error_of(&said).contains(action), "rob GET {path}: {code} {said}");
         let (code, said) = send(&state, &tokens["cy"], "GET", path, Value::Null);
         assert!(code == 200 && said.contains(KEPT_CANARY), "cy, a viewer, GET {path}: {code} {said}");
+    }
+
+    // What every other route is sent: a version of kept, the run waiting, a proposal, the run that
+    // kept the value.
+    let plan = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, again\"")).unwrap();
+    let heads: Value = serde_json::from_str(&send(&state, ada, "GET", "/deployments/kept/log/heads", Value::Null).1).unwrap();
+    let seq = heads["entries"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap()["seq"].as_u64().unwrap();
+    let runs: Value = serde_json::from_str(&send(&state, ada, "GET", "/deployments/steps/runs", Value::Null).1).unwrap();
+    let waiting = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let proposal = {
+        let other = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, an agent's\"")).unwrap();
+        for unit in &other.units {
+            assert_eq!(ask(&state, Some(&tokens["scout"]), "POST", "/unit", unit.clone()).0, 200);
+        }
+        let (code, said) = send(&state, &tokens["scout"], "POST", "/deploy", json!({ "slug": "kept", "unit": other.unit, "document": other.document }));
+        assert_eq!(code, 202, "an agent's version waits: {said}");
+        serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap()
+    };
+    // ada, who holds it, reads the state a restore would put back.
+    let (code, said) = send(&state, ada, "POST", "/deployments/kept/restore", json!({ "run": seq, "state": true, "dry_run": true }));
+    assert!(code == 200 && said.contains(KEPT_CANARY), "ada's dry run says the values: {code} {said}");
+    let got = Got { units: plan.units.clone(), unit: plan.unit.clone(), document: plan.document.clone(), waiting, proposal, seq };
+    for (method, path, body, answered) in every_other(&got) {
+        let (code, said) = ask(&state, Some(&rob), method, &path, body);
+        assert!(!said.contains(KEPT_CANARY) && !said.contains(CANARY), "rob {method} {path} ({code}) answers a value: {said}");
+        assert_eq!(code, answered, "rob {method} {path}: {said}");
+        if code == 403 {
+            assert!(error_of(&said).contains("state.view"), "rob {method} {path}: {said}");
+        }
+        if path.ends_with("/tick") {
+            let tick: Value = serde_json::from_str(&said).unwrap();
+            let keys: BTreeSet<&str> = tick.as_object().unwrap().keys().map(String::as_str).collect();
+            assert_eq!(keys, BTreeSet::from(["at_epoch_seconds", "label", "left_out"]), "{said}");
+            assert!(tick["left_out"].as_str().unwrap().contains("holon bind viewer --to rob --flow kept"), "what would give them: {said}");
+        }
     }
 }
 

@@ -60,9 +60,22 @@ pub(crate) struct TickNowBody {
     pub(crate) clock: String,
 }
 
+/// A tick as `POST /deployments/<slug>/tick` answers it to whoever doesn't read its flow's runs'
+/// steps (run.steps, R57): when it ticked and which clock, field by field. Its outputs and what it
+/// did are its run's values, left out; `left_out` says so, and what would give them.
+#[derive(Serialize)]
+struct TickHead<'a> {
+    at_epoch_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+    left_out: String,
+}
+
 /// `POST /deployments/<slug>/tick`: that clock ticks now, as the scheduler would tick it (its
 /// next tick a period from now), and the tick's history entry answers. The editor's "tick now".
-pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) -> Response {
+/// Ticking is flow.lifecycle's; the entry's outputs and what it did, a run's values, are
+/// run.steps': to a caller who doesn't hold it, a [`TickHead`] answers (R57).
+pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request, caller: &crate::access::Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -86,7 +99,12 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
     fire_one_clock_tick(&state.store, &state.deployments, &state.deployments_path, slug.to_string(), unit, cell, &permit, &secrets, &clock, SystemTime::now());
     let deployments = state.deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
-    let mut reply = serde_json::to_value(dep.history.last()).unwrap_or_default();
+    let Some(tick) = dep.history.last() else { return Response::json(&serde_json::Value::Null) };
+    if let Err(refused) = crate::can::can(caller, crate::can::Action::RunSteps, &crate::can::Resource::Flow(slug)) {
+        let left_out = format!("its outputs and what it did are its run's values, left out: {}", refused.0);
+        return Response::json(&TickHead { at_epoch_seconds: tick.at_epoch_seconds, label: tick.label.as_deref(), left_out });
+    }
+    let mut reply = serde_json::to_value(tick).unwrap_or_default();
     Redactor::of(&dep.secrets).json(&mut reply);
     Response::json(&reply)
 }

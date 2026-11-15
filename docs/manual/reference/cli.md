@@ -404,7 +404,8 @@ holon tick <slug> <clock>
 ```
 
 Fires one of a flow's clocks now, by its label as `holon deployments` shows it (`"every 2s"`):
-what the run did, as a tick on its own would.
+what the run did, as a tick on its own would. What it produced and did are its run's values, which
+take `run.steps` on the flow: without it, it says they were left out, and what would give them.
 
 ### `holon state`
 

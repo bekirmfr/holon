@@ -1923,6 +1923,9 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
 /// An agent restores nothing: its restore (not a dry run) is saved for a person to approve, an
 /// `ask` event on the deployment's timeline naming the point and what of it, answered 202. The
 /// editor's history offers it as a restore, which a person makes (history-L4 §4).
+///
+/// A state, put back or its dry run, is read as the state is: whoever doesn't hold state.view on
+/// the flow is refused, naming it (R57).
 pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, who: &Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -1934,6 +1937,13 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     };
     if !restore.code && !restore.state {
         return err(400, "say what to restore: \"code\": true, \"state\": true, or both");
+    }
+    // A state put back, or what putting it back would change, is the flow's state: state.view's,
+    // as reading it is (R57).
+    if restore.state
+        && let Err(refused) = can(who, Action::StateView, &Resource::Flow(slug))
+    {
+        return refused.response();
     }
     let point = match (restore.version, restore.run) {
         (Some(n), None) => Point::Version(n),
