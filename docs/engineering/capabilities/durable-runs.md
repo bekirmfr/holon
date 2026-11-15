@@ -149,8 +149,8 @@ is tried again by the next pass.
 
 - **Waiting runs**, in the deployments file. Their inputs, sourced values, requests, events and any
   old tokens may hold a secret or a caller's credential, so the file keeps them sealed
-  (`sealed_for_disk`: AES-256-GCM under the secrets master key, bound to the deployment and run
-  id, `parked_context`), and the server opens them as it starts (`ParkedRun::open`). A server whose
+  (`sealed_for_disk`: a line sealed under the deployment's data key, `at_rest::deployment`,
+  bound to the deployment and run id, `parked_context`), and the server opens them as it starts (`ParkedRun::open`). A server whose
   secrets live in memory has no key to keep, and seals nothing.
 - **Tokens**, because the host key is a file: losing or replacing it invalidates every outstanding
   token.
@@ -249,7 +249,7 @@ In `crates/holon/src/tests.rs`:
   approval or resumes it; a viewer, a service, an agent and the same person twice are refused;
   two people approve and the run goes on with who they were; one decline with a reason ends it; one
   that runs out goes on expired, with who approved; each decision is in the log and the activity
-  log. `only_a_person_decides_an_approval`.
+  log. `an_approval_in_steps_is_decided_a_step_at_a_time`, `who_may_decide_an_approval`.
 - In `mcp.rs`, `an_agent_reads_who_approved_a_waiting_run_and_never_decides_it`; in
   `decidecmd.rs`, how a waiting run, a decision and a run picked by its id's start read.
 

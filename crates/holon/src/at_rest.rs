@@ -17,7 +17,7 @@
 //!   copies sealed lines byte for byte (§4). A run log's line is sealed apart from its `seq` and
 //!   `prev`, before the log's lock is taken, and they are kept in clear before it
 //!   (`r2.<seq>.<prev>.<place>.<v>.<body>`): sealing a whole line under the lock cost lazy runs a
-//!   third of their throughput (§7's fallback, measured in docs/engineering/performance.md). The
+//!   third of their throughput (§7's fallback, measured in docs/engineering/themes/performance.md). The
 //!   chain still hashes the whole line as made, so a seq or prev changed on disk breaks it; and
 //!   `<place>`, a keyed hash of the seq, the prev and the body's nonce and tag, binds the three
 //!   together, so a body moved to another line (the last line's, which no line after it names,
@@ -256,7 +256,7 @@ fn now_ms() -> u64 {
 /// base64url, unpadded, as `holon_core::bytes_text(_, "base64url")` writes it, by table: every
 /// sealed line and value goes through these, under a log's lock, and the core's decoder looks
 /// each character up in its alphabet one by one (several times slower on a 5 KB line: measured in
-/// docs/engineering/performance.md, encryption at rest). The test holds the two to one another.
+/// docs/engineering/themes/performance.md, encryption at rest). The test holds the two to one another.
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /// Each byte's place in [`B64`], or 0xff for one that isn't in it.

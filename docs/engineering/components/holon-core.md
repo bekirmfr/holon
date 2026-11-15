@@ -199,7 +199,7 @@ About 340 `#[test]` functions in `src/`, plus the golden records and oracles in 
   `decode_rejects_malformed_bytes`, `identical_children_that_feed_nothing_are_refused`
   (`hash.rs`); `the_encoding_is_pinned` (a value's exact bytes and hash),
   `both_zeros_and_every_nan_hash_alike`, `a_value_hash_never_equals_a_unit_hash` (`value_hash.rs`).
-- **The catalog.** `genesis_has_95_leaves`; `the_two_catalogs_agree` (every name has an interface
+- **The catalog.** `genesis_has_…_leaves` (named for its count); `the_two_catalogs_agree` (every name has an interface
   and capabilities); `every_genesis_primitive_is_computed_somewhere_and_every_opcode_is_one`.
 - **The evaluator against its oracles.** `lazy_and_eager_agree_on_generated_graphs` (8,000 runs
   against `eager::eval_eager`); `a_composite_run_down_its_plan_does_what_the_walk_does` and

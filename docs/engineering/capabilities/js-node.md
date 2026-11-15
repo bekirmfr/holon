@@ -189,10 +189,10 @@ In `holon-module`'s `lib.rs`, the runner: `a_module_with_imports_never_runs`,
 `a_module_that_is_not_one_fails_validation_with_the_reason`,
 `the_observer_hears_why_a_module_gave_nothing`.
 
-In `holon-author`: `a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs`,
-`a_js_node_s_mistakes_are_named_at_their_place` (`print.rs`);
-`a_js_bodys_types_are_blanked_in_place` (`ts.rs`); `a_js_body_is_never_touched` (`format.rs`);
-`fmt_leaves_a_hash_inside_a_js_body_alone`,
+In `holon-author`: `a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs`
+(`print.rs`); `a_js_bodys_types_are_blanked_in_place` (`ts.rs`);
+`a_js_body_is_laid_out_like_the_rest`, `a_js_body_keeps_its_var_and_loose_equality` (`format.rs`);
+`fmt_keeps_a_hash_inside_a_js_body`,
 `check_compiles_each_js_body_and_says_a_mistake_at_its_line` (`commands.rs`);
 `explain_says_why_a_js_node_gave_nothing` (`agent.rs`). In the server's `permissions.rs`,
 `a_module_s_budgets_are_limits_with_ceilings_and_no_defaults`.

@@ -241,13 +241,17 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 
 ### 2.6 Secrets (secrets.rs, sealing.rs, secret_sources.rs, taint.rs)
 
-- **Kept sealed**: each value AES-256-GCM under a master key, a fresh nonce each, the slug, name
-  and version as associated data (`sealing::context`), so a value moved elsewhere fails to open.
-  The key is kept apart from the data (`--secrets-key`, `KeySource`): `os` (the OS key store, the
-  default on Windows and macOS), `env:VAR`, or `file:PATH` (owner-only; the default elsewhere, in
-  `~/.holon/keys`). The file records a `key_check`, so a wrong key refuses to start rather than open
-  an empty store over the real one. A value can instead be a reference (`env:…`, `vault:…`),
-  read again every `REFRESH`.
+- **Kept sealed**: each value sealed as a line (XChaCha20-Poly1305, a fresh 192-bit nonce each)
+  under the keyring's `secrets` scope, the slug, name and version as associated data
+  (`secrets::context`), so a value moved elsewhere fails to open; the file as a whole is sealed
+  again under the `server` scope, as every file the server writes is (encryption at rest,
+  docs/L4s/at-rest-encryption-L4.md). The keyring's data keys (`keys.json`) are kept only wrapped
+  by the root key, which is kept apart from the data (`--root-key`, `KeySource`): `os` (the OS key
+  store, the default on Windows and macOS), `env:VAR`, or `file:PATH` (owner-only; the default
+  elsewhere, `~/.holon/keys/<id>.key`), never in the data folder. `keys.json` records a
+  `root_check`, so a wrong or missing root refuses to start rather than open an empty store over
+  the real one. A value can instead be a reference (`env:…`, `vault:…`), read again every
+  `REFRESH`.
 - **Written, never read back**, over the control plane, by an admin: listing gives names,
   versions and sources. At least `MIN_SECRET_LEN` (6) characters; `MAX_VERSIONS` (5) kept; every
   change audited beside the file (`<secrets>.audit.jsonl`), never a value.
@@ -450,10 +454,12 @@ What is not defended, or only partly:
   text/plain or JSON POST from another site, `Origin: null`, a look-alike origin, a rebinding or
   wrong-port Host, a form POST; none saves anything, the editor and curl still do);
   `oversized_body_is_refused` (one byte past `MAX_BODY_BYTES` is a 413).
-- **Roles and accounts**: `each_role_does_what_it_may`, `an_agent_proposes_and_calls_and_does_nothing_else`
-  (15 paths refused it; the header lowers, never raises), `a_new_server_answers_only_its_setup`,
+- **Roles and accounts**: `the_built_in_roles_are_the_designs`,
+  `the_admin_holds_everything_and_an_agent_its_own` (a role holding an action only on its own
+  holds it on what it saved and nothing else), `every_route_is_reached_and_asks_of_what_it_names`
+  (`can.rs`), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
-  `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
+  `no_change_leaves_no_admin`, `kept_as_hashes_and_read_back` (no token or password in the file),
   `wrong_setup_codes_lock_setting_up_for_a_while_where_they_came_from` (and `HOLON_SETUP_CODE` in
   any case), `every_way_in_that_takes_a_secret_counts_its_wrong_guesses` (each from an address,
   and in from another),
@@ -468,7 +474,7 @@ What is not defended, or only partly:
   `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
   places is answered 404),
   `the_control_plane_admits_so_many_requests_at_once`,
-  `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
+  `which_id_tokens_are_taken` (another audience, party, issuer, expiry, signature or key),
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
   verified signs no one in; another subject with a matched email is no one),
@@ -495,8 +501,10 @@ What is not defended, or only partly:
   dry run never show it; the log shows its mark), `a_secret_computed_into_something_else_stays_out_of_the_log`,
   `a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state`,
   `a_secret_goes_only_where_its_approval_shows_it_going`, `a_waiting_runs_record_is_sealed_on_disk`
-  (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
-  `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails),
+  (and `0o600`), `a_keyring_opens_only_under_its_root` (a wrong or missing root, or `keys.json`
+  missing beside sealed files, refuses and writes nothing),
+  `a_value_opens_only_under_its_keys_and_for_its_place` (another slug, name, version or keyring
+  fails), `what_is_sealed_opens_only_where_it_was_sealed`,
   `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
   tainted field redacted, a value made from a secret withheld, past 16 KiB its size, sealed on
   disk and listed again after a reload),

@@ -809,7 +809,7 @@ impl CutPlan {
         // What it lets go of, written to the backup first: if it can't be, the cut fails, and the
         // cut made holding the lock instead finds the same and doesn't cut (`cut_back`).
         // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
-        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        // decrypt a run, for nothing: docs/engineering/themes/performance.md, encryption at rest).
         let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         keep_aside(self.backup.as_ref(), &self.path, &gone)?;
         let dropped: Vec<&Sealed> = split.drop.iter().map(|j| &self.sealed[*j]).collect();
@@ -2299,7 +2299,7 @@ impl Log {
         // What it lets go of, written to the backup first; if it can't be, no cut: the file
         // holds them until it can, and the host warns (storage.rs).
         // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
-        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        // decrypt a run, for nothing: docs/engineering/themes/performance.md, encryption at rest).
         let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         let dropped: Vec<Sealed> = split.drop.iter().map(|j| self.sealed[*j].clone()).collect();
         let aside = keep_aside(self.backup.as_ref(), &path, &gone).and_then(|()| keep_segments_aside(self.backup.as_ref(), &path, &dropped.iter().collect::<Vec<_>>()));
