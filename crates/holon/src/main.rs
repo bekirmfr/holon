@@ -1019,7 +1019,13 @@ fn serve(args: Vec<String>) {
     });
     let refuse_to_start = |e: String| -> ! {
         eprintln!("holon: {e}");
-        eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
+        // A key missing is fixed by the key file that goes with the data, never by moving the file
+        // aside, which loses what it holds (the run log's runs).
+        if e.contains(at_rest::RESTORE_KEYS) {
+            eprintln!("holon: refusing to start rather than overwrite it — restore the key file that goes with the data");
+        } else {
+            eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
+        }
         std::process::exit(1);
     };
     // The keys everything the server seals is sealed under (at_rest.rs), opened before anything
