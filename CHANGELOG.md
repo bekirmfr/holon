@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A text nested past the bound is refused however it is written.** The count that refuses a
+  text nested past 128 levels read some texts otherwise than the parser: `x as⏎any as⏎any…`, an
+  `else if` chain whose statements end with `;`, a `//` comment ended by a lone `\r`, U+2028 or
+  U+2029, a hashbang, Unicode's spaces, a string going on over `\r\n`, and a `/` after `}`, `of`,
+  a type's `>`, TypeScript's `!` or a `++` begun on a line. Such a text got past it as deep as it
+  liked and crashed `holon check`, the language server or an agent's `check`, or trapped the
+  editor's tab. The count now reads a text as oxc's lexer does, and refuses a `/` TypeScript
+  reads either way by what came before it: put one side in parentheses.
 - **Checking, deploying and formatting a flow take time in proportion to it.** A function using
   one that uses one, twice each, with a secret through them, made `holon check`, a deploy and each
   run walk every path: twenty-four such levels took minutes, and anyone who may propose a deploy could

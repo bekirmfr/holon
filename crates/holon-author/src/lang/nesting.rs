@@ -14,6 +14,18 @@
 //! again, as does a statement begun on a line of its own; a string, a comment and a template's
 //! text count nothing. The count is the tree's depth or more, never less, for any text TypeScript
 //! reads: a statement is only taken to end where TypeScript ends it.
+//!
+//! So the scanner reads a text's words, comments and line ends as oxc's lexer does, or a text
+//! written to be read one way by it and another by the parser gets past (audit R36): a line ends
+//! at `\n`, `\r`, U+2028 or U+2029, which end a `//` comment, a string and a regular expression;
+//! the spaces are oxc's (U+00A0, U+FEFF, U+3000 and the rest, never a word); `#!` on the first
+//! line is a comment; a `\` before a line's end goes on with a string. Where TypeScript's own
+//! reading of a `/` hangs on what the parser makes of what came before it, after a `}`, an `of`
+//! or a `>` that may close a type's arguments, the text is refused at it, to be written in
+//! parentheses: one read as a division and the other as a regular expression would each skip what
+//! the other counts. A word that wants what follows it (`as`, `keyof`, `in`) keeps its statement
+//! open over a line's end, and an `else` after a statement that ended goes on its `if`: `if (a)
+//! x; else if (b) y; else …` nests as deep as its links.
 
 use std::cell::Cell;
 
@@ -54,16 +66,36 @@ pub(crate) fn on_deep_stack<T: Send>(f: impl FnOnce() -> Result<T, LowerError> +
     })
 }
 
-/// `src` refused at the place it nests past [`MAX_NESTING`], if it does.
+/// Why a text is refused before it is read, at a byte.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Refused {
+    /// It nests past the limit here.
+    Deep(usize),
+    /// A `/` here reads as a division or a regular expression as the parser takes what came
+    /// before it (the module's doc).
+    TwoWays(usize),
+}
+
+impl Refused {
+    fn at(self) -> usize {
+        match self {
+            Refused::Deep(at) | Refused::TwoWays(at) => at,
+        }
+    }
+}
+
+/// `src` refused at the place it nests past [`MAX_NESTING`], if it does, or where a `/` in it
+/// reads two ways.
 pub fn check(src: &str) -> Result<(), LowerError> {
     match deepest(src, MAX_NESTING) {
         Ok(_) => Ok(()),
-        Err(at) => {
-            let at = pos(src.as_bytes(), at);
-            Err(LowerError {
-                span: Span { start: at, end: at },
-                message: format!("this nests more than {MAX_NESTING} levels deep: name a part of it, with a const or a function"),
-            })
+        Err(refused) => {
+            let at = pos(src.as_bytes(), refused.at());
+            let message = match refused {
+                Refused::Deep(_) => format!("this nests more than {MAX_NESTING} levels deep: name a part of it, with a const or a function"),
+                Refused::TwoWays(_) => "this `/` reads two ways in TypeScript, after a `}`, an `of` or a `>` that may close a type's arguments: a division, or a regular expression's start; put the value it divides, or the regular expression, in parentheses".to_string(),
+            };
+            Err(LowerError { span: Span { start: at, end: at }, message })
         }
     }
 }
@@ -71,7 +103,7 @@ pub fn check(src: &str) -> Result<(), LowerError> {
 /// Where `src` nests deepest, the first place it does.
 pub(crate) fn deepest_at(src: &str) -> Pos {
     let most = deepest(src, usize::MAX).unwrap_or_default();
-    pos(src.as_bytes(), deepest(src, most.saturating_sub(1)).err().unwrap_or_default())
+    pos(src.as_bytes(), deepest(src, most.saturating_sub(1)).err().map(Refused::at).unwrap_or_default())
 }
 
 /// The line and column (in characters) of byte `at`.
@@ -90,7 +122,8 @@ const PUNCTUATION: &[&str] = &[
     "**", "<<", ">>",
 ];
 
-/// The words that put what follows them under them: `typeof x`, `new X`, `a in b`, `do …`.
+/// The words that put what follows them under them: `typeof x`, `new X`, `a in b`, `do …`. Each
+/// wants what follows it, so a line's end after one doesn't end its statement (`x as⏎any`).
 const NESTING_WORDS: &[&str] = &["typeof", "void", "delete", "await", "yield", "new", "do", "in", "instanceof", "of", "as", "satisfies", "keyof", "infer", "extends", "unique", "asserts", "is", "readonly"];
 
 /// The words after which a value is still to come, so a `/` starts a regular expression.
@@ -98,6 +131,26 @@ const BEFORE_A_VALUE: &[&str] = &["return", "typeof", "case", "in", "of", "delet
 
 /// The words that go on a statement begun on a line before: `a\nin b`, `} else {`, `} catch {`.
 const GOING_ON: &[&str] = &["in", "instanceof", "as", "satisfies", "of", "extends", "implements", "is", "else", "catch", "finally", "while"];
+
+/// The space or the line's end at byte `i`, as oxc's lexer reads them: its length, and whether
+/// it ends a line. A space is a tab, a vertical tab, a form feed, a space, or one of Unicode's
+/// that oxc takes as one (NEL, NBSP, U+1680, U+2000 to U+200B, U+202F, U+205F, U+3000, U+FEFF);
+/// a line ends at `\n`, `\r`, U+2028 and U+2029.
+fn space_at(b: &[u8], i: usize) -> Option<(usize, bool)> {
+    match *b.get(i..)? {
+        [b'\n' | b'\r', ..] => Some((1, true)),
+        [b' ' | b'\t' | 0x0B | 0x0C, ..] => Some((1, false)),
+        [0xE2, 0x80, 0xA8 | 0xA9, ..] => Some((3, true)),
+        [0xC2, 0x85 | 0xA0, ..] => Some((2, false)),
+        [0xE1, 0x9A, 0x80, ..] | [0xE2, 0x80, 0x80..=0x8B | 0xAF, ..] | [0xE2, 0x81, 0x9F, ..] | [0xE3, 0x80, 0x80, ..] | [0xEF, 0xBB, 0xBF, ..] => Some((3, false)),
+        _ => None,
+    }
+}
+
+/// Whether a line ends at byte `i`.
+fn line_ends_at(b: &[u8], i: usize) -> bool {
+    space_at(b, i).is_some_and(|(_, ends)| ends)
+}
 
 /// A bracket's level, or the text's top.
 struct Level {
@@ -111,6 +164,18 @@ struct Level {
     /// Whether it is the head of an `if`, a `while`, a `for` or a `with`, which a statement
     /// follows: a value is still to come after its `)`.
     head: bool,
+    /// The `else`s of the chain going on in it, each a level of the `if` it goes on: kept over
+    /// the statements that end between them (`if (a) x; else if (b) y; else …`).
+    elses: usize,
+    /// Whether a statement or a list's item ended in it with the last token (a `;`, a `,`, a
+    /// line): an `else` now goes on the chain; anything else ends it.
+    ended: bool,
+}
+
+impl Level {
+    fn new(open: u8, head: bool) -> Level {
+        Level { open, count: 0, angles: 0, head, elses: 0, ended: false }
+    }
 }
 
 /// What the last token was, as what may follow it.
@@ -127,7 +192,7 @@ struct Count<'s> {
     b: &'s [u8],
     i: usize,
     levels: Vec<Level>,
-    /// The sum of the levels' counts: how deep the token being read is.
+    /// The sum of the levels' counts and elses: how deep the token being read is.
     depth: usize,
     /// The deepest so far, and how deep it may go.
     deepest: usize,
@@ -137,12 +202,22 @@ struct Count<'s> {
     words: [&'s str; 2],
     /// Whether a line ended since the last token.
     newline: bool,
+    /// Whether the last token was a word that wants what follows it ([`NESTING_WORDS`]).
+    hangs: bool,
+    /// Whether a `/` next reads two ways: after a `}` that closed a `{`, an `of`, or a `>` that
+    /// may close a type's arguments.
+    two_ways: bool,
 }
 
-/// How deep `src` nests, or the byte where it first nests past `limit`.
-pub(crate) fn deepest(src: &str, limit: usize) -> Result<usize, usize> {
-    let root = Level { open: 0, count: 0, angles: 0, head: false };
-    let mut c = Count { src, b: src.as_bytes(), i: 0, levels: vec![root], depth: 0, deepest: 0, limit, last: Last::Other, words: ["", ""], newline: false };
+/// How deep `src` nests, or where it is refused: the byte where it first nests past `limit`, or
+/// a `/` that reads two ways.
+pub(crate) fn deepest(src: &str, limit: usize) -> Result<usize, Refused> {
+    let root = Level::new(0, false);
+    let mut c = Count { src, b: src.as_bytes(), i: 0, levels: vec![root], depth: 0, deepest: 0, limit, last: Last::Other, words: ["", ""], newline: false, hangs: false, two_ways: false };
+    // `#!` at the very start is a comment to its line's end, as the lexer's first token.
+    if c.b.starts_with(b"#!") {
+        c.skip_to_line_end();
+    }
     while c.i < c.b.len() {
         if c.top().open == b'`' {
             c.template_text()?;
@@ -162,23 +237,31 @@ impl<'s> Count<'s> {
         self.b.get(self.i + n).copied()
     }
 
+    /// To the line's end, not taking it.
+    fn skip_to_line_end(&mut self) {
+        while self.i < self.b.len() && !line_ends_at(self.b, self.i) {
+            self.i += 1;
+        }
+    }
+
     /// One level deeper, in the level the token at `at` is in.
-    fn deeper(&mut self, at: usize) -> Result<(), usize> {
+    fn deeper(&mut self, at: usize) -> Result<(), Refused> {
         self.top().count += 1;
         self.depth += 1;
         self.deepest = self.deepest.max(self.depth);
-        if self.depth > self.limit { Err(at) } else { Ok(()) }
+        if self.depth > self.limit { Err(Refused::Deep(at)) } else { Ok(()) }
     }
 
     /// What comes next is a sibling of what came before it in this level.
     fn sibling(&mut self) {
         let level = self.top();
         let count = std::mem::take(&mut level.count);
+        level.ended = true;
         self.depth -= count;
     }
 
     fn open(&mut self, open: u8, head: bool) {
-        self.levels.push(Level { open, count: 0, angles: 0, head });
+        self.levels.push(Level::new(open, head));
     }
 
     /// The level closed: the one under it is the token's.
@@ -187,7 +270,7 @@ impl<'s> Count<'s> {
             return None;
         }
         let level = self.levels.pop()?;
-        self.depth -= level.count;
+        self.depth -= level.count + level.elses;
         Some(level)
     }
 
@@ -197,7 +280,7 @@ impl<'s> Count<'s> {
     }
 
     /// A template's text, to its end or its next `${`.
-    fn template_text(&mut self) -> Result<(), usize> {
+    fn template_text(&mut self) -> Result<(), Refused> {
         while let Some(c) = self.peek(0) {
             match c {
                 b'`' => {
@@ -224,38 +307,41 @@ impl<'s> Count<'s> {
         Ok(())
     }
 
-    /// Code: whitespace and comments, or one token.
-    fn code(&mut self) -> Result<(), usize> {
-        let c = self.b[self.i];
-        match c {
-            b'\n' => {
-                self.newline = true;
-                self.i += 1;
-            }
-            _ if c.is_ascii_whitespace() => self.i += 1,
-            b'/' if self.peek(1) == Some(b'/') => {
-                while self.peek(0).is_some_and(|c| c != b'\n') {
-                    self.i += 1;
-                }
-            }
+    /// Code: a space, a line's end or a comment, or one token.
+    fn code(&mut self) -> Result<(), Refused> {
+        if let Some((len, ends)) = space_at(self.b, self.i) {
+            self.newline |= ends;
+            self.i += len;
+            return Ok(());
+        }
+        match self.b[self.i] {
+            b'/' if self.peek(1) == Some(b'/') => self.skip_to_line_end(),
             b'/' if self.peek(1) == Some(b'*') => {
                 self.i += 2;
-                while let Some(c) = self.peek(0) {
-                    if c == b'*' && self.peek(1) == Some(b'/') {
+                while self.i < self.b.len() {
+                    if self.b[self.i] == b'*' && self.peek(1) == Some(b'/') {
                         self.i += 2;
                         break;
                     }
                     // A comment over lines ends a line, as one does for ending a statement.
-                    self.newline |= c == b'\n';
+                    self.newline |= line_ends_at(self.b, self.i);
                     self.i += 1;
                 }
             }
             _ => {
-                if self.newline && self.last == Last::Value && self.starts_statement() {
+                if self.newline && self.last == Last::Value && !self.hangs && self.starts_statement() {
                     self.sibling();
                 }
-                self.newline = false;
-                self.token()?;
+                // An `else` goes on its `if` whatever ended before it; anything else after a
+                // statement that ended ends the chain of them.
+                let else_here = !matches!(self.words[1], "." | "?.") && is_word_start(self.b[self.i]) && self.word_here() == "else";
+                let level = self.top();
+                if std::mem::take(&mut level.ended) && !else_here {
+                    let elses = std::mem::take(&mut level.elses);
+                    self.depth -= elses;
+                }
+                let line_start = std::mem::take(&mut self.newline);
+                self.token(line_start)?;
             }
         }
         Ok(())
@@ -273,22 +359,41 @@ impl<'s> Count<'s> {
         }
     }
 
+    /// The word here: to its first byte that is no word's, or a space oxc takes as one.
     fn word_here(&self) -> &'s str {
-        let end = self.b[self.i..].iter().position(|&c| !is_word_part(c)).map_or(self.b.len(), |n| self.i + n);
+        let mut end = self.i;
+        while end < self.b.len() && is_word_part(self.b[end]) && space_at(self.b, end).is_none() {
+            end += 1;
+        }
         &self.src[self.i..end]
     }
 
-    fn token(&mut self) -> Result<(), usize> {
+    /// One token, `line_start` when a line ended before it.
+    fn token(&mut self, line_start: bool) -> Result<(), Refused> {
         let at = self.i;
         let c = self.b[at];
+        let two_ways = std::mem::take(&mut self.two_ways);
+        self.hangs = false;
         if is_word_start(c) {
             let word = self.word_here();
             self.i += word.len();
             // After a `.`, a word is a property's name, whatever it is.
             let property = matches!(self.words[1], "." | "?.");
+            if !property && word == "else" {
+                // A level of the `if` it goes on, kept while the chain does: a `;` before the
+                // next `else` doesn't end it (`if (a) x; else if (b) y; else …`).
+                self.top().elses += 1;
+                self.depth += 1;
+                self.deepest = self.deepest.max(self.depth);
+                if self.depth > self.limit {
+                    return Err(Refused::Deep(at));
+                }
+            }
             if !property && NESTING_WORDS.contains(&word) {
                 self.deeper(at)?;
+                self.hangs = true;
             }
+            self.two_ways = !property && word == "of";
             let last = if !property && BEFORE_A_VALUE.contains(&word) { Last::Other } else { Last::Value };
             self.said(word, last);
         } else if c.is_ascii_digit() || (c == b'.' && self.peek(1).is_some_and(|d| d.is_ascii_digit())) {
@@ -300,11 +405,13 @@ impl<'s> Count<'s> {
         } else if c == b'`' {
             self.i += 1;
             self.open(b'`', false);
+        } else if c == b'/' && two_ways {
+            return Err(Refused::TwoWays(at));
         } else if c == b'/' && self.last != Last::Value {
             self.regex();
             self.said("", Last::Value);
         } else {
-            self.punctuation(at)?;
+            self.punctuation(at, line_start)?;
         }
         Ok(())
     }
@@ -321,13 +428,15 @@ impl<'s> Count<'s> {
         }
     }
 
-    /// A string, to its closing quote or its line's end (where it is a mistake TypeScript stops at).
+    /// A string, to its closing quote or its line's end at `\n` or `\r` (a mistake the lexer
+    /// stops at, as here); a `\` before a line's end goes on with it.
     fn string(&mut self, quote: u8) {
         self.i += 1;
         while let Some(c) = self.peek(0) {
             match c {
+                b'\\' if self.peek(1) == Some(b'\r') && self.peek(2) == Some(b'\n') => self.i += 3,
                 b'\\' => self.i += 2,
-                b'\n' => return,
+                b'\n' | b'\r' => return,
                 _ if c == quote => {
                     self.i += 1;
                     return;
@@ -337,30 +446,31 @@ impl<'s> Count<'s> {
         }
     }
 
-    /// A regular expression, with its flags, to its closing `/` or its line's end.
+    /// A regular expression, with its flags, to its closing `/` or its line's end (a `\` before
+    /// it too: the lexer stops there).
     fn regex(&mut self) {
         self.i += 1;
         let mut class = false;
-        while let Some(c) = self.peek(0) {
-            match c {
+        while self.i < self.b.len() && !line_ends_at(self.b, self.i) {
+            match self.b[self.i] {
+                b'\\' if line_ends_at(self.b, self.i + 1) => self.i += 1,
                 b'\\' => self.i += 2,
-                b'\n' => return,
                 b'/' if !class => {
                     self.i += 1;
                     break;
                 }
-                _ => {
+                c => {
                     class = (class || c == b'[') && c != b']';
                     self.i += 1;
                 }
             }
         }
-        while self.peek(0).is_some_and(is_word_part) {
+        while self.i < self.b.len() && is_word_part(self.b[self.i]) && space_at(self.b, self.i).is_none() {
             self.i += 1;
         }
     }
 
-    fn punctuation(&mut self, at: usize) -> Result<(), usize> {
+    fn punctuation(&mut self, at: usize, line_start: bool) -> Result<(), Refused> {
         let p = PUNCTUATION.iter().find(|p| self.b[at..].starts_with(p.as_bytes())).copied().unwrap_or(&self.src[at..at + 1]);
         self.i += p.len();
         match p {
@@ -374,6 +484,9 @@ impl<'s> Count<'s> {
             ")" | "]" | "}" => {
                 // The `}` that ends a template's `${…}` goes back to its text.
                 let closed = self.close();
+                // A `}` that closed a `{` ends a block or a value as the parser takes it: a `/`
+                // after it reads two ways.
+                self.two_ways = p == "}" && closed.as_ref().is_some_and(|l| l.open == b'{');
                 let head = closed.is_some_and(|l| l.head);
                 self.said(p, if head { Last::Other } else { Last::Value });
             }
@@ -394,16 +507,24 @@ impl<'s> Count<'s> {
             }
             ">" | ">>" | ">>>" => {
                 self.deeper(at)?;
-                // A `>` closing a type's arguments ends a value: `Array<T>`.
+                // A `>` closing a type's arguments ends a value: `Array<T>`; or it compares, and
+                // a `/` after it starts a regular expression: it reads two ways.
                 let level = self.top();
                 let closes = level.angles > 0;
                 level.angles = level.angles.saturating_sub(p.len());
+                self.two_ways = closes;
                 self.said(p, if closes { Last::Value } else { Last::Other });
             }
             "++" | "--" => {
                 self.deeper(at)?;
-                let last = self.last;
+                // First on its line it is the next statement's, before a value (`a⏎++b`).
+                let last = if line_start { Last::Other } else { self.last };
                 self.said(p, last);
+            }
+            "!" if self.last == Last::Value && !line_start => {
+                // After a value on its line, TypeScript's non-null `a!`: a value still.
+                self.deeper(at)?;
+                self.said(p, Last::Value);
             }
             _ => {
                 self.deeper(at)?;
@@ -471,6 +592,66 @@ mod tests {
         }),
     ];
 
+    /// Unicode's spaces, as the parser takes them, between a line's end and what goes on it.
+    const SPACES: &[&str] = &["\u{a0}", "\u{feff}", "\u{3000}", "\u{2003}", "\u{200b}", "\u{85}", "\u{1680}", "\u{202f}", "\u{205f}", "\u{b}", "\u{c}"];
+
+    /// `n` parentheses round `a`.
+    fn parens(n: usize) -> String {
+        format!("{}a{}", "(".repeat(n), ")".repeat(n))
+    }
+
+    /// Each way a text was written that the count read otherwise than the parser (audit R36),
+    /// `n` deep as the parser reads it: a word that wants what follows it at a line's end, its
+    /// statement reset by the next line (`x as⏎any as⏎any…`); an `else if` chain whose statements
+    /// end with `;`; a comment, a string or a hashbang the count read past where the lexer ends
+    /// it; Unicode's spaces read as words, each beginning a statement; and a `/` the count read as
+    /// a division where the parser starts a regular expression, or the other way, skipping what
+    /// the other counts (after a TypeScript `!`, a `++` begun on a line, a `}`, an `of`, a `>`).
+    const READ_ALIKE: &[(&str, Form)] = &[
+        ("`as` at a line's end", |n| answering(&format!("a{}", " as\nany".repeat(n)))),
+        ("`satisfies` at a line's end", |n| answering(&format!("a{}", " satisfies\nany".repeat(n)))),
+        ("`keyof` at a line's end", |n| answering("a").replacen("route.post", &format!("type T = {}string\n\nroute.post", "keyof\n".repeat(n)), 1)),
+        ("`else if` after statements", |n| handler(&format!("  let x = 0\n{}  return x\n", lines(n, |k| format!("  {}if (a === {k}) x = {k};\n", if k == 1 { "" } else { "else " }))))),
+        ("a `//` comment a lone `\\r` ends", |n| answering(&format!("// c\r{}", parens(n)))),
+        ("a `//` comment U+2028 ends", |n| answering(&format!("// c\u{2028}{}", parens(n)))),
+        ("a `//` comment U+2029 ends", |n| answering(&format!("// c\u{2029}{}", parens(n)))),
+        ("a hashbang", |n| format!("#!/usr/bin/env holon /*\n{}", answering(&parens(n)))),
+        ("a string a `\\` goes on over `\\r\\n`", |n| answering(&format!("\"a\\\r\n\" + {}", parens(n)))),
+        ("Unicode's spaces", |n| answering(&format!("a{}", lines(n, |k| format!("\n{}+ a", SPACES[k % SPACES.len()]))))),
+        ("a division after TypeScript's `!`", |n| answering(&format!("a! / {} / 1", parens(n)))),
+        ("a regular expression after `++` begun on a line", |n| handler(&format!("  let r = {{ lastIndex: 0 }}\n  r\n  ++/'/.lastIndex + {}\n  return 0\n", parens(n)))),
+        ("a regular expression after `}`", |n| handler(&format!("  if (a) {{}}\n  /`/\n  return {}\n", parens(n)))),
+        ("a division after `of`", |n| handler(&format!("  const of = 1\n  return of / {} / 1\n", parens(n)))),
+        ("a regular expression after a type's `>`", |n| handler(&format!("  const r = <any>/`/\n  return {}\n", parens(n)))),
+    ];
+
+    /// How deep the parser's tree of `text` goes, in its nodes: oxc's own reading, on a stack
+    /// with room for what these tests write.
+    fn parser_depth(text: &str) -> usize {
+        struct Depth {
+            now: usize,
+            most: usize,
+        }
+        impl<'a> oxc_ast_visit::Visit<'a> for Depth {
+            fn enter_node(&mut self, _: oxc_ast::AstKind<'a>) {
+                self.now += 1;
+                self.most = self.most.max(self.now);
+            }
+            fn leave_node(&mut self, _: oxc_ast::AstKind<'a>) {
+                self.now -= 1;
+            }
+        }
+        let text = text.to_string();
+        let reading = std::thread::Builder::new().stack_size(512 << 20).spawn(move || {
+            let allocator = oxc_allocator::Allocator::default();
+            let parsed = oxc_parser::Parser::new(&allocator, &text, oxc_span::SourceType::ts()).parse();
+            let mut depth = Depth { now: 0, most: 0 };
+            oxc_ast_visit::Visit::visit_program(&mut depth, &parsed.program);
+            depth.most
+        });
+        reading.unwrap().join().unwrap()
+    }
+
     /// A flow reading the secret `k`, sending `value`, made of it, to a host, with `a`.
     fn sending(defs: &str, value: &str) -> String {
         format!("import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport api from \"host:api.example.com\"\n\nflow(\"deep\", {{ port: 8999 }})\n\n{defs}\nroute.get(\"/\", async (req) => {{\n  const a = req.query.a\n  const r = await api.get(\"/a\", {{ headers: {{ a, k: {value} }} }})\n  return r.status\n}})\n")
@@ -527,6 +708,7 @@ mod tests {
             ("compile", crate::lang::compile(text).err().map(|e| e.to_string()).into_iter().collect()),
             ("check", crate::commands::check("deep.holon.ts", text).err),
             ("mistakes", editing::mistakes(text).into_iter().map(|m| m.message).collect()),
+            ("graph", crate::graph::graph(text, false).err().into_iter().collect()),
         ];
         if lay_out {
             said.push(("format", format::format(text).err().map(|e| e.to_string()).into_iter().collect()));
@@ -604,6 +786,50 @@ mod tests {
                 .collect();
             for form in forms {
                 form.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            }
+        });
+    }
+
+    /// **Guards:** the count reads a text as the parser does, whatever way it is written: each
+    /// way that was read otherwise ([`READ_ALIKE`]), written four times the bound deep as the
+    /// parser reads it (its own tree's depth, the oracle), is refused by every entry that compiles
+    /// a flow, on 1 MiB of stack, a Windows program's main thread's; none goes on to read it.
+    /// **Why:** the count is the only thing between a text and the parser's recursion. Where it
+    /// read a text otherwise than the lexer (a comment, a string or a hashbang ended elsewhere, a
+    /// space taken for a word, a `/` taken the other way), it skipped what the parser read, or
+    /// began a statement where the parser went on one: `x as⏎any as⏎any…` and long `else if`
+    /// chains crashed `holon check` at 400,000 links, and an agent's proposal 3,000 deep could
+    /// trap the reviewer's tab, whose wasm has a 1 MiB stack (audit R36).
+    /// **If it fails:** the row named gets past the count: read it as oxc's lexer does
+    /// (`space_at`, `line_ends_at`, `string`, `regex`), keep its statement going where the parser
+    /// does (`hangs`, `elses`), or refuse a `/` the parser may read either way (`two_ways`). If
+    /// the parser reads a row shallow, the row no longer tests the count: write it again.
+    #[test]
+    fn no_way_of_writing_a_text_gets_it_past_the_count() {
+        let n = 4 * MAX_NESTING;
+        std::thread::scope(|s| {
+            let rows: Vec<_> = READ_ALIKE
+                .iter()
+                .map(|&(name, form)| {
+                    let on_a_main_thread = std::thread::Builder::new().name(format!("{name} on a main thread's stack")).stack_size(1 << 20);
+                    let text = form(n);
+                    let read = parser_depth(&text);
+                    assert!(read >= n, "{name}: the parser reads it {read} deep, not {n}: the row doesn't test the count");
+                    // The count first: a text it lets through would only be read, slowly, by
+                    // every entry below.
+                    assert!(super::check(&text).is_err(), "{name}: the count lets it through, {read} deep by the parser's tree");
+                    on_a_main_thread
+                        .spawn_scoped(s, move || {
+                            for (entry, said) in compiled(&text, true) {
+                                let refused = said.iter().any(|m| m.contains(&format!("more than {MAX_NESTING} levels deep")) || m.contains("reads two ways"));
+                                assert!(refused, "{name}: {entry} doesn't refuse it at the count: {said:?}");
+                            }
+                        })
+                        .unwrap()
+                })
+                .collect();
+            for row in rows {
+                row.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
             }
         });
     }

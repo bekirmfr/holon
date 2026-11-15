@@ -356,6 +356,32 @@ are reused or nested (audit R17):
   each fix taken out fails it), `the_samples_walk_far_below_what_a_question_may_visit`,
   `the_samples_lay_out_far_below_fmts_bound`.
 
+### G13. A text is counted as the parser reads it
+
+The count that bounds how deep a text nests (`lang::nesting`, 128 levels) is the only thing
+between a text and the parser's recursion, so it reads a text's words, comments and line ends as
+oxc's lexer does (audit R36). Where it read one otherwise it skipped what the parser read, or
+began a statement where the parser went on one, and a text got past it as deep as it liked:
+`x as⏎any as⏎any…` and long `else if` chains crashed `holon check` at 400,000 links, and an
+agent's proposal 3,000 deep could trap a reviewer's tab, whose wasm has a 1 MiB stack.
+
+- **Read alike.** A line ends at `\n`, `\r`, U+2028 and U+2029, ending a `//` comment, a string
+  (at `\n` and `\r`) and a regular expression; a `\` before it goes on with a string. oxc's spaces
+  (U+00A0, U+FEFF, U+3000, U+200B and the rest) are spaces, never words. `#!` at a text's start is
+  a comment to its line's end. A word that wants what follows it (`as`, `keyof`, `in`) keeps its
+  statement going over a line's end; each `else` is a level of its `if`, kept over the `;`s of
+  the chain. TypeScript's `a!` is a value, and a `++` begun on a line is the next statement's.
+- **Refused where it can't tell.** Whether a `/` divides or starts a regular expression hangs, after
+  a `}`, an `of` or a `>` that may close a type's arguments, on what the parser made of what came
+  before; read the wrong way, each skips what the other counts. The count refuses that `/`,
+  saying to put one side in parentheses (`Refused::TwoWays`).
+- **Limits.** An `else if` chain counts three levels a link (its condition, its statement or
+  block, its `else`): 41 links fit in a route's handler, where the parser's tree is one a link.
+  `graph::graph` lowers on the deep stack, as `lang::compile` does.
+- **Tests.** `no_way_of_writing_a_text_gets_it_past_the_count` (each way that was read otherwise,
+  four times the bound deep by oxc's own tree, refused by every entry on 1 MiB of stack; each fix
+  taken out fails its row), `no_text_nested_past_the_bound_crashes_any_compile_entry`.
+
 ## 3. Policy, not accident
 
 Some choices weaken a record on purpose, and are listed so they are seen as choices (RA §2.5): a
