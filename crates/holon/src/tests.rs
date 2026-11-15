@@ -8478,6 +8478,47 @@ export const pay = action(async (order) => {
                 }
             }
         }
+        // Decisions forged whole, each place the line says them (what was delivered, the steps
+        // that took it): one person deciding twice, a step there isn't, an agent on a person's
+        // step; and whoever started the run deciding a step that doesn't take them, its first
+        // part's line saying they started it. None passes: verify holds an approval's decisions
+        // to its steps (`durable::StoredWaiting::decided_as`).
+        if slug == "payouts" {
+            let number = |n: f64| serde_json::json!({ "type": "Number", "value": n });
+            let text = |s: &str| serde_json::json!({ "type": "Text", "value": s });
+            let pair = |k: &str, v: serde_json::Value| serde_json::json!([k, v]);
+            let resumed = values.iter().position(|v| v["kind"] == "resume").expect("the resumed part's line");
+            let first = values.iter().position(|v| v["kind"] == "trigger").expect("the first part's line");
+            let mut started = values[first].clone();
+            started["by"] = "ada".into();
+            let rows = [
+                ("one person deciding twice", resumed, rewritten(&values[resumed], &"bob".into(), &"ada".into())),
+                ("a step there isn't", resumed, rewritten(&values[resumed], &pair("slot", number(0.0)), &pair("slot", number(1.0)))),
+                ("an agent on a person's step", resumed, rewritten(&values[resumed], &pair("kind", text("person")), &pair("kind", text("agent")))),
+                ("whoever started it deciding", first, started),
+            ];
+            for (what, i, changed) in rows {
+                assert_ne!(changed, values[i], "{what}: the line changes");
+                tried += 1;
+                let mut lines: Vec<String> = Vec::new();
+                for (j, v) in values.iter().enumerate() {
+                    let mut v = if j == i { changed.clone() } else { v.clone() };
+                    if let Some(before) = lines.last() {
+                        v["prev"] = recorder::line_hash(before).into();
+                    }
+                    lines.push(serde_json::to_string(&v).unwrap());
+                }
+                let head = recorder::line_hash(lines.last().unwrap());
+                let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+                let report = verify::check(&copy, None, &BTreeMap::new());
+                let said = verify::describe(&report, None);
+                assert!(report.ok() || said.contains("what was delivered to it"), "{what} fails, and not for its decisions:\n{said}");
+                if report.ok() {
+                    passed += 1;
+                    leaks.push(format!("{slug}: {what}"));
+                }
+            }
+        }
     }
     eprintln!("{tried} changes tried, {passed} pass verify without the head ({by_field:?}); {} as checked, {} saying less", leaks.len(), said_less.len());
     assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
@@ -8485,9 +8526,23 @@ export const pay = action(async (order) => {
     assert!(said_less.is_empty(), "{} of {tried} changes pass, saying less was checked:\n{}", said_less.len(), said_less.join("\n"));
 }
 
+/// `v` with every value in it that is `from` (a whole JSON value: a string, a record's field as
+/// its pair) made `to`: a line changed each place it says something, kept as one.
+fn rewritten(v: &serde_json::Value, from: &serde_json::Value, to: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    if v == from {
+        return to.clone();
+    }
+    match v {
+        J::Array(items) => J::Array(items.iter().map(|i| rewritten(i, from, to)).collect()),
+        J::Object(fields) => J::Object(fields.iter().map(|(k, f)| (k.clone(), rewritten(f, from, to))).collect()),
+        _ => v.clone(),
+    }
+}
+
 /// What [`no_line_changed_and_chained_again_passes_as_checked`] doesn't hold verify to yet: the
 /// fields R26's later steps hold (audit R26).
-const OPEN: &[&str] = &["events", "commit", "session", "retries", "by", "grant"];
+const OPEN: &[&str] = &["commit", "session", "retries", "by", "grant"];
 
 /// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
 /// that follows. A run that failed is run again: what it computed is checked, and what its writes

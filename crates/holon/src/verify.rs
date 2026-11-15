@@ -36,7 +36,7 @@ use std::collections::BTreeSet;
 
 use crate::*;
 use holon_core::Observer;
-use holon_host::{Exchange, Limits, Performer, Waits};
+use holon_host::{Exchange, Limits, Performer, Waiting, Waits};
 use recorder::{line_hash, LogEntry};
 
 mod replay;
@@ -1546,6 +1546,7 @@ fn rerun(
     let mut waits = Logged {
         reads,
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
+        reached: BTreeMap::new(),
         marks: marks.clone(),
     };
     let limits = rerun_limits();
@@ -1655,6 +1656,18 @@ fn rerun(
     if parked != waits_at && (entry.error.is_none() || !parked.is_empty()) {
         differs.push("where it waits");
     }
+    // What was delivered to it: each at a point it reached waiting, and an approval's what its
+    // decisions deliver, taken as the server takes them, by the steps it asks for there and
+    // whoever started it (its first part's line says who).
+    let starter = earlier.iter().find(|e| e.kind != "resume").and_then(|e| e.by.as_deref());
+    let delivered = waits.events.iter().find_map(|(name, event)| match waits.reached.get(name) {
+        None => Some(format!("{name:?} was delivered, and it doesn't wait there")),
+        Some(Some(steps)) => durable::StoredWaiting::decided_as(name, steps, event, starter).err(),
+        Some(None) => None,
+    });
+    if delivered.is_some() {
+        differs.push("what was delivered to it");
+    }
     // A run that finished and changed its state kept the state it left (`firing::keep_state`), or
     // failed saying why: a line that keeps none is no such run's.
     let changed = host.performed.iter().any(|(c, p)| match c {
@@ -1726,7 +1739,10 @@ fn rerun(
                 false => Rerun::Differs(format!("{} (it failed, and its entry says other than what it does run again, not only less)", differs.join(", "))),
             }
         }
-        false => Rerun::Differs(differs.join(", ")),
+        false => Rerun::Differs(match delivered {
+            Some(why) => format!("{} ({why})", differs.join(", ")),
+            None => differs.join(", "),
+        }),
     }
 }
 
@@ -1805,6 +1821,10 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
     entry.clone().values_mut(&mut |v| held &= SValue::from_core(&v.clone().into_core()) == *v);
     if !held {
         return Some("a value in it isn't one a run holds (a record with a key twice, or out of order)".into());
+    }
+    // What was delivered to the points it waited at is given to a resumed part (durable.rs).
+    if !entry.events.is_empty() && kind != "resume" {
+        return Some("it says what was delivered to points it waited at, and it isn't a resumed part".into());
     }
     if let Some(c) = &entry.commit {
         match (c.after, c.n) {
@@ -1986,6 +2006,9 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
 struct Logged {
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
     events: BTreeMap<String, Value>,
+    /// Each point it reached waiting that it was delivered an event at, by name: an approval's
+    /// steps, none for an event's.
+    reached: BTreeMap<String, Option<String>>,
     marks: Marks,
 }
 
@@ -1995,6 +2018,13 @@ impl Waits for Logged {
     }
     fn event(&self, name: &str) -> Option<Value> {
         self.events.get(name).cloned()
+    }
+    fn event_at(&mut self, at: &Waiting) -> Option<Value> {
+        let event = self.event(&at.name);
+        if event.is_some() {
+            self.reached.insert(at.name.clone(), at.approval.clone());
+        }
+        event
     }
     fn token(&mut self, name: &str) -> String {
         self.marks.of("token", name)
