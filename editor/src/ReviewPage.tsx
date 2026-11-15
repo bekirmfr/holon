@@ -180,7 +180,9 @@ export function ReviewPage({
   const lines = useMemo(() => textLines(data?.text ?? ""), [data]);
   const groups = useMemo(() => (data ? mayGroups(data.preview.touches, data.preview.settings, lines) : []), [data, lines]);
   const asked = data?.preview.needs_approval.length ?? 0;
-  const newer = !entry || (data !== null && data.saved.saved_at_epoch_seconds > entry.deployed_at_epoch_seconds);
+  // A proposal waiting is newer than what is deployed, whatever the stamps say: they are seconds,
+  // and an agent's version proposed in the second its last one was deployed is saved at it.
+  const newer = !entry || (data !== null && (data.proposal !== null || data.saved.saved_at_epoch_seconds > entry.deployed_at_epoch_seconds));
 
   const show = (n: number) => {
     setView("whole");
